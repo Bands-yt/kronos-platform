@@ -304,6 +304,22 @@ void RuntimeShell::tick(float dt) {
         state_ = ShellState::Error;
     }
 
+    // Kronos ("Active Joining UI" -- real bug fix): Escape always leaves
+    // InGame back to Home, matching every other game's own convention
+    // (the real gap a live playtest surfaced -- once reached via the Home
+    // Screen's "Play"/"Join", not a CLI flag, InGame previously had no
+    // way back out at all: no keyboard shortcut, and the mouse itself is
+    // captured/hidden by relative mouse mode, so the always-visible HUD's
+    // own buttons below were unreachable too). leaveSession() itself
+    // already no-ops safely on an inactive (offline) NetworkSession -- see
+    // NetworkSession::shutdown()'s own mode/sessionActuallyStarted_ guard
+    // -- so this one call is correct for both online and offline play.
+    bool escapeDown = state_ == ShellState::InGame && app_.input().isActionDown("ToggleMenu");
+    if (escapeDown && !escapeKeyWasDown_) {
+        leaveSession();
+    }
+    escapeKeyWasDown_ = escapeDown;
+
     beginFrame();
     switch (state_) {
         case ShellState::Home: drawHomePanel(); break;
@@ -508,25 +524,34 @@ void RuntimeShell::drawErrorPanel() {
 
 void RuntimeShell::drawPlayerListOverlay() {
     net::NetworkSession& session = app_.networkSession();
-    if (!session.isActive()) return; // real, honest no-op for offline play -- nothing to show
+    bool online = session.isActive();
 
-    // Always-visible, minimal HUD -- a real "Leave Session" action must
-    // always be reachable while InGame, not hidden behind a toggle.
+    // Always-visible, minimal HUD -- a real "leave" action must always be
+    // reachable while InGame, not hidden behind a toggle. Drawn for
+    // offline play too now (previously an early-return here left offline
+    // play with no HUD -- and therefore no discoverable way back to Home
+    // -- at all; see tick()'s own Escape handling for the actual fix,
+    // this text is what makes it discoverable without reading docs).
     ImGui::SetNextWindowPos(ImVec2(16.0f, 16.0f), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.65f);
     if (ImGui::Begin("##InGameHud", nullptr,
                       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav |
                           ImGuiWindowFlags_NoFocusOnAppearing)) {
-        ImGui::Text("%s", session.isServer() ? "Hosting" : "Connected");
-        if (ImGui::Button("Leave Session")) leaveSession();
-        ImGui::SameLine();
-        if (ImGui::Button(showPlayerListOverlay_ ? "Hide Players" : "Show Players")) {
-            showPlayerListOverlay_ = !showPlayerListOverlay_;
+        ImGui::Text("%s", online ? (session.isServer() ? "Hosting" : "Connected") : "Offline");
+        if (online) {
+            if (ImGui::Button("Leave Session")) leaveSession();
+            ImGui::SameLine();
+            if (ImGui::Button(showPlayerListOverlay_ ? "Hide Players" : "Show Players")) {
+                showPlayerListOverlay_ = !showPlayerListOverlay_;
+            }
+        } else {
+            if (ImGui::Button("Back to Home")) leaveSession();
         }
+        ImGui::TextDisabled("Press Esc to leave");
     }
     ImGui::End();
 
-    if (!showPlayerListOverlay_) return;
+    if (!online || !showPlayerListOverlay_) return;
 
     ImGui::SetNextWindowPos(ImVec2(16.0f, 90.0f), ImGuiCond_Appearing);
     ImGui::SetNextWindowBgAlpha(0.85f);

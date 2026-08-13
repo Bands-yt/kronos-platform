@@ -148,6 +148,16 @@ private:
 
     bool showPlayerListOverlay_ = false;
 
+    // Kronos ("Active Joining UI" -- real bug fix): edge-detection state
+    // for the "ToggleMenu" (Escape) action, same
+    // isActionDown()+"WasDown_" pattern core::Application already uses
+    // for every other keyboard toggle. Without this, InGame (reached via
+    // the Home Screen's own "Play"/"Join" -- not just a CLI flag) had no
+    // way back out at all once the mouse was captured: no keyboard
+    // shortcut existed, and the always-visible HUD's own buttons were
+    // themselves unreachable by a hidden, captured cursor.
+    bool escapeKeyWasDown_ = false;
+
     VkDescriptorPool imguiDescriptorPool_ = nullptr;
     ImDrawData* pendingDrawData_ = nullptr;
 };

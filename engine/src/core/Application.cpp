@@ -140,6 +140,13 @@ bool Application::initialize(const CreateInfo& info) {
     // concern rather than a character-movement one.
     input_.bindAction("Interact", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
                                                                     SDL_SCANCODE_E});
+    // Kronos ("Active Joining UI"): the real Escape-to-leave binding
+    // runtime::RuntimeShell polls while InGame (see that class's own
+    // tick()) -- bound generically here, same as every other action,
+    // rather than a shell-specific input path, since a bound action is
+    // free real estate regardless of which CLI mode ends up querying it.
+    input_.bindAction("ToggleMenu", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
+                                                                      SDL_SCANCODE_ESCAPE});
     // Sprint 14 ("RTX Upgrade" Phase 2 / "Performance Mode"): the real
     // runtime toggles the brief asks for. F6/F7 rather than reusing an
     // already-bound key, edge-detected the same way "Interact" already
