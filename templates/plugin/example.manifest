@@ -1,0 +1,7 @@
+PLUGIN 1
+NAME Example Plugin
+VERSION 1.0.0
+AUTHOR Your Name
+DESCRIPTION A real, working starting point for a Kronos Studio plugin -- copy this folder, rename it, and edit main.lua.
+ENTRY main.lua
+END

@@ -1,0 +1,12 @@
+build/
+compile_commands.json
+*.o
+*.obj
+
+# Generated trailer/render captures (raw frame sequences + encoded video,
+# tens of GB -- not source, not shipped in any package)
+trailer_output/
+trailer_output_final/
+trailer_output_kronos_final/
+trailer_output_final.mp4
+trailer_output_kronos_final.mp4

@@ -1,0 +1,12 @@
+# Build output
+engine/build/
+dist/
+
+# Generated trailer/render captures (not source)
+trailer_output/
+
+# Editor/OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store

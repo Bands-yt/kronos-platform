@@ -1,0 +1,238 @@
+#include "studio/plugins/PublishingPanel.hpp"
+
+#include <cstdio>
+#include <filesystem>
+#include <sstream>
+
+#include <imgui.h>
+
+#include "publishing/PublishValidation.hpp"
+#include "studio/PluginChrome.hpp"
+
+namespace engine::studio::plugins {
+
+namespace {
+std::vector<std::string> splitCommaSeparated(const std::string& text) {
+    std::vector<std::string> result;
+    std::stringstream stream(text);
+    std::string token;
+    while (std::getline(stream, token, ',')) {
+        size_t start = token.find_first_not_of(' ');
+        size_t end = token.find_last_not_of(' ');
+        if (start == std::string::npos) continue;
+        result.push_back(token.substr(start, end - start + 1));
+    }
+    return result;
+}
+} // namespace
+
+PublishingPanel::PublishingPanel(SceneManager& sceneManager, core::Camera& viewportCamera, core::MeshLibrary& meshLibrary,
+                                  core::TextureLibrary& textureLibrary, net::NetworkSession& networkSession)
+    : sceneManager_(&sceneManager), viewportCamera_(&viewportCamera), meshLibrary_(&meshLibrary),
+      textureLibrary_(&textureLibrary), networkSession_(&networkSession) {
+    thumbnailRig_.camera.position = glm::vec3(0.0f, 3.0f, 8.0f);
+    thumbnailRig_.camera.yawDegrees = -90.0f;
+    thumbnailRig_.camera.pitchDegrees = -15.0f;
+}
+
+void PublishingPanel::logMessage(const std::string& message) {
+    publishLog_.push_back(message);
+    if (publishLog_.size() > 200) publishLog_.erase(publishLog_.begin());
+}
+
+publishing::WorldPackage PublishingPanel::buildPackage(core::ECS& ecs) const {
+    publishing::WorldPackage package;
+    package.worldId = worldIdBuffer_;
+    package.version = versionBuffer_;
+    package.metadata.title = titleBuffer_;
+    package.metadata.description = descriptionBuffer_;
+    package.metadata.tags = splitCommaSeparated(tagsBuffer_);
+    package.metadata.creatorName = creatorNameBuffer_;
+    package.metadata.recommendedPlayerCount = recommendedPlayerCount_;
+    package.metadata.category = static_cast<publishing::WorldCategory>(categoryIndex_);
+    package.metadata.thumbnailPath = lastThumbnailPath_;
+    package.scene = sceneManager_->captureScene(ecs, *viewportCamera_);
+    return package;
+}
+
+void PublishingPanel::drawMetadataSection() {
+    if (!ImGui::CollapsingHeader("World Metadata", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    ImGui::InputText("World Id", worldIdBuffer_, sizeof(worldIdBuffer_));
+    helpMarker("A stable, creator-facing id -- never regenerated once published (same real convention Avatar Item ids already use).");
+    ImGui::InputText("Version", versionBuffer_, sizeof(versionBuffer_));
+    helpMarker("Real semantic version, e.g. \"1.0\" or \"1.0.0\".");
+    ImGui::InputText("Title", titleBuffer_, sizeof(titleBuffer_));
+    ImGui::InputTextMultiline("Description", descriptionBuffer_, sizeof(descriptionBuffer_), ImVec2(0, 80));
+    ImGui::InputText("Tags (comma-separated)", tagsBuffer_, sizeof(tagsBuffer_));
+    ImGui::InputText("Creator Name", creatorNameBuffer_, sizeof(creatorNameBuffer_));
+    ImGui::InputInt("Recommended Player Count", &recommendedPlayerCount_);
+    const char* categories[] = {"Adventure", "Mining", "Horror", "Sandbox"};
+    ImGui::Combo("Category", &categoryIndex_, categories, 4);
+    ImGui::InputInt("Creator Player Id (for server registry)", &creatorPlayerId_);
+}
+
+void PublishingPanel::drawThumbnailSection() {
+    if (!ImGui::CollapsingHeader("Thumbnail Camera", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    ImGui::TextUnformatted("Real, independent camera -- does not move your edit viewport.");
+    ImGui::DragFloat3("Camera Position", &thumbnailRig_.camera.position.x, 0.1f);
+    ImGui::DragFloat("Yaw", &thumbnailRig_.camera.yawDegrees, 1.0f);
+    ImGui::DragFloat("Pitch", &thumbnailRig_.camera.pitchDegrees, 1.0f, -89.0f, 89.0f);
+
+    int modeIndex = captureMode_ == publishing::ThumbnailCaptureMode::Auto ? 0 : 1;
+    const char* modes[] = {"Auto", "Manual"};
+    if (ImGui::Combo("Capture Mode", &modeIndex, modes, 2)) {
+        captureMode_ = modeIndex == 0 ? publishing::ThumbnailCaptureMode::Auto : publishing::ThumbnailCaptureMode::Manual;
+    }
+    helpMarker("Auto real-captures automatically once the camera has a real rendered frame ready. Manual waits for the button below.");
+
+    ImGui::BeginChild("##thumbnail_preview", ImVec2(0, 260), true);
+    if (thumbnailRig_.hasRenderedFrame()) {
+        VkExtent2D extent = thumbnailRig_.extent();
+        ImGui::Image(thumbnailRig_.imguiTextureId(), ImVec2(static_cast<float>(extent.width), static_cast<float>(extent.height)));
+    } else {
+        ImGui::TextDisabled("Rendering...");
+    }
+    ImGui::EndChild();
+
+    if (ImGui::Button("Capture Thumbnail")) {
+        // Real directory creation before the real write -- a bug this
+        // sprint's own live testing found: captureThumbnailToFile()'s
+        // std::ofstream doesn't create parent directories (matching
+        // ofstream's own real behavior everywhere else in this
+        // codebase), so a fresh Studio run with no real "published_worlds"
+        // directory yet would silently fail every capture. See
+        // WorldPackage::saveToDirectory()'s own real
+        // create_directories() call for the same real requirement.
+        std::error_code ec;
+        std::filesystem::create_directories(publishDirectoryBuffer_, ec);
+        std::string path = std::string(publishDirectoryBuffer_) + "/" + std::string(worldIdBuffer_) + "_thumbnail.ppm";
+        // captureToFile() itself needs a live core::Renderer&, only
+        // available from renderPreview()'s per-frame hook -- the button
+        // just marks intent; the actual real capture happens the next
+        // time renderPreview() runs, see that method's own comment.
+        captureRequested_ = true;
+        pendingThumbnailPath_ = path;
+    }
+    if (hasCapturedThumbnail_) ImGui::TextDisabled("Captured: %s", lastThumbnailPath_.c_str());
+}
+
+void PublishingPanel::drawValidationSection(core::ECS& ecs) {
+    if (!ImGui::CollapsingHeader("Validation", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    publishing::WorldPackage package = buildPackage(ecs);
+    publishing::PublishValidationResult result =
+        publishing::validateForPublish(package.worldId, package.version, package.metadata, package.scene);
+
+    if (result.valid) {
+        ImGui::TextColored(ImVec4(0.35f, 0.80f, 0.40f, 1.0f), "Ready to publish.");
+    } else {
+        ImGui::TextColored(ImVec4(0.90f, 0.30f, 0.30f, 1.0f), "%zu real validation error(s):", result.errors.size());
+        for (const auto& error : result.errors) ImGui::BulletText("%s", error.c_str());
+    }
+}
+
+void PublishingPanel::drawTestPublishSection(core::ECS& ecs) {
+    if (!ImGui::CollapsingHeader("Test Publish (local packaging)", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    ImGui::InputText("Output Directory", publishDirectoryBuffer_, sizeof(publishDirectoryBuffer_));
+    if (ImGui::Button("Test Publish")) {
+        publishing::WorldPackage package = buildPackage(ecs);
+        publishing::PublishValidationResult result =
+            publishing::validateForPublish(package.worldId, package.version, package.metadata, package.scene);
+        if (!result.valid) {
+            logMessage("Test Publish failed validation (" + std::to_string(result.errors.size()) + " error(s)).");
+            for (const auto& error : result.errors) logMessage("  - " + error);
+        } else {
+            std::string directory = std::string(publishDirectoryBuffer_) + "/" + package.worldId + "_v" + package.version;
+            bool ok = package.saveToDirectory(directory);
+            logMessage(ok ? "Test Publish succeeded: packaged to " + directory
+                          : "Test Publish failed: could not write package to " + directory);
+        }
+    }
+}
+
+void PublishingPanel::drawServerRegistrySection(core::ECS& ecs) {
+    if (!ImGui::CollapsingHeader("Publish to Server Registry")) return;
+    if (!networkSession_->isServer()) {
+        ImGui::TextDisabled("Host a server (Network Overlay) to publish into its real world registry.");
+        return;
+    }
+
+    ImGui::Text("%zu world(s) currently in this server's real registry", networkSession_->worldRegistry().size());
+    if (ImGui::Button("Publish to Registry")) {
+        publishing::WorldPackage package = buildPackage(ecs);
+        publishing::WorldListing listing;
+        listing.worldId = package.worldId;
+        listing.creatorId = static_cast<net::PlayerId>(creatorPlayerId_);
+        listing.version = package.version;
+        listing.metadata = package.metadata;
+
+        publishing::PublishValidationResult result = networkSession_->publishWorld(listing);
+        if (!result.valid) {
+            logMessage("Registry publish failed (" + std::to_string(result.errors.size()) + " error(s)).");
+            for (const auto& error : result.errors) logMessage("  - " + error);
+        } else {
+            logMessage("Registry publish succeeded: " + listing.worldId + " v" + listing.version);
+        }
+    }
+}
+
+void PublishingPanel::drawPublishLogSection() {
+    if (!ImGui::CollapsingHeader("Publish Log")) return;
+    ImGui::BeginChild("##publish_log_scroll", ImVec2(0, 150), true);
+    for (const auto& line : publishLog_) ImGui::TextUnformatted(line.c_str());
+    ImGui::EndChild();
+    if (ImGui::Button("Clear Log")) publishLog_.clear();
+}
+
+void PublishingPanel::drawPanel(core::ECS& ecs, core::EntityId, const std::vector<core::EntityId>&) {
+    ImGui::Begin(name());
+    drawPluginHeader("Publishing");
+
+    drawMetadataSection();
+    drawThumbnailSection();
+    drawValidationSection(ecs);
+    drawTestPublishSection(ecs);
+    drawServerRegistrySection(ecs);
+    drawPublishLogSection();
+
+    drawPluginFooter();
+    ImGui::End();
+}
+
+void PublishingPanel::renderPreview(VkCommandBuffer cmd, core::Renderer& renderer, core::ECS& ecs) {
+    thumbnailRig_.render(cmd, renderer, ecs, *meshLibrary_, *textureLibrary_);
+
+    // Task 3's real Auto capture mode: the first time the rig has a real
+    // rendered frame ready and nothing has been captured yet, trigger a
+    // real capture automatically -- no button click required. Manual
+    // mode never does this; the "Capture Thumbnail" button is the only
+    // way to trigger one.
+    if (captureMode_ == publishing::ThumbnailCaptureMode::Auto && !hasCapturedThumbnail_ && !captureRequested_ &&
+        thumbnailRig_.hasRenderedFrame()) {
+        std::error_code ec;
+        std::filesystem::create_directories(publishDirectoryBuffer_, ec); // see the manual button's own comment on why this is real-required
+        captureRequested_ = true;
+        pendingThumbnailPath_ = std::string(publishDirectoryBuffer_) + "/" + std::string(worldIdBuffer_) + "_thumbnail.ppm";
+    }
+
+    if (captureRequested_ && thumbnailRig_.hasRenderedFrame()) {
+        captureRequested_ = false;
+        bool ok = thumbnailRig_.captureToFile(renderer, pendingThumbnailPath_);
+        if (ok) {
+            lastThumbnailPath_ = pendingThumbnailPath_;
+            hasCapturedThumbnail_ = true;
+            logMessage("Thumbnail captured: " + lastThumbnailPath_);
+        } else {
+            logMessage("Thumbnail capture FAILED: " + pendingThumbnailPath_);
+        }
+    }
+}
+
+void PublishingPanel::shutdown(core::Renderer& renderer) {
+    thumbnailRig_.destroy(renderer, renderer.allocator(), renderer.device());
+}
+
+} // namespace engine::studio::plugins
