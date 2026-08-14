@@ -108,6 +108,13 @@ private:
     void drawPendingFileActionPopup();
     void drawSceneTabsBar();
     void drawRecoveryBanner();
+    // Kronos ("First-Launch Experience"): a real welcome panel, shown
+    // only the one time drawDockspace()'s own DockBuilder detects a
+    // genuinely first-ever launch (DockBuilderGetNode() == nullptr) --
+    // reuses that existing detection rather than a second marker-file
+    // mechanism. See .cpp for the real buttons (Open Default Project /
+    // View Quickstart).
+    void drawWelcomePanel();
     // Kronos (Alpha Completion Checklist, "Project System Finalization" --
     // "auto-backup"): see projectAutosaveTimer_'s own comment.
     void tickProjectAutosave(float dt);
@@ -296,6 +303,10 @@ private:
     // changes?" banner drawn by drawRecoveryBanner(), cleared once the
     // user picks Recover or Dismiss.
     std::string recoveryOfferPath_;
+    // Kronos ("First-Launch Experience"): set true exactly once, by
+    // drawDockspace()'s own first-launch detection -- see
+    // drawWelcomePanel()'s own comment.
+    bool welcomePanelOpen_ = false;
     // The project-level counterpart to recoveryOfferPath_ above -- see
     // core::ProjectFile::hasRecoveryFile()'s own comment. Kept as a
     // separate field (not reusing recoveryOfferPath_) since a scene

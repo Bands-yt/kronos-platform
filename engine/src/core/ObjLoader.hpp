@@ -39,4 +39,15 @@ struct ObjLoadResult {
 // uploaded images.
 [[nodiscard]] ObjLoadResult loadObj(const std::string& path);
 
+// The real inverse of loadObj() -- writes `vertices`/`indices` (any
+// source: EditableMesh::vertices()/indices(), a loadObj() result passed
+// straight through, anything shaped like Mesh::uploadFromHost()'s own
+// parameters) as a real, standard Wavefront OBJ: one `v`/`vt`/`vn` line
+// per vertex plus one 1-indexed `f v/vt/vn ...` line per triangle --
+// loadObj() itself can read the result straight back. Returns false on
+// a real file-open failure (bad path, no write permission); never
+// throws.
+[[nodiscard]] bool saveObj(const std::string& path, const std::vector<Vertex>& vertices,
+                            const std::vector<uint32_t>& indices);
+
 } // namespace engine::core

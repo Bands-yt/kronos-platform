@@ -29,6 +29,7 @@
 #include "core/WorldProp.hpp"
 #include "runtime/GameLoop.hpp"
 #include "runtime/RuntimeShell.hpp"
+#include "housedemo/HouseDemoScene.hpp"
 #include "miningsim/MiningSimRtx.hpp"
 #include "miningsim/Mob.hpp"
 #include "tntwars/DestructibleGeometryVisual.hpp"
@@ -116,6 +117,7 @@ int main(int argc, char** argv) {
     std::string trailerScriptPath = "TrailerScript.lua";
     std::string trailerOutputDir = "trailer_output";
     bool miningSimMode = false;
+    bool houseDemoMode = false;
     bool renderShowcaseMode = false;
     bool tntWarsMode = false;
     std::string tntWarsMapArg; // real, optional positional map-name selector for --tntwars (see below)
@@ -155,6 +157,13 @@ int main(int argc, char** argv) {
             // windowed app.run() loop every other engine_runtime launch
             // uses, so the scene can actually be looked at/moved through.
             miningSimMode = true;
+        } else if (arg == "--house-demo") {
+            // Kronos ("house-demo"): real, live, interactive launch mode
+            // for the house-building deliverable (see
+            // housedemo/HouseDemoScene.hpp's own header comment). Same
+            // "replaces the bring-up scene, then runs the real windowed
+            // app.run() loop" shape as --miningsim above.
+            houseDemoMode = true;
         } else if (arg == "--render-showcase") {
             // Kronos ("Real-Time Rendering Evolved" trailer): real, live,
             // scripted-camera launch mode -- see the dedicated branch
@@ -198,7 +207,7 @@ int main(int argc, char** argv) {
     // tntWarsMode's own early-return branches below, so it's included
     // here explicitly rather than assumed already covered.
     bool homeScreenMode = networkConfig.mode == engine::net::NetworkMode::Offline && !trailerMode && !miningSimMode &&
-                           !renderShowcaseMode && !tntWarsMode;
+                           !renderShowcaseMode && !tntWarsMode && !houseDemoMode;
 
     engine::core::Application app;
 
@@ -335,6 +344,42 @@ int main(int argc, char** argv) {
         app.camera().pitchDegrees = -8.0f;
 
         app.run();
+        app.shutdown();
+        return 0;
+    }
+
+    if (houseDemoMode) {
+        std::fprintf(stdout, "engine_runtime: --house-demo mode -- a standard house on rolling hills\n");
+
+        engine::core::Terrain terrain;
+        engine::core::Terrain::CreateInfo terrainInfo;
+        terrainInfo.gridResolution = 65;
+        terrainInfo.chunkCount = 8;
+        terrainInfo.cellSize = 1.0f;
+        terrainInfo.origin = {-32.0f, 0.0f, -32.0f};
+        if (!terrain.create(terrainInfo, app.ecs(), app.meshLibrary(), app.renderer().allocator(),
+                             app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue())) {
+            std::fprintf(stderr, "engine_runtime: --house-demo terrain.create failed.\n");
+            app.shutdown();
+            return 1;
+        }
+        terrain.applyPreset(engine::core::Terrain::Preset::RollingHills);
+        app.setTerrain(&terrain);
+        app.setTerrainStreamingRadii(60.0f, 80.0f);
+
+        engine::housedemo::buildHouseDemoScene(app.ecs(), app.meshLibrary(), terrain, app.renderer().allocator(),
+                                                app.renderer().device(), app.renderer().commandPool(),
+                                                app.renderer().graphicsQueue(), glm::vec2(0.0f, 0.0f));
+
+        // A real 3/4 elevated view -- shows the roof ridge, the west
+        // wall's window, and the front door all at once, rather than the
+        // flatter, more head-on default framing.
+        app.camera().position = {12.0f, 8.0f, -12.0f};
+        app.camera().yawDegrees = 135.0f;
+        app.camera().pitchDegrees = -20.0f;
+
+        app.run();
+        terrain.destroy();
         app.shutdown();
         return 0;
     }

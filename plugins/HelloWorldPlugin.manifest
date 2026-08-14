@@ -1,0 +1,7 @@
+PLUGIN 1
+NAME Hello World
+VERSION 1.0.0
+AUTHOR Kronos
+DESCRIPTION The smallest real, working starter plugin -- proves the Luau VM, task/events tables, and the load/reload cycle all work, nothing more.
+ENTRY HelloWorldPlugin.lua
+END

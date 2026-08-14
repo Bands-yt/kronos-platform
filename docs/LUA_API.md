@@ -27,8 +27,12 @@ Studio's plugin/console `world` table (`studio::registerStudioEcsBindings`)
 is intentionally smaller than engine_runtime's (`core::ScriptWorldApi`) —
 Studio owns no live `Physics`/`RuntimeAnimationPlayer`, so
 `applyImpulse`/`setVelocity`/`playAnimation`/`stopAnimation` don't exist
-there. Both share `createEntity`/`setParent`/`unparent`/`findByName`/
-`getPosition`/`setPosition`/`setColor`.
+there. It's also missing `createEntity`, `getRotation`/`setRotation`,
+`setScale`, and `setMaterial`/`setEmissive` — a Studio plugin/console
+script can only act on entities that already exist (via `findByName`),
+not spawn new ones. The two tables share exactly six real functions:
+`findByName`/`getPosition`/`setPosition`/`setColor`/`setParent`/
+`unparent`.
 
 ## Core globals
 

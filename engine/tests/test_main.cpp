@@ -28,6 +28,12 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/EditableMesh.hpp"
+#include "core/KMeshFile.hpp"
+#include "core/ObjLoader.hpp"
+#include "core/UvTools.hpp"
+#include "housedemo/HouseLayout.hpp"
+
 #include "core/Animation.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/AnimationItem.hpp"
@@ -1401,7 +1407,15 @@ void testScriptedPluginLoader() {
 // actually firing. If a future edit to the template introduces a typo or
 // an API call that no longer exists, this test catches it.
 void testPluginTemplateLoadsAndRunsReal() {
-    const char* manifestPath = "../../templates/plugin/example.manifest";
+    // Real packaging fix (see testShippedAvatarAnimationClipsLoadAndValidate()'s
+    // own comment for the full story): resolves against a real
+    // "templates" sitting next to the running test binary (the packaged
+    // alpha zip case) before falling back to the compile-time source path
+    // (the engine/build/ dev case), instead of a hardcoded "../../"
+    // relative path that only happened to work from one specific cwd.
+    std::string manifestPath =
+        engine::core::resolveResourceDir(engine::core::executableDirectory(), "templates", ENGINE_TEMPLATES_DIR) +
+        "/plugin/example.manifest";
     engine::core::ECS ecs;
     engine::net::NetworkSession networkSession; // real, live, Offline mode -- same as testScriptedPluginLoader's own
 
@@ -1797,8 +1811,19 @@ std::string readExampleLuaFile(const char* path) {
     return contents.str();
 }
 
+// Real packaging fix (see testShippedAvatarAnimationClipsLoadAndValidate()'s
+// own comment for the full story): resolves against a real "examples"
+// sitting next to the running test binary (the packaged alpha zip case)
+// before falling back to the compile-time source path (the engine/build/
+// dev case), instead of a hardcoded "../../" relative path that only
+// happened to work from one specific cwd.
+std::string exampleLuaPath(const char* fileName) {
+    return engine::core::resolveResourceDir(engine::core::executableDirectory(), "examples", ENGINE_EXAMPLES_DIR) +
+           "/lua/" + fileName;
+}
+
 void testLuaExampleMovingPlatformOscillatesRealPosition() {
-    std::string source = readExampleLuaFile("../../examples/lua/moving_platform.lua");
+    std::string source = readExampleLuaFile(exampleLuaPath("moving_platform.lua").c_str());
     check(!source.empty(), "moving_platform.lua example: the real shipped file real-reads");
 
     engine::core::ECS ecs;
@@ -1833,7 +1858,7 @@ void testLuaExampleMovingPlatformOscillatesRealPosition() {
 }
 
 void testLuaExampleInteractiveLightTogglesRealEmissive() {
-    std::string source = readExampleLuaFile("../../examples/lua/interactive_light.lua");
+    std::string source = readExampleLuaFile(exampleLuaPath("interactive_light.lua").c_str());
     check(!source.empty(), "interactive_light.lua example: the real shipped file real-reads");
 
     // world.setEmissive() is engine_runtime-only (not part of Studio's
@@ -1888,7 +1913,7 @@ void testLuaExampleInteractiveLightTogglesRealEmissive() {
 // testScriptNetworkApiRealFireServerReachesLuauHandler's real-socket
 // pattern rather than stubbing the transport.
 void testLuaExampleNetworkedPingRealRoundTrip() {
-    std::string source = readExampleLuaFile("../../examples/lua/networked_ping.lua");
+    std::string source = readExampleLuaFile(exampleLuaPath("networked_ping.lua").c_str());
     check(!source.empty(), "networked_ping.lua example: the real shipped file real-reads");
 
     constexpr uint16_t kTestPort = 17786;
@@ -2406,8 +2431,15 @@ void testProjectFileSaveLoadRoundTrip() {
 // testPluginTemplateLoadsAndRunsReal's own "verify the real shipped
 // file, not a re-typed copy" discipline.
 void testDefaultProjectTemplateLoadsReal() {
+    // Real packaging fix (see testShippedAvatarAnimationClipsLoadAndValidate()'s
+    // own comment for the full story) -- same resolveResourceDir()
+    // treatment as the plugin template and Lua examples above, instead of
+    // a hardcoded "../../" relative path.
+    std::string templateDir =
+        engine::core::resolveResourceDir(engine::core::executableDirectory(), "templates", ENGINE_TEMPLATES_DIR) +
+        "/project";
     engine::core::ProjectFile project;
-    check(project.loadFromFile("../../templates/project/default.project"),
+    check(project.loadFromFile(templateDir + "/default.project"),
           "default project template: the real shipped .project file real-loads");
     check(project.isCompatibleVersion(), "default project template: its own shipped VERSION is real-compatible with "
                                           "this build's kProjectFormatVersion");
@@ -2416,7 +2448,7 @@ void testDefaultProjectTemplateLoadsReal() {
     check(project.activeSceneIndex == 0, "default project template: its real activeSceneIndex points at that scene");
 
     engine::core::SceneFile scene;
-    check(scene.loadFromFile("../../templates/project/default.scene"),
+    check(scene.loadFromFile(templateDir + "/default.scene"),
           "default project template: the real shipped .scene file real-loads");
     check(scene.entities.size() == 3, "default project template: its real scene really has all three shipped entities");
 
@@ -3754,13 +3786,100 @@ void testAvatarControllerEmotePlayback() {
           "emote rather than just changing a state label");
 }
 
+void testAvatarControllerFallingAndLandingStates() {
+    engine::core::Skeleton skeleton = makeTwoJointTestSkeleton();
+    glm::vec3 childBind = skeleton.joints[1].localPosition;
+    engine::core::AvatarController::Settings settings;
+    settings.locomotionBlendSeconds = 0.0f; // instant cuts -- isolates state-machine transitions from blend timing
+    settings.jumpBlendSeconds = 0.0f;
+    engine::core::AvatarController controller(skeleton, settings);
+    controller.setIdleClip(makeHoldPoseClip("child", childBind, 0.0f));
+    controller.setWalkClip(makeHoldPoseClip("child", childBind, 1.0f));
+    controller.setRunClip(makeHoldPoseClip("child", childBind, 2.0f));
+    controller.setJumpClip(makeHoldPoseClip("child", childBind, 3.0f));
+    controller.setJumpAirClip(makeHoldPoseClip("child", childBind, 6.0f));
+    controller.setJumpLandClip(makeHoldPoseClip("child", childBind, 5.0f)); // 1-second duration, see makeHoldPoseClip
+
+    auto jointX = [&]() { return controller.animationPlayer().skinningMatrices()[1][3].x; };
+
+    // Rising (vertical velocity >= 0) while airborne is real Jump, exactly
+    // as testAvatarControllerStateMachine already covers -- re-establish it
+    // here as the real precondition Falling transitions out of.
+    controller.tickAnimation(0.1f, /*speed=*/0.0f, /*grounded=*/false, /*verticalVelocity=*/5.0f);
+    check(controller.locomotionState() == engine::core::AvatarLocomotionState::Jump, "rising while airborne is Jump");
+    check(nearlyEqual(jointX(), 3.0f, 0.01f), "Jump drives the pose from jump_start's clip");
+
+    // Vertical velocity crossing negative while still airborne is the real,
+    // explicit Falling trigger -- and jump_air (not jump_start) now drives
+    // the pose, proving this is a genuine state transition, not a label
+    // change over the same clip.
+    controller.tickAnimation(0.1f, /*speed=*/0.0f, /*grounded=*/false, /*verticalVelocity=*/-2.0f);
+    check(controller.locomotionState() == engine::core::AvatarLocomotionState::Falling,
+          "vertical velocity < 0 while airborne enters Falling");
+    check(nearlyEqual(jointX(), 6.0f, 0.01f), "Falling drives the pose from jump_air's clip");
+
+    // Staying airborne and still falling holds Falling (jump_air keeps
+    // looping, not re-triggered from scratch every tick).
+    controller.tickAnimation(0.1f, /*speed=*/0.0f, /*grounded=*/false, /*verticalVelocity=*/-4.0f);
+    check(controller.locomotionState() == engine::core::AvatarLocomotionState::Falling, "continuing to fall stays in Falling");
+
+    // The airborne -> grounded edge is the real Landing trigger -- jump_land
+    // fires once, and the state machine must hold Landing (not fall through
+    // to Idle/Walk/Run immediately) while jump_land is still playing.
+    controller.tickAnimation(0.1f, /*speed=*/0.0f, /*grounded=*/true, /*verticalVelocity=*/0.0f);
+    check(controller.locomotionState() == engine::core::AvatarLocomotionState::Landing, "landing after Falling enters Landing");
+    check(nearlyEqual(jointX(), 5.0f, 0.01f), "Landing drives the pose from jump_land's clip");
+
+    // jump_land's real duration is 1.0s (makeHoldPoseClip's default), and
+    // landFinished checks the playhead *as of the start of this tick* (the
+    // real value left by the previous tick's own player_.tick(dt)) --  so a
+    // further grounded tick that only pushes the accumulated playhead to
+    // 0.1+0.3=0.4s must stay in Landing, proving the exit condition is the
+    // clip's own real playhead, not a single-tick guess.
+    controller.tickAnimation(0.3f, /*speed=*/2.0f, /*grounded=*/true, /*verticalVelocity=*/0.0f);
+    check(controller.locomotionState() == engine::core::AvatarLocomotionState::Landing,
+          "Landing holds while jump_land's own playhead hasn't reached its duration yet, even though real walking "
+          "speed is already present");
+    check(nearlyEqual(jointX(), 5.0f, 0.01f), "the pose still reflects jump_land while Landing is held");
+
+    // Accumulated playhead is now 0.4s, still short of the 1.0s duration --
+    // this tick pushes it to 0.4+0.7=1.1s, but landFinished is evaluated
+    // against the playhead *before* this tick's own advance, so this call
+    // still observes 0.4s and must still hold Landing.
+    controller.tickAnimation(0.7f, /*speed=*/2.0f, /*grounded=*/true, /*verticalVelocity=*/0.0f);
+    check(controller.locomotionState() == engine::core::AvatarLocomotionState::Landing,
+          "Landing still holds the tick before the accumulated playhead actually crosses jump_land's duration");
+    check(nearlyEqual(jointX(), 5.0f, 0.01f), "the pose still reflects jump_land immediately before the recovery tick");
+
+    // Now the accumulated playhead (1.1s) is observed at the start of this
+    // tick and is past jump_land's 1.0s duration -- this is the real tick
+    // that both recovers out of Landing and evaluates real Idle/Walk/Run
+    // from the current horizontal speed, one tick, not one frame late.
+    controller.tickAnimation(0.1f, /*speed=*/2.0f, /*grounded=*/true, /*verticalVelocity=*/0.0f);
+    check(controller.locomotionState() == engine::core::AvatarLocomotionState::Walk,
+          "once jump_land's own playhead has actually crossed its duration, Landing recovers straight into real Walk "
+          "given walking speed, the same tick");
+    check(nearlyEqual(jointX(), 1.0f, 0.01f), "the pose now reflects the Walk clip, not a stale jump_land frame");
+}
+
 void testLoadoutToRiggedMeshGeneration() {
     engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
     std::string error;
     check(skeleton.validate(error), "buildHumanoidSkeleton() produces a valid, well-formed skeleton");
-    check(skeleton.joints.size() == 7, "the humanoid skeleton has hips + torso + head + 2 arms + 2 legs = 7 joints");
-    check(skeleton.findJointIndex("hips") == 0 && skeleton.joints[0].parentIndex == -1,
-          "hips is the skeleton's root joint");
+    check(skeleton.joints.size() == 18,
+          "the humanoid skeleton has the real 18-bone rig (root/pelvis/spine_lower/spine_upper/neck/head, "
+          "upper/lower arm+hand x2, upper/lower leg+foot x2)");
+    check(skeleton.findJointIndex("root") == 0 && skeleton.joints[0].parentIndex == -1,
+          "root is the skeleton's real root joint");
+    const char* kExpectedJoints[] = {"root",        "pelvis",      "spine_lower", "spine_upper", "neck",
+                                       "head",        "arm_L_upper", "arm_L_lower", "hand_L",      "arm_R_upper",
+                                       "arm_R_lower", "hand_R",      "leg_L_upper", "leg_L_lower", "foot_L",
+                                       "leg_R_upper", "leg_R_lower", "foot_R"};
+    bool everyExpectedJointExists = true;
+    for (const char* name : kExpectedJoints) {
+        if (skeleton.findJointIndex(name) < 0) everyExpectedJointExists = false;
+    }
+    check(everyExpectedJointExists, "every real bone from the Avatar spec's exact 18-bone list exists by name");
 
     engine::core::HumanoidMeshData fullBody = engine::core::buildHumanoidMeshData(skeleton);
     check(!fullBody.vertices.empty(), "buildHumanoidMeshData produces real geometry");
@@ -3771,8 +3890,9 @@ void testLoadoutToRiggedMeshGeneration() {
           "the generated skin weights validate against the generated skeleton -- a real mesh->skeleton binding");
 
     // Every vertex tagged Head must be rigidly bound (100%) to the "head"
-    // joint -- the real, honestly-simplified single-joint rigging scheme
-    // this procedural body uses (see HumanoidMeshData's header comment).
+    // joint -- a real sphere, but still a single terminal joint with
+    // nothing to smoothly blend with (see buildHumanoidMeshData()'s own
+    // comment).
     int headJoint = skeleton.findJointIndex("head");
     bool allHeadVerticesBoundToHeadJoint = true;
     int headVertexCount = 0;
@@ -3782,12 +3902,32 @@ void testLoadoutToRiggedMeshGeneration() {
         const auto& sw = fullBody.skinWeights.perVertex[i];
         if (sw.jointIndices[0] != headJoint || !nearlyEqual(sw.weights[0], 1.0f)) allHeadVerticesBoundToHeadJoint = false;
     }
-    check(headVertexCount == 24, "the procedural head is one box (24 vertices, 4 per face x 6 faces)");
+    check(headVertexCount > 0, "the procedural head produces real geometry");
     check(allHeadVerticesBoundToHeadJoint, "every Head-segment vertex is rigidly bound to the head joint");
 
+    // Real smooth-skinning check: the LeftArm segment must contain at
+    // least one vertex with TWO real, non-zero joint influences (the
+    // elbow's own blend ring) -- proving appendSmoothLimb() actually
+    // produced smooth binding, not just a second rigid piece.
+    bool foundSmoothBlendedVertex = false;
+    for (size_t i = 0; i < fullBody.vertices.size(); ++i) {
+        if (fullBody.vertexSegments[i] != engine::core::HumanoidBodySegment::LeftArm) continue;
+        const auto& sw = fullBody.skinWeights.perVertex[i];
+        int realInfluences = 0;
+        for (int k = 0; k < 4; ++k) {
+            if (sw.jointIndices[k] != -1 && sw.weights[k] > 0.0f) ++realInfluences;
+        }
+        if (realInfluences >= 2) foundSmoothBlendedVertex = true;
+    }
+    check(foundSmoothBlendedVertex,
+          "the LeftArm segment has real, smoothly-blended vertices (2 real joint influences) at the elbow -- proving "
+          "real smooth skinning, not uniformly-rigid single-joint binding");
+
     engine::core::HumanoidMeshData headOnly = engine::core::extractSegment(fullBody, engine::core::HumanoidBodySegment::Head);
-    check(headOnly.vertices.size() == 24, "extractSegment(Head) pulls out exactly the head box's vertices");
-    check(headOnly.indices.size() == 36, "extractSegment(Head) pulls out exactly the head box's 12 triangles (36 indices)");
+    check(headOnly.vertices.size() == static_cast<size_t>(headVertexCount),
+          "extractSegment(Head) pulls out exactly the head's own vertices");
+    check(!headOnly.indices.empty() && headOnly.indices.size() % 3 == 0,
+          "extractSegment(Head) pulls out a real, well-formed triangle list");
     for (uint32_t idx : headOnly.indices) {
         check(idx < headOnly.vertices.size(), "extractSegment re-indexes triangles to be valid within the extracted subset");
     }
@@ -3970,20 +4110,20 @@ void testValidateAnimationClipAgainstSkeleton() {
     engine::core::AnimationClip goodClip;
     engine::core::Keyframe k;
     k.time = 0.0f;
-    goodClip.trackFor("torso").addKeyframe(k);
+    goodClip.trackFor("spine_upper").addKeyframe(k);
     goodClip.trackFor("head").addKeyframe(k);
     check(engine::core::validateAnimationClipAgainstSkeleton(goodClip, skeleton, error),
           "a clip whose tracks all target real joints validates");
 
     engine::core::AnimationClip mismatchedClip;
-    mismatchedClip.trackFor("torso").addKeyframe(k);
+    mismatchedClip.trackFor("spine_upper").addKeyframe(k);
     mismatchedClip.trackFor("tail").addKeyframe(k); // buildHumanoidSkeleton() has no "tail" joint
     check(!engine::core::validateAnimationClipAgainstSkeleton(mismatchedClip, skeleton, error),
           "a track targeting a joint absent from the skeleton fails (joint mismatch)");
     check(error.find("tail") != std::string::npos, "the joint-mismatch error names the offending joint");
 
     engine::core::AnimationClip emptyTrackClip;
-    emptyTrackClip.trackFor("torso"); // trackFor() creates the track but adds no keyframe
+    emptyTrackClip.trackFor("spine_upper"); // trackFor() creates the track but adds no keyframe
     check(!engine::core::validateAnimationClipAgainstSkeleton(emptyTrackClip, skeleton, error),
           "a track with zero keyframes fails (missing channels)");
 }
@@ -4005,13 +4145,13 @@ void testAnimationThumbnailPoseSnapshotPipeline() {
     clip.duration = 1.0f;
     engine::core::Keyframe start;
     start.time = 0.0f;
-    start.position = skeleton.joints[static_cast<size_t>(skeleton.findJointIndex("rightArm"))].localPosition;
-    clip.trackFor("rightArm").addKeyframe(start);
+    start.position = skeleton.joints[static_cast<size_t>(skeleton.findJointIndex("arm_R_upper"))].localPosition;
+    clip.trackFor("arm_R_upper").addKeyframe(start);
     engine::core::Keyframe end;
     end.time = 1.0f;
     end.position = start.position;
     end.rotation = glm::angleAxis(glm::radians(-70.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-    clip.trackFor("rightArm").addKeyframe(end);
+    clip.trackFor("arm_R_upper").addKeyframe(end);
 
     engine::core::AnimationPlayer previewPlayer(skeleton);
     auto handle = previewPlayer.play(clip, engine::core::AnimationLayer::Base, false);
@@ -4188,10 +4328,10 @@ void testFullRiggedAvatarLoadoutToAnimationPipeline() {
     // real locomotion + jump + emote sequence, proving AnimationPlayer's
     // pose output and the skeleton's joint layout agree throughout.
     engine::core::AvatarController controller(skeleton);
-    glm::vec3 torsoBind = skeleton.joints[static_cast<size_t>(skeleton.findJointIndex("torso"))].localPosition;
-    engine::core::AnimationClip idle = makeHoldPoseClip("torso", torsoBind, 0.0f);
-    engine::core::AnimationClip walk = makeHoldPoseClip("torso", torsoBind, 1.0f);
-    engine::core::AnimationClip jump = makeHoldPoseClip("torso", torsoBind, 2.0f);
+    glm::vec3 torsoBind = skeleton.joints[static_cast<size_t>(skeleton.findJointIndex("spine_upper"))].localPosition;
+    engine::core::AnimationClip idle = makeHoldPoseClip("spine_upper", torsoBind, 0.0f);
+    engine::core::AnimationClip walk = makeHoldPoseClip("spine_upper", torsoBind, 1.0f);
+    engine::core::AnimationClip jump = makeHoldPoseClip("spine_upper", torsoBind, 2.0f);
     controller.setIdleClip(idle);
     controller.setWalkClip(walk);
     controller.setJumpClip(jump);
@@ -4215,7 +4355,7 @@ void testFullRiggedAvatarLoadoutToAnimationPipeline() {
     emoteAnim.item.id = "wave_01";
     emoteAnim.item.category = engine::core::AnimationCategory::Emote;
     emoteAnim.item.clipPath = "test_integration_wave.anim";
-    engine::core::AnimationClip emoteClip = makeHoldPoseClip("torso", torsoBind, 3.0f);
+    engine::core::AnimationClip emoteClip = makeHoldPoseClip("spine_upper", torsoBind, 3.0f);
     emoteClip.looping = false;
     check(emoteClip.saveToFile(emoteAnim.item.clipPath), "integration: the emote clip file saves");
     engine::core::AnimationDatabase animationDb;
@@ -22058,6 +22198,371 @@ void testForgeToolSucceedsAndConsumesExactOreWhenBothGatesPass() {
 
 } // namespace
 
+// Real, welded quad -- 4 shared vertices, 2 triangles sharing the
+// diagonal edge (1,2) -- unlike EditableMesh::createBox() (flat-shaded,
+// no vertex sharing at all across faces, see that function's own
+// comment), this is what bevelEdge() needs a real interior edge to test
+// against.
+engine::core::EditableMesh makeWeldedQuad() {
+    std::vector<engine::core::Vertex> vertices = {
+        {{-1.0f, 0.0f, -1.0f}, {0, 1, 0}, {0, 0}},
+        {{1.0f, 0.0f, -1.0f}, {0, 1, 0}, {1, 0}},
+        {{1.0f, 0.0f, 1.0f}, {0, 1, 0}, {1, 1}},
+        {{-1.0f, 0.0f, 1.0f}, {0, 1, 0}, {0, 1}},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2, 0, 2, 3};
+    return engine::core::EditableMesh::fromVertexData(std::move(vertices), std::move(indices));
+}
+
+void testEditableMeshCreateBoxHasRealBoxTopology() {
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    check(box.vertexCount() == 24, "box has 24 vertices (4 per face x 6 faces, flat-shaded)");
+    check(box.faceCount() == 12, "box has 12 triangles (2 per face x 6 faces)");
+}
+
+void testEditableMeshExtrudeFaceAddsSixFacesAndMovesTheCap() {
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    size_t facesBefore = box.faceCount();
+    size_t vertsBefore = box.vertexCount();
+    glm::vec3 normalBefore = box.faceNormal(0);
+    glm::vec3 centroidBefore = box.faceCentroid(0);
+
+    check(box.extrudeFace(0, 1.0f), "extrudeFace succeeds on a real, in-range face");
+    check(box.faceCount() == facesBefore + 6, "extrude adds exactly 6 faces (moved cap + 3 wall quads x 2 tris)");
+    check(box.vertexCount() == vertsBefore + 3, "extrude adds exactly 3 new (offset) vertices");
+
+    glm::vec3 centroidAfter = box.faceCentroid(0);
+    float movedDistance = glm::distance(centroidBefore + normalBefore * 1.0f, centroidAfter);
+    check(movedDistance < 1e-3f, "the cap's new centroid is offset by exactly the extrude distance along the face normal");
+
+    check(!box.extrudeFace(999, 1.0f), "extrudeFace on an out-of-range face is a real, honest no-op");
+}
+
+void testEditableMeshSubdivideFaceSplitsOneTriangleIntoFour() {
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    size_t facesBefore = box.faceCount();
+    size_t vertsBefore = box.vertexCount();
+
+    check(box.subdivideFace(0), "subdivideFace succeeds on a real, in-range face");
+    check(box.faceCount() == facesBefore + 3, "subdivide turns 1 triangle into 4 (net +3)");
+    check(box.vertexCount() == vertsBefore + 3, "subdivide adds exactly 3 new (edge midpoint) vertices");
+}
+
+void testEditableMeshMergeVerticesWeldsCloseVerticesAndDropsDegenerateFaces() {
+    // Two unit triangles sharing an edge in *position* only (not index --
+    // constructed the way a naive .obj import or a hand-placed pair of
+    // Block Builder triangles might leave things), one vertex apart by
+    // less than the weld threshold.
+    std::vector<engine::core::Vertex> vertices = {
+        {{0.0f, 0.0f, 0.0f}, {0, 1, 0}, {0, 0}}, {{1.0f, 0.0f, 0.0f}, {0, 1, 0}, {1, 0}},
+        {{0.0f, 0.0f, 1.0f}, {0, 1, 0}, {0, 1}}, {{0.001f, 0.0f, 0.0f}, {0, 1, 0}, {0, 0}},
+        {{1.0f, 0.0f, 0.0f}, {0, 1, 0}, {1, 0}}, {{1.0f, 0.0f, 1.0f}, {0, 1, 0}, {1, 1}},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2, 3, 4, 5};
+    auto mesh = engine::core::EditableMesh::fromVertexData(std::move(vertices), std::move(indices));
+    check(mesh.vertexCount() == 6, "starts with 6 real, distinct vertex entries");
+
+    size_t mergedCount = mesh.mergeVertices(0.01f);
+    check(mergedCount > 0, "mergeVertices reports a real, non-zero number of welded vertices");
+    check(mesh.vertexCount() < 6, "vertex count actually drops after welding close vertices");
+    check(mesh.faceCount() == 2, "both real (non-degenerate) triangles survive the weld");
+}
+
+void testEditableMeshBevelEdgeReplacesASharedInteriorEdge() {
+    auto quad = makeWeldedQuad();
+    // indices {0,1,2} and {0,2,3} -- the real shared edge (in both
+    // triangles) is (0,2), the quad's own diagonal, not (1,2) (only in
+    // the first triangle).
+    size_t facesBefore = quad.faceCount();
+    size_t vertsBefore = quad.vertexCount();
+
+    check(quad.bevelEdge(0, 2, 0.25f), "bevelEdge succeeds on the quad's real, shared interior edge (0,2)");
+    check(quad.faceCount() == facesBefore + 2, "bevel adds exactly 2 new triangles (1 new connecting quad)");
+    check(quad.vertexCount() == vertsBefore + 4, "bevel adds exactly 4 new (offset) vertices, 2 per adjacent face");
+}
+
+void testEditableMeshBevelEdgeIsHonestNoOpOnANonSharedEdge() {
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    // Box faces share no vertex indices at all (flat-shaded, see
+    // createBox()'s own comment) -- any edge here has 0 or 1 adjacent
+    // faces by construction, never the 2 a real interior-edge bevel
+    // needs.
+    check(!box.bevelEdge(0, 1, 0.25f), "bevelEdge on a box (no real shared edges) is a real, honest no-op");
+}
+
+void testEditableMeshInsetFaceShrinksTowardCentroidAndAddsSixFaces() {
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    size_t facesBefore = box.faceCount();
+    size_t vertsBefore = box.vertexCount();
+    glm::vec3 centroidBefore = box.faceCentroid(0);
+
+    check(box.insetFace(0, 0.5f), "insetFace succeeds on a real, in-range face");
+    check(box.faceCount() == facesBefore + 6, "inset adds exactly 6 faces (shrunk cap + 3 wall quads x 2 tris)");
+    check(box.vertexCount() == vertsBefore + 3, "inset adds exactly 3 new (shrunk) vertices");
+
+    glm::vec3 centroidAfter = box.faceCentroid(0);
+    check(nearlyEqual(glm::distance(centroidBefore, centroidAfter), 0.0f, 1e-3f),
+          "an inset face's centroid stays put (shrinks symmetrically around the same center)");
+}
+
+void testUvToolsPlanarProjectionMapsToNormalizedZeroOneRange() {
+    auto box = engine::core::EditableMesh::createBox({1.0f, 1.0f, 1.0f});
+    engine::core::applyPlanarProjection(box, engine::core::ProjectionAxis::Y);
+    for (const auto& v : box.vertices()) {
+        check(v.uv.x >= -1e-4f && v.uv.x <= 1.0f + 1e-4f, "planar-projected U stays within [0,1]");
+        check(v.uv.y >= -1e-4f && v.uv.y <= 1.0f + 1e-4f, "planar-projected V stays within [0,1]");
+    }
+    // A 2x2x2 box's real corner at (+1,+1,+1) projects (Y-axis away) to
+    // the real UV corner (1,1) -- the top-right of the bounding box in
+    // the XZ plane.
+    bool foundTopRightCorner = false;
+    for (const auto& v : box.vertices()) {
+        if (nearlyEqual(v.position.x, 1.0f) && nearlyEqual(v.position.z, 1.0f)) {
+            if (nearlyEqual(v.uv.x, 1.0f, 1e-3f) && nearlyEqual(v.uv.y, 1.0f, 1e-3f)) foundTopRightCorner = true;
+        }
+    }
+    check(foundTopRightCorner, "the box's real (+1,*,+1) corner lands at real UV (1,1) under Y-axis planar projection");
+}
+
+void testUvToolsCubeProjectionPicksPerFaceDominantAxis() {
+    auto box = engine::core::EditableMesh::createBox({1.0f, 1.0f, 1.0f});
+    engine::core::applyCubeProjection(box);
+    // Every vertex gets a real UV in [0,1] regardless of which face's
+    // dominant axis produced it.
+    bool anyOutOfRange = false;
+    for (const auto& v : box.vertices()) {
+        if (v.uv.x < -1e-4f || v.uv.x > 1.0f + 1e-4f || v.uv.y < -1e-4f || v.uv.y > 1.0f + 1e-4f) anyOutOfRange = true;
+    }
+    check(!anyOutOfRange, "cube projection keeps every real UV within [0,1] regardless of per-face axis choice");
+}
+
+void testUvToolsAutoUnwrapPreservesRealTriangleEdgeLengthRatios() {
+    auto original = engine::core::EditableMesh::createBox({0.5f, 1.5f, 0.5f}); // real, non-cubic proportions
+    auto box = engine::core::applyAutoUnwrap(original);
+
+    auto indices = box.faceVertexIndices(0);
+    const auto& vertices = box.vertices();
+    glm::vec3 pa = vertices[indices[0]].position, pb = vertices[indices[1]].position, pc = vertices[indices[2]].position;
+    glm::vec2 ua = vertices[indices[0]].uv, ub = vertices[indices[1]].uv, uc = vertices[indices[2]].uv;
+
+    float real3dAb = glm::length(pb - pa), real3dAc = glm::length(pc - pa);
+    float uvAb = glm::length(ub - ua), uvAc = glm::length(uc - ua);
+    check(real3dAb > 1e-6f && uvAb > 1e-6f, "auto-unwrap produces a real, non-degenerate UV edge");
+    // The real 3D edge-length ratio must match the real UV edge-length
+    // ratio -- this is what "shape-preserving" actually means, checked
+    // directly rather than assumed.
+    check(nearlyEqual(real3dAb / real3dAc, uvAb / uvAc, 0.01f),
+          "auto-unwrap's per-triangle UV preserves the real 3D edge-length ratio (shape-preserving, not just any layout)");
+}
+
+void testUvToolsAutoUnwrapPacksFacesIntoNonOverlappingCells() {
+    auto original = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    auto box = engine::core::applyAutoUnwrap(original);
+    // Real, direct non-overlap check: every face's own UV bounding box
+    // must fit inside a single, real 1/ceil(sqrt(faceCount)) grid cell --
+    // if two faces' UV bounds ever overlapped, this would fail for at
+    // least one of them.
+    int gridSize = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(box.faceCount()))));
+    float cell = 1.0f / static_cast<float>(gridSize);
+    bool anyCellViolation = false;
+    for (size_t f = 0; f < box.faceCount(); ++f) {
+        auto indices = box.faceVertexIndices(f);
+        int col = static_cast<int>(f) % gridSize, row = static_cast<int>(f) / gridSize;
+        float cellMinX = col * cell, cellMaxX = (col + 1) * cell;
+        float cellMinY = row * cell, cellMaxY = (row + 1) * cell;
+        for (uint32_t vi : indices) {
+            glm::vec2 uv = box.vertices()[vi].uv;
+            if (uv.x < cellMinX - 1e-4f || uv.x > cellMaxX + 1e-4f || uv.y < cellMinY - 1e-4f ||
+                uv.y > cellMaxY + 1e-4f) {
+                anyCellViolation = true;
+            }
+        }
+    }
+    check(!anyCellViolation, "every real face's UV stays inside its own real, non-overlapping grid cell");
+}
+
+void testSaveObjRoundTripsThroughLoadObjWithRealGeometry() {
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    const char* path = "test_export.obj";
+    check(engine::core::saveObj(path, box.vertices(), box.indices()), "saveObj writes a real file successfully");
+
+    auto loaded = engine::core::loadObj(path);
+    check(loaded.succeeded, "loadObj reads saveObj's own output back successfully");
+    check(loaded.vertices.size() == box.vertexCount(), "round-tripped vertex count matches the real original");
+    check(loaded.indices.size() == box.indices().size(), "round-tripped index count matches the real original");
+
+    // Real, direct spot check: every original vertex position must
+    // appear somewhere in the reloaded set (order/indexing may differ,
+    // the real geometry must not).
+    bool foundOriginalCorner = false;
+    for (const auto& v : loaded.vertices) {
+        if (nearlyEqual(v.position.x, 0.5f) && nearlyEqual(v.position.y, 0.5f) && nearlyEqual(v.position.z, 0.5f)) {
+            foundOriginalCorner = true;
+        }
+    }
+    check(foundOriginalCorner, "a real original corner position survives the saveObj/loadObj round trip");
+    std::remove(path);
+}
+
+void testKMeshSaveLoadRoundTripsExactly() {
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    const char* path = "test_export.kmesh";
+    check(engine::core::saveKMesh(path, box.vertices(), box.indices()), "saveKMesh writes a real file successfully");
+
+    auto loaded = engine::core::loadKMesh(path);
+    check(loaded.succeeded, "loadKMesh reads saveKMesh's own output back successfully");
+    check(loaded.vertices.size() == box.vertexCount(), "kmesh round trip preserves the exact real vertex count");
+    check(loaded.indices.size() == box.indices().size(), "kmesh round trip preserves the exact real index count");
+
+    // Unlike .obj (which only carries position/uv/normal, no shared-vs-
+    // unshared structure), .kmesh is the one real format that
+    // round-trips EVERY vertex exactly, in order -- checked directly.
+    bool allExact = true;
+    for (size_t i = 0; i < box.vertexCount() && i < loaded.vertices.size(); ++i) {
+        if (!nearlyEqual(box.vertices()[i].position.x, loaded.vertices[i].position.x) ||
+            !nearlyEqual(box.vertices()[i].position.y, loaded.vertices[i].position.y) ||
+            !nearlyEqual(box.vertices()[i].position.z, loaded.vertices[i].position.z)) {
+            allExact = false;
+        }
+    }
+    check(allExact, "every real vertex position round-trips through .kmesh byte-for-byte (within float precision)");
+    std::remove(path);
+}
+
+void testKMeshLoadIsHonestAboutAMalformedFile() {
+    const char* path = "test_malformed.kmesh";
+    {
+        std::ofstream out(path);
+        out << "NOT_A_REAL_KMESH_HEADER\n";
+    }
+    auto loaded = engine::core::loadKMesh(path);
+    check(!loaded.succeeded, "loadKMesh reports real failure on a file with no real KMESH header");
+    check(!loaded.error.empty(), "loadKMesh's failure includes a real, non-empty error message");
+    std::remove(path);
+}
+
+void testShippedAvatarAnimationClipsLoadAndValidate() {
+    // Kronos ("Avatar System" -- animation set): real regression coverage
+    // for the 6 shipped clips (engine/assets/animations/*.anim) -- loads
+    // each real file back from disk (not just checking it was written
+    // once) and validates it against the real 18-bone skeleton, the same
+    // check a real caller (AvatarController::setIdleClip() et al.) needs
+    // to hold.
+    //
+    // Real bug found via the packaged alpha zip's own engine_tests binary
+    // (package_alpha.sh copies it in specifically so a tester can verify
+    // the exact shipped binaries pass the full suite): a hardcoded
+    // "../assets/animations/" relative path only resolves correctly when
+    // cwd is engine/build/ (this suite's own dev convention) -- from the
+    // packaged flat layout (engine_tests sitting next to assets/, no
+    // "build/" parent) it silently resolved to the wrong directory and
+    // every check below false-failed, exactly the same real packaging
+    // failure mode core/ResourcePaths.hpp's own header comment already
+    // documents for engine_runtime/studio's shader/asset loading. Fixed
+    // the same way: resolveResourceDir() prefers a real "assets" sitting
+    // next to the running test binary (the packaged case) before falling
+    // back to the compile-time source path (the dev-build case) -- one
+    // real resolution, correct from both cwd conventions.
+    std::string animDir =
+        engine::core::resolveResourceDir(engine::core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/animations";
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    struct ClipSpec {
+        const char* fileName;
+        bool looping;
+    };
+    const ClipSpec kClips[] = {
+        {"idle.anim", true},       {"walk.anim", true},      {"run.anim", true},
+        {"jump_start.anim", false}, {"jump_air.anim", true}, {"jump_land.anim", false},
+    };
+    for (const ClipSpec& spec : kClips) {
+        engine::core::AnimationClip clip;
+        check(clip.loadFromFile(animDir + "/" + spec.fileName), "shipped clip loads from real disk file");
+        check(!clip.tracks.empty(), "shipped clip has real tracks, not an empty stub");
+        check(clip.looping == spec.looping, "shipped clip's looping flag matches its real intended playback (loop vs one-shot)");
+
+        std::string error;
+        check(engine::core::validateAnimationClipAgainstSkeleton(clip, skeleton, error),
+              "shipped clip validates against the real 18-bone skeleton");
+
+        // Real "no root motion" check: every keyframe's position must
+        // exactly equal that joint's own real bind-local position --
+        // nothing ever translates away from bind pose, only rotates.
+        bool noRootMotion = true;
+        for (const auto& track : clip.tracks) {
+            int jointIndex = skeleton.findJointIndex(track.targetName());
+            if (jointIndex < 0) continue; // already caught by validateAnimationClipAgainstSkeleton above
+            glm::vec3 bindPos = skeleton.joints[static_cast<size_t>(jointIndex)].localPosition;
+            for (const auto& keyframe : track.keyframes()) {
+                if (glm::distance(keyframe.position, bindPos) > 1e-4f) noRootMotion = false;
+            }
+        }
+        check(noRootMotion, "shipped clip never animates position away from bind pose -- real, honest no-root-motion");
+    }
+}
+
+void testHouseLayoutHasExactlyOneFloorAndTwoRoofWedges() {
+    auto parts = engine::housedemo::computeHouseLayout();
+    check(!parts.empty(), "computeHouseLayout returns a non-empty layout");
+
+    int floorCount = 0, roofCount = 0, wallCount = 0;
+    for (const auto& part : parts) {
+        if (part.kind == engine::housedemo::HousePartKind::Floor) ++floorCount;
+        if (part.kind == engine::housedemo::HousePartKind::RoofWedge) ++roofCount;
+        if (part.kind == engine::housedemo::HousePartKind::Wall) ++wallCount;
+    }
+    check(floorCount == 1, "exactly one Floor part");
+    check(roofCount == 2, "exactly two RoofWedge parts (front + back gable halves)");
+    check(wallCount > 0, "at least one Wall part");
+}
+
+void testHouseLayoutRoofWedgesMeetAtRidge() {
+    // Real, direct check of the yaw math HouseLayout.cpp's own comment
+    // describes -- a yaw=0 wedge's "tall" (ridge) edge sits at
+    // position.z - halfExtents.z; a yaw=180 wedge's tall edge sits at
+    // position.z + halfExtents.z (the 180-degree rotation flips which
+    // local end is "tall" in world space). Both must land on the exact
+    // same world Z for the two roof halves to actually meet, not leave a
+    // gap or overlap at the ridge line.
+    auto parts = engine::housedemo::computeHouseLayout();
+    std::vector<engine::housedemo::HousePart> roofParts;
+    for (const auto& part : parts) {
+        if (part.kind == engine::housedemo::HousePartKind::RoofWedge) roofParts.push_back(part);
+    }
+    check(roofParts.size() == 2, "exactly two roof wedges to check ridge alignment on");
+    if (roofParts.size() != 2) return;
+
+    float ridgeA = roofParts[0].yawDegrees == 0.0f ? roofParts[0].localPosition.z - roofParts[0].halfExtents.z
+                                                     : roofParts[0].localPosition.z + roofParts[0].halfExtents.z;
+    float ridgeB = roofParts[1].yawDegrees == 0.0f ? roofParts[1].localPosition.z - roofParts[1].halfExtents.z
+                                                     : roofParts[1].localPosition.z + roofParts[1].halfExtents.z;
+    check(nearlyEqual(ridgeA, ridgeB), "both roof wedges' tall (ridge) edges land on the same world Z");
+
+    // Both roof pieces must also reach the same peak height (ridge apex),
+    // and their eave (low) edges must sit at the same height as each
+    // other (a real, symmetric gable, not a lopsided roof).
+    check(nearlyEqual(roofParts[0].localPosition.y + roofParts[0].halfExtents.y,
+                       roofParts[1].localPosition.y + roofParts[1].halfExtents.y),
+          "both roof wedges reach the same peak (ridge apex) height");
+}
+
+void testHouseLayoutDoorGapIsOpenInFrontWall() {
+    // Real, direct check that no Wall part's box actually covers the
+    // real door gap (x in [-0.6, 0.6], z == -3, the front wall) -- a
+    // wall segment overlapping this gap would silently block the real
+    // door main.cpp/HouseDemoScene.cpp spawns there.
+    auto parts = engine::housedemo::computeHouseLayout();
+    bool gapBlocked = false;
+    for (const auto& part : parts) {
+        if (part.kind != engine::housedemo::HousePartKind::Wall) continue;
+        bool touchesFrontWallZ = std::fabs(part.localPosition.z - (-3.0f)) < 0.15f;
+        if (!touchesFrontWallZ) continue;
+        bool overlapsDoorGapX = (part.localPosition.x - part.halfExtents.x < 0.0f) &&
+                                 (part.localPosition.x + part.halfExtents.x > 0.0f) && part.localPosition.y < 2.0f;
+        if (overlapsDoorGapX) gapBlocked = true;
+    }
+    check(!gapBlocked, "no front-wall part blocks the door gap at ground level");
+}
+
 int main() {
     testAnimationInterpolation();
     testConstantEasing();
@@ -22137,6 +22642,7 @@ int main() {
     testAvatarControllerStateMachine();
     testAvatarControllerBlendTreeTransitions();
     testAvatarControllerEmotePlayback();
+    testAvatarControllerFallingAndLandingStates();
     testLoadoutToRiggedMeshGeneration();
     testCollectKeyframeTimes();
     testAnimationItemValidationAndManifestRoundTrip();
@@ -23554,6 +24060,29 @@ int main() {
     testForgeToolFailsWithoutRarityUnlockEvenWithEnoughOre();
     testForgeToolFailsWithoutEnoughOreEvenWithRarityUnlocked();
     testForgeToolSucceedsAndConsumesExactOreWhenBothGatesPass();
+
+    testEditableMeshCreateBoxHasRealBoxTopology();
+    testEditableMeshExtrudeFaceAddsSixFacesAndMovesTheCap();
+    testEditableMeshSubdivideFaceSplitsOneTriangleIntoFour();
+    testEditableMeshMergeVerticesWeldsCloseVerticesAndDropsDegenerateFaces();
+    testEditableMeshBevelEdgeReplacesASharedInteriorEdge();
+    testEditableMeshBevelEdgeIsHonestNoOpOnANonSharedEdge();
+    testEditableMeshInsetFaceShrinksTowardCentroidAndAddsSixFaces();
+
+    testUvToolsPlanarProjectionMapsToNormalizedZeroOneRange();
+    testUvToolsCubeProjectionPicksPerFaceDominantAxis();
+    testUvToolsAutoUnwrapPreservesRealTriangleEdgeLengthRatios();
+    testUvToolsAutoUnwrapPacksFacesIntoNonOverlappingCells();
+
+    testSaveObjRoundTripsThroughLoadObjWithRealGeometry();
+    testKMeshSaveLoadRoundTripsExactly();
+    testKMeshLoadIsHonestAboutAMalformedFile();
+
+    testShippedAvatarAnimationClipsLoadAndValidate();
+
+    testHouseLayoutHasExactlyOneFloorAndTwoRoofWedges();
+    testHouseLayoutRoofWedgesMeetAtRidge();
+    testHouseLayoutDoorGapIsOpenInFrontWall();
 
     std::fprintf(stdout, "%d/%d checks passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;

@@ -71,6 +71,14 @@ public:
 
     [[nodiscard]] core::ECS& ecs() { return ecs_; }
 
+    // Real, up-to-date (position/yaw/pitch recomputed at the end of every
+    // drawAndHandleOrbit() call, see that method) read-only access to the
+    // orbit camera -- lets a caller project its own world-space points
+    // (e.g. studio::plugins::AnimationPreviewerPlugin's skeleton overlay)
+    // into the exact same view the rendered texture was drawn with. Call
+    // only after drawAndHandleOrbit() has run this frame.
+    [[nodiscard]] const core::Camera& camera() const { return camera_; }
+
     // Sprint 10 ("Creator Tools Phase 2") task category 2's "live
     // preview window" for the Particle Editor -- previously private and
     // "never populated" (see class comment), now exposed so a caller

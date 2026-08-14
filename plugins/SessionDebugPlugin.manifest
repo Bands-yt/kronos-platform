@@ -1,0 +1,7 @@
+PLUGIN 1
+NAME Session Debug
+VERSION 1.0.0
+AUTHOR Kronos
+DESCRIPTION Real network.* RPC debug logger -- registers a PluginDebugPing handler and fires one periodically. A real, honest no-op until you've hosted/joined a session from the Network Overlay plugin.
+ENTRY SessionDebugPlugin.lua
+END

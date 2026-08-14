@@ -66,6 +66,7 @@ launch; Alt+Tab or close the window to release it).
 | `--stress <playerCount>` | Server-only: connect that many real synthetic client players, for load testing |
 | `--tntwars [map]` | Launch directly into a live, playable TNT Wars match (`map` is one of `sky`/`volcano`/`underwater`/`trenches`, defaults to `trenches`) |
 | `--miningsim` | Launch the interactive Mining Sim prototype scene |
+| `--house-demo` | Launch a real built house (working door, 2 windows, kitchen, fireplace) on rolling-hill terrain |
 | `--render-showcase` | A scripted-camera rendering showcase, no gameplay |
 | `--trailer [script] [outputDir]` | Batch cinematic capture mode (writes frames, doesn't open an interactive window) |
 

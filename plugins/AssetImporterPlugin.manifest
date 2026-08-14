@@ -1,0 +1,7 @@
+PLUGIN 1
+NAME Asset Importer
+VERSION 1.0.0
+AUTHOR Kronos
+DESCRIPTION An honest placeholder -- no asset-registry Lua binding exists yet, so this can't really import anything. Demonstrates the one adjacent real capability (findByName + setColor/setPosition) as a stand-in, and says so.
+ENTRY AssetImporterPlugin.lua
+END

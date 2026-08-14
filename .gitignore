@@ -10,3 +10,9 @@ trailer_output/
 .idea/
 *.swp
 .DS_Store
+
+# Local runtime state (real, but per-machine/per-player, not source --
+# see core::CrashReporter/core::LocalProfile's own on-disk formats)
+crash_report_*.txt
+imgui.ini
+local_profile.profile

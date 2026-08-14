@@ -73,6 +73,9 @@ add_library(engine_core STATIC
     core/RayTracingScene.cpp
     core/VmaImpl.cpp
     core/Mesh.cpp
+    core/EditableMesh.cpp
+    core/UvTools.cpp
+    core/KMeshFile.cpp
     core/CharacterController.cpp
     core/Animation.cpp
     core/PropAnimation.cpp
@@ -268,6 +271,9 @@ add_library(engine_core STATIC
     miningsim/MobVisual.cpp
     miningsim/ForgeVisual.cpp
 
+    housedemo/HouseLayout.cpp
+    housedemo/HouseDemoScene.cpp
+
     platform_adapters/UnifiedInput.cpp
     platform_adapters/adapters/WindowsAdapter.cpp
     platform_adapters/adapters/LinuxAdapter.cpp
@@ -308,6 +314,15 @@ target_compile_definitions(engine_core PUBLIC
     # in engine/assets/audio, loaded via core::Audio::loadSound() at TNT
     # Wars live-mode startup.
     ENGINE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../assets"
+    # Same real "prefer a packaged sibling dir, else fall back to this
+    # compile-time source path" resolution as ENGINE_ASSET_DIR (see
+    # core/ResourcePaths.hpp) -- used by engine_tests' own real
+    # template/example regression coverage so it resolves correctly both
+    # from engine/build/ (dev convention) and from inside a packaged
+    # alpha zip (scripts/package_alpha.sh copies templates/ and examples/
+    # in as siblings of engine_tests itself).
+    ENGINE_TEMPLATES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../templates"
+    ENGINE_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../examples"
     # Without this, glm::perspective()/glm::ortho() default to OpenGL's
     # clip-space Z range ([-1,1]) -- Vulkan requires [0,1] (its clip
     # volume is defined by 0<=z<=w, not -w<=z<=w). Depth *testing* still
@@ -402,6 +417,8 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/MaterialPlugin.cpp
         studio/plugins/TerrainEditorPlugin.cpp
         studio/plugins/CreatorToolsPlugin.cpp
+        studio/plugins/BlockBuilderPlugin.cpp
+        studio/plugins/ModelingModePlugin.cpp
         studio/plugins/ParticleEditorPlugin.cpp
         studio/plugins/PrefabPlugin.cpp
         studio/plugins/ModelImporterPlugin.cpp
@@ -426,7 +443,6 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/CreatorConsolePlugin.cpp
         studio/plugins/TimelineEditorPlugin.cpp
         studio/plugins/CreatorAssetBrowserPlugin.cpp
-        studio/plugins/TntWarsPlugin.cpp
         studio/plugins/TrailerPanel.cpp
         studio/plugins/LauncherPlugin.cpp
         studio/ParticlePresets.cpp

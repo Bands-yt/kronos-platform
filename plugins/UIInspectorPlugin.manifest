@@ -1,0 +1,7 @@
+PLUGIN 1
+NAME UI Inspector
+VERSION 1.0.0
+AUTHOR Kronos
+DESCRIPTION Polls a named entity's real transform every couple of seconds and logs it. Studio's world table has no selection query, so this watches a name you set rather than "whatever's selected" -- see the script's own comment.
+ENTRY UIInspectorPlugin.lua
+END

@@ -12,6 +12,7 @@ class NetworkSession;
 
 namespace engine::studio {
 class PluginManager;
+class NotificationCenter;
 }
 
 namespace engine::studio::plugins {
@@ -35,8 +36,8 @@ namespace engine::studio::plugins {
 // loading one is a one-click "Load" instead of typing its exact path.
 class PluginBrowserPlugin final : public IStudioPlugin {
 public:
-    PluginBrowserPlugin(PluginManager& pluginManager, net::NetworkSession& networkSession)
-        : pluginManager_(&pluginManager), networkSession_(&networkSession) {}
+    PluginBrowserPlugin(PluginManager& pluginManager, net::NetworkSession& networkSession, NotificationCenter& notifications)
+        : pluginManager_(&pluginManager), networkSession_(&networkSession), notifications_(&notifications) {}
 
     [[nodiscard]] const char* name() const override { return "Plugin Browser"; }
     [[nodiscard]] const char* category() const override { return "Plugins"; }
@@ -46,9 +47,12 @@ public:
 private:
     void drawLocalPluginsSection();
     void loadFromManifestPath(const std::string& manifestPath);
+    void scanNow();
+    void createStarterPlugin();
 
     PluginManager* pluginManager_;
     net::NetworkSession* networkSession_; // real, live -- passed straight through to each ScriptedPlugin::load()
+    NotificationCenter* notifications_;    // real toasts for load/scan/create results, see .cpp
     core::ECS* ecs_ = nullptr; // captured from the first drawPanel() call, see .cpp
 
     std::string manifestPathBuffer_;

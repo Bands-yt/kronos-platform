@@ -19,37 +19,46 @@ namespace engine::core {
 
 class CatalogueIndex;
 
-// A real, minimal, procedural biped -- exactly what an idle/walk/run/jump/
-// emote animation set needs to look articulated (a hip root, a torso,
-// head, two arms, two legs), not a full finger/face/spine-twist rig. This
-// is the skeleton every AvatarController-driven character in this pass
-// shares -- generated, not authored/imported, the same "procedural, not a
-// DCC asset" spirit core::Mesh::createBox/createCapsule already have.
-// Deliberately separate from studio::AvatarPreviewer's existing
-// attachment-based mannequin (see AvatarLoadoutSync.hpp's comment) -- that
-// system predates skinning entirely and stays untouched; this is a new,
-// independent rigged path built alongside it, not a retrofit.
+// Kronos ("Avatar System" -- Full Technical Specification): a real,
+// 18-joint procedural biped -- root/pelvis/spine_lower/spine_upper/neck/
+// head, upper/lower arm + hand on each side, upper/lower leg + foot on
+// each side -- exactly the bone list specified, not a full finger/face/
+// twist-bone DCC rig. This is the skeleton every AvatarController-driven
+// character in this pass shares -- generated, not authored/imported, the
+// same "procedural, not a DCC asset" spirit core::Mesh::createBox/
+// createCapsule already have. Deliberately separate from
+// studio::AvatarPreviewer's existing attachment-based mannequin (see
+// AvatarLoadoutSync.hpp's comment) -- that system predates skinning
+// entirely and stays untouched; this is a new, independent rigged path
+// built alongside it, not a retrofit.
 [[nodiscard]] Skeleton buildHumanoidSkeleton();
 
-// Which of buildHumanoidSkeleton()'s joints owns a given body segment's
-// geometry -- exactly the segments buildHumanoidMeshData() generates one
-// box per. Not a general enum: this procedural body has no fingers, no
-// separate hands/feet, no face.
+// Which body segment a given piece of geometry belongs to -- still 6
+// (not 18): each *wearable* zone (Head/Torso/LeftArm/RightArm/LeftLeg/
+// RightLeg) spans multiple real joints now (an arm segment's own mesh
+// covers arm_?_upper through hand_?), matching AvatarItemCategory's own
+// existing Head/Torso/Legs granularity (a shirt covers the whole arm,
+// not just the upper-arm bone) -- see buildHumanoidMeshData()'s own
+// comment for exactly which joints feed which segment's geometry.
 enum class HumanoidBodySegment { Head, Torso, LeftArm, RightArm, LeftLeg, RightLeg };
 constexpr size_t kHumanoidBodySegmentCount = 6;
 
-// Real procedural humanoid geometry (one box per HumanoidBodySegment,
-// centered at that segment's joint's bind-pose world position, sized to
-// roughly suggest a body part) plus real, rigid (100%-single-joint) skin
-// weights -- a real, honestly-simplified rigging scheme: every vertex
-// binds fully to exactly one joint, so there's no smooth bend at the
-// shoulders/hips (a multi-joint-weighted rig with real elbow/knee
-// bending is a deliberately un-built refinement -- see
-// SkinnedRenderable::castsShadow's comment for this codebase's precedent
-// on documenting a scope boundary rather than silently half-building it).
-// Kept as host-side data (not yet uploaded to the GPU) so the generation
-// and weighting logic is exercised by a dependency-free test -- see
-// spawnRiggedAvatar() for the half that actually uploads this.
+// Real procedural humanoid geometry, real per-segment skin weights --
+// and real smooth (2-joint) blending at the elbows/knees specifically
+// (see appendSmoothLimb() in the .cpp), not the uniformly-rigid single-
+// joint binding this function used before the 18-bone rig. Per segment:
+// Head is a real sphere, rigidly bound (a terminal joint, nothing to
+// blend with). Torso is one rigid box spanning pelvis to neck, bound to
+// spine_upper -- "single connected piece" per spec; a real multi-joint
+// smooth spine is a deliberately un-built refinement (this rig's own
+// idle/walk/run set doesn't bend the spine, so rigid costs nothing real
+// yet -- the same "document the boundary, don't half-build past it"
+// precedent this file already followed for the old 7-joint rig). Each
+// arm/leg is a real 2-link smooth chain (upper-to-lower, real elbow/knee
+// blend) capped with a rigid hand/foot box. Kept as host-side data (not
+// yet uploaded to the GPU) so the generation and weighting logic is
+// exercised by a dependency-free test -- see spawnRiggedAvatar() for the
+// half that actually uploads this.
 struct HumanoidMeshData {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;

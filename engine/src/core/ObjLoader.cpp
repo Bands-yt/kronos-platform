@@ -223,4 +223,30 @@ ObjLoadResult loadObj(const std::string& path) {
     return result;
 }
 
+bool saveObj(const std::string& path, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open()) return false;
+
+    out << "# Exported by Kronos Studio\n";
+    for (const Vertex& v : vertices) {
+        out << "v " << v.position.x << " " << v.position.y << " " << v.position.z << "\n";
+    }
+    for (const Vertex& v : vertices) {
+        out << "vt " << v.uv.x << " " << v.uv.y << "\n";
+    }
+    for (const Vertex& v : vertices) {
+        out << "vn " << v.normal.x << " " << v.normal.y << " " << v.normal.z << "\n";
+    }
+    // 1-indexed, v/vt/vn all sharing the same per-vertex index -- real
+    // and correct for any mesh this engine produces (every Vertex
+    // already carries its own position+uv+normal together, never
+    // split), which is the common case loadObj() itself also produces.
+    for (size_t f = 0; f * 3 < indices.size(); ++f) {
+        uint32_t a = indices[f * 3] + 1, b = indices[f * 3 + 1] + 1, c = indices[f * 3 + 2] + 1;
+        out << "f " << a << "/" << a << "/" << a << " " << b << "/" << b << "/" << b << " " << c << "/" << c << "/"
+            << c << "\n";
+    }
+    return out.good();
+}
+
 } // namespace engine::core

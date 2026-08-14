@@ -100,6 +100,28 @@ public:
     [[nodiscard]] static Mesh createQuad(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
                                           float halfSize);
 
+    // A real cylinder -- flat top/bottom caps (fan-triangulated from a
+    // center vertex, +-Y normals) + a smooth radial-normal side wall,
+    // same "duplicate the seam vertex for a clean UV wrap" convention
+    // createCapsule() already uses. Built for the Block Builder plugin's
+    // primitive palette (studio::plugins::BlockBuilderPlugin) -- note
+    // there is no MeshSourceKind::Cylinder (see that enum's own comment):
+    // a block spawned with this mesh renders/moves/selects normally for
+    // the rest of the session but won't survive a Save Scene reload with
+    // its exact shape, the same honest limitation core::Terrain already
+    // has for a different reason (see SceneFile.hpp's own doc comment).
+    [[nodiscard]] static Mesh createCylinder(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool,
+                                              VkQueue queue, float radius, float halfHeight,
+                                              uint32_t radialSegments = 16);
+
+    // A real wedge/ramp -- a box whose front face (+Z) collapses to a
+    // single bottom edge, leaving one flat sloped face from the back
+    // face's top edge down to the front-bottom edge (Roblox's own
+    // WedgePart shape). Same MeshSourceKind caveat as createCylinder()
+    // above -- no MeshSourceKind::Wedge exists, live-session only.
+    [[nodiscard]] static Mesh createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool,
+                                           VkQueue queue, glm::vec3 halfExtents);
+
 private:
     VkBuffer vertexBuffer_ = VK_NULL_HANDLE;
     VmaAllocation vertexAllocation_ = nullptr;

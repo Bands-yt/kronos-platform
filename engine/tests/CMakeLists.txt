@@ -47,6 +47,7 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/ExplorerPanel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/InspectorPanel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/CreatorToolsSpawning.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/housedemo/HouseLayout.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/CreatorConsole.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticlePresets.cpp
 )

@@ -359,6 +359,127 @@ Mesh Mesh::createCapsule(VmaAllocator allocator, VkDevice device, VkCommandPool 
     return mesh;
 }
 
+Mesh Mesh::createCylinder(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue, float radius,
+                           float halfHeight, uint32_t radialSegments) {
+    radialSegments = std::max(3u, radialSegments);
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    const float twoPi = 6.28318530718f;
+
+    // Side wall: top ring then bottom ring, radial normals, same
+    // "verticesPerRing = segments+1 for a clean UV seam" convention
+    // createCapsule() already uses.
+    uint32_t topWallStart = 0;
+    for (uint32_t s = 0; s <= radialSegments; ++s) {
+        float theta = twoPi * static_cast<float>(s) / static_cast<float>(radialSegments);
+        float cosT = std::cos(theta), sinT = std::sin(theta);
+        float u = static_cast<float>(s) / static_cast<float>(radialSegments);
+        vertices.push_back({{radius * cosT, halfHeight, radius * sinT}, {cosT, 0.0f, sinT}, {u, 0.0f}});
+    }
+    uint32_t bottomWallStart = static_cast<uint32_t>(vertices.size());
+    for (uint32_t s = 0; s <= radialSegments; ++s) {
+        float theta = twoPi * static_cast<float>(s) / static_cast<float>(radialSegments);
+        float cosT = std::cos(theta), sinT = std::sin(theta);
+        float u = static_cast<float>(s) / static_cast<float>(radialSegments);
+        vertices.push_back({{radius * cosT, -halfHeight, radius * sinT}, {cosT, 0.0f, sinT}, {u, 1.0f}});
+    }
+    for (uint32_t s = 0; s < radialSegments; ++s) {
+        uint32_t top0 = topWallStart + s, top1 = topWallStart + s + 1;
+        uint32_t bot0 = bottomWallStart + s, bot1 = bottomWallStart + s + 1;
+        indices.insert(indices.end(), {top0, top1, bot0, top1, bot1, bot0});
+    }
+
+    // Top cap: fan from a center vertex, +Y normal. Increasing theta
+    // (cos,sin sweep +X toward +Z) matches createBox()'s own +Y face
+    // winding (verified against its vertex order directly).
+    uint32_t topCapCenter = static_cast<uint32_t>(vertices.size());
+    vertices.push_back({{0.0f, halfHeight, 0.0f}, {0, 1, 0}, {0.5f, 0.5f}});
+    uint32_t topCapRimStart = static_cast<uint32_t>(vertices.size());
+    for (uint32_t s = 0; s <= radialSegments; ++s) {
+        float theta = twoPi * static_cast<float>(s) / static_cast<float>(radialSegments);
+        float cosT = std::cos(theta), sinT = std::sin(theta);
+        vertices.push_back(
+            {{radius * cosT, halfHeight, radius * sinT}, {0, 1, 0}, {0.5f + 0.5f * cosT, 0.5f + 0.5f * sinT}});
+    }
+    for (uint32_t s = 0; s < radialSegments; ++s) {
+        indices.insert(indices.end(), {topCapCenter, topCapRimStart + s, topCapRimStart + s + 1});
+    }
+
+    // Bottom cap: same fan, wound the opposite way (decreasing theta) for
+    // the -Y normal.
+    uint32_t bottomCapCenter = static_cast<uint32_t>(vertices.size());
+    vertices.push_back({{0.0f, -halfHeight, 0.0f}, {0, -1, 0}, {0.5f, 0.5f}});
+    uint32_t bottomCapRimStart = static_cast<uint32_t>(vertices.size());
+    for (uint32_t s = 0; s <= radialSegments; ++s) {
+        float theta = twoPi * static_cast<float>(s) / static_cast<float>(radialSegments);
+        float cosT = std::cos(theta), sinT = std::sin(theta);
+        vertices.push_back(
+            {{radius * cosT, -halfHeight, radius * sinT}, {0, -1, 0}, {0.5f + 0.5f * cosT, 0.5f - 0.5f * sinT}});
+    }
+    for (uint32_t s = 0; s < radialSegments; ++s) {
+        indices.insert(indices.end(), {bottomCapCenter, bottomCapRimStart + s + 1, bottomCapRimStart + s});
+    }
+
+    Mesh mesh;
+    (void)mesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices);
+    return mesh;
+}
+
+Mesh Mesh::createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                        glm::vec3 h) {
+    // A box whose +Z face collapses to a single bottom edge -- back face
+    // (-Z) stays full height, front face has no vertical extent at all,
+    // leaving one flat sloped face connecting the back-top edge to the
+    // front-bottom edge. Every face below is copied from createBox()'s
+    // own vertex order/winding for the faces that are unchanged (bottom,
+    // back), with the two side faces reduced from a quad to a triangle
+    // (front-top vertex doesn't exist) and the slope face computed fresh
+    // (cross-product-verified normal direction, see inline notes).
+    std::vector<Vertex> vertices = {
+        // Bottom (-Y), full rectangle -- same vertex order as createBox()'s
+        // own -Y face.
+        {{-h.x, -h.y, h.z}, {0, -1, 0}, {0, 0}},
+        {{h.x, -h.y, h.z}, {0, -1, 0}, {1, 0}},
+        {{h.x, -h.y, -h.z}, {0, -1, 0}, {1, 1}},
+        {{-h.x, -h.y, -h.z}, {0, -1, 0}, {0, 1}},
+        // Back (-Z), full rectangle, vertical -- same vertex order as
+        // createBox()'s own -Z face.
+        {{-h.x, -h.y, -h.z}, {0, 0, -1}, {0, 0}},
+        {{h.x, -h.y, -h.z}, {0, 0, -1}, {1, 0}},
+        {{h.x, h.y, -h.z}, {0, 0, -1}, {1, 1}},
+        {{-h.x, h.y, -h.z}, {0, 0, -1}, {0, 1}},
+        // Left (-X), triangle: bottom-front, bottom-back, top-back (no
+        // top-front vertex -- collapsed).
+        {{-h.x, -h.y, h.z}, {-1, 0, 0}, {0, 0}},
+        {{-h.x, -h.y, -h.z}, {-1, 0, 0}, {1, 0}},
+        {{-h.x, h.y, -h.z}, {-1, 0, 0}, {1, 1}},
+        // Right (+X), triangle: bottom-back, top-back, bottom-front.
+        {{h.x, -h.y, -h.z}, {1, 0, 0}, {0, 0}},
+        {{h.x, h.y, -h.z}, {1, 0, 0}, {1, 0}},
+        {{h.x, -h.y, h.z}, {1, 0, 0}, {1, 1}},
+        // Slope, normal (0, h.z, h.y) normalized -- verified via
+        // cross(bottom-front-left - top-back-left, bottom-front-right -
+        // top-back-left), see this function's own derivation.
+        {{-h.x, h.y, -h.z}, glm::normalize(glm::vec3(0.0f, h.z, h.y)), {0, 0}},
+        {{-h.x, -h.y, h.z}, glm::normalize(glm::vec3(0.0f, h.z, h.y)), {0, 1}},
+        {{h.x, -h.y, h.z}, glm::normalize(glm::vec3(0.0f, h.z, h.y)), {1, 1}},
+        {{h.x, h.y, -h.z}, glm::normalize(glm::vec3(0.0f, h.z, h.y)), {1, 0}},
+    };
+
+    std::vector<uint32_t> indices = {
+        0, 1, 2, 0, 2, 3,    // bottom
+        4, 5, 6, 4, 6, 7,    // back
+        8, 9, 10,            // left (single triangle)
+        11, 12, 13,          // right (single triangle)
+        14, 15, 16, 14, 16, 17, // slope
+    };
+
+    Mesh mesh;
+    (void)mesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices);
+    return mesh;
+}
+
 uint32_t MeshLibrary::registerMesh(Mesh mesh) {
     meshes_.push_back(std::move(mesh));
     return static_cast<uint32_t>(meshes_.size() - 1);

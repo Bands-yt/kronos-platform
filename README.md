@@ -35,6 +35,7 @@ go straight to the [Quickstart](docs/QUICKSTART.md).
 | I want to... | Start here |
 |---|---|
 | Build and run it | [docs/QUICKSTART.md](docs/QUICKSTART.md) |
+| Try the packaged Alpha release (no build required) | [docs/ALPHA_TESTER_GUIDE.md](docs/ALPHA_TESTER_GUIDE.md) |
 | Fix a build/run problem | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Write a Studio plugin | [docs/PLUGIN_DEVELOPER_EXPERIENCE.md](docs/PLUGIN_DEVELOPER_EXPERIENCE.md), [docs/PLUGIN_SYSTEM.md](docs/PLUGIN_SYSTEM.md) |
 | Write a gameplay script | [docs/LUA_CREATOR_EXPERIENCE.md](docs/LUA_CREATOR_EXPERIENCE.md), [docs/LUA_API.md](docs/LUA_API.md) |

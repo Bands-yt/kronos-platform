@@ -14,6 +14,8 @@
 #include "studio/plugins/AnimationPreviewerPlugin.hpp"
 #include "studio/plugins/AvatarPreviewer.hpp"
 #include "studio/plugins/CataloguePanel.hpp"
+#include "studio/plugins/BlockBuilderPlugin.hpp"
+#include "studio/plugins/ModelingModePlugin.hpp"
 #include "studio/plugins/CreatorToolsPlugin.hpp"
 #include "studio/plugins/DiagnosticsPlugin.hpp"
 #include "studio/plugins/ModerationPanel.hpp"
@@ -32,7 +34,6 @@
 #include "studio/plugins/ShopPlugin.hpp"
 #include "studio/plugins/TerrainEditorPlugin.hpp"
 #include "studio/plugins/TexturePreviewPlugin.hpp"
-#include "studio/plugins/TntWarsPlugin.hpp"
 #include "studio/plugins/LauncherPlugin.hpp"
 #include "studio/plugins/TrailerPanel.hpp"
 #include "studio/plugins/UploadAnimationPlugin.hpp"
@@ -197,6 +198,18 @@ bool StudioApp::initialize() {
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_,
         renderer_, *terrainEditorPlugin_));
 
+    // Block Builder (real, found missing via a live playtest -- "add a
+    // custom block/stud maker"): same terrainEditorPlugin_ dependency as
+    // Creator Tools above, registered right after for the same reason.
+    pluginManager_.registerPlugin(std::make_unique<plugins::BlockBuilderPlugin>(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_,
+        *terrainEditorPlugin_));
+
+    // Modeling Mode ("3D Model Maker" Phase 2) -- real vertex/edge/face
+    // editing over whatever Block Builder (above) placed.
+    pluginManager_.registerPlugin(std::make_unique<plugins::ModelingModePlugin>(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_));
+
     auto particleEditor = std::make_unique<plugins::ParticleEditorPlugin>(
         particleSystem_, renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
         meshLibrary_, textureLibrary_);
@@ -305,18 +318,17 @@ bool StudioApp::initialize() {
     publishingPanel_ = publishingPanel.get();
     pluginManager_.registerPlugin(std::move(publishingPanel));
 
-    // TNT-Wars (Sprint 14 "TNT-Wars Core Game Build") -- real map-editing
-    // (spawns real procedural level geometry via the same real Vulkan
-    // mesh-build handles plugins::PrefabPlugin already takes) + class/map
-    // tuning, both through the same real networkSession_ reference every
-    // other networked plugin above already uses. A built TNT-Wars map is
-    // just live ECS content at that point -- publishingPanel_ above (no
-    // new publish path needed) is what actually validates/packages it,
-    // matching the brief's own "world package validated via
-    // PublishingPanel" phrasing.
-    pluginManager_.registerPlugin(std::make_unique<plugins::TntWarsPlugin>(
-        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_,
-        textureLibrary_, networkSession_));
+    // Kronos ("Model Maker Alpha" -- tester declutter): TntWarsPlugin
+    // (Sprint 14, real TNT-Wars map-editing + class/map tuning) is
+    // deliberately NOT registered here anymore -- a live playtest found
+    // it real but confusing clutter for testers focused on general
+    // world-building (Block Builder/Modeling Mode/Creator Tools), not
+    // this specific game mode. engine_runtime's own `--tntwars` play
+    // mode is untouched (it doesn't depend on this Studio-side authoring
+    // plugin at all), and the shared `tntwars::` types LauncherPlugin
+    // below and others still use are untouched too -- only this one
+    // plugin's registration (and its own .cpp from the studio build,
+    // see src/CMakeLists.txt) is gone.
 
     // Kronos ("Studio Finalisation"): the real "front door" -- biome
     // selection + a real renderer-settings panel + real JSON-backed
@@ -383,7 +395,25 @@ bool StudioApp::initialize() {
     // later lands after it in pluginManager_'s list, keeping same-
     // category plugins contiguous for PluginManager::drawMenu()'s
     // category-change separator logic.
-    pluginManager_.registerPlugin(std::make_unique<plugins::PluginBrowserPlugin>(pluginManager_, networkSession_));
+    pluginManager_.registerPlugin(
+        std::make_unique<plugins::PluginBrowserPlugin>(pluginManager_, networkSession_, notifications_));
+
+    // Real bug fix (found via a live playtest): every first-party plugin's
+    // own `open_` default is `true` (IStudioPlugin.hpp), so a fresh launch
+    // previously cascaded all ~29 of them open and undocked at once,
+    // stacked on top of the Viewport -- none of drawDockspace()'s own
+    // DockBuilder layout above covers them (only the 7 built-in panels
+    // are). Closing them here, uniformly, after registration is the
+    // smaller and more honest fix vs. flipping IStudioPlugin's own
+    // default: a user who explicitly clicks PluginBrowserPlugin's "Load
+    // Plugin" button still gets an open window immediately (that
+    // ScriptedPlugin registers well after this loop runs), while
+    // first-party tools stay exactly as discoverable as before via the
+    // Plugins menu (PluginManager::drawMenu()) -- just not all open at
+    // once.
+    for (auto& plugin : pluginManager_.plugins()) {
+        plugin->setOpen(false);
+    }
 
     if (!debugConsolePanel_.initialize(ecs_)) {
         std::fprintf(stderr, "StudioApp: DebugConsolePanel::initialize failed.\n");
@@ -429,7 +459,11 @@ void StudioApp::buildBringUpScene() {
     boxMeshSource.kind = core::MeshSourceKind::Box;
     boxMeshSource.params = {0.5f, 0.5f, 0.5f};
 
-    constexpr int kGridSize = 6;
+    // Real bug fix (found via a live playtest): 6x6=36 was cluttering a
+    // fresh launch's Explorer tree ("Other (38)" including GroundPlane/
+    // DynamicBox). 3x3 keeps the same metallic/roughness sweep (the loop
+    // math below is resolution-independent) with far less clutter.
+    constexpr int kGridSize = 3;
     for (int xi = 0; xi < kGridSize; ++xi) {
         for (int zi = 0; zi < kGridSize; ++zi) {
             auto entity = ecs_.createEntity("MaterialSample");
@@ -565,6 +599,7 @@ void StudioApp::drawDockspace() {
 
     drawSceneTabsBar();
     drawRecoveryBanner();
+    drawWelcomePanel();
 
     ImGuiID dockspaceId = ImGui::GetID("StudioDockSpace");
 
@@ -579,6 +614,11 @@ void StudioApp::drawDockspace() {
     // launch -- this only ever fires on a genuinely first-ever run (or
     // after imgui.ini is deleted).
     if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr) {
+        // Kronos ("First-Launch Experience"): reuses this exact same
+        // detection rather than a second marker-file mechanism -- a
+        // genuinely first-ever launch (or imgui.ini deleted) is real
+        // signal either way.
+        welcomePanelOpen_ = true;
         ImGui::DockBuilderRemoveNode(dockspaceId);
         ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
         ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
@@ -824,8 +864,10 @@ void StudioApp::drawRecoveryBanner() {
             (void)sceneManager_.saveScene(originalPath, ecs_, viewportPanel_.camera());
             explorerPanel_.setSelected(core::kNullEntity);
             fileActionStatus_ = "Recovered " + originalPath;
+            notifications_.push(fileActionStatus_, NotificationSeverity::Success);
         } else {
             fileActionStatus_ = "Recovery failed to load: " + recoveryPath;
+            notifications_.push(fileActionStatus_, NotificationSeverity::Error);
         }
         recoveryOfferPath_.clear();
     }
@@ -869,6 +911,32 @@ void StudioApp::drawRecoveryBanner() {
     ImGui::PopStyleColor();
 }
 
+void StudioApp::drawWelcomePanel() {
+    if (!welcomePanelOpen_) return;
+
+    ImGui::SetNextWindowSize(ImVec2(460.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::Begin("Welcome to Kronos Studio", &welcomePanelOpen_)) {
+        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "Welcome to Kronos Studio");
+        ImGui::TextWrapped(
+            "This is a real, working creator tool -- everything you click here does "
+            "something real. A few places to start:");
+        ImGui::Spacing();
+        ImGui::BulletText("The Plugins menu (top bar) lists every built-in tool, grouped by category.");
+        ImGui::BulletText("Block Builder (Plugins > World) places real primitives you can move/rotate/scale.");
+        ImGui::BulletText("Creator Tools (Plugins > World) places props, terrain, and lighting.");
+        ImGui::Spacing();
+        if (ImGui::Button("Open Default Project", ImVec2(200.0f, 0.0f))) {
+            switchToScene("templates/project/default.scene");
+            welcomePanelOpen_ = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("View Quickstart", ImVec2(200.0f, 0.0f))) {
+            notifications_.push("Quickstart guide: docs/QUICKSTART.md", NotificationSeverity::Info);
+        }
+    }
+    ImGui::End();
+}
+
 void StudioApp::switchToScene(const std::string& path) {
     if (!sceneManager_.currentScenePath().empty() && sceneManager_.currentScenePath() != path) {
         (void)sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera());
@@ -877,11 +945,13 @@ void StudioApp::switchToScene(const std::string& path) {
     if (!sceneManager_.loadScene(path, ecs_, meshLibrary_, renderer_.allocator(), renderer_.device(),
                                   renderer_.commandPool(), renderer_.graphicsQueue(), viewportPanel_.camera())) {
         fileActionStatus_ = "Load failed: " + path;
+        notifications_.push(fileActionStatus_, NotificationSeverity::Error);
         return;
     }
 
     explorerPanel_.setSelected(core::kNullEntity);
     fileActionStatus_ = "Loaded " + path;
+    notifications_.push(fileActionStatus_, NotificationSeverity::Success);
     recoveryOfferPath_ = SceneManager::hasRecoveryFile(path) ? path : std::string();
 
     auto& tabs = sceneManager_.openScenePaths();

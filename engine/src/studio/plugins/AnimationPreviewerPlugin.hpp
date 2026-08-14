@@ -83,6 +83,27 @@ public:
 private:
     void spawnDemoBody();
     void playFromStart();
+    // Loads one of the 6 real shipped clips (engine/assets/animations/
+    // idle|walk|run|jump_start|jump_air|jump_land.anim -- the same files
+    // core::AvatarController's setIdleClip()/setWalkClip()/setRunClip()/
+    // setJumpClip()/setJumpAirClip()/setJumpLandClip() are meant to be fed
+    // in real gameplay) via previewClip(), resolving the real packaged-vs-
+    // dev-build asset directory the same way Renderer/UIRenderer already
+    // do for shaders (core::resolveResourceDir()) rather than a hardcoded
+    // relative path.
+    void loadShippedClip(const char* fileBaseName, const char* displayName);
+    // Draws bone lines + joint markers over the just-rendered preview
+    // image by projecting each joint's real current world position
+    // (skinningMatrices()[i] applied to the joint's own bind-pose world
+    // position -- the same "skinning matrix applied to a point sitting at
+    // the joint's own pivot" reasoning tests/test_main.cpp's
+    // testAnimationPlayerPlaybackAndPoseGeneration() already establishes)
+    // through scene_'s real camera, using the exact image rect
+    // drawAndHandleOrbit() just drew into (via ImGui::GetItemRectMin/Max,
+    // the same pattern drawPanel()'s keyframe markers already use under
+    // the playhead slider). Must be called immediately after
+    // scene_.drawAndHandleOrbit(), before any other ImGui item is drawn.
+    void drawSkeletonOverlay();
 
     VmaAllocator allocator_;
     VkDevice device_;
@@ -106,6 +127,9 @@ private:
 
     char clipPathBuffer_[256] = "";
     std::string statusMessage_;
+
+    bool showSkeletonOverlay_ = false;
+    int selectedJointIndex_ = -1; // -1 = no bone selected
 };
 
 } // namespace engine::studio::plugins
