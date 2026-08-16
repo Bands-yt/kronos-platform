@@ -46,7 +46,14 @@ namespace engine::core {
 // own head-bob and AvatarFace's own facial transforms already use -- see
 // either one's own comment for why a naive right-multiply alone would be
 // wrong). A real, honest no-op if `skeleton` has no attach_back joint.
+//
+// Kronos ("Avatar 2.0" -- "Performance and LOD" -- "cache rig
+// transforms"): `bindPoseWorld` is real, new, and REQUIRED, same real
+// caller-cached-once-at-spawn convention core::AvatarFace's own
+// applyFacialExpressionToSkinningMatrices() now uses -- see that
+// function's own header comment for why this stopped being recomputed
+// internally.
 void applyAccessoryDynamicsToSkinningMatrices(std::vector<glm::mat4>& skinningMatrices, const Skeleton& skeleton,
-                                               float phase);
+                                               const std::vector<glm::mat4>& bindPoseWorld, float phase);
 
 } // namespace engine::core

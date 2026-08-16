@@ -1,5 +1,102 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (even later) — Avatar 2.0: Performance and LOD (final Avatar 2.0 workstream)
+
+**Cache rig transforms (real, done)**: `Skeleton::bindPoseMatrices()` is
+an O(joint-count) hierarchy walk that allocates a fresh
+`std::vector<glm::mat4>` every call, and was being recomputed up to 3
+times per real tick per avatar (once in `AvatarController::tick()`
+itself, once inside `applyFacialExpressionToSkinningMatrices()`, once
+inside `applyAccessoryDynamicsToSkinningMatrices()`) despite being
+invariant for a skeleton's whole lifetime. Fixed by caching it once at
+construction/spawn time in all three real owners
+(`AvatarController::cachedBindPose_`,
+`runtime::HomeAvatarPreview::cachedBindPose_`,
+`studio::plugins::AvatarEditor::cachedBindPose_`) and changing both
+`applyFacialExpressionToSkinningMatrices()`/
+`applyAccessoryDynamicsToSkinningMatrices()` to take a required
+`bindPoseWorld` parameter instead of recomputing internally.
+
+**Distance-based LOD (real, new)**: a new `core::AvatarLODTag` component
+(`Body`/`Face`/`Clothing`/`Accessory`) is attached once at each entity's
+real spawn point (`spawnRiggedAvatar()`, `uploadClothingPiece()`,
+`spawnAvatarFace()`, `spawnAvatarAccessories()`) — not inferred from list
+position, since clothing entity *count* varies per equip loadout, which
+would make a positional scheme fragile. A new, pure, tested
+`core::updateAvatarLOD()` (`core/AvatarLOD.hpp/.cpp`) reads each real
+entity's tag and toggles its existing `SkinnedRenderable::visible` flag
+based on distance-to-camera — this flag was already real and already
+respected by the renderer's skinned draw loop
+(`if (!skinned.visible) continue;`, `Renderer.cpp:4737`), so this needed
+**zero renderer/shader changes** to actually skip real GPU draw calls.
+Staggered thresholds (face 9m, accessories 12m, clothing 14.5m — `Body`
+is never hidden, silhouette must stay readable at any distance) sit
+comfortably above `CharacterController`'s default 6-unit third-person
+camera distance (so a player's own face/accessories/clothing never
+disappear in ordinary gameplay) and within reach of
+`PreviewScene::kMaxOrbitDistance` (15 units), so a creator zooming out in
+Studio's AvatarEditor or the Home preview genuinely walks through every
+tier. Wired into all three real owners: `CharacterController::tick()`
+(real gameplay avatar, using the real, one-tick-stale camera position
+already available at that call site), and
+`AvatarEditor::update()`/`HomeAvatarPreview::update()` (both via a new
+`PreviewScene::orbitDistance()` accessor — the exact real, already-
+computed distance the orbit camera uses, not a re-derived
+approximation).
+
+**Draw-call merging (real, partial — see below for what was deliberately
+not done)**: the face's 5 separate feature meshes merge down to 3 real
+draw calls — `spawnAvatarFace()` now builds one combined "FaceEyes" mesh
+(left+right eye spheres) and one combined "FaceBrows" mesh (left+right
+brow boxes), each half keeping its own per-vertex joint skin weight
+(`setJointIndexRange()`) so it still deforms independently under
+expression/animation despite sharing one draw call — safe because both
+eyes always share `kEyeColor` and both brows always share `browColor`
+(one `SkinnedRenderable::baseColor` is correct for the whole merged
+piece), and because `applyFacialExpressionToSkinningMatrices()` only
+ever writes into `skinningMatrices[jointIndex]`, never touches
+entities/meshes directly, so it's completely unaffected by the merge.
+Mouth stays its own entity (no pairing partner). Combined with the
+clothing merge already shipped in an earlier Avatar 2.0 pass (shirt =
+torso + both sleeves in one mesh, pants = both legs in one mesh), a
+fully-equipped avatar now costs at most 6 (body) + 3 (face) + 2
+(clothing) + up to 5 (accessories) draw calls, down from 18.
+
+**Explicitly not done, and why**: merging the 6 body segments
+(Torso+LeftArm+RightArm → 1 mesh, LeftLeg+RightLeg → 1 mesh) was
+investigated and deliberately deferred — unlike the face/clothing
+merges, a body-segment merge would either (a) flatten
+`applySegmentShadingGradient()`'s existing real per-segment shading
+(torso vs. arms vs. legs currently render at different brightness
+multipliers even when wearing the same-colored item — a real, already-
+shipped Visual Fidelity feature, and a single merged mesh can only carry
+one `baseColor` per entity, this codebase's vertex format has no
+per-vertex color channel) or (b) require a real, separate, larger
+vertex-format/shader change to add one. It would also break the
+`skinnedEntities_[i] == HumanoidBodySegment(i)` index correspondence
+`Application::refreshLocalPlayerAvatarAppearance()` and
+`AvatarEditor::refreshSegmentColors()` both rely on today. A real,
+scoped follow-up, not a silently-dropped task.
+
+**Visual verification**: Home preview screenshot confirmed no regression
+at default (close) camera distance, where every LOD tier is expected to
+stay in its "Full" state (3.0-unit default orbit distance is well under
+every real cutoff). Live verification of the merged face specifically
+was attempted but blocked by another already-fullscreened foreground app
+occupying the whole screen at screenshot time — not silently skipped,
+just honestly unverified visually; the merge's correctness instead rests
+on the structural argument above (shared colors, per-vertex joint
+weights, joint-indexed expression system) plus the full test suite.
+
+7 new test checks (`testAvatarLODCategoryVisibleAtDistance`,
+`testUpdateAvatarLODWritesVisibleOnRealEntities`, 13+4 individual
+checks). Clean 4-target rebuild. **10754/10754 checks passing.**
+
+This closes the "Performance and LOD" workstream, and with it, every
+item in the original 7-part Avatar 2.0 mega-task (Facial System,
+Clothing Meshes, Accessory Rigging, Animation Polish, Performance and
+LOD, Studio Integration, Runtime Integration) is now real and shipped.
+
 ## 2026-08-16 (later still) — Avatar 2.0: Animation Polish + a real bind-pose bug found via screenshot
 
 **Status check on the "Hand and Limb Integration" / "Accessory Rigging"

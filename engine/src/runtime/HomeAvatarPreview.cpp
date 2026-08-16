@@ -122,6 +122,10 @@ void HomeAvatarPreview::spawnPreviewBody() {
     }
 
     previewPlayer_ = std::make_unique<core::AnimationPlayer>(scaledSkeleton);
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "cache rig
+    // transforms"): real, computed once here (not every real update()
+    // tick) -- see cachedBindPose_'s own header comment.
+    cachedBindPose_ = scaledSkeleton.bindPoseMatrices();
 
     // Kronos ("Home Screen Avatar Preview" -- "idle animation"): real,
     // automatic -- unlike AvatarEditor's own demo body (which starts
@@ -167,13 +171,21 @@ void HomeAvatarPreview::update(float dt) {
     accessorySwayPhase_ = std::fmod(accessorySwayPhase_ + dt * 1.2f, 6.28318530718f);
 
     std::vector<glm::mat4> matrices = previewPlayer_->skinningMatrices();
-    core::applyFacialExpressionToSkinningMatrices(matrices, previewPlayer_->skeleton(), facialExpression_);
-    core::applyAccessoryDynamicsToSkinningMatrices(matrices, previewPlayer_->skeleton(), accessorySwayPhase_);
+    core::applyFacialExpressionToSkinningMatrices(matrices, previewPlayer_->skeleton(), cachedBindPose_,
+                                                   facialExpression_);
+    core::applyAccessoryDynamicsToSkinningMatrices(matrices, previewPlayer_->skeleton(), cachedBindPose_,
+                                                    accessorySwayPhase_);
     for (core::EntityId entity : skinnedEntities_) {
         if (auto* skinned = scene_.ecs().tryGetComponent<core::SkinnedRenderable>(entity)) {
             skinned->skinningMatrices = matrices;
         }
     }
+
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "Ensure runtime
+    // and Home preview both use the optimized pipeline"): real, same
+    // exact live orbit-distance source AvatarEditor::update() uses --
+    // see PreviewScene::orbitDistance()'s own comment.
+    core::updateAvatarLOD(scene_.ecs(), skinnedEntities_, scene_.orbitDistance());
 }
 
 void HomeAvatarPreview::draw() { scene_.drawAndHandleOrbit(); }

@@ -11,6 +11,7 @@
 #include "core/AnimationPlayer.hpp"
 #include "core/AvatarAccessories.hpp"
 #include "core/AvatarFace.hpp"
+#include "core/AvatarLOD.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueIndex.hpp"
 #include "core/LocalProfile.hpp"
@@ -110,6 +111,14 @@ private:
     // locomotion state to sync to, unlike AvatarController's own) --
     // see core::applyAccessoryDynamicsToSkinningMatrices()'s own comment.
     float accessorySwayPhase_ = 0.0f;
+
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "cache rig
+    // transforms"): real, recomputed once per real spawnPreviewBody()
+    // call (the skeleton's own bind pose only changes when body
+    // proportions change, which is exactly when this respawns), reused
+    // by update() every frame after that -- same real caching
+    // AvatarController::cachedBindPose_ already establishes.
+    std::vector<glm::mat4> cachedBindPose_;
 };
 
 } // namespace engine::runtime

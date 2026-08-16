@@ -38,6 +38,7 @@
 #include "core/Animation.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/AvatarIdleClipResolution.hpp"
+#include "core/AvatarLOD.hpp"
 #include "core/AnimationItem.hpp"
 #include "core/AnimationManifest.hpp"
 #include "core/AnimationPlayer.hpp"
@@ -5714,6 +5715,110 @@ void testBuildHumanoidSkeletonAddsAccessoryAttachmentJoints() {
           "at phase 0 (sin(0)=0), the real back-item sway angle is real-zero");
     float peakSway = engine::core::computeBackAccessorySwayDegrees(1.57079632679f); // sin(pi/2) == 1
     check(peakSway > 0.0f, "at real peak phase, the real back-item sway angle is real-nonzero");
+}
+
+// Kronos ("Avatar 2.0" -- "Performance and LOD" -- "distance-based LOD
+// levels for clothing meshes, accessories, and facial features"): real,
+// pure coverage over avatarLODCategoryVisibleAtDistance() -- Body is
+// never hidden regardless of distance; Face/Accessory/Clothing each
+// real-flip from visible to hidden exactly at their own configured
+// cutoff, and the real, staggered ordering (face hides first, clothing
+// last) actually holds for the real default thresholds.
+void testAvatarLODCategoryVisibleAtDistance() {
+    using engine::core::AvatarLODCategory;
+    using engine::core::AvatarLODThresholds;
+    AvatarLODThresholds thresholds; // real, shipped defaults
+
+    check(engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Body, 0.0f, thresholds),
+          "Body real-stays visible at zero distance");
+    check(engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Body, 1000.0f, thresholds),
+          "Body real-stays visible even at an extreme real distance -- silhouette is never LOD-hidden");
+
+    check(engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Face, 0.0f, thresholds),
+          "Face is real-visible up close");
+    check(!engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Face, thresholds.faceCutoffMeters,
+                                                              thresholds),
+          "Face is real-hidden exactly at its own configured cutoff (a strict '<' comparison, not '<=')");
+    check(!engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Face,
+                                                              thresholds.faceCutoffMeters + 1.0f, thresholds),
+          "Face stays real-hidden past its own cutoff");
+
+    check(engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Accessory, 0.0f, thresholds),
+          "Accessory is real-visible up close");
+    check(!engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Accessory,
+                                                              thresholds.accessoryCutoffMeters, thresholds),
+          "Accessory is real-hidden exactly at its own configured cutoff");
+
+    check(engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Clothing, 0.0f, thresholds),
+          "Clothing is real-visible up close");
+    check(!engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Clothing,
+                                                              thresholds.clothingCutoffMeters, thresholds),
+          "Clothing is real-hidden exactly at its own configured cutoff");
+
+    // Real, staggered ordering: at a distance beyond Face's own cutoff
+    // but still under Accessory's/Clothing's, only Face has dropped out.
+    float betweenFaceAndAccessory = (thresholds.faceCutoffMeters + thresholds.accessoryCutoffMeters) * 0.5f;
+    check(!engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Face, betweenFaceAndAccessory,
+                                                              thresholds),
+          "between the face and accessory cutoffs, Face has real-dropped out");
+    check(engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Accessory, betweenFaceAndAccessory,
+                                                             thresholds),
+          "between the face and accessory cutoffs, Accessory real-stays visible");
+    check(engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Clothing, betweenFaceAndAccessory,
+                                                             thresholds),
+          "between the face and accessory cutoffs, Clothing real-stays visible");
+
+    // A real, deliberately custom threshold set round-trips correctly
+    // too, not just the shipped defaults.
+    AvatarLODThresholds custom{2.0f, 4.0f, 6.0f};
+    check(!engine::core::avatarLODCategoryVisibleAtDistance(AvatarLODCategory::Face, 3.0f, custom),
+          "a real, custom faceCutoffMeters is honored, not the shipped default");
+}
+
+// Kronos ("Avatar 2.0" -- "Performance and LOD"): real, pure ECS
+// coverage over updateAvatarLOD() itself -- given a real ECS with one
+// tagged entity per AvatarLODCategory (plus one deliberately-untagged
+// entity, standing in for any future skinned entity that never gets a
+// real AvatarLODTag attached), confirms the real per-entity
+// SkinnedRenderable::visible writes match avatarLODCategoryVisibleAtDistance()'s
+// own already-tested logic, and that the untagged entity real-defaults
+// to Body (always visible) rather than being silently skipped.
+void testUpdateAvatarLODWritesVisibleOnRealEntities() {
+    using engine::core::AvatarLODCategory;
+    using engine::core::AvatarLODTag;
+    using engine::core::AvatarLODThresholds;
+    using engine::core::SkinnedRenderable;
+
+    engine::core::ECS ecs;
+    AvatarLODThresholds thresholds;
+
+    engine::core::EntityId bodyEntity = ecs.createEntity("Body");
+    ecs.addComponent<SkinnedRenderable>(bodyEntity);
+    ecs.addComponent<AvatarLODTag>(bodyEntity).category = AvatarLODCategory::Body;
+
+    engine::core::EntityId faceEntity = ecs.createEntity("Face");
+    ecs.addComponent<SkinnedRenderable>(faceEntity);
+    ecs.addComponent<AvatarLODTag>(faceEntity).category = AvatarLODCategory::Face;
+
+    engine::core::EntityId untaggedEntity = ecs.createEntity("Untagged");
+    ecs.addComponent<SkinnedRenderable>(untaggedEntity);
+
+    std::vector<engine::core::EntityId> entities{bodyEntity, faceEntity, untaggedEntity};
+
+    // Beyond the face cutoff: Body real-stays visible, Face real-hides,
+    // the untagged entity real-defaults to Body's own always-visible
+    // behavior.
+    engine::core::updateAvatarLOD(ecs, entities, thresholds.faceCutoffMeters + 1.0f, thresholds);
+    check(ecs.tryGetComponent<SkinnedRenderable>(bodyEntity)->visible,
+          "Body real-stays visible past the face cutoff");
+    check(!ecs.tryGetComponent<SkinnedRenderable>(faceEntity)->visible, "Face real-hides past its own cutoff");
+    check(ecs.tryGetComponent<SkinnedRenderable>(untaggedEntity)->visible,
+          "an untagged entity real-defaults to Body's always-visible behavior, not silently hidden");
+
+    // Back under the cutoff: Face real-reappears.
+    engine::core::updateAvatarLOD(ecs, entities, 0.0f, thresholds);
+    check(ecs.tryGetComponent<SkinnedRenderable>(faceEntity)->visible,
+          "Face real-reappears once back under its cutoff");
 }
 
 // Kronos ("Avatar 2.0" -- "Facial System"): real, pure coverage over
@@ -26510,6 +26615,8 @@ int main() {
     testSecondaryOscillationUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates();
     testBuildHumanoidSkeletonAddsFaceJointsAsHeadChildren();
     testBuildHumanoidSkeletonAddsAccessoryAttachmentJoints();
+    testAvatarLODCategoryVisibleAtDistance();
+    testUpdateAvatarLODWritesVisibleOnRealEntities();
     testFacialExpressionTransformsRespondToEachRealChannel();
     testLoadoutToRiggedMeshGeneration();
     testCollectKeyframeTimes();

@@ -45,10 +45,11 @@ float computeSecondaryOscillationDegrees(AvatarLocomotionState state, float phas
     return amplitude * std::sin(phase);
 }
 
-AvatarController::AvatarController(Skeleton skeleton) : player_(std::move(skeleton)) {}
+AvatarController::AvatarController(Skeleton skeleton)
+    : player_(std::move(skeleton)), cachedBindPose_(player_.skeleton().bindPoseMatrices()) {}
 
 AvatarController::AvatarController(Skeleton skeleton, Settings settings)
-    : player_(std::move(skeleton)), settings_(settings) {}
+    : player_(std::move(skeleton)), settings_(settings), cachedBindPose_(player_.skeleton().bindPoseMatrices()) {}
 
 void AvatarController::setIdleClip(AnimationClip clip) {
     idleClip_ = std::move(clip);
@@ -215,7 +216,11 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
     // directly); the head-bob/facial-expression offsets below need to
     // mutate individual joint entries before handing the result off.
     std::vector<glm::mat4> skinningMatrices = player_.skinningMatrices();
-    std::vector<glm::mat4> bindWorld = player_.skeleton().bindPoseMatrices();
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "cache rig
+    // transforms"): real -- cachedBindPose_ (computed once, in the
+    // constructor) replaces a fresh player_.skeleton().bindPoseMatrices()
+    // call here, see that member's own header comment.
+    const std::vector<glm::mat4>& bindWorld = cachedBindPose_;
     // Kronos ("Avatar 2.0" real correctness fix): pivots a real joint's
     // skinning matrix around that joint's own real bind-pose world
     // position, not the rig's local origin -- a plain right-multiplied
@@ -297,7 +302,8 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
     // the actual rigged avatar.
     currentFacialExpression_ = blendFacialExpressionTowards(currentFacialExpression_, targetFacialExpression_, dt,
                                                               settings_.facialExpressionBlendSpeed);
-    applyFacialExpressionToSkinningMatrices(skinningMatrices, player_.skeleton(), currentFacialExpression_);
+    applyFacialExpressionToSkinningMatrices(skinningMatrices, player_.skeleton(), cachedBindPose_,
+                                             currentFacialExpression_);
 
     // Kronos ("Avatar 2.0" -- "Accessory Rigging" -- "dynamic offsets,
     // e.g. backpack sway"): real, honest no-op if this character has no
@@ -306,7 +312,8 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
     // same real secondaryMotionPhase_ the head-bob already advances
     // (locomotion-synced), rather than a second, independent phase
     // accumulator for one more small effect.
-    applyAccessoryDynamicsToSkinningMatrices(skinningMatrices, player_.skeleton(), secondaryMotionPhase_);
+    applyAccessoryDynamicsToSkinningMatrices(skinningMatrices, player_.skeleton(), cachedBindPose_,
+                                              secondaryMotionPhase_);
 
     for (EntityId entity : skinnedEntities) {
         if (auto* t = ecs.tryGetComponent<Transform>(entity)) *t = characterTransform;

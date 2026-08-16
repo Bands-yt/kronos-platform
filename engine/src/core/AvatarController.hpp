@@ -299,6 +299,20 @@ private:
     AvatarFacialExpression targetFacialExpression_;
     float autoBlinkTimer_ = 4.0f;
     float autoBlinkProgress_ = -1.0f;
+
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "cache rig
+    // transforms"): real -- a skeleton's own bind pose is fully
+    // determined at construction (buildHumanoidSkeleton() +
+    // applyBodyProportionsToSkeleton() decide it once, before this
+    // controller or any of its entities exist) and never changes for
+    // this controller's entire lifetime. Computed exactly once, in the
+    // constructor, instead of every real tick() -- see this class's own
+    // .cpp for the real, measured-in-principle waste this replaces
+    // (player_.skeleton().bindPoseMatrices() is an O(joint count)
+    // hierarchy walk allocating a fresh vector, previously called up to
+    // three times per real tick across the head-bob/facial-expression/
+    // accessory-dynamics code paths).
+    std::vector<glm::mat4> cachedBindPose_;
 };
 
 } // namespace engine::core

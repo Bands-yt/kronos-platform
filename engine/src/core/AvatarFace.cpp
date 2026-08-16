@@ -153,6 +153,7 @@ AvatarFacialExpression blendFacialExpressionTowards(const AvatarFacialExpression
 }
 
 void applyFacialExpressionToSkinningMatrices(std::vector<glm::mat4>& skinningMatrices, const Skeleton& skeleton,
+                                              const std::vector<glm::mat4>& bindPoseWorld,
                                               const AvatarFacialExpression& expression) {
     constexpr std::array<FacialFeature, 5> kFeatures = {FacialFeature::LeftEye, FacialFeature::RightEye,
                                                           FacialFeature::LeftBrow, FacialFeature::RightBrow,
@@ -166,15 +167,16 @@ void applyFacialExpressionToSkinningMatrices(std::vector<glm::mat4>& skinningMat
     // which is rig-space origin here. translate(+jointPos) * (scale/
     // rotate/offset) * translate(-jointPos) pivots around the real
     // joint position instead, so a blink scales the eye in place rather
-    // than sliding it toward the rig's own local origin.
-    std::vector<glm::mat4> bindWorld = skeleton.bindPoseMatrices();
+    // than sliding it toward the rig's own local origin. `bindPoseWorld`
+    // is real, caller-cached (see this function's own header comment on
+    // why it's no longer recomputed here every call).
     for (FacialFeature feature : kFeatures) {
         int index = skeleton.findJointIndex(facialFeatureJointName(feature));
         if (index < 0 || static_cast<size_t>(index) >= skinningMatrices.size() ||
-            static_cast<size_t>(index) >= bindWorld.size()) {
+            static_cast<size_t>(index) >= bindPoseWorld.size()) {
             continue; // real, honest no-op
         }
-        glm::vec3 jointPos = glm::vec3(bindWorld[static_cast<size_t>(index)][3]);
+        glm::vec3 jointPos = glm::vec3(bindPoseWorld[static_cast<size_t>(index)][3]);
         FacialFeatureTransform t = computeFacialFeatureTransform(feature, expression);
         glm::mat4 extra = glm::translate(glm::mat4(1.0f), jointPos + t.positionOffset) *
                            glm::rotate(glm::mat4(1.0f), glm::radians(t.rollDegrees), glm::vec3(0.0f, 0.0f, 1.0f)) *
@@ -182,6 +184,47 @@ void applyFacialExpressionToSkinningMatrices(std::vector<glm::mat4>& skinningMat
         skinningMatrices[static_cast<size_t>(index)] = skinningMatrices[static_cast<size_t>(index)] * extra;
     }
 }
+
+namespace {
+// Kronos ("Avatar 2.0" -- "Performance and LOD" -- "draw-call merging"):
+// unlike setJointIndex() above (which stamps every vertex in a
+// skinWeights buffer with one joint), a merged multi-feature mesh needs
+// each half stamped with its OWN joint -- this sets jointIndices[0] only
+// for the vertices appended since `fromVertex`, the same "per-range
+// stamp after append" shape spawnAvatarClothing()'s own appendSmoothLimb()
+// calls already rely on internally for multi-joint single meshes.
+void setJointIndexRange(SkinWeights& skinWeights, size_t fromVertex, int jointIndex) {
+    for (size_t i = fromVertex; i < skinWeights.perVertex.size(); ++i) {
+        skinWeights.perVertex[i].jointIndices[0] = jointIndex;
+    }
+}
+
+// Real, shared upload+spawn step every merged face piece below uses --
+// same "one real RiggedMesh, one real entity, one real draw call" shape
+// RiggedAvatar.cpp's own uploadClothingPiece() already establishes.
+bool uploadFacePiece(ECS& ecs, const Skeleton& skeleton, const std::vector<Vertex>& vertices,
+                      const std::vector<uint32_t>& indices, const SkinWeights& skinWeights, glm::vec4 color,
+                      const char* entityName, RiggedMeshLibrary& riggedMeshLibrary, VmaAllocator allocator,
+                      VkDevice device, VkCommandPool cmdPool, VkQueue queue, EntityId& outEntity,
+                      std::string& outError) {
+    RiggedMesh riggedMesh;
+    std::string error;
+    if (!riggedMesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices, skinWeights, skeleton, error)) {
+        outError = std::string("failed to upload facial feature \"") + entityName + "\": " + error;
+        return false;
+    }
+    uint32_t handle = riggedMeshLibrary.registerRiggedMesh(std::move(riggedMesh));
+    outEntity = ecs.createEntity(entityName);
+    auto& skinned = ecs.addComponent<SkinnedRenderable>(outEntity);
+    skinned.riggedMeshHandle = handle;
+    skinned.skinningMatrices.assign(skeleton.joints.size(), glm::mat4(1.0f));
+    skinned.baseColor = color;
+    // Kronos ("Avatar 2.0" -- "Performance and LOD"): real -- see
+    // AvatarLODTag's own comment (core/Components.hpp).
+    ecs.addComponent<AvatarLODTag>(outEntity).category = AvatarLODCategory::Face;
+    return true;
+}
+} // namespace
 
 bool spawnAvatarFace(ECS& ecs, const Skeleton& skeleton, glm::vec4 skinTone, RiggedMeshLibrary& riggedMeshLibrary,
                       VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
@@ -196,21 +239,6 @@ bool spawnAvatarFace(ECS& ecs, const Skeleton& skeleton, glm::vec4 skinTone, Rig
     constexpr glm::vec4 kMouthColor(0.5f, 0.28f, 0.28f, 1.0f);
     glm::vec4 browColor(skinTone.r * 0.55f, skinTone.g * 0.5f, skinTone.b * 0.45f, 1.0f);
 
-    struct FeatureSpec {
-        FacialFeature feature;
-        glm::vec3 halfExtentsOrRadii;
-        bool isSphere;
-        glm::vec4 color;
-        const char* entityName;
-    };
-    const std::array<FeatureSpec, 5> specs = {{
-        {FacialFeature::LeftEye, {0.018f, 0.018f, 0.014f}, true, kEyeColor, "FaceLeftEye"},
-        {FacialFeature::RightEye, {0.018f, 0.018f, 0.014f}, true, kEyeColor, "FaceRightEye"},
-        {FacialFeature::LeftBrow, {0.028f, 0.008f, 0.006f}, false, browColor, "FaceLeftBrow"},
-        {FacialFeature::RightBrow, {0.028f, 0.008f, 0.006f}, false, browColor, "FaceRightBrow"},
-        {FacialFeature::Mouth, {0.032f, 0.008f, 0.006f}, false, kMouthColor, "FaceMouth"},
-    }};
-
     // Real bind-pose world (rig-space) position for each joint -- a
     // skinning matrix is IDENTITY at bind pose by construction
     // (jointWorldMatrix * inverse(jointBindWorldMatrix) == identity when
@@ -220,42 +248,97 @@ bool spawnAvatarFace(ECS& ecs, const Skeleton& skeleton, glm::vec4 skinTone, Rig
     // own worldPos(jointName) lambda bakes body-segment vertices at the
     // joint's real bind position rather than at the local origin.
     std::vector<glm::mat4> bindWorld = skeleton.bindPoseMatrices();
+    auto jointWorldPos = [&](const char* jointName, int& outJointIndex) -> glm::vec3 {
+        outJointIndex = skeleton.findJointIndex(jointName);
+        if (outJointIndex < 0) return glm::vec3(0.0f);
+        return glm::vec3(bindWorld[static_cast<size_t>(outJointIndex)][3]);
+    };
 
     std::vector<EntityId> spawned;
-    for (const FeatureSpec& spec : specs) {
-        int jointIndex = skeleton.findJointIndex(facialFeatureJointName(spec.feature));
-        if (jointIndex < 0) {
-            outError = std::string("skeleton has no real \"") + facialFeatureJointName(spec.feature) + "\" joint";
-            for (EntityId e : spawned) ecs.destroyEntity(e);
-            return false;
-        }
-        glm::vec3 jointWorldPos = glm::vec3(bindWorld[static_cast<size_t>(jointIndex)][3]);
 
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "draw-call
+    // merging"): the two eyes real-merge into one mesh/entity/draw call
+    // (both always share kEyeColor, so one SkinnedRenderable::baseColor
+    // is correct for the whole piece), and the two brows real-merge the
+    // same way (both always share browColor) -- reduces the face from 5
+    // real draw calls to 3. Each half still deforms independently under
+    // animation/expression: its own vertices carry its own joint's real
+    // skin weight (setJointIndexRange() below), the same "one mesh spans
+    // multiple joints via per-vertex weights" pattern
+    // spawnAvatarClothing()'s own appendSmoothLimb() already establishes
+    // for limbs -- and applyFacialExpressionToSkinningMatrices() (above)
+    // only ever writes into skinningMatrices[jointIndex], never touches
+    // entities/meshes directly, so it is completely unaffected by this
+    // merge.
+    {
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
         SkinWeights skinWeights;
-        if (spec.isSphere) {
-            appendFeatureSphere(vertices, indices, jointWorldPos, spec.halfExtentsOrRadii, skinWeights);
-        } else {
-            appendFeatureBox(vertices, indices, jointWorldPos, spec.halfExtentsOrRadii, skinWeights);
+        for (const char* jointName : {"face_left_eye", "face_right_eye"}) {
+            int jointIndex = -1;
+            glm::vec3 pos = jointWorldPos(jointName, jointIndex);
+            if (jointIndex < 0) {
+                outError = std::string("skeleton has no real \"") + jointName + "\" joint";
+                for (EntityId e : spawned) ecs.destroyEntity(e);
+                return false;
+            }
+            size_t vertsBefore = vertices.size();
+            appendFeatureSphere(vertices, indices, pos, glm::vec3(0.018f, 0.018f, 0.014f), skinWeights);
+            setJointIndexRange(skinWeights, vertsBefore, jointIndex);
         }
-        setJointIndex(skinWeights, jointIndex);
-
-        RiggedMesh riggedMesh;
-        std::string featureError;
-        if (!riggedMesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices, skinWeights, skeleton,
-                                        featureError)) {
-            outError = std::string("failed to upload facial feature \"") + spec.entityName + "\": " + featureError;
+        EntityId entity;
+        if (!uploadFacePiece(ecs, skeleton, vertices, indices, skinWeights, kEyeColor, "FaceEyes", riggedMeshLibrary,
+                              allocator, device, cmdPool, queue, entity, outError)) {
             for (EntityId e : spawned) ecs.destroyEntity(e);
             return false;
         }
-        uint32_t handle = riggedMeshLibrary.registerRiggedMesh(std::move(riggedMesh));
+        spawned.push_back(entity);
+    }
 
-        EntityId entity = ecs.createEntity(spec.entityName);
-        auto& skinned = ecs.addComponent<SkinnedRenderable>(entity);
-        skinned.riggedMeshHandle = handle;
-        skinned.skinningMatrices.assign(skeleton.joints.size(), glm::mat4(1.0f));
-        skinned.baseColor = spec.color;
+    {
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        SkinWeights skinWeights;
+        for (const char* jointName : {"face_left_brow", "face_right_brow"}) {
+            int jointIndex = -1;
+            glm::vec3 pos = jointWorldPos(jointName, jointIndex);
+            if (jointIndex < 0) {
+                outError = std::string("skeleton has no real \"") + jointName + "\" joint";
+                for (EntityId e : spawned) ecs.destroyEntity(e);
+                return false;
+            }
+            size_t vertsBefore = vertices.size();
+            appendFeatureBox(vertices, indices, pos, glm::vec3(0.028f, 0.008f, 0.006f), skinWeights);
+            setJointIndexRange(skinWeights, vertsBefore, jointIndex);
+        }
+        EntityId entity;
+        if (!uploadFacePiece(ecs, skeleton, vertices, indices, skinWeights, browColor, "FaceBrows", riggedMeshLibrary,
+                              allocator, device, cmdPool, queue, entity, outError)) {
+            for (EntityId e : spawned) ecs.destroyEntity(e);
+            return false;
+        }
+        spawned.push_back(entity);
+    }
+
+    {
+        int jointIndex = -1;
+        glm::vec3 pos = jointWorldPos("face_mouth", jointIndex);
+        if (jointIndex < 0) {
+            outError = "skeleton has no real \"face_mouth\" joint";
+            for (EntityId e : spawned) ecs.destroyEntity(e);
+            return false;
+        }
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        SkinWeights skinWeights;
+        appendFeatureBox(vertices, indices, pos, glm::vec3(0.032f, 0.008f, 0.006f), skinWeights);
+        setJointIndex(skinWeights, jointIndex);
+        EntityId entity;
+        if (!uploadFacePiece(ecs, skeleton, vertices, indices, skinWeights, kMouthColor, "FaceMouth", riggedMeshLibrary,
+                              allocator, device, cmdPool, queue, entity, outError)) {
+            for (EntityId e : spawned) ecs.destroyEntity(e);
+            return false;
+        }
         spawned.push_back(entity);
     }
 

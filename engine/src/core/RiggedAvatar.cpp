@@ -698,6 +698,11 @@ bool spawnRiggedAvatar(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout& 
         skinned.riggedMeshHandle = handle;
         skinned.skinningMatrices.assign(skeleton.joints.size(), glm::mat4(1.0f));
         skinned.baseColor = applySegmentShadingGradient(segment, colors[i]);
+        // Kronos ("Avatar 2.0" -- "Performance and LOD"): body segments
+        // stay AvatarLODCategory::Body (the default) -- see
+        // AvatarLODTag's own comment for why this category is never
+        // distance-hidden.
+        ecs.addComponent<AvatarLODTag>(entity);
 
         spawned.push_back(entity);
     }
@@ -740,6 +745,9 @@ bool uploadClothingPiece(ECS& ecs, const Skeleton& skeleton, const std::vector<V
     skinned.riggedMeshHandle = handle;
     skinned.skinningMatrices.assign(skeleton.joints.size(), glm::mat4(1.0f));
     skinned.baseColor = glm::vec4(glm::vec3(color) * kClothingShadingMultiplier, color.a);
+    // Kronos ("Avatar 2.0" -- "Performance and LOD"): real -- see
+    // AvatarLODTag's own comment.
+    ecs.addComponent<AvatarLODTag>(outEntity).category = AvatarLODCategory::Clothing;
     return true;
 }
 } // namespace

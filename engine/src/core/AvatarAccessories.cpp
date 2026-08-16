@@ -117,6 +117,9 @@ bool spawnAvatarAccessories(ECS& ecs, const Skeleton& skeleton, const AvatarLoad
         skinned.riggedMeshHandle = handle;
         skinned.skinningMatrices.assign(skeleton.joints.size(), glm::mat4(1.0f));
         skinned.baseColor = manifest->item.baseColor;
+        // Kronos ("Avatar 2.0" -- "Performance and LOD"): real -- see
+        // AvatarLODTag's own comment (core/Components.hpp).
+        ecs.addComponent<AvatarLODTag>(entity).category = AvatarLODCategory::Accessory;
         spawned.push_back(entity);
     }
 
@@ -127,12 +130,13 @@ bool spawnAvatarAccessories(ECS& ecs, const Skeleton& skeleton, const AvatarLoad
 float computeBackAccessorySwayDegrees(float phase) { return 3.0f * std::sin(phase); }
 
 void applyAccessoryDynamicsToSkinningMatrices(std::vector<glm::mat4>& skinningMatrices, const Skeleton& skeleton,
-                                               float phase) {
+                                               const std::vector<glm::mat4>& bindPoseWorld, float phase) {
     int index = skeleton.findJointIndex("attach_back");
-    if (index < 0 || static_cast<size_t>(index) >= skinningMatrices.size()) return;
-    std::vector<glm::mat4> bindWorld = skeleton.bindPoseMatrices();
-    if (static_cast<size_t>(index) >= bindWorld.size()) return;
-    glm::vec3 jointPos = glm::vec3(bindWorld[static_cast<size_t>(index)][3]);
+    if (index < 0 || static_cast<size_t>(index) >= skinningMatrices.size() ||
+        static_cast<size_t>(index) >= bindPoseWorld.size()) {
+        return;
+    }
+    glm::vec3 jointPos = glm::vec3(bindPoseWorld[static_cast<size_t>(index)][3]);
     float swayDegrees = computeBackAccessorySwayDegrees(phase);
     glm::mat4 sway = glm::translate(glm::mat4(1.0f), jointPos) *
                       glm::rotate(glm::mat4(1.0f), glm::radians(swayDegrees), glm::vec3(1.0f, 0.0f, 0.0f)) *

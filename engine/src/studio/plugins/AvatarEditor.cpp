@@ -142,6 +142,10 @@ void AvatarEditor::spawnDemoBody() {
     // own combo selections (or their real "Default" entries) are what
     // first calls previewPlayer_->play().
     previewPlayer_ = std::make_unique<core::AnimationPlayer>(scaledSkeleton);
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "cache rig
+    // transforms"): real, computed once here -- see cachedBindPose_'s
+    // own header comment.
+    cachedBindPose_ = scaledSkeleton.bindPoseMatrices();
 }
 
 void AvatarEditor::applyHeadShape(core::HeadShape shape) {
@@ -277,12 +281,22 @@ void AvatarEditor::update(float dt, core::ECS&, core::EntityId, const std::vecto
     previewPlayer_->tick(dt);
     (void)previewPlayer_->consumeFiredEvents(); // no consumer wired up here -- draining keeps the queue from growing unbounded, same as AnimationPreviewerPlugin::update()
     std::vector<glm::mat4> matrices = previewPlayer_->skinningMatrices();
-    core::applyFacialExpressionToSkinningMatrices(matrices, previewPlayer_->skeleton(), facialExpression_);
+    core::applyFacialExpressionToSkinningMatrices(matrices, previewPlayer_->skeleton(), cachedBindPose_,
+                                                   facialExpression_);
     for (core::EntityId entity : skinnedEntities_) {
         if (auto* skinned = scene_.ecs().tryGetComponent<core::SkinnedRenderable>(entity)) {
             skinned->skinningMatrices = matrices;
         }
     }
+
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "Ensure runtime
+    // and Home preview both use the optimized pipeline"): real, exact --
+    // scene_.orbitDistance() is the actual live distance from this
+    // panel's own orbit camera to the demo body (see PreviewScene::
+    // orbitDistance()'s own comment), so a creator scrolling out
+    // genuinely sees facial features, then accessories, then clothing
+    // drop out, the same real tiers gameplay/Home preview use.
+    core::updateAvatarLOD(scene_.ecs(), skinnedEntities_, scene_.orbitDistance());
 }
 
 void AvatarEditor::drawPanel(core::ECS&, core::EntityId, const std::vector<core::EntityId>&) {

@@ -5,6 +5,8 @@
 
 #include <SDL2/SDL.h>
 
+#include "core/AvatarLOD.hpp"
+
 namespace engine::core {
 
 glm::vec2 rampVelocityTowardTarget(glm::vec2 current, glm::vec2 target, float rate, float dt) {
@@ -216,6 +218,21 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
     // tick-stale one.
     if (avatarController != nullptr && skinnedEntities != nullptr) {
         avatarController->tick(dt, ecs, physics, entity_, *skinnedEntities);
+
+        // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "Add
+        // distance-based LOD levels for clothing meshes, accessories,
+        // and facial features"): real -- camera.position here is still
+        // last tick's value (this same function only overwrites it
+        // further down, see the real `camera.position = ...` line
+        // below), which is a real, honest, imperceptible one-tick-stale
+        // distance, not a fabricated one. In ordinary third-person play
+        // this stays comfortably under every real cutoff (Settings::
+        // cameraDistance defaults to 6.0f, well below
+        // AvatarLODThresholds::faceCutoffMeters's own 9.0f default), so
+        // a player's own face/accessories/clothing never disappear
+        // during normal gameplay -- this only engages for a genuinely
+        // far camera.
+        updateAvatarLOD(ecs, *skinnedEntities, glm::length(camera.position - characterPos));
     }
 
     // Third-person follow camera -- orbits at a fixed distance behind

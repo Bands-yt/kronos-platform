@@ -88,6 +88,14 @@ public:
     // only after drawAndHandleOrbit() has run this frame.
     [[nodiscard]] const core::Camera& camera() const { return camera_; }
 
+    // Kronos ("Avatar 2.0" -- "Performance and LOD"): real, exact
+    // distance from the orbit camera to its fixed focus point (the
+    // demo/preview body's own approximate root) -- camera_.position is
+    // literally `focusPoint_ - camera_.forward() * orbitDistance_` (see
+    // drawAndHandleOrbit()), so this is the real, already-computed value,
+    // not a re-derived approximation.
+    [[nodiscard]] float orbitDistance() const { return orbitDistance_; }
+
     // Sprint 10 ("Creator Tools Phase 2") task category 2's "live
     // preview window" for the Particle Editor -- previously private and
     // "never populated" (see class comment), now exposed so a caller

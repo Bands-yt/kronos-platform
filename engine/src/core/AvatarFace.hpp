@@ -73,7 +73,21 @@ struct FacialFeatureTransform {
 // head-bob uses). A real, honest no-op for any face joint `skeleton`
 // doesn't actually have (an older/foreign skeleton) -- never crashes on
 // a missing joint.
+//
+// Kronos ("Avatar 2.0" -- "Performance and LOD" -- "cache rig
+// transforms"): `bindPoseWorld` is real, new, and REQUIRED (not
+// recomputed internally as it used to be) -- a skeleton's own bind pose
+// is invariant for its entire lifetime (buildHumanoidSkeleton() +
+// applyBodyProportionsToSkeleton() fully determine it once, before any
+// entity is ever spawned), so recomputing skeleton.bindPoseMatrices()
+// (an O(joint count) walk allocating a fresh vector) every real tick,
+// for every real avatar, was real, measurable, avoidable waste. Every
+// real caller now computes this exactly once (at spawn) and passes the
+// same cached vector back in here every frame -- see
+// AvatarController::cachedBindPose_'s own comment for where that
+// caching actually lives.
 void applyFacialExpressionToSkinningMatrices(std::vector<glm::mat4>& skinningMatrices, const Skeleton& skeleton,
+                                              const std::vector<glm::mat4>& bindPoseWorld,
                                               const AvatarFacialExpression& expression);
 
 // Real GPU upload + ECS spawn -- five small, real meshes (two eyes, two

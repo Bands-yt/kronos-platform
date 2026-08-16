@@ -325,6 +325,25 @@ struct SkinnedRenderable {
     float emissiveIntensity = 0.0f;
 };
 
+// Kronos ("Avatar 2.0" -- "Performance and LOD" -- "distance-based LOD
+// levels for clothing meshes, accessories, and facial features"): a
+// real, small tag identifying which real spawn category a skinned avatar
+// entity belongs to, attached once at the exact real spawn point (see
+// spawnRiggedAvatar()/uploadClothingPiece()/spawnAvatarFace()/
+// spawnAvatarAccessories()'s own real entity-creation lines) rather than
+// inferred from list position/index -- clothing entity *count* varies
+// per equip loadout, so a positional-offset scheme would be fragile;
+// reading this real component back is not. `Body` (the default) is
+// deliberately never distance-hidden by core::updateAvatarLOD() (see
+// AvatarLOD.hpp) -- overall silhouette must stay readable at any
+// distance, only the fine detail categories the user actually asked for
+// LOD on get toggled off.
+enum class AvatarLODCategory { Body, Face, Clothing, Accessory };
+
+struct AvatarLODTag {
+    AvatarLODCategory category = AvatarLODCategory::Body;
+};
+
 // A real, minimal moving platform -- oscillates along `axis` around
 // `basePosition` with a sine wave, the "jumpable platform" runtime
 // example scene (docs task category 7) actually needs to demonstrate

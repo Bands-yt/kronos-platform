@@ -11,6 +11,7 @@
 #include "core/AnimationPlayer.hpp"
 #include "core/AvatarAccessories.hpp"
 #include "core/AvatarFace.hpp"
+#include "core/AvatarLOD.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueIndex.hpp"
 #include "core/LocalProfile.hpp"
@@ -186,6 +187,13 @@ private:
     // the real gameplay avatar/Home preview use, so a creator sees the
     // real expression system, not an approximation of it.
     core::AvatarFacialExpression facialExpression_;
+
+    // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "cache rig
+    // transforms"): real, recomputed once per real spawnDemoBody() call,
+    // reused by update() every frame after that -- same real caching
+    // AvatarController::cachedBindPose_/runtime::HomeAvatarPreview::
+    // cachedBindPose_ already establish.
+    std::vector<glm::mat4> cachedBindPose_;
 
     std::string statusMessage_;
 };
