@@ -9,6 +9,7 @@
 
 #include "core/AnimationDatabase.hpp"
 #include "core/AnimationPlayer.hpp"
+#include "core/AvatarFace.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueIndex.hpp"
 #include "core/LocalProfile.hpp"
@@ -111,6 +112,10 @@ private:
     // "persist on the spot" convention studio::plugins::CataloguePanel's
     // own real Purchase button already establishes.
     void applySkinTone(int index);
+    // Kronos ("Avatar 2.0" -- "Clothing Meshes" -- "Studio Integration"):
+    // real, full respawn (same reason setEquippedItem()'s own Torso/Legs
+    // branch needs one -- the clothing shell has no fast re-tint path).
+    void applyClothingFit(core::ClothingFit fit);
     // Kronos ("Avatar Phase" -- "AvatarEditor: Clothing & Accessory
     // Slots"): the one real, shared re-tint step applySkinTone(),
     // equipItem(), and unequipItem() all call -- recomputes every
@@ -173,6 +178,13 @@ private:
     // rebuilt (against the current, possibly body-slider-scaled skeleton)
     // every spawnDemoBody() call -- see that method's own comment.
     std::unique_ptr<core::AnimationPlayer> previewPlayer_;
+
+    // Kronos ("Avatar 2.0" -- "Facial System" -- "Studio Integration" --
+    // "face sliders"): real, live -- update() applies this every frame
+    // via the exact same core::applyFacialExpressionToSkinningMatrices()
+    // the real gameplay avatar/Home preview use, so a creator sees the
+    // real expression system, not an approximation of it.
+    core::AvatarFacialExpression facialExpression_;
 
     std::string statusMessage_;
 };

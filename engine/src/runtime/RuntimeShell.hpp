@@ -95,11 +95,17 @@ public:
     // ensureAvatarCatalogueLoaded()), main.cpp's real spawn lambda just
     // forwards whatever it's given to
     // core::Application::spawnLocalPlayerAvatar().
+    // Kronos ("Avatar 2.0" -- "Clothing Meshes"): `clothingFit` is real,
+    // new, trailing -- this callback's own real, only caller
+    // (main.cpp's lambda) forwards it straight to
+    // core::Application::spawnLocalPlayerAvatar()'s own new, same-name
+    // parameter.
     RuntimeShell(core::Application& app, std::function<core::EntityId()> spawnNetworkedPlayerEntity,
                  std::function<core::EntityId(glm::vec4 skinTone, core::HeadShape headShape,
                                                core::BodyProportions bodyProportions, const core::AvatarLoadout& loadout,
                                                const core::CatalogueIndex& catalogueIndex,
-                                               const core::AnimationOverrides& animationOverrides)>
+                                               const core::AnimationOverrides& animationOverrides,
+                                               core::ClothingFit clothingFit)>
                      spawnOfflinePlayerEntity);
     ~RuntimeShell();
 
@@ -311,7 +317,7 @@ private:
     std::function<core::EntityId()> spawnNetworkedPlayerEntity_;
     std::function<core::EntityId(glm::vec4 skinTone, core::HeadShape headShape, core::BodyProportions bodyProportions,
                                   const core::AvatarLoadout& loadout, const core::CatalogueIndex& catalogueIndex,
-                                  const core::AnimationOverrides& animationOverrides)>
+                                  const core::AnimationOverrides& animationOverrides, core::ClothingFit clothingFit)>
         spawnOfflinePlayerEntity_;
 
     ShellState state_ = ShellState::Home;

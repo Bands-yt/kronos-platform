@@ -79,7 +79,7 @@ const char* disconnectReasonLabel(net::DisconnectReason reason) {
 RuntimeShell::RuntimeShell(core::Application& app, std::function<core::EntityId()> spawnNetworkedPlayerEntity,
                            std::function<core::EntityId(glm::vec4, core::HeadShape, core::BodyProportions,
                                                          const core::AvatarLoadout&, const core::CatalogueIndex&,
-                                                         const core::AnimationOverrides&)>
+                                                         const core::AnimationOverrides&, core::ClothingFit)>
                                spawnOfflinePlayerEntity)
     : app_(app),
       spawnNetworkedPlayerEntity_(std::move(spawnNetworkedPlayerEntity)),
@@ -509,7 +509,8 @@ void RuntimeShell::selectGame(const core::GameCatalogueEntry& game) {
             core::resolveSkinToneColor(localProfile_.skinToneIndex), core::headShapeFromIndex(localProfile_.headShapeIndex),
             core::BodyProportions{localProfile_.bodyHeight, localProfile_.bodyWidth, localProfile_.bodyLimbScale,
                                    localProfile_.bodyTorsoLength, localProfile_.bodyShoulderWidth},
-            avatarLoadout_, avatarCatalogueIndex_, animationOverrides);
+            avatarLoadout_, avatarCatalogueIndex_, animationOverrides,
+            core::clothingFitFromIndex(localProfile_.clothingFitIndex));
     }
 
     // Kronos ("Game Catalogue Overhaul", Phase 6): real, local retention

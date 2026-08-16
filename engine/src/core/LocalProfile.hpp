@@ -273,6 +273,16 @@ struct LocalProfile {
     // own bindAction() calls for what those defaults actually are.
     std::unordered_map<std::string, int> inputBindingOverrides;
 
+    // Kronos ("Avatar 2.0" -- "Clothing Meshes" -- "fit parameter"): real,
+    // persistent, the same "plain int, small enumerable choice" shape
+    // skinToneIndex/headShapeIndex already establish -- see
+    // core::clothingFitFromIndex()/clothingFitToIndex() (RiggedAvatar.hpp)
+    // for the real enum this resolves to. 0 (Tight) is the real, honest
+    // default -- a pre-existing profile that never opens whatever real UI
+    // eventually exposes this keeps the real, already-shipped tighter
+    // shell fit, not a silently different look.
+    int clothingFitIndex = 0;
+
     // Kronos ("Social Layer" -- "Friends + Presence + Messaging"): see
     // FriendEntry/FriendMessage's own comments above for the real, stated
     // scope. `pendingRequests` holds *outgoing* requests this profile has

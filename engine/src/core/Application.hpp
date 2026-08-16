@@ -183,13 +183,18 @@ public:
     // first; a broken override real-falls back to the shipped default
     // clip rather than leaving that locomotion state with no clip at all
     // -- see the .cpp's own loadClip lambda.
+    // Kronos ("Avatar 2.0" -- "Clothing Meshes"): `clothingFit` is real,
+    // new, optional (defaults to ClothingFit::Tight, same real value
+    // core::LocalProfile::clothingFitIndex itself defaults to -- every
+    // pre-existing call site keeps compiling and looking identical).
     [[nodiscard]] bool spawnLocalPlayerAvatar(glm::vec3 spawnPosition,
                                                glm::vec4 skinTone = glm::vec4(0.85f, 0.75f, 0.65f, 1.0f),
                                                HeadShape headShape = HeadShape::Oval,
                                                BodyProportions bodyProportions = {},
                                                const AvatarLoadout& loadout = AvatarLoadout(),
                                                const CatalogueIndex& catalogueIndex = CatalogueIndex(),
-                                               const AnimationOverrides& animationOverrides = AnimationOverrides());
+                                               const AnimationOverrides& animationOverrides = AnimationOverrides(),
+                                               ClothingFit clothingFit = ClothingFit::Tight);
 
     // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
     // live re-equip while InGame): real, live re-tint of the already-

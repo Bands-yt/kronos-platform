@@ -2020,7 +2020,8 @@ int main(int argc, char** argv) {
             return networkedPlayer;
         }, [&app](glm::vec4 skinTone, engine::core::HeadShape headShape, engine::core::BodyProportions bodyProportions,
                   const engine::core::AvatarLoadout& loadout, const engine::core::CatalogueIndex& catalogueIndex,
-                  const engine::core::AnimationOverrides& animationOverrides) -> engine::core::EntityId {
+                  const engine::core::AnimationOverrides& animationOverrides,
+                  engine::core::ClothingFit clothingFit) -> engine::core::EntityId {
             // Kronos ("Avatar System" -- "Spawn a default avatar when
             // entering any world"): the real, same
             // Application::spawnLocalPlayerAvatar() the bring-up world
@@ -2038,7 +2039,7 @@ int main(int argc, char** argv) {
             // given.
             glm::vec3 spawnPosition{0.0f, 3.0f, -6.0f};
             if (!app.spawnLocalPlayerAvatar(spawnPosition, skinTone, headShape, bodyProportions, loadout, catalogueIndex,
-                                             animationOverrides)) {
+                                             animationOverrides, clothingFit)) {
                 std::fprintf(stderr, "engine_runtime: spawnLocalPlayerAvatar() failed for a Catalogue game.\n");
                 return engine::core::kNullEntity;
             }

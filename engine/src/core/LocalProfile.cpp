@@ -69,6 +69,7 @@ bool LocalProfile::saveToFile(const std::string& path) const {
     out << "TEXTSCALE " << textScale << "\n";
     out << "COLORBLINDMODE " << colorblindModeIndex << "\n";
     out << "REDUCEDMOTION " << (reducedMotion ? 1 : 0) << "\n";
+    out << "CLOTHINGFIT " << clothingFitIndex << "\n";
     for (const auto& [actionName, scancode] : inputBindingOverrides) {
         out << "INPUTBIND " << actionName << " " << scancode << "\n";
     }
@@ -174,6 +175,8 @@ bool LocalProfile::loadFromFile(const std::string& path) {
             loaded.colorblindModeIndex = std::atoi(line.substr(15).c_str());
         } else if (line.rfind("REDUCEDMOTION ", 0) == 0) {
             loaded.reducedMotion = std::atoi(line.substr(14).c_str()) != 0;
+        } else if (line.rfind("CLOTHINGFIT ", 0) == 0) {
+            loaded.clothingFitIndex = std::atoi(line.substr(12).c_str());
         } else if (line.rfind("INPUTBIND ", 0) == 0) {
             std::string rest = line.substr(10);
             size_t spacePos = rest.rfind(' ');

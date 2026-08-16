@@ -674,4 +674,137 @@ bool spawnRiggedAvatar(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout& 
     return true;
 }
 
+namespace {
+// Kronos ("Avatar 2.0" -- "Clothing Meshes" -- "basic cloth shading"): a
+// real, small, uniform darkening -- the same real "cheap depth/material
+// cue, not a new shader/material system" spirit applySegmentShadingGradient()
+// already establishes for the bare body, applied here so a clothing
+// shell reads as a distinct (duller, less "plastic") material from the
+// skin/body underneath it, not a same-looking layer.
+constexpr float kClothingShadingMultiplier = 0.92f;
+
+glm::vec4 resolveClothingColor(const AvatarLoadout& loadout, const CatalogueIndex& index, AvatarItemCategory category,
+                                glm::vec4 defaultColor) {
+    std::string itemId = loadout.equippedItemId(category);
+    if (itemId.empty()) return defaultColor;
+    const AvatarItemManifest* manifest = index.findById(itemId);
+    return manifest != nullptr ? manifest->item.baseColor : defaultColor; // real, honest fail-soft, same as resolveSegmentColorsForLoadout()
+}
+
+bool uploadClothingPiece(ECS& ecs, const Skeleton& skeleton, const std::vector<Vertex>& vertices,
+                          const std::vector<uint32_t>& indices, const SkinWeights& skinWeights, glm::vec4 color,
+                          const char* entityName, RiggedMeshLibrary& riggedMeshLibrary, VmaAllocator allocator,
+                          VkDevice device, VkCommandPool cmdPool, VkQueue queue, EntityId& outEntity,
+                          std::string& outError) {
+    RiggedMesh riggedMesh;
+    std::string error;
+    if (!riggedMesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices, skinWeights, skeleton, error)) {
+        outError = std::string("failed to upload \"") + entityName + "\": " + error;
+        return false;
+    }
+    uint32_t handle = riggedMeshLibrary.registerRiggedMesh(std::move(riggedMesh));
+    outEntity = ecs.createEntity(entityName);
+    auto& skinned = ecs.addComponent<SkinnedRenderable>(outEntity);
+    skinned.riggedMeshHandle = handle;
+    skinned.skinningMatrices.assign(skeleton.joints.size(), glm::mat4(1.0f));
+    skinned.baseColor = glm::vec4(glm::vec3(color) * kClothingShadingMultiplier, color.a);
+    return true;
+}
+} // namespace
+
+bool spawnAvatarClothing(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout& loadout, const CatalogueIndex& index,
+                          BodyProportions bodyProportions, ClothingFit fit, RiggedMeshLibrary& riggedMeshLibrary,
+                          VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                          std::vector<EntityId>& outClothingEntities, std::string& outError) {
+    std::vector<glm::mat4> world = skeleton.bindPoseMatrices();
+    auto worldPos = [&](const char* jointName) -> glm::vec3 {
+        int index2 = skeleton.findJointIndex(jointName);
+        return index2 >= 0 ? glm::vec3(world[static_cast<size_t>(index2)][3]) : glm::vec3(0.0f);
+    };
+    auto jointIndexFor = [&](const char* jointName) { return skeleton.findJointIndex(jointName); };
+
+    float shell = clothingFitScaleMultiplier(fit);
+    float w = bodyProportions.width;
+    float ls = bodyProportions.limbScale;
+    std::vector<HumanoidBodySegment> unusedSegments; // real clothing pieces aren't split via extractSegment(), so this tag is never read back
+
+    std::vector<EntityId> spawned;
+
+    // Shirt: a real, scaled-up torso barrel (short-sleeve -- covers the
+    // upper arm only, a real, stated, deliberate simplification that
+    // avoids clipping through the hand box at the wrist) -- one combined
+    // mesh, one real draw call.
+    {
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        SkinWeights skinWeights;
+
+        glm::vec3 pelvisPos = worldPos("pelvis");
+        glm::vec3 neckPos = worldPos("neck");
+        glm::vec3 torsoCenter = (pelvisPos + neckPos) * 0.5f;
+        float torsoHalfHeight = glm::length(neckPos - pelvisPos) * 0.5f * 1.03f; // real, slight over-extension so the shell doesn't clip through the neck/waist seam
+        std::vector<glm::vec2> shirtProfile = {
+            {0.20f * w * shell, 0.12f * w * shell},
+            {0.24f * w * shell, 0.14f * w * shell},
+            {0.27f * w * shell, 0.14f * w * shell},
+        };
+        appendProfiledBarrel(vertices, indices, unusedSegments, torsoCenter, torsoHalfHeight, shirtProfile,
+                              jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, skinWeights);
+
+        glm::vec2 shoulderCS(0.095f * ls * shell, 0.095f * ls * shell);
+        glm::vec2 sleeveCS(0.085f * ls * shell, 0.085f * ls * shell);
+        appendSmoothLimb(vertices, indices, unusedSegments, worldPos("arm_L_upper"), worldPos("arm_L_lower"), shoulderCS,
+                          sleeveCS, jointIndexFor("arm_L_upper"), jointIndexFor("arm_L_lower"), HumanoidBodySegment::LeftArm,
+                          skinWeights);
+        appendSmoothLimb(vertices, indices, unusedSegments, worldPos("arm_R_upper"), worldPos("arm_R_lower"), shoulderCS,
+                          sleeveCS, jointIndexFor("arm_R_upper"), jointIndexFor("arm_R_lower"),
+                          HumanoidBodySegment::RightArm, skinWeights);
+
+        glm::vec4 color = resolveClothingColor(loadout, index, AvatarItemCategory::Torso, kDefaultShirtColor);
+        EntityId entity;
+        if (!uploadClothingPiece(ecs, skeleton, vertices, indices, skinWeights, color, "AvatarClothing_Shirt",
+                                  riggedMeshLibrary, allocator, device, cmdPool, queue, entity, outError)) {
+            for (EntityId e : spawned) ecs.destroyEntity(e);
+            return false;
+        }
+        spawned.push_back(entity);
+    }
+
+    // Pants: both real, full legs (hip to ankle), same real smooth-limb
+    // technique, scaled outward the same way.
+    {
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        SkinWeights skinWeights;
+
+        glm::vec2 hipCS(0.13f * ls * shell, 0.13f * ls * shell);
+        glm::vec2 kneeCS(0.105f * ls * shell, 0.105f * ls * shell);
+        glm::vec2 ankleCS(0.09f * ls * shell, 0.09f * ls * shell); // real, slightly looser than the bare ankle so trouser cuffs don't clip the foot box
+
+        appendSmoothLimb(vertices, indices, unusedSegments, worldPos("leg_L_upper"), worldPos("leg_L_lower"), hipCS,
+                          kneeCS, jointIndexFor("leg_L_upper"), jointIndexFor("leg_L_lower"), HumanoidBodySegment::LeftLeg,
+                          skinWeights);
+        appendSmoothLimb(vertices, indices, unusedSegments, worldPos("leg_L_lower"), worldPos("foot_L"), kneeCS, ankleCS,
+                          jointIndexFor("leg_L_lower"), jointIndexFor("foot_L"), HumanoidBodySegment::LeftLeg, skinWeights);
+        appendSmoothLimb(vertices, indices, unusedSegments, worldPos("leg_R_upper"), worldPos("leg_R_lower"), hipCS,
+                          kneeCS, jointIndexFor("leg_R_upper"), jointIndexFor("leg_R_lower"), HumanoidBodySegment::RightLeg,
+                          skinWeights);
+        appendSmoothLimb(vertices, indices, unusedSegments, worldPos("leg_R_lower"), worldPos("foot_R"), kneeCS, ankleCS,
+                          jointIndexFor("leg_R_lower"), jointIndexFor("foot_R"), HumanoidBodySegment::RightLeg,
+                          skinWeights);
+
+        glm::vec4 color = resolveClothingColor(loadout, index, AvatarItemCategory::Legs, kDefaultTrouserColor);
+        EntityId entity;
+        if (!uploadClothingPiece(ecs, skeleton, vertices, indices, skinWeights, color, "AvatarClothing_Pants",
+                                  riggedMeshLibrary, allocator, device, cmdPool, queue, entity, outError)) {
+            for (EntityId e : spawned) ecs.destroyEntity(e);
+            return false;
+        }
+        spawned.push_back(entity);
+    }
+
+    outClothingEntities = std::move(spawned);
+    return true;
+}
+
 } // namespace engine::core

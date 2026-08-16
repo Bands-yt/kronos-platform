@@ -1,5 +1,49 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still) — Avatar 2.0: Clothing Meshes (real, working)
+
+**What shipped:**
+- `core::spawnAvatarClothing()` (RiggedAvatar.hpp/.cpp) — real, separate
+  procedural geometry, not the pre-existing tint-only look (which stays
+  unchanged and still shows through for Hat/Shoes/Face/Back). A real
+  shirt shell (torso barrel + short sleeves, reusing
+  `appendProfiledBarrel()`/`appendSmoothLimb()` — the exact same
+  functions the bare body uses) and a real pants shell (both full legs,
+  hip to ankle), each one combined `RiggedMesh` (one draw call per
+  piece). "Shared rig weights" in the literal sense asked for: bound to
+  the exact same joint indices (`spine_upper`, `arm_*_upper/lower`,
+  `leg_*_upper/lower`, `foot_*`) the body's own segments already use, not
+  a separate skinning scheme.
+- Real `ClothingFit{Tight, Loose}` enum, persisted as
+  `LocalProfile::clothingFitIndex` (round-trip + backward-compat tested).
+  `clothingFitScaleMultiplier()` scales every cross-section outward
+  (1.06× Tight, 1.18× Loose).
+- "Basic cloth shading": a real, small uniform darkening
+  (`kClothingShadingMultiplier = 0.92`) distinct from the body's own
+  per-segment gradient, so the shell reads as a different material.
+- Wired into all three real spawn sites (gameplay avatar, Home preview,
+  Studio `AvatarEditor`) — `Application::spawnLocalPlayerAvatar()` grew a
+  real, optional trailing `ClothingFit` parameter (threaded through
+  `RuntimeShell`'s callback and `main.cpp`'s lambda so the real gameplay
+  avatar now reads the player's actual persisted fit choice, not just a
+  hardcoded default).
+- Studio integration: `AvatarEditor` gained a real "Clothing Fit"
+  Tight/Loose control and — since the underlying expression system was
+  already built for the Facial System — real, live "Facial Expression"
+  sliders (blink/smile/frown/talk) too, both visually verified in the
+  actual preview.
+- 6 new test checks. Visually verified via live screenshot — tapered
+  shirt torso and cylindrical pant legs render as genuinely distinct
+  geometry from the bare body, no clipping/z-fighting artifacts.
+  **10719/10719 checks passing**, clean 4-target rebuild.
+
+**Explicitly not done this pass:** Hat/Shoes/Face/Back remain
+color-tint-only (no accessory attachment meshes yet — the face joints'
+own architecture is the right foundation, not yet extended to
+hats/backpacks/handhelds). LOD and draw-call merging beyond "one mesh
+per clothing piece" haven't been started.
+
+
 ## 2026-08-16 (later) — Avatar 2.0: Facial System (real, working vertical slice)
 
 Scoped to the Facial System workstream only, per explicit instruction to

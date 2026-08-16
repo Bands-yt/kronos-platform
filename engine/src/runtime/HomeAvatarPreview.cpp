@@ -97,6 +97,21 @@ void HomeAvatarPreview::spawnPreviewBody() {
         std::fprintf(stderr, "HomeAvatarPreview: failed to spawn face: %s\n", faceError.c_str());
     }
 
+    // Kronos ("Avatar 2.0" -- "Clothing Meshes" -- "Runtime Integration"):
+    // real, reads the real, persisted fit choice straight off
+    // localProfile_ (this preview always has one, unlike Application::
+    // spawnLocalPlayerAvatar()).
+    std::vector<core::EntityId> clothingEntities;
+    std::string clothingError;
+    core::ClothingFit fit = core::clothingFitFromIndex(localProfile_->clothingFitIndex);
+    if (core::spawnAvatarClothing(scene_.ecs(), scaledSkeleton, *loadout_, *catalogueIndex_, proportions, fit,
+                                   *riggedMeshLibrary_, allocator_, device_, cmdPool_, queue_, clothingEntities,
+                                   clothingError)) {
+        skinnedEntities_.insert(skinnedEntities_.end(), clothingEntities.begin(), clothingEntities.end());
+    } else {
+        std::fprintf(stderr, "HomeAvatarPreview: failed to spawn clothing: %s\n", clothingError.c_str());
+    }
+
     previewPlayer_ = std::make_unique<core::AnimationPlayer>(scaledSkeleton);
 
     // Kronos ("Home Screen Avatar Preview" -- "idle animation"): real,

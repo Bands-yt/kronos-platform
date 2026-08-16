@@ -98,6 +98,32 @@ void AvatarEditor::spawnDemoBody() {
         statusMessage_ = "Failed to spawn avatar preview: " + error;
         std::fprintf(stderr, "AvatarEditor: %s\n", statusMessage_.c_str());
     }
+
+    // Kronos ("Avatar 2.0" -- "Studio Integration" -- "clothing mesh
+    // preview"): real -- the exact same spawnAvatarFace()/
+    // spawnAvatarClothing() calls the real gameplay avatar and Home
+    // preview both make, folded into this panel's own skinnedEntities_
+    // so update()'s existing pose-write loop covers them for free (see
+    // that method's own unchanged loop below).
+    std::vector<core::EntityId> faceEntities;
+    std::string faceError;
+    if (core::spawnAvatarFace(scene_.ecs(), scaledSkeleton, initialTone, *riggedMeshLibrary_, allocator_, device_,
+                               cmdPool_, queue_, faceEntities, faceError)) {
+        skinnedEntities_.insert(skinnedEntities_.end(), faceEntities.begin(), faceEntities.end());
+    } else {
+        std::fprintf(stderr, "AvatarEditor: failed to spawn face: %s\n", faceError.c_str());
+    }
+    std::vector<core::EntityId> clothingEntities;
+    std::string clothingError;
+    core::ClothingFit fit = core::clothingFitFromIndex(localProfile_->clothingFitIndex);
+    if (core::spawnAvatarClothing(scene_.ecs(), scaledSkeleton, *loadout_, *catalogueIndex_, proportions, fit,
+                                   *riggedMeshLibrary_, allocator_, device_, cmdPool_, queue_, clothingEntities,
+                                   clothingError)) {
+        skinnedEntities_.insert(skinnedEntities_.end(), clothingEntities.begin(), clothingEntities.end());
+    } else {
+        std::fprintf(stderr, "AvatarEditor: failed to spawn clothing: %s\n", clothingError.c_str());
+    }
+
     // Kronos ("Avatar Phase" -- "AvatarEditor: Animation Overrides"): real
     // rebuild against the same scaled skeleton the body was just spawned
     // with -- a stale previewPlayer_ built against a pre-Body-Sliders bind
@@ -133,6 +159,15 @@ void AvatarEditor::applyBodyProportions() {
     spawnDemoBody();
     (void)localProfile_->saveToFile(kLocalProfilePath);
     statusMessage_ = "Body proportions updated.";
+}
+
+void AvatarEditor::applyClothingFit(core::ClothingFit fit) {
+    localProfile_->clothingFitIndex = core::clothingFitToIndex(fit);
+    for (core::EntityId entity : skinnedEntities_) scene_.ecs().destroyEntity(entity);
+    skinnedEntities_.clear();
+    spawnDemoBody();
+    (void)localProfile_->saveToFile(kLocalProfilePath);
+    statusMessage_ = fit == core::ClothingFit::Tight ? "Clothing fit set to Tight." : "Clothing fit set to Loose.";
 }
 
 void AvatarEditor::applySkinTone(int index) {
@@ -177,7 +212,23 @@ void AvatarEditor::setEquippedItem(core::AvatarItemCategory category, const std:
         statusMessage_ = "Failed to equip \"" + itemId + "\" -- not found in the catalogue.";
         return;
     }
-    refreshSegmentColors();
+    if (category == core::AvatarItemCategory::Torso || category == core::AvatarItemCategory::Legs) {
+        // Kronos ("Avatar 2.0" -- "Clothing Meshes"): a real, full
+        // respawn -- unlike the body's own tint (refreshSegmentColors()'s
+        // real, cheap in-place baseColor mutation), the clothing shell's
+        // real color is baked into its own RiggedMesh at upload time (no
+        // fast re-tint path exists for it), so a Torso/Legs equip change
+        // needs a real new upload to actually show the new item's color
+        // on the shell. Occasional Studio clicks, not a gameplay hot
+        // path -- the real GPU cost here is real but acceptable, same
+        // "don't build a fast path for a problem that isn't real yet"
+        // precedent this codebase already follows elsewhere.
+        for (core::EntityId entity : skinnedEntities_) scene_.ecs().destroyEntity(entity);
+        skinnedEntities_.clear();
+        spawnDemoBody();
+    } else {
+        refreshSegmentColors();
+    }
     (void)loadout_->saveToFile(kLocalAvatarLoadoutPath);
 }
 
@@ -217,7 +268,8 @@ void AvatarEditor::update(float dt, core::ECS&, core::EntityId, const std::vecto
     if (!previewPlayer_) return;
     previewPlayer_->tick(dt);
     (void)previewPlayer_->consumeFiredEvents(); // no consumer wired up here -- draining keeps the queue from growing unbounded, same as AnimationPreviewerPlugin::update()
-    const auto& matrices = previewPlayer_->skinningMatrices();
+    std::vector<glm::mat4> matrices = previewPlayer_->skinningMatrices();
+    core::applyFacialExpressionToSkinningMatrices(matrices, previewPlayer_->skeleton(), facialExpression_);
     for (core::EntityId entity : skinnedEntities_) {
         if (auto* skinned = scene_.ecs().tryGetComponent<core::SkinnedRenderable>(entity)) {
             skinned->skinningMatrices = matrices;
@@ -299,9 +351,10 @@ void AvatarEditor::drawPanel(core::ECS&, core::EntityId, const std::vector<core:
 
     ImGui::SeparatorText("Clothing & Accessories");
     ImGui::TextWrapped(
-        "Equip items you own from the Catalogue. Top/Bottom/Hat recolor the matching body region (this rig has no "
-        "separate clothing meshes yet -- see AvatarItem.hpp's own comment); Shoes/Face/Back are real, saved, "
-        "ownership-checked equips with no visual effect on this body yet, an honest, stated gap.");
+        "Equip items you own from the Catalogue. Top/Bottom now generate a real, separate procedural clothing mesh "
+        "(see \"Clothing Fit\" below) instead of just recoloring the body; Hat still recolors the head region. "
+        "Shoes/Face/Back are real, saved, ownership-checked equips with no visual effect on this body yet, an "
+        "honest, stated gap.");
     for (const auto& slot : kClothingSlots) {
         ImGui::PushID(static_cast<int>(slot.category));
         std::string equippedId = loadout_->equippedItemId(slot.category);
@@ -321,6 +374,27 @@ void AvatarEditor::drawPanel(core::ECS&, core::EntityId, const std::vector<core:
         }
         ImGui::PopID();
     }
+
+    ImGui::SeparatorText("Clothing Fit");
+    core::ClothingFit currentFit = core::clothingFitFromIndex(localProfile_->clothingFitIndex);
+    bool tightSelected = currentFit == core::ClothingFit::Tight;
+    if (tightSelected) ImGui::BeginDisabled();
+    if (ImGui::Button("Tight")) applyClothingFit(core::ClothingFit::Tight);
+    if (tightSelected) ImGui::EndDisabled();
+    ImGui::SameLine();
+    bool looseSelected = currentFit == core::ClothingFit::Loose;
+    if (looseSelected) ImGui::BeginDisabled();
+    if (ImGui::Button("Loose")) applyClothingFit(core::ClothingFit::Loose);
+    if (looseSelected) ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Facial Expression");
+    ImGui::TextWrapped(
+        "Live preview only -- these sliders drive the real expression system above, but aren't saved (a future "
+        "dialogue/emote system is the real, intended real-time driver, see AvatarController::setFacialExpression()).");
+    ImGui::SliderFloat("Blink", &facialExpression_.blinkWeight, 0.0f, 1.0f);
+    ImGui::SliderFloat("Smile", &facialExpression_.smileWeight, 0.0f, 1.0f);
+    ImGui::SliderFloat("Frown", &facialExpression_.frownWeight, 0.0f, 1.0f);
+    ImGui::SliderFloat("Talk", &facialExpression_.talkWeight, 0.0f, 1.0f);
 
     ImGui::SeparatorText("Animations");
     ImGui::TextWrapped(

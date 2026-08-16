@@ -2039,7 +2039,7 @@ void Application::run() {
 bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skinTone, HeadShape headShape,
                                           BodyProportions bodyProportions, const AvatarLoadout& loadout,
                                           const CatalogueIndex& catalogueIndex,
-                                          const AnimationOverrides& animationOverrides) {
+                                          const AnimationOverrides& animationOverrides, ClothingFit clothingFit) {
     // Real, honest reset -- a fresh call (e.g. loading a different
     // Catalogue game) must not leave a stale AvatarController driving
     // GPU-uploaded entities that runtime::loadGame()'s own ECS wipe
@@ -2088,6 +2088,27 @@ bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skin
     } else {
         std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarFace() failed: %s\n",
                      faceError.c_str());
+    }
+
+    // Kronos ("Avatar 2.0" -- "Clothing Meshes" -- "Runtime Integration"):
+    // real, same "fold into the one real skinnedAvatarEntities_ list"
+    // pattern spawnAvatarFace() just established above. `localProfile_`
+    // isn't reachable from here (Application has no real identity
+    // concept of its own, by design -- see core::LocalProfile's own
+    // "engine_runtime/Studio each own their own real profile" scope), so
+    // the real fit choice is threaded in as a parameter instead, same
+    // "caller resolves from its own real, persisted state" precedent
+    // skinTone/headShape/bodyProportions/loadout already establish for
+    // this exact function.
+    std::vector<EntityId> clothingEntities;
+    std::string clothingError;
+    if (spawnAvatarClothing(ecs_, skeleton, loadout, catalogueIndex, bodyProportions, clothingFit, riggedMeshLibrary_,
+                             renderer_.allocator(), renderer_.device(), renderer_.commandPool(),
+                             renderer_.graphicsQueue(), clothingEntities, clothingError)) {
+        skinnedAvatarEntities_.insert(skinnedAvatarEntities_.end(), clothingEntities.begin(), clothingEntities.end());
+    } else {
+        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarClothing() failed: %s\n",
+                     clothingError.c_str());
     }
 
     avatarController_ = std::make_unique<AvatarController>(skeleton);

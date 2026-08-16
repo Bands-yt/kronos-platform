@@ -318,4 +318,46 @@ constexpr glm::vec4 kDefaultTrouserColor(0.24f, 0.27f, 0.32f, 1.0f);
                                       glm::vec4 skinTone = glm::vec4(0.85f, 0.75f, 0.65f, 1.0f),
                                       HeadShape headShape = HeadShape::Oval, BodyProportions bodyProportions = {});
 
+// Kronos ("Avatar 2.0" -- "Clothing Meshes"): real, only two real
+// options -- "how much larger than the body underneath is the clothing
+// shell." Not a continuous slider: a real, honest, small enumerable
+// choice (matching this rig's own "real, small, enumerable choice, not
+// a free color pick" precedent -- see core::skinToneIndex's own
+// comment), persisted as LocalProfile::clothingFitIndex.
+enum class ClothingFit { Tight, Loose };
+[[nodiscard]] inline float clothingFitScaleMultiplier(ClothingFit fit) {
+    return fit == ClothingFit::Tight ? 1.06f : 1.18f;
+}
+[[nodiscard]] inline ClothingFit clothingFitFromIndex(int index) { return index == 1 ? ClothingFit::Loose : ClothingFit::Tight; }
+[[nodiscard]] inline int clothingFitToIndex(ClothingFit fit) { return fit == ClothingFit::Loose ? 1 : 0; }
+
+// Kronos ("Avatar 2.0" -- "Clothing Meshes"): real, separate procedural
+// geometry -- NOT the pre-existing tint-only look (resolveSegmentColorsForLoadout()
+// recoloring the body segment's own mesh in place, still real and
+// unchanged by this function, still what shows through if this call is
+// never made or a slot has nothing equipped in it and no honest default
+// shell is spawned for it). A real shirt shell (the torso's own
+// appendProfiledBarrel() profile, scaled outward by
+// clothingFitScaleMultiplier(), plus two short sleeves over the upper
+// arms via the exact same appendSmoothLimb() the body's own arms use)
+// and a real pants shell (both full legs, hip to ankle, same real
+// smooth-limb technique) -- each one real, single, combined RiggedMesh
+// (one real draw call for the whole shirt, one for the whole pants, a
+// real, small step toward "merge draw calls" for free), bound to the
+// exact same real joints (spine_upper/arm_*_upper/arm_*_lower/
+// leg_*_upper/leg_*_lower/foot_*) the body's own segments already use --
+// "shared rig weights" in the real, literal sense: the same joint
+// indices, not a separate skinning scheme. Always spawns both shells
+// (the real, honest baked-in-clothing default color when nothing's
+// equipped, same philosophy resolveSegmentColorsForLoadout() already
+// establishes for the body's own tint) -- a fresh avatar looks dressed,
+// not shirtless, from the first spawn. `outError` is only ever set on a
+// genuine GPU upload failure; a missing/unresolvable equipped item is a
+// real, honest fallback to the default color, not an error.
+[[nodiscard]] bool spawnAvatarClothing(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout& loadout,
+                                        const CatalogueIndex& index, BodyProportions bodyProportions, ClothingFit fit,
+                                        RiggedMeshLibrary& riggedMeshLibrary, VmaAllocator allocator, VkDevice device,
+                                        VkCommandPool cmdPool, VkQueue queue, std::vector<EntityId>& outClothingEntities,
+                                        std::string& outError);
+
 } // namespace engine::core

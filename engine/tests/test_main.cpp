@@ -3238,6 +3238,7 @@ void testLocalProfileSaveLoadRoundTrip() {
     profile.textScale = 1.5f;
     profile.colorblindModeIndex = 2;
     profile.reducedMotion = true;
+    profile.clothingFitIndex = 1;
     profile.inputBindingOverrides = {{"Jump", 44}, {"Interact", 8}};
     profile.friends = {{"creator_111", "Alice"}, {"creator_222", "Bob Two Names"}};
     profile.pendingRequests = {{"creator_333", "Charlie"}};
@@ -3292,6 +3293,7 @@ void testLocalProfileSaveLoadRoundTrip() {
     check(nearlyEqual(loaded.textScale, 1.5f), "textScale round-trips");
     check(loaded.colorblindModeIndex == 2, "colorblindModeIndex round-trips");
     check(loaded.reducedMotion, "reducedMotion round-trips");
+    check(loaded.clothingFitIndex == 1, "clothingFitIndex round-trips");
     check(loaded.inputBindingOverrides.size() == 2 && loaded.inputBindingOverrides.at("Jump") == 44 &&
               loaded.inputBindingOverrides.at("Interact") == 8,
           "inputBindingOverrides round-trips every real entry");
@@ -3562,6 +3564,7 @@ void testLocalProfileLoadsPreSettingsFileWithHonestDefaults() {
           "missing UISCALE/TEXTSCALE real-default to 1.0f each -- no real scaling change from before this feature existed");
     check(loaded.colorblindModeIndex == 0, "missing COLORBLINDMODE real-defaults to 0 (None)");
     check(!loaded.reducedMotion, "missing REDUCEDMOTION real-defaults to false");
+    check(loaded.clothingFitIndex == 0, "missing CLOTHINGFIT real-defaults to 0 (Tight)");
     check(loaded.inputBindingOverrides.empty(),
           "missing INPUTBIND lines real-default to an empty map -- every action keeps its own real, existing default binding");
     std::remove(path);
@@ -5990,6 +5993,24 @@ void testApplySegmentShadingGradientDarkensExtremitiesButPreservesHeadAndAlpha()
     check(nearlyEqual(head.a, color.a) && nearlyEqual(torso.a, color.a) && nearlyEqual(leftArm.a, color.a) &&
               nearlyEqual(leftLeg.a, color.a),
           "alpha is real-preserved untouched by every real segment's shading multiplier");
+}
+
+// Kronos ("Avatar 2.0" -- "Clothing Meshes" -- "fit parameter"): real,
+// pure coverage over the ClothingFit <-> index conversions and the real
+// scale multiplier each real fit option produces.
+void testClothingFitConversionsAndScaleMultiplier() {
+    using engine::core::ClothingFit;
+    check(engine::core::clothingFitFromIndex(0) == ClothingFit::Tight, "index 0 real-resolves to Tight");
+    check(engine::core::clothingFitFromIndex(1) == ClothingFit::Loose, "index 1 real-resolves to Loose");
+    check(engine::core::clothingFitFromIndex(99) == ClothingFit::Tight,
+          "a real, out-of-range index real-falls back to the honest Tight default, not a crash");
+    check(engine::core::clothingFitToIndex(ClothingFit::Tight) == 0, "Tight real-round-trips to index 0");
+    check(engine::core::clothingFitToIndex(ClothingFit::Loose) == 1, "Loose real-round-trips to index 1");
+
+    float tightScale = engine::core::clothingFitScaleMultiplier(ClothingFit::Tight);
+    float looseScale = engine::core::clothingFitScaleMultiplier(ClothingFit::Loose);
+    check(tightScale > 1.0f, "even Tight is a real, small shell offset outside the bare body (not zero clearance)");
+    check(looseScale > tightScale, "Loose real-produces a real, larger shell offset than Tight");
 }
 
 // Kronos ("Avatar Phase" -- "Default Avatar Redesign" -- "Torso:
@@ -26364,6 +26385,7 @@ int main() {
     testBuildHumanoidMeshDataReflectsTorsoLengthAndShoulderWidthViaScaledSkeleton();
     testResolveSegmentColorsForLoadoutDefaultsToBakedInClothing();
     testApplySegmentShadingGradientDarkensExtremitiesButPreservesHeadAndAlpha();
+    testClothingFitConversionsAndScaleMultiplier();
     testBuildHumanoidMeshDataTorsoIsNotABox();
     testBuildHumanoidMeshDataArmTapersFromShoulderToElbow();
     testResolveSkinToneColorHandlesValidUnsetAndOutOfRangeIndices();
