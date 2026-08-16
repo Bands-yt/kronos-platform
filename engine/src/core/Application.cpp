@@ -2111,6 +2111,19 @@ bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skin
                      clothingError.c_str());
     }
 
+    // Kronos ("Avatar 2.0" -- "Accessory Rigging"): real, same
+    // fold-into-skinnedAvatarEntities_ pattern as face/clothing above.
+    std::vector<EntityId> accessoryEntities;
+    std::string accessoryError;
+    if (spawnAvatarAccessories(ecs_, skeleton, loadout, catalogueIndex, riggedMeshLibrary_, renderer_.allocator(),
+                                renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                                accessoryEntities, accessoryError)) {
+        skinnedAvatarEntities_.insert(skinnedAvatarEntities_.end(), accessoryEntities.begin(), accessoryEntities.end());
+    } else {
+        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarAccessories() failed: %s\n",
+                     accessoryError.c_str());
+    }
+
     avatarController_ = std::make_unique<AvatarController>(skeleton);
 
     // Real, shipped clips (engine/assets/animations/*.anim) -- same

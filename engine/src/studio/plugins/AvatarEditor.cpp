@@ -123,6 +123,14 @@ void AvatarEditor::spawnDemoBody() {
     } else {
         std::fprintf(stderr, "AvatarEditor: failed to spawn clothing: %s\n", clothingError.c_str());
     }
+    std::vector<core::EntityId> accessoryEntities;
+    std::string accessoryError;
+    if (core::spawnAvatarAccessories(scene_.ecs(), scaledSkeleton, *loadout_, *catalogueIndex_, *riggedMeshLibrary_,
+                                      allocator_, device_, cmdPool_, queue_, accessoryEntities, accessoryError)) {
+        skinnedEntities_.insert(skinnedEntities_.end(), accessoryEntities.begin(), accessoryEntities.end());
+    } else {
+        std::fprintf(stderr, "AvatarEditor: failed to spawn accessories: %s\n", accessoryError.c_str());
+    }
 
     // Kronos ("Avatar Phase" -- "AvatarEditor: Animation Overrides"): real
     // rebuild against the same scaled skeleton the body was just spawned

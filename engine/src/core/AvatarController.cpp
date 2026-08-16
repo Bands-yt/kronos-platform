@@ -261,6 +261,15 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
                                                               settings_.facialExpressionBlendSpeed);
     applyFacialExpressionToSkinningMatrices(skinningMatrices, player_.skeleton(), currentFacialExpression_);
 
+    // Kronos ("Avatar 2.0" -- "Accessory Rigging" -- "dynamic offsets,
+    // e.g. backpack sway"): real, honest no-op if this character has no
+    // Back item equipped at all (the joint still exists, but nothing is
+    // bound to it -- swaying an empty joint is harmless). Reuses the
+    // same real secondaryMotionPhase_ the head-bob already advances
+    // (locomotion-synced), rather than a second, independent phase
+    // accumulator for one more small effect.
+    applyAccessoryDynamicsToSkinningMatrices(skinningMatrices, player_.skeleton(), secondaryMotionPhase_);
+
     for (EntityId entity : skinnedEntities) {
         if (auto* t = ecs.tryGetComponent<Transform>(entity)) *t = characterTransform;
         if (auto* skinned = ecs.tryGetComponent<SkinnedRenderable>(entity)) skinned->skinningMatrices = skinningMatrices;

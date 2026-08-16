@@ -9,6 +9,7 @@
 
 #include "core/AnimationDatabase.hpp"
 #include "core/AnimationPlayer.hpp"
+#include "core/AvatarAccessories.hpp"
 #include "core/AvatarFace.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueIndex.hpp"
@@ -103,6 +104,12 @@ private:
     core::AvatarFacialExpression facialExpression_;
     float autoBlinkTimer_ = 3.0f;
     float autoBlinkProgress_ = -1.0f;
+
+    // Kronos ("Avatar 2.0" -- "Accessory Rigging" -- "backpack sway"):
+    // real, gentle, always-advancing phase (this preview has no real
+    // locomotion state to sync to, unlike AvatarController's own) --
+    // see core::applyAccessoryDynamicsToSkinningMatrices()'s own comment.
+    float accessorySwayPhase_ = 0.0f;
 };
 
 } // namespace engine::runtime

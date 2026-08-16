@@ -112,6 +112,15 @@ void HomeAvatarPreview::spawnPreviewBody() {
         std::fprintf(stderr, "HomeAvatarPreview: failed to spawn clothing: %s\n", clothingError.c_str());
     }
 
+    std::vector<core::EntityId> accessoryEntities;
+    std::string accessoryError;
+    if (core::spawnAvatarAccessories(scene_.ecs(), scaledSkeleton, *loadout_, *catalogueIndex_, *riggedMeshLibrary_,
+                                      allocator_, device_, cmdPool_, queue_, accessoryEntities, accessoryError)) {
+        skinnedEntities_.insert(skinnedEntities_.end(), accessoryEntities.begin(), accessoryEntities.end());
+    } else {
+        std::fprintf(stderr, "HomeAvatarPreview: failed to spawn accessories: %s\n", accessoryError.c_str());
+    }
+
     previewPlayer_ = std::make_unique<core::AnimationPlayer>(scaledSkeleton);
 
     // Kronos ("Home Screen Avatar Preview" -- "idle animation"): real,
@@ -155,8 +164,11 @@ void HomeAvatarPreview::update(float dt) {
         }
     }
 
+    accessorySwayPhase_ = std::fmod(accessorySwayPhase_ + dt * 1.2f, 6.28318530718f);
+
     std::vector<glm::mat4> matrices = previewPlayer_->skinningMatrices();
     core::applyFacialExpressionToSkinningMatrices(matrices, previewPlayer_->skeleton(), facialExpression_);
+    core::applyAccessoryDynamicsToSkinningMatrices(matrices, previewPlayer_->skeleton(), accessorySwayPhase_);
     for (core::EntityId entity : skinnedEntities_) {
         if (auto* skinned = scene_.ecs().tryGetComponent<core::SkinnedRenderable>(entity)) {
             skinned->skinningMatrices = matrices;

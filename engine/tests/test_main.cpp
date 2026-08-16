@@ -5651,6 +5651,44 @@ void testBuildHumanoidSkeletonAddsFaceJointsAsHeadChildren() {
     }
 }
 
+// Kronos ("Avatar 2.0" -- "Accessory Rigging"): real, pure coverage over
+// the skeleton's own four new attach_* joints -- correct parenting
+// (head-children for hat/hair/face accessory, spine_upper-child for
+// back), and real, pure coverage over computeBackAccessorySwayDegrees().
+void testBuildHumanoidSkeletonAddsAccessoryAttachmentJoints() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    int headIndex = skeleton.findJointIndex("head");
+    int spineUpperIndex = skeleton.findJointIndex("spine_upper");
+    check(headIndex >= 0 && spineUpperIndex >= 0, "setup: the real \"head\"/\"spine_upper\" joints exist");
+
+    const char* kHeadChildAttachments[] = {"attach_hat", "attach_hair", "attach_face_accessory"};
+    for (const char* name : kHeadChildAttachments) {
+        int index = skeleton.findJointIndex(name);
+        check(index >= 0, (std::string("the real \"") + name + "\" joint exists").c_str());
+        if (index >= 0) {
+            check(skeleton.joints[static_cast<size_t>(index)].parentIndex == headIndex,
+                  (std::string("\"") + name + "\" is real-parented directly to \"head\"").c_str());
+        }
+    }
+
+    int backIndex = skeleton.findJointIndex("attach_back");
+    check(backIndex >= 0, "the real \"attach_back\" joint exists");
+    if (backIndex >= 0) {
+        check(skeleton.joints[static_cast<size_t>(backIndex)].parentIndex == spineUpperIndex,
+              "\"attach_back\" is real-parented directly to \"spine_upper\", not \"head\" -- a real, distinct "
+              "location from the face/hat/hair attachments");
+    }
+
+    // Handhelds real-reuse the already-existing hand joints -- no new
+    // joint needed, confirmed real (not a new, separate assumption).
+    check(skeleton.findJointIndex("hand_R") >= 0, "the real, pre-existing \"hand_R\" joint still exists for handhelds");
+
+    check(nearlyEqual(engine::core::computeBackAccessorySwayDegrees(0.0f), 0.0f),
+          "at phase 0 (sin(0)=0), the real back-item sway angle is real-zero");
+    float peakSway = engine::core::computeBackAccessorySwayDegrees(1.57079632679f); // sin(pi/2) == 1
+    check(peakSway > 0.0f, "at real peak phase, the real back-item sway angle is real-nonzero");
+}
+
 // Kronos ("Avatar 2.0" -- "Facial System"): real, pure coverage over
 // computeFacialFeatureTransform()/blendFacialExpressionTowards() -- the
 // two, fully headless-testable halves of the real procedural expression
@@ -5791,15 +5829,17 @@ void testLoadoutToRiggedMeshGeneration() {
     engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
     std::string error;
     check(skeleton.validate(error), "buildHumanoidSkeleton() produces a valid, well-formed skeleton");
-    check(skeleton.joints.size() == 23,
+    check(skeleton.joints.size() == 27,
           "the humanoid skeleton has the real 18-bone rig (root/pelvis/spine_lower/spine_upper/neck/head, "
           "upper/lower arm+hand x2, upper/lower leg+foot x2) plus the real 5 Avatar 2.0 facial attachment joints "
-          "(face_left_eye/face_right_eye/face_left_brow/face_right_brow/face_mouth)");
+          "(face_left_eye/face_right_eye/face_left_brow/face_right_brow/face_mouth) plus the real 4 Avatar 2.0 "
+          "accessory attachment joints (attach_hat/attach_hair/attach_face_accessory/attach_back)");
     check(skeleton.findJointIndex("root") == 0 && skeleton.joints[0].parentIndex == -1,
           "root is the skeleton's real root joint");
     const char* kExpectedJoints[] = {
         "root",         "pelvis",       "spine_lower",  "spine_upper",  "neck",         "head",
         "face_left_eye", "face_right_eye", "face_left_brow", "face_right_brow", "face_mouth",
+        "attach_hat", "attach_hair", "attach_face_accessory", "attach_back",
         "arm_L_upper",  "arm_L_lower",  "hand_L",       "arm_R_upper",  "arm_R_lower",  "hand_R",
         "leg_L_upper",  "leg_L_lower",  "foot_L",       "leg_R_upper",  "leg_R_lower",  "foot_R"};
     bool everyExpectedJointExists = true;
@@ -26441,6 +26481,7 @@ int main() {
     testAvatarControllerFallingAndLandingStates();
     testSecondaryHeadBobUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates();
     testBuildHumanoidSkeletonAddsFaceJointsAsHeadChildren();
+    testBuildHumanoidSkeletonAddsAccessoryAttachmentJoints();
     testFacialExpressionTransformsRespondToEachRealChannel();
     testLoadoutToRiggedMeshGeneration();
     testCollectKeyframeTimes();

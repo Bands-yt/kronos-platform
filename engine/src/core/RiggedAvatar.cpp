@@ -375,6 +375,38 @@ Skeleton buildHumanoidSkeleton() {
     mouth.localPosition = {0.0f, -0.07f, 0.145f};
     skeleton.addJoint(mouth);
 
+    // Kronos ("Avatar 2.0" -- "Accessory Rigging"): four real, new
+    // attachment joints -- "handheld" reuses the existing hand_L/hand_R
+    // joints below (already real; no new joint needed for it). Real,
+    // hand-placed offsets on the head ellipsoid/torso, same convention
+    // the five facial joints just above already establish.
+    Joint attachHat;
+    attachHat.name = "attach_hat";
+    attachHat.parentIndex = headIndex;
+    attachHat.localPosition = {0.0f, 0.19f, 0.0f};
+    skeleton.addJoint(attachHat);
+
+    Joint attachHair;
+    attachHair.name = "attach_hair";
+    attachHair.parentIndex = headIndex;
+    attachHair.localPosition = {0.0f, 0.15f, -0.09f};
+    skeleton.addJoint(attachHair);
+
+    Joint attachFaceAccessory;
+    attachFaceAccessory.name = "attach_face_accessory";
+    attachFaceAccessory.parentIndex = headIndex;
+    attachFaceAccessory.localPosition = {0.0f, 0.03f, 0.165f};
+    skeleton.addJoint(attachFaceAccessory);
+
+    // attach_back is parented to spine_upper (the torso's own real
+    // attachment joint, same one the torso mesh itself binds to), not
+    // head -- a real, distinct location for backpacks/capes.
+    Joint attachBack;
+    attachBack.name = "attach_back";
+    attachBack.parentIndex = spineUpperIndex;
+    attachBack.localPosition = {0.0f, 0.05f, -0.17f};
+    skeleton.addJoint(attachBack);
+
     Joint armLUpper;
     armLUpper.name = "arm_L_upper";
     armLUpper.parentIndex = spineUpperIndex;

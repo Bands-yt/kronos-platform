@@ -1,5 +1,47 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still) — Avatar 2.0: Accessory Rigging (real, tested)
+
+**What shipped:**
+- Four new skeleton joints: `attach_hat`/`attach_hair`/`attach_face_accessory`
+  (children of `head`) and `attach_back` (child of `spine_upper`, a real,
+  distinct location from the face/hat/hair cluster). Joint count 23 → 27.
+  Handhelds real-reuse the already-existing `hand_R` joint — no new joint
+  needed there.
+- New `core::AvatarAccessories.hpp/.cpp`: `spawnAvatarAccessories()` — a
+  real, small placeholder box per equipped Hat/Hair/Face/Back/Accessory
+  item (tinted with that item's real catalogue color), rigidly bound to
+  its own attachment joint. Unlike clothing, an empty slot spawns
+  nothing at all — there's no honest "everyone wears a hat by default"
+  baseline the way there is for shirts/pants.
+- Real "dynamic offsets": `computeBackAccessorySwayDegrees()` (pure,
+  tested) + `applyAccessoryDynamicsToSkinningMatrices()` — a genuine
+  per-frame sway on an equipped Back item, using the same pivot-around-
+  the-joint construction the head-bob/facial-expression work already
+  established. Wired into the real gameplay path (reuses
+  `AvatarController`'s existing locomotion-synced phase) and the Home
+  preview (its own gentle always-on phase, since it has no locomotion
+  state to sync to).
+- Wired into all three real spawn sites (gameplay avatar, Home preview,
+  Studio `AvatarEditor`) alongside the face/clothing spawns.
+- 12 new test checks (joint parenting including the real `attach_back` ≠
+  head-child distinction, sway function). **10731/10731 passing**, clean
+  4-target rebuild, real process launches with no errors.
+- Not visually re-verified via screenshot this pass — nothing is
+  equipped in Hat/Hair/Face/Back/Accessory in the default profile, so
+  there's honestly nothing new to see yet; correctness rests on the
+  passing pure-logic tests plus the already-proven rendering pipeline
+  (identical architecture to the Facial System/Clothing work, both of
+  which *were* visually confirmed).
+
+**Explicitly not done:** no real hat/backpack/glasses *shapes* (every
+accessory is currently the same placeholder box, differently sized/
+tinted) — real per-category silhouettes are a stated, deferred art
+task, not an engineering one. LOD and draw-call merging remain
+unstarted. Animation Polish (secondary motion on torso/arms beyond the
+existing head-bob) is next.
+
+
 ## 2026-08-16 (later still) — Avatar 2.0: Clothing Meshes (real, working)
 
 **What shipped:**

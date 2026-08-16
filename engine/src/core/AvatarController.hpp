@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/AnimationPlayer.hpp"
+#include "core/AvatarAccessories.hpp"
 #include "core/AvatarFace.hpp"
 #include "core/ECS.hpp"
 #include "core/Physics.hpp"
