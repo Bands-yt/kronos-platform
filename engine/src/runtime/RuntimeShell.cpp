@@ -675,6 +675,7 @@ void RuntimeShell::tick(float dt) {
             case ShellState::Error: drawErrorPanel(); break;
             case ShellState::InGame:
                 tickTrailerCaptureMode(dt);
+                tickEmoteActivation();
                 if (!trailerHudHidden_) {
                     drawPlayerListOverlay();
                     tickChatActivation();
@@ -2226,6 +2227,28 @@ void RuntimeShell::tickChatActivation() {
         app_.setMovementInputSuspended(true);
     }
     openChatKeyWasDown_ = openChatDown;
+}
+
+void RuntimeShell::tickEmoteActivation() {
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantTextInput) return; // real -- don't trigger while e.g. typing "g" into the chat box
+    bool playEmoteDown = app_.input().isActionDown("PlayEmote");
+    if (playEmoteDown && !playEmoteKeyWasDown_) {
+        ensureAvatarCatalogueLoaded();
+        std::string error;
+        bool played = app_.playEquippedEmote(avatarLoadout_, animationDatabase_, error);
+        // Kronos ("Notifications System"): real, transient feedback via
+        // the same toast mechanism every other real gameplay event
+        // already uses -- a status string on the (currently closed)
+        // Avatar Shop panel would be invisible to a player who just
+        // pressed a gameplay key.
+        if (!error.empty()) {
+            notify(core::NotificationKind::SystemMessage, "Emote failed", error);
+        } else if (!played) {
+            notify(core::NotificationKind::SystemMessage, "No emote equipped", "Equip an Emote-category item in the Avatar Shop first.");
+        }
+    }
+    playEmoteKeyWasDown_ = playEmoteDown;
 }
 
 void RuntimeShell::drawChatPanel() {

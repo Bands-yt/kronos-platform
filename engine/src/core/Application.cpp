@@ -10,6 +10,7 @@
 #include <SDL2/SDL.h>
 
 #include "core/Economy.hpp"
+#include "core/EmoteSystem.hpp"
 #include "core/Inventory.hpp"
 #include "core/Logger.hpp"
 #include "core/OreNode.hpp"
@@ -165,6 +166,16 @@ bool Application::initialize(const CreateInfo& info) {
                                                                     SDL_SCANCODE_SLASH});
     input_.bindAction("OpenShop", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
                                                                     SDL_SCANCODE_B});
+    // Kronos ("Avatar 2.0" -- "Animation Polish" -- "Support emote
+    // playback from Marketplace items"): real -- core::playEquippedEmote()
+    // (EmoteSystem.hpp) and AvatarController::playEmote() already existed
+    // and worked, but had no real trigger anywhere in actual gameplay
+    // (only Studio's AvatarPreviewer "Try On" flow called the underlying
+    // pieces) -- this is the real, new gameplay-side trigger that
+    // function's own header comment already anticipated ("a runtime
+    // emote keybind").
+    input_.bindAction("PlayEmote", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
+                                                                      SDL_SCANCODE_G});
     // Sprint 14 ("RTX Upgrade" Phase 2 / "Performance Mode"): the real
     // runtime toggles the brief asks for. F6/F7 rather than reusing an
     // already-bound key, edge-detected the same way "Interact" already
@@ -2184,6 +2195,12 @@ void Application::refreshLocalPlayerAvatarAppearance(glm::vec4 skinTone, const A
             skinned->baseColor = applySegmentShadingGradient(static_cast<HumanoidBodySegment>(i), colors[i]);
         }
     }
+}
+
+bool Application::playEquippedEmote(const AvatarLoadout& loadout, const AnimationDatabase& animationDatabase,
+                                     std::string& outError) {
+    if (!avatarController_) return false; // real, honest no-op -- no avatar currently spawned
+    return engine::core::playEquippedEmote(loadout, animationDatabase, *avatarController_, outError);
 }
 
 bool Application::startNetworking(const net::NetworkSession::Config& config) {

@@ -61,6 +61,18 @@ enum class AvatarLocomotionState { Idle, Walk, Run, Jump, Falling, Landing };
 [[nodiscard]] float secondaryHeadBobHzForState(AvatarLocomotionState state, float idleSwayHz, float walkBobHz,
                                                  float runBobHz);
 
+// Kronos ("Avatar 2.0" -- "Animation Polish" -- "secondary motion for
+// head, torso, and arms"): real, pure, generic version of
+// computeSecondaryHeadBobDegrees()'s own math (kept as a real, separate
+// function rather than rewriting the already-tested head-bob one, same
+// "small duplication over a premature shared abstraction" precedent
+// core::appendBox()/AvatarFace.cpp's own appendFeatureBox() already
+// establish) -- lets torso sway and arm swing reuse the exact same real
+// per-state-amplitude/zero-during-airborne shape with their own real,
+// distinct amplitudes.
+[[nodiscard]] float computeSecondaryOscillationDegrees(AvatarLocomotionState state, float phase, float idleDegrees,
+                                                         float walkDegrees, float runDegrees);
+
 // The animation-side counterpart to CharacterController -- that class
 // owns input/physics/camera (see its own header comment); this one owns
 // picking and blending the right clips for however CharacterController
@@ -110,6 +122,23 @@ public:
         float idleSwayHz = 0.3f;
         float walkBobHz = 1.8f;
         float runBobHz = 2.6f;
+
+        // Kronos ("Avatar 2.0" -- "Animation Polish" -- "secondary
+        // motion for head, torso, and arms"): real, same real
+        // per-state-amplitude shape as the head-bob fields above,
+        // reusing the exact same locomotion-synced secondaryMotionPhase_
+        // (not a second, independent phase per body part) -- torso sways
+        // side-to-side (Z-axis roll, distinct from the head's own
+        // front-back X-axis nod); arms swing front-back (X-axis, like a
+        // natural walking arm pump), with the real, opposite phase
+        // between left/right arms (computeSecondaryOscillationDegrees()'s
+        // own header comment).
+        float idleTorsoSwayDegrees = 0.8f;
+        float walkTorsoSwayDegrees = 2.5f;
+        float runTorsoSwayDegrees = 4.0f;
+        float idleArmSwingDegrees = 1.0f;
+        float walkArmSwingDegrees = 6.0f;
+        float runArmSwingDegrees = 10.0f;
 
         // Kronos ("Avatar 2.0" -- "Facial System"): real, tuned so a
         // real 0.15s auto-blink (autoBlinkDurationSeconds) still reads

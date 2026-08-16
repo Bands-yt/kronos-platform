@@ -254,6 +254,14 @@ private:
     // initialize()'s own real callback registration) and handles real
     // Enter-to-send/Escape-to-close.
     void tickChatActivation();
+    // Kronos ("Avatar 2.0" -- "Animation Polish" -- "Support emote
+    // playback from Marketplace items"): real -- edge-detected, same
+    // shape as tickChatActivation(), routed through the real, bindable
+    // "PlayEmote" action (Application::initialize()'s own bindAction()
+    // call). Works both online and offline (unlike chat, an emote has
+    // no real network-delivery concern -- it's a real, local, purely
+    // visual pose change on this player's own avatar).
+    void tickEmoteActivation();
     void drawChatPanel();
 
     // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
@@ -582,6 +590,10 @@ private:
     // per-frame held state, not a "just pressed" edge, so tickChatActivation()
     // tracks the previous frame's value itself.
     bool openChatKeyWasDown_ = false;
+    // Kronos ("Avatar 2.0" -- "Animation Polish"): real edge-detect state
+    // for the real "PlayEmote" bound action, same shape as
+    // openChatKeyWasDown_ just above.
+    bool playEmoteKeyWasDown_ = false;
 
     VkDescriptorPool imguiDescriptorPool_ = nullptr;
     ImDrawData* pendingDrawData_ = nullptr;

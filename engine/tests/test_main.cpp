@@ -5630,6 +5630,33 @@ void testSecondaryHeadBobUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates(
           "Jump's real phase-advance rate is zero -- no procedural bob to phase at all while airborne");
 }
 
+// Kronos ("Avatar 2.0" -- "Animation Polish" -- "secondary motion for
+// head, torso, and arms"): real, pure coverage over the generic
+// computeSecondaryOscillationDegrees() torso/arm sway reuses.
+void testSecondaryOscillationUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates() {
+    using engine::core::AvatarLocomotionState;
+    float idleDeg = 0.8f, walkDeg = 2.5f, runDeg = 4.0f;
+    float quarterPi = 1.57079632679f; // sin(pi/2) == 1 -- real peak amplitude
+
+    check(nearlyEqual(engine::core::computeSecondaryOscillationDegrees(AvatarLocomotionState::Idle, quarterPi, idleDeg,
+                                                                          walkDeg, runDeg),
+                       idleDeg),
+          "Idle's real peak oscillation angle real-equals its own configured idle amplitude");
+    check(nearlyEqual(engine::core::computeSecondaryOscillationDegrees(AvatarLocomotionState::Walk, quarterPi, idleDeg,
+                                                                          walkDeg, runDeg),
+                       walkDeg),
+          "Walk's real peak oscillation angle real-equals its own configured walk amplitude");
+    check(nearlyEqual(engine::core::computeSecondaryOscillationDegrees(AvatarLocomotionState::Run, quarterPi, idleDeg,
+                                                                          walkDeg, runDeg),
+                       runDeg),
+          "Run's real peak oscillation angle real-equals its own configured run amplitude");
+    for (auto state : {AvatarLocomotionState::Jump, AvatarLocomotionState::Falling, AvatarLocomotionState::Landing}) {
+        check(nearlyEqual(engine::core::computeSecondaryOscillationDegrees(state, quarterPi, idleDeg, walkDeg, runDeg),
+                           0.0f),
+              "Jump/Falling/Landing real-get zero procedural oscillation, even at real peak phase");
+    }
+}
+
 // Kronos ("Avatar 2.0" -- "Facial System"): real, pure coverage over the
 // skeleton's own five new face_* attachment joints -- correct parenting
 // (all children of "head"), and a real, honest sanity check that
@@ -26480,6 +26507,7 @@ int main() {
     testAvatarControllerEmotePlayback();
     testAvatarControllerFallingAndLandingStates();
     testSecondaryHeadBobUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates();
+    testSecondaryOscillationUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates();
     testBuildHumanoidSkeletonAddsFaceJointsAsHeadChildren();
     testBuildHumanoidSkeletonAddsAccessoryAttachmentJoints();
     testFacialExpressionTransformsRespondToEachRealChannel();

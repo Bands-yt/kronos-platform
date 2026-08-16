@@ -1,5 +1,89 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still) — Avatar 2.0: Animation Polish + a real bind-pose bug found via screenshot
+
+**Status check on the "Hand and Limb Integration" / "Accessory Rigging"
+request**: hand geometry, per-joint skin weighting, and continuous limb
+deformation under animation were **already real and tested** before this
+entry (the existing box-hand-on-forearm-joint + smooth-limb-tube
+architecture, covered by `testBuildHumanoidMeshDataArmTapersFromShoulderToElbow`
+and friends). Accessory Rigging (attachment bones for hats/hair/face/
+back/handhelds) also already shipped in the previous commit. Neither
+was a real gap — but investigating the "looks disconnected" report
+surfaced a real, different bug, described below.
+
+**What was actually found and fixed**: a live screenshot of the Home
+avatar preview showed the arms rendering as near-invisible thin lines,
+not the "disconnected" look the geometry itself suggested. Root cause:
+the rig's bind pose is a true T-pose (arms perfectly horizontal, +/-X),
+and the default preview camera views the character close to head-on —
+a limb pointing almost exactly at the camera projects to near-zero
+screen width, regardless of how correct the underlying mesh is. Because
+`idle.anim`'s own arm keyframes are baked at the *exact* T-pose rotation
+(identity quaternion), this wasn't just a preview-camera framing issue —
+the real gameplay idle pose has the same problem.
+
+**Real fix**: edited the shipped animation clips' `arm_L_upper`/
+`arm_R_upper` rotation keyframes to a real ~50° "A-pose" (angled down
+and out from the shoulder), computed via proper quaternion composition
+(existing swing rotation `*` new rest rotation, not just a naive angle
+add) so the existing sway/swing motion is preserved on top of the new
+rest angle, not replaced by it:
+- `idle.anim`: rest pose only had a tiny sway -- now a real, always-angled-down
+  arm instead of a flat T-pose the character holds for most of real
+  playtime.
+- `walk.anim`, `run.anim`: the existing Y-axis (front-back) swing now
+  composes with the new Z-axis (down-and-out) rest angle at every
+  keyframe, so walking/running arms swing from a natural base pose
+  instead of passing back through full T-pose at the neutral point of
+  each stride.
+- `jump_start.anim`: same treatment (Y-axis swing composed with the new
+  rest).
+- `jump_air.anim`/`jump_land.anim`: **left unchanged** -- both already
+  use a real, different Z-axis rotation (not a flat T-pose), so they
+  don't have the same severe foreshortening problem, and composing a
+  third rest angle onto an already-non-T-pose clip without being able to
+  carefully verify a brief, fast mid-air/landing frame felt like more
+  real risk than the confirmed problem justified. A real, stated,
+  deliberate scope cut, not an oversight.
+- `arm_L_lower`/`arm_R_lower` (elbow) tracks: **untouched** -- elbow
+  rotation is already relative to the shoulder's own current orientation
+  (standard FK hierarchy), so it doesn't need recomposing when the
+  shoulder's rest angle changes.
+
+Visually verified via live screenshot before and after -- the arms now
+render as clearly visible, properly-shaded tapered limbs connecting
+torso to hand, not thin lines. This is a real *asset* fix (animation
+keyframe data), not a code fix -- no C++ changed, no rebuild needed to
+take effect, `engine_tests` unaffected (10737/10737 still passing).
+
+**Also shipped this entry (real code, not just data)**:
+- **Support emote playback from Marketplace items** (a real, explicit
+  requirement): `core::playEquippedEmote()`/`resolveEmoteClip()`
+  (EmoteSystem.hpp) already existed and worked, but had **zero real
+  trigger anywhere in actual gameplay** -- only Studio's AvatarPreviewer
+  "Try On" flow called the underlying pieces. Added
+  `Application::playEquippedEmote()` (a thin, real forward) and a new
+  real, bindable `"PlayEmote"` action (default key G), with a real,
+  edge-detected trigger in `RuntimeShell::tickEmoteActivation()` --
+  works both online and offline (emotes are purely local/visual, unlike
+  chat). Real, honest toast feedback ("No emote equipped") when nothing
+  is equipped in the Emote category.
+- **Secondary motion for torso and arms** (head was already done): new
+  generic `computeSecondaryOscillationDegrees()` (pure, tested) reused
+  for a real torso side-sway (Z-axis) and real opposite-phase left/right
+  arm swing (X-axis), sharing the same locomotion-synced phase the
+  head-bob already advances. Refactored the head-bob's own pivot
+  construction into a shared `applyPivotedRotation` lambda rather than
+  copy-pasting the translate/rotate/translate-back math three more
+  times.
+- 2 new test checks. **10737/10737 passing**, clean 4-target rebuild.
+
+**Explicitly not done:** IK for foot placement (real, separate,
+substantial system -- listed as optional in the original spec).
+Performance/LOD/draw-call merging remain unstarted.
+
+
 ## 2026-08-16 (later still) — Avatar 2.0: Accessory Rigging (real, tested)
 
 **What shipped:**

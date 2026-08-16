@@ -33,6 +33,18 @@ float secondaryHeadBobHzForState(AvatarLocomotionState state, float idleSwayHz, 
     }
 }
 
+float computeSecondaryOscillationDegrees(AvatarLocomotionState state, float phase, float idleDegrees,
+                                          float walkDegrees, float runDegrees) {
+    float amplitude = 0.0f;
+    switch (state) {
+        case AvatarLocomotionState::Idle: amplitude = idleDegrees; break;
+        case AvatarLocomotionState::Walk: amplitude = walkDegrees; break;
+        case AvatarLocomotionState::Run: amplitude = runDegrees; break;
+        default: return 0.0f; // Jump/Falling/Landing -- same real "don't fight authored motion" reasoning as the head-bob
+    }
+    return amplitude * std::sin(phase);
+}
+
 AvatarController::AvatarController(Skeleton skeleton) : player_(std::move(skeleton)) {}
 
 AvatarController::AvatarController(Skeleton skeleton, Settings settings)
@@ -203,28 +215,54 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
     // directly); the head-bob/facial-expression offsets below need to
     // mutate individual joint entries before handing the result off.
     std::vector<glm::mat4> skinningMatrices = player_.skinningMatrices();
-    int headJointIndex = player_.skeleton().findJointIndex("head");
-    if (headJointIndex >= 0 && static_cast<size_t>(headJointIndex) < skinningMatrices.size()) {
-        float bobDegrees = computeSecondaryHeadBobDegrees(state_, secondaryMotionPhase_, settings_.idleSwayDegrees,
-                                                            settings_.walkBobDegrees, settings_.runBobDegrees);
-        // Kronos ("Avatar 2.0" real correctness fix): pivots around the
-        // real head joint's own bind-pose world position, not the rig's
-        // local origin -- a plain right-multiplied rotate() alone rotates
-        // *around whatever point the mesh's own vertices were baked
-        // relative to* (world/rig-space origin here, since
-        // buildHumanoidMeshData() bakes vertices at their real bind-pose
-        // world position, see that function's own worldPos() lambda),
-        // which would swing the head several centimeters sideways per
-        // degree instead of nodding in place. translate(+headPos) *
-        // rotate * translate(-headPos) is the standard "rotate about an
-        // arbitrary point" construction; the facial-expression transforms
-        // just below need the exact same real fix, and reuse `headPos`.
-        glm::vec3 headPos = glm::vec3(player_.skeleton().bindPoseMatrices()[static_cast<size_t>(headJointIndex)][3]);
-        glm::mat4 bob = glm::translate(glm::mat4(1.0f), headPos) *
-                         glm::rotate(glm::mat4(1.0f), glm::radians(bobDegrees), glm::vec3(1.0f, 0.0f, 0.0f)) *
-                         glm::translate(glm::mat4(1.0f), -headPos);
-        skinningMatrices[static_cast<size_t>(headJointIndex)] = skinningMatrices[static_cast<size_t>(headJointIndex)] * bob;
-    }
+    std::vector<glm::mat4> bindWorld = player_.skeleton().bindPoseMatrices();
+    // Kronos ("Avatar 2.0" real correctness fix): pivots a real joint's
+    // skinning matrix around that joint's own real bind-pose world
+    // position, not the rig's local origin -- a plain right-multiplied
+    // rotate() alone rotates *around whatever point the mesh's own
+    // vertices were baked relative to* (world/rig-space origin here,
+    // since buildHumanoidMeshData() bakes vertices at their real
+    // bind-pose world position, see that function's own worldPos()
+    // lambda), which would swing a limb several centimeters sideways per
+    // degree instead of moving it in place. translate(+jointPos) *
+    // rotate * translate(-jointPos) is the standard "rotate about an
+    // arbitrary point" construction, shared here across head/torso/arms
+    // rather than re-derived three times.
+    auto applyPivotedRotation = [&](const char* jointName, float degrees, glm::vec3 axis) {
+        int jointIndex = player_.skeleton().findJointIndex(jointName);
+        if (jointIndex < 0 || static_cast<size_t>(jointIndex) >= skinningMatrices.size() ||
+            static_cast<size_t>(jointIndex) >= bindWorld.size()) {
+            return;
+        }
+        glm::vec3 jointPos = glm::vec3(bindWorld[static_cast<size_t>(jointIndex)][3]);
+        glm::mat4 rot = glm::translate(glm::mat4(1.0f), jointPos) *
+                         glm::rotate(glm::mat4(1.0f), glm::radians(degrees), axis) *
+                         glm::translate(glm::mat4(1.0f), -jointPos);
+        skinningMatrices[static_cast<size_t>(jointIndex)] = skinningMatrices[static_cast<size_t>(jointIndex)] * rot;
+    };
+
+    float bobDegrees = computeSecondaryHeadBobDegrees(state_, secondaryMotionPhase_, settings_.idleSwayDegrees,
+                                                        settings_.walkBobDegrees, settings_.runBobDegrees);
+    applyPivotedRotation("head", bobDegrees, glm::vec3(1.0f, 0.0f, 0.0f));
+
+    // Kronos ("Avatar 2.0" -- "Animation Polish" -- "secondary motion for
+    // ... torso, and arms"): real -- torso sways side-to-side (Z-axis,
+    // distinct from the head's own front-back X-axis nod); arms swing
+    // front-back (X-axis, a natural walking arm pump) with real,
+    // opposite phase between left/right (negating the amplitude is
+    // equivalent to a real pi-radian phase offset for a sine wave).
+    float torsoSwayDegrees = computeSecondaryOscillationDegrees(state_, secondaryMotionPhase_,
+                                                                   settings_.idleTorsoSwayDegrees,
+                                                                   settings_.walkTorsoSwayDegrees,
+                                                                   settings_.runTorsoSwayDegrees);
+    applyPivotedRotation("spine_upper", torsoSwayDegrees, glm::vec3(0.0f, 0.0f, 1.0f));
+
+    float armSwingDegrees = computeSecondaryOscillationDegrees(state_, secondaryMotionPhase_,
+                                                                  settings_.idleArmSwingDegrees,
+                                                                  settings_.walkArmSwingDegrees,
+                                                                  settings_.runArmSwingDegrees);
+    applyPivotedRotation("arm_L_upper", armSwingDegrees, glm::vec3(1.0f, 0.0f, 0.0f));
+    applyPivotedRotation("arm_R_upper", -armSwingDegrees, glm::vec3(1.0f, 0.0f, 0.0f));
 
     // Kronos ("Avatar 2.0" -- "Facial System" -- real, automatic,
     // periodic blinking): a real triangle-shaped open->closed->open

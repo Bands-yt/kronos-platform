@@ -5,6 +5,7 @@
 #include <string>
 
 #include "core/Audio.hpp"
+#include "core/AnimationDatabase.hpp"
 #include "core/AvatarController.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/Camera.hpp"
@@ -210,6 +211,17 @@ public:
     // (skinnedAvatarEntities_ empty), not an error.
     void refreshLocalPlayerAvatarAppearance(glm::vec4 skinTone, const AvatarLoadout& loadout,
                                              const CatalogueIndex& catalogueIndex);
+
+    // Kronos ("Avatar 2.0" -- "Animation Polish" -- "Support emote
+    // playback from Marketplace items"): a real, thin forward to
+    // core::playEquippedEmote() against the real, live gameplay
+    // avatarController_ -- see that free function's own header comment
+    // (EmoteSystem.hpp) for the full real equip -> resolve -> play
+    // contract this just forwards `loadout`/`animationDatabase` into. A
+    // real, honest no-op (returns false, `outError` left empty) if no
+    // avatar is currently spawned (avatarController_ null), not a crash.
+    bool playEquippedEmote(const AvatarLoadout& loadout, const AnimationDatabase& animationDatabase,
+                            std::string& outError);
     [[nodiscard]] ParticleSystem& particleSystem() { return particleSystem_; }
     [[nodiscard]] RuntimeAnimationPlayer& animationPlayer() { return animationPlayer_; }
     [[nodiscard]] ScriptUiApi& scriptUiApi() { return scriptUiApi_; }
