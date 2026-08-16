@@ -1,0 +1,11 @@
+GAMEMANIFEST 1
+NAME Sky Garden
+DESCRIPTION A small floating sandbox platform with a few colorful blocks to push around.
+GENRETAG Sandbox
+GENRETAG Social
+THUMBNAILCOLOR 0.3 0.8 0.6 1
+EFFORTSCORE 0.35
+LAUNCHKIND ProjectPath
+PROJECTPATH project.project
+CLIFLAG 
+END

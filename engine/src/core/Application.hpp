@@ -5,7 +5,10 @@
 #include <string>
 
 #include "core/Audio.hpp"
+#include "core/AvatarController.hpp"
+#include "core/AvatarLoadout.hpp"
 #include "core/Camera.hpp"
+#include "core/CatalogueIndex.hpp"
 #include "core/CharacterController.hpp"
 #include "core/ECS.hpp"
 #include "core/Interactable.hpp"
@@ -17,6 +20,8 @@
 #include "core/ProcessStats.hpp"
 #include "core/Profiler.hpp"
 #include "core/ResourcePaths.hpp"
+#include "core/RiggedAvatar.hpp"
+#include "core/RiggedMesh.hpp"
 #include "net/NetworkSession.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/ScriptNetworkApi.hpp"
@@ -112,6 +117,94 @@ public:
     [[nodiscard]] Camera& camera() { return camera_; }
     [[nodiscard]] platform_adapters::UnifiedInput& input() { return input_; }
     [[nodiscard]] CharacterController& characterController() { return characterController_; }
+    [[nodiscard]] RiggedMeshLibrary& riggedMeshLibrary() { return riggedMeshLibrary_; }
+
+    // Kronos ("Avatar System" -- "replace the placeholder cylinder with a
+    // real humanoid avatar"): the one real, shared spawn path for the
+    // local, physics-driven player character -- everything main.cpp's
+    // bring-up world and runtime::RuntimeShell's own Catalogue-launch
+    // callback need, in one place, instead of each hand-rolling its own
+    // characterController_.spawn() + plain-capsule-Renderable call (the
+    // "placeholder cylinder" the user's spec names). Real, complete
+    // orchestration: spawns the physics capsule (characterController_.
+    // spawn(), no visible mesh of its own this time -- the rigged body
+    // below is what's actually drawn), spawns the real 18-bone rigged
+    // avatar body (RiggedAvatar.hpp's spawnRiggedAvatar(), an "empty
+    // loadout" -- no catalogue/creator-marketplace tie-in yet, a real,
+    // stated scope boundary, not a placeholder claiming otherwise), loads
+    // the 6 real shipped clips (engine/assets/animations/*.anim -- idle/
+    // walk/run/jump_start/jump_air/jump_land) into a fresh
+    // AvatarController, and wires both into the real pre-tick hook
+    // (initialize()'s own PreTickHook lambda) so CharacterController::
+    // tick()'s existing, already-real avatarController/skinnedEntities
+    // parameters actually get driven every tick from here on.
+    //
+    // Real, honest degrade: if the rigged body's GPU upload fails (a real,
+    // if rare, possibility -- see spawnRiggedAvatar()'s own contract),
+    // this returns false and falls back to nothing being spawned at all
+    // rather than a silently-broken half-avatar; the caller's own
+    // pre-existing plain-capsule fallback (if it still has one) is the
+    // honest recovery path, not fabricated here.
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Skin-Tone Selection"):
+    // `skinTone` is real, new, optional (defaults to the same real color
+    // this always used before the feature existed -- see
+    // core::kDefaultSkinToneColor) -- the caller (runtime::RuntimeShell/
+    // main.cpp) resolves the real, chosen tone from core::LocalProfile::
+    // skinToneIndex (core::resolveSkinToneColor()) and passes it in; this
+    // class doesn't own a LocalProfile itself (core::Application has no
+    // real per-player identity concept, matching every other real
+    // "caller owns identity, Application just spawns" split in this
+    // class, e.g. setNetworkedLocalPlayerEntity()).
+    // Kronos ("Avatar Phase" -- "Avatar Head System"): `headShape` is
+    // real, new, optional (defaults to core::HeadShape::Oval, the new
+    // real default) -- same "caller resolves from its own LocalProfile,
+    // this method just forwards it" shape as `skinTone` above.
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Body Sliders"):
+    // `bodyProportions` is real, new, optional (defaults to identity --
+    // see core::BodyProportions's own header comment). Unlike skinTone/
+    // headShape, this method applies it to the skeleton itself (via
+    // core::applyBodyProportionsToSkeleton()) before spawning, and passes
+    // that same scaled skeleton to the new AvatarController it
+    // constructs, so animation playback skins against the same bind pose
+    // the mesh was actually built from.
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Clothing & Accessory
+    // Slots"): `loadout`/`catalogueIndex` are real, new, optional
+    // (default to empty -- the exact same "nothing equipped" behavior
+    // every pre-existing call site already had). Forwarded straight to
+    // spawnRiggedAvatar(), same "caller resolves from its own
+    // LocalProfile/CatalogueIndex, this method just forwards it" shape as
+    // skinTone/headShape above -- see runtime::RuntimeShell::selectGame()
+    // for the one real caller that resolves both from real, on-disk,
+    // shared files.
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Animation Overrides"):
+    // `animationOverrides` is real, new, optional (defaults to every slot
+    // empty -- the exact same "always the shipped default" behavior every
+    // pre-existing call site already had). Each non-empty slot is tried
+    // first; a broken override real-falls back to the shipped default
+    // clip rather than leaving that locomotion state with no clip at all
+    // -- see the .cpp's own loadClip lambda.
+    [[nodiscard]] bool spawnLocalPlayerAvatar(glm::vec3 spawnPosition,
+                                               glm::vec4 skinTone = glm::vec4(0.85f, 0.75f, 0.65f, 1.0f),
+                                               HeadShape headShape = HeadShape::Oval,
+                                               BodyProportions bodyProportions = {},
+                                               const AvatarLoadout& loadout = AvatarLoadout(),
+                                               const CatalogueIndex& catalogueIndex = CatalogueIndex(),
+                                               const AnimationOverrides& animationOverrides = AnimationOverrides());
+
+    // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
+    // live re-equip while InGame): real, live re-tint of the already-
+    // spawned local player avatar's own segment colors -- the exact same
+    // resolveSegmentColorsForLoadout() mechanism studio::plugins::
+    // AvatarEditor::refreshSegmentColors() already uses for its own live
+    // preview, applied here to the real, live gameplay avatar instead.
+    // Deliberately does NOT respawn anything (headShape/bodyProportions
+    // changes still need a real spawnLocalPlayerAvatar() respawn, same
+    // "color-only changes are live, geometry changes need a respawn"
+    // split AvatarEditor's own applySkinTone()/applyHeadShape() already
+    // draw) -- a real, honest no-op if no avatar is currently spawned
+    // (skinnedAvatarEntities_ empty), not an error.
+    void refreshLocalPlayerAvatarAppearance(glm::vec4 skinTone, const AvatarLoadout& loadout,
+                                             const CatalogueIndex& catalogueIndex);
     [[nodiscard]] ParticleSystem& particleSystem() { return particleSystem_; }
     [[nodiscard]] RuntimeAnimationPlayer& animationPlayer() { return animationPlayer_; }
     [[nodiscard]] ScriptUiApi& scriptUiApi() { return scriptUiApi_; }
@@ -268,6 +361,33 @@ public:
     }
     [[nodiscard]] bool cameraShowcaseModeEnabled() const { return cameraShowcaseModeEnabled_; }
     [[nodiscard]] float showcaseElapsedSeconds() const { return showcaseElapsedSeconds_; }
+
+    // Kronos ("Player & Chat System" -- chat panel): real, small, same
+    // "caller sets a plain bool, the pre-tick hook checks it" shape
+    // cameraShowcaseModeEnabled_ already establishes -- this class
+    // deliberately has no ImGui dependency at all (engine_core links no
+    // UI framework, see core/UITheme.hpp's own header comment for the
+    // same real constraint), so it can't check ImGui::GetIO().
+    // WantCaptureKeyboard itself; runtime::RuntimeShell (which does have
+    // ImGui) sets this explicitly instead while its own real chat input
+    // box has focus, so WASD/mouse-look don't also drive the character
+    // while a player is typing a chat message.
+    void setMovementInputSuspended(bool suspended) { movementInputSuspended_ = suspended; }
+
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Accessibility: Reduced motion mode"): real, same "caller
+    // resolves from its own LocalProfile, this class just consumes it"
+    // shape as setMovementInputSuspended() above -- core::Application has
+    // no LocalProfile of its own (see that method's own comment on the
+    // established split). Real, live consumption at the two real places
+    // this engine actually moves the camera on its own: TNT Wars
+    // explosion camera shake (scaled to zero, not just damped -- see the
+    // pre-tick hook's own real shake-application line) and the cutscene
+    // FOV-change path (frozen at whatever FOV was already active when
+    // this was enabled, rather than following cutscene data -- see that
+    // real call site's own comment).
+    void setReducedMotionEnabled(bool enabled) { reducedMotionEnabled_ = enabled; }
+    [[nodiscard]] bool isReducedMotionEnabled() const { return reducedMotionEnabled_; }
 
     // Real, live-synced destructible-wall state for Trenches -- main.cpp's
     // own --tntwars setup populates this once (tntwars::spawnDestructibleWallVisual())
@@ -439,6 +559,16 @@ private:
     Camera camera_;
     platform_adapters::UnifiedInput input_;
     CharacterController characterController_;
+    // Kronos ("Avatar System" -- real humanoid avatar): see
+    // spawnLocalPlayerAvatar()'s own comment. riggedMeshLibrary_ owns the
+    // real GPU mesh resources spawnRiggedAvatar() uploads; avatarController_
+    // is null until spawnLocalPlayerAvatar() first succeeds (no avatar
+    // spawned yet, e.g. a CLI mode that never calls it -- every such
+    // caller keeps behaving exactly as before, see the PreTickHook's own
+    // null-check).
+    RiggedMeshLibrary riggedMeshLibrary_;
+    std::unique_ptr<AvatarController> avatarController_;
+    std::vector<EntityId> skinnedAvatarEntities_;
     ParticleSystem particleSystem_;
     RuntimeAnimationPlayer animationPlayer_;
     // unique_ptr, not a plain member: ScriptWorldApi holds references to
@@ -541,6 +671,8 @@ private:
     // Kronos ("Real-Time Rendering Evolved" trailer) -- see
     // setCameraShowcaseMode()'s own comment.
     bool cameraShowcaseModeEnabled_ = false;
+    bool movementInputSuspended_ = false;
+    bool reducedMotionEnabled_ = false;
     trailer::ShowcaseCameraPath showcaseCameraPath_;
     float showcaseElapsedSeconds_ = 0.0f;
 

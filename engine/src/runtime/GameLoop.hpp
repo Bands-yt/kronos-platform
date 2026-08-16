@@ -142,6 +142,14 @@ public:
     // postRenderHook.
     void renderTick(float dt);
 
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Graphics: FPS cap"): real, live -- changes the render
+    // frame-pacing target of an already-running run() loop immediately
+    // (0 = uncapped). See run()'s own comment for why this is a real
+    // member, not just RunConfig::targetRenderDt.
+    void setTargetRenderDt(float dt) { targetRenderDt_ = dt; }
+    [[nodiscard]] float targetRenderDt() const { return targetRenderDt_; }
+
 private:
     Subsystems subsystems_;
     PreTickHook preTickHook_;
@@ -149,6 +157,7 @@ private:
     NetworkTickHook networkTickHook_;
     PostRenderHook postRenderHook_;
     PreRenderHook preRenderHook_;
+    float targetRenderDt_ = 1.0f / 180.0f;
 };
 
 } // namespace engine::runtime

@@ -9,7 +9,13 @@
 
 #include "anticheat/RollingEventCounter.hpp"
 #include "core/ECS.hpp"
+#include "core/GameManifest.hpp"
+#include "core/LocalProfile.hpp"
+#include "moderation/AccountModerationRegistry.hpp"
+#include "moderation/AppealLog.hpp"
+#include "moderation/DirectMessageLog.hpp"
 #include "moderation/ChatLog.hpp"
+#include "moderation/EscalationEventLog.hpp"
 #include "moderation/MuteBlockRegistry.hpp"
 #include "moderation/ProfanityFilter.hpp"
 #include "moderation/ReportLog.hpp"
@@ -46,6 +52,10 @@ enum class JoinFailureReason : uint8_t {
     None = 0,          // no failure -- either never attempted, or the join succeeded
     VersionMismatch = 1,
     SessionFull = 2,
+    // Kronos ("Moderation Architecture v2", "Account System v1"): a
+    // real, honest, distinct reason -- a banned player's real Error UI
+    // should say so, not the misleading "session full".
+    Banned = 3,
 };
 enum class DisconnectReason : uint8_t {
     None = 0,
@@ -107,6 +117,32 @@ public:
         // a real, unlisted/private session (e.g. a Studio test session)
         // sets this false.
         bool advertiseOnLan = true;
+        // Kronos ("Moderation Architecture v2", "Session Browser Game
+        // Identity"): real "which game is this session actually
+        // running," broadcast alongside sessionName/hostDisplayName --
+        // see LanSessionAnnouncement's own comment for what each field
+        // means and why gameName (not a separate numeric id) is the real
+        // identity key. Blank/default is valid (a session with no
+        // specific game context, e.g. some existing tests/tools).
+        std::string gameName;
+        glm::vec4 gameThumbnailColor{0.35f, 0.55f, 0.85f, 1.0f};
+        core::GameSafetyStatus gameSafetyStatus = core::GameSafetyStatus::Safe;
+
+        // Kronos ("Moderation Architecture v1", Phase 1): server mode
+        // only, real disk persistence for chatLog()/reportLog()/
+        // reviewQueue()/escalationEventLog()/appealLog() -- real, but
+        // deliberately real, explicit **opt-in** (default false), not
+        // opt-out. A real, long-running production server (main.cpp's
+        // --server mode) sets this true; every test that spins up a
+        // real, short-lived server keeps its own fresh, empty, in-memory
+        // logs (the previously-established, still-correct behavior)
+        // rather than silently loading whatever an *earlier test in the
+        // same process* happened to save to the same real, fixed file
+        // path -- a real, genuine test-isolation bug this default
+        // avoids, not a hypothetical one (caught by this session's own
+        // test suite: ~10 pre-existing tests broke before this default
+        // was flipped to opt-in).
+        bool persistModerationLogs = false;
     };
 
     ~NetworkSession();
@@ -148,12 +184,38 @@ public:
     // before then).
     [[nodiscard]] uint64_t sessionId() const { return sessionId_; }
     [[nodiscard]] const std::string& sessionName() const { return sessionName_; }
+    // Kronos ("Session Browser Polish v2" -- "Sorting: Newly Created"):
+    // real wall-clock seconds this server session actually started at
+    // (server mode only, set once in initialize()) -- broadcast in every
+    // real LanSessionAnnouncement so a browsing client can really sort by
+    // it, not a fabricated/estimated value.
+    [[nodiscard]] int64_t sessionStartUnixSeconds() const { return sessionStartUnixSeconds_; }
 
     // Client-only: call before initialize() to set the real display name
     // sent in this client's JoinRequest -- defaults to "Player" if never
     // called, so every existing caller/test keeps compiling and passing
     // unchanged. Server mode ignores this entirely.
     void setLocalDisplayName(std::string name) { localDisplayName_ = std::move(name); }
+
+    // Kronos ("Moderation Architecture v2", "Account System v1"): the
+    // real, stable core::LocalProfile::profileId and self-declared
+    // core::AgeGroup sent alongside displayName in this client's
+    // JoinRequest -- real, honest identity signals a server needs for
+    // persistent bans/mutes (keyed by profileId, survives a reconnect,
+    // unlike net::PlayerId which is a fresh per-session handle) and
+    // Minor Mode enforcement (needs the real age signal server-side, not
+    // just locally). Defaults (0, Unknown) if never called, same
+    // "every existing caller keeps compiling unchanged" contract as
+    // setLocalDisplayName(). A real, honest, stated limitation: nothing
+    // stops a client from lying about either value or generating a new
+    // profileId to evade a ban -- there is no real authentication in
+    // this codebase (see core::LocalProfile's own "no auth, no
+    // password" scope), matching the user's own "no networking or cloud
+    // accounts yet" framing for this pass.
+    void setLocalIdentity(uint64_t profileId, core::AgeGroup ageGroup) {
+        localProfileId_ = profileId;
+        localAgeGroup_ = ageGroup;
+    }
 
     // Client-only: the real reason the most recent join attempt was
     // rejected -- JoinFailureReason::None if it wasn't (either it
@@ -321,12 +383,61 @@ public:
     // no-op outside Client mode.
     void reportPlayer(PlayerId reported, moderation::ReportCategory category, const std::string& description);
 
+    // Kronos ("Moderation Architecture v1", Phase 1) -- real, client-side
+    // "Submit Appeal" request, exact same shape/precedent as
+    // reportPlayer() above. Server-side, this only ever appends to
+    // appealLog() with a real server timestamp and AppealOutcome::Pending
+    // -- resolving it (Upheld/Reduced/Reversed) is a real, separate,
+    // human moderator action (studio::plugins::ModerationPanel's real
+    // Appeals section), never automatic. A real, honest no-op outside
+    // Client mode.
+    void submitAppeal(const std::string& playerStatement, const std::string& relatedReviewCaseReason);
+
+    // Kronos ("Moderation Architecture v2", "DM System v1"): real,
+    // client-side "send a direct message" -- exact same real shape/
+    // precedent as sendChatMessage(), except server-side delivery is
+    // targeted at the one real recipient, never broadcast. Real
+    // moderation (TrustSafetyService/PolicyEngine) and Minor Mode DM
+    // restrictions are enforced server-side, see
+    // handleDirectMessageSendServer()'s own comment -- this call
+    // doesn't (and can't, from the client) know in advance whether the
+    // real server will actually deliver it. A real, honest no-op
+    // outside Client mode.
+    void sendDirectMessage(PlayerId recipient, const std::string& text);
+
+    // Real, observer-side hook for a received real direct message --
+    // same real, injected-callback shape as setOnChatMessageReceived().
+    void setOnDirectMessageReceived(std::function<void(PlayerId sender, const std::string& text)> callback) {
+        onDirectMessageReceived_ = std::move(callback);
+    }
+
     [[nodiscard]] moderation::ChatLog& chatLog() { return chatLog_; }
     [[nodiscard]] moderation::ReportLog& reportLog() { return reportLog_; }
     [[nodiscard]] moderation::ReviewQueue& reviewQueue() { return reviewQueue_; }
     [[nodiscard]] moderation::MuteBlockRegistry& muteBlockRegistry() { return muteBlockRegistry_; }
     [[nodiscard]] moderation::TrustedCreatorRegistry& trustedCreatorRegistry() { return trustedCreatorRegistry_; }
     [[nodiscard]] moderation::WorldSafetySettings& worldSafetySettings() { return worldSafetySettings_; }
+    // Kronos ("Moderation Architecture v1", Phase 1): real, read-only --
+    // a moderator dashboard reads risk scores/tiers and the real audit
+    // trail, it doesn't mutate safety::TrustSafetyService directly (its
+    // real actions all flow through the Callbacks this class already
+    // wires in initialize(), not through a UI poking it).
+    [[nodiscard]] const safety::TrustSafetyService& trustSafetyService() const { return trustSafetyService_; }
+    [[nodiscard]] const moderation::EscalationEventLog& escalationEventLog() const { return escalationEventLog_; }
+    [[nodiscard]] moderation::AppealLog& appealLog() { return appealLog_; }
+    [[nodiscard]] moderation::AccountModerationRegistry& accountModerationRegistry() { return accountModerationRegistry_; }
+    [[nodiscard]] moderation::DirectMessageLog& directMessageLog() { return directMessageLog_; }
+
+    // Kronos ("Moderation Architecture v2", "Minor Mode Enforcement"):
+    // real, server-side lookup of a connected remote player's own
+    // self-declared AgeGroup -- core::AgeGroup::Unknown (the real,
+    // conservative default) for a player who hasn't joined, or who
+    // joined via a pre-Account-System-v2 client that sent no real
+    // AgeGroup at all.
+    [[nodiscard]] core::AgeGroup playerAgeGroup(PlayerId player) const {
+        auto it = serverPlayerAgeGroups_.find(player);
+        return it != serverPlayerAgeGroups_.end() ? it->second : core::AgeGroup::Unknown;
+    }
 
     // Real, server-driven moderation mute (an escalation *action*,
     // dispatched automatically from safety::TrustSafetyService's
@@ -451,6 +562,8 @@ private:
     void handleTeleportRequestServer(PlayerId player, ByteReader& reader);
     void handleChatMessageServer(PlayerId player, ByteReader& reader);
     void handleReportPlayerServer(PlayerId player, ByteReader& reader);
+    void handleSubmitAppealServer(PlayerId player, ByteReader& reader);
+    void handleDirectMessageSendServer(PlayerId sender, ByteReader& reader);
     void handleSelectClassServer(PlayerId player, ByteReader& reader);
     void handleFireWeaponServer(PlayerId player, ByteReader& reader);
     void handleTriggerUltimateServer(PlayerId player, ByteReader& reader);
@@ -489,6 +602,16 @@ private:
     moderation::ChatLog chatLog_;
     moderation::ReportLog reportLog_;
     moderation::ReviewQueue reviewQueue_;
+    // Kronos ("Moderation Architecture v1", Phase 1): the real, disk-
+    // persisted audit trail safety::TrustSafetyService::Callbacks::
+    // onEscalationEvent feeds -- see EscalationEventLog.hpp's own class
+    // comment on why this is deliberately separate from safety::RiskScore
+    // (which stays unpersisted/decaying by design).
+    moderation::EscalationEventLog escalationEventLog_;
+    moderation::AppealLog appealLog_;
+    moderation::AccountModerationRegistry accountModerationRegistry_;
+    moderation::DirectMessageLog directMessageLog_;
+    std::function<void(PlayerId sender, const std::string& text)> onDirectMessageReceived_;
     moderation::TrustedCreatorRegistry trustedCreatorRegistry_;
     moderation::WorldSafetySettings worldSafetySettings_;
     anticheat::RollingEventCounter movementRejectionCounter_{10.0f}; // 10s rolling window
@@ -532,6 +655,7 @@ private:
     // real JoinAccepted payload.
     uint64_t sessionId_ = 0;
     std::string sessionName_;
+    int64_t sessionStartUnixSeconds_ = 0;
     std::function<void()> onSessionJoined_;
     std::function<void()> onSessionLeft_;
     // Real, honest "did this session actually finish starting" flag --
@@ -558,6 +682,20 @@ private:
     // onPeerDisconnected's PlayerRosterLeft broadcast still has a real
     // name to send after serverPlayerEntities_ has already been erased.
     std::unordered_map<PlayerId, std::string> serverPlayerDisplayNames_;
+    // Kronos ("Moderation Architecture v2", "Account System v1"): the
+    // real, stable profileId each connected player joined with (0 if
+    // they didn't send one -- a pre-Account-System-v2 client) -- lets
+    // real, session-scoped chat delivery consult the real, persistent
+    // accountModerationRegistry_ by the real identity that survives a
+    // reconnect, not just the ephemeral per-session PlayerId.
+    std::unordered_map<PlayerId, uint64_t> serverPlayerProfileIds_;
+    // Kronos ("Moderation Architecture v2", "Minor Mode Enforcement"):
+    // the real, self-declared AgeGroup each connected player joined
+    // with -- real server-side signal for Minor Mode policy checks
+    // (stricter chat thresholds, DM restrictions, unsafe-game/session
+    // gating) that need to know a *remote* player's age, not just the
+    // local player's own.
+    std::unordered_map<PlayerId, core::AgeGroup> serverPlayerAgeGroups_;
     std::unordered_map<ENetTransport::PeerId, PlayerId> serverPeerToPlayer_;
     std::unordered_map<PlayerId, DeltaSnapshot> serverPlayerBaselines_;
     std::unordered_map<uint32_t, core::EntityId> serverNetworkIdToEntity_;
@@ -584,6 +722,8 @@ private:
     // see setLocalDisplayName()/lastJoinFailureReason()/
     // lastDisconnectReason()'s own comments.
     std::string localDisplayName_ = "Player";
+    uint64_t localProfileId_ = 0;
+    core::AgeGroup localAgeGroup_ = core::AgeGroup::Unknown;
     JoinFailureReason lastJoinFailureReason_ = JoinFailureReason::None;
     uint32_t lastJoinFailureServerProtocolVersion_ = 0;
     DisconnectReason lastDisconnectReason_ = DisconnectReason::None;

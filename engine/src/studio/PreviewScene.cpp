@@ -26,7 +26,8 @@ const core::SceneLighting& previewLighting() {
 } // namespace
 
 void PreviewScene::render(VkCommandBuffer cmd, core::Renderer& renderer, core::MeshLibrary& meshLibrary,
-                           core::TextureLibrary& textureLibrary, core::RiggedMeshLibrary* riggedMeshLibrary) {
+                           core::TextureLibrary& textureLibrary, core::RiggedMeshLibrary* riggedMeshLibrary,
+                           const core::SceneLighting* lightingOverride) {
     if (desiredExtent_.width == 0 || desiredExtent_.height == 0) return;
 
     if (auxiliaryScene_ == core::Renderer::kInvalidAuxiliaryScene) {
@@ -46,7 +47,7 @@ void PreviewScene::render(VkCommandBuffer cmd, core::Renderer& renderer, core::M
     // same pre-pass callback, without touching drawSceneInto()'s
     // signature or affecting any other caller.
     core::SceneLighting previousLighting = renderer.lighting();
-    renderer.setLighting(previewLighting());
+    renderer.setLighting(lightingOverride != nullptr ? *lightingOverride : previewLighting());
 
     // The AuxiliarySceneHandle overload -- NOT the plain one -- so this
     // scene's UBO/shadow-map/HDR-bloom targets are its own, independent

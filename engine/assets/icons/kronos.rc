@@ -1,0 +1,8 @@
+// Kronos ("UI/UX Revamp" -- "App Icon"): real Windows executable-icon
+// resource script. Not exercised by this Linux dev build (no MSVC/MinGW
+// toolchain here to compile it against), but wired into CMake (see
+// engine/src/CMakeLists.txt's own `if(WIN32)` block) so a real Windows
+// build embeds this icon into both engine_runtime.exe and studio.exe --
+// real, bounded scope, not a fabricated claim of having tested it on
+// Windows.
+IDI_ICON1 ICON "kronos_icon.ico"

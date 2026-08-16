@@ -69,6 +69,14 @@ void GameLoop::run() { run(RunConfig{}); }
 
 void GameLoop::run(RunConfig config) {
     using Clock = std::chrono::steady_clock;
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Graphics: FPS cap"): real, live-mutable -- initialized
+    // from the real config passed in, but read from this member every
+    // loop iteration (not the local `config` parameter, which never
+    // changes once run() starts) so setTargetRenderDt() can change the
+    // real cap while this real, already-running loop keeps going, no
+    // restart needed.
+    targetRenderDt_ = config.targetRenderDt;
     auto previous = Clock::now();
     float simAccumulator = 0.0f;
     float networkAccumulator = 0.0f;
@@ -145,9 +153,9 @@ void GameLoop::run(RunConfig config) {
         // target render period, sleep off the real remainder so
         // presented frame time stabilizes near the target instead of
         // free-running as fast as the GPU allows.
-        if (config.targetRenderDt > 0.0f) {
+        if (targetRenderDt_ > 0.0f) {
             float elapsed = std::chrono::duration<float>(Clock::now() - frameStart).count();
-            float remaining = config.targetRenderDt - elapsed;
+            float remaining = targetRenderDt_ - elapsed;
             if (remaining > 0.0f) {
                 std::this_thread::sleep_for(std::chrono::duration<float>(remaining));
             }

@@ -26,7 +26,7 @@ std::vector<std::string> splitCommaSeparated(const std::string& text) {
 }
 } // namespace
 
-PublishingPanel::PublishingPanel(SceneManager& sceneManager, core::Camera& viewportCamera, core::MeshLibrary& meshLibrary,
+PublishingPanel::PublishingPanel(core::SceneManager& sceneManager, core::Camera& viewportCamera, core::MeshLibrary& meshLibrary,
                                   core::TextureLibrary& textureLibrary, net::NetworkSession& networkSession)
     : sceneManager_(&sceneManager), viewportCamera_(&viewportCamera), meshLibrary_(&meshLibrary),
       textureLibrary_(&textureLibrary), networkSession_(&networkSession) {

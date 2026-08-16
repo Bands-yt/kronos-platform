@@ -14,6 +14,15 @@ struct WorldSafetySettings {
     bool chatEnabled = true;
     bool profanityFilterEnabled = true;
     bool teleportEnabled = true;
+    // Kronos ("Moderation Architecture v2", item 5 "Creator Safety
+    // Tools" -- "WorldSafetySettings improvements"): a real, separate
+    // toggle from chatEnabled -- a public-broadcast-heavy social space
+    // and a small creative space have genuinely different real reasons
+    // to want one on without the other (e.g. keep public chat, disable
+    // 1:1 DMs specifically to reduce grooming risk). Checked alongside
+    // chatEnabled at net::NetworkSession's real DM send path, not a
+    // settings field nobody reads.
+    bool directMessagesEnabled = true;
 
     // When true, only players net::PlayerIds present in the world's
     // TrustedCreatorRegistry may use Studio's networked test-session

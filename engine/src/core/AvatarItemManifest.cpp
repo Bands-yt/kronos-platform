@@ -5,6 +5,28 @@
 
 namespace engine::core {
 
+const char* avatarItemModerationStatusName(AvatarItemModerationStatus status) {
+    switch (status) {
+        case AvatarItemModerationStatus::Approved: return "Approved";
+        case AvatarItemModerationStatus::UnderReview: return "UnderReview";
+        case AvatarItemModerationStatus::Rejected: return "Rejected";
+    }
+    return "Approved";
+}
+
+bool avatarItemModerationStatusFromName(const std::string& name, AvatarItemModerationStatus& out) {
+    static constexpr AvatarItemModerationStatus kAll[] = {AvatarItemModerationStatus::Approved,
+                                                            AvatarItemModerationStatus::UnderReview,
+                                                            AvatarItemModerationStatus::Rejected};
+    for (AvatarItemModerationStatus candidate : kAll) {
+        if (name == avatarItemModerationStatusName(candidate)) {
+            out = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 namespace {
 
 nlohmann::json vec4ToJson(const glm::vec4& v) { return nlohmann::json::array({v.x, v.y, v.z, v.w}); }
@@ -31,6 +53,14 @@ nlohmann::json AvatarItemManifest::toJson() const {
     j["creatorId"] = creatorId;
     j["uploadDateUnixSeconds"] = uploadDateUnixSeconds;
     j["price"] = price;
+    j["updateTimestampUnixSeconds"] = updateTimestampUnixSeconds;
+    j["version"] = version;
+    j["moderationStatus"] = avatarItemModerationStatusName(moderationStatus);
+    j["ratingScore"] = ratingScore;
+    j["ratingCount"] = ratingCount;
+    j["views"] = views;
+    j["purchaseCount"] = purchaseCount;
+    j["favorites"] = favorites;
     return j;
 }
 
@@ -69,6 +99,23 @@ bool AvatarItemManifest::fromJson(const nlohmann::json& j, AvatarItemManifest& o
             parsed.uploadDateUnixSeconds = j.at("uploadDateUnixSeconds").get<int64_t>();
         }
         if (j.contains("price")) parsed.price = j.at("price").get<int32_t>();
+        if (j.contains("updateTimestampUnixSeconds")) {
+            parsed.updateTimestampUnixSeconds = j.at("updateTimestampUnixSeconds").get<int64_t>();
+        }
+        if (j.contains("version")) parsed.version = j.at("version").get<int32_t>();
+        if (j.contains("moderationStatus")) {
+            // Unrecognized status name real-falls back to the struct's own
+            // default (Approved) rather than failing the whole parse --
+            // forward-compatible with a future status this reader
+            // predates, same convention every other enum-by-name field in
+            // this codebase already uses.
+            (void)avatarItemModerationStatusFromName(j.at("moderationStatus").get<std::string>(), parsed.moderationStatus);
+        }
+        if (j.contains("ratingScore")) parsed.ratingScore = j.at("ratingScore").get<float>();
+        if (j.contains("ratingCount")) parsed.ratingCount = j.at("ratingCount").get<int32_t>();
+        if (j.contains("views")) parsed.views = j.at("views").get<int64_t>();
+        if (j.contains("purchaseCount")) parsed.purchaseCount = j.at("purchaseCount").get<int32_t>();
+        if (j.contains("favorites")) parsed.favorites = j.at("favorites").get<int32_t>();
 
         out = std::move(parsed);
         return true;

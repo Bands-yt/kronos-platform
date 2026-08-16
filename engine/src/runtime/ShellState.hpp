@@ -9,14 +9,49 @@ namespace engine::runtime {
 
 // Kronos ("Active Joining UI" -- engine_runtime ImGui + input
 // integration): the real states engine_runtime's new pre-game shell can
-// be in. Home/SessionBrowser/Loading/Error are all real menu states
-// (mouse visible/absolute, ImGui panels drawn); InGame is the existing,
-// unchanged playable-scene state every CLI mode already had before this
-// shell existed (mouse captured/relative, no menu panels drawn).
+// be in. Home/SessionBrowser/Loading/GameCatalogue/Error are all real
+// menu states (mouse visible/absolute, ImGui panels drawn); InGame is
+// the existing, unchanged playable-scene state every CLI mode already
+// had before this shell existed (mouse captured/relative, no menu
+// panels drawn).
+//
+// GameCatalogue (Kronos "Game Catalogue Overhaul") is the real
+// replacement for the old bare "Play" button -- picking a
+// ProjectPath-kind game there real-loads it via runtime::loadGame()
+// (core/GameManifest.hpp) and enters InGame the same way a successful
+// join does; picking a CliFlag-kind game (TNT Wars/Mining Sim/House
+// Demo, still hardcoded C++ gameplay, not scene data) instead relaunches
+// engine_runtime itself via core::launchProcess() and never touches this
+// state machine at all.
+// Kronos ("Marketplace" -- "engine_runtime-side catalogue UI"): AvatarShop
+// is the real player-facing equivalent of studio::plugins::CataloguePanel
+// -- browse the same real, shared avatar-item catalogue
+// (core::CatalogueIndex/core::CatalogueDatabase), equip owned items, and
+// spend real KronosCredits, all from inside engine_runtime itself. Before
+// this, the entire real Marketplace/economy system (built across this
+// codebase's history) was only ever reachable from Studio -- a real,
+// honest, previously-stated gap (see studio::plugins::CataloguePanel's
+// own now-stale class comment) that this closes.
+// Kronos ("Settings Panel v2 + Input Remapping + Accessibility Layer"):
+// Settings is real, reachable from Home (like AvatarShop) -- the in-game
+// pause-menu path is a real, separate overlay flag (mirroring
+// RuntimeShell::showAvatarShopOverlay_'s own real precedent), not a
+// second ShellState, since a real game is still live underneath it.
+// Kronos ("Social Layer" -- "Friends + Presence + Messaging" /
+// "Notifications System"): Friends and Notifications are real, reachable
+// from Home, same dual "ShellState + in-game overlay flag" shape
+// AvatarShop/Settings already establish -- see
+// RuntimeShell::showFriendsOverlay_/showNotificationsOverlay_'s own
+// comments for the in-game half.
 enum class ShellState {
     Home,
     SessionBrowser,
     Loading,
+    GameCatalogue,
+    AvatarShop,
+    Settings,
+    Friends,
+    Notifications,
     InGame,
     Error,
 };
@@ -47,13 +82,18 @@ struct ShellErrorInfo {
 // not a general-purpose UI framework.
 enum class ShellEvent {
     OpenSessionBrowser, // Home -> SessionBrowser
-    ReturnHome,         // SessionBrowser/Error -> Home
+    ReturnHome,         // SessionBrowser/GameCatalogue/Error -> Home
     JoinRequested,       // SessionBrowser -> Loading (a real join attempt just started)
     JoinSucceeded,       // Loading -> InGame
     JoinFailed,          // Loading -> Error
     CancelJoin,          // Loading -> Home (the player backed out of a real, still-in-flight join attempt)
-    PlayOffline,         // Home -> InGame (no networking at all -- today's existing default behavior)
+    OpenGameCatalogue,   // Home -> GameCatalogue (Kronos "Game Catalogue Overhaul" -- replaces the old bare Play button)
+    GameSelected,        // GameCatalogue -> InGame (runtime::loadGame() real-succeeded for the picked ProjectPath game)
     SessionEnded,        // InGame -> Home (a real, graceful or ungraceful disconnect/leave)
+    OpenAvatarShop,      // Home -> AvatarShop
+    OpenSettings,        // Home -> Settings
+    OpenFriends,         // Home -> Friends
+    OpenNotifications,   // Home -> Notifications
 };
 
 // Kronos ("Active Joining UI"): the real, pure state-transition function
@@ -70,7 +110,11 @@ enum class ShellEvent {
     switch (current) {
         case ShellState::Home:
             if (event == ShellEvent::OpenSessionBrowser) return ShellState::SessionBrowser;
-            if (event == ShellEvent::PlayOffline) return ShellState::InGame;
+            if (event == ShellEvent::OpenGameCatalogue) return ShellState::GameCatalogue;
+            if (event == ShellEvent::OpenAvatarShop) return ShellState::AvatarShop;
+            if (event == ShellEvent::OpenSettings) return ShellState::Settings;
+            if (event == ShellEvent::OpenFriends) return ShellState::Friends;
+            if (event == ShellEvent::OpenNotifications) return ShellState::Notifications;
             return current;
         case ShellState::SessionBrowser:
             if (event == ShellEvent::ReturnHome) return ShellState::Home;
@@ -80,6 +124,22 @@ enum class ShellEvent {
             if (event == ShellEvent::JoinSucceeded) return ShellState::InGame;
             if (event == ShellEvent::JoinFailed) return ShellState::Error;
             if (event == ShellEvent::CancelJoin) return ShellState::Home;
+            return current;
+        case ShellState::GameCatalogue:
+            if (event == ShellEvent::ReturnHome) return ShellState::Home;
+            if (event == ShellEvent::GameSelected) return ShellState::InGame;
+            return current;
+        case ShellState::AvatarShop:
+            if (event == ShellEvent::ReturnHome) return ShellState::Home;
+            return current;
+        case ShellState::Settings:
+            if (event == ShellEvent::ReturnHome) return ShellState::Home;
+            return current;
+        case ShellState::Friends:
+            if (event == ShellEvent::ReturnHome) return ShellState::Home;
+            return current;
+        case ShellState::Notifications:
+            if (event == ShellEvent::ReturnHome) return ShellState::Home;
             return current;
         case ShellState::InGame:
             if (event == ShellEvent::SessionEnded) return ShellState::Home;

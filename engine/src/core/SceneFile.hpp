@@ -66,6 +66,20 @@ struct SceneEntityRecord {
     // above.
     bool hasLight = false;
     Light light;
+
+    // Kronos ("Game Catalogue Overhaul", Phase 1): real physics
+    // round-trip -- see this file's own class comment, which used to list
+    // RigidBody as a stated, deliberate gap ("Studio creates no entities
+    // with either component today"). A core::SceneFile-loaded game now
+    // needs real collision, not just visuals, so this closes that gap.
+    // Mirrors MeshSource's own "kind + per-kind params" convention
+    // exactly (see ColliderShape's own comment in Components.hpp).
+    // hasRigidBody implies colliderShape below is meaningful the same way
+    // hasRenderable implies meshSource is (see that field's own comment).
+    bool hasRigidBody = false;
+    RigidBodyMotionType motionType = RigidBodyMotionType::Static;
+    bool hasColliderShape = false;
+    ColliderShape colliderShape;
 };
 
 // A full scene -- every SceneEntityRecord worth persisting, plus the
@@ -83,10 +97,15 @@ struct SceneEntityRecord {
 // the source file path a texture was loaded from, so there is nothing
 // to serialize from yet; building that provenance tracking is the
 // texture-pipeline equivalent of MeshSource and deserves its own pass).
-// core::RigidBody/AudioSource aren't included either: Studio creates no
-// entities with either component today (no Physics in Studio at all --
-// see StudioApp.hpp's class comment -- and no audio-source authoring UI
-// exists), so there is nothing yet to round-trip.
+// core::AudioSource isn't included either: no audio-source authoring UI
+// exists anywhere yet, so there is nothing yet to round-trip.
+//
+// core::RigidBody/ColliderShape ARE now covered (Kronos "Game Catalogue
+// Overhaul", Phase 1) -- Studio itself still creates no physics entities
+// (no Physics in Studio at all, see StudioApp.hpp's class comment) and
+// still never sets hasRigidBody, but a hand-authored or
+// runtime::GameLoader-loaded scene can carry real physics data through
+// this format now; see SceneEntityRecord's own comment.
 //
 // Pure data: this struct doesn't know about MeshLibrary, Vulkan, or
 // core::ECS at all -- see studio/SceneManager.hpp for the capture-from-

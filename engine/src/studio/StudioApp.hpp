@@ -3,9 +3,11 @@
 #include <memory>
 
 #include "core/AnimationDatabase.hpp"
+#include "core/AvatarLoadout.hpp"
 #include "core/CatalogueDatabase.hpp"
 #include "core/CatalogueIndex.hpp"
 #include "core/ECS.hpp"
+#include "core/LocalProfile.hpp"
 #include "core/Mesh.hpp"
 #include "core/ParticleSystem.hpp"
 #include "core/PerformanceDiagnostics.hpp"
@@ -16,11 +18,13 @@
 #include "core/RiggedMesh.hpp"
 #include "core/Texture.hpp"
 #include "core/Window.hpp"
+#include "marketplace/TransactionLog.hpp"
 #include "net/NetworkSession.hpp"
+#include "safety/TrustSafetyService.hpp"
 #include "studio/Notification.hpp"
 #include "studio/OffscreenTarget.hpp"
 #include "studio/PluginManager.hpp"
-#include "studio/SceneManager.hpp"
+#include "core/SceneManager.hpp"
 #include "studio/UndoStack.hpp"
 #include "studio/panels/DebugConsolePanel.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
@@ -39,9 +43,11 @@ class AudioPreviewPlugin;
 class TexturePreviewPlugin;
 class AvatarPreviewer;
 class CataloguePanel;
+class CreatorProfilePanel;
 class UploadAvatarItemPlugin;
 class AnimationPreviewerPlugin;
 class UploadAnimationPlugin;
+class AvatarEditor;
 class PhysicsPreviewPlugin;
 class ShopPlugin;
 class TerrainEditorPlugin;
@@ -106,6 +112,10 @@ private:
     void buildBringUpScene();
     void drawFileMenu();
     void drawPendingFileActionPopup();
+    // Kronos ("Branding + Release Prep" -- "About panel"): real, small,
+    // version/build info -- see core/KronosVersion.hpp.
+    void drawAboutPanel();
+    bool showAboutPanel_ = false;
     void drawSceneTabsBar();
     void drawRecoveryBanner();
     // Kronos ("First-Launch Experience"): a real welcome panel, shown
@@ -125,6 +135,32 @@ private:
     // scene always adds/selects it as a tab too rather than being a
     // separate, tab-unaware code path.
     void switchToScene(const std::string& path);
+
+    // Kronos ("Game Catalogue Overhaul", Phase 7): real "Hidden Gems"
+    // dev-notification check -- called from the real Open Project code
+    // path. A real, honest no-op if `projectPath`'s own directory has no
+    // real game.gamemanifest sitting next to it (most Studio projects
+    // aren't a cataloged game at all). See HiddenGemsSelector.hpp's own
+    // comment for what "monthly job" really means for a local Alpha.
+    void checkHiddenGemsEligibilityAndNotify(const std::string& projectPath);
+
+    // Kronos ("Moderation Architecture v2", "Crash -> Safety Link"): real
+    // "this game's crash pattern needs a human's attention" check, same
+    // real Open Project call site as checkHiddenGemsEligibilityAndNotify()
+    // above and the same real, honest no-op if `projectPath` isn't a
+    // cataloged game. Never mutates core::GameManifest::safetyStatus
+    // itself -- see core::shouldFlagGameForCrashPattern()'s own comment
+    // on why this is a real, human-facing recommendation only. Also a
+    // real, honest no-op if the manifest is already flagged (UnderReview
+    // or Unsafe) -- no point re-warning about something a human already
+    // knows about.
+    void checkCrashPatternAndWarn(const std::string& projectPath);
+
+    // Real, small, persisted-across-launches cache -- recomputed only
+    // when shouldRecomputeHiddenGemsThisMonth() says the real calendar
+    // month has actually changed, not on every single Open Project.
+    std::vector<std::string> cachedHiddenGemNames_;
+    std::string hiddenGemsComputedMonthKey_;
 
     core::Window window_;
     core::Renderer renderer_;
@@ -191,7 +227,36 @@ private:
     // it, AvatarPreviewer resolves equipped item ids through it.
     core::CatalogueDatabase catalogueDatabase_;
     core::CatalogueIndex catalogueIndex_;
+    // Kronos ("Avatar Creation System, Marketplace & Economy" -- "Wire
+    // Wallet -> Catalogue purchases"): real, same identity/wallet
+    // runtime::RuntimeShell's own Home Screen uses -- see initialize()'s
+    // own loadOrCreateProfile() call site comment.
+    core::LocalProfile localProfile_;
+    marketplace::TransactionLog transactionLog_;
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Clothing & Accessory
+    // Slots"): the real, persistent record of which real catalogue item
+    // is equipped in each real slot for the local player's own avatar --
+    // same real "local_profile.profile"-style local file convention (see
+    // localAvatarLoadoutPath_'s own comment), loaded once here and handed
+    // to AvatarEditor by reference, the same "caller owns identity, this
+    // panel just gets a reference" shape localProfile_ itself already
+    // establishes. Distinct from plugins::AvatarPreviewer's own loadout_
+    // member -- that's the OLD, non-skinned "mannequin" preview system's
+    // own, separate, never-persisted loadout (see AvatarLoadoutSync.hpp's
+    // header comment); this is the real, persisted loadout for the new
+    // rigged/skinned Avatar Phase system.
+    core::AvatarLoadout localAvatarLoadout_;
+    // Kronos ("Moderation Architecture v1", Phase 1): Studio's own real
+    // TrustSafetyService instance, distinct from any net::NetworkSession's
+    // (Studio isn't necessarily connected to a live session at all when a
+    // creator uploads catalogue content) -- real creator-content
+    // moderation (onImageUpload/onCreatorContentSubmission/
+    // onCreatorDisplayNameChange) was already fully implemented but had
+    // zero real callers anywhere in this codebase; this is that real
+    // caller's real home.
+    safety::TrustSafetyService studioTrustSafetyService_;
     std::string catalogueDatabasePath_ = "catalogue.json";
+    std::string localAvatarLoadoutPath_ = "local_avatar_loadout.loadout";
 
     // Animation Upload Pipeline (docs task category 5) -- same "owned
     // here, not by the one plugin that writes to it" reasoning as
@@ -210,9 +275,11 @@ private:
     // device teardown.
     plugins::AvatarPreviewer* avatarPreviewer_ = nullptr;
     plugins::CataloguePanel* cataloguePanel_ = nullptr;
+    plugins::CreatorProfilePanel* creatorProfilePanel_ = nullptr;
     plugins::UploadAvatarItemPlugin* uploadAvatarItemPlugin_ = nullptr;
     plugins::AnimationPreviewerPlugin* animationPreviewerPlugin_ = nullptr;
     plugins::UploadAnimationPlugin* uploadAnimationPlugin_ = nullptr;
+    plugins::AvatarEditor* avatarEditor_ = nullptr;
     // Same "raw pointer into what pluginManager_ owns" pattern -- see
     // PhysicsPreviewPlugin.hpp's class comment for what Play/Stop does.
     // ViewportPanel reads this directly (debug-draw toggles, recentContacts(),
@@ -276,7 +343,7 @@ private:
     // scene paths (core/ProjectFile.hpp) -- StudioApp doesn't switch its
     // own ecs_/meshLibrary_ per "opened project", only File > Open
     // Project's scenePaths populate sceneManager_'s tab list.
-    SceneManager sceneManager_;
+    core::SceneManager sceneManager_;
     core::ProjectFile currentProject_;
     std::string currentProjectPath_;
     size_t lastSeenUndoCount_ = 0; // see SceneManager.hpp's class comment on dirty-tracking

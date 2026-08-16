@@ -1,10 +1,50 @@
 #include "core/Window.hpp"
 
 #include <SDL2/SDL_vulkan.h>
+#include <stb_image.h>
 
 #include <cstdio>
 
 namespace engine::core {
+
+namespace {
+// Kronos ("UI/UX Revamp" -- "App Icon"): real, honest best-effort --
+// SDL2 has no built-in PNG decoder (that's SDL2_image, not a dependency
+// this codebase otherwise needs), so this reuses the same vendored
+// stb_image core::Texture already loads real GPU textures with
+// (Texture.cpp's own #include <stb_image.h>), then hands the raw RGBA8
+// pixels to SDL via SDL_CreateRGBSurfaceFrom -- no new image-decoding
+// dependency pulled in just for a window icon. A missing/corrupt file is
+// a real, non-fatal no-op (logged, window opens with the OS/window-
+// manager's own default icon), matching this codebase's "fail soft on a
+// missing optional asset" convention throughout (e.g. UIRenderer's own
+// font-atlas failure just above this call site in Application::initialize()).
+void applyWindowIcon(SDL_Window* window, const std::string& iconPath) {
+    if (iconPath.empty()) return;
+
+    int width = 0, height = 0, channels = 0;
+    stbi_uc* pixels = stbi_load(iconPath.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+    if (pixels == nullptr) {
+        std::fprintf(stderr, "Window: could not load icon \"%s\" -- continuing with the default window icon.\n",
+                     iconPath.c_str());
+        return;
+    }
+
+    // Real, explicit RGBA8 byte order/masks -- SDL_CreateRGBSurfaceFrom
+    // doesn't infer them from anything, and stbi_load's own STBI_rgb_alpha
+    // request guarantees exactly 4 bytes/pixel in R,G,B,A order.
+    constexpr int kBitsPerPixel = 32;
+    constexpr int kBytesPerPixel = 4;
+    Uint32 rMask = 0x000000ff, gMask = 0x0000ff00, bMask = 0x00ff0000, aMask = 0xff000000;
+    SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(pixels, width, height, kBitsPerPixel, width * kBytesPerPixel,
+                                                     rMask, gMask, bMask, aMask);
+    if (surface != nullptr) {
+        SDL_SetWindowIcon(window, surface);
+        SDL_FreeSurface(surface); // real, honest -- SDL_SetWindowIcon copies the surface, doesn't take ownership of it
+    }
+    stbi_image_free(pixels);
+}
+} // namespace
 
 Window::~Window() {
     shutdown();
@@ -33,6 +73,8 @@ bool Window::initialize(const CreateInfo& info) {
         SDL_Quit();
         return false;
     }
+
+    applyWindowIcon(window_, info.iconPath);
 
     width_ = info.width;
     height_ = info.height;

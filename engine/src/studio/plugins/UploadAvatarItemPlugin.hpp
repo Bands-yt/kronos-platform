@@ -8,6 +8,9 @@
 #include "core/AvatarItemManifest.hpp"
 #include "core/CatalogueDatabase.hpp"
 #include "core/CatalogueIndex.hpp"
+#include "core/LocalProfile.hpp"
+#include "marketplace/TransactionLog.hpp"
+#include "safety/TrustSafetyService.hpp"
 #include "studio/IStudioPlugin.hpp"
 #include "studio/PreviewScene.hpp"
 
@@ -30,10 +33,19 @@ namespace engine::studio::plugins {
 // a restart) on success.
 class UploadAvatarItemPlugin final : public IStudioPlugin {
 public:
+    // Kronos ("Creator Identity + Marketplace Publishing Pipeline"):
+    // `localProfile`/`transactionLog` are real, new, injected the same
+    // "caller owns identity, this panel just gets a reference" shape
+    // every other real StudioApp-owned identity/ledger reference already
+    // uses here -- `localProfile` supplies the real, stable creatorId a
+    // publish is now filed under (replacing the old free-text field, see
+    // that member's own comment), `transactionLog` is where a real
+    // publish event is recorded (see TransactionLog::recordPublish()).
     UploadAvatarItemPlugin(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
                             core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary,
                             core::CatalogueDatabase& database, core::CatalogueIndex& index,
-                            std::string databaseFilePath);
+                            std::string databaseFilePath, safety::TrustSafetyService& trustSafetyService,
+                            core::LocalProfile& localProfile, marketplace::TransactionLog& transactionLog);
 
     [[nodiscard]] const char* name() const override { return "Upload Item"; }
     [[nodiscard]] const char* category() const override { return "Avatar"; }
@@ -64,6 +76,14 @@ private:
     core::CatalogueDatabase* database_;
     core::CatalogueIndex* index_;
     std::string databaseFilePath_; // where a successful upload persists the whole database to disk
+    // Kronos ("Moderation Architecture v1", Phase 1): real image-upload
+    // scanning (AssetSafetyGuard's structural checks -- see
+    // TrustSafetyService::onImageUpload()'s own comment for exactly what
+    // that does and doesn't catch) -- previously fully implemented but
+    // never actually called from anywhere in this codebase.
+    safety::TrustSafetyService* trustSafetyService_;
+    core::LocalProfile* localProfile_;
+    marketplace::TransactionLog* transactionLog_;
 
     core::AvatarItemManifest draft_;
     char idBuffer_[64] = "";
@@ -71,9 +91,14 @@ private:
     char tagsBuffer_[256] = ""; // comma-separated, split into draft_.item.tags on build
     char meshPathBuffer_[256] = "";
     char texturePathBuffer_[256] = "";
-    char creatorIdBuffer_[64] = "studio_creator";
     int categoryIndex_ = 0;
     int price_ = 0;
+    // Kronos ("Creator Identity + Marketplace Publishing Pipeline"): real
+    // confirmation-dialog state -- "Publish to Marketplace" opens a real
+    // ImGui modal (drawn from drawPanel()) rather than publishing
+    // immediately on click; the modal's own "Confirm" button is the one
+    // real call site that invokes submitUpload().
+    bool showPublishConfirmation_ = false;
 
     PreviewScene thumbnailScene_;
     bool hasThumbnail_ = false;

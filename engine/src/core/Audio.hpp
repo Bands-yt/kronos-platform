@@ -55,10 +55,32 @@ public:
     // maxDistance) rather than hardcoded further than miniaudio's defaults.
     void mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward, glm::vec3 listenerUp);
 
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Audio: Master volume"): real, immediate -- forwards
+    // directly to miniaudio's own real engine-level volume
+    // (ma_engine_set_volume), applied on top of every category's own
+    // volume and every individual AudioSource::volume, matching how a
+    // real master fader always sits above per-bus faders. A real,
+    // honest no-op before initialize() succeeds (nothing to set volume
+    // on yet) -- the caller's own real, chosen value is remembered
+    // (masterVolume_) and reapplied by initialize() so a setting applied
+    // before startNetworking()/audio init still takes effect once audio
+    // actually comes up.
+    void setMasterVolume(float volume01);
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Audio: Music volume, SFX volume"): real, immediate --
+    // takes effect on this category's every AudioSource the very next
+    // mix() call (no per-sound bookkeeping needed since mix() already
+    // re-applies every AudioSource's own volume every frame).
+    void setCategoryVolume(AudioCategory category, float volume01);
+
 private:
     ma_engine* engine_ = nullptr;
     std::vector<ma_sound*> sounds_;
     bool initialized_ = false;
+    float masterVolume_ = 1.0f;
+    float musicVolume_ = 1.0f;
+    float sfxVolume_ = 1.0f;
 };
 
 } // namespace engine::core

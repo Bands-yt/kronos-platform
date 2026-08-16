@@ -93,6 +93,15 @@ add_library(engine_core STATIC
     core/ParticleSystem.cpp
     core/SceneFile.cpp
     core/ProjectFile.cpp
+    core/GameManifest.cpp
+    core/LocalGameDirectory.cpp
+    core/SceneManager.cpp
+    core/ProcessLaunch.cpp
+    core/QualityScore.cpp
+    core/HiddenGemsSelector.cpp
+    core/ProjectReadmeGenerator.cpp
+    core/AvatarIdleClipResolution.cpp
+    core/GameCatalogueAggregate.cpp
     core/AvatarItem.cpp
     core/AvatarItemManifest.cpp
     core/CatalogueDatabase.cpp
@@ -161,9 +170,11 @@ add_library(engine_core STATIC
     net/NetworkedMovement.cpp
     net/NetworkSession.cpp
     net/SessionHistory.cpp
+    net/GamePlayLog.cpp
     net/LanDiscoveryProtocol.cpp
     net/LanSessionAnnouncer.cpp
     net/LanSessionBrowser.cpp
+    net/SessionBrowserSort.cpp
 
     migration/RbxlxParser.cpp
     migration/InstanceTreeBuilder.cpp
@@ -179,6 +190,9 @@ add_library(engine_core STATIC
     safety/TextNormalize.cpp
     safety/CreatorIdentityGuard.cpp
     safety/AssetSafetyGuard.cpp
+    safety/BehavioralPatternAnalyzer.cpp
+    safety/ImageClassifierStub.cpp
+    safety/PolicyEngine.cpp
 
     anticheat/DeviceFingerprint.cpp
     anticheat/ExploitSignatureDB.cpp
@@ -192,6 +206,12 @@ add_library(engine_core STATIC
     moderation/ReportLog.cpp
     moderation/TrustedCreatorRegistry.cpp
     moderation/ReviewQueue.cpp
+    moderation/EscalationEventLog.cpp
+    moderation/AppealLog.cpp
+    moderation/AccountModerationRegistry.cpp
+    moderation/DirectMessageLog.cpp
+    moderation/SafetyReportGenerator.cpp
+    moderation/TrainingDataLog.cpp
 
     publishing/WorldMetadata.cpp
     publishing/PublishValidation.cpp
@@ -286,12 +306,19 @@ add_library(engine_core STATIC
 
     marketplace/MarketplaceService.cpp
     marketplace/ListingReviewPipeline.cpp
+    marketplace/TransactionLog.cpp
+    marketplace/CreditsPurchase.cpp
+    marketplace/RatingSubmission.cpp
+    marketplace/RecommendationEngine.cpp
     marketplace/adapters/SteamPaymentAdapter.cpp
     marketplace/adapters/StoreKitPaymentAdapter.cpp
     marketplace/adapters/PlayBillingPaymentAdapter.cpp
     marketplace/adapters/XboxPaymentAdapter.cpp
     marketplace/adapters/PSNPaymentAdapter.cpp
     marketplace/adapters/EShopPaymentAdapter.cpp
+
+    social/FriendsService.cpp
+    notification/NotificationService.cpp
 
     accessibility/AccessibilityOptions.cpp
 
@@ -323,6 +350,13 @@ target_compile_definitions(engine_core PUBLIC
     # in as siblings of engine_tests itself).
     ENGINE_TEMPLATES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../templates"
     ENGINE_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../examples"
+    # Kronos ("Game Catalogue Overhaul", Phase 2): same real "packaged
+    # sibling dir, else fall back to this compile-time source path"
+    # resolution as ENGINE_ASSET_DIR/ENGINE_TEMPLATES_DIR/ENGINE_EXAMPLES_DIR
+    # -- where real, checked-in bundled games (core::GameManifest +
+    # project.project/*.scene/Scripts/) live, scanned by
+    # core::scanLocalGameDirectory().
+    ENGINE_GAMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../games"
     # Without this, glm::perspective()/glm::ortho() default to OpenGL's
     # clip-space Z range ([-1,1]) -- Vulkan requires [0,1] (its clip
     # volume is defined by 0<=z<=w, not -w<=z<=w). Depth *testing* still
@@ -379,6 +413,29 @@ if(ENGINE_BUILD_RUNTIME)
     add_executable(engine_runtime
         main.cpp
         runtime/RuntimeShell.cpp
+        runtime/GameLoader.cpp
+        runtime/HomeAvatarPreview.cpp
+        # Kronos ("UI/UX Revamp"): real, shared with studio's own source
+        # list below (not engine_core's) -- core::UITheme.cpp includes
+        # <imgui.h> directly, and engine_core deliberately links no UI
+        # framework at all (engine_tests, which also links engine_core,
+        # has no ImGui dependency to inherit). Compiled independently
+        # into each of the two real ImGui-using binaries instead, same
+        # real "one source file, two targets" pattern CMake already
+        # supports natively -- not a duplicated copy to keep in sync.
+        core/UITheme.cpp
+        # Kronos ("Home Screen Avatar Preview"): same real "one source
+        # file, two targets" precedent as core/UITheme.cpp just above --
+        # studio::PreviewScene/OffscreenTarget have zero real Studio-only
+        # coupling (confirmed by direct read: both only touch core::
+        # Renderer/ECS/Camera plus ImGui itself), they're studio::-
+        # namespaced today purely by location, matching the exact
+        # already-documented precedent for studio::SceneManager. Reused
+        # here, not duplicated, for the real Home avatar preview's own
+        # orbit/zoom offscreen viewport.
+        studio/OffscreenTarget.cpp
+        studio/PreviewScene.cpp
+        $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos.rc>
     )
     target_link_libraries(engine_runtime PRIVATE engine_core imgui::imgui)
 endif()
@@ -395,10 +452,14 @@ if(ENGINE_BUILD_STUDIO)
         studio/OffscreenTarget.cpp
         studio/PluginManager.cpp
         studio/StudioEcsScriptApi.cpp
-        studio/SceneManager.cpp
         studio/StudioStyle.cpp
         studio/StudioIcons.cpp
         studio/PluginChrome.cpp
+        # Kronos ("UI/UX Revamp"): see engine_runtime's own source list
+        # above for why this lives here (and there) instead of in
+        # engine_core.
+        core/UITheme.cpp
+        $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos.rc>
         studio/Notification.cpp
         studio/EntityClassification.cpp
         studio/CreatorToolsSpawning.cpp
@@ -431,6 +492,9 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/AvatarPreviewer.cpp
         studio/plugins/CataloguePanel.cpp
         studio/plugins/UploadAvatarItemPlugin.cpp
+        studio/plugins/CreatorProfilePanel.cpp
+        studio/plugins/CreatorDashboardPanel.cpp
+        studio/plugins/AvatarEditor.cpp
         studio/plugins/AnimationPreviewerPlugin.cpp
         studio/plugins/UploadAnimationPlugin.cpp
         studio/plugins/PhysicsPreviewPlugin.cpp
@@ -438,6 +502,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/DiagnosticsPlugin.cpp
         studio/plugins/NetworkOverlayPlugin.cpp
         studio/plugins/ModerationPanel.cpp
+        studio/plugins/SafeContentPreviewPanel.cpp
         studio/plugins/PublishingPanel.cpp
         studio/plugins/LightingToolsPlugin.cpp
         studio/plugins/CreatorConsolePlugin.cpp

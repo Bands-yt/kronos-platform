@@ -40,6 +40,13 @@ public:
     // pending review case).
     void clear() { cases_.clear(); }
 
+    // Kronos ("Moderation Architecture v1", Phase 1): real disk
+    // persistence, same convention as moderation::ChatLog/ReportLog's
+    // own saveToFile()/loadFromFile() -- a pending human-review case
+    // must survive a process restart, not silently vanish.
+    [[nodiscard]] bool saveToFile(const std::string& path) const;
+    [[nodiscard]] bool loadFromFile(const std::string& path);
+
 private:
     std::vector<ReviewCase> cases_;
 };

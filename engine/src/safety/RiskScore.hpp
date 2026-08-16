@@ -20,6 +20,17 @@ struct RiskSignal {
 
 enum class EscalationTier { Log, Mute, Restrict, HumanReview, LegalReport };
 
+[[nodiscard]] inline const char* escalationTierName(EscalationTier tier) {
+    switch (tier) {
+        case EscalationTier::Log: return "Log";
+        case EscalationTier::Mute: return "Mute";
+        case EscalationTier::Restrict: return "Restrict";
+        case EscalationTier::HumanReview: return "Human Review";
+        case EscalationTier::LegalReport: return "Legal Report";
+    }
+    return "Unknown";
+}
+
 // The "rolling risk score (time-windowed)" node from docs/ARCHITECTURE.md
 // §10's moderation flowchart: a single weighted score per user/
 // conversation, decaying without reinforcement so one false positive

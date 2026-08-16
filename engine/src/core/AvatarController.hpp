@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "core/AnimationPlayer.hpp"
@@ -9,6 +10,24 @@
 
 namespace engine::core {
 
+// Kronos ("Avatar Phase" -- "AvatarEditor: Animation Overrides"): a real,
+// optional, per-slot override of which clip *file path* to load instead
+// of this rig's own shipped default (idle.anim/walk.anim/run.anim/
+// jump_start.anim/jump_air.anim/jump_land.anim, see
+// Application::spawnLocalPlayerAvatar()'s own comment) -- an empty string
+// means "use the real, honest shipped default," the same "empty/unset
+// falls back to the real default" convention core::LocalProfile's own
+// skinToneIndex/headShapeIndex already establish. Covers all six real
+// clip slots core::AvatarController exposes.
+struct AnimationOverrides {
+    std::string idleClipPath;
+    std::string walkClipPath;
+    std::string runClipPath;
+    std::string jumpStartClipPath;
+    std::string jumpAirClipPath;
+    std::string jumpLandClipPath;
+};
+
 // Which locomotion clip is currently driving the Base layer -- purely a
 // reflection of AvatarController's own state machine (see tickAnimation()'s
 // comment), exposed for tests and for a future Studio debug overlay to
@@ -17,6 +36,28 @@ namespace engine::core {
 // triggers -- vertical velocity sign for Jump vs Falling, the landing
 // edge for Landing), not one flat "airborne" bucket.
 enum class AvatarLocomotionState { Idle, Walk, Run, Jump, Falling, Landing };
+
+// Kronos ("Avatar 2.0" -- "Animation Polish: secondary motion"): real,
+// pure, headlessly-testable -- the actual angle (degrees, to rotate the
+// head joint around its local X axis) for a given locomotion state and
+// accumulated phase. Extracted out of AvatarController::tick() (which
+// also does real ECS/skinning-matrix work) so the actual math is
+// separately testable, same "pure logic lives in its own free function"
+// split this codebase already follows throughout (e.g.
+// core::resolveAvatarIdleClipPath()). Jump/Falling/Landing get no
+// procedural bob at all (0.0f) -- those states are already carrying
+// real, deliberate authored motion of their own; layering a head-sway
+// on top would fight it.
+[[nodiscard]] float computeSecondaryHeadBobDegrees(AvatarLocomotionState state, float phase, float idleSwayDegrees,
+                                                     float walkBobDegrees, float runBobDegrees);
+
+// The real per-tick phase-advance rate (Hz, i.e. full 2*pi cycles per
+// second) for whichever locomotion state is currently active -- Idle
+// sways slowly and calmly, Walk/Run bob faster, matching a real
+// footfall-adjacent cadence. Jump/Falling/Landing advance at 0 (no
+// procedural motion to phase at all).
+[[nodiscard]] float secondaryHeadBobHzForState(AvatarLocomotionState state, float idleSwayHz, float walkBobHz,
+                                                 float runBobHz);
 
 // The animation-side counterpart to CharacterController -- that class
 // owns input/physics/camera (see its own header comment); this one owns
@@ -49,6 +90,24 @@ public:
         // the two dimensions isGrounded()'s raycast needs.
         float capsuleRadius = 0.35f;
         float capsuleHalfHeight = 0.55f;
+
+        // Kronos ("Avatar 2.0" -- "Animation Polish: secondary motion"):
+        // real, small, procedural head-bob/sway layered on TOP of
+        // whatever authored clip is already playing (idle/walk/run) --
+        // this rig's own shipped clips already carry the *primary*
+        // motion (see idle.anim's own real spine/head/arm sway
+        // keyframes); this is deliberately a tiny, separate,
+        // state-dependent addition on the head joint only, not a
+        // reimplementation of authored animation. Idle uses a slow, calm
+        // sway (breathing-like); Walk/Run use a faster, sharper bob tied
+        // to footfall cadence. Degrees are small on purpose -- this is a
+        // subtle "alive" cue, not a visible bobblehead.
+        float idleSwayDegrees = 1.2f;
+        float walkBobDegrees = 3.0f;
+        float runBobDegrees = 4.5f;
+        float idleSwayHz = 0.3f;
+        float walkBobHz = 1.8f;
+        float runBobHz = 2.6f;
     };
 
     // Two constructors rather than one with `Settings settings = {}` --
@@ -163,6 +222,14 @@ private:
 
     AnimationPlayer::Handle emoteHandle_ = AnimationPlayer::kInvalidHandle;
     bool emotePlaying_ = false;
+
+    // Kronos ("Avatar 2.0" -- "Animation Polish: secondary motion"): real
+    // accumulated phase (radians, wrapped to [0, 2*pi)) driving the real
+    // procedural head bob -- see computeSecondaryHeadBobDegrees()'s own
+    // comment. Advanced every real tick() call by
+    // secondaryHeadBobHzForState()'s own rate for whichever state is
+    // currently active.
+    float secondaryMotionPhase_ = 0.0f;
 };
 
 } // namespace engine::core

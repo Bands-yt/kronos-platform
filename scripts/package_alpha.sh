@@ -57,6 +57,15 @@ cp "${BUILD_DIR}"/shaders/*.spv "${OUT_DIR}/shaders/"
 # here and why none of it is a licensed/scraped asset).
 cp -R "${REPO_ROOT}/engine/assets" "${OUT_DIR}/assets"
 
+# Real bundled games (Kronos "Game Catalogue Overhaul"): `games/` is the
+# real runtime scan directory core::scanLocalGameDirectory() defaults to
+# (resolved via core::resolveResourceDir(), same real "prefer a packaged
+# sibling dir" convention as assets/templates/examples above) -- ships as
+# a sibling of the binaries so the Game Catalogue has real, genuinely
+# swappable content (games/DefaultWorld, games/SkyGarden) from a
+# tester's very first launch, not an empty catalogue.
+cp -R "${REPO_ROOT}/games" "${OUT_DIR}/games"
+
 # Plugin folder structure (Alpha Completion Checklist, "plugin folder
 # structure"): `plugins/` is the real runtime scan directory
 # studio::plugins::PluginBrowserPlugin defaults to (see its own
@@ -96,6 +105,37 @@ fi
 # repo just to find the Quickstart/Troubleshooting/Tester Guide.
 cp -R "${REPO_ROOT}/docs" "${OUT_DIR}/docs"
 cp "${REPO_ROOT}/README.md" "${OUT_DIR}/README.md"
+
+# Kronos ("UI/UX Revamp" -- "Integrate icon into build scripts and
+# launcher metadata"): a real, generated .desktop file (freedesktop.org
+# Desktop Entry spec) pointing at this specific package's own real,
+# absolute Exec/Icon paths -- this is a self-contained, relocatable
+# folder (not a system package with a fixed install prefix), so the
+# paths are only real/correct once OUT_DIR is known, which is exactly
+# why this is generated here rather than checked in as a static file. A
+# tester who wants a real, clickable/menu-searchable launcher copies
+# this into ~/.local/share/applications/ (README/Quickstart says so);
+# neither binary requires it to run.
+cat > "${OUT_DIR}/kronos.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Kronos
+Comment=Kronos Platform -- Game Catalogue and Home Screen
+Exec=${OUT_DIR}/engine_runtime
+Icon=${OUT_DIR}/assets/icons/kronos_icon.png
+Terminal=false
+Categories=Game;
+EOF
+cat > "${OUT_DIR}/kronos-studio.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Kronos Studio
+Comment=Kronos Platform -- Studio (creator tools)
+Exec=${OUT_DIR}/studio
+Icon=${OUT_DIR}/assets/icons/kronos_icon.png
+Terminal=false
+Categories=Development;Game;
+EOF
 
 echo "package_alpha.sh: done. Real package layout:"
 find "${OUT_DIR}" -maxdepth 2 | sed "s|${OUT_DIR}|  kronos-alpha|"

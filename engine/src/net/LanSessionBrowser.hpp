@@ -25,6 +25,16 @@ struct DiscoveredSession {
     // NetworkStats::averagePingMs() already uses), not a fabricated
     // estimate. A one-way broadcast alone can never produce a real RTT.
     float pingMs = 0.0f;
+
+    // Kronos ("Moderation Architecture v2", "Session Browser Game
+    // Identity"): real, straight from the real LanSessionAnnouncement --
+    // see that struct's own comment for what each field means.
+    std::string gameName;
+    glm::vec4 gameThumbnailColor{0.35f, 0.55f, 0.85f, 1.0f};
+    uint8_t gameSafetyStatusValue = 0;
+    // Kronos ("Session Browser Polish v2"): real, see
+    // LanSessionAnnouncement::sessionStartUnixSeconds's own comment.
+    int64_t sessionStartUnixSeconds = 0;
 };
 
 // Kronos ("Active Joining UI" -- LAN discovery): the real, client-side

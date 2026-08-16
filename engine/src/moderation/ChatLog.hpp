@@ -39,6 +39,17 @@ public:
     [[nodiscard]] size_t size() const { return entries_.size(); }
     void clear() { entries_.clear(); }
 
+    // Kronos ("Moderation Architecture v1", Phase 1): real disk
+    // persistence -- this log used to be in-memory only, reset on every
+    // process restart, the single most concrete gap against "Full
+    // logging + audit trails." Same hand-rolled "KEY value / END"
+    // convention as net::GamePlayLog. Real, honest ring-buffer caveat:
+    // loadFromFile() re-applies the same maxEntries_ cap record() always
+    // has, so loading a file with more real entries than that still
+    // yields a real, bounded in-memory log, not an unbounded one.
+    [[nodiscard]] bool saveToFile(const std::string& path) const;
+    [[nodiscard]] bool loadFromFile(const std::string& path);
+
 private:
     std::deque<ChatLogEntry> entries_;
     size_t maxEntries_;

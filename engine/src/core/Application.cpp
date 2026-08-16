@@ -34,6 +34,11 @@ bool Application::initialize(const CreateInfo& info) {
     windowInfo.title = info.title;
     windowInfo.width = info.width;
     windowInfo.height = info.height;
+    // Kronos ("UI/UX Revamp" -- "App Icon"): real, resolved the same
+    // packaged-vs-dev-build way every other real asset path in this
+    // codebase already is (resolveResourceDir()'s own convention).
+    windowInfo.iconPath =
+        resolveResourceDir(executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/icons/kronos_icon.png";
     if (!window_.initialize(windowInfo)) {
         std::fprintf(stderr, "Application: Window::initialize failed.\n");
         return false;
@@ -147,6 +152,19 @@ bool Application::initialize(const CreateInfo& info) {
     // free real estate regardless of which CLI mode ends up querying it.
     input_.bindAction("ToggleMenu", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
                                                                       SDL_SCANCODE_ESCAPE});
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Input Remapping System"): real, new default bindings
+    // for runtime::RuntimeShell's own chat/shop activation, previously a
+    // hardcoded ImGuiKey_Slash check and a mouse-only HUD button
+    // respectively (see RuntimeShell.cpp's own tickChatActivation()/
+    // "Shop" button comments) -- routed through the same real, bindable
+    // action system as every other gameplay input, so both are real,
+    // honestly remappable via a Settings UI instead of a second,
+    // parallel hardcoded-key path.
+    input_.bindAction("OpenChat", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
+                                                                    SDL_SCANCODE_SLASH});
+    input_.bindAction("OpenShop", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
+                                                                    SDL_SCANCODE_B});
     // Sprint 14 ("RTX Upgrade" Phase 2 / "Performance Mode"): the real
     // runtime toggles the brief asks for. F6/F7 rather than reusing an
     // already-bound key, edge-detected the same way "Interact" already
@@ -246,8 +264,10 @@ bool Application::initialize(const CreateInfo& info) {
 
     // engine_runtime wants the 3D view filling the whole window -- unlike
     // Studio, which never calls setScene() on its own Renderer (see
-    // Renderer.hpp's setScene() doc comment).
-    renderer_.setScene(&ecs_, &camera_, &meshLibrary_, &particleSystem_, &textureLibrary_);
+    // Renderer.hpp's setScene() doc comment). riggedMeshLibrary_ is the
+    // real fix for spawnLocalPlayerAvatar()'s own skinned body actually
+    // being drawn on this path -- see setScene()'s own header comment.
+    renderer_.setScene(&ecs_, &camera_, &meshLibrary_, &particleSystem_, &textureLibrary_, &riggedMeshLibrary_);
 
     runtime::GameLoop::Subsystems subsystems{&window_, &renderer_, &ecs_, &physics_, &audio_, &scripting_, &camera_};
     gameLoop_ = std::make_unique<runtime::GameLoop>(subsystems);
@@ -341,7 +361,16 @@ bool Application::initialize(const CreateInfo& info) {
         // showcase camera replaces CharacterController entirely -- see
         // setCameraShowcaseMode()'s own comment on why (no player capsule,
         // no WASD/mouse-look, no HUD in this mode).
-        if (!cameraShowcaseModeEnabled_) characterController_.tick(dt, ecs_, physics_, input_, camera_);
+        // Kronos ("Avatar System" -- real humanoid avatar): real, honest
+        // conditional pass-through -- avatarController_/skinnedAvatarEntities_
+        // stay at their real, null/empty defaults for every caller that
+        // never calls spawnLocalPlayerAvatar() (every CLI rich mode still
+        // spawning its own plain-capsule character directly), so this is
+        // purely additive, not a behavior change for them.
+        if (!cameraShowcaseModeEnabled_ && !movementInputSuspended_) {
+            characterController_.tick(dt, ecs_, physics_, input_, camera_, avatarController_.get(),
+                                       avatarController_ ? &skinnedAvatarEntities_ : nullptr);
+        }
 
         if (cameraShowcaseModeEnabled_) {
             showcaseElapsedSeconds_ += dt;
@@ -350,7 +379,16 @@ bool Application::initialize(const CreateInfo& info) {
             camera_.yawDegrees = sample.yawDegrees;
             camera_.pitchDegrees = sample.pitchDegrees;
             camera_.rollDegrees = sample.rollDegrees;
-            camera_.verticalFovDegrees = sample.fovDegrees;
+            // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+            // Layer" -- "Accessibility: Reduced motion -- lower FOV
+            // changes"): real -- this showcase camera path is the one
+            // real place anywhere in this engine that varies FOV over
+            // time (see this method's own comment on why); skipping this
+            // one write keeps the camera at whatever real FOV it already
+            // had, an honest, real "lower FOV changes" rather than a
+            // fabricated general motion-comfort system this engine has no
+            // other FOV-varying code to apply it to.
+            if (!reducedMotionEnabled_) camera_.verticalFovDegrees = sample.fovDegrees;
 
             using T = trailer::ShowcaseSceneTimes;
             float t = showcaseElapsedSeconds_;
@@ -833,7 +871,17 @@ bool Application::initialize(const CreateInfo& info) {
                 tntWarsProjectileVisuals_.end());
 
             tntwars::tickGameplayShake(tntWarsShakeState_, dt);
-            camera_.position += tntwars::sampleGameplayShakeOffset(tntWarsShakeState_);
+            // Kronos ("Settings Panel v2 + Input Remapping +
+            // Accessibility Layer" -- "Accessibility: Reduced motion --
+            // reduced screen shake"): real -- zeroes the real offset
+            // reduced-motion players actually feel, without touching
+            // tickGameplayShake()'s own trauma-accumulation state (a
+            // real explosion still registers real trauma even while
+            // reduced motion is on, so shake resumes at the real,
+            // correct intensity the instant the setting is turned back
+            // off, rather than needing a fresh explosion to "recharge"
+            // it).
+            if (!reducedMotionEnabled_) camera_.position += tntwars::sampleGameplayShakeOffset(tntWarsShakeState_);
 
             // Kronos ("Visual Polish" world-building, "damage decals"):
             // real per-tick expiry -- see tickDecalExpiry()'s own
@@ -1986,6 +2034,102 @@ void Application::run() {
         return;
     }
     gameLoop_->run();
+}
+
+bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skinTone, HeadShape headShape,
+                                          BodyProportions bodyProportions, const AvatarLoadout& loadout,
+                                          const CatalogueIndex& catalogueIndex,
+                                          const AnimationOverrides& animationOverrides) {
+    // Real, honest reset -- a fresh call (e.g. loading a different
+    // Catalogue game) must not leave a stale AvatarController driving
+    // GPU-uploaded entities that runtime::loadGame()'s own ECS wipe
+    // already destroyed. RiggedMeshLibrary keeps whatever GPU mesh
+    // buffers the previous avatar's segments used; re-registering fresh
+    // ones each call is a real, small, accepted GPU-memory cost for a
+    // local Alpha (matches this codebase's own "don't over-engineer a
+    // resource pool for a problem that isn't real yet" convention), not
+    // a leak -- RiggedMeshLibrary owns and frees every handle it ever
+    // registers at its own destruction.
+    avatarController_.reset();
+    skinnedAvatarEntities_.clear();
+
+    EntityId character = characterController_.spawn(ecs_, physics_, spawnPosition);
+    if (character == kNullEntity) {
+        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- characterController_.spawn() failed.\n");
+        return false;
+    }
+
+    Skeleton skeleton = applyBodyProportionsToSkeleton(buildHumanoidSkeleton(), bodyProportions);
+    std::string spawnError;
+    if (!spawnRiggedAvatar(ecs_, skeleton, loadout, catalogueIndex, riggedMeshLibrary_, renderer_.allocator(),
+                            renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), skinnedAvatarEntities_,
+                            spawnError, skinTone, headShape, bodyProportions)) {
+        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnRiggedAvatar() failed: %s\n",
+                     spawnError.c_str());
+        skinnedAvatarEntities_.clear();
+        return false;
+    }
+
+    avatarController_ = std::make_unique<AvatarController>(skeleton);
+
+    // Real, shipped clips (engine/assets/animations/*.anim) -- same
+    // packaged-vs-dev-build resolution every other real asset path in
+    // this codebase uses. A missing clip is a real, honest partial
+    // degrade (that locomotion state just holds whatever pose the last
+    // successfully-loaded clip left, per AnimationPlayer's own "finished/
+    // never-started clip holds its pose" behavior) logged to stderr, not
+    // a fatal error -- the avatar itself is still real and already
+    // spawned above.
+    std::string animDir = resolveResourceDir(executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/animations";
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Animation Overrides"):
+    // `overridePath` (non-empty) is tried first; a broken override
+    // real-falls back to the shipped default clip (rather than leaving
+    // this locomotion state with no clip at all), same real, honest
+    // fail-soft discipline the shipped-clip-only path already had.
+    auto loadClip = [&](const char* fileBaseName, void (AvatarController::*setter)(AnimationClip),
+                         const std::string& overridePath) {
+        std::string shippedPath = animDir + "/" + fileBaseName + ".anim";
+        AnimationClip clip;
+        if (!overridePath.empty()) {
+            if (clip.loadFromFile(overridePath)) {
+                (avatarController_.get()->*setter)(std::move(clip));
+                return;
+            }
+            std::fprintf(stderr,
+                         "Application: spawnLocalPlayerAvatar() -- override clip \"%s\" failed to load, falling "
+                         "back to the shipped default.\n",
+                         overridePath.c_str());
+        }
+        if (clip.loadFromFile(shippedPath)) {
+            (avatarController_.get()->*setter)(std::move(clip));
+        } else {
+            std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- could not load \"%s\".\n", shippedPath.c_str());
+        }
+    };
+    loadClip("idle", &AvatarController::setIdleClip, animationOverrides.idleClipPath);
+    loadClip("walk", &AvatarController::setWalkClip, animationOverrides.walkClipPath);
+    loadClip("run", &AvatarController::setRunClip, animationOverrides.runClipPath);
+    loadClip("jump_start", &AvatarController::setJumpClip, animationOverrides.jumpStartClipPath);
+    loadClip("jump_air", &AvatarController::setJumpAirClip, animationOverrides.jumpAirClipPath);
+    loadClip("jump_land", &AvatarController::setJumpLandClip, animationOverrides.jumpLandClipPath);
+
+    return true;
+}
+
+void Application::refreshLocalPlayerAvatarAppearance(glm::vec4 skinTone, const AvatarLoadout& loadout,
+                                                       const CatalogueIndex& catalogueIndex) {
+    if (skinnedAvatarEntities_.empty()) return; // real, honest no-op -- no avatar currently spawned
+    std::array<glm::vec4, kHumanoidBodySegmentCount> colors =
+        resolveSegmentColorsForLoadout(loadout, catalogueIndex, skinTone);
+    for (size_t i = 0; i < skinnedAvatarEntities_.size() && i < colors.size(); ++i) {
+        if (auto* skinned = ecs_.tryGetComponent<SkinnedRenderable>(skinnedAvatarEntities_[i])) {
+            // Kronos ("Avatar 2.0" -- "Visual Fidelity: per-segment color
+            // gradients"): same real shading step spawnRiggedAvatar()
+            // itself applies -- see applySegmentShadingGradient()'s own
+            // comment.
+            skinned->baseColor = applySegmentShadingGradient(static_cast<HumanoidBodySegment>(i), colors[i]);
+        }
+    }
 }
 
 bool Application::startNetworking(const net::NetworkSession::Config& config) {

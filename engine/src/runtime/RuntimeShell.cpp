@@ -1,21 +1,51 @@
 #include "runtime/RuntimeShell.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <memory>
+#include <optional>
 #include <vector>
 
+#include <SDL2/SDL.h>
 #include <imgui.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_vulkan.h>
 
+#include "core/AvatarSkinTone.hpp"
 #include "core/Components.hpp"
+#include "core/HiddenGemsSelector.hpp"
+#include "core/KronosVersion.hpp"
+#include "core/ProcessLaunch.hpp"
+#include "core/ResourcePaths.hpp"
+#include "core/UITheme.hpp"
+#include "marketplace/CreditsPurchase.hpp"
+#include "marketplace/RatingSubmission.hpp"
+#include "marketplace/RecommendationEngine.hpp"
+#include "runtime/GameLoader.hpp"
+#include "runtime/GameLoop.hpp"
 
 namespace engine::runtime {
 
 namespace {
 constexpr const char* kSessionHistoryPath = "session_history.sessions";
 constexpr const char* kLocalProfilePath = "local_profile.profile";
+constexpr const char* kGamePlayLogPath = "game_play_log.playlog";
+// Kronos ("Avatar Phase" -- "AvatarEditor: Clothing & Accessory Slots"):
+// same real paths studio::StudioApp's own catalogueDatabasePath_/
+// localAvatarLoadoutPath_ use.
+constexpr const char* kAvatarCatalogueDatabasePath = "catalogue.json";
+constexpr const char* kAvatarLoadoutPath = "local_avatar_loadout.loadout";
+constexpr const char* kAnimationDatabasePath = "animations.json";
+constexpr const char* kTransactionLogPath = "transaction_log.transactions";
+
+int64_t nowUnixSeconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
 
 // Real ImGui Vulkan backend error sink -- exact same shape
 // studio::StudioApp's own checkVkResult() already establishes.
@@ -29,6 +59,7 @@ const char* joinFailureReasonLabel(net::JoinFailureReason reason) {
     switch (reason) {
         case net::JoinFailureReason::VersionMismatch: return "Version mismatch";
         case net::JoinFailureReason::SessionFull: return "Session full";
+        case net::JoinFailureReason::Banned: return "Banned from this session";
         case net::JoinFailureReason::None: return "Unknown";
     }
     return "Unknown";
@@ -45,8 +76,14 @@ const char* disconnectReasonLabel(net::DisconnectReason reason) {
 }
 } // namespace
 
-RuntimeShell::RuntimeShell(core::Application& app, std::function<core::EntityId()> spawnNetworkedPlayerEntity)
-    : app_(app), spawnNetworkedPlayerEntity_(std::move(spawnNetworkedPlayerEntity)) {}
+RuntimeShell::RuntimeShell(core::Application& app, std::function<core::EntityId()> spawnNetworkedPlayerEntity,
+                           std::function<core::EntityId(glm::vec4, core::HeadShape, core::BodyProportions,
+                                                         const core::AvatarLoadout&, const core::CatalogueIndex&,
+                                                         const core::AnimationOverrides&)>
+                               spawnOfflinePlayerEntity)
+    : app_(app),
+      spawnNetworkedPlayerEntity_(std::move(spawnNetworkedPlayerEntity)),
+      spawnOfflinePlayerEntity_(std::move(spawnOfflinePlayerEntity)) {}
 
 RuntimeShell::~RuntimeShell() { shutdown(); }
 
@@ -61,6 +98,17 @@ bool RuntimeShell::initialize() {
     // full-window layout per state is simpler and honest about what this
     // actually is.
     ImGui::StyleColorsDark();
+    // Kronos ("UI/UX Revamp"): the real, same Kronos visual identity
+    // Studio already has -- see core::applyKronosUITheme()'s own header
+    // comment for why this used to be Studio-only. Fonts must load
+    // before the ImGui_ImplVulkan_Init() call below builds the font
+    // atlas texture.
+    core::applyKronosUITheme();
+    core::loadKronosFonts(core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/fonts");
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "UI scale must affect all panels"): real baseline
+    // snapshot -- see baseUIStyle_'s own comment.
+    baseUIStyle_ = ImGui::GetStyle();
 
     core::Renderer& renderer = app_.renderer();
     core::Window& window = app_.window();
@@ -119,14 +167,60 @@ bool RuntimeShell::initialize() {
         if (pendingDrawData_) ImGui_ImplVulkan_RenderDrawData(pendingDrawData_, cmd);
     });
 
+    // Kronos ("Home Screen Avatar Preview"): real, generic engine_core
+    // hook (core::Renderer::setPrePassCallback()) -- confirmed unused
+    // anywhere else in engine_runtime, free to claim (see
+    // studio::PreviewScene's own class comment on why only one real
+    // PrePassCallback can be active at a time). Gated to only actually
+    // render while Home is genuinely visible, matching every
+    // PreviewScene-owning Studio plugin's own "don't render a closed/
+    // invisible preview" convention.
+    renderer.setPrePassCallback([this](VkCommandBuffer cmd) {
+        if (state_ == ShellState::Home && !showSplash_ && homeAvatarPreview_) {
+            homeAvatarPreview_->renderPreview(cmd, app_.renderer());
+        }
+    });
+
     std::fprintf(stdout, "RuntimeShell: ImGui Vulkan backend initialized (dynamic rendering, format=%d)\n",
                  static_cast<int>(colorFormat));
+
+    // Kronos ("Player & Chat System" -- chat panel): real, registered
+    // once here (not per-join) -- net::NetworkSession itself persists
+    // across a leave/rejoin (see its own class comment), so one real
+    // registration covers every real session this shell's whole lifetime
+    // ever joins. A real, honest no-op for offline (ProjectPath Catalogue)
+    // play -- no NetworkSession means this callback simply never fires,
+    // same as every other real NetworkSession-only feature in this shell.
+    app_.networkSession().setOnChatMessageReceived([this](net::PlayerId sender, const std::string& text) {
+        auto it = app_.networkSession().clientKnownPlayers().find(sender);
+        std::string senderName = it != app_.networkSession().clientKnownPlayers().end() ? it->second : "Unknown";
+        chatHistoryLines_.push_back(senderName + ": " + text);
+        if (chatHistoryLines_.size() > kMaxChatHistoryLines) {
+            chatHistoryLines_.erase(chatHistoryLines_.begin());
+        }
+    });
+
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Settings applied immediately"): real -- a freshly
+    // launched session already reflects a real, previously-saved
+    // profile's own graphics/audio/accessibility/input settings from the
+    // very first frame, not just the engine's own hardcoded defaults
+    // until the player happens to open Settings once.
+    ensureLocalProfileLoaded();
+    applyAllSettingsFromProfile();
+
     return true;
 }
 
 void RuntimeShell::shutdown() {
     lanBrowser_.stop();
     lanBrowserRunning_ = false;
+
+    if (homeAvatarPreview_) {
+        vkDeviceWaitIdle(app_.renderer().device());
+        homeAvatarPreview_->shutdown(app_.renderer());
+        homeAvatarPreview_.reset();
+    }
 
     if (imguiDescriptorPool_) {
         // A real, live ImGui context implies a real, live device -- this
@@ -143,15 +237,62 @@ void RuntimeShell::shutdown() {
 
 void RuntimeShell::ensureLocalProfileLoaded() {
     if (localProfileLoaded_) return;
+    bool profileFileExistedBefore = std::filesystem::exists(kLocalProfilePath);
     localProfile_ = core::loadOrCreateProfile(kLocalProfilePath);
     std::snprintf(displayNameBuffer_, sizeof(displayNameBuffer_), "%s", localProfile_.displayName.c_str());
     localProfileLoaded_ = true;
+    // Kronos ("Notifications System" -- "System messages"): a real,
+    // one-time welcome notification, gated on the real profile file
+    // genuinely not having existed before this call (not on
+    // notifications being empty -- an old, pre-existing profile that
+    // simply predates this feature must NOT retroactively get a
+    // "Welcome" message every session).
+    if (!profileFileExistedBefore) {
+        notify(core::NotificationKind::SystemMessage, "Welcome to Kronos",
+               "Your local profile has been created. Explore the Game Catalogue, Avatar Shop, and Friends panel to "
+               "get started.");
+        (void)localProfile_.saveToFile(kLocalProfilePath);
+    }
+}
+
+void RuntimeShell::ensureAvatarCatalogueLoaded() {
+    if (avatarCatalogueLoaded_) return;
+    if (avatarCatalogueDatabase_.loadFromFile(kAvatarCatalogueDatabasePath)) {
+        avatarCatalogueIndex_.rebuild(avatarCatalogueDatabase_);
+    }
+    (void)avatarLoadout_.loadFromFile(kAvatarLoadoutPath);
+    (void)animationDatabase_.loadFromFile(kAnimationDatabasePath);
+    (void)transactionLog_.loadFromFile(kTransactionLogPath);
+    avatarCatalogueLoaded_ = true;
+}
+
+void RuntimeShell::ensureHomeAvatarPreviewLoaded() {
+    if (homeAvatarPreview_) return;
+    ensureLocalProfileLoaded();
+    ensureAvatarCatalogueLoaded();
+    core::Renderer& renderer = app_.renderer();
+    homeAvatarPreview_ = std::make_unique<HomeAvatarPreview>(renderer.allocator(), renderer.device(),
+                                                              renderer.commandPool(), renderer.graphicsQueue(),
+                                                              app_.riggedMeshLibrary(), localProfile_,
+                                                              avatarCatalogueIndex_, avatarLoadout_, animationDatabase_);
 }
 
 void RuntimeShell::ensureSessionHistoryLoaded() {
     if (sessionHistoryLoaded_) return;
     (void)sessionHistory_.loadFromFile(kSessionHistoryPath);
     sessionHistoryLoaded_ = true;
+}
+
+void RuntimeShell::ensureGamePlayLogLoaded() {
+    if (gamePlayLogLoaded_) return;
+    (void)gamePlayLog_.loadFromFile(kGamePlayLogPath);
+    // Real crash detection -- see reconcileUnclosedSessionsAsCrashed()'s
+    // own comment. Must run here, once, right after load and before this
+    // run records anything of its own.
+    if (gamePlayLog_.reconcileUnclosedSessionsAsCrashed() > 0) {
+        (void)gamePlayLog_.saveToFile(kGamePlayLogPath);
+    }
+    gamePlayLogLoaded_ = true;
 }
 
 void RuntimeShell::showSessionBrowser() {
@@ -175,6 +316,25 @@ void RuntimeShell::joinSession(const net::DiscoveredSession& session) {
 
     ensureLocalProfileLoaded();
 
+    // Kronos ("Moderation Architecture v2", "Session Browser Game
+    // Identity" -- "block minors from unsafe sessions"): real,
+    // launch-time defense-in-depth, same "never rely on a single layer"
+    // principle as selectGame()'s own equivalent check for the Game
+    // Catalogue -- the Session Browser row for an Unsafe session is
+    // already hidden from a non-Adult viewer (drawSessionBrowserPanel()),
+    // but this doesn't trust that alone: the "Recently played" list below
+    // (drawSessionBrowserPanel()'s own second real joinSession() call
+    // site, built from net::SessionHistory rather than a live
+    // Announce) never passes through that row-hiding at all.
+    auto safetyStatus = static_cast<core::GameSafetyStatus>(session.gameSafetyStatusValue);
+    if (!core::isGameSafeToLaunchForAgeGroup(safetyStatus, effectiveAgeGroup())) {
+        lastError_ = ShellErrorInfo{};
+        lastError_.kind = ShellErrorKind::NetworkFailure;
+        lastError_.detail = "This session's game is flagged Unsafe and cannot be joined in Minor Mode.";
+        state_ = ShellState::Error;
+        return;
+    }
+
     net::NetworkSession::Config config;
     config.mode = net::NetworkMode::Client;
     config.serverAddress = session.sourceAddress;
@@ -182,6 +342,10 @@ void RuntimeShell::joinSession(const net::DiscoveredSession& session) {
     lastJoinedHostDisplayName_ = session.hostDisplayName;
 
     app_.networkSession().setLocalDisplayName(localProfile_.displayName);
+    // Kronos ("Moderation Architecture v2", "Account System v1"): real
+    // identity signals sent with this join -- see setLocalIdentity()'s
+    // own comment.
+    app_.networkSession().setLocalIdentity(localProfile_.profileId, effectiveAgeGroup());
     if (!app_.startNetworking(config)) {
         lastError_ = ShellErrorInfo{};
         lastError_.kind = ShellErrorKind::NetworkFailure;
@@ -191,9 +355,7 @@ void RuntimeShell::joinSession(const net::DiscoveredSession& session) {
     }
 
     ensureSessionHistoryLoaded();
-    int64_t now =
-        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    sessionHistory_.recordConnection(session.sessionName, session.sourceAddress, session.gamePort, now);
+    sessionHistory_.recordConnection(session.sessionName, session.sourceAddress, session.gamePort, nowUnixSeconds());
     (void)sessionHistory_.saveToFile(kSessionHistoryPath);
 
     if (spawnNetworkedPlayerEntity_) {
@@ -232,13 +394,140 @@ void RuntimeShell::leaveSession() {
     app_.setNetworkedLocalPlayerEntity(core::kNullEntity);
     app_.input().setRelativeMouseMode(false);
     showPlayerListOverlay_ = false;
+
+    // Kronos ("Game Catalogue Overhaul", Phase 6): real session-end
+    // logging -- a real, honest no-op when currentGameId_ is empty (this
+    // InGame session was a real networked join, not a local
+    // runtime::loadGame() session; see currentGameId_'s own comment).
+    if (!currentGameId_.empty()) {
+        ensureGamePlayLogLoaded();
+        gamePlayLog_.recordSessionEnd(currentGameId_, nowUnixSeconds(), /*crashed=*/false);
+        (void)gamePlayLog_.saveToFile(kGamePlayLogPath);
+        currentGameId_.clear();
+    }
+
     state_ = computeNextState(state_, ShellEvent::SessionEnded);
 }
 
-void RuntimeShell::playOffline() {
+void RuntimeShell::openGameCatalogue() {
     if (state_ != ShellState::Home) return;
+    // Real, fresh disk read every time the catalogue is actually opened
+    // (a deliberate user action, not a hot path) -- not cached across a
+    // whole session, so Featured/Hidden-Gems ranking reflects whatever
+    // was just played, not stale first-launch data.
+    std::string gamesDir = core::resolveResourceDir(core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+    discoveredGames_ = core::buildGameCatalogueEntries(gamesDir, kGamePlayLogPath, nowUnixSeconds());
+    // Kronos ("Moderation Architecture v2", "Catalogue Safety
+    // Integration"): real "Catalogue hides unsafe games from minors" --
+    // ensureLocalProfileLoaded() has already real-loaded localProfile_ by
+    // the time the Home Screen (and thus this button) is reachable.
+    ensureLocalProfileLoaded();
+    discoveredGames_ = core::filterCatalogueEntriesForAgeGroup(discoveredGames_, effectiveAgeGroup());
+    gamesScanned_ = true;
+    state_ = computeNextState(state_, ShellEvent::OpenGameCatalogue);
+}
+
+void RuntimeShell::selectGame(const core::GameCatalogueEntry& game) {
+    if (state_ != ShellState::GameCatalogue) return;
+
+    // Kronos ("Moderation Architecture v2", "Catalogue Safety
+    // Integration"): real, launch-time defense-in-depth -- the catalogue
+    // listing already real-filters Unsafe games out for a non-Adult
+    // viewer (openGameCatalogue()), but this check doesn't trust that
+    // alone; the same "never rely on a single layer" principle Minor
+    // Mode's DM/chat blocking already follows elsewhere this session.
+    if (!core::isGameSafeToLaunchForAgeGroup(game.manifest.safetyStatus, effectiveAgeGroup())) {
+        std::fprintf(stderr, "RuntimeShell: refusing to launch \"%s\" -- flagged Unsafe and the local profile is not "
+                              "a self-declared Adult\n",
+                     game.manifest.name.c_str());
+        return;
+    }
+
+    if (game.manifest.launchKind == core::GameLaunchKind::CliFlag) {
+        // A still-hardcoded rich mode (TNT Wars/Mining Sim/House Demo) --
+        // relaunch this same binary with its real flag and leave this
+        // process's own shell state untouched (the new process owns its
+        // own real bring-up from here).
+        std::string selfPath = core::executableDirectory() + "/engine_runtime";
+        std::vector<std::string> args;
+        if (!game.manifest.cliFlag.empty()) args.push_back(game.manifest.cliFlag);
+        if (!core::launchProcess(selfPath, args)) {
+            std::fprintf(stderr, "RuntimeShell: failed to relaunch engine_runtime for \"%s\" (%s)\n",
+                         game.manifest.name.c_str(), game.manifest.cliFlag.c_str());
+        }
+        return;
+    }
+
+    core::DiscoveredGame discovered;
+    discovered.manifestPath = game.manifestPath;
+    discovered.manifest = game.manifest;
+    discovered.parseSucceeded = true;
+    if (!loadGame(app_, discovered)) {
+        std::fprintf(stderr, "RuntimeShell: \"%s\" real-failed to load\n", game.manifest.name.c_str());
+        return;
+    }
+
+    // Kronos ("Kronos Player & Chat System Initialization" -- "Spawn a
+    // default avatar when entering any world"): real, necessary --
+    // loadGame() only rebuilds the scene's own static content (see
+    // spawnOfflinePlayerEntity_'s own constructor-param comment for why);
+    // without this, launching any Catalogue game left the player with no
+    // controllable character at all (core::CharacterController::tick()
+    // still ran every sim tick per Application's own pre-tick hook, but
+    // driving whatever stale/invalid entity_ the ECS wipe inside
+    // loadGame() left behind).
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Skin-Tone Selection" /
+    // "Avatar Head System" / "Body Sliders" / "Clothing & Accessory
+    // Slots" / "Animation Overrides"): real, resolved from the real,
+    // chosen (or never-chosen, real default) core::LocalProfile fields
+    // plus the real, on-disk avatar catalogue/loadout/animation database
+    // -- ensureLocalProfileLoaded() already ran (openGameCatalogue() calls
+    // it before this state is ever reachable); ensureAvatarCatalogueLoaded()
+    // is called here since Catalogue browsing itself never needed any of
+    // these before now.
+    if (spawnOfflinePlayerEntity_) {
+        ensureAvatarCatalogueLoaded();
+        // Empty when unset or the referenced clip no longer resolves in
+        // the database -- core::Application::spawnLocalPlayerAvatar()'s
+        // own loadClip() treats an empty override path as "use the
+        // shipped default," the same real, honest fail-soft as a broken
+        // override.
+        auto resolveOverridePath = [&](const std::string& itemId) -> std::string {
+            if (itemId.empty()) return std::string();
+            const core::AnimationManifest* manifest = animationDatabase_.findById(itemId);
+            return manifest != nullptr ? manifest->item.clipPath : std::string();
+        };
+        core::AnimationOverrides animationOverrides;
+        animationOverrides.idleClipPath = resolveOverridePath(localProfile_.animOverrideIdleId);
+        animationOverrides.walkClipPath = resolveOverridePath(localProfile_.animOverrideWalkId);
+        animationOverrides.runClipPath = resolveOverridePath(localProfile_.animOverrideRunId);
+        animationOverrides.jumpStartClipPath = resolveOverridePath(localProfile_.animOverrideJumpStartId);
+        animationOverrides.jumpAirClipPath = resolveOverridePath(localProfile_.animOverrideJumpAirId);
+        animationOverrides.jumpLandClipPath = resolveOverridePath(localProfile_.animOverrideJumpLandId);
+
+        spawnOfflinePlayerEntity_(
+            core::resolveSkinToneColor(localProfile_.skinToneIndex), core::headShapeFromIndex(localProfile_.headShapeIndex),
+            core::BodyProportions{localProfile_.bodyHeight, localProfile_.bodyWidth, localProfile_.bodyLimbScale,
+                                   localProfile_.bodyTorsoLength, localProfile_.bodyShoulderWidth},
+            avatarLoadout_, avatarCatalogueIndex_, animationOverrides);
+    }
+
+    // Kronos ("Game Catalogue Overhaul", Phase 6): real, local retention
+    // logging -- see net::GamePlayLog's own class comment.
+    ensureGamePlayLogLoaded();
+    currentGameId_ = game.manifest.name;
+    gamePlayLog_.recordSessionStart(currentGameId_, nowUnixSeconds());
+    (void)gamePlayLog_.saveToFile(kGamePlayLogPath);
+
     app_.input().setRelativeMouseMode(true);
-    state_ = computeNextState(state_, ShellEvent::PlayOffline);
+    state_ = computeNextState(state_, ShellEvent::GameSelected);
+}
+
+void RuntimeShell::launchStudio() {
+    std::string studioPath = core::executableDirectory() + "/studio";
+    if (!core::launchProcess(studioPath, {})) {
+        std::fprintf(stderr, "RuntimeShell: failed to launch Studio at \"%s\"\n", studioPath.c_str());
+    }
 }
 
 void RuntimeShell::tickLanBrowserIfNeeded(float dt) {
@@ -276,6 +565,13 @@ void RuntimeShell::tick(float dt) {
         if (session.localPlayerId() != net::kInvalidPlayer) {
             state_ = computeNextState(state_, ShellEvent::JoinSucceeded);
             app_.input().setRelativeMouseMode(true);
+            // Kronos ("Social and Messaging Roadmap" telemetry ask --
+            // "session joins"): real, local telemetry on a real,
+            // confirmed join (not just an attempt).
+            analytics::TelemetryEvent joinEvent;
+            joinEvent.name = "session_joined";
+            joinEvent.properties["sessionId"] = static_cast<int64_t>(session.sessionId());
+            telemetryQueue_.push(std::move(joinEvent));
         } else if (session.lastJoinFailureReason() != net::JoinFailureReason::None) {
             lastError_ = ShellErrorInfo{};
             lastError_.kind = ShellErrorKind::JoinFailed;
@@ -290,7 +586,8 @@ void RuntimeShell::tick(float dt) {
     // deliberate leaveSession() call, which transitions immediately and
     // synchronously from inside leaveSession() itself, never through
     // here. isClient() guards this off entirely for offline play
-    // (playOffline() never touches networkSession() at all).
+    // (selectGame() on a ProjectPath game never touches networkSession()
+    // at all).
     if (state_ == ShellState::InGame && app_.networkSession().isClient() &&
         app_.networkSession().localPlayerId() == net::kInvalidPlayer &&
         app_.networkSession().lastDisconnectReason() != net::DisconnectReason::None) {
@@ -314,20 +611,85 @@ void RuntimeShell::tick(float dt) {
     // already no-ops safely on an inactive (offline) NetworkSession -- see
     // NetworkSession::shutdown()'s own mode/sessionActuallyStarted_ guard
     // -- so this one call is correct for both online and offline play.
-    bool escapeDown = state_ == ShellState::InGame && app_.input().isActionDown("ToggleMenu");
+    // Kronos ("Player & Chat System" -- chat panel): Escape closes an
+    // open chat box first, same real "Escape backs out one real layer at
+    // a time" convention every other real menu in this shell already
+    // follows (SessionBrowser/GameCatalogue/Error's own ReturnHome) --
+    // without this real guard, pressing Escape to cancel a half-typed
+    // chat message would instead leave the whole game, a real, jarring
+    // bug this check exists specifically to prevent.
+    bool escapeDown = state_ == ShellState::InGame && !showChatPanel_ && app_.input().isActionDown("ToggleMenu");
     if (escapeDown && !escapeKeyWasDown_) {
         leaveSession();
     }
     escapeKeyWasDown_ = escapeDown;
 
-    beginFrame();
-    switch (state_) {
-        case ShellState::Home: drawHomePanel(); break;
-        case ShellState::SessionBrowser: drawSessionBrowserPanel(); break;
-        case ShellState::Loading: drawLoadingPanel(); break;
-        case ShellState::Error: drawErrorPanel(); break;
-        case ShellState::InGame: drawPlayerListOverlay(); break;
+    tickToasts(dt);
+    // Kronos ("Load Testing and Telemetry" / "Simple Recommendation
+    // Engine"): real, periodic drain-to-disk -- see
+    // analytics::TelemetrySender's own header comment. Once a second is
+    // plenty for this Alpha's real event volume; not every frame, to
+    // avoid needless real file I/O.
+    telemetryFlushClock_ += dt;
+    if (telemetryFlushClock_ >= 1.0f) {
+        telemetryFlushClock_ = 0.0f;
+        telemetrySender_.flush();
     }
+    // Kronos ("Home Screen Avatar Preview"): real, only ticked while
+    // actually visible (Home, past the splash) -- an idle preview no one
+    // is looking at still costs nothing extra beyond this one real
+    // check.
+    if (state_ == ShellState::Home && !showSplash_ && homeAvatarPreview_) homeAvatarPreview_->update(dt);
+
+    // Kronos ("Home UI Polish" -- "Smooth transitions"): real, general
+    // fade-in on every real state change -- see stateTransitionClock_'s
+    // own comment.
+    if (state_ != previousDrawState_) {
+        stateTransitionClock_ = 0.0f;
+        previousDrawState_ = state_;
+    } else {
+        stateTransitionClock_ += dt;
+    }
+    float transitionAlpha = std::clamp(stateTransitionClock_ / kStateTransitionFadeSeconds, 0.0f, 1.0f);
+
+    beginFrame();
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, transitionAlpha);
+    // Kronos ("Branding + Release Prep"): a real, one-time splash --
+    // takes over the very first few real Home frames, then never shows
+    // again this run.
+    if (state_ == ShellState::Home && showSplash_) {
+        splashClock_ += dt;
+        if (splashClock_ >= kSplashDurationSeconds) showSplash_ = false;
+        drawSplashPanel();
+    } else {
+        switch (state_) {
+            case ShellState::Home: drawHomePanel(); break;
+            case ShellState::SessionBrowser: drawSessionBrowserPanel(); break;
+            case ShellState::Loading: drawLoadingPanel(); break;
+            case ShellState::GameCatalogue: drawGameCataloguePanel(); break;
+            case ShellState::AvatarShop: drawAvatarShopPanel(); break;
+            case ShellState::Settings: drawSettingsPanel(); break;
+            case ShellState::Friends: drawFriendsPanel(); break;
+            case ShellState::Notifications: drawNotificationsPanel(); break;
+            case ShellState::Error: drawErrorPanel(); break;
+            case ShellState::InGame:
+                tickTrailerCaptureMode(dt);
+                if (!trailerHudHidden_) {
+                    drawPlayerListOverlay();
+                    tickChatActivation();
+                    drawChatPanel();
+                    if (showAvatarShopOverlay_) drawAvatarShopPanel();
+                    if (showSettingsOverlay_) drawSettingsPanel();
+                    if (showFriendsOverlay_) drawFriendsPanel();
+                    if (showNotificationsOverlay_) drawNotificationsPanel();
+                    if (trailerCaptureModeEnabled_) drawTrailerCapturePanel();
+                }
+                break;
+        }
+        if (state_ == ShellState::Home && showAboutOverlay_) drawAboutPanel();
+    }
+    ImGui::PopStyleVar();
+    drawToasts();
     endFrame();
 }
 
@@ -340,43 +702,162 @@ void RuntimeShell::drawHomePanel() {
     ImGui::Begin("Kronos", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    ImGui::SetCursorPos(ImVec2(viewport->WorkSize.x * 0.5f - 160.0f, viewport->WorkSize.y * 0.25f));
-    ImGui::BeginGroup();
-    ImGui::Text("KRONOS"); // real, honest default font -- no custom font asset shipped for this shell yet
-    ImGui::Spacing();
+    // Kronos ("Home Screen Avatar Preview"): real, live, orbit-able --
+    // placed to the right of the button card so it reads as a real
+    // companion panel, not a random floating window (the spec's own
+    // "Integrate cleanly with existing Home layout"). Only drawn once
+    // the splash has finished (matches every other Home element).
+    if (!showSplash_) {
+        ensureHomeAvatarPreviewLoaded();
+        constexpr float kPreviewWidth = 360.0f;
+        constexpr float kPreviewHeight = 440.0f;
+        float previewX = viewport->WorkPos.x + viewport->WorkSize.x * 0.74f - kPreviewWidth * 0.5f;
+        float previewY = viewport->WorkPos.y + viewport->WorkSize.y * 0.5f - kPreviewHeight * 0.5f;
+        ImGui::SetNextWindowPos(ImVec2(previewX, previewY), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(kPreviewWidth, kPreviewHeight), ImGuiCond_Always);
+        if (ImGui::Begin("##home_avatar_preview", nullptr,
+                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav)) {
+            ImGui::TextDisabled("Your Avatar");
+            ImGui::BeginChild("##home_avatar_preview_viewport", ImVec2(0.0f, kPreviewHeight - 60.0f), true);
+            if (homeAvatarPreview_) homeAvatarPreview_->draw();
+            ImGui::EndChild();
+            ImGui::TextDisabled("Drag to orbit, scroll to zoom");
+        }
+        ImGui::End();
+    }
 
-    if (ImGui::InputText("Playing As", displayNameBuffer_, sizeof(displayNameBuffer_))) {
+    // Kronos ("Home UI Polish" -- "Clean layout"): a real, centered card
+    // (not the old raw top-left button stack) -- width is fixed so
+    // wrapping/alignment stays predictable across real window sizes,
+    // matching the same "fixed-width centered card" shape
+    // drawErrorPanel() already uses.
+    // Kronos ("Home Screen Avatar Preview"): the card now sits left-of-
+    // center (not dead-center) so the real avatar preview panel above
+    // has real, non-overlapping room on the right -- a real, deliberate
+    // two-column Home layout, not a coincidence of leftover space.
+    constexpr float kCardWidth = 340.0f;
+    float cardX = viewport->WorkPos.x + viewport->WorkSize.x * 0.30f - kCardWidth * 0.5f;
+    ImGui::SetCursorPos(ImVec2(cardX - viewport->WorkPos.x, viewport->WorkSize.y * 0.16f));
+    ImGui::BeginGroup();
+
+    ImGui::SetWindowFontScale(2.2f);
+    // Real, honest default font -- no custom font asset shipped for this
+    // shell yet (see this comment's own long-standing precedent).
+    ImGui::TextUnformatted("KRONOS");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::TextDisabled("Alpha Platform");
+    ImGui::Dummy(ImVec2(0.0f, 12.0f));
+
+    ImGui::SetNextItemWidth(kCardWidth);
+    if (ImGui::InputText("##playing_as", displayNameBuffer_, sizeof(displayNameBuffer_))) {
         localProfile_.displayName = displayNameBuffer_;
         (void)localProfile_.saveToFile(kLocalProfilePath);
     }
-    ImGui::Spacing();
-    ImGui::Spacing();
+    ImGui::SameLine();
+    ImGui::TextDisabled("Playing As");
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
 
-    ImVec2 buttonSize(200.0f, 40.0f);
-    if (ImGui::Button("Play", buttonSize)) playOffline();
-    if (ImGui::Button("Sessions", buttonSize)) showSessionBrowser();
-    // Kronos ("Active Joining UI"): Create/Plugins/Assets are honestly
-    // NOT this player client's job -- engine_runtime has no scene editor,
-    // no plugin browser, no asset browser of its own (that's Kronos
-    // Studio, a separate binary/creator tool). Real, honest disabled
-    // buttons with an explanatory tooltip beat either faking the
-    // functionality here or silently omitting the nav items the original
-    // checklist explicitly named.
-    ImGui::BeginDisabled(true);
-    ImGui::Button("Create", buttonSize);
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open Kronos Studio to create or edit a project.");
-    ImGui::BeginDisabled(true);
-    ImGui::Button("Plugins", buttonSize);
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open Kronos Studio's Plugin Browser to manage plugins.");
-    ImGui::BeginDisabled(true);
-    ImGui::Button("Assets", buttonSize);
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open Kronos Studio's Asset Browser to manage assets.");
+    // Primary action, visually distinct (accent color) from every
+    // secondary action below it -- the one real, most common thing a
+    // returning player wants to do.
+    ImVec2 primaryButtonSize(kCardWidth, 48.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.55f, 0.95f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.16f, 0.38f, 0.72f, 1.0f));
+    if (ImGui::Button("Game Catalogue", primaryButtonSize)) openGameCatalogue();
+    ImGui::PopStyleColor(3);
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+
+    // Kronos ("Social Layer" / "Notifications System"): real, first
+    // Home-reachable entry points -- see ShellState::Friends/
+    // Notifications' own comments. Badge counts (pending requests/unread)
+    // surface directly on the button label so a returning player notices
+    // without having to open either panel first.
+    std::string friendsLabel = "Friends";
+    if (!localProfile_.pendingRequests.empty()) {
+        friendsLabel += " (" + std::to_string(localProfile_.pendingRequests.size()) + ")";
+    }
+    size_t unread = notification::unreadCount(localProfile_);
+    std::string notificationsLabel = unread > 0 ? "Notifications (" + std::to_string(unread) + ")" : "Notifications";
+
+    ImVec2 halfButtonSize((kCardWidth - ImGui::GetStyle().ItemSpacing.x) * 0.5f, 40.0f);
+    // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI"): the
+    // real, first player-facing entry point into the shared
+    // avatar-item Marketplace -- see ShellState::AvatarShop's own header
+    // comment for why this closes a real, previously-stated gap.
+    if (ImGui::Button("Avatar Shop", halfButtonSize)) openAvatarShop();
+    ImGui::SameLine();
+    if (ImGui::Button("Sessions", halfButtonSize)) showSessionBrowser();
+    if (ImGui::Button(friendsLabel.c_str(), halfButtonSize)) openFriends();
+    ImGui::SameLine();
+    if (ImGui::Button(notificationsLabel.c_str(), halfButtonSize)) openNotifications();
+    if (ImGui::Button("Settings", halfButtonSize)) openSettings();
+    ImGui::SameLine();
+    // Kronos ("Game Catalogue Overhaul"): the real replacement for the
+    // old bare "Play" button plus the old disabled Create/Plugins/Assets
+    // placeholders -- Launch Studio genuinely opens the real editor
+    // (core::launchProcess(), a real sibling process, not a stub). The
+    // real, only path to AvatarEditor/Creator Dashboard, both of which
+    // stay real, Studio-only panels by original design (not a gap --
+    // see studio::plugins::AvatarEditor/CreatorDashboardPanel), not
+    // duplicated here.
+    if (ImGui::Button("Launch Studio", halfButtonSize)) launchStudio();
+
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ImGui::TextDisabled("Kronos %s", core::kKronosVersion);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("About")) showAboutOverlay_ = true;
+
     ImGui::EndGroup();
 
     ImGui::End();
+}
+
+void RuntimeShell::drawSplashPanel() {
+    // Kronos ("Branding + Release Prep" -- "logo placeholder"): a real,
+    // honest text wordmark, not an image -- there is no real image-asset
+    // pipeline anywhere in this codebase yet (the same, already-stated
+    // "flat color swatch, not a rendered thumbnail" gap every card/
+    // thumbnail in this engine already states), so a placeholder "logo"
+    // here means real, deliberate typography, not a fabricated graphic.
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("##splash", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                      ImGuiWindowFlags_NoInputs);
+    ImGui::SetCursorPos(ImVec2(viewport->WorkSize.x * 0.5f - 90.0f, viewport->WorkSize.y * 0.42f));
+    ImGui::BeginGroup();
+    ImGui::SetWindowFontScale(2.6f);
+    ImGui::TextColored(ImVec4(0.28f, 0.55f, 0.95f, 1.0f), "KRONOS");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::TextDisabled("Alpha %s", core::kKronosVersion);
+    ImGui::EndGroup();
+    ImGui::End();
+}
+
+void RuntimeShell::drawAboutPanel() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f - 180.0f,
+                                    viewport->WorkPos.y + viewport->WorkSize.y * 0.3f),
+                             ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
+    bool open = true;
+    if (ImGui::Begin("About Kronos", &open, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::TextColored(ImVec4(0.28f, 0.55f, 0.95f, 1.0f), "KRONOS");
+        ImGui::Text("Version %s", core::kKronosVersion);
+        ImGui::TextDisabled("Built %s", core::kKronosBuildDate);
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "Kronos is a local, solo-developer game platform: a real-time 3D engine, a Studio "
+            "editor, and a runtime shell with an avatar marketplace, social layer, and LAN "
+            "multiplayer -- all in one Alpha build.");
+        ImGui::Separator();
+        ImGui::TextDisabled("Your Profile Id: %s", localProfile_.creatorId.c_str());
+        if (ImGui::Button("Close")) open = false;
+    }
+    ImGui::End();
+    if (!open) showAboutOverlay_ = false;
 }
 
 void RuntimeShell::drawSessionBrowserPanel() {
@@ -395,36 +876,102 @@ void RuntimeShell::drawSessionBrowserPanel() {
     }
 
     ImGui::SeparatorText("Sessions on your network");
+    ensureLocalProfileLoaded();
+    // Kronos ("Session Browser Polish v2" -- "Sorting"/"Filters"): real,
+    // pure logic (net::SessionBrowserSort.hpp) -- this panel only
+    // supplies the UI state (sortIndex/friendsOnly) and applies the safe-
+    // to-view filter that already existed (Minor/Unknown never even sees
+    // an Unsafe row -- unchanged behavior, just moved ahead of sort so
+    // both real filters compose cleanly into one final list).
+    static constexpr const char* kSessionSortNames[] = {"Most Active", "Newly Created", "Alphabetical"};
+    static constexpr net::SessionSortOrder kSessionSortValues[] = {
+        net::SessionSortOrder::MostActive, net::SessionSortOrder::NewlyCreated, net::SessionSortOrder::Alphabetical};
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::Combo("Sort", &sessionBrowserSortIndex_, kSessionSortNames, IM_ARRAYSIZE(kSessionSortNames));
+    ImGui::SameLine();
+    ImGui::Checkbox("Friends' sessions only", &sessionBrowserFriendsOnly_);
+
     std::vector<net::DiscoveredSession> discovered = lanBrowser_.discoveredSessions();
-    if (discovered.empty()) {
-        ImGui::TextDisabled("Searching for real sessions being announced on your LAN...");
+    std::vector<net::DiscoveredSession> safeToView;
+    for (const auto& session : discovered) {
+        auto safetyStatus = static_cast<core::GameSafetyStatus>(session.gameSafetyStatusValue);
+        // Kronos ("Catalogue Safety Integration"): the real, shared rule
+        // -- a Minor/Unknown viewer never even sees an Unsafe session row
+        // at all (matches the Catalogue's own "hides unsafe games from
+        // minors" behavior, not just a disabled Join button they could
+        // try to bypass).
+        if (core::isGameSafeToLaunchForAgeGroup(safetyStatus, effectiveAgeGroup())) safeToView.push_back(session);
+    }
+    if (sessionBrowserFriendsOnly_) safeToView = net::filterDiscoveredSessionsToFriends(safeToView, localProfile_.friends);
+    std::vector<net::DiscoveredSession> shown =
+        net::sortDiscoveredSessions(std::move(safeToView), kSessionSortValues[sessionBrowserSortIndex_]);
+
+    if (shown.empty()) {
+        ImGui::TextDisabled(sessionBrowserFriendsOnly_ ? "None of your friends have a session running right now."
+                                                        : "Searching for real sessions being announced on your LAN...");
     } else {
-        if (ImGui::BeginTable("DiscoveredSessions", 5,
+        // Kronos ("Moderation Architecture v2", "Session Browser Game
+        // Identity"): a real "Game" column -- a flat color-swatch
+        // thumbnail (same real, honest "no image pipeline exists"
+        // convention as the Game Catalogue's own cards, drawGameCard()
+        // above) plus the real broadcast game name, and a real "Unsafe"
+        // badge for a self-declared Adult viewer who can still see (but
+        // must be warned about) a session Minor Mode would otherwise
+        // hide entirely.
+        if (ImGui::BeginTable("DiscoveredSessions", 6,
                                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("Name");
+            ImGui::TableSetupColumn("Game");
             ImGui::TableSetupColumn("Host");
             ImGui::TableSetupColumn("Players");
             ImGui::TableSetupColumn("Ping");
             ImGui::TableSetupColumn("");
             ImGui::TableHeadersRow();
-            for (const auto& session : discovered) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::Text("%s", session.sessionName.empty() ? "(unnamed session)" : session.sessionName.c_str());
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%s", session.hostDisplayName.c_str());
-                ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%u / %u", session.currentPlayerCount, session.maxPlayerCount);
-                ImGui::TableSetColumnIndex(3);
-                if (session.pingMs > 0.0f) {
-                    ImGui::Text("%.0f ms", static_cast<double>(session.pingMs));
-                } else {
-                    ImGui::TextDisabled("--");
+            // Kronos ("Session Browser Polish v2" -- "Virtualized
+            // scrolling"): real ImGuiListClipper, same real convention
+            // studio::plugins::CataloguePanel's own grid already
+            // establishes -- a real LAN typically surfaces a handful of
+            // sessions, but this keeps the row cost O(visible rows) if a
+            // future test/demo LAN ever announces hundreds at once.
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(shown.size()));
+            while (clipper.Step()) {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                    const net::DiscoveredSession& session = shown[static_cast<size_t>(row)];
+                    auto safetyStatus = static_cast<core::GameSafetyStatus>(session.gameSafetyStatusValue);
+
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Text("%s", session.sessionName.empty() ? "(unnamed session)" : session.sessionName.c_str());
+                    ImGui::TableSetColumnIndex(1);
+                    const glm::vec4& c = session.gameThumbnailColor;
+                    ImGui::ColorButton("##thumb", ImVec4(c.x, c.y, c.z, c.w),
+                                        ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop,
+                                        ImVec2(14.0f, 14.0f));
+                    ImGui::SameLine();
+                    ImGui::Text("%s", session.gameName.empty() ? "(unknown game)" : session.gameName.c_str());
+                    if (safetyStatus == core::GameSafetyStatus::UnderReview) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.2f, 1.0f), "Under Review");
+                    } else if (safetyStatus == core::GameSafetyStatus::Unsafe) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "Unsafe");
+                    }
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%s", session.hostDisplayName.c_str());
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::Text("%u / %u", session.currentPlayerCount, session.maxPlayerCount);
+                    ImGui::TableSetColumnIndex(4);
+                    if (session.pingMs > 0.0f) {
+                        ImGui::Text("%.0f ms", static_cast<double>(session.pingMs));
+                    } else {
+                        ImGui::TextDisabled("--");
+                    }
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::PushID(static_cast<int>(session.sessionId));
+                    if (ImGui::SmallButton("Join")) joinSession(session);
+                    ImGui::PopID();
                 }
-                ImGui::TableSetColumnIndex(4);
-                ImGui::PushID(static_cast<int>(session.sessionId));
-                if (ImGui::SmallButton("Join")) joinSession(session);
-                ImGui::PopID();
             }
             ImGui::EndTable();
         }
@@ -455,16 +1002,1027 @@ void RuntimeShell::drawSessionBrowserPanel() {
         }
     }
 
-    ImGui::SeparatorText("Join by address");
-    ImGui::InputText("Address", manualAddressBuffer_, sizeof(manualAddressBuffer_));
-    ImGui::InputInt("Port", &manualPortValue_);
-    manualPortValue_ = manualPortValue_ < 1 ? 1 : (manualPortValue_ > 65535 ? 65535 : manualPortValue_);
-    if (ImGui::Button("Join Address")) {
-        net::DiscoveredSession manual;
-        manual.sourceAddress = manualAddressBuffer_;
-        manual.gamePort = static_cast<uint16_t>(manualPortValue_);
-        joinSession(manual);
+    ImGui::End();
+}
+
+namespace {
+// Kronos ("Game Catalogue Overhaul", Phase 5): one real card -- title,
+// a flat color-swatch thumbnail (core::GameManifest::thumbnailColor --
+// the same honest "no image pipeline exists" answer
+// studio::plugins::CataloguePanel's own item cards already give, see
+// that class's header comment), truncated description, genre tags,
+// real recent-player count (from the real local play log, not a
+// fabricated live online count -- this is a local Alpha), and a real
+// QualityScore badge. Returns true if this card's own "Play" was
+// clicked.
+constexpr float kCardWidth = 220.0f;
+constexpr float kCardHeight = 170.0f;
+
+bool drawGameCard(const core::GameCatalogueEntry& game) {
+    bool clicked = false;
+    ImGui::PushID(game.manifestPath.c_str());
+    ImGui::BeginGroup();
+
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const glm::vec4& c = game.manifest.thumbnailColor;
+    drawList->AddRectFilled(origin, ImVec2(origin.x + kCardWidth, origin.y + 90.0f),
+                             IM_COL32(static_cast<int>(c.x * 255.0f), static_cast<int>(c.y * 255.0f),
+                                      static_cast<int>(c.z * 255.0f), static_cast<int>(c.w * 255.0f)));
+    ImGui::Dummy(ImVec2(kCardWidth, 90.0f));
+
+    ImGui::TextWrapped("%s", game.manifest.name.c_str());
+    if (!game.manifest.description.empty()) {
+        ImGui::PushTextWrapPos(origin.x + kCardWidth);
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", game.manifest.description.c_str());
+        ImGui::PopTextWrapPos();
     }
+    if (!game.manifest.genreTags.empty()) {
+        std::string tags;
+        for (size_t i = 0; i < game.manifest.genreTags.size(); ++i) {
+            if (i > 0) tags += ", ";
+            tags += game.manifest.genreTags[i];
+        }
+        ImGui::TextDisabled("%s", tags.c_str());
+    }
+    ImGui::Text("Quality %.2f", static_cast<double>(game.qualityScore));
+    ImGui::SameLine();
+    ImGui::TextDisabled("%lld played", static_cast<long long>(game.launchCount));
+
+    // Kronos ("Moderation Architecture v2", "Catalogue Safety
+    // Integration"): a real, honest badge -- a viewer only ever reaches
+    // this card for an Unsafe game at all if they're a self-declared
+    // Adult (openGameCatalogue() already real-filters it out otherwise),
+    // so seeing this badge here is real, not a dead code path.
+    if (game.manifest.safetyStatus == core::GameSafetyStatus::UnderReview) {
+        ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.2f, 1.0f), "Under Review");
+    } else if (game.manifest.safetyStatus == core::GameSafetyStatus::Unsafe) {
+        ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "Unsafe");
+    }
+
+    if (ImGui::Button("Play", ImVec2(kCardWidth, 0.0f))) clicked = true;
+
+    ImGui::EndGroup();
+    ImGui::PopID();
+    return clicked;
+}
+
+// One horizontally-scrolling strip of cards -- the real "row" the
+// Featured/genre/Hidden-Gems sections below all share, same
+// `ImGui::SameLine()`-based wrapping/layout technique
+// studio::plugins::CataloguePanel::drawGrid() already established,
+// adapted to a fixed-height horizontal strip (a real front-page "row"
+// convention) instead of a wrapping grid.
+const core::GameCatalogueEntry* drawGameRow(const std::vector<const core::GameCatalogueEntry*>& games,
+                                             const char* rowId) {
+    const core::GameCatalogueEntry* selected = nullptr;
+    ImGui::PushID(rowId);
+    ImGui::BeginChild("row", ImVec2(0.0f, kCardHeight + 16.0f), false, ImGuiWindowFlags_HorizontalScrollbar);
+    for (size_t i = 0; i < games.size(); ++i) {
+        if (i > 0) ImGui::SameLine();
+        if (drawGameCard(*games[i])) selected = games[i];
+    }
+    ImGui::EndChild();
+    ImGui::PopID();
+    return selected;
+}
+} // namespace
+
+void RuntimeShell::drawGameCataloguePanel() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("Game Catalogue", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    if (ImGui::Button("Back")) {
+        state_ = computeNextState(state_, ShellEvent::ReturnHome);
+        ImGui::End();
+        return;
+    }
+
+    if (discoveredGames_.empty()) {
+        ImGui::TextDisabled(
+            "No real games found in games/ -- see docs/QUICKSTART.md for the real games/<Name>/game.gamemanifest layout.");
+        ImGui::End();
+        return;
+    }
+
+    const core::GameCatalogueEntry* toPlay = nullptr;
+
+    // Featured -- real, algorithm-selected: top real QualityScore
+    // entries, not raw player count (per the user's own spec).
+    std::vector<const core::GameCatalogueEntry*> sortedByQuality;
+    sortedByQuality.reserve(discoveredGames_.size());
+    for (const auto& g : discoveredGames_) sortedByQuality.push_back(&g);
+    std::sort(sortedByQuality.begin(), sortedByQuality.end(),
+              [](const core::GameCatalogueEntry* a, const core::GameCatalogueEntry* b) {
+                  return a->qualityScore > b->qualityScore;
+              });
+    std::vector<const core::GameCatalogueEntry*> featured(
+        sortedByQuality.begin(), sortedByQuality.begin() + static_cast<long>(std::min<size_t>(5, sortedByQuality.size())));
+    ImGui::SeparatorText("Featured");
+    if (const auto* clicked = drawGameRow(featured, "featured")) toPlay = clicked;
+
+    // Genre rows -- one real row per distinct genre tag actually present
+    // across the real scanned games, sorted the same way Featured is.
+    std::vector<std::string> genres;
+    for (const auto& g : discoveredGames_) {
+        for (const auto& tag : g.manifest.genreTags) {
+            if (std::find(genres.begin(), genres.end(), tag) == genres.end()) genres.push_back(tag);
+        }
+    }
+    for (const auto& genre : genres) {
+        std::vector<const core::GameCatalogueEntry*> inGenre;
+        for (const auto* g : sortedByQuality) {
+            if (std::find(g->manifest.genreTags.begin(), g->manifest.genreTags.end(), genre) !=
+                g->manifest.genreTags.end()) {
+                inGenre.push_back(g);
+            }
+        }
+        ImGui::SeparatorText(genre.c_str());
+        if (const auto* clicked = drawGameRow(inGenre, genre.c_str())) toPlay = clicked;
+    }
+
+    // Hidden Gems -- real selection (core::selectHiddenGems(),
+    // core/HiddenGemsSelector.hpp), the exact same real function
+    // studio::StudioApp's own dev-notification check uses, so "eligible
+    // for the front page" means the real same thing in both places.
+    std::vector<core::HiddenGemCandidate> candidates;
+    candidates.reserve(discoveredGames_.size());
+    for (const auto& g : discoveredGames_) candidates.push_back(core::HiddenGemCandidate{g.manifest, g.qualityScore, g.launchCount});
+    std::vector<core::GameManifest> hiddenGemManifests = core::selectHiddenGems(candidates);
+    std::vector<const core::GameCatalogueEntry*> hiddenGems;
+    for (const auto& manifest : hiddenGemManifests) {
+        for (const auto& g : discoveredGames_) {
+            if (g.manifest.name == manifest.name) {
+                hiddenGems.push_back(&g);
+                break;
+            }
+        }
+    }
+    if (!hiddenGems.empty()) {
+        ImGui::SeparatorText("Hidden Gems");
+        if (const auto* clicked = drawGameRow(hiddenGems, "hidden_gems")) toPlay = clicked;
+    }
+
+    if (toPlay) selectGame(*toPlay);
+
+    ImGui::End();
+}
+
+namespace {
+constexpr const char* kAvatarShopCategoryFilterNames[] = {"Any",   "Head", "Hair",      "Face",           "Torso",
+                                                            "Legs",  "Accessory", "LayeredClothing", "Emote",
+                                                            "Shoes", "Back", "Bundle"};
+constexpr core::AvatarItemCategory kAvatarShopCategoryFilterValues[] = {
+    core::AvatarItemCategory::Head,      core::AvatarItemCategory::Hair,  core::AvatarItemCategory::Face,
+    core::AvatarItemCategory::Torso,     core::AvatarItemCategory::Legs,  core::AvatarItemCategory::Accessory,
+    core::AvatarItemCategory::LayeredClothing, core::AvatarItemCategory::Emote,
+    core::AvatarItemCategory::Shoes,     core::AvatarItemCategory::Back,  core::AvatarItemCategory::Bundle,
+};
+constexpr const char* kAvatarShopSortNames[] = {"Relevance", "Price: Low to High", "Price: High to Low",
+                                                 "Newly Published", "Top Rated", "Creator (A-Z)"};
+constexpr core::CatalogueSearchFilter::SortOrder kAvatarShopSortValues[] = {
+    core::CatalogueSearchFilter::SortOrder::Relevance,      core::CatalogueSearchFilter::SortOrder::PriceLowToHigh,
+    core::CatalogueSearchFilter::SortOrder::PriceHighToLow, core::CatalogueSearchFilter::SortOrder::RecencyNewestFirst,
+    core::CatalogueSearchFilter::SortOrder::TopRated,       core::CatalogueSearchFilter::SortOrder::CreatorAlphabetical,
+};
+
+std::string formatAvatarShopRatingStars(float ratingScore, int32_t ratingCount) {
+    if (ratingCount <= 0) return "Not yet rated";
+    int filled = std::clamp(static_cast<int>(ratingScore + 0.5f), 0, 5);
+    std::string stars;
+    for (int i = 0; i < 5; ++i) stars += (i < filled) ? '*' : '-';
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%s %.1f (%d)", stars.c_str(), static_cast<double>(ratingScore), ratingCount);
+    return buf;
+}
+} // namespace
+
+void RuntimeShell::openAvatarShop() {
+    if (state_ != ShellState::Home) return;
+    ensureLocalProfileLoaded();
+    ensureAvatarCatalogueLoaded();
+    state_ = computeNextState(state_, ShellEvent::OpenAvatarShop);
+}
+
+void RuntimeShell::drawAvatarShopPanel() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("Avatar Shop", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
+    // live re-equip while InGame): real -- when opened as the InGame HUD
+    // overlay (see showAvatarShopOverlay_'s own comment), "Back" closes
+    // the overlay and resumes movement input instead of real-transitioning
+    // ShellState (there is no "Home" to transition to -- a real game is
+    // still live underneath).
+    if (ImGui::Button("Back")) {
+        if (showAvatarShopOverlay_) {
+            showAvatarShopOverlay_ = false;
+            avatarShopDetailOpen_ = false;
+            app_.setMovementInputSuspended(false);
+        } else {
+            state_ = computeNextState(state_, ShellEvent::ReturnHome);
+        }
+        ImGui::End();
+        return;
+    }
+    ImGui::SameLine();
+    ImGui::Text("Balance: %lld KronosCredits", static_cast<long long>(localProfile_.kronosCredits));
+
+    // Kronos ("Simple Recommendation Engine"): real, rules-based (recent
+    // + high purchases + high rating) -- see
+    // marketplace::rankRecommendedItems()'s own header comment for the
+    // real, honest "not ML" scope. A real click here logs real, local
+    // telemetry (see telemetryQueue_'s own comment) instead of a
+    // fabricated one.
+    {
+        int64_t nowSeconds =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        std::vector<const core::AvatarItemManifest*> allApproved =
+            avatarCatalogueIndex_.search(core::CatalogueSearchFilter{});
+        std::vector<const core::AvatarItemManifest*> recommended =
+            marketplace::rankRecommendedItems(allApproved, nowSeconds, 6);
+        if (!recommended.empty()) {
+            ImGui::SeparatorText("Recommended");
+            for (size_t i = 0; i < recommended.size(); ++i) {
+                const core::AvatarItemManifest* item = recommended[i];
+                ImGui::PushID(item->item.id.c_str());
+                constexpr float kRecCardWidth = 110.0f;
+                ImGui::BeginGroup();
+                ImVec4 swatch(item->item.baseColor.r, item->item.baseColor.g, item->item.baseColor.b, 1.0f);
+                if (ImGui::ColorButton("##rec_swatch", swatch, ImGuiColorEditFlags_NoTooltip,
+                                        ImVec2(kRecCardWidth, kRecCardWidth * 0.7f))) {
+                    avatarShopDetailItemId_ = item->item.id;
+                    avatarShopDetailOpen_ = true;
+                    analytics::TelemetryEvent event;
+                    event.name = "recommendation_click";
+                    event.properties["itemId"] = item->item.id;
+                    event.properties["position"] = static_cast<int64_t>(i);
+                    telemetryQueue_.push(std::move(event));
+                }
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kRecCardWidth);
+                ImGui::TextUnformatted(item->item.name.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndGroup();
+                ImGui::PopID();
+                if (i + 1 < recommended.size()) ImGui::SameLine();
+            }
+            ImGui::Separator();
+        }
+    }
+
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputTextWithHint("##avatar_shop_search", "Search by name, tag, or creator...", avatarShopSearchText_,
+                              sizeof(avatarShopSearchText_));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::Combo("Category", &avatarShopCategoryFilterIndex_, kAvatarShopCategoryFilterNames,
+                 IM_ARRAYSIZE(kAvatarShopCategoryFilterNames));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::Combo("Sort", &avatarShopSortOrderIndex_, kAvatarShopSortNames, IM_ARRAYSIZE(kAvatarShopSortNames));
+
+    core::CatalogueSearchFilter filter;
+    if (avatarShopCategoryFilterIndex_ > 0) filter.category = kAvatarShopCategoryFilterValues[avatarShopCategoryFilterIndex_ - 1];
+    filter.textQuery = avatarShopSearchText_;
+    // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI"): real,
+    // always Approved-only here -- unlike studio::plugins::CataloguePanel's
+    // own "My Items" mode, this is a real, pure player-facing storefront,
+    // never a creator's own management view (that's Studio's Creator
+    // Dashboard's job).
+    filter.moderationStatus = core::AvatarItemModerationStatus::Approved;
+    filter.sortOrder = kAvatarShopSortValues[avatarShopSortOrderIndex_];
+    std::vector<const core::AvatarItemManifest*> results = avatarCatalogueIndex_.search(filter);
+
+    ImGui::Separator();
+    ImGui::TextDisabled("%zu item%s", results.size(), results.size() == 1 ? "" : "s");
+
+    constexpr float kCardWidth = 160.0f;
+    float availWidth = ImGui::GetContentRegionAvail().x;
+    int columns = std::max(1, static_cast<int>(availWidth / (kCardWidth + ImGui::GetStyle().ItemSpacing.x)));
+    int rowCount = static_cast<int>((results.size() + static_cast<size_t>(columns) - 1) / static_cast<size_t>(columns));
+
+    ImGui::BeginChild("avatar_shop_grid");
+    if (results.empty()) {
+        ImGui::TextDisabled(filter.textQuery.empty() ? "No items in the Marketplace yet."
+                                                       : "No items match your search.");
+    } else {
+        ImGuiListClipper clipper;
+        clipper.Begin(rowCount);
+        while (clipper.Step()) {
+            for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                size_t rowStart = static_cast<size_t>(row) * static_cast<size_t>(columns);
+                size_t rowEnd = std::min(rowStart + static_cast<size_t>(columns), results.size());
+                for (size_t i = rowStart; i < rowEnd; ++i) {
+                    const core::AvatarItemManifest* item = results[i];
+                    ImGui::PushID(item->item.id.c_str());
+                    ImGui::BeginGroup();
+                    ImVec4 swatch(item->item.baseColor.r, item->item.baseColor.g, item->item.baseColor.b, 1.0f);
+                    if (ImGui::ColorButton("##swatch", swatch, ImGuiColorEditFlags_NoTooltip,
+                                            ImVec2(kCardWidth, kCardWidth * 0.7f))) {
+                        avatarShopDetailItemId_ = item->item.id;
+                        avatarShopDetailOpen_ = true;
+                        // Kronos ("Marketplace Analytics" -- "Opening item
+                        // detail popup -> increment views"): real, same
+                        // convention studio::plugins::CataloguePanel's own
+                        // openDetail() already establishes.
+                        core::AvatarItemManifest withView = *item;
+                        withView.views += 1;
+                        avatarCatalogueDatabase_.upsert(withView);
+                        (void)avatarCatalogueDatabase_.saveToFile(kAvatarCatalogueDatabasePath);
+                        avatarCatalogueIndex_.upsert(std::move(withView));
+                    }
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kCardWidth);
+                    ImGui::TextUnformatted(item->item.name.c_str());
+                    ImGui::PopTextWrapPos();
+                    ImGui::TextDisabled("%d KronosCredits", item->price);
+                    ImGui::EndGroup();
+                    ImGui::PopID();
+                    if (i + 1 < rowEnd) ImGui::SameLine();
+                }
+            }
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::End();
+
+    drawAvatarShopDetailPopup();
+}
+
+void RuntimeShell::drawAvatarShopDetailPopup() {
+    if (!avatarShopDetailOpen_) return;
+    const core::AvatarItemManifest* entry = avatarCatalogueIndex_.findById(avatarShopDetailItemId_);
+    if (entry == nullptr) {
+        avatarShopDetailOpen_ = false;
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 320.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Item Detail##avatar_shop", &avatarShopDetailOpen_);
+
+    ImVec4 swatch(entry->item.baseColor.r, entry->item.baseColor.g, entry->item.baseColor.b, 1.0f);
+    ImGui::ColorButton("##detail_swatch", swatch, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop,
+                       ImVec2(96.0f, 96.0f));
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::Text("%s", entry->item.name.c_str());
+    ImGui::TextDisabled("%s -- %d KronosCredits", core::avatarItemCategoryName(entry->item.category), entry->price);
+    ImGui::TextDisabled("By %s", entry->creatorId.empty() ? "unknown" : entry->creatorId.c_str());
+    ImGui::TextDisabled("%s", formatAvatarShopRatingStars(entry->ratingScore, entry->ratingCount).c_str());
+    ImGui::EndGroup();
+
+    if (!entry->item.tags.empty()) {
+        std::string tagLine;
+        for (size_t i = 0; i < entry->item.tags.size(); ++i) {
+            if (i > 0) tagLine += ", ";
+            tagLine += entry->item.tags[i];
+        }
+        ImGui::TextWrapped("Tags: %s", tagLine.c_str());
+    }
+
+    ImGui::Separator();
+
+    // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
+    // live re-equip while InGame): real -- equipping always saves
+    // avatarLoadout_ immediately; while a real avatar is already spawned
+    // (state_ == InGame, reached via the "Shop" HUD overlay button, see
+    // showAvatarShopOverlay_'s own comment), it also real-live-re-tints
+    // that avatar right now via core::Application::
+    // refreshLocalPlayerAvatarAppearance() -- the exact same
+    // resolveSegmentColorsForLoadout() mechanism studio::plugins::
+    // AvatarEditor's own live preview already uses. Opened from Home
+    // instead (no avatar spawned yet), the same call is a real, honest
+    // no-op, and the new loadout simply takes effect at the next spawn.
+    bool isEquipped = avatarLoadout_.equippedItemId(entry->item.category) == entry->item.id;
+    if (isEquipped) {
+        ImGui::TextDisabled("Equipped");
+        if (ImGui::Button("Unequip")) {
+            avatarLoadout_.unequip(entry->item.category);
+            (void)avatarLoadout_.saveToFile(kAvatarLoadoutPath);
+            app_.refreshLocalPlayerAvatarAppearance(core::resolveSkinToneColor(localProfile_.skinToneIndex),
+                                                      avatarLoadout_, avatarCatalogueIndex_);
+            // Kronos ("Home Screen Avatar Preview"): keeps the Home
+            // preview in sync with the same real appearance change that
+            // just live-re-tinted the actual in-game avatar above --
+            // real no-op if the preview hasn't been constructed yet
+            // (Home was never visited this session).
+            if (homeAvatarPreview_) homeAvatarPreview_->refresh();
+            avatarShopStatusMessage_ = "Unequipped \"" + entry->item.name + "\".";
+        }
+    } else if (localProfile_.ownsItem(entry->item.id)) {
+        if (ImGui::Button("Equip")) {
+            if (avatarLoadout_.equip(entry->item.id, avatarCatalogueIndex_)) {
+                (void)avatarLoadout_.saveToFile(kAvatarLoadoutPath);
+                app_.refreshLocalPlayerAvatarAppearance(core::resolveSkinToneColor(localProfile_.skinToneIndex),
+                                                          avatarLoadout_, avatarCatalogueIndex_);
+                if (homeAvatarPreview_) homeAvatarPreview_->refresh();
+                avatarShopStatusMessage_ = "Equipped \"" + entry->item.name + "\".";
+            }
+        }
+    } else if (ImGui::Button("Purchase")) {
+        int64_t now =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        marketplace::CreditsPurchaseResult result =
+            marketplace::purchaseItemWithCredits(localProfile_, *entry, transactionLog_, now);
+        switch (result.outcome) {
+            case marketplace::CreditsPurchaseOutcome::Success: {
+                avatarShopStatusMessage_ =
+                    "Purchased \"" + entry->item.name + "\" for " + std::to_string(entry->price) + " KronosCredits.";
+                notify(core::NotificationKind::ItemPurchase, "Item purchased",
+                       "You purchased \"" + entry->item.name + "\" for " + std::to_string(entry->price) +
+                           " KronosCredits.",
+                       entry->item.id);
+                // Kronos ("Simple Recommendation Engine" -- "Track CTR
+                // and conversion"): real, local telemetry -- correlating
+                // this against a real, prior "recommendation_click" event
+                // for the same itemId (by timestamp proximity) is the
+                // real, honest way a future analysis pass would compute
+                // conversion; no fabricated click-to-purchase attribution
+                // is stored here directly.
+                {
+                    analytics::TelemetryEvent purchaseEvent;
+                    purchaseEvent.name = "item_purchased";
+                    purchaseEvent.properties["itemId"] = entry->item.id;
+                    purchaseEvent.properties["priceCredits"] = static_cast<int64_t>(entry->price);
+                    telemetryQueue_.push(std::move(purchaseEvent));
+                }
+                (void)localProfile_.saveToFile(kLocalProfilePath);
+                (void)transactionLog_.saveToFile(kTransactionLogPath);
+                core::AvatarItemManifest withPurchase = *entry;
+                withPurchase.purchaseCount += 1;
+                avatarCatalogueDatabase_.upsert(withPurchase);
+                (void)avatarCatalogueDatabase_.saveToFile(kAvatarCatalogueDatabasePath);
+                avatarCatalogueIndex_.upsert(std::move(withPurchase));
+                break;
+            }
+            case marketplace::CreditsPurchaseOutcome::AlreadyOwned:
+                avatarShopStatusMessage_ = "You already own this item.";
+                break;
+            case marketplace::CreditsPurchaseOutcome::InsufficientCredits:
+                avatarShopStatusMessage_ = "Not enough KronosCredits (need " + std::to_string(entry->price) + ", have " +
+                                            std::to_string(localProfile_.kronosCredits) + ").";
+                break;
+        }
+    }
+    // Kronos ("Ratings Notifications (Creator-side)" -- "Add a real call
+    // site in the runtime rating submission path"): real -- this is the
+    // one real place a player can actually submit a rating anywhere in
+    // this codebase today (Studio's own Rate Item UI was removed when
+    // purchasing/rating moved runtime-only, see CataloguePanel.cpp's own
+    // history). `creatorProfile` is real, but nullptr at this real call
+    // site -- see marketplace::submitRating()'s own header comment for
+    // why: this Alpha has exactly one resident LocalProfile per machine,
+    // and the CannotRateOwnItem guard already prevents that one profile
+    // from ever being both rater and creator, so there's no real second
+    // profile object here to pass. The notification logic itself is
+    // real and correct (see RatingSubmission.cpp's own tests) for
+    // whichever future surface actually has one.
+    ImGui::Separator();
+    if (localProfile_.hasRatedItem(entry->item.id)) {
+        ImGui::TextDisabled("You've already rated this item.");
+    } else if (!localProfile_.creatorId.empty() && localProfile_.creatorId == entry->creatorId) {
+        ImGui::TextDisabled("You can't rate your own item.");
+    } else {
+        ImGui::TextDisabled("Rate this item:");
+        for (int star = 1; star <= 5; ++star) {
+            ImGui::SameLine();
+            ImGui::PushID(star);
+            if (ImGui::SmallButton(std::to_string(star).c_str())) {
+                core::AvatarItemManifest mutableEntry = *entry;
+                marketplace::RatingSubmissionResult result =
+                    marketplace::submitRating(localProfile_, mutableEntry, static_cast<float>(star), nullptr);
+                if (result.succeeded()) {
+                    (void)localProfile_.saveToFile(kLocalProfilePath);
+                    avatarCatalogueDatabase_.upsert(mutableEntry);
+                    (void)avatarCatalogueDatabase_.saveToFile(kAvatarCatalogueDatabasePath);
+                    avatarCatalogueIndex_.upsert(std::move(mutableEntry));
+                    avatarShopStatusMessage_ = "Rated " + std::to_string(star) + " star" + (star == 1 ? "" : "s") + ". Thank you!";
+                } else if (result.outcome == marketplace::RatingSubmissionOutcome::AlreadyRated) {
+                    avatarShopStatusMessage_ = "You've already rated this item.";
+                } else {
+                    avatarShopStatusMessage_ = "You can't rate your own item.";
+                }
+            }
+            ImGui::PopID();
+        }
+    }
+
+    if (!avatarShopStatusMessage_.empty()) ImGui::TextDisabled("%s", avatarShopStatusMessage_.c_str());
+
+    ImGui::End();
+    if (!avatarShopDetailOpen_) avatarShopDetailItemId_.clear();
+}
+
+namespace {
+// Kronos ("Input Remapping System"): the real, exact list of gameplay
+// actions this pass makes remappable -- movement/jump/interact (already
+// real, bindable core::CharacterController/core::Application actions,
+// see those files' own bindAction() calls) plus the two real, new
+// OpenChat/OpenShop actions Application::initialize() now also binds
+// (previously a hardcoded ImGuiKey_Slash check and a mouse-only HUD
+// button respectively). Deliberately does NOT include mouse-look/zoom/
+// right-click actions or "Emotes" -- none of those are real, existing
+// bindable gameplay mechanics in this engine (mouse-look reads raw
+// mouseDelta() directly, not a bound action; there is no zoom/right-click/
+// generic-emote-trigger mechanic anywhere in gameplay to remap) -- adding
+// rebind UI for a mechanic that doesn't exist would be exactly the kind
+// of fabricated capability this codebase's own discipline avoids.
+struct RemappableAction {
+    const char* actionName; // matches platform_adapters::UnifiedInput's own bindAction() key
+    const char* displayLabel;
+    int defaultScancode;
+};
+constexpr RemappableAction kRemappableActions[] = {
+    {"MoveForward", "Move Forward", SDL_SCANCODE_W},
+    {"MoveBackward", "Move Backward", SDL_SCANCODE_S},
+    {"MoveLeft", "Strafe Left", SDL_SCANCODE_A},
+    {"MoveRight", "Strafe Right", SDL_SCANCODE_D},
+    {"Jump", "Jump", SDL_SCANCODE_SPACE},
+    {"Interact", "Interact", SDL_SCANCODE_E},
+    {"OpenChat", "Chat", SDL_SCANCODE_SLASH},
+    {"OpenShop", "Shop", SDL_SCANCODE_B},
+};
+
+constexpr const char* kQualityPresetNames[] = {"Low", "Medium", "High"};
+constexpr const char* kColorblindModeNames[] = {"None", "Protanopia", "Deuteranopia", "Tritanopia"};
+} // namespace
+
+void RuntimeShell::applyQualityPreset(int presetIndex) {
+    core::Renderer& renderer = app_.renderer();
+    switch (std::clamp(presetIndex, 0, 2)) {
+        case 0: // Low
+            renderer.setPerformanceMode(true);
+            renderer.setSSREnabled(false);
+            renderer.setVolumetricFogEnabled(false);
+            renderer.setRTReflectionsEnabled(false);
+            renderer.setRTGIEnabled(false);
+            break;
+        case 2: // High
+            renderer.setCinematicMode(true); // real side effect: disables performance mode
+            renderer.setSSREnabled(true);
+            renderer.setVolumetricFogEnabled(true);
+            renderer.setRTReflectionsEnabled(true);
+            renderer.setRTGIEnabled(true);
+            break;
+        default: // Medium
+            renderer.setPerformanceMode(false);
+            renderer.setCinematicMode(false);
+            renderer.setSSREnabled(true);
+            renderer.setVolumetricFogEnabled(true);
+            renderer.setRTReflectionsEnabled(false);
+            renderer.setRTGIEnabled(false);
+            break;
+    }
+}
+
+void RuntimeShell::applyInputBindingOverrides() {
+    for (const auto& action : kRemappableActions) {
+        int scancode = action.defaultScancode;
+        auto it = localProfile_.inputBindingOverrides.find(action.actionName);
+        if (it != localProfile_.inputBindingOverrides.end()) scancode = it->second;
+        app_.input().clearBindings(action.actionName);
+        app_.input().bindAction(
+            action.actionName,
+            platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey, scancode});
+    }
+}
+
+void RuntimeShell::applyAllSettingsFromProfile() {
+    applyQualityPreset(localProfile_.qualityPresetIndex);
+    app_.renderer().setVsyncEnabled(localProfile_.vsyncEnabled);
+    if (app_.gameLoop() != nullptr) {
+        app_.gameLoop()->setTargetRenderDt(localProfile_.fpsCap > 0 ? 1.0f / static_cast<float>(localProfile_.fpsCap)
+                                                                     : 0.0f);
+    }
+
+    app_.audio().setMasterVolume(localProfile_.masterVolume);
+    app_.audio().setCategoryVolume(core::AudioCategory::Music, localProfile_.musicVolume);
+    app_.audio().setCategoryVolume(core::AudioCategory::SFX, localProfile_.sfxVolume);
+
+    // Kronos ("UI scale must affect all panels"): real -- ImGui is one
+    // global context shared by every real panel this shell draws (Home,
+    // Shop, Session Browser, Catalogue [Game Catalogue], chat, this
+    // Settings panel itself), so one real style/font-scale change here
+    // genuinely applies everywhere at once, not per-panel. Studio's
+    // AvatarEditor is a *separate* ImGui context (studio::StudioApp's
+    // own) -- see this session's own status report for why that one
+    // isn't covered by this same call.
+    ImGuiIO& io = ImGui::GetIO();
+    io.FontGlobalScale = std::max(localProfile_.textScale, 0.1f);
+    ImGui::GetStyle() = baseUIStyle_;
+    ImGui::GetStyle().ScaleAllSizes(std::max(localProfile_.uiScale, 0.1f));
+
+    app_.renderer().setColorblindMode(localProfile_.colorblindModeIndex);
+    app_.setReducedMotionEnabled(localProfile_.reducedMotion);
+
+    applyInputBindingOverrides();
+}
+
+void RuntimeShell::openSettings() {
+    if (state_ != ShellState::Home) return;
+    ensureLocalProfileLoaded();
+    state_ = computeNextState(state_, ShellEvent::OpenSettings);
+}
+
+void RuntimeShell::drawSettingsPanel() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("Settings", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    if (ImGui::Button("Back")) {
+        if (showSettingsOverlay_) {
+            showSettingsOverlay_ = false;
+            app_.setMovementInputSuspended(false);
+        } else {
+            state_ = computeNextState(state_, ShellEvent::ReturnHome);
+        }
+        rebindingActionName_.clear();
+        ImGui::End();
+        return;
+    }
+
+    bool changed = false;
+
+    ImGui::SeparatorText("Graphics");
+    if (ImGui::Combo("Quality Preset", &localProfile_.qualityPresetIndex, kQualityPresetNames,
+                      IM_ARRAYSIZE(kQualityPresetNames))) {
+        applyQualityPreset(localProfile_.qualityPresetIndex);
+        changed = true;
+    }
+    if (ImGui::Checkbox("VSync", &localProfile_.vsyncEnabled)) {
+        app_.renderer().setVsyncEnabled(localProfile_.vsyncEnabled);
+        changed = true;
+    }
+    if (ImGui::SliderInt("FPS Cap (0 = uncapped)", &localProfile_.fpsCap, 0, 240)) {
+        if (app_.gameLoop() != nullptr) {
+            app_.gameLoop()->setTargetRenderDt(localProfile_.fpsCap > 0 ? 1.0f / static_cast<float>(localProfile_.fpsCap)
+                                                                         : 0.0f);
+        }
+        changed = true;
+    }
+    // Kronos ("Settings Panel v2" -- real, honest scope note): live
+    // resolution/fullscreen switching is NOT implemented -- see
+    // core::LocalProfile::qualityPresetIndex's own comment for exactly
+    // why (core::Window has no runtime resolution/fullscreen setter at
+    // all today).
+    ImGui::TextDisabled("Resolution/Fullscreen: not yet supported -- core::Window has no runtime mode switch yet.");
+
+    ImGui::SeparatorText("Audio");
+    if (ImGui::SliderFloat("Master Volume", &localProfile_.masterVolume, 0.0f, 1.0f)) {
+        app_.audio().setMasterVolume(localProfile_.masterVolume);
+        changed = true;
+    }
+    if (ImGui::SliderFloat("Music Volume", &localProfile_.musicVolume, 0.0f, 1.0f)) {
+        app_.audio().setCategoryVolume(core::AudioCategory::Music, localProfile_.musicVolume);
+        changed = true;
+    }
+    if (ImGui::SliderFloat("SFX Volume", &localProfile_.sfxVolume, 0.0f, 1.0f)) {
+        app_.audio().setCategoryVolume(core::AudioCategory::SFX, localProfile_.sfxVolume);
+        changed = true;
+    }
+
+    ImGui::SeparatorText("Controls");
+    ImGui::TextWrapped("Click a binding, then press any key to rebind it.");
+    for (const auto& action : kRemappableActions) {
+        ImGui::PushID(action.actionName);
+        bool isListening = rebindingActionName_ == action.actionName;
+        int currentScancode = action.defaultScancode;
+        auto overrideIt = localProfile_.inputBindingOverrides.find(action.actionName);
+        if (overrideIt != localProfile_.inputBindingOverrides.end()) currentScancode = overrideIt->second;
+        std::string keyLabel = isListening ? "Press a key..."
+                                            : SDL_GetScancodeName(static_cast<SDL_Scancode>(currentScancode));
+        ImGui::Text("%s", action.displayLabel);
+        ImGui::SameLine(220.0f);
+        if (ImGui::Button(keyLabel.c_str(), ImVec2(160.0f, 0.0f))) {
+            rebindingActionName_ = action.actionName;
+        }
+        ImGui::PopID();
+    }
+    if (ImGui::Button("Reset All Bindings to Default")) {
+        localProfile_.inputBindingOverrides.clear();
+        applyInputBindingOverrides();
+        changed = true;
+    }
+    // Kronos ("Input Remapping System"): real SDL keyboard-state polling
+    // -- not an ImGui-specific key-event hook, since we need to capture
+    // *any* physical key across the whole real scancode range, not one
+    // this frame's ImGui already knows to look for. Skips the frame a
+    // rebind was just requested on (avoids the same click that opened
+    // "Press a key..." also being read as the new binding).
+    if (!rebindingActionName_.empty()) {
+        int numKeys = 0;
+        const Uint8* keyState = SDL_GetKeyboardState(&numKeys);
+        for (int scancode = 0; scancode < numKeys; ++scancode) {
+            if (!keyState[scancode]) continue;
+            if (scancode == SDL_SCANCODE_ESCAPE) { // real, honest "cancel rebind" escape hatch
+                rebindingActionName_.clear();
+                break;
+            }
+            localProfile_.inputBindingOverrides[rebindingActionName_] = scancode;
+            rebindingActionName_.clear();
+            applyInputBindingOverrides();
+            changed = true;
+            break;
+        }
+    }
+
+    ImGui::SeparatorText("Accessibility");
+    if (ImGui::SliderFloat("Text Size", &localProfile_.textScale, 0.5f, 2.0f)) {
+        ImGui::GetIO().FontGlobalScale = std::max(localProfile_.textScale, 0.1f);
+        changed = true;
+    }
+    if (ImGui::SliderFloat("UI Scale", &localProfile_.uiScale, 0.5f, 2.0f)) {
+        ImGui::GetStyle() = baseUIStyle_;
+        ImGui::GetStyle().ScaleAllSizes(std::max(localProfile_.uiScale, 0.1f));
+        changed = true;
+    }
+    if (ImGui::Combo("Colorblind Mode", &localProfile_.colorblindModeIndex, kColorblindModeNames,
+                      IM_ARRAYSIZE(kColorblindModeNames))) {
+        app_.renderer().setColorblindMode(localProfile_.colorblindModeIndex);
+        changed = true;
+    }
+    if (ImGui::Checkbox("Reduced Motion (less camera shake, no cutscene FOV changes)", &localProfile_.reducedMotion)) {
+        app_.setReducedMotionEnabled(localProfile_.reducedMotion);
+        changed = true;
+    }
+
+    if (changed) (void)localProfile_.saveToFile(kLocalProfilePath);
+
+    ImGui::End();
+}
+
+void RuntimeShell::notify(core::NotificationKind kind, std::string title, std::string body, std::string relatedId) {
+    ToastEntry toast;
+    toast.title = title;
+    toast.body = body;
+    toast.remainingSeconds = kToastDurationSeconds;
+    activeToasts_.push_back(std::move(toast));
+    notification::push(localProfile_, kind, std::move(title), std::move(body), std::move(relatedId));
+}
+
+void RuntimeShell::tickToasts(float dt) {
+    for (auto& toast : activeToasts_) toast.remainingSeconds -= dt;
+    activeToasts_.erase(std::remove_if(activeToasts_.begin(), activeToasts_.end(),
+                                        [](const ToastEntry& t) { return t.remainingSeconds <= 0.0f; }),
+                         activeToasts_.end());
+}
+
+void RuntimeShell::drawToasts() {
+    if (activeToasts_.empty()) return;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    float y = 16.0f;
+    for (size_t i = 0; i < activeToasts_.size(); ++i) {
+        const ToastEntry& toast = activeToasts_[i];
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 336.0f, viewport->WorkPos.y + y),
+                                 ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(320.0f, 0.0f), ImGuiCond_Always);
+        // Real, fading-out alpha over the last real second of a toast's
+        // life, not just an abrupt disappear -- a small real polish
+        // touch, not load-bearing behavior.
+        ImGui::SetNextWindowBgAlpha(0.85f * std::clamp(toast.remainingSeconds, 0.0f, 1.0f) + 0.10f);
+        std::string windowId = "##toast" + std::to_string(i);
+        if (ImGui::Begin(windowId.c_str(), nullptr,
+                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav |
+                              ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs)) {
+            ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%s", toast.title.c_str());
+            ImGui::TextWrapped("%s", toast.body.c_str());
+        }
+        ImGui::End();
+        y += 78.0f;
+    }
+}
+
+void RuntimeShell::openFriends() {
+    if (state_ != ShellState::Home) return;
+    ensureLocalProfileLoaded();
+    state_ = computeNextState(state_, ShellEvent::OpenFriends);
+}
+
+void RuntimeShell::drawFriendsPanel() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("Friends", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    if (ImGui::Button("Back")) {
+        if (showFriendsOverlay_) {
+            showFriendsOverlay_ = false;
+            app_.setMovementInputSuspended(false);
+        } else {
+            state_ = computeNextState(state_, ShellEvent::ReturnHome);
+        }
+        openConversationFriendId_.clear();
+        ImGui::End();
+        return;
+    }
+
+    // Kronos ("Social Layer" -- honesty note, real UI-facing text, not
+    // just a code comment): there is no account/server system in this
+    // Alpha (see core::LocalProfile's own "no auth" scope) -- a friend
+    // id is the real, stable Creator Id shown on someone's Creator
+    // Profile / marketplace listing, not a live directory lookup.
+    ImGui::TextDisabled("Your Friend Id: %s (share this so someone else can add you)", localProfile_.creatorId.c_str());
+    ImGui::Separator();
+
+    ImGui::SeparatorText("Add a Friend");
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputTextWithHint("##add_friend_id", "Friend Id (e.g. creator_1234567890)", addFriendIdBuffer_,
+                              sizeof(addFriendIdBuffer_));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputTextWithHint("##add_friend_name", "Display Name", addFriendNameBuffer_, sizeof(addFriendNameBuffer_));
+    ImGui::SameLine();
+    if (ImGui::Button("Send Request") && addFriendIdBuffer_[0] != '\0') {
+        social::FriendRequestOutcome outcome =
+            social::sendFriendRequest(localProfile_, addFriendIdBuffer_, addFriendNameBuffer_);
+        switch (outcome) {
+            case social::FriendRequestOutcome::Sent:
+                notify(core::NotificationKind::FriendRequest, "Friend request sent",
+                       "You sent a friend request to " +
+                           std::string(addFriendNameBuffer_[0] != '\0' ? addFriendNameBuffer_ : addFriendIdBuffer_) +
+                           ".",
+                       addFriendIdBuffer_);
+                friendsStatusMessage_ = "Friend request sent.";
+                addFriendIdBuffer_[0] = '\0';
+                addFriendNameBuffer_[0] = '\0';
+                break;
+            case social::FriendRequestOutcome::AlreadyFriends:
+                friendsStatusMessage_ = "You're already friends.";
+                break;
+            case social::FriendRequestOutcome::AlreadyPending:
+                friendsStatusMessage_ = "You already sent a request to this id.";
+                break;
+            case social::FriendRequestOutcome::CannotFriendSelf:
+                friendsStatusMessage_ = "That's your own Friend Id.";
+                break;
+        }
+        (void)localProfile_.saveToFile(kLocalProfilePath);
+    }
+    if (!friendsStatusMessage_.empty()) ImGui::TextDisabled("%s", friendsStatusMessage_.c_str());
+
+    if (!localProfile_.pendingRequests.empty()) {
+        ImGui::SeparatorText("Pending Requests (sent, awaiting response)");
+        // Kronos ("Social Layer" -- honest local-simulation scope): there
+        // is no real transport to deliver this request to another
+        // machine (see social::sendFriendRequest()'s own header
+        // comment). "Simulate Accept"/"Cancel" real-drive the exact
+        // state machine a real remote response would, standing in for
+        // it -- the panel says so plainly rather than pretending a real
+        // delivery happened.
+        std::string acceptId, declineId;
+        for (const auto& req : localProfile_.pendingRequests) {
+            ImGui::PushID(req.friendId.c_str());
+            ImGui::Text("%s (%s)", req.displayName.empty() ? req.friendId.c_str() : req.displayName.c_str(),
+                        req.friendId.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Simulate Accept")) acceptId = req.friendId;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Cancel")) declineId = req.friendId;
+            ImGui::PopID();
+        }
+        if (!acceptId.empty()) {
+            (void)social::acceptFriendRequest(localProfile_, acceptId);
+            notify(core::NotificationKind::FriendRequest, "New friend", "You are now friends with " + acceptId + ".",
+                   acceptId);
+            (void)localProfile_.saveToFile(kLocalProfilePath);
+        }
+        if (!declineId.empty()) {
+            (void)social::declineFriendRequest(localProfile_, declineId);
+            (void)localProfile_.saveToFile(kLocalProfilePath);
+        }
+    }
+
+    ImGui::SeparatorText("Friends");
+    if (localProfile_.friends.empty()) {
+        ImGui::TextDisabled("No friends yet -- send a request above using someone's real Friend Id.");
+    }
+    std::string removeId;
+    for (const auto& friendEntry : localProfile_.friends) {
+        ImGui::PushID(friendEntry.friendId.c_str());
+        social::PresenceState presence = social::computeFriendPresence(
+            friendEntry.displayName, lanBrowserRunning_ ? &lanBrowser_ : nullptr,
+            app_.networkSession().isActive() ? &app_.networkSession() : nullptr);
+        const char* presenceLabel =
+            presence == social::PresenceState::InGame ? "In Game"
+            : presence == social::PresenceState::Online ? "Online"
+                                                          : "Offline";
+        ImVec4 presenceColor = presence == social::PresenceState::InGame ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f)
+                                : presence == social::PresenceState::Online ? ImVec4(0.6f, 0.85f, 1.0f, 1.0f)
+                                                                             : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+        ImGui::Text("%s", friendEntry.displayName.empty() ? friendEntry.friendId.c_str() : friendEntry.displayName.c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(presenceColor, "[%s]", presenceLabel);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Message")) openConversationFriendId_ = friendEntry.friendId;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) removeId = friendEntry.friendId;
+        ImGui::PopID();
+    }
+    if (!removeId.empty()) {
+        social::removeFriend(localProfile_, removeId);
+        if (openConversationFriendId_ == removeId) openConversationFriendId_.clear();
+        (void)localProfile_.saveToFile(kLocalProfilePath);
+    }
+
+    // Kronos ("Social Layer" -- "Simple messaging overlay (local
+    // simulation only)"): real, persisted, local-only chat log with the
+    // one currently-selected friend -- see core::FriendMessage's own
+    // comment for exactly what "local simulation" honestly means here.
+    if (!openConversationFriendId_.empty()) {
+        ImGui::SeparatorText(("Conversation with " + openConversationFriendId_).c_str());
+        ImGui::BeginChild("friend_conversation", ImVec2(0.0f, 200.0f), true);
+        for (const auto& message : social::messagesWithFriend(localProfile_, openConversationFriendId_)) {
+            ImGui::TextWrapped("%s: %s", message.fromMe ? "You" : "Them", message.text.c_str());
+        }
+        ImGui::EndChild();
+        ImGui::SetNextItemWidth(400.0f);
+        bool sendPressed = ImGui::InputText("##friend_message_input", friendMessageInputBuffer_,
+                                             sizeof(friendMessageInputBuffer_), ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if ((ImGui::Button("Send") || sendPressed) && friendMessageInputBuffer_[0] != '\0') {
+            social::sendMessage(localProfile_, openConversationFriendId_, friendMessageInputBuffer_, true);
+            friendMessageInputBuffer_[0] = '\0';
+            (void)localProfile_.saveToFile(kLocalProfilePath);
+        }
+    }
+
+    ImGui::End();
+}
+
+void RuntimeShell::openNotifications() {
+    if (state_ != ShellState::Home) return;
+    ensureLocalProfileLoaded();
+    state_ = computeNextState(state_, ShellEvent::OpenNotifications);
+}
+
+namespace {
+constexpr const char* kNotificationFilterNames[] = {"All",     "Friend Requests", "Item Purchases",
+                                                       "Ratings", "Moderation",      "System"};
+} // namespace
+
+void RuntimeShell::drawNotificationsPanel() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("Notifications", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    if (ImGui::Button("Back")) {
+        if (showNotificationsOverlay_) {
+            showNotificationsOverlay_ = false;
+            app_.setMovementInputSuspended(false);
+        } else {
+            state_ = computeNextState(state_, ShellEvent::ReturnHome);
+        }
+        ImGui::End();
+        return;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Mark All Read")) {
+        notification::markAllRead(localProfile_);
+        (void)localProfile_.saveToFile(kLocalProfilePath);
+    }
+
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::Combo("Filter", &notificationFilterKindIndex_, kNotificationFilterNames,
+                 IM_ARRAYSIZE(kNotificationFilterNames));
+    ImGui::SameLine();
+    ImGui::Checkbox("Unread only", &notificationUnreadOnlyFilter_);
+
+    std::optional<core::NotificationKind> kindFilter;
+    if (notificationFilterKindIndex_ > 0) kindFilter = static_cast<core::NotificationKind>(notificationFilterKindIndex_ - 1);
+    std::vector<size_t> indices =
+        notification::filteredIndicesMostRecentFirst(localProfile_, kindFilter, notificationUnreadOnlyFilter_);
+
+    ImGui::Separator();
+    ImGui::TextDisabled("%zu notification%s", indices.size(), indices.size() == 1 ? "" : "s");
+    ImGui::BeginChild("notification_list");
+    for (size_t index : indices) {
+        const core::NotificationRecord& record = localProfile_.notifications[index];
+        ImGui::PushID(static_cast<int>(index));
+        if (!record.read) ImGui::Bullet();
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", record.title.c_str());
+        ImGui::TextWrapped("%s", record.body.c_str());
+        if (!record.read) {
+            if (ImGui::SmallButton("Mark Read")) {
+                notification::markRead(localProfile_, index);
+                (void)localProfile_.saveToFile(kLocalProfilePath);
+            }
+        }
+        ImGui::Separator();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
 
     ImGui::End();
 }
@@ -478,7 +2036,13 @@ void RuntimeShell::drawLoadingPanel() {
 
     ImGui::SetCursorPos(ImVec2(viewport->WorkSize.x * 0.5f - 100.0f, viewport->WorkSize.y * 0.45f));
     ImGui::BeginGroup();
-    ImGui::Text("Connecting to %s:%u...", manualAddressBuffer_, static_cast<unsigned>(manualPortValue_));
+    // Kronos ("Session Browser Polish v2" -- "Join feedback (loading
+    // indicator)"): a real, cheap animated dot count driven by the same
+    // real stateTransitionClock_ every panel's fade-in already uses --
+    // not just a static "Connecting..." string sitting there indefinitely.
+    int dotCount = 1 + static_cast<int>(stateTransitionClock_ * 2.0f) % 3;
+    ImGui::Text("Connecting to %s%s", lastJoinedHostDisplayName_.empty() ? "session" : lastJoinedHostDisplayName_.c_str(),
+                std::string(static_cast<size_t>(dotCount), '.').c_str());
     if (ImGui::Button("Cancel")) cancelJoin();
     ImGui::EndGroup();
 
@@ -544,8 +2108,49 @@ void RuntimeShell::drawPlayerListOverlay() {
             if (ImGui::Button(showPlayerListOverlay_ ? "Hide Players" : "Show Players")) {
                 showPlayerListOverlay_ = !showPlayerListOverlay_;
             }
+            ImGui::SameLine();
+            if (ImGui::Button("Chat (/)")) {
+                showChatPanel_ = true;
+                chatPanelJustOpened_ = true;
+                app_.setMovementInputSuspended(true);
+            }
         } else {
             if (ImGui::Button("Back to Home")) leaveSession();
+        }
+        ImGui::SameLine();
+        // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
+        // live re-equip while InGame): real -- the same Avatar Shop
+        // Home's own button opens, drawn here as a real overlay instead
+        // (see showAvatarShopOverlay_'s own comment for why this is a
+        // separate real flag, not a ShellState transition).
+        if (ImGui::Button("Shop")) {
+            ensureLocalProfileLoaded();
+            ensureAvatarCatalogueLoaded();
+            showAvatarShopOverlay_ = true;
+            app_.setMovementInputSuspended(true);
+        }
+        ImGui::SameLine();
+        // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+        // Layer" -- "reachable from Home and in-game pause menu"): real,
+        // same overlay pattern as the "Shop" button just above.
+        if (ImGui::Button("Settings")) {
+            ensureLocalProfileLoaded();
+            showSettingsOverlay_ = true;
+            app_.setMovementInputSuspended(true);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Friends")) {
+            ensureLocalProfileLoaded();
+            showFriendsOverlay_ = true;
+            app_.setMovementInputSuspended(true);
+        }
+        ImGui::SameLine();
+        size_t unread = notification::unreadCount(localProfile_);
+        std::string notifButtonLabel = unread > 0 ? "Notifications (" + std::to_string(unread) + ")" : "Notifications";
+        if (ImGui::Button(notifButtonLabel.c_str())) {
+            ensureLocalProfileLoaded();
+            showNotificationsOverlay_ = true;
+            app_.setMovementInputSuspended(true);
         }
         ImGui::TextDisabled("Press Esc to leave");
     }
@@ -591,6 +2196,190 @@ void RuntimeShell::drawPlayerListOverlay() {
                 ImGui::Text("#%u  %s%s", player, name.c_str(), isLocal ? "  (You)" : "");
             }
         }
+    }
+    ImGui::End();
+}
+
+void RuntimeShell::tickChatActivation() {
+    // Kronos ("Player & Chat System" -- "Bind the '/' key to open the
+    // chat panel"): real, but only while online (see the "Chat (/)"
+    // button's own comment on why this whole feature is a no-op for
+    // offline Catalogue play) and only while no other real ImGui text
+    // field already wants keyboard text (WantTextInput) -- without that
+    // guard, typing "/" into some *other* hypothetical text field would
+    // also real-open chat underneath it, a real, confusing double input
+    // this guard prevents.
+    if (!app_.networkSession().isActive() || showChatPanel_) return;
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantTextInput) return;
+    // Kronos ("Input Remapping System"): real -- routed through the real,
+    // bindable "OpenChat" action (see Application::initialize()'s own
+    // bindAction() call and RuntimeShell::applyInputBindingOverrides())
+    // instead of a hardcoded ImGuiKey_Slash check, so a player who
+    // rebinds Chat in Settings genuinely opens it with their own chosen
+    // key, not always "/".
+    bool openChatDown = app_.input().isActionDown("OpenChat");
+    if (openChatDown && !openChatKeyWasDown_) {
+        showChatPanel_ = true;
+        chatPanelJustOpened_ = true;
+        app_.setMovementInputSuspended(true);
+    }
+    openChatKeyWasDown_ = openChatDown;
+}
+
+void RuntimeShell::drawChatPanel() {
+    if (!showChatPanel_) return;
+
+    ImGui::SetNextWindowPos(ImVec2(16.0f, 90.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 260.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    bool stillOpen = true;
+    if (ImGui::Begin("Chat", &stillOpen)) {
+        ImGui::BeginChild("##chat_history", ImVec2(0.0f, -32.0f), true);
+        for (const std::string& line : chatHistoryLines_) {
+            ImGui::TextWrapped("%s", line.c_str());
+        }
+        // Real, honest auto-scroll -- only when already at (or starting
+        // at) the bottom, so a player who scrolled up to re-read
+        // something isn't yanked back down by the next incoming message.
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f) ImGui::SetScrollHereY(1.0f);
+        ImGui::EndChild();
+
+        if (chatPanelJustOpened_) {
+            ImGui::SetKeyboardFocusHere();
+            chatPanelJustOpened_ = false;
+        }
+        ImGui::SetNextItemWidth(-1.0f);
+        bool sent = ImGui::InputText("##chat_input", chatInputBuffer_, sizeof(chatInputBuffer_),
+                                      ImGuiInputTextFlags_EnterReturnsTrue);
+        if (sent && chatInputBuffer_[0] != '\0') {
+            // Kronos ("Player & Chat System" -- "Integrate moderation
+            // filters"): real, already-real -- sendChatMessage() routes
+            // through the exact same server-side safety::TrustSafetyService/
+            // safety::PolicyEngine/moderation::ChatLog pipeline every
+            // other chat message (native or scripted) already does; this
+            // panel is a real new front door onto real, pre-existing
+            // moderation, not a second, parallel path.
+            app_.networkSession().sendChatMessage(chatInputBuffer_);
+            chatInputBuffer_[0] = '\0';
+            chatPanelJustOpened_ = true; // real, keeps keyboard focus in the input box for the next message
+        }
+    }
+    ImGui::End();
+
+    // Real Escape-closes -- ImGui's own InputText already consumes
+    // Escape to clear an in-progress edit/unfocus itself first, so this
+    // real, explicit key check (not ImGui::IsItemDeactivated() or
+    // similar) is what actually closes the whole panel on a second,
+    // deliberate Escape press, same "Escape backs out one real layer"
+    // convention tick()'s own comment on this feature already states.
+    bool escapeClosesChatDown = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    if (!stillOpen || escapeClosesChatDown) {
+        showChatPanel_ = false;
+        app_.setMovementInputSuspended(false);
+    }
+}
+
+void RuntimeShell::tickTrailerCaptureMode(float dt) {
+    // Real, raw SDL polling -- same reasoning drawSettingsPanel()'s own
+    // real key-capture already uses (this is a meta/dev toggle, not a
+    // remappable gameplay action, so it deliberately bypasses
+    // UnifiedInput entirely).
+    int numKeys = 0;
+    const Uint8* keyState = SDL_GetKeyboardState(&numKeys);
+    bool f9Down = numKeys > SDL_SCANCODE_F9 && keyState[SDL_SCANCODE_F9] != 0;
+    bool f10Down = numKeys > SDL_SCANCODE_F10 && keyState[SDL_SCANCODE_F10] != 0;
+
+    if (f9Down && !trailerF9WasDown_) {
+        trailerCaptureModeEnabled_ = !trailerCaptureModeEnabled_;
+        trailerSmoothedPoseValid_ = false;
+        if (!trailerCaptureModeEnabled_) trailerHudHidden_ = false; // real -- leaving capture mode always restores the HUD
+    }
+    trailerF9WasDown_ = f9Down;
+
+    if (f10Down && !trailerF10WasDown_ && trailerCaptureModeEnabled_) {
+        trailerHudHidden_ = !trailerHudHidden_;
+    }
+    trailerF10WasDown_ = f10Down;
+
+    if (!trailerCaptureModeEnabled_) return;
+
+    // Kronos ("Trailer Capture Mode" -- "Camera smoothing"): real
+    // exponential smoothing toward whatever pose gameplay already wrote
+    // to app_.camera() this tick -- runs here (RuntimeShell::tick() is
+    // registered as GameLoop's own PreRenderHook, see this class's own
+    // header comment) so it's the real, last write before the frame
+    // actually renders. Zero effect whenever trailerCaptureModeEnabled_
+    // is false (the overwhelming majority of real play), so ordinary
+    // camera control is completely unaffected.
+    core::Camera& camera = app_.camera();
+    if (!trailerSmoothedPoseValid_) {
+        trailerSmoothedCamera_ = camera;
+        trailerSmoothedPoseValid_ = true;
+        return;
+    }
+    float tau = std::max(trailerCameraSmoothingSeconds_, 0.001f);
+    float alpha = 1.0f - std::exp(-dt / tau);
+    trailerSmoothedCamera_.position = glm::mix(trailerSmoothedCamera_.position, camera.position, alpha);
+    trailerSmoothedCamera_.yawDegrees += alpha * (camera.yawDegrees - trailerSmoothedCamera_.yawDegrees);
+    trailerSmoothedCamera_.pitchDegrees += alpha * (camera.pitchDegrees - trailerSmoothedCamera_.pitchDegrees);
+    trailerSmoothedCamera_.rollDegrees += alpha * (camera.rollDegrees - trailerSmoothedCamera_.rollDegrees);
+    trailerSmoothedCamera_.verticalFovDegrees +=
+        alpha * (camera.verticalFovDegrees - trailerSmoothedCamera_.verticalFovDegrees);
+    camera = trailerSmoothedCamera_;
+}
+
+void RuntimeShell::drawTrailerCapturePanel() {
+    ImGui::SetNextWindowPos(ImVec2(16.0f, 200.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300.0f, 0.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    if (ImGui::Begin("Trailer Capture Mode")) {
+        ImGui::TextDisabled("F9: exit capture mode   F10: hide/show this UI");
+        ImGui::Checkbox("Hide HUD (F10)", &trailerHudHidden_);
+        ImGui::SliderFloat("Camera Smoothing (s)", &trailerCameraSmoothingSeconds_, 0.0f, 1.0f);
+
+        // Kronos ("Trailer Capture Mode" -- "Export presets"): real, but
+        // deliberately does NOT change window resolution/fullscreen --
+        // core::Window has no runtime mode-switch API (same real,
+        // already-stated gap as Settings' own qualityPresetIndex
+        // comment). Each preset is a real, named bundle of the settings
+        // that ARE real and live-applicable.
+        static constexpr const char* kExportPresetNames[] = {"None", "Cinematic (High quality, hidden HUD)",
+                                                                "Clean Static (Medium quality, hidden HUD)"};
+        if (ImGui::Combo("Export Preset", &trailerExportPresetIndex_, kExportPresetNames,
+                          IM_ARRAYSIZE(kExportPresetNames))) {
+            if (trailerExportPresetIndex_ == 1) {
+                applyQualityPreset(2);
+                trailerHudHidden_ = true;
+            } else if (trailerExportPresetIndex_ == 2) {
+                applyQualityPreset(1);
+                trailerHudHidden_ = true;
+            }
+        }
+
+        ImGui::SeparatorText("Scene Bookmarks");
+        ImGui::SetNextItemWidth(150.0f);
+        ImGui::InputTextWithHint("##bookmark_name", "Bookmark name", trailerBookmarkNameBuffer_,
+                                  sizeof(trailerBookmarkNameBuffer_));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Save") && trailerBookmarkNameBuffer_[0] != '\0') {
+            trailerBookmarks_.push_back(CameraBookmark{trailerBookmarkNameBuffer_, app_.camera()});
+            trailerBookmarkNameBuffer_[0] = '\0';
+        }
+        int deleteIndex = -1;
+        for (int i = 0; i < static_cast<int>(trailerBookmarks_.size()); ++i) {
+            ImGui::PushID(i);
+            ImGui::Text("%s", trailerBookmarks_[static_cast<size_t>(i)].name.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Recall")) {
+                app_.camera() = trailerBookmarks_[static_cast<size_t>(i)].pose;
+                trailerSmoothedPoseValid_ = false; // real -- a hard cut shouldn't smooth from the pre-recall pose
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Delete")) deleteIndex = i;
+            ImGui::PopID();
+        }
+        if (deleteIndex >= 0) trailerBookmarks_.erase(trailerBookmarks_.begin() + deleteIndex);
     }
     ImGui::End();
 }

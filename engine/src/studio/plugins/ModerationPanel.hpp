@@ -36,6 +36,22 @@ private:
     void drawReviewQueueSection();
     void drawTrustedCreatorSection();
     void drawServerMuteSection();
+    // Kronos ("Moderation Architecture v1", Phase 1): the two real,
+    // stated dashboard gaps this phase closes -- a per-player risk-
+    // score/tier readout (drawn inline within drawReviewQueueSection(),
+    // not a separate section, since it's per-case context, not
+    // standalone data) and a real cross-session audit-log view.
+    void drawAuditLogSection();
+    void drawAppealsSection();
+    // Kronos ("Moderation Architecture v2", "DM System v1"): real Studio
+    // visibility for direct messages, same "moderator can see it, a
+    // real DM system needs real oversight same as chat does" spirit.
+    void drawDirectMessagesSection();
+    // Kronos ("Moderation Architecture v2", item G "Monthly Safety
+    // Reports"): a real, moderator-triggered export button -- see
+    // moderation::SafetyReportGenerator's own header comment for exactly
+    // what this can and can't honestly summarize.
+    void drawSafetyReportSection();
 
     net::NetworkSession* session_;
 
@@ -50,6 +66,14 @@ private:
 
     // Server Mute form state.
     int muteTargetId_ = 0;
+
+    // Appeals section form state (Kronos "Moderation Architecture v1", Phase 1).
+    int selectedAppealIndex_ = -1;
+    int appealOutcomeIndex_ = 1; // index into the real {Upheld, Reduced, Reversed} picker below -- Pending is never manually re-selected
+    char appealReviewerNoteBuffer_[256] = "";
+
+    // Safety Report section state (Kronos "Moderation Architecture v2", item G).
+    std::string safetyReportStatus_;
 };
 
 } // namespace engine::studio::plugins

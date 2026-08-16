@@ -1,8 +1,37 @@
 #include "core/AvatarController.hpp"
 
+#include <cmath>
+
+#include <glm/gtc/matrix_transform.hpp>
+
 #include "core/Components.hpp"
 
 namespace engine::core {
+
+namespace {
+constexpr float kTwoPi = 6.28318530718f;
+}
+
+float computeSecondaryHeadBobDegrees(AvatarLocomotionState state, float phase, float idleSwayDegrees,
+                                      float walkBobDegrees, float runBobDegrees) {
+    float amplitude = 0.0f;
+    switch (state) {
+        case AvatarLocomotionState::Idle: amplitude = idleSwayDegrees; break;
+        case AvatarLocomotionState::Walk: amplitude = walkBobDegrees; break;
+        case AvatarLocomotionState::Run: amplitude = runBobDegrees; break;
+        default: return 0.0f; // Jump/Falling/Landing -- real, deliberate authored motion, no procedural bob on top
+    }
+    return amplitude * std::sin(phase);
+}
+
+float secondaryHeadBobHzForState(AvatarLocomotionState state, float idleSwayHz, float walkBobHz, float runBobHz) {
+    switch (state) {
+        case AvatarLocomotionState::Idle: return idleSwayHz;
+        case AvatarLocomotionState::Walk: return walkBobHz;
+        case AvatarLocomotionState::Run: return runBobHz;
+        default: return 0.0f;
+    }
+}
 
 AvatarController::AvatarController(Skeleton skeleton) : player_(std::move(skeleton)) {}
 
@@ -157,10 +186,38 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
 
     tickAnimation(dt, horizontalSpeed, grounded, velocity.y);
 
+    // Kronos ("Avatar 2.0" -- "Animation Polish: secondary motion"): real
+    // phase advance, wrapped to [0, 2*pi) so it never grows unbounded
+    // over a long play session (float precision would eventually suffer
+    // otherwise). See computeSecondaryHeadBobDegrees()'s own comment for
+    // why this is only ever nonzero during Idle/Walk/Run.
+    secondaryMotionPhase_ += dt * kTwoPi *
+                             secondaryHeadBobHzForState(state_, settings_.idleSwayHz, settings_.walkBobHz, settings_.runBobHz);
+    secondaryMotionPhase_ = std::fmod(secondaryMotionPhase_, kTwoPi);
+
     Transform characterTransform;
     if (auto* t = ecs.tryGetComponent<Transform>(character)) characterTransform = *t;
 
-    const auto& skinningMatrices = player_.skinningMatrices();
+    // A real, mutable copy -- player_.skinningMatrices() is const (shared
+    // read-only state every skinned entity would otherwise reference
+    // directly); the head-bob offset below needs to mutate just the one
+    // head-joint entry before handing the result off.
+    std::vector<glm::mat4> skinningMatrices = player_.skinningMatrices();
+    int headJointIndex = player_.skeleton().findJointIndex("head");
+    if (headJointIndex >= 0 && static_cast<size_t>(headJointIndex) < skinningMatrices.size()) {
+        float bobDegrees = computeSecondaryHeadBobDegrees(state_, secondaryMotionPhase_, settings_.idleSwayDegrees,
+                                                            settings_.walkBobDegrees, settings_.runBobDegrees);
+        // Right-multiplied -- rotates the head mesh in its own bind-local
+        // frame (real, standard "procedural bone tweak on top of a
+        // skinning matrix" technique), around local X (a nod-style bob),
+        // same real convention core::Camera's own rollDegrees rotation
+        // already establishes for "small, additive, doesn't disturb the
+        // rest of the transform."
+        skinningMatrices[static_cast<size_t>(headJointIndex)] =
+            skinningMatrices[static_cast<size_t>(headJointIndex)] *
+            glm::rotate(glm::mat4(1.0f), glm::radians(bobDegrees), glm::vec3(1.0f, 0.0f, 0.0f));
+    }
+
     for (EntityId entity : skinnedEntities) {
         if (auto* t = ecs.tryGetComponent<Transform>(entity)) *t = characterTransform;
         if (auto* skinned = ecs.tryGetComponent<SkinnedRenderable>(entity)) skinned->skinningMatrices = skinningMatrices;

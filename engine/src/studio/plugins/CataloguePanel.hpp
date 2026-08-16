@@ -8,6 +8,8 @@
 #include "core/AssetCache.hpp"
 #include "core/CatalogueDatabase.hpp"
 #include "core/CatalogueIndex.hpp"
+#include "core/LocalProfile.hpp"
+#include "marketplace/TransactionLog.hpp"
 #include "studio/IStudioPlugin.hpp"
 #include "studio/PreviewScene.hpp"
 
@@ -18,6 +20,7 @@ class Renderer;
 namespace engine::studio::plugins {
 
 class AvatarPreviewer;
+class CreatorProfilePanel;
 
 // Task category 3: "Catalogue Viewer (Studio + Runtime)." A scrollable
 // grid of item cards over core::CatalogueIndex's search results (search
@@ -50,9 +53,30 @@ class AvatarPreviewer;
 // pass.
 class CataloguePanel final : public IStudioPlugin {
 public:
+    // Kronos ("Avatar Creation System, Marketplace & Economy" -- "Wire
+    // Wallet -> Catalogue purchases"): `localProfile`/`transactionLog` are
+    // real, new, injected the same "caller owns it, this panel just gets
+    // a reference" way every other dependency here already is --
+    // StudioApp owns both (real, persistent, loaded/saved the same
+    // "local_profile.profile" file runtime::RuntimeShell's own profile
+    // uses, so a creator's Studio and engine_runtime sessions share one
+    // real identity/wallet, not two independently-drifting ones).
+    // Kronos ("Marketplace Search + Categories v2" -- "Ratings
+    // Submission"): `databaseFilePath` is real, new -- a rating mutates a
+    // real AvatarItemManifest (ratingScore/ratingCount), which must be
+    // real-persisted back to catalogue.json the same way
+    // UploadAvatarItemPlugin's own submitUpload() already does (see that
+    // class's own databaseFilePath_ member).
+    // Kronos ("Creator Profiles v2 + Marketplace Analytics + Creator
+    // Dashboard" -- "View Profile button"): `creatorProfilePanel` is
+    // real, new -- the real, existing panel this class's own "View
+    // Creator Profile" button hands off to (see
+    // CreatorProfilePanel::viewCreatorProfile()'s own comment).
     CataloguePanel(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
                     core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary, core::CatalogueIndex& index,
-                    core::CatalogueDatabase& database, AvatarPreviewer& avatarPreviewer);
+                    core::CatalogueDatabase& database, std::string databaseFilePath, AvatarPreviewer& avatarPreviewer,
+                    CreatorProfilePanel& creatorProfilePanel, core::LocalProfile& localProfile,
+                    marketplace::TransactionLog& transactionLog);
 
     [[nodiscard]] const char* name() const override { return "Catalogue"; }
     [[nodiscard]] const char* category() const override { return "Avatar"; }
@@ -70,6 +94,13 @@ private:
     void drawGrid();
     void drawDetailPopup();
     void openDetail(const std::string& itemId);
+    // Kronos ("Creator Profiles v2 + Marketplace Analytics + Creator
+    // Dashboard" -- "Marketplace Analytics"): the one real, shared
+    // "write this mutated manifest back to both the database and the
+    // index, then save to disk" step -- rating submission, view-count
+    // increments, and purchase-count increments all funnel through this
+    // instead of each duplicating the same three real calls.
+    void persistManifestMutation(core::AvatarItemManifest manifest);
 
     VmaAllocator allocator_;
     VkDevice device_;
@@ -79,11 +110,21 @@ private:
     core::TextureLibrary* textureLibrary_;
     core::CatalogueIndex* index_;
     core::CatalogueDatabase* database_;
+    std::string databaseFilePath_;
     AvatarPreviewer* avatarPreviewer_;
+    CreatorProfilePanel* creatorProfilePanel_;
+    core::LocalProfile* localProfile_;
+    marketplace::TransactionLog* transactionLog_;
 
     char searchText_[128] = "";
     int categoryFilterIndex_ = 0; // 0 = "Any" -- see kCategoryFilterNames in the .cpp
-    int sortOrderIndex_ = 0;      // indexes core::CatalogueSearchFilter::SortOrder
+    int sortOrderIndex_ = 0;      // indexes kSortOrderNames/kSortOrderValues in the .cpp
+    // Kronos ("Marketplace Search + Categories v2" -- "My Items tab"):
+    // real -- when true, drawGrid() shows every real item filed under
+    // localProfile_->creatorId regardless of moderationStatus (a creator
+    // sees their own UnderReview/Rejected items too); when false, the
+    // real public browse view real-filters to Approved only.
+    bool showMyItemsOnly_ = false;
 
     std::string detailItemId_; // empty = no detail popup open
     bool detailPopupOpen_ = false;

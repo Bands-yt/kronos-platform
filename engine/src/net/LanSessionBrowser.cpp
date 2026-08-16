@@ -126,6 +126,10 @@ void LanSessionBrowser::tick(float nowSeconds) {
         session.currentPlayerCount = announcement.currentPlayerCount;
         session.maxPlayerCount = announcement.maxPlayerCount;
         session.lastSeenSeconds = nowSeconds;
+        session.gameName = announcement.gameName;
+        session.gameThumbnailColor = announcement.gameThumbnailColor;
+        session.gameSafetyStatusValue = announcement.gameSafetyStatusValue;
+        session.sessionStartUnixSeconds = announcement.sessionStartUnixSeconds;
 
         if (pendingPingSentAtSeconds_.find(sourceAddress) == pendingPingSentAtSeconds_.end()) {
             // Real unicast Echo, sent from the real, separate

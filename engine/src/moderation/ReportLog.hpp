@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "moderation/ReportTypes.hpp"
@@ -23,6 +24,14 @@ public:
     // "N reports against this player" anti-cheat-adjacent signal reads.
     [[nodiscard]] std::vector<PlayerReport> reportsAgainst(net::PlayerId reported) const;
     [[nodiscard]] size_t countAgainst(net::PlayerId reported) const;
+
+    // Kronos ("Moderation Architecture v1", Phase 1): real disk
+    // persistence, same convention as moderation::ChatLog's own
+    // saveToFile()/loadFromFile() -- reports are exactly the kind of
+    // record that should survive a process restart (see this class's
+    // own "never silently roll off" comment above).
+    [[nodiscard]] bool saveToFile(const std::string& path) const;
+    [[nodiscard]] bool loadFromFile(const std::string& path);
 
 private:
     std::vector<PlayerReport> reports_;

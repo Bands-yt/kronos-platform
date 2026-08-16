@@ -14,15 +14,18 @@ const char* avatarItemCategoryName(AvatarItemCategory category) {
         case AvatarItemCategory::Accessory: return "Accessory";
         case AvatarItemCategory::LayeredClothing: return "LayeredClothing";
         case AvatarItemCategory::Emote: return "Emote";
+        case AvatarItemCategory::Shoes: return "Shoes";
+        case AvatarItemCategory::Back: return "Back";
+        case AvatarItemCategory::Bundle: return "Bundle";
     }
     return "Accessory";
 }
 
 bool avatarItemCategoryFromName(const std::string& name, AvatarItemCategory& out) {
     static constexpr AvatarItemCategory kAll[] = {
-        AvatarItemCategory::Head,     AvatarItemCategory::Hair,     AvatarItemCategory::Face,
-        AvatarItemCategory::Torso,    AvatarItemCategory::Legs,     AvatarItemCategory::Accessory,
-        AvatarItemCategory::LayeredClothing, AvatarItemCategory::Emote,
+        AvatarItemCategory::Head,  AvatarItemCategory::Hair,  AvatarItemCategory::Face,  AvatarItemCategory::Torso,
+        AvatarItemCategory::Legs,  AvatarItemCategory::Accessory, AvatarItemCategory::LayeredClothing,
+        AvatarItemCategory::Emote, AvatarItemCategory::Shoes, AvatarItemCategory::Back, AvatarItemCategory::Bundle,
     };
     for (AvatarItemCategory candidate : kAll) {
         if (name == avatarItemCategoryName(candidate)) {

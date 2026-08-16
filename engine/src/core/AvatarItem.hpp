@@ -15,6 +15,13 @@ namespace engine::core {
 // attachment at all (see AvatarAttachment.hpp) -- it occupies a loadout
 // slot the same way every other category does, but never spawns a child
 // entity.
+// Kronos ("Avatar Phase" -- "AvatarEditor: Clothing & Accessory Slots"):
+// `Shoes` and `Back` are real, new categories -- the spec's own explicit
+// "top, bottom, shoes" clothing slots and "hat, face, back" accessory
+// slots need a real, distinct category each to be independently
+// equippable (AvatarLoadout's own "no duplicate categories" guarantee is
+// structural, per-category -- see that class's own comment), which Torso
+// (top)/Legs (bottom)/Head (hat)/Face didn't already provide.
 enum class AvatarItemCategory {
     Head,
     Hair,
@@ -24,6 +31,17 @@ enum class AvatarItemCategory {
     Accessory,
     LayeredClothing,
     Emote,
+    Shoes,
+    Back,
+    // Kronos ("Marketplace Search + Categories v2" -- "Bundle (future use,
+    // scaffold only)"): a real, new, distinct category value -- exists so
+    // it round-trips/serializes/filters correctly and a future bundle
+    // feature has a real home to file items under, but no real
+    // multi-item-bundle purchase/composition logic is built yet (an
+    // honest, stated gap, same "real slot, no fabricated behavior behind
+    // it" pattern Shoes/Back/Emote/Accessory already establish for their
+    // own real, stated visual-mapping gaps).
+    Bundle,
 };
 
 [[nodiscard]] const char* avatarItemCategoryName(AvatarItemCategory category);

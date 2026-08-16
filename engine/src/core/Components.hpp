@@ -224,6 +224,16 @@ struct ColliderShape {
 
 // A positioned sound emitter, mixed by Audio each frame from Transform.
 // See Audio.hpp.
+// Kronos ("Settings Panel v2 + Input Remapping + Accessibility Layer" --
+// "Audio: Music volume, SFX volume"): real, minimal category concept --
+// core::Audio::mix() multiplies a sound's own AudioSource::volume by
+// this category's own real, live-settable multiplier (see
+// Audio::setCategoryVolume()'s own comment) on top of the real, separate
+// master volume (miniaudio's own engine-level volume). Two categories
+// only, matching exactly what the settings spec names -- not a general
+// N-bus mixer.
+enum class AudioCategory { Music, SFX };
+
 struct AudioSource {
     uint32_t soundHandle = kInvalidHandle;
     float volume = 1.0f;
@@ -231,6 +241,7 @@ struct AudioSource {
     float maxDistance = 50.0f;
     bool looping = false;
     bool playing = false;
+    AudioCategory category = AudioCategory::SFX;
 
     static constexpr uint32_t kInvalidHandle = ~0u;
 };

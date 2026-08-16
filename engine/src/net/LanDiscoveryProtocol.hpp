@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include <glm/glm.hpp>
+
 namespace engine::net {
 
 class ByteWriter;
@@ -72,6 +74,33 @@ struct LanSessionAnnouncement {
     uint16_t gamePort = 0; // the real ENet port to actually connect to -- distinct from kLanDiscoveryPort
     uint8_t currentPlayerCount = 0;
     uint8_t maxPlayerCount = 0;
+
+    // Kronos ("Moderation Architecture v2", "Session Browser Game
+    // Identity"): real "which game is this session actually running" --
+    // `gameName` doubles as the real identity key this codebase already
+    // uses everywhere else (core::GameManifest::name -- the same string
+    // net::GamePlayLog/core::HiddenGemsSelector already key on, see
+    // GameCatalogueAggregate.hpp's own comment), not a separate numeric
+    // gameId scheme this codebase has no other use for. `gameThumbnailColor`
+    // mirrors GameManifest's own real, honest "no image pipeline yet, a
+    // flat color swatch is the real answer" convention.
+    // `gameSafetyStatusValue` is a real core::GameSafetyStatus, stored as
+    // a raw uint8_t here (net/ doesn't otherwise depend on core::) --
+    // callers cast via static_cast<core::GameSafetyStatus>, same
+    // "storage is a plain integer, the real enum lives in core::" pattern
+    // AgeGroup gets nowhere in this wire format (it's sent as a raw u8
+    // too, see NetworkSession's own JoinRequest handling).
+    std::string gameName;
+    glm::vec4 gameThumbnailColor{0.35f, 0.55f, 0.85f, 1.0f};
+    uint8_t gameSafetyStatusValue = 0; // core::GameSafetyStatus::Safe's own underlying value
+
+    // Kronos ("Session Browser Polish v2" -- "Sorting: Newly Created"):
+    // real wall-clock seconds the host's own NetworkSession actually
+    // started at (NetworkSession::sessionStartUnixSeconds()) -- not a
+    // fabricated/estimated value, and not the same thing as
+    // `lastSeenSeconds` on the browser side (that one is "how long since
+    // I last heard an Announce," this one is "when the session began").
+    int64_t sessionStartUnixSeconds = 0;
 };
 
 void serializeLanAnnouncement(const LanSessionAnnouncement& announcement, ByteWriter& writer);

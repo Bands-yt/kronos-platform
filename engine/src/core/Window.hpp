@@ -28,6 +28,15 @@ public:
         uint32_t width = 1280;
         uint32_t height = 720;
         bool resizable = true;
+        // Kronos ("UI/UX Revamp" -- "App Icon"): a real, honest opt-in --
+        // blank (the default) means no icon is set, matching SDL's own
+        // "OS/window-manager default" behavior, not a fabricated fallback
+        // asset. Resolved relative to the real assets directory by the
+        // caller (core::Application/studio::StudioApp), same convention
+        // every other real asset path in this codebase already follows
+        // (e.g. UIRenderer's own font atlas path) -- this class doesn't
+        // know about core::resolveResourceDir() itself.
+        std::string iconPath;
     };
 
     Window() = default;

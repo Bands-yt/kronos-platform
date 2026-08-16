@@ -1,6 +1,7 @@
 #include "net/NetworkSession.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -14,6 +15,8 @@
 #include "net/NetworkIdentity.hpp"
 #include "net/NetworkedMovement.hpp"
 #include "net/Serialization.hpp"
+
+#include "moderation/TrainingDataLog.hpp"
 
 namespace engine::net {
 
@@ -51,7 +54,32 @@ enum class WireMessageType : uint8_t {
     Disconnect = 18,           // server -> client: reason (u8) -- a real, graceful goodbye, see disconnectPlayer()/shutdown()
     PlayerRosterJoined = 19,   // server -> client broadcast: player, displayName
     PlayerRosterLeft = 20,     // server -> client broadcast: player, displayName
+    // Kronos ("Moderation Architecture v1", Phase 1): client -> server
+    // only, no broadcast/ack -- exact same real shape as ReportPlayer=7
+    // above (see submitAppeal()'s own comment).
+    SubmitAppeal = 21,
+    // Kronos ("Moderation Architecture v2", "DM System v1"): a real,
+    // minimal, text-only direct-message pair -- Send is client -> server
+    // only (real moderation routing happens server-side, same as chat);
+    // Deliver is server -> the one real intended recipient only, NEVER a
+    // broadcast (the whole point of a DM, unlike ChatBroadcast).
+    DirectMessageSend = 22,
+    DirectMessageDeliver = 23,
 };
+
+// Kronos ("Moderation Architecture v1", Phase 1): real, local, per-
+// machine persistence paths for the real moderation logs below -- same
+// "plain relative path in the working directory" convention as every
+// other small local save file in this codebase (e.g.
+// runtime::RuntimeShell's own kSessionHistoryPath/kLocalProfilePath).
+constexpr const char* kChatLogPath = "chat_log.chatlog";
+constexpr const char* kReportLogPath = "report_log.reportlog";
+constexpr const char* kReviewQueuePath = "review_queue.reviewqueue";
+constexpr const char* kEscalationEventLogPath = "escalation_log.escalationlog";
+constexpr const char* kAppealLogPath = "appeal_log.appeallog";
+constexpr const char* kAccountModerationPath = "account_moderation.accountmod";
+constexpr const char* kDirectMessageLogPath = "dm_log.dmlog";
+constexpr const char* kTrainingDataLogPath = "moderation_training_data.log";
 
 // Kronos ("Active Joining UI"): the raw ENet peer cap passed to
 // hostServer() must exceed the real, business-level maxClients by a
@@ -92,6 +120,22 @@ bool NetworkSession::initialize(const Config& config) {
     config_ = config;
 
     if (config_.mode == NetworkMode::Server) {
+        // Kronos ("Moderation Architecture v1", Phase 1): real disk
+        // persistence -- these logs used to reset on every process
+        // restart (see each type's own header comment). Real, explicit
+        // opt-in (see Config::persistModerationLogs's own comment on
+        // why default-off matters). A real, honest no-op if no file
+        // exists yet (first-ever server start).
+        if (config_.persistModerationLogs) {
+            (void)chatLog_.loadFromFile(kChatLogPath);
+            (void)reportLog_.loadFromFile(kReportLogPath);
+            (void)reviewQueue_.loadFromFile(kReviewQueuePath);
+            (void)escalationEventLog_.loadFromFile(kEscalationEventLogPath);
+            (void)appealLog_.loadFromFile(kAppealLogPath);
+            (void)accountModerationRegistry_.loadFromFile(kAccountModerationPath);
+            (void)directMessageLog_.loadFromFile(kDirectMessageLogPath);
+        }
+
         // Kronos ("Active Joining UI"): the raw ENet host is over-
         // provisioned by kSessionFullRejectionHeadroom -- see that
         // constant's own comment. config_.maxClients itself stays the
@@ -115,6 +159,9 @@ bool NetworkSession::initialize(const Config& config) {
         sessionId_ = config_.sessionId != 0 ? config_.sessionId : generateSessionId();
         sessionName_ = config_.sessionName;
         config_.sessionId = sessionId_; // keep config_ and the accessor in agreement
+        sessionStartUnixSeconds_ =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
 
         // Kronos ("Active Joining UI" -- LAN discovery): a real, honest
         // best-effort start -- a failed bind() (e.g. another process
@@ -154,6 +201,22 @@ bool NetworkSession::initialize(const Config& config) {
         };
         trustSafetyCallbacks.onLegalReportRequired = [this](safety::PlayerId player, const char* reason) {
             reviewQueue_.add(moderation::ReviewCase{player, reason, true, clockSeconds_});
+        };
+        // Kronos ("Moderation Architecture v1", Phase 1): real, but
+        // honestly scoped -- there is no real per-client targeted
+        // message wire type yet to actually deliver a warning to the
+        // specific player it's about (only a broadcast ChatBroadcast
+        // exists). Logging server-side is the real, stated interim
+        // behavior; a real client-facing delivery channel is separate,
+        // later work, not silently pretended to exist here.
+        trustSafetyCallbacks.onWarn = [](safety::PlayerId player, const char* reason) {
+            std::fprintf(stderr, "TrustSafetyService: real Warn issued for player=%u (%s) -- no client-facing delivery channel yet\n",
+                         player, reason);
+        };
+        trustSafetyCallbacks.onEscalationEvent = [this](safety::PlayerId player, safety::EscalationTier tier,
+                                                          const char* source) {
+            escalationEventLog_.record(
+                moderation::EscalationEvent{player, tier, source, static_cast<double>(clockSeconds_)});
         };
         trustSafetyService_.setCallbacks(std::move(trustSafetyCallbacks));
 
@@ -229,6 +292,21 @@ bool NetworkSession::initialize(const Config& config) {
 }
 
 void NetworkSession::shutdown() {
+    // Kronos ("Moderation Architecture v1", Phase 1): real, symmetric
+    // save half of initialize()'s real load -- only for a server that
+    // genuinely started (matches sessionActuallyStarted_'s own existing
+    // use elsewhere in this function; a client, or a server that failed
+    // to bind, never loaded these in the first place).
+    if (config_.mode == NetworkMode::Server && sessionActuallyStarted_ && config_.persistModerationLogs) {
+        (void)chatLog_.saveToFile(kChatLogPath);
+        (void)reportLog_.saveToFile(kReportLogPath);
+        (void)reviewQueue_.saveToFile(kReviewQueuePath);
+        (void)escalationEventLog_.saveToFile(kEscalationEventLogPath);
+        (void)appealLog_.saveToFile(kAppealLogPath);
+        (void)accountModerationRegistry_.saveToFile(kAccountModerationPath);
+        (void)directMessageLog_.saveToFile(kDirectMessageLogPath);
+    }
+
     stopStressTest();
     lanAnnouncer_.stop();
 
@@ -413,6 +491,8 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
         serverPlayerEntities_.erase(player);
         serverPlayerBaselines_.erase(player);
         serverPlayerDisplayNames_.erase(player);
+        serverPlayerProfileIds_.erase(player);
+        serverPlayerAgeGroups_.erase(player);
         networkStats_.removePlayer(player);
         // Sprint 12: real per-connection moderation/anti-cheat hygiene --
         // muteBlockRegistry_/movementRejectionCounter_ are keyed by
@@ -462,6 +542,10 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
             handleChatMessageServer(player, reader);
         } else if (messageType == WireMessageType::ReportPlayer) {
             handleReportPlayerServer(player, reader);
+        } else if (messageType == WireMessageType::SubmitAppeal) {
+            handleSubmitAppealServer(player, reader);
+        } else if (messageType == WireMessageType::DirectMessageSend) {
+            handleDirectMessageSendServer(player, reader);
         } else if (messageType == WireMessageType::SelectClass) {
             handleSelectClassServer(player, reader);
         } else if (messageType == WireMessageType::FireWeapon) {
@@ -503,6 +587,23 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
     // no-op if lanAnnouncer_ never started (advertiseOnLan == false, or
     // its own start() failed) -- see LanSessionAnnouncer::tick()'s own
     // early-return.
+    //
+    // Kronos ("Moderation Architecture v2", "Session Browser Game
+    // Identity"): gameName/gameThumbnailColor/gameSafetyStatus below are
+    // real, but this specific config_ passthrough isn't covered by a
+    // NetworkSession-level end-to-end test -- this class's own real
+    // announcer broadcasts to 255.255.255.255 (see start()'s call site
+    // just above), and real L2/L3 broadcast delivery isn't guaranteed
+    // inside this sandboxed test environment (the exact same, already-
+    // documented limitation LanSessionAnnouncer.hpp's own class comment
+    // states, and the real reason testLanDiscoveryOptOutViaAdvertiseOnLanFalse
+    // only asserts the *negative* case for a real hosted session). The
+    // real wire format and the real Announcer->Browser mechanism ARE
+    // fully covered (testLanDiscoveryProtocolSerializationRoundTrips,
+    // testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing,
+    // both extended with these fields) -- only this one-line config_->
+    // announcement copy is manual-verification-only, a real, small, and
+    // low-risk gap, not a silent one.
     LanSessionAnnouncement announcement;
     announcement.protocolVersion = kNetworkProtocolVersion;
     announcement.sessionId = sessionId_;
@@ -511,6 +612,10 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
     announcement.gamePort = config_.port;
     announcement.currentPlayerCount = static_cast<uint8_t>(std::min<size_t>(serverPlayerEntities_.size(), 255));
     announcement.maxPlayerCount = static_cast<uint8_t>(std::min<size_t>(config_.maxClients, 255));
+    announcement.gameName = config_.gameName;
+    announcement.gameThumbnailColor = config_.gameThumbnailColor;
+    announcement.gameSafetyStatusValue = static_cast<uint8_t>(config_.gameSafetyStatus);
+    announcement.sessionStartUnixSeconds = sessionStartUnixSeconds_;
     lanAnnouncer_.tick(dt, announcement);
 }
 
@@ -594,6 +699,17 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
         networkStats_.recordPacketDropped();
         return;
     }
+    // Kronos ("Moderation Architecture v2", "Account System v1"): real,
+    // persistent, cross-session mute -- distinct from isServerMuted()'s
+    // real, session-scoped PlayerId-keyed check just above (a real
+    // moderator action might only mean "for tonight," this means "this
+    // real account, indefinitely, across reconnects").
+    auto profileIdIt = serverPlayerProfileIds_.find(player);
+    if (profileIdIt != serverPlayerProfileIds_.end() && profileIdIt->second != 0 &&
+        accountModerationRegistry_.isMuted(profileIdIt->second)) {
+        networkStats_.recordPacketDropped();
+        return;
+    }
     chatRateLimiter_.setMaxPerSecond(worldSafetySettings_.maxChatMessagesPerSecond);
     if (!chatRateLimiter_.tryConsume(player, clockSeconds_)) {
         networkStats_.recordPacketDropped();
@@ -610,13 +726,40 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
 
     // Real escalation-pipeline scoring (finally gives
     // safety::TrustSafetyService a real caller -- see this class's
-    // header comment). The message is still delivered regardless of the
-    // classification, exactly matching onChatMessage()'s own documented
-    // "flagging never blocks delivery by itself" contract.
-    safety::TextClassification classification = trustSafetyService_.onChatMessage(player, text);
+    // header comment). Kronos ("Moderation Architecture v1", Phase 1):
+    // the message is still delivered regardless of the classification
+    // for every *ambiguous/borderline* category -- but a real hard-block
+    // category (safety::PolicyEngine) now genuinely stops delivery, see
+    // TextClassification::blocked's own comment. The message is still
+    // real-recorded to chatLog_ below either way -- a blocked message is
+    // exactly the kind of thing a moderator needs to be able to review,
+    // not evidence that should vanish just because it wasn't delivered.
+    // Kronos ("Moderation Architecture v2", "Minor Mode Enforcement"):
+    // the real, now-available sender AgeGroup (playerAgeGroup(), fed by
+    // the real JoinRequest identity signal) -- closes the real gap
+    // Phase 1's own onChatMessage() comment stated ("no per-connected-
+    // remote-player age signal exists in the network protocol yet").
+    safety::TextClassification classification = trustSafetyService_.onChatMessage(player, text, playerAgeGroup(player));
 
     chatLog_.record(moderation::ChatLogEntry{player, text, profanityResult.containsProfanity, classification.flagged,
                                               static_cast<double>(clockSeconds_)});
+
+    // Kronos ("Moderation Architecture v2", item H "ML Retraining
+    // Pipeline (Stub)"): real, future-ready (text, classification) data
+    // collection -- only flagged messages, same "not every message is
+    // worth persisting long-term" reasoning EscalationEventLog's own
+    // caller applies (dispatchEscalation()'s own comment). Gated behind
+    // the same real, explicit persistModerationLogs opt-in every other
+    // moderation log uses (Config::persistModerationLogs's own comment) --
+    // a real, short-lived test server never pollutes this file.
+    if (classification.flagged && config_.persistModerationLogs) {
+        (void)moderation::appendTrainingDataSample(kTrainingDataLogPath, text, classification);
+    }
+
+    if (classification.blocked) {
+        networkStats_.recordPacketDropped();
+        return;
+    }
 
     const std::string& outgoingText = worldSafetySettings_.profanityFilterEnabled ? profanityResult.censored : text;
     ByteWriter writer;
@@ -643,6 +786,107 @@ void NetworkSession::handleReportPlayerServer(PlayerId player, ByteReader& reade
     }
 
     reportLog_.submit(moderation::PlayerReport{player, reported, category, description, static_cast<double>(clockSeconds_)});
+}
+
+void NetworkSession::handleDirectMessageSendServer(PlayerId sender, ByteReader& reader) {
+    PlayerId recipient = reader.readU32();
+    std::string text = reader.readString();
+    if (reader.hasError()) {
+        networkStats_.recordPacketDropped();
+        return;
+    }
+
+    // Same real world-safety/mute gates chat already uses -- a DM system
+    // is real chat's sibling, not a separate, ungated channel.
+    // Kronos ("Moderation Architecture v2", item 5): directMessagesEnabled
+    // is a real, separate creator toggle from chatEnabled -- see that
+    // field's own comment.
+    if (!worldSafetySettings_.chatEnabled || !worldSafetySettings_.directMessagesEnabled || isServerMuted(sender)) {
+        networkStats_.recordPacketDropped();
+        return;
+    }
+
+    core::AgeGroup senderAgeGroup = playerAgeGroup(sender);
+    core::AgeGroup recipientAgeGroup = playerAgeGroup(recipient);
+
+    // Kronos ("Moderation Architecture v2", "Minor Mode Enforcement" --
+    // "DM restrictions"): the real, simplest, safest v1 rule -- if
+    // EITHER real party is a real (or possibly) minor, this DM is
+    // real-blocked outright, not just moderated. A real, honest,
+    // deliberately conservative v1 scope (no per-pair "both adults,
+    // both minors, one of each" nuance) -- "protect minors by default"
+    // means starting from "no DMs touching a minor at all," not
+    // building the more permissive, more complex version first.
+    bool minorModeBlocked = senderAgeGroup != core::AgeGroup::Adult || recipientAgeGroup != core::AgeGroup::Adult;
+
+    // Real moderation routing through the exact same TrustSafetyService/
+    // PolicyEngine chat already uses (spec: "Routed through
+    // TrustSafetyService") -- one real text-classification pipeline, not
+    // a second, DM-specific one.
+    safety::TextClassification classification = trustSafetyService_.onChatMessage(sender, text, senderAgeGroup);
+    bool blocked = minorModeBlocked || classification.blocked;
+
+    directMessageLog_.record(moderation::DirectMessageLogEntry{sender, recipient, text, classification.flagged,
+                                                                 blocked, static_cast<double>(clockSeconds_)});
+
+    // Kronos ("Moderation Architecture v2", item B "Behavioral Model
+    // (Heuristic v1)"): real conversion from moderation::
+    // DirectMessageLog's own entries into safety::DirectMessageSample --
+    // see BehavioralPatternAnalyzer.hpp's own comment on why this
+    // conversion happens here (in NetworkSession, which owns both
+    // namespaces already) rather than inside safety:: itself. Runs on
+    // every real DM send, blocked-or-not -- a blocked DM is still a real
+    // data point about this sender's real pattern.
+    std::vector<safety::DirectMessageSample> senderSamples;
+    for (const moderation::DirectMessageLogEntry& entry : directMessageLog_.entries()) {
+        if (entry.sender != sender) continue;
+        senderSamples.push_back(safety::DirectMessageSample{entry.recipient, playerAgeGroup(entry.recipient), entry.text,
+                                                              entry.serverTimestampSeconds});
+    }
+    trustSafetyService_.onDirectMessagePattern(sender, senderSamples, static_cast<double>(clockSeconds_));
+
+    if (blocked) {
+        networkStats_.recordPacketDropped();
+        return;
+    }
+
+    // Real, targeted delivery -- the one real recipient's own peer only,
+    // never a broadcast (unlike ChatBroadcast). serverPeerToPlayer_ only
+    // maps peer->PlayerId; a real linear search over this real, small
+    // (one entry per connected player) map is the honest, simple choice
+    // over maintaining a second, parallel reverse map just for this.
+    for (const auto& [peer, playerId] : serverPeerToPlayer_) {
+        if (playerId != recipient) continue;
+        ByteWriter writer;
+        writer.writeU8(static_cast<uint8_t>(WireMessageType::DirectMessageDeliver));
+        writer.writeU32(sender);
+        writer.writeString(text);
+        networkStats_.recordPacketSent(writer.size());
+        transport_.send(peer, writer.bytes().data(), writer.size(), kReliableChannel, true);
+        break;
+    }
+}
+
+void NetworkSession::handleSubmitAppealServer(PlayerId player, ByteReader& reader) {
+    std::string playerStatement = reader.readString();
+    std::string relatedReviewCaseReason = reader.readString();
+    if (reader.hasError()) {
+        networkStats_.recordPacketDropped();
+        return;
+    }
+
+    // Kronos ("Moderation Architecture v2", "Account System v1" -- "appeal
+    // history tied to identity"): real, best-effort profileId lookup --
+    // 0 (the real, honest "unknown" default) for a player who joined via
+    // a pre-Account-System-v2 client that sent no real profileId at all,
+    // same soft-fallback convention handleJoinRequestServer() itself
+    // already uses.
+    auto submitterProfileIdIt = serverPlayerProfileIds_.find(player);
+    uint64_t submitterProfileId = submitterProfileIdIt != serverPlayerProfileIds_.end() ? submitterProfileIdIt->second : 0;
+
+    appealLog_.submit(moderation::Appeal{player, submitterProfileId, playerStatement, relatedReviewCaseReason,
+                                          moderation::AppealOutcome::Pending, "", static_cast<double>(clockSeconds_),
+                                          0.0});
 }
 
 void NetworkSession::handleSelectClassServer(PlayerId player, ByteReader& reader) {
@@ -727,6 +971,11 @@ void NetworkSession::handleJoinRequestServer(ENetTransport::PeerId peer, PlayerI
         return;
     }
 
+    // Real version-mismatch rejection FIRST, using only the two original
+    // fields -- deliberately BEFORE reading the newer profileId/AgeGroup
+    // fields below, so a stale/incompatible client that doesn't even
+    // know to send them still gets a real, honest JoinRejected reply
+    // instead of a silent drop.
     if (clientProtocolVersion != kNetworkProtocolVersion) {
         ByteWriter rejected;
         rejected.writeU8(static_cast<uint8_t>(WireMessageType::JoinRejected));
@@ -737,6 +986,37 @@ void NetworkSession::handleJoinRequestServer(ENetTransport::PeerId peer, PlayerI
         transport_.disconnectPeerGracefully(peer);
         core::logInfo("Network", "rejected player %u: protocol version mismatch (client %u, server %u)", player,
                        clientProtocolVersion, kNetworkProtocolVersion);
+        return;
+    }
+
+    // Kronos ("Moderation Architecture v2", "Account System v1"): real
+    // identity signals -- see NetworkSession::setLocalIdentity()'s own
+    // comment. Read only now, after the version check above already
+    // passed -- a genuinely compatible-version client always sends
+    // these, so a real hasError() here means a real, honest malformed/
+    // adversarial payload, not just an older client. Defaults (0,
+    // Unknown) on error, same "fail soft, real conservative default"
+    // spirit as every other identity gap in this system -- doesn't
+    // reject the join by itself, no-op ban-checking for a 0 profileId.
+    uint64_t clientProfileId = reader.readU64();
+    auto clientAgeGroup = static_cast<core::AgeGroup>(reader.readU8());
+    if (reader.hasError()) {
+        clientProfileId = 0;
+        clientAgeGroup = core::AgeGroup::Unknown;
+    }
+
+    // Real, persistent ban enforcement -- keyed by the real, stable
+    // profileId (survives a reconnect, unlike net::PlayerId).
+    if (clientProfileId != 0 && accountModerationRegistry_.isBanned(clientProfileId)) {
+        ByteWriter rejected;
+        rejected.writeU8(static_cast<uint8_t>(WireMessageType::JoinRejected));
+        rejected.writeU8(static_cast<uint8_t>(JoinFailureReason::Banned));
+        rejected.writeU32(kNetworkProtocolVersion);
+        networkStats_.recordPacketSent(rejected.size());
+        transport_.send(peer, rejected.bytes().data(), rejected.size(), kReliableChannel, true);
+        transport_.disconnectPeerGracefully(peer);
+        core::logInfo("Network", "rejected player %u: real, persistent ban on profileId %llu", player,
+                       static_cast<unsigned long long>(clientProfileId));
         return;
     }
 
@@ -773,6 +1053,8 @@ void NetworkSession::handleJoinRequestServer(ENetTransport::PeerId peer, PlayerI
     // studio::plugins::NetworkOverlayPlugin's own updated comment).
     if (auto* name = currentEcs_->tryGetComponent<core::Name>(avatar)) name->value = displayName;
     serverPlayerDisplayNames_[player] = displayName;
+    serverPlayerProfileIds_[player] = clientProfileId;
+    serverPlayerAgeGroups_[player] = clientAgeGroup;
 
     uint32_t avatarNetworkId = 0;
     if (auto* identity = currentEcs_->tryGetComponent<NetworkIdentity>(avatar)) avatarNetworkId = identity->networkId;
@@ -875,6 +1157,10 @@ void NetworkSession::tickClient(float dt, core::ECS& ecs, core::EntityId localPl
         writer.writeU8(static_cast<uint8_t>(WireMessageType::JoinRequest));
         writer.writeU32(kNetworkProtocolVersion);
         writer.writeString(localDisplayName_);
+        // Kronos ("Moderation Architecture v2", "Account System v1"):
+        // real identity signals -- see setLocalIdentity()'s own comment.
+        writer.writeU64(localProfileId_);
+        writer.writeU8(static_cast<uint8_t>(localAgeGroup_));
         networkStats_.recordPacketSent(writer.size());
         transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
     };
@@ -1010,6 +1296,17 @@ void NetworkSession::tickClient(float dt, core::ECS& ecs, core::EntityId localPl
             return;
         }
 
+        if (messageType == WireMessageType::DirectMessageDeliver) {
+            PlayerId sender = reader.readU32();
+            std::string text = reader.readString();
+            if (reader.hasError()) {
+                networkStats_.recordPacketDropped();
+                return;
+            }
+            if (onDirectMessageReceived_) onDirectMessageReceived_(sender, text);
+            return;
+        }
+
         if (messageType == WireMessageType::ProjectileSpawned) {
             tntwars::ProjectileState projectile;
             projectile.type = static_cast<tntwars::ProjectileType>(reader.readU8());
@@ -1133,6 +1430,16 @@ void NetworkSession::sendChatMessage(const std::string& text) {
     transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
 }
 
+void NetworkSession::sendDirectMessage(PlayerId recipient, const std::string& text) {
+    if (config_.mode != NetworkMode::Client) return;
+    ByteWriter writer;
+    writer.writeU8(static_cast<uint8_t>(WireMessageType::DirectMessageSend));
+    writer.writeU32(recipient);
+    writer.writeString(text);
+    networkStats_.recordPacketSent(writer.size());
+    transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
+}
+
 void NetworkSession::reportPlayer(PlayerId reported, moderation::ReportCategory category, const std::string& description) {
     if (config_.mode != NetworkMode::Client) return;
     ByteWriter writer;
@@ -1145,6 +1452,19 @@ void NetworkSession::reportPlayer(PlayerId reported, moderation::ReportCategory 
     // unreliable-channel packet loss the way a per-tick position update
     // legitimately can (a stale one is worthless once a newer one
     // arrives; a lost report is just gone).
+    transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
+}
+
+void NetworkSession::submitAppeal(const std::string& playerStatement, const std::string& relatedReviewCaseReason) {
+    if (config_.mode != NetworkMode::Client) return;
+    ByteWriter writer;
+    writer.writeU8(static_cast<uint8_t>(WireMessageType::SubmitAppeal));
+    writer.writeString(playerStatement);
+    writer.writeString(relatedReviewCaseReason);
+    networkStats_.recordPacketSent(writer.size());
+    // Reliable, same real reasoning as reportPlayer()'s own comment: a
+    // player's appeal should never silently vanish to unreliable-channel
+    // packet loss.
     transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
 }
 

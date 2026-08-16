@@ -49,9 +49,32 @@ VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& fo
     return formats.front();
 }
 
-VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& modes) {
-    if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_MAILBOX_KHR) != modes.end()) {
-        return VK_PRESENT_MODE_MAILBOX_KHR;
+VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& modes, bool vsyncEnabled) {
+    // Kronos ("UI/UX Revamp" -- "Performance & Stability", "whistling
+    // sound when Studio opens"): real, identified root cause -- MAILBOX
+    // presents as fast as the GPU can produce frames, uncapped by the
+    // display's own refresh rate. On an idle/near-static scene (the Home
+    // Screen, an empty Studio viewport) that means sustained
+    // near-100%-duty-cycle GPU work for zero visible benefit -- a
+    // textbook cause of both fan ramp-up and coil whine. FIFO is real
+    // vsync: guaranteed present-mode support (unlike MAILBOX, which
+    // isn't universally available -- see the fallback below), capped to
+    // the display's own refresh rate, and the real, standard default
+    // every editor/engine uses for exactly this "idle quietly" reason.
+    //
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Graphics: VSync"): MAILBOX's real, legitimate use case
+    // (lower input latency for a fast-paced game, at the real cost of
+    // burning full GPU power even when idle) is now the real, explicit,
+    // user-facing graphics setting this comment always said it should
+    // be -- see Renderer::setVsyncEnabled(). Real, honest fallback if
+    // the physical device doesn't actually support MAILBOX (the Vulkan
+    // spec never guarantees it): stay on FIFO rather than silently
+    // requesting an unsupported mode.
+    if (!vsyncEnabled) {
+        for (VkPresentModeKHR mode : modes) {
+            if (mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
+        }
     }
     return VK_PRESENT_MODE_FIFO_KHR;
 }
@@ -471,7 +494,7 @@ bool Renderer::createSwapchain() {
     vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice_, surface_, &presentModeCount, presentModes.data());
 
     VkSurfaceFormatKHR surfaceFormat = chooseSurfaceFormat(formats);
-    VkPresentModeKHR presentMode = choosePresentMode(presentModes);
+    VkPresentModeKHR presentMode = choosePresentMode(presentModes, vsyncEnabled_);
     VkExtent2D extent = chooseExtent(caps, window_->width(), window_->height());
 
     uint32_t imageCount = caps.minImageCount + 1;
@@ -1499,6 +1522,14 @@ void Renderer::setPerformanceMode(bool enabled) {
         cinematicModeEnabled_ = false; // see setCinematicMode()'s own comment on this mutual exclusion
     }
 }
+
+void Renderer::setVsyncEnabled(bool enabled) {
+    if (vsyncEnabled_ == enabled) return; // real, honest no-op -- no swapchain rebuild for an unchanged value
+    vsyncEnabled_ = enabled;
+    if (swapchain_ != VK_NULL_HANDLE) recreateSwapchain();
+}
+
+void Renderer::setColorblindMode(int mode) { colorblindModeIndex_ = std::clamp(mode, 0, 3); }
 
 // Sprint 16 ("Cinematic Graphics") -- see this method's own public
 // declaration comment in Renderer.hpp for the real mutual-exclusion
@@ -4049,6 +4080,13 @@ void Renderer::drawBloomAndComposite(VkCommandBuffer cmd, FrameSync& frame, VkIm
     } else {
         compositePush.saturation = 1.0f;
     }
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Accessibility: Colorblind modes"): real, applies
+    // regardless of Cinematic Mode -- colorblind correction is an
+    // accessibility need, not a cosmetic grading choice, so it stays
+    // active even with every other composite-pass effect at its own
+    // real, cinematic-mode-off zero value.
+    compositePush.colorblindMode = static_cast<float>(colorblindModeIndex_);
     vkCmdPushConstants(cmd, compositePipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(compositePush),
                         &compositePush);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -4820,8 +4858,13 @@ bool Renderer::renderFrame() {
     if (sceneEcs_ != nullptr && sceneCamera_ != nullptr && sceneMeshLibrary_ != nullptr &&
         sceneParticleSystem_ != nullptr && sceneTextureLibrary_ != nullptr) {
         // Real scene fills the whole swapchain -- engine_runtime's path.
+        // Kronos ("Avatar System"): sceneRiggedMeshLibrary_ now real-passed
+        // through -- see setScene()'s own header comment for the real bug
+        // this fixes (a real, GPU-uploaded skinned avatar body that was
+        // never actually submitted to a draw call on this exact path).
         drawSceneInto(cmd, image, swapchainImageViews_[imageIndex], depthImage_, depthImageView_, swapchainExtent_,
-                      *sceneCamera_, *sceneEcs_, *sceneMeshLibrary_, *sceneParticleSystem_, *sceneTextureLibrary_);
+                      *sceneCamera_, *sceneEcs_, *sceneMeshLibrary_, *sceneParticleSystem_, *sceneTextureLibrary_,
+                      sceneRiggedMeshLibrary_);
     } else {
         // No scene set -- Studio's path: a plain clear behind its docked
         // ImGui panels (its own scene render, if any, already happened in

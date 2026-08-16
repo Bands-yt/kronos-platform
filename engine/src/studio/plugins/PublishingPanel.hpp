@@ -4,11 +4,11 @@
 #include <vector>
 
 #include "core/Camera.hpp"
+#include "core/SceneManager.hpp"
 #include "net/NetworkSession.hpp"
 #include "publishing/ThumbnailCapture.hpp"
 #include "publishing/WorldPackage.hpp"
 #include "studio/IStudioPlugin.hpp"
-#include "studio/SceneManager.hpp"
 #include "studio/ThumbnailCameraRig.hpp"
 
 namespace engine::core {
@@ -39,7 +39,7 @@ namespace engine::studio::plugins {
 // publish action).
 class PublishingPanel final : public IStudioPlugin {
 public:
-    PublishingPanel(SceneManager& sceneManager, core::Camera& viewportCamera, core::MeshLibrary& meshLibrary,
+    PublishingPanel(core::SceneManager& sceneManager, core::Camera& viewportCamera, core::MeshLibrary& meshLibrary,
                      core::TextureLibrary& textureLibrary, net::NetworkSession& networkSession);
 
     [[nodiscard]] const char* name() const override { return "Publishing"; }
@@ -65,7 +65,7 @@ private:
     [[nodiscard]] publishing::WorldPackage buildPackage(core::ECS& ecs) const;
     void logMessage(const std::string& message);
 
-    SceneManager* sceneManager_;
+    core::SceneManager* sceneManager_;
     core::Camera* viewportCamera_;
     core::MeshLibrary* meshLibrary_;
     core::TextureLibrary* textureLibrary_;

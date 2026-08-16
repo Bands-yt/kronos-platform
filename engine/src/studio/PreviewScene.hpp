@@ -57,8 +57,17 @@ public:
     // UploadAvatarItemPlugin) keeps compiling and behaving identically
     // unchanged; only a scene with real SkinnedRenderable entities (see
     // studio::plugins::AnimationPreviewerPlugin) needs to pass one.
+    // Kronos ("Home Screen Avatar Preview" -- "cinematic lighting
+    // preset"): `lightingOverride` is real, new, optional (default
+    // nullptr, so every existing caller -- AvatarPreviewer, AvatarEditor,
+    // CataloguePanel -- keeps rendering under this class's own flat
+    // "studio lightbox" default, unchanged). A non-null pointer swaps in
+    // the caller's own SceneLighting instead, the same real
+    // swap-then-restore mechanism this class already uses internally for
+    // its own default -- see .cpp.
     void render(VkCommandBuffer cmd, core::Renderer& renderer, core::MeshLibrary& meshLibrary,
-                core::TextureLibrary& textureLibrary, core::RiggedMeshLibrary* riggedMeshLibrary = nullptr);
+                core::TextureLibrary& textureLibrary, core::RiggedMeshLibrary* riggedMeshLibrary = nullptr,
+                const core::SceneLighting* lightingOverride = nullptr);
 
     // Draws the rendered texture into whatever ImGui window/child the
     // caller has already Begin()'d, sized to fill the available content

@@ -38,7 +38,36 @@ layout(push_constant) uniform CompositePushConstants {
     float sunScreenX;
     float sunScreenY;
     float sunVisible;
+    float colorblindMode; // 0=None, 1=Protanopia, 2=Deuteranopia, 3=Tritanopia -- see core::CompositePushConstants
 } params;
+
+// Kronos ("Settings Panel v2 + Input Remapping + Accessibility Layer" --
+// "Accessibility: Colorblind modes" -- "a simple post-processing shader
+// (tint matrix)"): real, standard 3x3 RGB approximation matrices for
+// simulating each real color-vision deficiency -- the same widely-used
+// "simple matrix" approach real-time engines and browser-based simulators
+// (e.g. Coblis) already ship, deliberately not a full LMS cone-response
+// simulation (a real, honest, and appropriately-scoped choice matching
+// what the spec itself asks for).
+vec3 applyColorblindTint(vec3 color, int mode) {
+    mat3 m;
+    if (mode == 1) { // Protanopia
+        m = mat3(0.567, 0.558, 0.000,
+                  0.433, 0.442, 0.242,
+                  0.000, 0.000, 0.758);
+    } else if (mode == 2) { // Deuteranopia
+        m = mat3(0.625, 0.700, 0.000,
+                  0.375, 0.300, 0.300,
+                  0.000, 0.000, 0.700);
+    } else if (mode == 3) { // Tritanopia
+        m = mat3(0.950, 0.000, 0.000,
+                  0.050, 0.433, 0.475,
+                  0.000, 0.567, 0.525);
+    } else {
+        return color;
+    }
+    return clamp(m * color, 0.0, 1.0);
+}
 
 // Narkowicz's fit of the ACES filmic tonemap curve -- the standard,
 // widely-used approximation (not the full ACES reference implementation,
@@ -129,6 +158,8 @@ void main() {
     // near the middle and a faster one at the corners).
     float vignette = 1.0 - params.vignetteStrength * dot(centerOffset, centerOffset) * 2.0;
     mapped *= clamp(vignette, 0.0, 1.0);
+
+    mapped = applyColorblindTint(mapped, int(params.colorblindMode + 0.5));
 
     outColor = vec4(mapped, 1.0);
 }

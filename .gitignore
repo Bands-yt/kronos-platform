@@ -16,3 +16,8 @@ trailer_output/
 crash_report_*.txt
 imgui.ini
 local_profile.profile
+local_avatar_loadout.loadout
+game_play_log.playlog
+transaction_log.transactions
+telemetry.log
+*_launch.log

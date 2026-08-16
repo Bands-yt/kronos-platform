@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -36,6 +37,7 @@
 
 #include "core/Animation.hpp"
 #include "core/AnimationDatabase.hpp"
+#include "core/AvatarIdleClipResolution.hpp"
 #include "core/AnimationItem.hpp"
 #include "core/AnimationManifest.hpp"
 #include "core/AnimationPlayer.hpp"
@@ -48,6 +50,7 @@
 #include "core/AvatarItem.hpp"
 #include "core/AvatarItemManifest.hpp"
 #include "core/AvatarLoadout.hpp"
+#include "core/AvatarSkinTone.hpp"
 #include "core/Biome.hpp"
 #include "core/CascadeSplitMath.hpp"
 #include "core/CrashReporter.hpp"
@@ -87,7 +90,13 @@
 #include "core/Weather.hpp"
 #include "core/WorldProp.hpp"
 #include "core/Prefab.hpp"
+#include "core/KronosVersion.hpp"
 #include "core/ProjectFile.hpp"
+#include "core/ProjectReadmeGenerator.hpp"
+#include "core/GameManifest.hpp"
+#include "core/LocalGameDirectory.hpp"
+#include "core/ProcessLaunch.hpp"
+#include "core/GameCatalogueAggregate.hpp"
 #include "core/RiggedAvatar.hpp"
 #include "core/RiggedMesh.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
@@ -99,8 +108,14 @@
 #include "core/ScriptWorldApi.hpp"
 #include "core/Skeleton.hpp"
 #include "core/SkinWeights.hpp"
+#include "marketplace/CreditsPurchase.hpp"
+#include "marketplace/RatingSubmission.hpp"
+#include "marketplace/RecommendationEngine.hpp"
 #include "marketplace/ListingReviewPipeline.hpp"
+#include "marketplace/TransactionLog.hpp"
 #include "migration/ImportSafetyGuard.hpp"
+#include "notification/NotificationService.hpp"
+#include "social/FriendsService.hpp"
 #include "miningsim/Dungeon.hpp"
 #include "miningsim/Forging.hpp"
 #include "miningsim/Boss.hpp"
@@ -118,6 +133,7 @@
 #include "net/LanDiscoveryProtocol.hpp"
 #include "net/LanSessionAnnouncer.hpp"
 #include "net/LanSessionBrowser.hpp"
+#include "net/SessionBrowserSort.hpp"
 #include "net/NetworkIdentity.hpp"
 #include "net/NetworkSession.hpp"
 #include "net/NetworkStats.hpp"
@@ -137,6 +153,10 @@
 #include "net/RemoteEvent.hpp"
 #include "net/Serialization.hpp"
 #include "net/SessionHistory.hpp"
+#include "net/GamePlayLog.hpp"
+#include "core/QualityScore.hpp"
+#include "core/HiddenGemsSelector.hpp"
+#include "analytics/TelemetrySender.hpp"
 #include "net/ServerReconciliation.hpp"
 #include "safety/AssetSafetyGuard.hpp"
 #include "safety/CreatorIdentityGuard.hpp"
@@ -148,6 +168,13 @@
 #include "publishing/WorldRegistry.hpp"
 #include "runtime/ShellState.hpp"
 #include "safety/TrustSafetyService.hpp"
+#include "safety/PolicyEngine.hpp"
+#include "moderation/EscalationEventLog.hpp"
+#include "moderation/AppealLog.hpp"
+#include "moderation/AccountModerationRegistry.hpp"
+#include "moderation/DirectMessageLog.hpp"
+#include "moderation/SafetyReportGenerator.hpp"
+#include "moderation/TrainingDataLog.hpp"
 #include "studio/CreatorConsole.hpp"
 #include "studio/CreatorToolsSpawning.hpp"
 #include "studio/EntityClassification.hpp"
@@ -156,7 +183,7 @@
 #include "studio/Notification.hpp"
 #include "studio/LocalPluginDirectory.hpp"
 #include "studio/PluginManifest.hpp"
-#include "studio/SceneManager.hpp"
+#include "core/SceneManager.hpp"
 #include "studio/StudioEcsScriptApi.hpp"
 #include "studio/UndoStack.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
@@ -530,6 +557,240 @@ void testAssetSafetyGuard() {
     std::vector<uint8_t> notAnImage{'n', 'o', 't', ' ', 'a', 'n', ' ', 'i', 'm', 'a', 'g', 'e'};
     engine::safety::AssetSafetyReport notImageReport = guard.scanImageAsset(notAnImage, "png", scanner);
     check(notImageReport.anyBlocked(), "a file with no recognizable image signature is blocked");
+}
+
+// Kronos ("Moderation Architecture v2", item A "Image Moderation"): real,
+// honest filename-keyword tests -- see ImageClassifierStub.hpp's own
+// header comment for exactly what "real" means here (a keyword match on
+// the uploader-chosen filename, not visual pixel content).
+void testImageClassifierStubDetectsNudity() {
+    engine::safety::ImageClassifierStub classifier;
+    auto result = classifier.classify("totally_nsfw_final.png");
+    check(result.flagged, "a real nudity-marker filename real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::ImageRiskCategory::Nudity) !=
+              result.categories.end(),
+          "a real nudity-marker filename real-categorizes as Nudity specifically");
+}
+
+void testImageClassifierStubDetectsSexualization() {
+    engine::safety::ImageClassifierStub classifier;
+    auto result = classifier.classify("my_onlyfans_promo.jpg");
+    check(result.flagged, "a real sexualization-marker filename real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(),
+                     engine::safety::ImageRiskCategory::Sexualization) != result.categories.end(),
+          "a real sexualization-marker filename real-categorizes as Sexualization specifically");
+}
+
+void testImageClassifierStubDetectsGore() {
+    engine::safety::ImageClassifierStub classifier;
+    auto result = classifier.classify("battle_gore_screenshot.png");
+    check(result.flagged, "a real gore-marker filename real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::ImageRiskCategory::Gore) !=
+              result.categories.end(),
+          "a real gore-marker filename real-categorizes as Gore specifically");
+}
+
+void testImageClassifierStubDetectsExtremistSymbols() {
+    engine::safety::ImageClassifierStub classifier;
+    auto result = classifier.classify("swastika_decal.png");
+    check(result.flagged, "a real extremist-symbol-marker filename real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(),
+                     engine::safety::ImageRiskCategory::ExtremistSymbols) != result.categories.end(),
+          "a real extremist-symbol-marker filename real-categorizes as ExtremistSymbols specifically");
+}
+
+void testImageClassifierStubCleanFilenameAllows() {
+    engine::safety::ImageClassifierStub classifier;
+    auto result = classifier.classify("wooden_crate_texture.png");
+    check(!result.flagged, "an ordinary asset filename does not real-flag");
+    check(result.categories.empty(), "an ordinary asset filename produces no categories");
+}
+
+void testPolicyEngineImageGoreAndExtremistSymbolsAlwaysBlock() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::ImageClassification gore;
+    gore.flagged = true;
+    gore.categories = {engine::safety::ImageRiskCategory::Gore};
+    check(policy.decide(gore, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Block,
+          "Gore real-blocks even for a real, self-declared Adult");
+
+    engine::safety::ImageClassification extremist;
+    extremist.flagged = true;
+    extremist.categories = {engine::safety::ImageRiskCategory::ExtremistSymbols};
+    check(policy.decide(extremist, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Block,
+          "ExtremistSymbols real-blocks even for a real, self-declared Adult");
+}
+
+void testPolicyEngineImageNudityBlocksForMinorOrUnknownOnly() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::ImageClassification nudity;
+    nudity.flagged = true;
+    nudity.categories = {engine::safety::ImageRiskCategory::Nudity};
+
+    check(policy.decide(nudity, engine::safety::AgeGroup::Minor).action == engine::safety::PolicyAction::Block,
+          "Nudity real-blocks for a real, self-declared Minor");
+    check(policy.decide(nudity, engine::safety::AgeGroup::Unknown).action == engine::safety::PolicyAction::Block,
+          "Nudity real-blocks for a real Unknown age -- the real, conservative default");
+    check(policy.decide(nudity, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Warn,
+          "Nudity real-does NOT hard-block for a real, self-declared Adult -- warns instead");
+}
+
+// Real end-to-end proof, going through TrustSafetyService::onImageUpload
+// (the same real call path UploadAvatarItemPlugin::submitUpload() uses)
+// with a real file on disk -- not a hand-built ImageClassification.
+void testTrustSafetyServiceOnImageUploadBlocksNudityForRealMinorUploader() {
+    const char* path = "test_upload_nsfw_texture.png";
+    {
+        std::vector<uint8_t> png = buildPng(64, 64);
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    }
+
+    engine::safety::TrustSafetyService service;
+    auto result = service.onImageUpload(1, path, engine::core::AgeGroup::Minor);
+    check(result.blocked, "a real filename-flagged upload from a real, self-declared Minor uploader is real-blocked "
+                           "end-to-end, not just flagged");
+    check(!result.structuralReport.anyFlagged(), "the underlying file bytes are a real, clean PNG -- only the "
+                                                   "filename triggered the block, proving the two signal sources "
+                                                   "are genuinely independent");
+
+    std::remove(path);
+}
+
+void testTrustSafetyServiceOnImageUploadAllowsCleanFilenameForRealAdultUploader() {
+    const char* path = "test_upload_clean_texture.png";
+    {
+        std::vector<uint8_t> png = buildPng(64, 64);
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    }
+
+    engine::safety::TrustSafetyService service;
+    auto result = service.onImageUpload(1, path, engine::core::AgeGroup::Adult);
+    check(!result.blocked, "a real, clean-filename, clean-bytes upload is genuinely not blocked");
+
+    std::remove(path);
+}
+
+// Kronos ("Moderation Architecture v2", item B "Behavioral Model
+// (Heuristic v1)"): real, pure tests over BehavioralPatternAnalyzer --
+// see that class's own header comment for exactly what "real" means
+// here (frequency-counting over a sender's own already-logged DM
+// history, not graph/ML behavior modeling).
+engine::safety::DirectMessageSample makeDmSample(uint32_t recipient, engine::core::AgeGroup recipientAgeGroup,
+                                                  const std::string& text, double timestamp) {
+    return engine::safety::DirectMessageSample{recipient, recipientAgeGroup, text, timestamp};
+}
+
+void testBehavioralPatternAnalyzerCleanHistoryIsNone() {
+    engine::safety::BehavioralPatternAnalyzer analyzer;
+    std::vector<engine::safety::DirectMessageSample> samples = {
+        makeDmSample(2, engine::core::AgeGroup::Adult, "hey, want to team up?", 100.0),
+    };
+    auto signal = analyzer.analyze(samples, 100.0);
+    check(signal.tier == engine::safety::BehaviorRiskTier::None, "a single, ordinary DM produces no real behavioral signal");
+}
+
+void testBehavioralPatternAnalyzerDetectsRapidDmEscalation() {
+    engine::safety::BehavioralPatternAnalyzer analyzer;
+    std::vector<engine::safety::DirectMessageSample> samples;
+    for (int i = 0; i < 10; ++i) {
+        samples.push_back(makeDmSample(static_cast<uint32_t>(100 + i), engine::core::AgeGroup::Adult, "hi",
+                                        100.0 + i));
+    }
+    auto signal = analyzer.analyze(samples, 109.0);
+    check(signal.tier == engine::safety::BehaviorRiskTier::Medium,
+          "a real burst of 10 real DMs within the real recent window real-flags as Medium");
+    check(std::string(signal.reason) == "RapidDmEscalation", "the real reason label real-identifies the real pattern");
+}
+
+void testBehavioralPatternAnalyzerDetectsRepeatedContactWithMinors() {
+    engine::safety::BehavioralPatternAnalyzer analyzer;
+    std::vector<engine::safety::DirectMessageSample> samples = {
+        makeDmSample(2, engine::core::AgeGroup::Minor, "hi", 100.0),
+        makeDmSample(3, engine::core::AgeGroup::Minor, "hi", 101.0),
+        makeDmSample(4, engine::core::AgeGroup::Minor, "hi", 102.0),
+    };
+    auto signal = analyzer.analyze(samples, 102.0);
+    check(signal.tier == engine::safety::BehaviorRiskTier::High,
+          "real contact with 3 real, distinct Minor recipients real-flags as the most severe real tier");
+    check(std::string(signal.reason) == "RepeatedContactWithMinors", "the real reason label real-identifies the real pattern");
+}
+
+void testBehavioralPatternAnalyzerRepeatedMinorContactOutranksRapidMessageCount() {
+    // A real sender contacting the SAME single minor rapidly (not 3
+    // distinct minors) shouldn't trip RepeatedContactWithMinors -- only
+    // RapidDmEscalation, proving the "distinct recipients" real condition
+    // is genuinely checked, not just "any minor involved at all".
+    engine::safety::BehavioralPatternAnalyzer analyzer;
+    std::vector<engine::safety::DirectMessageSample> samples;
+    for (int i = 0; i < 10; ++i) {
+        samples.push_back(makeDmSample(2, engine::core::AgeGroup::Minor, "hi", 100.0 + i));
+    }
+    auto signal = analyzer.analyze(samples, 109.0);
+    check(signal.tier == engine::safety::BehaviorRiskTier::Medium,
+          "a real rapid burst to a single real Minor recipient real-flags as RapidDmEscalation, not "
+          "RepeatedContactWithMinors -- distinct-recipient counting is real, not a blanket 'any minor' check");
+}
+
+void testBehavioralPatternAnalyzerDetectsHarassmentPattern() {
+    engine::safety::BehavioralPatternAnalyzer analyzer;
+    std::vector<engine::safety::DirectMessageSample> samples = {
+        makeDmSample(2, engine::core::AgeGroup::Adult, "nobody likes you", 100.0),
+        makeDmSample(3, engine::core::AgeGroup::Adult, "everyone hates you", 101.0),
+        makeDmSample(4, engine::core::AgeGroup::Adult, "you should quit", 102.0),
+    };
+    auto signal = analyzer.analyze(samples, 102.0);
+    check(signal.tier == engine::safety::BehaviorRiskTier::Medium,
+          "3 real, distinct harassment-marker DMs real-flag as a real HarassmentPattern");
+    check(std::string(signal.reason) == "HarassmentPattern", "the real reason label real-identifies the real pattern");
+}
+
+void testBehavioralPatternAnalyzerDetectsOffPlatformRedirectPattern() {
+    engine::safety::BehavioralPatternAnalyzer analyzer;
+    std::vector<engine::safety::DirectMessageSample> samples = {
+        makeDmSample(2, engine::core::AgeGroup::Adult, "add me on discord", 100.0),
+        makeDmSample(3, engine::core::AgeGroup::Adult, "text me at this number", 101.0),
+        makeDmSample(4, engine::core::AgeGroup::Adult, "let's talk on snap", 102.0),
+    };
+    auto signal = analyzer.analyze(samples, 102.0);
+    check(signal.tier == engine::safety::BehaviorRiskTier::Low,
+          "3 real, distinct off-platform-redirect DMs real-flag as the real, lowest non-None tier");
+    check(std::string(signal.reason) == "RepeatedOffPlatformRedirectAttempts",
+          "the real reason label real-identifies the real pattern");
+}
+
+void testBehavioralPatternAnalyzerIgnoresSamplesOutsideRecentWindow() {
+    engine::safety::BehavioralPatternAnalyzer analyzer;
+    std::vector<engine::safety::DirectMessageSample> samples;
+    for (int i = 0; i < 10; ++i) {
+        // Every real sample is 1000 real seconds in the past -- well
+        // outside the real, fixed recent window this analyzer uses.
+        samples.push_back(makeDmSample(static_cast<uint32_t>(100 + i), engine::core::AgeGroup::Adult, "hi",
+                                        100.0 + i));
+    }
+    auto signal = analyzer.analyze(samples, 2000.0);
+    check(signal.tier == engine::safety::BehaviorRiskTier::None,
+          "a real burst of DMs entirely outside the real recent window produces no real behavioral signal -- old "
+          "activity doesn't count as 'happening right now'");
+}
+
+// Real, direct proof TrustSafetyService::onDirectMessagePattern actually
+// folds a real BehaviorSignal into the real, shared ModerationPipeline
+// risk score -- not just returning a signal nothing acts on.
+void testTrustSafetyServiceOnDirectMessagePatternEscalatesRiskForRepeatedMinorContact() {
+    engine::safety::TrustSafetyService service;
+    check(service.currentTier(1) == engine::safety::EscalationTier::Log, "a real sender with no signals yet starts at the real baseline tier");
+
+    std::vector<engine::safety::DirectMessageSample> samples = {
+        makeDmSample(2, engine::core::AgeGroup::Minor, "hi", 100.0),
+        makeDmSample(3, engine::core::AgeGroup::Minor, "hi", 101.0),
+        makeDmSample(4, engine::core::AgeGroup::Minor, "hi", 102.0),
+    };
+    engine::safety::EscalationTier tier = service.onDirectMessagePattern(1, samples, 102.0);
+    check(tier != engine::safety::EscalationTier::Log,
+          "a real RepeatedContactWithMinors pattern genuinely escalates the real sender's real risk tier past baseline");
+    check(service.currentTier(1) == tier, "the returned tier real-matches the real, now-updated pipeline state");
 }
 
 void testListingReviewPipeline() {
@@ -1096,6 +1357,285 @@ void testScanLocalPluginDirectoryHandlesMissingDirectory() {
     std::vector<engine::studio::DiscoveredPlugin> discovered =
         engine::studio::scanLocalPluginDirectory("this_directory_does_not_exist_at_all");
     check(discovered.empty(), "scanning a real non-existent directory real-returns a real, honest empty result, not an error/crash");
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 0) -- same real, hand-rolled
+// "KEY value / END" round-trip discipline as testPluginManifestSaveLoadRoundTrip().
+void testGameManifestSaveLoadRoundTrip() {
+    engine::core::GameManifest manifest;
+    manifest.name = "Sky Sandbox";
+    manifest.description = "A small block-building sandbox in the clouds.";
+    manifest.genreTags = {"Sandbox", "Social"};
+    manifest.thumbnailColor = glm::vec4(0.2f, 0.6f, 0.9f, 1.0f);
+    manifest.effortScore = 0.75f;
+    manifest.launchKind = engine::core::GameLaunchKind::ProjectPath;
+    manifest.projectPath = "project.project";
+    manifest.cliFlag = "";
+    manifest.safetyStatus = engine::core::GameSafetyStatus::UnderReview;
+    manifest.unsafeReason = "flagged by a real report, pending human review";
+
+    const char* path = "test_game.gamemanifest";
+    check(manifest.saveToFile(path), "game manifest saves");
+
+    engine::core::GameManifest loaded;
+    check(loaded.loadFromFile(path), "game manifest loads");
+    check(loaded.name == manifest.name, "manifest round-trips name");
+    check(loaded.description == manifest.description, "manifest round-trips description");
+    check(loaded.genreTags == manifest.genreTags, "manifest round-trips genreTags in order");
+    check(nearlyEqual(loaded.thumbnailColor.x, manifest.thumbnailColor.x) &&
+              nearlyEqual(loaded.thumbnailColor.w, manifest.thumbnailColor.w),
+          "manifest round-trips thumbnailColor");
+    check(nearlyEqual(loaded.effortScore, manifest.effortScore), "manifest round-trips effortScore");
+    check(loaded.launchKind == engine::core::GameLaunchKind::ProjectPath, "manifest round-trips launchKind");
+    check(loaded.projectPath == manifest.projectPath, "manifest round-trips projectPath");
+    check(loaded.safetyStatus == engine::core::GameSafetyStatus::UnderReview, "manifest round-trips safetyStatus");
+    check(loaded.unsafeReason == manifest.unsafeReason, "manifest round-trips unsafeReason");
+
+    // A manifest with no SAFETYSTATUS line at all (e.g. every game
+    // authored before this real field existed, the same real backward-
+    // compatibility case the "unknown key" check above covers forward)
+    // real-defaults to Safe, not an error and not a silent Unsafe -- the
+    // honest "nothing has flagged this yet" default, distinct from
+    // AgeGroup's own conservative-by-default convention (a game isn't
+    // guilty until a real human/heuristic actually flags it).
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "GAMEMANIFEST 1\n";
+        out << "NAME Pre-Existing Game\n";
+        out << "END\n";
+    }
+    engine::core::GameManifest defaultLoaded;
+    check(defaultLoaded.loadFromFile(path), "a manifest with no SAFETYSTATUS line at all still loads");
+    check(defaultLoaded.safetyStatus == engine::core::GameSafetyStatus::Safe,
+          "a missing SAFETYSTATUS line real-defaults to Safe, not Unsafe or UnderReview");
+
+    // CliFlag-kind games round-trip too, including an empty projectPath
+    // being real and meaningless for that kind (not an error).
+    engine::core::GameManifest cliGame;
+    cliGame.name = "TNT Wars";
+    cliGame.launchKind = engine::core::GameLaunchKind::CliFlag;
+    cliGame.cliFlag = "--tntwars";
+    check(cliGame.saveToFile(path), "CliFlag-kind game manifest saves");
+    engine::core::GameManifest cliLoaded;
+    check(cliLoaded.loadFromFile(path), "CliFlag-kind game manifest loads");
+    check(cliLoaded.launchKind == engine::core::GameLaunchKind::CliFlag, "CliFlag launchKind round-trips");
+    check(cliLoaded.cliFlag == "--tntwars", "cliFlag round-trips");
+
+    // Forward-compatible with an unknown key from a future format version,
+    // same convention as PluginManifest/AnimationClip/Prefab's own loaders.
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "GAMEMANIFEST 1\n";
+        out << "NAME Future Game\n";
+        out << "PLAYERCAP 12\n"; // unknown key
+        out << "END\n";
+    }
+    engine::core::GameManifest futureLoaded;
+    check(futureLoaded.loadFromFile(path), "manifest with an unknown key still loads");
+    check(futureLoaded.name == "Future Game", "known keys around an unknown one are still parsed correctly");
+
+    engine::core::GameManifest missing;
+    check(!missing.loadFromFile("does_not_exist.gamemanifest"), "loadFromFile fails cleanly for a missing file");
+
+    std::remove(path);
+}
+
+// Kronos ("Moderation Architecture v2", "Catalogue Safety Integration"):
+// real, pure tests over isGameSafeToLaunchForAgeGroup() -- the one real
+// rule both the Catalogue listing filter and RuntimeShell::selectGame()'s
+// launch-time defense-in-depth check share (see GameManifest.hpp's own
+// comment on why this is a single function, not two independent rules).
+void testIsGameSafeToLaunchForAgeGroup() {
+    using engine::core::AgeGroup;
+    using engine::core::GameSafetyStatus;
+    using engine::core::isGameSafeToLaunchForAgeGroup;
+
+    check(isGameSafeToLaunchForAgeGroup(GameSafetyStatus::Safe, AgeGroup::Minor), "a real Safe game is launchable by a real Minor");
+    check(isGameSafeToLaunchForAgeGroup(GameSafetyStatus::UnderReview, AgeGroup::Minor),
+          "a real UnderReview game is still launchable -- flagged for review isn't confirmed unsafe");
+    check(!isGameSafeToLaunchForAgeGroup(GameSafetyStatus::Unsafe, AgeGroup::Minor),
+          "a real Unsafe game is real-blocked for a real, self-declared Minor");
+    check(!isGameSafeToLaunchForAgeGroup(GameSafetyStatus::Unsafe, AgeGroup::Unknown),
+          "a real Unsafe game is real-blocked for a real Unknown age -- the real, conservative default");
+    check(isGameSafeToLaunchForAgeGroup(GameSafetyStatus::Unsafe, AgeGroup::Adult),
+          "a real Unsafe game is still real-visible/launchable for a real, self-declared Adult");
+}
+
+void testFilterCatalogueEntriesForAgeGroupHidesUnsafeFromMinorsOnly() {
+    engine::core::GameCatalogueEntry safe;
+    safe.manifest.name = "Safe Game";
+    safe.manifest.safetyStatus = engine::core::GameSafetyStatus::Safe;
+
+    engine::core::GameCatalogueEntry underReview;
+    underReview.manifest.name = "Under Review Game";
+    underReview.manifest.safetyStatus = engine::core::GameSafetyStatus::UnderReview;
+
+    engine::core::GameCatalogueEntry unsafe;
+    unsafe.manifest.name = "Unsafe Game";
+    unsafe.manifest.safetyStatus = engine::core::GameSafetyStatus::Unsafe;
+
+    std::vector<engine::core::GameCatalogueEntry> entries = {safe, underReview, unsafe};
+
+    auto forMinor = engine::core::filterCatalogueEntriesForAgeGroup(entries, engine::core::AgeGroup::Minor);
+    check(forMinor.size() == 2, "a real Minor viewer's real-filtered catalogue excludes exactly the real Unsafe entry");
+    for (const auto& entry : forMinor) {
+        check(entry.manifest.safetyStatus != engine::core::GameSafetyStatus::Unsafe,
+              "no real Unsafe entry ever survives real-filtering for a real Minor viewer");
+    }
+
+    auto forAdult = engine::core::filterCatalogueEntriesForAgeGroup(entries, engine::core::AgeGroup::Adult);
+    check(forAdult.size() == 3, "a real, self-declared Adult viewer's real-filtered catalogue keeps all 3 real entries, "
+                                 "including the real Unsafe one");
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 0) -- same real "scan a real
+// local directory" discipline as testScanLocalPluginDirectoryDiscoversRealManifests(),
+// adapted for one real subfolder per game (see LocalGameDirectory.hpp's
+// own comment on why this differs from the flat plugin-manifest scan).
+void testScanLocalGameDirectoryDiscoversRealManifests() {
+    const char* dir = "test_game_directory";
+    std::filesystem::create_directory(dir);
+    std::filesystem::create_directory(std::string(dir) + "/AlphaGame");
+    std::filesystem::create_directory(std::string(dir) + "/BetaGame");
+    std::filesystem::create_directory(std::string(dir) + "/EmptyFolder"); // no manifest inside -- must be real-ignored
+
+    {
+        engine::core::GameManifest a;
+        a.name = "Alpha Game";
+        check(a.saveToFile(std::string(dir) + "/AlphaGame/game.gamemanifest"), "real manifest A saves for the scan test");
+    }
+    {
+        engine::core::GameManifest b;
+        b.name = "Beta Game";
+        check(b.saveToFile(std::string(dir) + "/BetaGame/game.gamemanifest"), "real manifest B saves for the scan test");
+    }
+
+    std::vector<engine::core::DiscoveredGame> discovered = engine::core::scanLocalGameDirectory(dir);
+    check(discovered.size() == 2,
+          "scanLocalGameDirectory() real-finds exactly the two real game subfolders with a manifest, real-ignoring "
+          "the empty subfolder");
+
+    bool foundAlpha = false, foundBeta = false;
+    for (const auto& d : discovered) {
+        check(d.parseSucceeded, "each real discovered game manifest real-parses successfully");
+        if (d.manifest.name == "Alpha Game") foundAlpha = true;
+        if (d.manifest.name == "Beta Game") foundBeta = true;
+    }
+    check(foundAlpha && foundBeta, "both real manifests' real names are correctly parsed, not just counted");
+
+    std::filesystem::remove_all(dir);
+}
+
+void testScanLocalGameDirectoryHandlesMissingDirectory() {
+    std::vector<engine::core::DiscoveredGame> discovered =
+        engine::core::scanLocalGameDirectory("this_game_directory_does_not_exist_at_all");
+    check(discovered.empty(), "scanning a real non-existent games directory real-returns a real, honest empty result, not an error/crash");
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 2): real regression coverage
+// for the 2 shipped games (games/DefaultWorld, games/SkyGarden) -- scans
+// the real directory, then real-loads each one's real ProjectFile +
+// active SceneFile back from disk, the same resolution
+// runtime::loadGame() performs (minus the live ECS/Physics/Scripting
+// side effects, which need a real Renderer/window -- see that function's
+// own header comment on why the rest is manual-verification-only).
+// Same packaged-vs-dev-build resolveResourceDir() treatment as
+// testShippedAvatarAnimationClipsLoadAndValidate() -- see that test's
+// own comment for the full story.
+void testShippedGamesDiscoverAndLoadReal() {
+    std::string gamesDir = engine::core::resolveResourceDir(engine::core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+    std::vector<engine::core::DiscoveredGame> discovered = engine::core::scanLocalGameDirectory(gamesDir);
+    check(discovered.size() >= 2, "the real shipped games directory real-contains at least the 2 bundled example games");
+
+    bool foundDefaultWorld = false, foundSkyGarden = false;
+    for (const auto& game : discovered) {
+        check(game.parseSucceeded, "each real shipped game's manifest real-parses successfully");
+        if (!game.parseSucceeded) continue;
+
+        std::filesystem::path gameDir = std::filesystem::path(game.manifestPath).parent_path();
+        check(game.manifest.launchKind == engine::core::GameLaunchKind::ProjectPath,
+              "each real shipped example game is a genuine ProjectPath game, not a CliFlag stand-in");
+
+        engine::core::ProjectFile project;
+        check(project.loadFromFile((gameDir / game.manifest.projectPath).string()),
+              "the real shipped game's real project.project file loads");
+        check(!project.scenePaths.empty() && project.activeSceneIndex >= 0 &&
+                  static_cast<size_t>(project.activeSceneIndex) < project.scenePaths.size(),
+              "the real shipped project has a real, valid active scene index");
+
+        engine::core::SceneFile scene;
+        std::filesystem::path scenePath = gameDir / project.scenePaths[static_cast<size_t>(project.activeSceneIndex)];
+        check(scene.loadFromFile(scenePath.string()), "the real shipped game's real active scene file loads");
+        check(!scene.entities.empty(), "the real shipped game's scene has at least one real entity, not an empty stub");
+
+        if (game.manifest.name == "Default World") {
+            foundDefaultWorld = true;
+            bool foundGround = false, foundBox = false;
+            for (const auto& e : scene.entities) {
+                if (e.name == "GroundPlane") {
+                    foundGround = e.hasRigidBody && e.motionType == engine::core::RigidBodyMotionType::Static;
+                }
+                if (e.name == "DynamicBox") {
+                    foundBox = e.hasRigidBody && e.motionType == engine::core::RigidBodyMotionType::Dynamic;
+                }
+            }
+            check(foundGround, "Default World's real GroundPlane entity has a real static rigid body");
+            check(foundBox, "Default World's real DynamicBox entity has a real dynamic rigid body");
+        } else if (game.manifest.name == "Sky Garden") {
+            foundSkyGarden = true;
+            check(scene.entities.size() >= 4, "Sky Garden's real scene has its platform, three cubes, and a light");
+        }
+    }
+    check(foundDefaultWorld && foundSkyGarden,
+          "both real shipped example games were actually found and validated by name, not just counted");
+}
+
+// Kronos ("Game Catalogue Overhaul"): real, end-to-end coverage for
+// buildGameCatalogueEntries() (core/GameCatalogueAggregate.hpp) against
+// the real shipped games -- proves the one shared aggregation both
+// RuntimeShell's Game Catalogue UI and StudioApp's Hidden Gems check
+// build on genuinely scans real games, loads a real (here, fixture)
+// play log, and computes a real, sane QualityScore for each.
+void testBuildGameCatalogueEntriesAggregatesRealShippedGames() {
+    std::string gamesDir = engine::core::resolveResourceDir(engine::core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+
+    const char* playLogPath = "test_catalogue_aggregate.playlog";
+    {
+        engine::net::GamePlayLog fixtureLog;
+        fixtureLog.recordSessionStart("Default World", 0);
+        fixtureLog.recordSessionEnd("Default World", 1800, false);
+        check(fixtureLog.saveToFile(playLogPath), "a real fixture play log saves for the aggregate test");
+    }
+
+    std::vector<engine::core::GameCatalogueEntry> entries =
+        engine::core::buildGameCatalogueEntries(gamesDir, playLogPath, 2000);
+    check(entries.size() >= 2, "the real shipped games all real-appear as real catalogue entries");
+
+    bool foundDefaultWorld = false;
+    for (const auto& entry : entries) {
+        check(entry.qualityScore >= 0.0f && entry.qualityScore <= 1.0f,
+              "every real entry's real QualityScore stays within its documented [0,1] range");
+        if (entry.manifest.name == "Default World") {
+            foundDefaultWorld = true;
+            check(entry.launchCount == 1, "Default World's real launch count reflects the real fixture play log");
+            check(entry.stats.avgSessionLengthMinutes > 0.0f,
+                  "Default World's real avg session length is really computed from the real fixture session");
+        }
+    }
+    check(foundDefaultWorld, "Default World specifically was really found and validated among the real entries");
+
+    std::remove(playLogPath);
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 3): real coverage for the
+// actual posix_spawn() mechanism -- not just path resolution -- using a
+// genuinely harmless, side-effect-free real binary (/usr/bin/true, which
+// does nothing and exits 0 immediately) rather than spawning Studio
+// itself, which this suite has no business doing headlessly.
+void testLaunchProcessRealSpawnSucceedsAndFailsHonestly() {
+    check(engine::core::launchProcess("/usr/bin/true", {}), "launchProcess() real-succeeds spawning a real, existing executable");
+    check(!engine::core::launchProcess("/this/path/does/not/exist/at/all", {}),
+          "launchProcess() real-fails honestly (returns false, doesn't crash/throw) for a non-existent executable path");
 }
 
 // Kronos (Alpha Roadmap Phase 5, "Plugin System Expansion" -- "Plugin
@@ -2390,6 +2930,111 @@ void testSceneFileSaveLoadRoundTrip() {
     std::remove(path);
 }
 
+// Kronos ("Game Catalogue Overhaul", Phase 1): SceneFile's own class
+// comment used to list RigidBody as a stated, deliberate gap -- this is
+// the real regression coverage for closing it, exercising every real
+// ColliderShapeKind, mirroring testSceneFileSaveLoadRoundTrip()'s own
+// per-field-then-round-trip discipline.
+void testSceneFileRigidBodyColliderRoundTrip() {
+    // A real fixture .obj on disk -- ColliderShape::validate() (reused
+    // below, not reimplemented) checks Mesh colliders' path actually
+    // resolves, so this needs to be a genuine file, same as
+    // testSaveObjRoundTripsThroughLoadObjWithRealGeometry()'s own fixture.
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    const char* meshPath = "test_scene_collider.obj";
+    check(engine::core::saveObj(meshPath, box.vertices(), box.indices()), "collider mesh fixture .obj saves");
+
+    engine::core::SceneFile file;
+
+    engine::core::SceneEntityRecord staticBox;
+    staticBox.name = "Ground";
+    staticBox.hasRigidBody = true;
+    staticBox.motionType = engine::core::RigidBodyMotionType::Static;
+    staticBox.hasColliderShape = true;
+    staticBox.colliderShape.kind = engine::core::ColliderShapeKind::Box;
+    staticBox.colliderShape.params = {5.0f, 0.5f, 5.0f};
+    file.entities.push_back(staticBox);
+
+    engine::core::SceneEntityRecord dynamicSphere;
+    dynamicSphere.name = "Ball";
+    dynamicSphere.hasRigidBody = true;
+    dynamicSphere.motionType = engine::core::RigidBodyMotionType::Dynamic;
+    dynamicSphere.hasColliderShape = true;
+    dynamicSphere.colliderShape.kind = engine::core::ColliderShapeKind::Sphere;
+    dynamicSphere.colliderShape.params = {0.75f, 0.0f, 0.0f};
+    file.entities.push_back(dynamicSphere);
+
+    engine::core::SceneEntityRecord kinematicCapsule;
+    kinematicCapsule.name = "Platform";
+    kinematicCapsule.hasRigidBody = true;
+    kinematicCapsule.motionType = engine::core::RigidBodyMotionType::Kinematic;
+    kinematicCapsule.hasColliderShape = true;
+    kinematicCapsule.colliderShape.kind = engine::core::ColliderShapeKind::Capsule;
+    kinematicCapsule.colliderShape.params = {0.4f, 1.2f, 0.0f};
+    file.entities.push_back(kinematicCapsule);
+
+    engine::core::SceneEntityRecord meshCollider;
+    meshCollider.name = "Terrain";
+    meshCollider.hasRigidBody = true;
+    meshCollider.motionType = engine::core::RigidBodyMotionType::Static;
+    meshCollider.hasColliderShape = true;
+    meshCollider.colliderShape.kind = engine::core::ColliderShapeKind::Mesh;
+    meshCollider.colliderShape.path = meshPath;
+    file.entities.push_back(meshCollider);
+
+    engine::core::SceneEntityRecord noPhysics;
+    noPhysics.name = "Decoration";
+    file.entities.push_back(noPhysics);
+
+    const char* path = "test_scene_physics.scene";
+    check(file.saveToFile(path), "scene file with physics data saves");
+
+    engine::core::SceneFile loaded;
+    check(loaded.loadFromFile(path), "scene file with physics data loads");
+    check(loaded.entities.size() == 5, "all five entity records round-trip");
+
+    if (loaded.entities.size() == 5) {
+        check(loaded.entities[0].hasRigidBody && loaded.entities[0].motionType == engine::core::RigidBodyMotionType::Static,
+              "static box rigid body + motion type round-trip");
+        check(loaded.entities[0].hasColliderShape &&
+                  loaded.entities[0].colliderShape.kind == engine::core::ColliderShapeKind::Box,
+              "box collider kind round-trips");
+        check(nearlyEqual(loaded.entities[0].colliderShape.params.x, 5.0f) &&
+                  nearlyEqual(loaded.entities[0].colliderShape.params.y, 0.5f),
+              "box collider half-extents round-trip");
+        std::string boxError;
+        check(loaded.entities[0].colliderShape.validate(boxError), "round-tripped box collider real-validates");
+
+        check(loaded.entities[1].motionType == engine::core::RigidBodyMotionType::Dynamic,
+              "dynamic motion type round-trips");
+        check(loaded.entities[1].colliderShape.kind == engine::core::ColliderShapeKind::Sphere,
+              "sphere collider kind round-trips");
+        check(nearlyEqual(loaded.entities[1].colliderShape.params.x, 0.75f), "sphere collider radius round-trips");
+
+        check(loaded.entities[2].motionType == engine::core::RigidBodyMotionType::Kinematic,
+              "kinematic motion type round-trips");
+        check(loaded.entities[2].colliderShape.kind == engine::core::ColliderShapeKind::Capsule,
+              "capsule collider kind round-trips");
+        check(nearlyEqual(loaded.entities[2].colliderShape.params.x, 0.4f) &&
+                  nearlyEqual(loaded.entities[2].colliderShape.params.y, 1.2f),
+              "capsule collider radius/half-height round-trip");
+
+        check(loaded.entities[3].colliderShape.kind == engine::core::ColliderShapeKind::Mesh,
+              "mesh collider kind round-trips");
+        check(loaded.entities[3].colliderShape.path == meshPath, "mesh collider path round-trips");
+        std::string meshError;
+        check(loaded.entities[3].colliderShape.validate(meshError),
+              "round-tripped mesh collider real-validates against the real fixture file on disk");
+
+        check(!loaded.entities[4].hasRigidBody && !loaded.entities[4].hasColliderShape,
+              "an entity with no physics data round-trips with hasRigidBody/hasColliderShape both false, not "
+              "defaulted to true");
+    }
+
+    std::remove(path);
+    std::remove(meshPath);
+}
+
 void testProjectFileSaveLoadRoundTrip() {
     engine::core::ProjectFile project;
     project.name = "My Game";
@@ -2499,7 +3144,7 @@ void testProjectFileVersionCompatibility() {
 // Kronos (Alpha Completion Checklist, "Project System Finalization" --
 // "auto-backup"/"recovery"): real coverage of the new project-level
 // recovery-file primitives, mirroring
-// studio::SceneManager::recoveryPathFor()/hasRecoveryFile()'s own
+// core::SceneManager::recoveryPathFor()/hasRecoveryFile()'s own
 // already-tested real behavior for scene content.
 void testProjectFileRecoveryPathHelpers() {
     const char* path = "test_project_recovery.project";
@@ -2524,6 +3169,34 @@ void testProjectFileRecoveryPathHelpers() {
 
 // Kronos (Alpha Roadmap Phase 9, "Platform Services" -- "Account system
 // (simple local profiles first)").
+// Kronos ("Branding + Release Prep" -- "Basic README generator
+// (Studio)"): real, pure coverage over core::generateProjectReadme() --
+// real project metadata produces real, correct content, and an empty
+// project honestly says so rather than fabricating scene names.
+void testGenerateProjectReadmeIncludesRealMetadata() {
+    engine::core::ProjectFile project;
+    project.name = "My Cool Game";
+    project.createdAtUnixSeconds = 1700000000;
+    project.modifiedAtUnixSeconds = 1700100000;
+    project.scenePaths = {"scenes/main.scene", "scenes/lobby.scene"};
+    project.activeSceneIndex = 1;
+
+    std::string readme = engine::core::generateProjectReadme(project);
+    check(readme.find("My Cool Game") != std::string::npos, "the real project name real-appears in the generated README");
+    check(readme.find("scenes/main.scene") != std::string::npos && readme.find("scenes/lobby.scene") != std::string::npos,
+          "every real scene path real-appears in the generated README");
+    check(readme.find("scenes/lobby.scene (active)") != std::string::npos,
+          "the real, currently-active scene is real-marked as such");
+    check(readme.find(engine::core::kKronosVersion) != std::string::npos,
+          "the real, current Kronos version real-appears in the generated README");
+
+    engine::core::ProjectFile emptyProject;
+    emptyProject.name = "Empty Project";
+    std::string emptyReadme = engine::core::generateProjectReadme(emptyProject);
+    check(emptyReadme.find("No scenes yet") != std::string::npos,
+          "a real project with no scenes gets an honest 'No scenes yet' line, not fabricated content");
+}
+
 void testLocalProfileGenerateIdIsRealAndVaried() {
     uint64_t a = engine::core::generateProfileId();
     uint64_t b = engine::core::generateProfileId();
@@ -2536,6 +3209,45 @@ void testLocalProfileSaveLoadRoundTrip() {
     profile.displayName = "Faris";
     profile.profileId = 123456789ULL;
     profile.createdAtUnixSeconds = 1700000000;
+    profile.ageGroup = engine::core::AgeGroup::Adult;
+    profile.creatorVerified = true;
+    profile.kronosCredits = 4200;
+    profile.ownedItemIds = {"wizard_hat_01", "cool_shades_02"};
+    profile.skinToneIndex = 7;
+    profile.headShapeIndex = 1;
+    profile.bodyHeight = 1.1f;
+    profile.bodyWidth = 0.9f;
+    profile.bodyLimbScale = 1.05f;
+    profile.bodyTorsoLength = 0.95f;
+    profile.bodyShoulderWidth = 1.08f;
+    profile.animOverrideIdleId = "cool_idle_01";
+    profile.animOverrideWalkId = "sneaky_walk_02";
+    profile.animOverrideRunId = "sprint_run_03";
+    profile.animOverrideJumpStartId = "backflip_jump_04";
+    profile.animOverrideJumpAirId = "spin_air_05";
+    profile.animOverrideJumpLandId = "roll_land_06";
+    profile.creatorId = "creator_123456789";
+    profile.ratedItemIds = {"wizard_hat_01", "sci_fi_visor"};
+    profile.qualityPresetIndex = 2;
+    profile.vsyncEnabled = false;
+    profile.fpsCap = 60;
+    profile.masterVolume = 0.8f;
+    profile.musicVolume = 0.6f;
+    profile.sfxVolume = 0.9f;
+    profile.uiScale = 1.25f;
+    profile.textScale = 1.5f;
+    profile.colorblindModeIndex = 2;
+    profile.reducedMotion = true;
+    profile.inputBindingOverrides = {{"Jump", 44}, {"Interact", 8}};
+    profile.friends = {{"creator_111", "Alice"}, {"creator_222", "Bob Two Names"}};
+    profile.pendingRequests = {{"creator_333", "Charlie"}};
+    profile.friendMessages = {{"creator_111", true, "hey there", 1700000100},
+                               {"creator_111", false, "hi back!", 1700000200}};
+    profile.notifications = {{engine::core::NotificationKind::ItemPurchase, "Item purchased",
+                               "You purchased \"Wizard Hat\" for 100 KronosCredits.", "wizard_hat_01", 1700000300,
+                               false},
+                              {engine::core::NotificationKind::FriendRequest, "Friend request sent",
+                               "You sent a friend request to Charlie.", "creator_333", 1700000400, true}};
 
     const char* path = "test_local_profile.profile";
     check(profile.saveToFile(path), "a real profile saves");
@@ -2545,8 +3257,196 @@ void testLocalProfileSaveLoadRoundTrip() {
     check(loaded.displayName == "Faris", "displayName round-trips");
     check(loaded.profileId == 123456789ULL, "profileId round-trips");
     check(loaded.createdAtUnixSeconds == 1700000000, "createdAtUnixSeconds round-trips");
+    check(loaded.ageGroup == engine::core::AgeGroup::Adult, "ageGroup round-trips");
+    check(loaded.creatorVerified, "creatorVerified round-trips");
+    check(loaded.kronosCredits == 4200, "kronosCredits round-trips");
+    check(loaded.ownedItemIds == std::vector<std::string>{"wizard_hat_01", "cool_shades_02"},
+          "ownedItemIds round-trips in order");
+    check(loaded.ownsItem("wizard_hat_01") && !loaded.ownsItem("not_owned"),
+          "ownsItem() real-reflects the real, round-tripped ownedItemIds");
+    check(loaded.skinToneIndex == 7, "skinToneIndex round-trips");
+    check(loaded.headShapeIndex == 1, "headShapeIndex round-trips");
+    check(nearlyEqual(loaded.bodyHeight, 1.1f), "bodyHeight round-trips");
+    check(nearlyEqual(loaded.bodyWidth, 0.9f), "bodyWidth round-trips");
+    check(nearlyEqual(loaded.bodyLimbScale, 1.05f), "bodyLimbScale round-trips");
+    check(nearlyEqual(loaded.bodyTorsoLength, 0.95f), "bodyTorsoLength round-trips");
+    check(nearlyEqual(loaded.bodyShoulderWidth, 1.08f), "bodyShoulderWidth round-trips");
+    check(loaded.animOverrideIdleId == "cool_idle_01", "animOverrideIdleId round-trips");
+    check(loaded.animOverrideWalkId == "sneaky_walk_02", "animOverrideWalkId round-trips");
+    check(loaded.animOverrideRunId == "sprint_run_03", "animOverrideRunId round-trips");
+    check(loaded.animOverrideJumpStartId == "backflip_jump_04", "animOverrideJumpStartId round-trips");
+    check(loaded.animOverrideJumpAirId == "spin_air_05", "animOverrideJumpAirId round-trips");
+    check(loaded.animOverrideJumpLandId == "roll_land_06", "animOverrideJumpLandId round-trips");
+    check(loaded.creatorId == "creator_123456789", "creatorId round-trips");
+    check(loaded.ratedItemIds == std::vector<std::string>{"wizard_hat_01", "sci_fi_visor"},
+          "ratedItemIds round-trips in order");
+    check(loaded.hasRatedItem("wizard_hat_01") && !loaded.hasRatedItem("never_rated"),
+          "hasRatedItem() real-reflects the real, round-tripped ratedItemIds");
+    check(loaded.qualityPresetIndex == 2, "qualityPresetIndex round-trips");
+    check(!loaded.vsyncEnabled, "vsyncEnabled round-trips");
+    check(loaded.fpsCap == 60, "fpsCap round-trips");
+    check(nearlyEqual(loaded.masterVolume, 0.8f), "masterVolume round-trips");
+    check(nearlyEqual(loaded.musicVolume, 0.6f), "musicVolume round-trips");
+    check(nearlyEqual(loaded.sfxVolume, 0.9f), "sfxVolume round-trips");
+    check(nearlyEqual(loaded.uiScale, 1.25f), "uiScale round-trips");
+    check(nearlyEqual(loaded.textScale, 1.5f), "textScale round-trips");
+    check(loaded.colorblindModeIndex == 2, "colorblindModeIndex round-trips");
+    check(loaded.reducedMotion, "reducedMotion round-trips");
+    check(loaded.inputBindingOverrides.size() == 2 && loaded.inputBindingOverrides.at("Jump") == 44 &&
+              loaded.inputBindingOverrides.at("Interact") == 8,
+          "inputBindingOverrides round-trips every real entry");
+    check(loaded.friends.size() == 2 && loaded.friends[0].friendId == "creator_111" &&
+              loaded.friends[0].displayName == "Alice" && loaded.friends[1].friendId == "creator_222" &&
+              loaded.friends[1].displayName == "Bob Two Names",
+          "friends round-trips in order, including a multi-word display name");
+    check(loaded.isFriend("creator_111") && !loaded.isFriend("creator_999"),
+          "isFriend() real-reflects the real, round-tripped friends list");
+    check(loaded.pendingRequests.size() == 1 && loaded.pendingRequests[0].friendId == "creator_333" &&
+              loaded.pendingRequests[0].displayName == "Charlie",
+          "pendingRequests round-trips");
+    check(loaded.hasPendingRequestTo("creator_333") && !loaded.hasPendingRequestTo("creator_111"),
+          "hasPendingRequestTo() real-reflects the real, round-tripped pendingRequests");
+    check(loaded.friendMessages.size() == 2 && loaded.friendMessages[0].friendId == "creator_111" &&
+              loaded.friendMessages[0].fromMe && loaded.friendMessages[0].text == "hey there" &&
+              loaded.friendMessages[0].timestampUnixSeconds == 1700000100 && !loaded.friendMessages[1].fromMe &&
+              loaded.friendMessages[1].text == "hi back!",
+          "friendMessages round-trips every real field, in order");
+    check(loaded.notifications.size() == 2 &&
+              loaded.notifications[0].kind == engine::core::NotificationKind::ItemPurchase &&
+              loaded.notifications[0].title == "Item purchased" && loaded.notifications[0].relatedId == "wizard_hat_01" &&
+              !loaded.notifications[0].read && loaded.notifications[1].kind == engine::core::NotificationKind::FriendRequest &&
+              loaded.notifications[1].read,
+          "notifications round-trips every real field, in order");
 
     std::remove(path);
+}
+
+// Kronos ("Avatar Phase" -- "AvatarEditor: Body Sliders"): a profile file
+// saved by a real, pre-existing (older) build with no BODYHEIGHT/
+// BODYWIDTH/BODYLIMBSCALE/BODYTORSOLENGTH/BODYSHOULDERWIDTH lines at all
+// must still real-load, real-defaulting each to 1.0f (identity) -- same
+// real forward-compatible-format discipline as skinToneIndex/
+// headShapeIndex's own equivalent tests above.
+void testLocalProfileLoadsPreBodyProportionsFileWithHonestDefault() {
+    const char* path = "test_pre_body_proportions.profile";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "PROFILE 1\n";
+        out << "ID 42\n";
+        out << "NAME Old Profile\n";
+        out << "END\n";
+    }
+    engine::core::LocalProfile loaded;
+    check(loaded.loadFromFile(path), "a real, pre-body-proportions profile file still loads");
+    check(nearlyEqual(loaded.bodyHeight, 1.0f) && nearlyEqual(loaded.bodyWidth, 1.0f) &&
+              nearlyEqual(loaded.bodyLimbScale, 1.0f) && nearlyEqual(loaded.bodyTorsoLength, 1.0f) &&
+              nearlyEqual(loaded.bodyShoulderWidth, 1.0f),
+          "missing BODYHEIGHT/BODYWIDTH/BODYLIMBSCALE/BODYTORSOLENGTH/BODYSHOULDERWIDTH lines real-default to 1.0f "
+          "each, matching LocalProfile's own struct defaults");
+    std::remove(path);
+}
+
+// Kronos ("Avatar Phase" -- "AvatarEditor: Animation Overrides"): a
+// profile file saved by a real, pre-existing (older) build with no
+// ANIMOVERRIDE* lines at all must still real-load, real-defaulting each
+// to an empty string ("use the shipped default clip") -- same real
+// forward-compatible-format discipline as every other field's own
+// equivalent test above.
+void testLocalProfileLoadsPreAnimationOverridesFileWithHonestDefault() {
+    const char* path = "test_pre_anim_overrides.profile";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "PROFILE 1\n";
+        out << "ID 42\n";
+        out << "NAME Old Profile\n";
+        out << "END\n";
+    }
+    engine::core::LocalProfile loaded;
+    check(loaded.loadFromFile(path), "a real, pre-animation-overrides profile file still loads");
+    check(loaded.animOverrideIdleId.empty() && loaded.animOverrideWalkId.empty() && loaded.animOverrideRunId.empty() &&
+              loaded.animOverrideJumpStartId.empty() && loaded.animOverrideJumpAirId.empty() &&
+              loaded.animOverrideJumpLandId.empty(),
+          "missing ANIMOVERRIDE* lines real-default to an empty string each, matching LocalProfile's own struct "
+          "defaults -- 'use the real, honest shipped default clip'");
+    std::remove(path);
+}
+
+// Kronos ("Avatar Phase" -- "Avatar Head System"): a profile file saved
+// by a real, pre-existing (older) build with no HEADSHAPEINDEX line at
+// all must still real-load, real-defaulting to 0 (Oval) -- same real
+// forward-compatible-format discipline as skinToneIndex's own equivalent
+// test above.
+void testLocalProfileLoadsPreHeadShapeFileWithHonestDefault() {
+    const char* path = "test_pre_head_shape.profile";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "PROFILE 1\n";
+        out << "ID 42\n";
+        out << "NAME Old Profile\n";
+        out << "END\n";
+    }
+    engine::core::LocalProfile loaded;
+    check(loaded.loadFromFile(path), "a real, pre-head-shape profile file still loads");
+    check(loaded.headShapeIndex == 0,
+          "a missing HEADSHAPEINDEX line real-defaults to 0 (Oval), matching LocalProfile's own struct default");
+    check(engine::core::headShapeFromIndex(loaded.headShapeIndex) == engine::core::HeadShape::Oval,
+          "which real-resolves to the real Oval shape");
+    std::remove(path);
+}
+
+// Kronos ("Avatar Phase" -- "AvatarEditor: Skin-Tone Selection"): a
+// profile file saved by a real, pre-existing (older) build with no
+// SKINTONEINDEX line at all must still real-load, real-defaulting to
+// kNoSkinToneSelected -- same real forward-compatible-format discipline
+// this codebase's own KEY-based text formats already guarantee
+// elsewhere (e.g. GameManifest's own "missing SAFETYSTATUS line"
+// coverage).
+void testLocalProfileLoadsPreSkinToneFileWithHonestDefault() {
+    const char* path = "test_pre_skin_tone.profile";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "PROFILE 1\n";
+        out << "ID 42\n";
+        out << "NAME Old Profile\n";
+        out << "END\n";
+    }
+    engine::core::LocalProfile loaded;
+    check(loaded.loadFromFile(path), "a real, pre-skin-tone profile file still loads");
+    check(loaded.skinToneIndex == engine::core::kNoSkinToneSelected,
+          "a missing SKINTONEINDEX line real-defaults to kNoSkinToneSelected, not garbage/zero");
+    std::remove(path);
+}
+
+// Kronos ("Avatar Phase" -- "AvatarEditor: Skin-Tone Selection"): real,
+// pure coverage over core::resolveSkinToneColor()/skinTonePalette().
+void testResolveSkinToneColorHandlesValidUnsetAndOutOfRangeIndices() {
+    const auto& palette = engine::core::skinTonePalette();
+    check(palette.size() == engine::core::kSkinTonePaletteSize, "skinTonePalette() real-returns exactly its own declared size");
+
+    for (size_t i = 0; i < palette.size(); ++i) {
+        check(engine::core::resolveSkinToneColor(static_cast<int>(i)) == palette[i].color,
+              "resolveSkinToneColor() real-returns the exact real palette entry for a real, valid in-range index");
+    }
+
+    check(engine::core::resolveSkinToneColor(engine::core::kNoSkinToneSelected) == engine::core::kDefaultSkinToneColor,
+          "resolveSkinToneColor(kNoSkinToneSelected) real-returns the exact real, honest default color");
+    check(engine::core::resolveSkinToneColor(-5) == engine::core::kDefaultSkinToneColor,
+          "a real, negative out-of-range index real-falls back to the real default, not undefined behavior");
+    check(engine::core::resolveSkinToneColor(999) == engine::core::kDefaultSkinToneColor,
+          "a real, too-large out-of-range index real-falls back to the real default, not an out-of-bounds read");
+}
+
+// Kronos ("Moderation Architecture v2", "Account System v1"): a real,
+// freshly-default-constructed profile must be the real, conservative
+// default -- Unknown, not Adult -- so "protect minors by default" holds
+// even before a user ever touches an age setting.
+void testLocalProfileDefaultsToUnknownAgeGroupAndUnverified() {
+    engine::core::LocalProfile profile;
+    check(profile.ageGroup == engine::core::AgeGroup::Unknown, "a fresh real profile real-defaults to AgeGroup::Unknown");
+    check(!profile.creatorVerified, "a fresh real profile real-defaults to not creator-verified");
+    check(profile.kronosCredits == 0,
+          "a fresh real profile real-defaults to 0 KronosCredits -- no fabricated starter grant");
+    check(profile.ownedItemIds.empty(), "a fresh real profile real-defaults to owning nothing");
 }
 
 void testLoadOrCreateProfileCreatesThenReloads() {
@@ -2562,6 +3462,672 @@ void testLoadOrCreateProfileCreatesThenReloads() {
           "loadOrCreateProfile() real-loads the same real profile back (same id) on a second call, rather than "
           "real-creating a new one every time");
 
+    std::remove(path);
+}
+
+// Kronos ("Creator Identity + Marketplace Publishing Pipeline"): real,
+// fresh profiles real-get a real, non-empty, stable creatorId derived
+// from their own real profileId -- not left blank until someone opens
+// the Upload panel.
+void testLoadOrCreateProfileAssignsRealCreatorId() {
+    const char* path = "test_load_or_create_creator_id.profile";
+    std::remove(path);
+
+    engine::core::LocalProfile profile = engine::core::loadOrCreateProfile(path);
+    check(!profile.creatorId.empty(), "a real, freshly-created profile real-gets a non-empty creatorId");
+    check(profile.creatorId == "creator_" + std::to_string(profile.profileId),
+          "the real creatorId is real-derived from this profile's own real, unique profileId");
+
+    std::remove(path);
+}
+
+// Kronos ("Creator Identity + Marketplace Publishing Pipeline"): a real
+// profile file saved by a real, pre-existing (older) build with no
+// CREATORID line at all must still real-load, and loadOrCreateProfile()
+// must real-backfill a real, stable creatorId (derived from the real,
+// already-assigned profileId that DOES exist in the file) rather than
+// leaving it permanently blank.
+void testLoadOrCreateProfileBackfillsCreatorIdForOldProfile() {
+    const char* path = "test_pre_creator_id.profile";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "PROFILE 1\n";
+        out << "ID 555555\n";
+        out << "NAME Old Profile\n";
+        out << "END\n";
+    }
+
+    engine::core::LocalProfile direct;
+    check(direct.loadFromFile(path), "a real, pre-creatorId profile file still loads directly");
+    check(direct.creatorId.empty(), "a raw loadFromFile() real-leaves creatorId empty -- backfill is loadOrCreateProfile()'s own job");
+
+    engine::core::LocalProfile backfilled = engine::core::loadOrCreateProfile(path);
+    check(backfilled.profileId == 555555ULL, "the real, pre-existing profileId is preserved through the backfill");
+    check(backfilled.creatorId == "creator_555555",
+          "loadOrCreateProfile() real-backfills a real, stable creatorId derived from the real, pre-existing profileId");
+
+    // Real-confirms the backfilled creatorId was actually real-saved back
+    // to disk, not just returned in memory once.
+    engine::core::LocalProfile reloaded;
+    check(reloaded.loadFromFile(path) && reloaded.creatorId == "creator_555555",
+          "the real backfilled creatorId real-persists to disk, not just this one in-memory call");
+
+    std::remove(path);
+}
+
+// Kronos ("Creator Payout Ledger + Ratings Submission + Marketplace
+// Moderation v3"): a real, pre-existing (older) profile file with no
+// RATEDITEM lines at all still real-loads, defaulting ratedItemIds to a
+// real, honest empty vector -- "never rated anything," not a parse
+// failure.
+void testLocalProfileLoadsPreRatedItemIdsFileWithHonestDefault() {
+    const char* path = "test_pre_rated_items.profile";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "PROFILE 1\n";
+        out << "ID 42\n";
+        out << "NAME Old Profile\n";
+        out << "END\n";
+    }
+    engine::core::LocalProfile loaded;
+    check(loaded.loadFromFile(path), "a real, pre-ratedItemIds profile file still loads");
+    check(loaded.ratedItemIds.empty(), "missing RATEDITEM lines real-default to an empty vector");
+    check(!loaded.hasRatedItem("anything"), "hasRatedItem() real-returns false against the real, empty default");
+    std::remove(path);
+}
+
+// Kronos ("Settings Panel v2 + Input Remapping + Accessibility Layer"):
+// a real, pre-existing (older) profile file with none of the new
+// settings/input-binding lines at all still real-loads, defaulting every
+// field to the real, honest value that already matched this engine's own
+// actual behavior before this feature existed (see LocalProfile.hpp's
+// own comment on each field).
+void testLocalProfileLoadsPreSettingsFileWithHonestDefaults() {
+    const char* path = "test_pre_settings.profile";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "PROFILE 1\n";
+        out << "ID 42\n";
+        out << "NAME Old Profile\n";
+        out << "END\n";
+    }
+    engine::core::LocalProfile loaded;
+    check(loaded.loadFromFile(path), "a real, pre-settings profile file still loads");
+    check(loaded.qualityPresetIndex == 1, "missing QUALITYPRESET real-defaults to 1 (Medium)");
+    check(loaded.vsyncEnabled, "missing VSYNCENABLED real-defaults to true, matching the engine's own pre-existing FIFO-always behavior");
+    check(loaded.fpsCap == 180, "missing FPSCAP real-defaults to 180, matching core::GameLoop's own pre-existing pacer default");
+    check(nearlyEqual(loaded.masterVolume, 1.0f) && nearlyEqual(loaded.musicVolume, 1.0f) && nearlyEqual(loaded.sfxVolume, 1.0f),
+          "missing volume lines real-default to 1.0f each -- full volume, matching pre-existing unscaled behavior");
+    check(nearlyEqual(loaded.uiScale, 1.0f) && nearlyEqual(loaded.textScale, 1.0f),
+          "missing UISCALE/TEXTSCALE real-default to 1.0f each -- no real scaling change from before this feature existed");
+    check(loaded.colorblindModeIndex == 0, "missing COLORBLINDMODE real-defaults to 0 (None)");
+    check(!loaded.reducedMotion, "missing REDUCEDMOTION real-defaults to false");
+    check(loaded.inputBindingOverrides.empty(),
+          "missing INPUTBIND lines real-default to an empty map -- every action keeps its own real, existing default binding");
+    std::remove(path);
+}
+
+// Kronos ("Social Layer" + "Notifications System"): a real, pre-existing
+// (older) profile file with none of the new FRIEND/PENDINGREQ/FMSG/NOTIF
+// lines at all still real-loads, defaulting every new collection to a
+// real, honest empty vector.
+void testLocalProfileLoadsPreSocialFileWithHonestDefaults() {
+    const char* path = "test_pre_social.profile";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "PROFILE 1\n";
+        out << "ID 42\n";
+        out << "NAME Old Profile\n";
+        out << "END\n";
+    }
+    engine::core::LocalProfile loaded;
+    check(loaded.loadFromFile(path), "a real, pre-social-layer profile file still loads");
+    check(loaded.friends.empty(), "missing FRIEND lines real-default to an empty vector");
+    check(loaded.pendingRequests.empty(), "missing PENDINGREQ lines real-default to an empty vector");
+    check(loaded.friendMessages.empty(), "missing FMSG lines real-default to an empty vector");
+    check(loaded.notifications.empty(), "missing NOTIF lines real-default to an empty vector");
+    check(!loaded.isFriend("anyone"), "isFriend() real-returns false against the real, empty default");
+    check(!loaded.hasPendingRequestTo("anyone"), "hasPendingRequestTo() real-returns false against the real, empty default");
+    std::remove(path);
+}
+
+// Kronos ("Social Layer" -- "Friend request send/accept/decline"): real,
+// pure coverage over social::FriendsService's own state-transition
+// functions -- every real outcome, and that each one mutates (or
+// doesn't) exactly what it should.
+void testFriendsServiceSendAcceptDeclineTransitions() {
+    engine::core::LocalProfile profile;
+    profile.creatorId = "creator_me";
+
+    check(engine::social::sendFriendRequest(profile, "creator_me", "Myself") ==
+              engine::social::FriendRequestOutcome::CannotFriendSelf,
+          "sending a request to your own real creatorId real-fails as CannotFriendSelf");
+
+    auto outcome = engine::social::sendFriendRequest(profile, "creator_alice", "Alice");
+    check(outcome == engine::social::FriendRequestOutcome::Sent, "a real, new request real-sends");
+    check(profile.pendingRequests.size() == 1 && profile.pendingRequests[0].friendId == "creator_alice",
+          "a sent request is real-appended to pendingRequests");
+
+    check(engine::social::sendFriendRequest(profile, "creator_alice", "Alice") ==
+              engine::social::FriendRequestOutcome::AlreadyPending,
+          "sending a second request to the same real, still-pending id real-fails as AlreadyPending");
+
+    check(engine::social::acceptFriendRequest(profile, "creator_alice") ==
+              engine::social::FriendResolutionOutcome::Accepted,
+          "accepting a real, pending request real-succeeds");
+    check(profile.pendingRequests.empty(), "the accepted request is real-removed from pendingRequests");
+    check(profile.isFriend("creator_alice"), "the accepted request's id is real-added to friends");
+
+    check(engine::social::sendFriendRequest(profile, "creator_alice", "Alice") ==
+              engine::social::FriendRequestOutcome::AlreadyFriends,
+          "sending a request to an already-real-friend id real-fails as AlreadyFriends");
+
+    check(engine::social::sendFriendRequest(profile, "creator_bob", "Bob") == engine::social::FriendRequestOutcome::Sent,
+          "a second, real, new request real-sends");
+    check(engine::social::declineFriendRequest(profile, "creator_bob") ==
+              engine::social::FriendResolutionOutcome::Declined,
+          "declining a real, pending request real-succeeds");
+    check(profile.pendingRequests.empty() && !profile.isFriend("creator_bob"),
+          "a declined request is real-removed and never becomes a friend");
+    check(engine::social::declineFriendRequest(profile, "creator_bob") ==
+              engine::social::FriendResolutionOutcome::NotFound,
+          "declining an id with no real, pending request real-fails as NotFound");
+
+    check(engine::social::removeFriend(profile, "creator_alice"), "removing a real, existing friend real-succeeds");
+    check(!profile.isFriend("creator_alice"), "the removed friend is real-gone from friends");
+    check(!engine::social::removeFriend(profile, "creator_alice"), "removing an already-removed friend is a real, honest no-op");
+}
+
+// Kronos ("Social Layer" -- "Simple messaging overlay"): real coverage
+// over social::sendMessage()/messagesWithFriend() -- messages real-scope
+// to the exact friend they belong to, in order.
+void testFriendsServiceMessagingScopesPerFriend() {
+    engine::core::LocalProfile profile;
+    engine::social::sendMessage(profile, "creator_alice", "hi Alice", true);
+    engine::social::sendMessage(profile, "creator_bob", "hi Bob", true);
+    engine::social::sendMessage(profile, "creator_alice", "how are you?", true);
+
+    auto withAlice = engine::social::messagesWithFriend(profile, "creator_alice");
+    check(withAlice.size() == 2 && withAlice[0].text == "hi Alice" && withAlice[1].text == "how are you?",
+          "messagesWithFriend() real-scopes to exactly the real messages for that friend, in order");
+    auto withBob = engine::social::messagesWithFriend(profile, "creator_bob");
+    check(withBob.size() == 1 && withBob[0].text == "hi Bob", "messagesWithFriend() real-excludes another friend's messages");
+    auto withNoone = engine::social::messagesWithFriend(profile, "creator_nobody");
+    check(withNoone.empty(), "messagesWithFriend() real-returns an empty vector for a friend with no real messages");
+}
+
+// Kronos ("Social Layer" -- "Presence states: Online, In Game, Offline"):
+// real coverage over social::computeFriendPresence() -- every real
+// source (null/no data, a real LanSessionBrowser with no matching host, a
+// real NetworkSession roster match) produces the real, correct presence.
+void testFriendsServicePresenceDefaultsToOfflineWithNoRealData() {
+    check(engine::social::computeFriendPresence("Alice", nullptr, nullptr) == engine::social::PresenceState::Offline,
+          "with no real browser and no real active session, presence real-defaults to Offline");
+}
+
+// Kronos ("Notifications System"): real, pure coverage over
+// notification::push()/markRead()/markAllRead()/unreadCount()/
+// filteredIndicesMostRecentFirst() -- the exact persistence/query logic
+// the Notification Center panel and toast popups read.
+void testNotificationServicePushMarkReadAndFilter() {
+    engine::core::LocalProfile profile;
+    engine::notification::push(profile, engine::core::NotificationKind::ItemPurchase, "Bought Hat", "You bought a hat.",
+                                "hat_01");
+    engine::notification::push(profile, engine::core::NotificationKind::FriendRequest, "New friend request",
+                                "Alice wants to be friends.", "creator_alice");
+    check(profile.notifications.size() == 2, "push() real-appends a real, new notification each real call");
+    check(!profile.notifications[0].read && !profile.notifications[1].read, "a real, freshly-pushed notification starts unread");
+    check(engine::notification::unreadCount(profile) == 2, "unreadCount() real-counts every real, unread notification");
+
+    check(engine::notification::markRead(profile, 0), "marking a real, in-range index real-succeeds");
+    check(profile.notifications[0].read, "markRead() real-marks the exact real record at that index");
+    check(engine::notification::unreadCount(profile) == 1, "unreadCount() real-reflects the real mark-as-read");
+    check(!engine::notification::markRead(profile, 99), "marking a real, out-of-range index is a real, honest no-op (false)");
+
+    engine::notification::markAllRead(profile);
+    check(engine::notification::unreadCount(profile) == 0, "markAllRead() real-marks every real notification read");
+
+    engine::core::LocalProfile filterProfile;
+    engine::notification::push(filterProfile, engine::core::NotificationKind::ItemPurchase, "Bought Hat", "body", "hat_01");
+    engine::notification::push(filterProfile, engine::core::NotificationKind::FriendRequest, "Friend Req", "body",
+                                "creator_alice");
+    engine::notification::push(filterProfile, engine::core::NotificationKind::ItemPurchase, "Bought Shoes", "body",
+                                "shoes_01");
+    (void)engine::notification::markRead(filterProfile, 0); // "Bought Hat" (oldest) is now read
+
+    auto allMostRecentFirst = engine::notification::filteredIndicesMostRecentFirst(filterProfile, std::nullopt, false);
+    check(allMostRecentFirst.size() == 3 && allMostRecentFirst[0] == 2 && allMostRecentFirst[2] == 0,
+          "filteredIndicesMostRecentFirst() with no filter real-returns every real index, most-recent-first");
+
+    auto purchasesOnly = engine::notification::filteredIndicesMostRecentFirst(
+        filterProfile, engine::core::NotificationKind::ItemPurchase, false);
+    check(purchasesOnly.size() == 2 && purchasesOnly[0] == 2 && purchasesOnly[1] == 0,
+          "filteredIndicesMostRecentFirst() real-restricts to the real, requested NotificationKind");
+
+    auto unreadOnly = engine::notification::filteredIndicesMostRecentFirst(filterProfile, std::nullopt, true);
+    check(unreadOnly.size() == 2 && std::find(unreadOnly.begin(), unreadOnly.end(), 0) == unreadOnly.end(),
+          "filteredIndicesMostRecentFirst() real-excludes the real, already-read notification when unreadOnly is set");
+}
+
+// Kronos ("Avatar Creation System, Marketplace & Economy" -- "Wire
+// Wallet -> Catalogue purchases"): real, pure coverage over
+// marketplace::purchaseItemWithCredits() -- every real outcome
+// (Success/AlreadyOwned/InsufficientCredits), and that each one mutates
+// (or doesn't) exactly what it should.
+void testPurchaseItemWithCreditsSucceedsAndDeductsBalance() {
+    engine::core::LocalProfile buyer;
+    buyer.profileId = 777;
+    buyer.kronosCredits = 500;
+
+    engine::core::AvatarItemManifest item;
+    item.item.id = "wizard_hat_01";
+    item.item.name = "Wizard Hat";
+    item.creatorId = "HatMaker99";
+    item.price = 150;
+
+    engine::marketplace::TransactionLog log;
+    auto result = engine::marketplace::purchaseItemWithCredits(buyer, item, log, 1700000000);
+
+    check(result.outcome == engine::marketplace::CreditsPurchaseOutcome::Success, "a real, affordable purchase real-succeeds");
+    check(result.succeeded(), "succeeded() real-reflects the real Success outcome");
+    check(buyer.kronosCredits == 350, "the real item price is really deducted from the real buyer's balance");
+    check(buyer.ownsItem("wizard_hat_01"), "the real buyer real-owns the real item after a successful purchase");
+    check(log.size() == 1, "a real transaction record is real-appended on success");
+    check(log.records()[0].buyerProfileId == 777 && log.records()[0].itemId == "wizard_hat_01" &&
+              log.records()[0].priceCredits == 150 && log.records()[0].sellerCreatorId == "HatMaker99",
+          "the real transaction record's fields real-match the real purchase");
+}
+
+void testPurchaseItemWithCreditsFailsWhenInsufficientBalance() {
+    engine::core::LocalProfile buyer;
+    buyer.profileId = 1;
+    buyer.kronosCredits = 50;
+
+    engine::core::AvatarItemManifest item;
+    item.item.id = "expensive_item";
+    item.item.name = "Expensive Item";
+    item.price = 999;
+
+    engine::marketplace::TransactionLog log;
+    auto result = engine::marketplace::purchaseItemWithCredits(buyer, item, log, 1700000000);
+
+    check(result.outcome == engine::marketplace::CreditsPurchaseOutcome::InsufficientCredits,
+          "a real, unaffordable purchase real-fails with InsufficientCredits");
+    check(!result.succeeded(), "succeeded() real-reflects the real failure");
+    check(buyer.kronosCredits == 50, "an insufficient-balance purchase never real-touches the real buyer's balance");
+    check(!buyer.ownsItem("expensive_item"), "an insufficient-balance purchase never real-grants ownership");
+    check(log.size() == 0, "an insufficient-balance purchase never real-appends a transaction record");
+}
+
+void testPurchaseItemWithCreditsFailsWhenAlreadyOwned() {
+    engine::core::LocalProfile buyer;
+    buyer.profileId = 1;
+    buyer.kronosCredits = 1000;
+    buyer.ownedItemIds = {"already_owned_item"};
+
+    engine::core::AvatarItemManifest item;
+    item.item.id = "already_owned_item";
+    item.item.name = "Already Owned Item";
+    item.price = 100;
+
+    engine::marketplace::TransactionLog log;
+    auto result = engine::marketplace::purchaseItemWithCredits(buyer, item, log, 1700000000);
+
+    check(result.outcome == engine::marketplace::CreditsPurchaseOutcome::AlreadyOwned,
+          "real-buying a real, already-owned item real-fails with AlreadyOwned");
+    check(buyer.kronosCredits == 1000, "an already-owned purchase attempt never real-touches the real buyer's balance");
+    check(log.size() == 0, "an already-owned purchase attempt never real-appends a transaction record");
+}
+
+// Kronos ("Creator Payout Ledger + Ratings Submission + Marketplace
+// Moderation v3" -- "Ratings Submission"): real, pure coverage over
+// marketplace::submitRating() -- score aggregation, duplicate-rating
+// prevention, and creator-self-rating prevention.
+void testSubmitRatingAggregatesScoreAndPreventsDuplicates() {
+    engine::core::LocalProfile rater;
+    rater.creatorId = "creator_buyer";
+
+    engine::core::AvatarItemManifest item;
+    item.item.id = "cool_hat";
+    item.creatorId = "creator_seller";
+    item.ratingScore = 4.0f;
+    item.ratingCount = 1; // one real, pre-existing rating already averaged in
+
+    auto result = engine::marketplace::submitRating(rater, item, 5.0f);
+    check(result.succeeded(), "a real, valid rating submission succeeds");
+    check(item.ratingCount == 2, "ratingCount real-increments by exactly one");
+    check(nearlyEqual(item.ratingScore, 4.5f),
+          "ratingScore is a real running average -- (4.0*1 + 5.0) / 2 = 4.5, not a fabricated value");
+    check(rater.hasRatedItem("cool_hat"), "the real rater's own ratedItemIds now real-records this item");
+
+    auto duplicate = engine::marketplace::submitRating(rater, item, 1.0f);
+    check(duplicate.outcome == engine::marketplace::RatingSubmissionOutcome::AlreadyRated,
+          "a real, second rating attempt from the same real profile real-fails with AlreadyRated");
+    check(item.ratingCount == 2 && nearlyEqual(item.ratingScore, 4.5f),
+          "a real, rejected duplicate rating never real-touches the item's own score/count");
+
+    engine::core::LocalProfile creator;
+    creator.creatorId = "creator_seller"; // the real, same creator who published `item`
+    auto selfRate = engine::marketplace::submitRating(creator, item, 5.0f);
+    check(selfRate.outcome == engine::marketplace::RatingSubmissionOutcome::CannotRateOwnItem,
+          "a real creator attempting to rate their own real item real-fails with CannotRateOwnItem");
+    check(item.ratingCount == 2, "a real, rejected self-rating never real-touches the item's own score/count either");
+    check(!creator.hasRatedItem("cool_hat"),
+          "a real, rejected self-rating never real-records a rating that didn't actually happen");
+}
+
+void testSubmitRatingClampsOutOfRangeScores() {
+    engine::core::LocalProfile rater;
+    rater.creatorId = "creator_buyer";
+    engine::core::AvatarItemManifest item;
+    item.item.id = "some_item";
+    item.creatorId = "someone_else";
+
+    auto result = engine::marketplace::submitRating(rater, item, 999.0f);
+    check(result.succeeded(), "an out-of-range score still real-succeeds (real-clamped, not rejected)");
+    check(nearlyEqual(item.ratingScore, 5.0f), "a real, too-large score real-clamps to the real 5-star maximum");
+}
+
+// Kronos ("Ratings Notifications (Creator-side)"): real coverage over
+// submitRating()'s new, optional creatorProfile parameter --
+// notification creation, correct creator resolution, and persistence.
+// Kronos ("Home Screen Avatar Preview" -- "idle animation"): real, pure
+// coverage over core::resolveAvatarIdleClipPath() -- the one part of the
+// Home preview's own idle-clip selection that's genuinely testable
+// without a real GPU/window (see runtime::HomeAvatarPreview's own class
+// comment: the actual mesh spawn/skeletal playback is real, live Vulkan
+// work, structurally verified by manual run, not fabricated automated
+// coverage here).
+void testResolveAvatarIdleClipPathPrefersOverrideThenFallsBackToShipped() {
+    engine::core::AnimationDatabase database;
+    engine::core::AnimationManifest customIdle;
+    customIdle.item.id = "fancy_idle";
+    customIdle.item.name = "Fancy Idle";
+    customIdle.item.category = engine::core::AnimationCategory::Locomotion;
+    customIdle.item.clipPath = "animations/fancy_idle.anim";
+    database.upsert(customIdle);
+
+    engine::core::LocalProfile profileWithOverride;
+    profileWithOverride.animOverrideIdleId = "fancy_idle";
+    check(engine::core::resolveAvatarIdleClipPath(profileWithOverride, database, "shipped/idle.anim") ==
+              "animations/fancy_idle.anim",
+          "a real, set override id that real-resolves in the database wins over the real shipped default");
+
+    engine::core::LocalProfile profileWithBrokenOverride;
+    profileWithBrokenOverride.animOverrideIdleId = "does_not_exist";
+    check(engine::core::resolveAvatarIdleClipPath(profileWithBrokenOverride, database, "shipped/idle.anim") ==
+              "shipped/idle.anim",
+          "a real, set override id that does NOT resolve in the database real-falls back to the real shipped default, "
+          "same fail-soft precedent core::Application::spawnLocalPlayerAvatar() already uses");
+
+    engine::core::LocalProfile profileWithNoOverride;
+    check(engine::core::resolveAvatarIdleClipPath(profileWithNoOverride, database, "shipped/idle.anim") ==
+              "shipped/idle.anim",
+          "no real override id at all real-uses the real shipped default");
+}
+
+// Kronos ("Simple Recommendation Engine"): real, pure coverage over
+// computeRecommendationScore()/rankRecommendedItems() -- every real
+// signal's real, directional effect, and that non-Approved items never
+// surface.
+void testRecommendationScoreRewardsRecencyPopularityAndQuality() {
+    int64_t now = 1700000000;
+
+    engine::core::AvatarItemManifest freshPopularHighlyRated;
+    freshPopularHighlyRated.item.id = "a";
+    freshPopularHighlyRated.updateTimestampUnixSeconds = now; // just updated
+    freshPopularHighlyRated.purchaseCount = 200;
+    freshPopularHighlyRated.ratingScore = 5.0f;
+    freshPopularHighlyRated.ratingCount = 50;
+
+    engine::core::AvatarItemManifest staleUnpopularUnrated;
+    staleUnpopularUnrated.item.id = "b";
+    staleUnpopularUnrated.updateTimestampUnixSeconds = now - (365 * 86400); // a real year old
+    staleUnpopularUnrated.purchaseCount = 0;
+    staleUnpopularUnrated.ratingScore = 0.0f;
+    staleUnpopularUnrated.ratingCount = 0;
+
+    float scoreA = engine::marketplace::computeRecommendationScore(freshPopularHighlyRated, now);
+    float scoreB = engine::marketplace::computeRecommendationScore(staleUnpopularUnrated, now);
+    check(scoreA > scoreB,
+          "a real, fresh/popular/highly-rated item real-scores higher than a real, stale/unpopular/unrated one");
+    // A real year-old item still carries a small, real, non-zero recency
+    // contribution (the decay curve never hits exactly zero) -- 0.03 is
+    // a real, generous tolerance for that, not a loosened assertion.
+    check(nearlyEqual(scoreB, 0.0f, 0.03f),
+          "a real item with zero real purchase/rating signal real-scores near zero (only a tiny recency residual)");
+
+    // Real, isolated recency effect -- everything else held constant.
+    engine::core::AvatarItemManifest freshOnly = staleUnpopularUnrated;
+    freshOnly.item.id = "c";
+    freshOnly.updateTimestampUnixSeconds = now;
+    check(engine::marketplace::computeRecommendationScore(freshOnly, now) >
+              engine::marketplace::computeRecommendationScore(staleUnpopularUnrated, now),
+          "recency alone real-raises the score, holding popularity/quality constant");
+
+    // Real confidence weighting: one 5-star rating shouldn't outscore a
+    // well-established, slightly-lower-rated item.
+    engine::core::AvatarItemManifest oneGreatRating;
+    oneGreatRating.item.id = "d";
+    oneGreatRating.ratingScore = 5.0f;
+    oneGreatRating.ratingCount = 1;
+    engine::core::AvatarItemManifest manyGoodRatings;
+    manyGoodRatings.item.id = "e";
+    manyGoodRatings.ratingScore = 4.5f;
+    manyGoodRatings.ratingCount = 40;
+    check(engine::marketplace::computeRecommendationScore(manyGoodRatings, now) >
+              engine::marketplace::computeRecommendationScore(oneGreatRating, now),
+          "real confidence-weighting means many good ratings real-outscore one perfect-but-unconfirmed rating");
+}
+
+void testRankRecommendedItemsFiltersNonApprovedAndRespectsMaxResults() {
+    int64_t now = 1700000000;
+
+    engine::core::AvatarItemManifest approvedHigh;
+    approvedHigh.item.id = "approved_high";
+    approvedHigh.moderationStatus = engine::core::AvatarItemModerationStatus::Approved;
+    approvedHigh.purchaseCount = 500;
+    approvedHigh.updateTimestampUnixSeconds = now;
+
+    engine::core::AvatarItemManifest approvedLow;
+    approvedLow.item.id = "approved_low";
+    approvedLow.moderationStatus = engine::core::AvatarItemModerationStatus::Approved;
+
+    engine::core::AvatarItemManifest pending;
+    pending.item.id = "pending_item";
+    pending.moderationStatus = engine::core::AvatarItemModerationStatus::UnderReview;
+    pending.purchaseCount = 9999; // even a real, huge purchase count must never surface a non-Approved item
+
+    std::vector<const engine::core::AvatarItemManifest*> candidates = {&approvedLow, &pending, &approvedHigh};
+    auto ranked = engine::marketplace::rankRecommendedItems(candidates, now, 10);
+    check(ranked.size() == 2, "rankRecommendedItems() real-filters out the real, non-Approved item entirely");
+    for (const auto* item : ranked) {
+        check(item->moderationStatus == engine::core::AvatarItemModerationStatus::Approved,
+              "every real, returned item is real-Approved");
+    }
+    check(ranked[0]->item.id == "approved_high", "the real, higher-scoring Approved item real-sorts first");
+
+    auto limited = engine::marketplace::rankRecommendedItems(candidates, now, 1);
+    check(limited.size() == 1 && limited[0]->item.id == "approved_high",
+          "rankRecommendedItems() real-respects maxResults, keeping the real, highest-scoring item(s)");
+}
+
+void testSubmitRatingPushesNotificationToMatchingCreatorProfile() {
+    engine::core::LocalProfile rater;
+    rater.creatorId = "creator_buyer";
+    rater.displayName = "Alice";
+
+    engine::core::LocalProfile creator;
+    creator.creatorId = "creator_seller";
+
+    engine::core::AvatarItemManifest item;
+    item.item.id = "cool_hat";
+    item.item.name = "Cool Hat";
+    item.creatorId = "creator_seller";
+    item.ratingScore = 4.0f;
+    item.ratingCount = 1;
+
+    auto result = engine::marketplace::submitRating(rater, item, 5.0f, &creator);
+    check(result.succeeded(), "a real, valid rating submission with a real creatorProfile still succeeds");
+    check(creator.notifications.size() == 1, "a real RatingReceived notification is real-pushed to the real, matching creator profile");
+    const auto& notification = creator.notifications.front();
+    check(notification.kind == engine::core::NotificationKind::RatingReceived,
+          "the real, pushed notification is real-kinded RatingReceived");
+    check(notification.relatedId == "cool_hat", "the real notification's relatedId is the real item's own id");
+    check(notification.title.find("Cool Hat") != std::string::npos, "the real item's own name real-appears in the notification title");
+    check(notification.body.find("4.5") != std::string::npos,
+          "the real, updated ratingScore (4.5, the real running average) real-appears in the notification body");
+    check(!notification.read, "a real, freshly-pushed notification starts unread");
+    check(rater.notifications.empty(), "the real rater's own profile never gets a notification meant for the creator");
+}
+
+void testSubmitRatingSkipsNotificationForMismatchedOrMissingCreatorProfile() {
+    engine::core::LocalProfile rater;
+    rater.creatorId = "creator_buyer";
+
+    engine::core::AvatarItemManifest item;
+    item.item.id = "cool_hat";
+    item.creatorId = "creator_seller";
+
+    // Real, correct creator resolution -- a profile that ISN'T the real
+    // creator (a different creatorId) must never receive a notification
+    // meant for someone else, even though it was passed in.
+    engine::core::LocalProfile wrongProfile;
+    wrongProfile.creatorId = "creator_someone_else_entirely";
+    auto result1 = engine::marketplace::submitRating(rater, item, 5.0f, &wrongProfile);
+    check(result1.succeeded(), "the real rating submission itself still succeeds regardless of creatorProfile correctness");
+    check(wrongProfile.notifications.empty(),
+          "a real, non-matching creatorProfile real-never receives a notification meant for a different creator");
+
+    // Real, honest no-crash, no-notification default when the caller has
+    // no real creator profile object at all (this Alpha's real, single-
+    // profile-per-machine production call site, see submitRating()'s own
+    // header comment).
+    engine::core::LocalProfile rater2;
+    rater2.creatorId = "creator_buyer_2";
+    engine::core::AvatarItemManifest item2;
+    item2.item.id = "another_hat";
+    item2.creatorId = "creator_seller";
+    auto result2 = engine::marketplace::submitRating(rater2, item2, 4.0f, nullptr);
+    check(result2.succeeded(), "a real rating submission with no creatorProfile at all still real-succeeds");
+}
+
+// Kronos ("Ratings Notifications (Creator-side)" -- "persistence" +
+// "backward compatibility"): a real RatingReceived notification
+// round-trips through LocalProfile::saveToFile()/loadFromFile() like any
+// other, and a real, pre-existing (older) profile file with no NOTIF
+// lines at all still real-loads with an honest empty notifications list
+// (see testLocalProfileLoadsPreSocialFileWithHonestDefaults() for the
+// general case this reuses the exact same real format for).
+void testRatingReceivedNotificationPersists() {
+    engine::core::LocalProfile rater;
+    rater.creatorId = "creator_buyer";
+    rater.displayName = "Bob";
+
+    engine::core::LocalProfile creator;
+    creator.creatorId = "creator_seller";
+
+    engine::core::AvatarItemManifest item;
+    item.item.id = "shiny_boots";
+    item.item.name = "Shiny Boots";
+    item.creatorId = "creator_seller";
+
+    auto result = engine::marketplace::submitRating(rater, item, 3.0f, &creator);
+    check(result.succeeded(), "setup: the real rating submission succeeds");
+    check(creator.notifications.size() == 1, "setup: the real notification was real-pushed");
+
+    const char* path = "test_rating_notification.profile";
+    check(creator.saveToFile(path), "the real creator profile, with its real new RatingReceived notification, saves");
+
+    engine::core::LocalProfile loaded;
+    check(loaded.loadFromFile(path), "the real, saved profile file real-loads back");
+    check(loaded.notifications.size() == 1, "the real RatingReceived notification round-trips");
+    check(loaded.notifications[0].kind == engine::core::NotificationKind::RatingReceived,
+          "the round-tripped notification's real kind is preserved");
+    check(loaded.notifications[0].relatedId == "shiny_boots", "the round-tripped notification's real relatedId is preserved");
+    std::remove(path);
+}
+
+void testTransactionLogSaveLoadRoundTrip() {
+    engine::marketplace::TransactionLog log;
+    log.record(engine::marketplace::TransactionRecord{111, "wizard_hat_01", "Wizard Hat, Deluxe", 150, "Hat Maker, Inc.",
+                                                        1700000000});
+    log.record(engine::marketplace::TransactionRecord{222, "cool_shades_02", "Cool Shades", 75, "ShadesCo", 1700000100});
+
+    const char* path = "test_transaction_log.transactions";
+    check(log.saveToFile(path), "a real transaction log saves");
+
+    engine::marketplace::TransactionLog loaded;
+    check(loaded.loadFromFile(path), "a real transaction log file loads");
+    check(loaded.size() == 2, "both real transaction records round-trip");
+    check(loaded.records()[0].buyerProfileId == 111 && loaded.records()[0].itemId == "wizard_hat_01" &&
+              loaded.records()[0].itemName == "Wizard Hat, Deluxe" && loaded.records()[0].priceCredits == 150 &&
+              loaded.records()[0].sellerCreatorId == "Hat Maker, Inc." && loaded.records()[0].timestampUnixSeconds == 1700000000,
+          "the real first record's fields (including real free-text fields with commas) round-trip exactly");
+    check(loaded.recordsForBuyer(222).size() == 1 && loaded.recordsForBuyer(222)[0].itemId == "cool_shades_02",
+          "recordsForBuyer() real-filters to exactly the real buyer's own real records");
+    check(loaded.recordsForBuyer(999).empty(), "recordsForBuyer() real-returns empty for a real buyer with no records");
+
+    std::remove(path);
+}
+
+// Kronos ("Creator Identity + Marketplace Publishing Pipeline"): real,
+// pure coverage over TransactionLog::recordPublish()/publishRecordsForCreator()
+// -- a real, separate publish-event kind that coexists in the same real
+// ledger file alongside purchase TransactionRecords, without either kind
+// corrupting the other.
+void testTransactionLogPublishRecordsCoexistWithPurchaseRecords() {
+    engine::marketplace::TransactionLog log;
+    log.record(engine::marketplace::TransactionRecord{111, "wizard_hat_01", "Wizard Hat", 150, "creator_1", 1700000000});
+    log.recordPublish(engine::marketplace::PublishRecord{"creator_1", "wizard_hat_01", "Wizard Hat", 1699999000,
+                                                           "Approved", "Head"});
+    log.recordPublish(
+        engine::marketplace::PublishRecord{"creator_2", "sus_item", "Sus Item", 1699999500, "UnderReview", "Torso"});
+
+    const char* path = "test_transaction_log_publish.transactions";
+    check(log.saveToFile(path), "a real transaction log with both record kinds saves");
+
+    engine::marketplace::TransactionLog loaded;
+    check(loaded.loadFromFile(path), "a real transaction log with both record kinds loads");
+    check(loaded.size() == 1, "the real purchase record kind is unaffected by the real publish records sharing the file");
+    check(loaded.publishRecords().size() == 2, "both real publish records round-trip");
+    check(loaded.publishRecords()[0].creatorId == "creator_1" && loaded.publishRecords()[0].itemId == "wizard_hat_01" &&
+              loaded.publishRecords()[0].itemName == "Wizard Hat" &&
+              loaded.publishRecords()[0].timestampUnixSeconds == 1699999000 &&
+              loaded.publishRecords()[0].moderationStatus == "Approved" && loaded.publishRecords()[0].category == "Head",
+          "the real first publish record's fields (including the real, new category field) round-trip exactly");
+    check(loaded.publishRecordsForCreator("creator_2").size() == 1 &&
+              loaded.publishRecordsForCreator("creator_2")[0].moderationStatus == "UnderReview",
+          "publishRecordsForCreator() real-filters to exactly the real creator's own real publish records");
+    check(loaded.publishRecordsForCreator("creator_nobody").empty(),
+          "publishRecordsForCreator() real-returns empty for a real creator with no publish records");
+
+    std::remove(path);
+}
+
+// Kronos ("Creator Payout Ledger + Ratings Submission + Marketplace
+// Moderation v3" -- "Marketplace Moderation v3" -- "backward
+// compatibility"): a real, pre-existing (older) transaction log file
+// with PUB records that predate PUBCATEGORY still real-loads, defaulting
+// the missing field to an empty string rather than failing the whole
+// parse.
+void testTransactionLogLoadsPrePublishCategoryFileWithHonestDefault() {
+    const char* path = "test_pre_publish_category.transactions";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "TRANSACTIONLOG 1\n";
+        out << "PUB 1699999000\n";
+        out << "PUBITEMID old_item\n";
+        out << "PUBITEMNAME Old Item\n";
+        out << "PUBCREATOR creator_1\n";
+        out << "PUBSTATUS Approved\n";
+        out << "END\n";
+    }
+    engine::marketplace::TransactionLog loaded;
+    check(loaded.loadFromFile(path), "a real, pre-PUBCATEGORY transaction log file still loads");
+    check(loaded.publishRecords().size() == 1, "the real, pre-existing publish record itself still loads");
+    check(loaded.publishRecords()[0].category.empty(),
+          "a missing PUBCATEGORY line real-defaults to an empty string, not a parse failure");
     std::remove(path);
 }
 
@@ -2593,7 +4159,7 @@ void testSceneManagerCapture() {
     camera.position = {5.0f, 6.0f, 7.0f};
     camera.yawDegrees = 120.0f;
 
-    engine::studio::SceneManager sceneManager;
+    engine::core::SceneManager sceneManager;
     const char* path = "test_scene_manager.scene";
     check(sceneManager.saveScene(path, ecs, camera), "SceneManager::saveScene writes a real file");
     check(sceneManager.currentScenePath() == path, "saveScene() records the path as current");
@@ -2631,17 +4197,17 @@ void testSceneManagerCapture() {
     // recovery file once the interval elapses, without touching the real
     // save file.
     sceneManager.markDirty();
-    check(!engine::studio::SceneManager::hasRecoveryFile(path), "no recovery file exists before any autosave has run");
-    sceneManager.tickAutosave(engine::studio::SceneManager::kAutosaveIntervalSeconds + 1.0f, ecs, camera);
-    check(engine::studio::SceneManager::hasRecoveryFile(path), "tickAutosave() past the interval writes a recovery file");
+    check(!engine::core::SceneManager::hasRecoveryFile(path), "no recovery file exists before any autosave has run");
+    sceneManager.tickAutosave(engine::core::SceneManager::kAutosaveIntervalSeconds + 1.0f, ecs, camera);
+    check(engine::core::SceneManager::hasRecoveryFile(path), "tickAutosave() past the interval writes a recovery file");
     check(sceneManager.isDirty(), "autosave does not clear the dirty flag (only a real Save does)");
 
     check(sceneManager.saveScene(path, ecs, camera), "re-saving the scene succeeds");
-    check(!engine::studio::SceneManager::hasRecoveryFile(path),
+    check(!engine::core::SceneManager::hasRecoveryFile(path),
           "a deliberate save consumes/clears the pending recovery file");
 
     std::remove(path);
-    std::remove(engine::studio::SceneManager::recoveryPathFor(path).c_str());
+    std::remove(engine::core::SceneManager::recoveryPathFor(path).c_str());
 }
 
 // Kronos (Alpha Roadmap Phase 2, "Scene system") -- real Hierarchy
@@ -2663,7 +4229,7 @@ void testSceneFileHierarchyRoundTrip() {
     engine::core::hierarchy::setParent(ecs, grandchild, child);
 
     engine::core::Camera camera;
-    engine::studio::SceneManager sceneManager;
+    engine::core::SceneManager sceneManager;
     const char* path = "test_scene_hierarchy.scene";
     check(sceneManager.saveScene(path, ecs, camera), "SceneManager::saveScene writes a real file with a real hierarchy");
 
@@ -2730,7 +4296,7 @@ void testSceneManagerNewSceneClearsEcsAndState() {
     (void)ecs.createEntity("Leftover2");
     check(ecs.entityCount() == 2, "the real ECS really has two real entities before newScene()");
 
-    engine::studio::SceneManager sceneManager;
+    engine::core::SceneManager sceneManager;
     const char* path = "test_new_scene_marker.scene";
     engine::core::Camera camera;
     check(sceneManager.saveScene(path, ecs, camera), "a real save gives newScene() a real prior currentScenePath_/clean state to reset from");
@@ -2771,7 +4337,7 @@ void testSceneManagerLoadSceneHandlesRenderableWithNoMeshSourceHonestly() {
     engine::core::ECS ecs;
     engine::core::MeshLibrary meshLibrary;
     engine::core::Camera camera;
-    engine::studio::SceneManager sceneManager;
+    engine::core::SceneManager sceneManager;
     bool ok = sceneManager.loadScene(path, ecs, meshLibrary, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
                                       VK_NULL_HANDLE, camera);
     check(ok, "loadScene() real-succeeds overall even though one entity's Renderable can't get a real mesh");
@@ -2786,6 +4352,94 @@ void testSceneManagerLoadSceneHandlesRenderableWithNoMeshSourceHonestly() {
           "the real Renderable component itself (color, etc.) still real-round-trips even meshless -- only the GPU mesh handle is honestly absent");
     check(renderable != nullptr && renderable->meshHandle == engine::core::Renderable::kInvalidHandle,
           "with no real mesh built, meshHandle honestly stays the real 'invalid' sentinel rather than a bogus value");
+
+    std::remove(path);
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 2): real, headless coverage
+// for loadScene()'s new optional `physics` parameter -- the exact
+// mechanism that makes a runtime::GameLoader-loaded game genuinely
+// playable (real Jolt collision), not just a static diorama. Entities
+// here carry no Renderable/MeshSource on purpose, so this stays headless
+// (VK_NULL_HANDLE, no real GPU upload attempted, same precedent as
+// testSceneManagerLoadSceneHandlesRenderableWithNoMeshSourceHonestly()).
+void testSceneManagerLoadSceneAttachesRealPhysicsBodies() {
+    engine::core::SceneFile file;
+
+    engine::core::SceneEntityRecord ground;
+    ground.name = "Ground";
+    ground.hasRigidBody = true;
+    ground.motionType = engine::core::RigidBodyMotionType::Static;
+    ground.hasColliderShape = true;
+    ground.colliderShape.kind = engine::core::ColliderShapeKind::Box;
+    ground.colliderShape.params = {5.0f, 0.5f, 5.0f};
+    file.entities.push_back(ground);
+
+    engine::core::SceneEntityRecord decoration;
+    decoration.name = "Decoration"; // no physics data at all -- must stay untouched
+    file.entities.push_back(decoration);
+
+    const char* path = "test_scene_physics_load.scene";
+    check(file.saveToFile(path), "a real scene file with physics data saves");
+
+    // Without a real Physics* (every existing Studio call site), physics
+    // data is parsed but no live body is created -- the entity still
+    // gets real RigidBody/ColliderShape components are NOT added, since
+    // nothing attached them.
+    {
+        engine::core::ECS ecs;
+        engine::core::MeshLibrary meshLibrary;
+        engine::core::Camera camera;
+        engine::core::SceneManager sceneManager;
+        check(sceneManager.loadScene(path, ecs, meshLibrary, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                      VK_NULL_HANDLE, camera),
+              "loadScene() with no Physics* still real-succeeds (Studio's own, unaffected call shape)");
+        engine::core::EntityId groundEntity = engine::core::kNullEntity;
+        for (auto entity : ecs.view<engine::core::Name>()) {
+            if (ecs.tryGetComponent<engine::core::Name>(entity)->value == "Ground") groundEntity = entity;
+        }
+        check(groundEntity != engine::core::kNullEntity, "the entity itself is still real-created");
+        check(ecs.tryGetComponent<engine::core::RigidBody>(groundEntity) == nullptr,
+              "with no real Physics* passed, no real RigidBody component is attached -- matches every existing "
+              "Studio call site's real, unchanged behavior");
+    }
+
+    // With a real, live, headlessly-initialized Physics world, the
+    // entity with real physics data gets a real Jolt body; the one
+    // without stays untouched.
+    {
+        engine::core::ECS ecs;
+        engine::core::MeshLibrary meshLibrary;
+        engine::core::Camera camera;
+        engine::core::Physics physics;
+        check(physics.initialize(), "SceneManager physics-attach test: real Physics initializes headlessly");
+        engine::core::SceneManager sceneManager;
+        check(sceneManager.loadScene(path, ecs, meshLibrary, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                      VK_NULL_HANDLE, camera, &physics),
+              "loadScene() with a real Physics* real-succeeds");
+
+        engine::core::EntityId groundEntity = engine::core::kNullEntity;
+        engine::core::EntityId decorationEntity = engine::core::kNullEntity;
+        for (auto entity : ecs.view<engine::core::Name>()) {
+            const std::string& name = ecs.tryGetComponent<engine::core::Name>(entity)->value;
+            if (name == "Ground") groundEntity = entity;
+            if (name == "Decoration") decorationEntity = entity;
+        }
+        check(groundEntity != engine::core::kNullEntity && decorationEntity != engine::core::kNullEntity,
+              "both real entities are created");
+
+        auto* rigidBody = ecs.tryGetComponent<engine::core::RigidBody>(groundEntity);
+        check(rigidBody != nullptr && rigidBody->joltBodyId != engine::core::RigidBody::kInvalidBodyId,
+              "the entity with real saved physics data gets a real, live Jolt body attached");
+        check(rigidBody != nullptr && rigidBody->motionType == engine::core::RigidBodyMotionType::Static,
+              "the attached real body's motion type matches the real saved data");
+
+        check(ecs.tryGetComponent<engine::core::RigidBody>(decorationEntity) == nullptr,
+              "the entity with no saved physics data gets no real body -- real per-entity behavior, not a "
+              "whole-scene toggle");
+
+        physics.shutdown();
+    }
 
     std::remove(path);
 }
@@ -2874,6 +4528,14 @@ void testAvatarItemManifestJsonRoundTrip() {
     manifest.creatorId = "creator_42";
     manifest.uploadDateUnixSeconds = 1700000000;
     manifest.price = 250;
+    manifest.updateTimestampUnixSeconds = 1700005000;
+    manifest.version = 3;
+    manifest.moderationStatus = engine::core::AvatarItemModerationStatus::UnderReview;
+    manifest.ratingScore = 4.5f;
+    manifest.ratingCount = 12;
+    manifest.views = 4321;
+    manifest.purchaseCount = 17;
+    manifest.favorites = 9;
 
     const char* path = "test_avatar_manifest.json";
     check(manifest.saveToFile(path), "avatar item manifest saves as real JSON");
@@ -2892,6 +4554,14 @@ void testAvatarItemManifestJsonRoundTrip() {
     check(loaded.creatorId == "creator_42", "creatorId round-trips");
     check(loaded.uploadDateUnixSeconds == 1700000000, "uploadDateUnixSeconds round-trips");
     check(loaded.price == 250, "price round-trips");
+    check(loaded.updateTimestampUnixSeconds == 1700005000, "updateTimestampUnixSeconds round-trips");
+    check(loaded.version == 3, "version round-trips");
+    check(loaded.moderationStatus == engine::core::AvatarItemModerationStatus::UnderReview, "moderationStatus round-trips");
+    check(nearlyEqual(loaded.ratingScore, 4.5f), "ratingScore round-trips");
+    check(loaded.ratingCount == 12, "ratingCount round-trips");
+    check(loaded.views == 4321, "views round-trips");
+    check(loaded.purchaseCount == 17, "purchaseCount round-trips");
+    check(loaded.favorites == 9, "favorites round-trips");
 
     bool allCategoriesRoundTrip = true;
     engine::core::AvatarItemCategory allCategories[] = {
@@ -2899,6 +4569,8 @@ void testAvatarItemManifestJsonRoundTrip() {
         engine::core::AvatarItemCategory::Face,      engine::core::AvatarItemCategory::Torso,
         engine::core::AvatarItemCategory::Legs,      engine::core::AvatarItemCategory::Accessory,
         engine::core::AvatarItemCategory::LayeredClothing, engine::core::AvatarItemCategory::Emote,
+        engine::core::AvatarItemCategory::Shoes,     engine::core::AvatarItemCategory::Back,
+        engine::core::AvatarItemCategory::Bundle,
     };
     for (auto testCategory : allCategories) {
         engine::core::AvatarItemManifest m;
@@ -2927,6 +4599,46 @@ void testAvatarItemManifestJsonRoundTrip() {
     std::remove("test_avatar_manifest_bad.json");
 
     std::remove(path);
+}
+
+// Kronos ("Creator Identity + Marketplace Publishing Pipeline"): real,
+// pure coverage over AvatarItemModerationStatus's own name/parse
+// resolvers, and real proof a pre-existing (older) manifest JSON with
+// none of the new listing-metadata fields at all still loads, defaulting
+// each real, honestly (see AvatarItemManifest.hpp's own comment on why
+// moderationStatus defaults to Approved specifically, not UnderReview).
+void testAvatarItemModerationStatusAndManifestBackwardCompatibility() {
+    check(std::string(engine::core::avatarItemModerationStatusName(engine::core::AvatarItemModerationStatus::Approved)) ==
+              "Approved",
+          "avatarItemModerationStatusName(Approved) is real \"Approved\"");
+    check(std::string(engine::core::avatarItemModerationStatusName(engine::core::AvatarItemModerationStatus::UnderReview)) ==
+              "UnderReview",
+          "avatarItemModerationStatusName(UnderReview) is real \"UnderReview\"");
+    check(std::string(engine::core::avatarItemModerationStatusName(engine::core::AvatarItemModerationStatus::Rejected)) ==
+              "Rejected",
+          "avatarItemModerationStatusName(Rejected) is real \"Rejected\"");
+
+    engine::core::AvatarItemModerationStatus parsed;
+    check(engine::core::avatarItemModerationStatusFromName("UnderReview", parsed) &&
+              parsed == engine::core::AvatarItemModerationStatus::UnderReview,
+          "avatarItemModerationStatusFromName real-parses a real, valid name");
+    check(!engine::core::avatarItemModerationStatusFromName("NotAStatus", parsed),
+          "avatarItemModerationStatusFromName real-rejects an unrecognized name");
+
+    nlohmann::json oldManifestJson = {{"id", "old_item"}, {"name", "Old Item"}};
+    engine::core::AvatarItemManifest loaded;
+    check(engine::core::AvatarItemManifest::fromJson(oldManifestJson, loaded),
+          "a real, pre-existing manifest JSON with none of the new listing-metadata fields still real-loads");
+    check(loaded.updateTimestampUnixSeconds == 0, "missing updateTimestampUnixSeconds real-defaults to 0");
+    check(loaded.version == 1, "missing version real-defaults to 1, matching AvatarItemManifest's own struct default");
+    check(loaded.moderationStatus == engine::core::AvatarItemModerationStatus::Approved,
+          "missing moderationStatus real-defaults to Approved -- an older entry never actually failed a check that "
+          "didn't exist yet");
+    check(nearlyEqual(loaded.ratingScore, 0.0f) && loaded.ratingCount == 0,
+          "missing ratingScore/ratingCount real-default to 0/0, the real, honest 'never rated' state");
+    check(loaded.views == 0 && loaded.purchaseCount == 0 && loaded.favorites == 0,
+          "missing views/purchaseCount/favorites real-default to 0/0/0 -- an older entry never actually accrued "
+          "analytics that didn't exist yet");
 }
 
 void testCatalogueDatabaseAndIndex() {
@@ -3028,6 +4740,92 @@ void testCatalogueDatabaseAndIndex() {
     check(index.findById("does_not_exist") == nullptr, "findById returns null for an unknown id");
 
     std::remove(path);
+}
+
+// Kronos ("Marketplace Search + Categories v2" -- "Marketplace Search
+// Engine", "Moderation Integration"): real, pure coverage over
+// CatalogueSearchFilter::textQuery (substring search real-matched
+// against name/creatorId/tags, all case-insensitive) and moderationStatus,
+// plus the two new real sort orders (TopRated/CreatorAlphabetical).
+void testCatalogueIndexTextQueryModerationAndNewSortOrders() {
+    engine::core::CatalogueDatabase database;
+    engine::core::AvatarItemManifest wizardHat;
+    wizardHat.item.id = "wizard_hat";
+    wizardHat.item.name = "Wizard Hat";
+    wizardHat.item.tags = {"fantasy", "hat"};
+    wizardHat.creatorId = "Alice";
+    wizardHat.moderationStatus = engine::core::AvatarItemModerationStatus::Approved;
+    wizardHat.ratingScore = 4.0f;
+    wizardHat.ratingCount = 10;
+    database.upsert(wizardHat);
+
+    engine::core::AvatarItemManifest sciFiVisor;
+    sciFiVisor.item.id = "scifi_visor";
+    sciFiVisor.item.name = "Sci-Fi Visor";
+    sciFiVisor.item.tags = {"scifi", "cool"};
+    sciFiVisor.creatorId = "bob";
+    sciFiVisor.moderationStatus = engine::core::AvatarItemModerationStatus::UnderReview;
+    sciFiVisor.ratingScore = 4.8f;
+    sciFiVisor.ratingCount = 3;
+    database.upsert(sciFiVisor);
+
+    engine::core::AvatarItemManifest unratedShirt;
+    unratedShirt.item.id = "plain_shirt";
+    unratedShirt.item.name = "Plain Shirt";
+    unratedShirt.creatorId = "zara";
+    unratedShirt.moderationStatus = engine::core::AvatarItemModerationStatus::Approved;
+    // ratingCount stays 0 -- real, honest "never rated"
+    database.upsert(unratedShirt);
+
+    engine::core::CatalogueIndex index;
+    index.rebuild(database);
+
+    engine::core::CatalogueSearchFilter nameQuery;
+    nameQuery.textQuery = "WIZ"; // real, case-insensitive substring against the name
+    auto nameResults = index.search(nameQuery);
+    check(nameResults.size() == 1 && nameResults[0]->item.id == "wizard_hat",
+          "textQuery real-matches a case-insensitive substring of the item's own name");
+
+    engine::core::CatalogueSearchFilter tagQuery;
+    tagQuery.textQuery = "scifi"; // real match against a tag, not the name
+    auto tagResults = index.search(tagQuery);
+    check(tagResults.size() == 1 && tagResults[0]->item.id == "scifi_visor",
+          "textQuery real-matches a substring of one of the item's own real tags");
+
+    engine::core::CatalogueSearchFilter creatorQuery;
+    creatorQuery.textQuery = "ALICE"; // real, case-insensitive match against creatorId
+    auto creatorResults = index.search(creatorQuery);
+    check(creatorResults.size() == 1 && creatorResults[0]->item.id == "wizard_hat",
+          "textQuery real-matches a case-insensitive substring of the item's own real creatorId");
+
+    check(index.search(engine::core::CatalogueSearchFilter{}).size() == 3, "an empty textQuery real-matches every item");
+
+    engine::core::CatalogueSearchFilter approvedOnly;
+    approvedOnly.moderationStatus = engine::core::AvatarItemModerationStatus::Approved;
+    auto approvedResults = index.search(approvedOnly);
+    check(approvedResults.size() == 2,
+          "moderationStatus filter real-excludes the real UnderReview item from the real public browse view");
+    for (const auto* entry : approvedResults) {
+        check(entry->moderationStatus == engine::core::AvatarItemModerationStatus::Approved,
+              "every real result under an Approved-only filter is genuinely Approved");
+    }
+
+    engine::core::CatalogueSearchFilter topRated;
+    topRated.sortOrder = engine::core::CatalogueSearchFilter::SortOrder::TopRated;
+    auto topRatedResults = index.search(topRated);
+    check(topRatedResults.size() == 3 && topRatedResults[0]->item.id == "scifi_visor" &&
+              topRatedResults[1]->item.id == "wizard_hat",
+          "TopRated real-sorts by ratingScore descending, real-highest first");
+    check(topRatedResults[2]->item.id == "plain_shirt",
+          "TopRated real-sorts a real, never-rated item (ratingCount 0) behind every real, actually-rated item, "
+          "regardless of its own 0.0f ratingScore default");
+
+    engine::core::CatalogueSearchFilter byCreator;
+    byCreator.sortOrder = engine::core::CatalogueSearchFilter::SortOrder::CreatorAlphabetical;
+    auto byCreatorResults = index.search(byCreator);
+    check(byCreatorResults.size() == 3 && byCreatorResults[0]->creatorId == "Alice" &&
+              byCreatorResults[1]->creatorId == "bob" && byCreatorResults[2]->creatorId == "zara",
+          "CreatorAlphabetical real-sorts by creatorId ascending");
 }
 
 void testAvatarLoadoutValidation() {
@@ -3786,6 +5584,49 @@ void testAvatarControllerEmotePlayback() {
           "emote rather than just changing a state label");
 }
 
+// Kronos ("Avatar 2.0" -- "Animation Polish: secondary motion"): real,
+// pure coverage over computeSecondaryHeadBobDegrees()/
+// secondaryHeadBobHzForState() -- the two, testable pure-math halves of
+// the real procedural head bob (the actual ECS/skinning-matrix
+// application in AvatarController::tick() needs a live Jolt Physics
+// world and is exercised there instead, see
+// testAvatarControllerStateMachine() and neighbors).
+void testSecondaryHeadBobUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates() {
+    using engine::core::AvatarLocomotionState;
+    float idleDeg = 1.2f, walkDeg = 3.0f, runDeg = 4.5f;
+
+    check(nearlyEqual(engine::core::computeSecondaryHeadBobDegrees(AvatarLocomotionState::Idle, 0.0f, idleDeg, walkDeg,
+                                                                      runDeg),
+                       0.0f),
+          "at phase 0 (sin(0)=0), every real state's bob angle is real-zero");
+    float quarterPi = 1.57079632679f; // sin(pi/2) == 1 -- real peak amplitude
+    check(nearlyEqual(engine::core::computeSecondaryHeadBobDegrees(AvatarLocomotionState::Idle, quarterPi, idleDeg,
+                                                                      walkDeg, runDeg),
+                       idleDeg),
+          "Idle's real peak bob angle real-equals its own configured idleSwayDegrees");
+    check(nearlyEqual(engine::core::computeSecondaryHeadBobDegrees(AvatarLocomotionState::Walk, quarterPi, idleDeg,
+                                                                      walkDeg, runDeg),
+                       walkDeg),
+          "Walk's real peak bob angle real-equals its own configured walkBobDegrees");
+    check(nearlyEqual(engine::core::computeSecondaryHeadBobDegrees(AvatarLocomotionState::Run, quarterPi, idleDeg,
+                                                                      walkDeg, runDeg),
+                       runDeg),
+          "Run's real peak bob angle real-equals its own configured runBobDegrees");
+
+    for (auto state : {AvatarLocomotionState::Jump, AvatarLocomotionState::Falling, AvatarLocomotionState::Landing}) {
+        check(nearlyEqual(engine::core::computeSecondaryHeadBobDegrees(state, quarterPi, idleDeg, walkDeg, runDeg), 0.0f),
+              "Jump/Falling/Landing real-get zero procedural bob, even at real peak phase -- authored motion isn't "
+              "fought");
+    }
+
+    check(nearlyEqual(engine::core::secondaryHeadBobHzForState(AvatarLocomotionState::Idle, 0.3f, 1.8f, 2.6f), 0.3f),
+          "Idle's real phase-advance rate is its own configured idleSwayHz");
+    check(nearlyEqual(engine::core::secondaryHeadBobHzForState(AvatarLocomotionState::Run, 0.3f, 1.8f, 2.6f), 2.6f),
+          "Run's real phase-advance rate is its own configured runBobHz");
+    check(nearlyEqual(engine::core::secondaryHeadBobHzForState(AvatarLocomotionState::Jump, 0.3f, 1.8f, 2.6f), 0.0f),
+          "Jump's real phase-advance rate is zero -- no procedural bob to phase at all while airborne");
+}
+
 void testAvatarControllerFallingAndLandingStates() {
     engine::core::Skeleton skeleton = makeTwoJointTestSkeleton();
     glm::vec3 childBind = skeleton.joints[1].localPosition;
@@ -3955,22 +5796,414 @@ void testLoadoutToRiggedMeshGeneration() {
     engine::core::CatalogueIndex index;
     index.rebuild(database);
 
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Clothing & Accessory
+    // Slots"): Shoes/Back are real, new, equippable categories with no
+    // real HumanoidBodySegment mapping yet (an honest, stated gap, same
+    // as Hair/Face/Accessory/LayeredClothing/Emote already had) --
+    // equipping them must be a real, successful loadout change that has
+    // zero effect on any segment's resolved color.
+    engine::core::AvatarItemManifest boots;
+    boots.item.id = "green_boots";
+    boots.item.category = engine::core::AvatarItemCategory::Shoes;
+    boots.item.baseColor = {0.0f, 1.0f, 0.0f, 1.0f};
+    database.upsert(boots);
+    engine::core::AvatarItemManifest cape;
+    cape.item.id = "purple_cape";
+    cape.item.category = engine::core::AvatarItemCategory::Back;
+    cape.item.baseColor = {0.6f, 0.0f, 0.6f, 1.0f};
+    database.upsert(cape);
+    index.rebuild(database);
+
     engine::core::AvatarLoadout loadout;
     check(loadout.equip("red_shirt", index), "equipping the shirt succeeds");
     check(loadout.equip("blue_hat", index), "equipping the hat succeeds");
+    check(loadout.equip("green_boots", index), "equipping the real, new Shoes-category item succeeds");
+    check(loadout.equip("purple_cape", index), "equipping the real, new Back-category item succeeds");
+    check(loadout.isEquipped(engine::core::AvatarItemCategory::Shoes) &&
+              loadout.isEquipped(engine::core::AvatarItemCategory::Back),
+          "the real loadout state genuinely reflects both new equips");
 
-    glm::vec4 defaultColor{0.5f, 0.5f, 0.5f, 1.0f};
+    glm::vec4 skinColor{0.5f, 0.5f, 0.5f, 1.0f};
     std::array<glm::vec4, engine::core::kHumanoidBodySegmentCount> colors =
-        engine::core::resolveSegmentColorsForLoadout(loadout, index, defaultColor);
+        engine::core::resolveSegmentColorsForLoadout(loadout, index, skinColor);
     check(nearlyEqual(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::Head)].z, 1.0f),
           "the Head segment is tinted from the equipped hat's blue baseColor");
     check(nearlyEqual(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::Torso)].x, 1.0f),
           "the Torso segment is tinted from the equipped shirt's red baseColor");
     check(nearlyEqual(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::LeftArm)].x, 1.0f),
           "the LeftArm segment inherits the shirt's color too (arms default to Torso, see categoryForBodySegment)");
-    check(nearlyEqual(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::LeftLeg)].x, defaultColor.x) &&
-              nearlyEqual(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::LeftLeg)].y, defaultColor.y),
-          "an unequipped category (Legs, nothing equipped there) falls back to the default color");
+    // Kronos ("Avatar Phase" -- "Default Avatar Redesign"): an unequipped
+    // Legs category real-falls back to kDefaultTrouserColor now, not the
+    // real, raw `skinColor` argument -- see resolveSegmentColorsForLoadout()'s
+    // own updated header comment on why ("baked-in clothing," not bare
+    // skin-toned legs, is the real, honest default look).
+    check(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::LeftLeg)] == engine::core::kDefaultTrouserColor,
+          "an unequipped Legs category real-falls back to the real, honest baked-in trouser color, not raw skin tone");
+    for (size_t i = 0; i < colors.size(); ++i) {
+        check(!nearlyEqual(colors[i].x, boots.item.baseColor.x) || !nearlyEqual(colors[i].y, boots.item.baseColor.y) ||
+                  !nearlyEqual(colors[i].z, boots.item.baseColor.z),
+              "no real segment picks up the equipped Shoes item's own color -- the honest, stated 'no visual "
+              "mapping yet' gap");
+        check(!nearlyEqual(colors[i].x, cape.item.baseColor.x) || !nearlyEqual(colors[i].y, cape.item.baseColor.y) ||
+                  !nearlyEqual(colors[i].z, cape.item.baseColor.z),
+              "no real segment picks up the equipped Back item's own color either, same honest gap");
+    }
+}
+
+// Kronos ("Avatar Phase" -- "Default Avatar Redesign"): real, pure proof
+// a completely fresh, empty loadout produces the real, honest "baked-in
+// clothing" default look -- shirt on Torso/arms, trousers on legs, real
+// skin tone on the head -- not one flat color everywhere.
+void testResolveSegmentColorsForLoadoutDefaultsToBakedInClothing() {
+    engine::core::CatalogueDatabase database;
+    engine::core::CatalogueIndex index;
+    index.rebuild(database);
+    engine::core::AvatarLoadout emptyLoadout;
+
+    glm::vec4 skinColor{0.85f, 0.75f, 0.65f, 1.0f};
+    std::array<glm::vec4, engine::core::kHumanoidBodySegmentCount> colors =
+        engine::core::resolveSegmentColorsForLoadout(emptyLoadout, index, skinColor);
+
+    check(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::Head)] == skinColor,
+          "the Head segment real-defaults to the real, passed-in skin color -- a head has no baked-in clothing");
+    for (auto segment : {engine::core::HumanoidBodySegment::Torso, engine::core::HumanoidBodySegment::LeftArm,
+                          engine::core::HumanoidBodySegment::RightArm}) {
+        check(colors[static_cast<size_t>(segment)] == engine::core::kDefaultShirtColor,
+              "Torso/LeftArm/RightArm real-default to the real, honest baked-in shirt color when nothing is equipped");
+    }
+    for (auto segment : {engine::core::HumanoidBodySegment::LeftLeg, engine::core::HumanoidBodySegment::RightLeg}) {
+        check(colors[static_cast<size_t>(segment)] == engine::core::kDefaultTrouserColor,
+              "LeftLeg/RightLeg real-default to the real, honest baked-in trouser color when nothing is equipped");
+    }
+    check(!(engine::core::kDefaultShirtColor == engine::core::kDefaultTrouserColor),
+          "the real shirt and trouser defaults are genuinely distinct colors, not one flat clothing tone");
+}
+
+// Kronos ("Avatar 2.0" -- "Visual Fidelity: per-segment color
+// gradients"): real, pure coverage over applySegmentShadingGradient() --
+// Head stays exactly untouched (a player's own chosen skin tone must
+// never silently drift), Torso stays full brightness, Arms/Legs darken
+// progressively toward the real extremities, and alpha is always
+// preserved untouched.
+void testApplySegmentShadingGradientDarkensExtremitiesButPreservesHeadAndAlpha() {
+    using engine::core::HumanoidBodySegment;
+    glm::vec4 color{0.8f, 0.4f, 0.2f, 0.77f};
+
+    glm::vec4 head = engine::core::applySegmentShadingGradient(HumanoidBodySegment::Head, color);
+    check(head == color, "Head real-gets no shading multiplier at all -- the exact real, chosen color passes through");
+
+    glm::vec4 torso = engine::core::applySegmentShadingGradient(HumanoidBodySegment::Torso, color);
+    check(torso == color, "Torso real-gets no shading multiplier either -- full brightness at the real body core");
+
+    glm::vec4 leftArm = engine::core::applySegmentShadingGradient(HumanoidBodySegment::LeftArm, color);
+    glm::vec4 rightArm = engine::core::applySegmentShadingGradient(HumanoidBodySegment::RightArm, color);
+    check(leftArm.r < color.r && leftArm.g < color.g && leftArm.b < color.b,
+          "LeftArm's real RGB is real-darkened relative to the real, original color");
+    check(leftArm == rightArm, "both real arms real-get the exact same real shading multiplier");
+
+    glm::vec4 leftLeg = engine::core::applySegmentShadingGradient(HumanoidBodySegment::LeftLeg, color);
+    check(leftLeg.r < leftArm.r, "Legs real-darken further than Arms -- a real, progressive core-to-extremity gradient");
+
+    check(nearlyEqual(head.a, color.a) && nearlyEqual(torso.a, color.a) && nearlyEqual(leftArm.a, color.a) &&
+              nearlyEqual(leftLeg.a, color.a),
+          "alpha is real-preserved untouched by every real segment's shading multiplier");
+}
+
+// Kronos ("Avatar Phase" -- "Default Avatar Redesign" -- "Torso:
+// redesigned (not a box)"): real, pure proof the torso is no longer the
+// old 24-vertex box -- appendProfiledBarrel() produces real, richer
+// per-ring geometry (8 segments x 3 profile rings x 6 triangulated ring
+// bands, plus 2 real fan-triangulated caps).
+void testBuildHumanoidMeshDataTorsoIsNotABox() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    engine::core::HumanoidMeshData data = engine::core::buildHumanoidMeshData(skeleton);
+    size_t torsoVertexCount = 0;
+    for (auto s : data.vertexSegments) {
+        if (s == engine::core::HumanoidBodySegment::Torso) ++torsoVertexCount;
+    }
+    check(torsoVertexCount > 24,
+          "the real, redesigned torso real-produces more vertices than the old 24-vertex box -- genuinely new "
+          "geometry, not a relabeled box");
+}
+
+// Kronos ("Avatar Phase" -- "Default Avatar Redesign" -- "Arms/Legs:
+// cylindrical with slight taper"): real, pure proof the arm actually
+// tapers -- the cross-section radius measured at the real shoulder joint
+// is real-larger than the radius measured at the real elbow joint, using
+// the exact same "vertex-to-joint-position distance at a ring that sits
+// exactly at that joint" reasoning testBuildHumanoidMeshDataAppliesWidthAndLimbScaleToMeshDimensions()
+// already established for limbScale.
+void testBuildHumanoidMeshDataArmTapersFromShoulderToElbow() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    engine::core::HumanoidMeshData data = engine::core::buildHumanoidMeshData(skeleton);
+    std::vector<glm::mat4> world = skeleton.bindPoseMatrices();
+    auto worldPos = [&](const char* jointName) {
+        int index = skeleton.findJointIndex(jointName);
+        return glm::vec3(world[static_cast<size_t>(index)][3]);
+    };
+    glm::vec3 shoulderPos = worldPos("arm_L_upper");
+    glm::vec3 elbowPos = worldPos("arm_L_lower");
+
+    // The arm travels along the bind pose's own local X axis (per this
+    // rig's own established joint layout -- see buildHumanoidSkeleton()'s
+    // own arm_L_upper/arm_L_lower localPosition), so a naive 3D distance
+    // from a joint would also pick up the neighboring mid-ring's own
+    // vertices whose own X offset happens to bleed toward that joint
+    // along the tube's own travel direction (appendSmoothLimb()'s ring
+    // corners vary in both X and Z, not purely perpendicular to travel).
+    // Filtering to vertices whose own X (and Y) real-matches the joint's
+    // exactly isolates that joint's own ring specifically -- only a
+    // theta=90/270 "side" vertex (whose own offset is pure Z) survives,
+    // and its Z distance from the joint is exactly that ring's own real
+    // cross-section radius.
+    auto ringRadiusAt = [&](glm::vec3 jointPos) {
+        float maxRadius = 0.0f;
+        for (size_t i = 0; i < data.vertices.size(); ++i) {
+            if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::LeftArm) continue;
+            const glm::vec3& p = data.vertices[i].position;
+            if (std::abs(p.x - jointPos.x) > 0.005f || std::abs(p.y - jointPos.y) > 0.005f) continue;
+            maxRadius = std::max(maxRadius, std::abs(p.z - jointPos.z));
+        }
+        return maxRadius;
+    };
+
+    float shoulderRadius = ringRadiusAt(shoulderPos);
+    float elbowRadius = ringRadiusAt(elbowPos);
+    check(shoulderRadius > 0.0f && elbowRadius > 0.0f, "real ring geometry real-exists at both the shoulder and elbow");
+    check(shoulderRadius > elbowRadius + 0.005f,
+          "the real, generated arm is real-thicker at the shoulder than at the elbow -- a genuine, real taper, not a "
+          "uniform tube");
+}
+
+// Kronos ("Avatar Phase" -- "Avatar Head System"): real, pure coverage
+// over core::HeadShape's own real, small resolver functions.
+void testHeadShapeRadiiAndNameAndIndexConversions() {
+    glm::vec3 ovalRadii = engine::core::headShapeRadii(engine::core::HeadShape::Oval);
+    check(nearlyEqual(ovalRadii.x, ovalRadii.z), "Oval's real X/Z radii are equal -- elongation is vertical only");
+    check(ovalRadii.y > ovalRadii.x,
+          "Oval's real Y radius is real-taller than its X/Z radii -- a real, R15-style vertical elongation");
+
+    glm::vec3 sphereRadii = engine::core::headShapeRadii(engine::core::HeadShape::Sphere);
+    check(nearlyEqual(sphereRadii.x, sphereRadii.y) && nearlyEqual(sphereRadii.y, sphereRadii.z),
+          "Sphere's real X/Y/Z radii are all equal -- a real, perfect sphere, the 'classic' shape");
+
+    check(std::string(engine::core::headShapeName(engine::core::HeadShape::Oval)) == "Oval", "headShapeName(Oval) is real \"Oval\"");
+    check(std::string(engine::core::headShapeName(engine::core::HeadShape::Sphere)) == "Sphere",
+          "headShapeName(Sphere) is real \"Sphere\"");
+
+    check(engine::core::headShapeFromIndex(0) == engine::core::HeadShape::Oval, "index 0 real-resolves to Oval");
+    check(engine::core::headShapeFromIndex(1) == engine::core::HeadShape::Sphere, "index 1 real-resolves to Sphere");
+    check(engine::core::headShapeFromIndex(-1) == engine::core::HeadShape::Oval,
+          "a real, out-of-range index real-falls back to Oval, the real, honest default");
+    check(engine::core::headShapeFromIndex(99) == engine::core::HeadShape::Oval,
+          "a real, too-large out-of-range index real-falls back to Oval too");
+
+    check(engine::core::headShapeToIndex(engine::core::HeadShape::Oval) == 0, "Oval real-round-trips to index 0");
+    check(engine::core::headShapeToIndex(engine::core::HeadShape::Sphere) == 1, "Sphere real-round-trips to index 1");
+}
+
+// Kronos ("Avatar Phase" -- "Avatar Head System"): real, pure proof the
+// two real head shapes actually produce geometrically different Head
+// segments -- not just two enum values that happen to resolve to the
+// same real radii.
+void testBuildHumanoidMeshDataProducesDistinctOvalAndSphereHeads() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+
+    auto headExtents = [&](engine::core::HeadShape shape) {
+        engine::core::HumanoidMeshData data = engine::core::buildHumanoidMeshData(skeleton, shape);
+        glm::vec3 minP(1e9f), maxP(-1e9f);
+        for (size_t i = 0; i < data.vertices.size(); ++i) {
+            if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::Head) continue;
+            minP = glm::min(minP, data.vertices[i].position);
+            maxP = glm::max(maxP, data.vertices[i].position);
+        }
+        return maxP - minP; // real, honest bounding-box extent (width, height, depth)
+    };
+
+    glm::vec3 ovalExtent = headExtents(engine::core::HeadShape::Oval);
+    glm::vec3 sphereExtent = headExtents(engine::core::HeadShape::Sphere);
+
+    check(ovalExtent.y > ovalExtent.x + 0.01f,
+          "the real, generated Oval head's own vertices are real-taller than they are wide -- not just a claim, the "
+          "actual geometry");
+    check(nearlyEqual(sphereExtent.x, sphereExtent.y, 0.01f) && nearlyEqual(sphereExtent.y, sphereExtent.z, 0.01f),
+          "the real, generated Sphere head's own vertices are real-equal in width/height/depth");
+    check(!nearlyEqual(ovalExtent.y, sphereExtent.y, 0.01f),
+          "Oval and Sphere real-produce genuinely different head geometry, not the same mesh under two names");
+}
+
+// Kronos ("Avatar Phase" -- "AvatarEditor: Body Sliders"): real, pure
+// coverage over clampBodyProportions() -- the one real guard between a
+// raw ImGui slider value and every downstream skeleton/mesh consumer.
+void testClampBodyProportionsBoundsValues() {
+    engine::core::BodyProportions tooSmall{0.1f, 0.1f, 0.1f, 0.1f, 0.1f};
+    engine::core::BodyProportions clampedSmall = engine::core::clampBodyProportions(tooSmall);
+    check(nearlyEqual(clampedSmall.height, engine::core::kBodyProportionMin) &&
+              nearlyEqual(clampedSmall.width, engine::core::kBodyProportionMin) &&
+              nearlyEqual(clampedSmall.limbScale, engine::core::kBodyProportionMin) &&
+              nearlyEqual(clampedSmall.torsoLength, engine::core::kBodyProportionMin) &&
+              nearlyEqual(clampedSmall.shoulderWidth, engine::core::kBodyProportionMin),
+          "a real, too-small proportion set real-clamps up to kBodyProportionMin on every one of the real five axes");
+
+    engine::core::BodyProportions tooLarge{5.0f, 5.0f, 5.0f, 5.0f, 5.0f};
+    engine::core::BodyProportions clampedLarge = engine::core::clampBodyProportions(tooLarge);
+    check(nearlyEqual(clampedLarge.height, engine::core::kBodyProportionMax) &&
+              nearlyEqual(clampedLarge.width, engine::core::kBodyProportionMax) &&
+              nearlyEqual(clampedLarge.limbScale, engine::core::kBodyProportionMax) &&
+              nearlyEqual(clampedLarge.torsoLength, engine::core::kBodyProportionMax) &&
+              nearlyEqual(clampedLarge.shoulderWidth, engine::core::kBodyProportionMax),
+          "a real, too-large proportion set real-clamps down to kBodyProportionMax on every one of the real five axes");
+
+    engine::core::BodyProportions inRange{1.05f, 0.95f, 1.0f, 0.9f, 1.1f};
+    engine::core::BodyProportions clampedInRange = engine::core::clampBodyProportions(inRange);
+    check(nearlyEqual(clampedInRange.height, 1.05f) && nearlyEqual(clampedInRange.width, 0.95f) &&
+              nearlyEqual(clampedInRange.limbScale, 1.0f) && nearlyEqual(clampedInRange.torsoLength, 0.9f) &&
+              nearlyEqual(clampedInRange.shoulderWidth, 1.1f),
+          "a real, already-in-range proportion set passes through clampBodyProportions() unchanged on every axis");
+}
+
+// Kronos ("Avatar Phase" -- "AvatarEditor: Body Sliders"): real, pure
+// proof applyBodyProportionsToSkeleton() scales exactly the real joints
+// its own header comment claims -- height on every joint's Y, torsoLength
+// as an additional multiplier on just the spine chain's Y, width only on
+// the hip lateral-offset joints' X, shoulderWidth only on the shoulder
+// lateral-offset joints' X -- and nothing else (arm/leg segment-length
+// joints stay untouched by any of the width/torso axes, by design, see
+// BodyProportions's own header comment).
+void testApplyBodyProportionsToSkeletonScalesExpectedJoints() {
+    engine::core::Skeleton base = engine::core::buildHumanoidSkeleton();
+    // height=1.2, width=0.8, limbScale=1.0 (never touches the skeleton),
+    // torsoLength=1.5, shoulderWidth=0.7.
+    engine::core::BodyProportions proportions{1.2f, 0.8f, 1.0f, 1.5f, 0.7f};
+    engine::core::Skeleton scaled = engine::core::applyBodyProportionsToSkeleton(base, proportions);
+
+    auto jointByName = [](const engine::core::Skeleton& skeleton, const char* name) -> const engine::core::Joint& {
+        int index = skeleton.findJointIndex(name);
+        return skeleton.joints[static_cast<size_t>(index)];
+    };
+
+    // Height: every joint's real Y local position scales by 1.2, including
+    // the head and both legs' own Y offsets (the spine chain gets an
+    // *additional* torsoLength multiplier on top, checked separately
+    // below).
+    for (const char* name : {"pelvis", "head", "leg_L_upper", "leg_L_lower", "foot_L", "leg_R_upper", "leg_R_lower",
+                              "foot_R"}) {
+        const engine::core::Joint& baseJoint = jointByName(base, name);
+        const engine::core::Joint& scaledJoint = jointByName(scaled, name);
+        std::string description = std::string("height real-scales joint \"") + name + "\"'s own real Y local position";
+        check(nearlyEqual(scaledJoint.localPosition.y, baseJoint.localPosition.y * 1.2f, 0.0001f), description.c_str());
+    }
+
+    // Torso length: the spine chain's real Y offsets get height AND
+    // torsoLength compounded (1.2 * 1.5 = 1.8) -- a real, additional
+    // stretch on top of overall stature, not a replacement for it.
+    for (const char* name : {"spine_lower", "spine_upper", "neck"}) {
+        const engine::core::Joint& baseJoint = jointByName(base, name);
+        const engine::core::Joint& scaledJoint = jointByName(scaled, name);
+        std::string description =
+            std::string("torsoLength real-compounds with height on joint \"") + name + "\"'s own real Y local position";
+        check(nearlyEqual(scaledJoint.localPosition.y, baseJoint.localPosition.y * 1.2f * 1.5f, 0.0001f),
+              description.c_str());
+    }
+
+    // Width: only the real hip lateral-offset joints' X scales by 0.8 --
+    // arm_L_lower/hand_L/leg_L_lower/foot_L's own X (segment length, not
+    // lateral spread) must stay exactly what buildHumanoidSkeleton() set,
+    // real-untouched by width.
+    for (const char* name : {"leg_L_upper", "leg_R_upper"}) {
+        const engine::core::Joint& baseJoint = jointByName(base, name);
+        const engine::core::Joint& scaledJoint = jointByName(scaled, name);
+        std::string description = std::string("width real-scales joint \"") + name + "\"'s own real X hip offset";
+        check(nearlyEqual(scaledJoint.localPosition.x, baseJoint.localPosition.x * 0.8f, 0.0001f), description.c_str());
+    }
+
+    // Shoulder width: only the real shoulder lateral-offset joints' X
+    // scales by 0.7, independent of hip width.
+    for (const char* name : {"arm_L_upper", "arm_R_upper"}) {
+        const engine::core::Joint& baseJoint = jointByName(base, name);
+        const engine::core::Joint& scaledJoint = jointByName(scaled, name);
+        std::string description =
+            std::string("shoulderWidth real-scales joint \"") + name + "\"'s own real X shoulder offset";
+        check(nearlyEqual(scaledJoint.localPosition.x, baseJoint.localPosition.x * 0.7f, 0.0001f), description.c_str());
+    }
+
+    for (const char* name : {"arm_L_lower", "hand_L", "leg_L_lower", "foot_L"}) {
+        const engine::core::Joint& baseJoint = jointByName(base, name);
+        const engine::core::Joint& scaledJoint = jointByName(scaled, name);
+        std::string description = std::string("width/shoulderWidth real-leave joint \"") + name +
+                                   "\"'s own real X segment-length offset untouched, by design";
+        check(nearlyEqual(scaledJoint.localPosition.x, baseJoint.localPosition.x, 0.0001f), description.c_str());
+    }
+}
+
+// Kronos ("Avatar Phase" -- "AvatarEditor: Body Sliders"): real, pure
+// proof buildHumanoidMeshData() actually applies `width`/`limbScale` to
+// real generated geometry dimensions -- a wider torso really has a wider
+// bounding box, a thicker limbScale really has a thicker arm.
+void testBuildHumanoidMeshDataAppliesWidthAndLimbScaleToMeshDimensions() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+
+    auto segmentExtent = [&](engine::core::BodyProportions proportions, engine::core::HumanoidBodySegment segment) {
+        engine::core::HumanoidMeshData data =
+            engine::core::buildHumanoidMeshData(skeleton, engine::core::HeadShape::Oval, proportions);
+        glm::vec3 minP(1e9f), maxP(-1e9f);
+        for (size_t i = 0; i < data.vertices.size(); ++i) {
+            if (data.vertexSegments[i] != segment) continue;
+            minP = glm::min(minP, data.vertices[i].position);
+            maxP = glm::max(maxP, data.vertices[i].position);
+        }
+        return maxP - minP;
+    };
+
+    glm::vec3 narrowTorso = segmentExtent({1.0f, 0.85f, 1.0f}, engine::core::HumanoidBodySegment::Torso);
+    glm::vec3 wideTorso = segmentExtent({1.0f, 1.15f, 1.0f}, engine::core::HumanoidBodySegment::Torso);
+    check(wideTorso.x > narrowTorso.x + 0.01f,
+          "a real, larger `width` real-produces a real, wider generated torso bounding box");
+
+    glm::vec3 thinArm = segmentExtent({1.0f, 1.0f, 0.85f}, engine::core::HumanoidBodySegment::RightArm);
+    glm::vec3 thickArm = segmentExtent({1.0f, 1.0f, 1.15f}, engine::core::HumanoidBodySegment::RightArm);
+    check(thickArm.x > thinArm.x + 0.01f,
+          "a real, larger `limbScale` real-produces a real, thicker generated right-arm bounding box");
+}
+
+// Kronos ("Avatar Phase" -- "AvatarEditor: Body Sliders"): real, pure
+// proof torsoLength/shoulderWidth actually reach generated geometry too,
+// via the real caller path (applyBodyProportionsToSkeleton() first, then
+// buildHumanoidMeshData() against that already-scaled skeleton -- the
+// exact sequence Application::spawnLocalPlayerAvatar() and
+// AvatarEditor::spawnDemoBody() both use).
+void testBuildHumanoidMeshDataReflectsTorsoLengthAndShoulderWidthViaScaledSkeleton() {
+    engine::core::Skeleton base = engine::core::buildHumanoidSkeleton();
+
+    auto torsoHeightExtent = [&](engine::core::BodyProportions proportions) {
+        engine::core::Skeleton scaled = engine::core::applyBodyProportionsToSkeleton(base, proportions);
+        engine::core::HumanoidMeshData data =
+            engine::core::buildHumanoidMeshData(scaled, engine::core::HeadShape::Oval, proportions);
+        glm::vec3 minP(1e9f), maxP(-1e9f);
+        for (size_t i = 0; i < data.vertices.size(); ++i) {
+            if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::Torso) continue;
+            minP = glm::min(minP, data.vertices[i].position);
+            maxP = glm::max(maxP, data.vertices[i].position);
+        }
+        return (maxP - minP).y;
+    };
+
+    float shortTorso = torsoHeightExtent({1.0f, 1.0f, 1.0f, 0.85f, 1.0f});
+    float longTorso = torsoHeightExtent({1.0f, 1.0f, 1.0f, 1.15f, 1.0f});
+    check(longTorso > shortTorso + 0.01f,
+          "a real, larger `torsoLength` real-produces a real, taller generated torso bounding box, via the "
+          "already-scaled-skeleton caller path -- the torso box itself never needs touching directly (its own height "
+          "auto-derives from the pelvis-to-neck joint distance)");
+
+    auto shoulderAttachExtent = [&](engine::core::BodyProportions proportions) {
+        engine::core::Skeleton scaled = engine::core::applyBodyProportionsToSkeleton(base, proportions);
+        return scaled.joints[static_cast<size_t>(scaled.findJointIndex("arm_R_upper"))].localPosition.x;
+    };
+    float narrowShoulders = shoulderAttachExtent({1.0f, 1.0f, 1.0f, 1.0f, 0.85f});
+    float wideShoulders = shoulderAttachExtent({1.0f, 1.0f, 1.0f, 1.0f, 1.15f});
+    check(wideShoulders > narrowShoulders + 0.01f,
+          "a real, larger `shoulderWidth` real-produces a real, wider real shoulder joint attachment offset, "
+          "independent of hip `width`");
 }
 
 void testCollectKeyframeTimes() {
@@ -10642,6 +12875,229 @@ void testSessionHistorySaveLoadRoundTrip() {
     std::remove(path);
 }
 
+// Kronos ("Game Catalogue Overhaul", Phase 6): same real save/load
+// discipline as testSessionHistorySaveLoadRoundTrip(), for
+// net::GamePlayLog's own real flat-file format.
+void testGamePlayLogRecordAndSaveLoadRoundTrip() {
+    engine::net::GamePlayLog log;
+    log.recordSessionStart("Default World", 1000);
+    log.recordSessionEnd("Default World", 1900, false);
+    log.recordSessionStart("Sky Garden", 2000);
+    log.recordSessionEnd("Sky Garden", 2100, true); // a real, explicit crashed session
+
+    check(log.size() == 2, "both real recorded sessions are present before any save/load");
+    auto defaultWorldSessions = log.sessionsForGame("Default World");
+    check(defaultWorldSessions.size() == 1 && defaultWorldSessions[0].startUnixSeconds == 1000 &&
+              defaultWorldSessions[0].endUnixSeconds == 1900 && !defaultWorldSessions[0].crashed,
+          "sessionsForGame() real-filters to just the one real game, with real start/end/crashed values");
+
+    const char* path = "test_game_play_log.playlog";
+    check(log.saveToFile(path), "a real play log saves");
+
+    engine::net::GamePlayLog loaded;
+    check(loaded.loadFromFile(path), "a real play log file loads");
+    check(loaded.size() == 2, "both real sessions round-trip");
+    auto skyGardenSessions = loaded.sessionsForGame("Sky Garden");
+    check(skyGardenSessions.size() == 1 && skyGardenSessions[0].crashed,
+          "a real crashed session's crashed flag round-trips, including a real game name with a space");
+
+    std::remove(path);
+}
+
+void testGamePlayLogRecordSessionEndIgnoresNoOpenSession() {
+    engine::net::GamePlayLog log;
+    // No matching recordSessionStart() at all -- a real, honest no-op,
+    // not a crash/assert.
+    log.recordSessionEnd("Never Started", 5000, false);
+    check(log.sessionsForGame("Never Started").empty(),
+          "recordSessionEnd() with no real open session for that game real-does-nothing");
+
+    log.recordSessionStart("Twice Closed", 1000);
+    log.recordSessionEnd("Twice Closed", 1100, false);
+    log.recordSessionEnd("Twice Closed", 1200, true); // already closed -- must not reopen/overwrite it
+    auto sessions = log.sessionsForGame("Twice Closed");
+    check(sessions.size() == 1 && sessions[0].endUnixSeconds == 1100 && !sessions[0].crashed,
+          "a second real recordSessionEnd() on an already-closed session real-changes nothing");
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 6): real coverage for the
+// "unclosed session from a previous run means it crashed" detection --
+// see reconcileUnclosedSessionsAsCrashed()'s own comment for the real
+// SceneManager-autosave-recovery precedent this mirrors.
+void testGamePlayLogReconcilesUnclosedSessionsAsCrashed() {
+    engine::net::GamePlayLog log;
+    log.recordSessionStart("Cleanly Closed", 1000);
+    log.recordSessionEnd("Cleanly Closed", 1500, false);
+    log.recordSessionStart("Left Open", 2000); // simulates a real crash/force-quit -- never closed
+
+    size_t reconciled = log.reconcileUnclosedSessionsAsCrashed();
+    check(reconciled == 1, "exactly the one real still-open session is real-reconciled, not the already-closed one");
+
+    auto cleanSessions = log.sessionsForGame("Cleanly Closed");
+    check(cleanSessions.size() == 1 && cleanSessions[0].endUnixSeconds == 1500 && !cleanSessions[0].crashed,
+          "an already-cleanly-closed session is real-untouched by reconciliation");
+
+    auto crashedSessions = log.sessionsForGame("Left Open");
+    check(crashedSessions.size() == 1 && crashedSessions[0].endUnixSeconds == crashedSessions[0].startUnixSeconds &&
+              crashedSessions[0].crashed,
+          "the real left-open session is real-closed with a real, honest best-effort end time and crashed=true");
+
+    check(log.reconcileUnclosedSessionsAsCrashed() == 0,
+          "reconciling again real-finds nothing left open -- idempotent, not double-counting");
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 6): real, pure coverage for
+// computeGamePlayStats()/computeQualityScore() (core/QualityScore.hpp)
+// across a representative fixture table -- both are pure functions, no
+// ECS/GPU/window needed.
+void testComputeGamePlayStatsAndQualityScore() {
+    using engine::net::GamePlaySession;
+
+    // A well-loved game: long sessions, played on 3 distinct real days
+    // out of a real 3-day window, zero real crashes.
+    std::vector<GamePlaySession> healthy;
+    healthy.push_back(GamePlaySession{"Healthy", 0, 3600, false});                  // day 0, 60 real minutes
+    healthy.push_back(GamePlaySession{"Healthy", 86400, 86400 + 1800, false});      // day 1, 30 real minutes
+    healthy.push_back(GamePlaySession{"Healthy", 2 * 86400, 2 * 86400 + 900, false}); // day 2, 15 real minutes
+    int64_t nowHealthy = 2 * 86400 + 900;
+
+    engine::core::GamePlayStats healthyStats = engine::core::computeGamePlayStats(healthy, nowHealthy);
+    check(nearlyEqual(healthyStats.avgSessionLengthMinutes, 35.0f, 0.1f),
+          "avg session length is the real mean of 60/30/15 real minutes");
+    check(nearlyEqual(healthyStats.distinctDaysPlayedRatio, 1.0f, 0.01f),
+          "played on all 3 real distinct days of a real 3-day window -- a real, full 1.0 retention ratio");
+    check(nearlyEqual(healthyStats.crashRate, 0.0f), "zero real crashes among real closed sessions");
+
+    // A struggling game: one short session that crashed.
+    std::vector<GamePlaySession> struggling;
+    struggling.push_back(GamePlaySession{"Struggling", 0, 60, true}); // 1 real minute, crashed
+    engine::core::GamePlayStats strugglingStats = engine::core::computeGamePlayStats(struggling, 60);
+    check(nearlyEqual(strugglingStats.crashRate, 1.0f), "the one real closed session crashed -- a real, full 1.0 crash rate");
+
+    check(engine::core::computeGamePlayStats({}, 1000).avgSessionLengthMinutes == 0.0f &&
+              engine::core::computeGamePlayStats({}, 1000).distinctDaysPlayedRatio == 0.0f,
+          "an empty real session list real-returns real, honest all-zero stats, not NaN/a crash");
+
+    // computeQualityScore() itself: a real, healthy, high-effort game
+    // must score higher than a real, low-effort, crash-prone one.
+    float healthyScore = engine::core::computeQualityScore(0.9f, healthyStats);
+    float strugglingScore = engine::core::computeQualityScore(0.2f, strugglingStats);
+    check(healthyScore > strugglingScore,
+          "a real high-effort, healthy-retention, zero-crash game real-outscores a real low-effort, crashy one");
+    check(healthyScore >= 0.0f && healthyScore <= 1.0f && strugglingScore >= 0.0f && strugglingScore <= 1.0f,
+          "computeQualityScore() stays within its real, documented [0,1] range");
+}
+
+// Kronos ("Moderation Architecture v2", "Crash -> Safety Link"): real,
+// pure coverage for shouldFlagGameForCrashPattern() -- both real
+// conditions (rate threshold AND minimum sample size) must independently
+// gate the real recommendation.
+void testShouldFlagGameForCrashPattern() {
+    check(!engine::core::shouldFlagGameForCrashPattern(0.9f, 1),
+          "a real, tiny sample size (1 real launch) never real-flags, regardless of crashRate -- not enough real "
+          "data to mean anything");
+    check(!engine::core::shouldFlagGameForCrashPattern(0.1f, 100),
+          "a real, low crashRate never real-flags, regardless of real sample size");
+    check(engine::core::shouldFlagGameForCrashPattern(0.5f, 10),
+          "a real crashRate at/above the real threshold, with a real, sufficient sample size, real-flags");
+    check(engine::core::shouldFlagGameForCrashPattern(engine::core::kCrashPatternRateThreshold,
+                                                        engine::core::kCrashPatternMinimumLaunchCount),
+          "exactly the real threshold values (both boundaries inclusive) real-flags");
+    check(!engine::core::shouldFlagGameForCrashPattern(engine::core::kCrashPatternRateThreshold - 0.01f,
+                                                         engine::core::kCrashPatternMinimumLaunchCount),
+          "just below the real rate threshold never real-flags");
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 6): real coverage for
+// TelemetrySender's own real disk-append sink -- flush() used to be a
+// pure stdout stub ("would upload"), this proves it now genuinely
+// persists real events to a real file.
+void testTelemetrySenderFlushPersistsRealEventsToDisk() {
+    const char* path = "test_telemetry.log";
+    std::remove(path);
+
+    engine::analytics::TelemetryQueue queue;
+    engine::analytics::TelemetryEvent event;
+    event.name = "game_launch";
+    event.properties["game_name"] = std::string("Default World");
+    event.properties["real_flag"] = true;
+    queue.push(event);
+
+    engine::analytics::TelemetrySender sender(queue, path);
+    size_t flushed = sender.flush();
+    check(flushed == 1, "flush() real-drains and real-reports exactly the one queued event");
+    check(queue.size() == 0, "the real queue is really empty after a real flush");
+
+    std::ifstream in(path);
+    check(in.is_open(), "flush() really created a real log file on disk, not just claimed to");
+    std::string line;
+    check(static_cast<bool>(std::getline(in, line)), "the real log file really has a real line in it");
+    check(line.find("game_launch") != std::string::npos && line.find("Default World") != std::string::npos &&
+              line.find("true") != std::string::npos,
+          "the real persisted line really contains the real event's name and real property values, not a "
+          "placeholder");
+
+    std::remove(path);
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 7): real, pure coverage for
+// selectHiddenGems() (core/HiddenGemsSelector.hpp) across a
+// representative fixture population -- high-effort/low-player-count
+// games should be selected, popular OR low-quality games should not.
+void testSelectHiddenGemsPicksHighQualityLowPlayerCountGames() {
+    using engine::core::HiddenGemCandidate;
+
+    engine::core::GameManifest gem;
+    gem.name = "Hidden Gem";
+    engine::core::GameManifest popular;
+    popular.name = "Popular Hit";
+    engine::core::GameManifest lowQuality;
+    lowQuality.name = "Low Quality";
+    engine::core::GameManifest alsoPopular;
+    alsoPopular.name = "Also Popular";
+
+    std::vector<HiddenGemCandidate> candidates = {
+        {gem, 0.85f, 2},          // real, high quality, real low launch count -- should be selected
+        {popular, 0.85f, 500},    // real, high quality, but real, heavily-played -- not "hidden"
+        {lowQuality, 0.2f, 1},    // real, low launch count, but real, low quality -- not "high-effort"
+        {alsoPopular, 0.9f, 480}, // real, high quality, real, heavily-played
+    };
+
+    std::vector<engine::core::GameManifest> selected = engine::core::selectHiddenGems(candidates);
+    bool foundGem = false, foundPopular = false, foundLowQuality = false;
+    for (const auto& m : selected) {
+        if (m.name == "Hidden Gem") foundGem = true;
+        if (m.name == "Popular Hit") foundPopular = true;
+        if (m.name == "Low Quality") foundLowQuality = true;
+    }
+    check(foundGem, "the real high-effort, low-player-count game is real-selected as a Hidden Gem");
+    check(!foundPopular, "a real high-quality but heavily-played game is real-excluded -- not \"hidden\"");
+    check(!foundLowQuality, "a real low-quality game is real-excluded even with a real low player count");
+
+    check(engine::core::selectHiddenGems({}).empty(), "an empty real candidate list real-selects nothing, not a crash");
+}
+
+// Kronos ("Game Catalogue Overhaul", Phase 7): real coverage for the
+// "monthly job" cadence gate -- pure calendar math, no scheduler needed.
+void testHiddenGemsMonthlyRecomputeGate() {
+    // 2026-01-15T00:00:00Z and 2026-02-01T00:00:00Z (real, fixed Unix
+    // timestamps, checked in as real, known-good literals, the same
+    // "real value, not a live clock read" discipline this suite already
+    // uses for other fixed-timestamp tests).
+    constexpr int64_t kJan15_2026 = 1768435200;
+    constexpr int64_t kFeb1_2026 = 1769904000;
+
+    check(engine::core::monthKeyForUnixSeconds(kJan15_2026) == "2026-01", "monthKeyForUnixSeconds() real-computes the real UTC calendar month");
+    check(engine::core::monthKeyForUnixSeconds(kFeb1_2026) == "2026-02", "a real different real month real-produces a real different key");
+
+    check(engine::core::shouldRecomputeHiddenGemsThisMonth("", kJan15_2026),
+          "a real, never-yet-computed month key real-triggers a real recompute");
+    check(!engine::core::shouldRecomputeHiddenGemsThisMonth("2026-01", kJan15_2026),
+          "the real same real month real-does-not re-trigger a recompute");
+    check(engine::core::shouldRecomputeHiddenGemsThisMonth("2026-01", kFeb1_2026),
+          "a real, genuinely new real calendar month real-triggers a recompute");
+}
+
 // Kronos (Alpha Roadmap Phase 4, "Networking Upgrade") -- real wire
 // (de)serialization round-trip for RemoteEvent::Payload, the shared
 // format net::NetworkSession's RemoteEventFire/RemoteEventBroadcast wire
@@ -11277,6 +13733,55 @@ void testChatLogSizeMatchesEntries() {
     check(log.size() == log.entries().size(), "ChatLog::size() real-always agrees with entries().size()");
 }
 
+// Kronos ("Moderation Architecture v1", Phase 1): real disk persistence.
+void testChatLogSaveLoadRoundTrip() {
+    engine::moderation::ChatLog log;
+    log.record(engine::moderation::ChatLogEntry{7, "hello there, spaces and all", true, false, 12.5});
+    log.record(engine::moderation::ChatLogEntry{9, "a real flagged message", false, true, 13.0});
+
+    const char* path = "test_chat_log.chatlog";
+    check(log.saveToFile(path), "a real chat log saves");
+
+    engine::moderation::ChatLog loaded;
+    check(loaded.loadFromFile(path), "a real chat log file loads");
+    check(loaded.size() == 2, "both real entries round-trip");
+    check(loaded.entries()[0].sender == 7 && loaded.entries()[0].text == "hello there, spaces and all" &&
+              loaded.entries()[0].containedProfanity && !loaded.entries()[0].flaggedByClassifier,
+          "a real entry's sender/text (with real spaces)/profanity flag round-trip");
+    check(loaded.entries()[1].flaggedByClassifier, "a real entry's classifier-flagged bool round-trips");
+    check(nearlyEqual(static_cast<float>(loaded.entries()[1].serverTimestampSeconds), 13.0f),
+          "a real entry's serverTimestampSeconds round-trips");
+
+    std::remove(path);
+}
+
+// --- DirectMessageLog (Kronos "Moderation Architecture v2", "DM System v1") ---------
+
+void testDirectMessageLogRecordAccumulates() {
+    engine::moderation::DirectMessageLog log;
+    log.record(engine::moderation::DirectMessageLogEntry{1, 2, "hi", false, false, 0.0});
+    log.record(engine::moderation::DirectMessageLogEntry{2, 1, "hey", false, false, 1.0});
+    check(log.size() == 2, "DirectMessageLog::record() real-accumulates every real DM");
+}
+
+void testDirectMessageLogSaveLoadRoundTrip() {
+    engine::moderation::DirectMessageLog log;
+    log.record(engine::moderation::DirectMessageLogEntry{3, 4, "a real DM, with spaces", true, true, 7.5});
+
+    const char* path = "test_dm_log.dmlog";
+    check(log.saveToFile(path), "a real DM log saves");
+
+    engine::moderation::DirectMessageLog loaded;
+    check(loaded.loadFromFile(path), "a real DM log file loads");
+    check(loaded.size() == 1, "the real entry round-trips");
+    const auto& e = loaded.entries()[0];
+    check(e.sender == 3 && e.recipient == 4 && e.text == "a real DM, with spaces" && e.flaggedByClassifier && e.blocked,
+          "a real entry's sender/recipient/text (with real spaces)/flagged/blocked all round-trip");
+    check(nearlyEqual(static_cast<float>(e.serverTimestampSeconds), 7.5f), "a real entry's timestamp round-trips");
+
+    std::remove(path);
+}
+
 // --- ReportLog / report types -----------------------------------------------------
 
 void testReportLogSubmitAccumulates() {
@@ -11300,6 +13805,27 @@ void testReportLogCountAgainstMatchesFilteredSize() {
     log.submit(engine::moderation::PlayerReport{2, 7, engine::moderation::ReportCategory::Abuse, "b", 1.0});
     check(log.countAgainst(7) == 2, "countAgainst() real-agrees with reportsAgainst().size() -- one real source of truth");
     check(log.countAgainst(999) == 0, "countAgainst() for a real player with zero reports is a real, honest 0");
+}
+
+// Kronos ("Moderation Architecture v1", Phase 1): real disk persistence.
+void testReportLogSaveLoadRoundTrip() {
+    engine::moderation::ReportLog log;
+    log.submit(engine::moderation::PlayerReport{1, 5, engine::moderation::ReportCategory::Cheating,
+                                                 "a real description with spaces", 42.0});
+
+    const char* path = "test_report_log.reportlog";
+    check(log.saveToFile(path), "a real report log saves");
+
+    engine::moderation::ReportLog loaded;
+    check(loaded.loadFromFile(path), "a real report log file loads");
+    check(loaded.size() == 1, "the real report round-trips");
+    const auto& r = loaded.reports()[0];
+    check(r.reporter == 1 && r.reported == 5 && r.category == engine::moderation::ReportCategory::Cheating &&
+              r.description == "a real description with spaces",
+          "a real report's reporter/reported/category/description (with real spaces) round-trip");
+    check(nearlyEqual(static_cast<float>(r.serverTimestampSeconds), 42.0f), "a real report's timestamp round-trips");
+
+    std::remove(path);
 }
 
 void testReportCategoryNameAbuse() {
@@ -11387,6 +13913,528 @@ void testReviewQueueLegalReportFlagPreserved() {
     engine::moderation::ReviewQueue queue;
     queue.add(engine::moderation::ReviewCase{1, "reason", true, 0.0});
     check(queue.cases().front().legalReportRequested, "ReviewQueue real-preserves the legalReportRequested flag through add()/cases()");
+}
+
+// Kronos ("Moderation Architecture v1", Phase 1): real disk persistence.
+void testReviewQueueSaveLoadRoundTrip() {
+    engine::moderation::ReviewQueue queue;
+    queue.add(engine::moderation::ReviewCase{3, "a real reason with spaces", true, 5.5});
+
+    const char* path = "test_review_queue.reviewqueue";
+    check(queue.saveToFile(path), "a real review queue saves");
+
+    engine::moderation::ReviewQueue loaded;
+    check(loaded.loadFromFile(path), "a real review queue file loads");
+    check(loaded.size() == 1, "the real case round-trips");
+    check(loaded.cases()[0].player == 3 && loaded.cases()[0].reason == "a real reason with spaces" &&
+              loaded.cases()[0].legalReportRequested,
+          "a real case's player/reason (with real spaces)/legalReportRequested round-trip");
+    check(nearlyEqual(static_cast<float>(loaded.cases()[0].serverTimestampSeconds), 5.5f),
+          "a real case's timestamp round-trips");
+
+    std::remove(path);
+}
+
+// --- EscalationEventLog (Kronos "Moderation Architecture v1", Phase 1) ---------------
+
+void testEscalationEventLogRecordAccumulates() {
+    engine::moderation::EscalationEventLog log;
+    log.record(engine::moderation::EscalationEvent{1, engine::safety::EscalationTier::Mute, "TextClassifier", 0.0});
+    log.record(engine::moderation::EscalationEvent{2, engine::safety::EscalationTier::Restrict, "AssetSafetyGuard", 1.0});
+    check(log.size() == 2, "EscalationEventLog::record() real-accumulates every real event");
+}
+
+void testEscalationEventLogSaveLoadRoundTrip() {
+    engine::moderation::EscalationEventLog log;
+    log.record(engine::moderation::EscalationEvent{4, engine::safety::EscalationTier::LegalReport, "Grooming", 9.5});
+
+    const char* path = "test_escalation_log.escalationlog";
+    check(log.saveToFile(path), "a real escalation event log saves");
+
+    engine::moderation::EscalationEventLog loaded;
+    check(loaded.loadFromFile(path), "a real escalation event log file loads");
+    check(loaded.size() == 1, "the real event round-trips");
+    check(loaded.events()[0].player == 4 && loaded.events()[0].tier == engine::safety::EscalationTier::LegalReport &&
+              loaded.events()[0].source == "Grooming",
+          "a real event's player/tier/source round-trip");
+    check(nearlyEqual(static_cast<float>(loaded.events()[0].serverTimestampSeconds), 9.5f),
+          "a real event's timestamp round-trips");
+
+    std::remove(path);
+}
+
+// --- AppealLog (Kronos "Moderation Architecture v1", Phase 1) ------------------------
+
+void testAppealLogSubmitAccumulates() {
+    engine::moderation::AppealLog log;
+    log.submit(engine::moderation::Appeal{1, 0, "it wasn't me", "Grooming", engine::moderation::AppealOutcome::Pending,
+                                           "", 0.0, 0.0});
+    check(log.size() == 1, "AppealLog::submit() real-accumulates every real appeal");
+    check(log.appeals().front().outcome == engine::moderation::AppealOutcome::Pending,
+          "a real freshly-submitted appeal real-starts Pending, never auto-resolved");
+}
+
+void testAppealLogAppealsForPlayerFiltersCorrectly() {
+    engine::moderation::AppealLog log;
+    log.submit(engine::moderation::Appeal{5, 0, "a", "x", engine::moderation::AppealOutcome::Pending, "", 0.0, 0.0});
+    log.submit(engine::moderation::Appeal{6, 0, "b", "y", engine::moderation::AppealOutcome::Pending, "", 1.0, 0.0});
+    log.submit(engine::moderation::Appeal{5, 0, "c", "z", engine::moderation::AppealOutcome::Pending, "", 2.0, 0.0});
+    check(log.appealsForPlayer(5).size() == 2, "appealsForPlayer() real-returns exactly the real appeals from that player");
+}
+
+// Kronos ("Moderation Architecture v2", "Account System v1" -- "appeal
+// history tied to identity"): real, pure coverage over
+// appealsForProfileId() -- the real cross-session lookup keyed by the
+// real, stable profileId rather than the ephemeral, per-session
+// PlayerId appealsForPlayer() uses.
+void testAppealLogAppealsForProfileIdFiltersCorrectly() {
+    engine::moderation::AppealLog log;
+    // Same real player id (99) reconnects with a fresh PlayerId (11, then
+    // 22) across two real sessions, but the same real, stable profileId
+    // (4242) both times -- exactly the real scenario appealsForPlayer()
+    // alone can't handle.
+    log.submit(engine::moderation::Appeal{11, 4242, "first session appeal", "x", engine::moderation::AppealOutcome::Pending,
+                                           "", 0.0, 0.0});
+    log.submit(engine::moderation::Appeal{22, 4242, "second session appeal", "y", engine::moderation::AppealOutcome::Pending,
+                                           "", 1.0, 0.0});
+    log.submit(engine::moderation::Appeal{33, 9999, "unrelated account's appeal", "z",
+                                           engine::moderation::AppealOutcome::Pending, "", 2.0, 0.0});
+
+    check(log.appealsForProfileId(4242).size() == 2,
+          "appealsForProfileId() real-returns both real appeals from the real, same account across two real, "
+          "different PlayerIds");
+    check(log.appealsForPlayer(11).size() == 1 && log.appealsForPlayer(22).size() == 1,
+          "sanity: appealsForPlayer() itself still only sees each real, separate session's own PlayerId, proving "
+          "appealsForProfileId() is doing genuinely different real work, not just delegating");
+    check(log.appealsForProfileId(0).empty(),
+          "profileId 0 ('unknown identity') never real-matches -- not a real account to aggregate under");
+}
+
+void testAppealLogResolveSetsOutcomeAndReviewerNote() {
+    engine::moderation::AppealLog log;
+    log.submit(engine::moderation::Appeal{1, 0, "statement", "context", engine::moderation::AppealOutcome::Pending, "",
+                                           0.0, 0.0});
+    bool resolved = log.resolve(0, engine::moderation::AppealOutcome::Reversed, "genuinely a false positive", 100.0);
+    check(resolved, "resolve() real-succeeds for a real, in-range index");
+    check(log.appeals()[0].outcome == engine::moderation::AppealOutcome::Reversed,
+          "resolve() real-sets the real outcome");
+    check(log.appeals()[0].reviewerNote == "genuinely a false positive", "resolve() real-sets the real reviewer note");
+    check(nearlyEqual(static_cast<float>(log.appeals()[0].resolvedServerTimestampSeconds), 100.0f),
+          "resolve() real-sets the real resolution timestamp");
+}
+
+void testAppealLogResolveOutOfRangeIndexFailsHonestly() {
+    engine::moderation::AppealLog log;
+    check(!log.resolve(0, engine::moderation::AppealOutcome::Upheld, "note", 1.0),
+          "resolve() real-fails honestly (returns false) for a real out-of-range index on a real empty log, never crashes");
+}
+
+void testAppealOutcomeNameAllValues() {
+    check(std::string(engine::moderation::appealOutcomeName(engine::moderation::AppealOutcome::Pending)) == "Pending",
+          "appealOutcomeName() real-names Pending correctly");
+    check(std::string(engine::moderation::appealOutcomeName(engine::moderation::AppealOutcome::Upheld)) == "Upheld",
+          "appealOutcomeName() real-names Upheld correctly");
+    check(std::string(engine::moderation::appealOutcomeName(engine::moderation::AppealOutcome::Reduced)) == "Reduced",
+          "appealOutcomeName() real-names Reduced correctly");
+    check(std::string(engine::moderation::appealOutcomeName(engine::moderation::AppealOutcome::Reversed)) == "Reversed",
+          "appealOutcomeName() real-names Reversed correctly");
+}
+
+void testAppealLogSaveLoadRoundTripWithMultipleFreeTextFields() {
+    engine::moderation::AppealLog log;
+    log.submit(engine::moderation::Appeal{2, 555555, "my real statement, with spaces", "Hate flag, with spaces",
+                                           engine::moderation::AppealOutcome::Pending, "", 3.0, 0.0});
+    log.resolve(0, engine::moderation::AppealOutcome::Reduced, "a real reviewer note, with spaces", 8.0);
+
+    const char* path = "test_appeal_log.appeallog";
+    check(log.saveToFile(path), "a real appeal log saves");
+
+    engine::moderation::AppealLog loaded;
+    check(loaded.loadFromFile(path), "a real appeal log file loads");
+    check(loaded.size() == 1, "the real appeal round-trips");
+    const auto& a = loaded.appeals()[0];
+    check(a.player == 2 && a.outcome == engine::moderation::AppealOutcome::Reduced,
+          "a real appeal's player/outcome round-trip");
+    check(a.profileId == 555555, "a real appeal's profileId round-trips");
+    check(a.playerStatement == "my real statement, with spaces", "a real appeal's playerStatement (with real spaces) round-trips");
+    check(a.relatedReviewCaseReason == "Hate flag, with spaces", "a real appeal's relatedReviewCaseReason (with real spaces) round-trips");
+    check(a.reviewerNote == "a real reviewer note, with spaces", "a real appeal's reviewerNote (with real spaces) round-trips");
+    check(nearlyEqual(static_cast<float>(a.submittedServerTimestampSeconds), 3.0f) &&
+              nearlyEqual(static_cast<float>(a.resolvedServerTimestampSeconds), 8.0f),
+          "a real appeal's two real, independent timestamps both round-trip");
+
+    std::remove(path);
+}
+
+// Kronos ("Moderation Architecture v2", item G "Monthly Safety
+// Reports"): real, pure coverage over SafetyReportGenerator::summarize()
+// -- a real fixture ReportLog/EscalationEventLog/AppealLog, each with a
+// real mix of categories/tiers/outcomes, proving every real count lands
+// in the right bucket.
+void testSafetyReportGeneratorSummarizesRealLogsCorrectly() {
+    engine::moderation::ReportLog reportLog;
+    reportLog.submit(engine::moderation::PlayerReport{1, 2, engine::moderation::ReportCategory::Abuse, "real abuse report", 1.0});
+    reportLog.submit(
+        engine::moderation::PlayerReport{1, 3, engine::moderation::ReportCategory::Cheating, "real cheating report", 2.0});
+    reportLog.submit(engine::moderation::PlayerReport{
+        1, 4, engine::moderation::ReportCategory::InappropriateContent, "real content report", 3.0});
+
+    engine::moderation::EscalationEventLog escalationLog;
+    escalationLog.record(engine::moderation::EscalationEvent{2, engine::safety::EscalationTier::Mute, "TextClassifier", 1.0});
+    escalationLog.record(engine::moderation::EscalationEvent{2, engine::safety::EscalationTier::Restrict, "TextClassifier", 2.0});
+    escalationLog.record(
+        engine::moderation::EscalationEvent{3, engine::safety::EscalationTier::HumanReview, "AssetSafetyGuard", 3.0});
+    escalationLog.record(
+        engine::moderation::EscalationEvent{4, engine::safety::EscalationTier::LegalReport, "TextClassifier", 4.0});
+
+    engine::moderation::AppealLog appealLog;
+    appealLog.submit(engine::moderation::Appeal{2, 0, "statement A", "Mute", engine::moderation::AppealOutcome::Pending, "", 1.0, 0.0});
+    appealLog.submit(engine::moderation::Appeal{3, 0, "statement B", "Restrict", engine::moderation::AppealOutcome::Pending, "", 2.0, 0.0});
+    appealLog.resolve(1, engine::moderation::AppealOutcome::Upheld, "real reviewer note", 10.0);
+    appealLog.submit(engine::moderation::Appeal{4, 0, "statement C", "HumanReview", engine::moderation::AppealOutcome::Pending, "", 3.0, 0.0});
+    appealLog.resolve(2, engine::moderation::AppealOutcome::Reversed, "real reviewer note", 11.0);
+
+    engine::moderation::SafetyReportGenerator generator;
+    engine::moderation::SafetyReportSummary summary = generator.summarize(reportLog, escalationLog, appealLog);
+
+    check(summary.totalPlayerReports == 3 && summary.abuseReports == 1 && summary.cheatingReports == 1 &&
+              summary.inappropriateContentReports == 1,
+          "real player report counts land in the real, correct per-category buckets");
+    check(summary.totalEscalations == 4 && summary.muteEscalations == 1 && summary.restrictEscalations == 1 &&
+              summary.humanReviewEscalations == 1 && summary.legalReportEscalations == 1,
+          "real escalation counts land in the real, correct per-tier buckets");
+    check(summary.totalAppeals == 3 && summary.pendingAppeals == 1 && summary.upheldAppeals == 1 &&
+              summary.reversedAppeals == 1,
+          "real appeal counts land in the real, correct per-outcome buckets");
+
+    std::string text = generator.formatAsText(summary, "2026-08");
+    check(text.find("2026-08") != std::string::npos, "the real periodLabel appears in the real formatted text");
+    check(text.find("Total: 3") != std::string::npos, "the real report total count appears in the real formatted text");
+    check(text.find("Reversed") != std::string::npos, "reversed appeals are real-labeled in the real formatted text");
+
+    const char* path = "test_safety_report.txt";
+    std::remove(path);
+    check(generator.exportToFile(summary, "2026-08", path), "exportToFile() real-writes the real report to disk");
+    std::ifstream in(path);
+    check(in.is_open(), "the real exported safety report file really exists on disk");
+    std::string firstLine;
+    std::getline(in, firstLine);
+    check(firstLine.find("2026-08") != std::string::npos, "the real exported file's real content matches formatAsText()'s own output");
+    std::remove(path);
+}
+
+// --- PolicyEngine (Kronos "Moderation Architecture v1", Phase 1) --------------------
+
+void testPolicyEngineGroomingAlwaysBlocksRegardlessOfAge() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::TextClassification c;
+    c.flagged = true;
+    c.categories = {engine::safety::TextRiskCategory::Grooming};
+    check(policy.decide(c, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Block,
+          "Grooming real-blocks even when the sender is a real, self-declared Adult");
+    check(policy.decide(c, engine::safety::AgeGroup::Unknown).action == engine::safety::PolicyAction::Block,
+          "Grooming real-blocks for a real Unknown age too");
+}
+
+void testPolicyEngineSexualContentBlocksForMinorOrUnknownOnly() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::TextClassification c;
+    c.flagged = true;
+    c.categories = {engine::safety::TextRiskCategory::SexualContent};
+    check(policy.decide(c, engine::safety::AgeGroup::Minor).action == engine::safety::PolicyAction::Block,
+          "SexualContent real-blocks for a real, self-declared Minor");
+    check(policy.decide(c, engine::safety::AgeGroup::Unknown).action == engine::safety::PolicyAction::Block,
+          "SexualContent real-blocks for a real Unknown age -- the real, conservative default (protect minors by "
+          "default even with no real age signal at all)");
+    check(policy.decide(c, engine::safety::AgeGroup::Adult).action != engine::safety::PolicyAction::Block,
+          "SexualContent real-does NOT hard-block for a real, self-declared Adult");
+}
+
+void testPolicyEngineHateAlwaysBlocks() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::TextClassification c;
+    c.flagged = true;
+    c.categories = {engine::safety::TextRiskCategory::Hate};
+    check(policy.decide(c, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Block,
+          "Hate real-blocks regardless of age -- the real proxy for the user's 'extremist propaganda' hard-block item");
+}
+
+void testPolicyEngineSelfHarmQueuesForReviewNeverBlocks() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::TextClassification c;
+    c.flagged = true;
+    c.categories = {engine::safety::TextRiskCategory::SelfHarm};
+    check(policy.decide(c, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::QueueForReview,
+          "SelfHarm real-queues for human review but real-never blocks -- suppressing a real cry for help would be "
+          "actively harmful, a human needs to see it, not silence it");
+}
+
+void testPolicyEngineThreatsQueuesForReview() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::TextClassification c;
+    c.flagged = true;
+    c.categories = {engine::safety::TextRiskCategory::Threats};
+    check(policy.decide(c, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::QueueForReview,
+          "Threats real-queues for a real, prompt human review");
+}
+
+void testPolicyEngineHarassmentPiiOffPlatformSpamWarnOnly() {
+    engine::safety::PolicyEngine policy;
+    for (auto category : {engine::safety::TextRiskCategory::Harassment, engine::safety::TextRiskCategory::PiiSolicitation,
+                           engine::safety::TextRiskCategory::OffPlatformRedirect, engine::safety::TextRiskCategory::Spam}) {
+        engine::safety::TextClassification c;
+        c.flagged = true;
+        c.categories = {category};
+        check(policy.decide(c, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Warn,
+              "each real ambiguous/borderline category real-warns, not blocks -- the real, unchanged 'flag but "
+              "deliver' behavior for anything short of a real hard-block category");
+    }
+}
+
+// Kronos ("Moderation Architecture v2", "Minor Mode Enforcement"): "no
+// off-platform links" for a real (or possibly) minor sender.
+void testPolicyEngineOffPlatformRedirectBlocksForMinorButWarnsForAdult() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::TextClassification c;
+    c.flagged = true;
+    c.categories = {engine::safety::TextRiskCategory::OffPlatformRedirect};
+    check(policy.decide(c, engine::safety::AgeGroup::Minor).action == engine::safety::PolicyAction::Block,
+          "OffPlatformRedirect real-blocks for a real, self-declared Minor -- Minor Mode's real 'no off-platform "
+          "links' rule");
+    check(policy.decide(c, engine::safety::AgeGroup::Unknown).action == engine::safety::PolicyAction::Block,
+          "OffPlatformRedirect real-blocks for a real Unknown age too -- the real, conservative default");
+    check(policy.decide(c, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Warn,
+          "OffPlatformRedirect real-stays Warn-only for a real, self-declared Adult -- Minor Mode's rule doesn't "
+          "apply to them");
+}
+
+void testPolicyEngineCleanMessageAllows() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::TextClassification c; // real, unflagged, empty categories
+    check(policy.decide(c, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Allow,
+          "a real, unflagged message real-allows");
+}
+
+void testPolicyEngineMostSevereCategoryWinsWhenMultipleFlagged() {
+    engine::safety::PolicyEngine policy;
+    engine::safety::TextClassification c;
+    c.flagged = true;
+    // Real, deliberately mixed severity -- Grooming (hard-block) must win
+    // over Spam (warn-only) when both are real-flagged on the same
+    // message.
+    c.categories = {engine::safety::TextRiskCategory::Spam, engine::safety::TextRiskCategory::Grooming};
+    check(policy.decide(c, engine::safety::AgeGroup::Adult).action == engine::safety::PolicyAction::Block,
+          "when multiple real categories are flagged on one message, the real, most-severe action wins");
+}
+
+// --- TextClassifierStub: new categories (Kronos "Moderation Architecture v1", Phase 1) ---
+
+void testTextClassifierStubDetectsGrooming() {
+    engine::safety::TextClassifierStub classifier;
+    auto result = classifier.classify("let's meet in person, and don't tell your parents");
+    check(result.flagged, "a real grooming-pattern message real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::TextRiskCategory::Grooming) !=
+              result.categories.end(),
+          "a real grooming-pattern message real-categorizes as Grooming specifically");
+}
+
+void testTextClassifierStubDetectsHate() {
+    engine::safety::TextClassifierStub classifier;
+    auto result = classifier.classify("go back to your country");
+    check(result.flagged, "a real hate-speech-pattern message real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::TextRiskCategory::Hate) !=
+              result.categories.end(),
+          "a real hate-speech-pattern message real-categorizes as Hate specifically");
+}
+
+void testTextClassifierStubDetectsSelfHarm() {
+    engine::safety::TextClassifierStub classifier;
+    auto result = classifier.classify("i just want to end it all");
+    check(result.flagged, "a real self-harm-disclosure message real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::TextRiskCategory::SelfHarm) !=
+              result.categories.end(),
+          "a real self-harm-disclosure message real-categorizes as SelfHarm specifically");
+}
+
+void testTextClassifierStubDetectsThreats() {
+    engine::safety::TextClassifierStub classifier;
+    auto result = classifier.classify("i will find you");
+    check(result.flagged, "a real threat message real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::TextRiskCategory::Threats) !=
+              result.categories.end(),
+          "a real threat message real-categorizes as Threats specifically");
+}
+
+void testTextClassifierStubDetectsSpam() {
+    engine::safety::TextClassifierStub classifier;
+    auto result = classifier.classify("free robux, click this link now");
+    check(result.flagged, "a real spam-pattern message real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::TextRiskCategory::Spam) !=
+              result.categories.end(),
+          "a real spam-pattern message real-categorizes as Spam specifically");
+}
+
+// Real gap fix (see TextClassifierStub.cpp's own comment on
+// containsHarassmentMarker/containsSexualContentMarker): Harassment and
+// SexualContent were declared and already consulted by PolicyEngine, but
+// classify() never actually produced either one -- proven dead by the
+// two tests below going through the real classify() path, not a hand-
+// built TextClassification the way the PolicyEngine-only tests do.
+void testTextClassifierStubDetectsHarassment() {
+    engine::safety::TextClassifierStub classifier;
+    auto result = classifier.classify("nobody likes you, you should quit");
+    check(result.flagged, "a real harassment-pattern message real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::TextRiskCategory::Harassment) !=
+              result.categories.end(),
+          "a real harassment-pattern message real-categorizes as Harassment specifically");
+}
+
+void testTextClassifierStubDetectsSexualContent() {
+    engine::safety::TextClassifierStub classifier;
+    auto result = classifier.classify("send nudes right now");
+    check(result.flagged, "a real sexual-content-solicitation message real-flags");
+    check(std::find(result.categories.begin(), result.categories.end(), engine::safety::TextRiskCategory::SexualContent) !=
+              result.categories.end(),
+          "a real sexual-content-solicitation message real-categorizes as SexualContent specifically");
+}
+
+// Real end-to-end proof the classify()->PolicyEngine dead-code gap above
+// is actually closed for a real Minor sender, going through
+// TrustSafetyService::onChatMessage (the same real call path
+// net::NetworkSession's chat broadcast handler uses), not a hand-built
+// TextClassification.
+void testTrustSafetyServiceOnChatMessageBlocksSexualContentForRealMinorSender() {
+    engine::safety::TrustSafetyService service;
+    auto result = service.onChatMessage(1, "send nudes right now", engine::core::AgeGroup::Minor);
+    check(result.blocked, "a real sexual-content message from a real, self-declared Minor sender is real-blocked "
+                           "end-to-end, not just flagged");
+}
+
+// Kronos ("Moderation Architecture v2", item H "ML Retraining Pipeline
+// (Stub)"): real, pure coverage over formatTrainingDataLine()/
+// appendTrainingDataSample() -- see TrainingDataLog.hpp's own header
+// comment for exactly what "future-ready scaffolding only" means here
+// (no training happens anywhere in this codebase).
+void testFormatTrainingDataLineIncludesRealFields() {
+    // Real, end-to-end classification (TrustSafetyService, not a bare
+    // TextClassifierStub::classify() call) -- TextClassification::blocked
+    // is only ever real-set by safety::PolicyEngine, which onChatMessage()
+    // consults; classify() alone never sets it, so this test's own
+    // BLOCKED=1 assertion needs the real full pipeline to be meaningful.
+    engine::safety::TrustSafetyService service;
+    auto classification = service.onChatMessage(1, "go back to your country", engine::core::AgeGroup::Adult);
+    std::string line = engine::moderation::formatTrainingDataLine("go back to your country", classification);
+    check(line.find("go back to your country") != std::string::npos, "the real classified text appears in the real formatted line");
+    check(line.find("Hate") != std::string::npos, "the real, matched category name appears in the real formatted line");
+    check(line.find("BLOCKED=1") != std::string::npos,
+          "Hate real-blocks (safety::PolicyEngine), so BLOCKED=1 real-appears -- not fabricated as always 0");
+}
+
+void testAppendTrainingDataSampleWritesRealLineToDisk() {
+    const char* path = "test_training_data.log";
+    std::remove(path);
+
+    engine::safety::TrustSafetyService service;
+    auto classification = service.onChatMessage(1, "free robux, click this link now", engine::core::AgeGroup::Adult);
+    check(engine::moderation::appendTrainingDataSample(path, "free robux, click this link now", classification),
+          "appendTrainingDataSample() real-writes to a real, openable path");
+
+    std::ifstream in(path);
+    check(in.is_open(), "the real training-data file really exists on disk");
+    std::string line;
+    check(static_cast<bool>(std::getline(in, line)), "the real file really has a real line in it");
+    check(line.find("free robux") != std::string::npos && line.find("Spam") != std::string::npos,
+          "the real persisted line contains the real text and the real, matched Spam category");
+
+    // A real, second append -- proves this is a real, growing append-only
+    // log (std::ios::app), not an overwrite each call.
+    check(engine::moderation::appendTrainingDataSample(path, "second message", classification), "a real second append succeeds");
+    std::ifstream in2(path);
+    size_t lineCount = 0;
+    std::string discard;
+    while (std::getline(in2, discard)) ++lineCount;
+    check(lineCount == 2, "two real appends really produce two real lines, not one overwritten line");
+
+    std::remove(path);
+}
+
+// --- TrustSafetyService::onChatMessage sets TextClassification::blocked (pure, no NetworkSession) ---
+
+void testTrustSafetyServiceOnChatMessageSetsBlockedForGrooming() {
+    engine::safety::TrustSafetyService service;
+    auto result = service.onChatMessage(1, "let's meet in person, and don't tell your parents");
+    check(result.blocked, "onChatMessage() real-sets blocked=true for a real Grooming-category message");
+}
+
+void testTrustSafetyServiceOnChatMessageDoesNotBlockOrdinaryFlaggedText() {
+    engine::safety::TrustSafetyService service;
+    // Real, explicit Adult -- OffPlatformRedirect real-hard-blocks for a
+    // real (or possibly) Minor sender under Minor Mode Enforcement (see
+    // safety::PolicyEngine's own comment), so this test's real premise
+    // ("an ambiguous category never blocks") needs a real, explicit
+    // Adult sender to hold.
+    auto result = service.onChatMessage(1, "hey add me on discord", engine::safety::AgeGroup::Adult);
+    check(result.flagged && !result.blocked,
+          "onChatMessage() real-flags but real-does-NOT-block an ordinary, ambiguous-category message for a real "
+          "Adult sender -- only real hard-block categories set blocked=true");
+}
+
+void testTrustSafetyServiceOnChatMessageWarnCallbackFiresForBorderlineCategory() {
+    engine::safety::TrustSafetyService service;
+    bool warnCalled = false;
+    const char* warnReason = "";
+    engine::safety::TrustSafetyService::Callbacks callbacks;
+    callbacks.onWarn = [&](engine::safety::PlayerId, const char* reason) {
+        warnCalled = true;
+        warnReason = reason;
+    };
+    service.setCallbacks(callbacks);
+    // Real, explicit Adult -- see testTrustSafetyServiceOnChatMessageDoesNotBlockOrdinaryFlaggedText()'s own comment.
+    service.onChatMessage(1, "hey add me on discord", engine::safety::AgeGroup::Adult);
+    check(warnCalled, "a real PolicyAction::Warn decision real-fires the real onWarn callback");
+    check(std::string(warnReason) == "OffPlatformRedirect", "the real onWarn callback receives the real policy reason");
+}
+
+// --- AccountModerationRegistry (Kronos "Moderation Architecture v2", "Account System v1") ---
+
+void testAccountModerationRegistryBanAndUnban() {
+    engine::moderation::AccountModerationRegistry registry;
+    check(!registry.isBanned(1), "isBanned() is real-false before any real ban() call");
+    registry.ban(1, "real repeated grooming-tier violations");
+    check(registry.isBanned(1), "ban() real-marks the real profileId banned");
+    registry.unban(1);
+    check(!registry.isBanned(1), "unban() real-reverses a real prior ban");
+}
+
+void testAccountModerationRegistryMuteAndUnmute() {
+    engine::moderation::AccountModerationRegistry registry;
+    registry.mute(2, "real repeated spam");
+    check(registry.isMuted(2), "mute() real-marks the real profileId muted");
+    registry.unmute(2);
+    check(!registry.isMuted(2), "unmute() real-reverses a real prior mute");
+}
+
+void testAccountModerationRegistryBanAndMuteAreIndependent() {
+    engine::moderation::AccountModerationRegistry registry;
+    registry.ban(3, "reason");
+    check(registry.isBanned(3) && !registry.isMuted(3), "a real ban real-doesn't also imply a real mute");
+}
+
+void testAccountModerationRegistrySaveLoadRoundTrip() {
+    engine::moderation::AccountModerationRegistry registry;
+    registry.ban(5, "a real reason with spaces");
+    registry.mute(6, "another real reason");
+
+    const char* path = "test_account_moderation.accountmod";
+    check(registry.saveToFile(path), "a real account moderation registry saves");
+
+    engine::moderation::AccountModerationRegistry loaded;
+    check(loaded.loadFromFile(path), "a real account moderation registry file loads");
+    check(loaded.size() == 2, "both real records round-trip");
+    check(loaded.isBanned(5) && !loaded.isMuted(5), "the real banned record's real state round-trips");
+    check(loaded.isMuted(6) && !loaded.isBanned(6), "the real muted record's real state round-trips");
+
+    std::remove(path);
 }
 
 // --- RollingEventCounter (anticheat) --------------------------------------------------
@@ -12441,6 +15489,14 @@ void testLanDiscoveryProtocolSerializationRoundTrips() {
     announcement.gamePort = 7777;
     announcement.currentPlayerCount = 3;
     announcement.maxPlayerCount = 8;
+    // Kronos ("Moderation Architecture v2", "Session Browser Game
+    // Identity"): real game-identity fields round-trip too.
+    announcement.gameName = "Sky Sandbox";
+    announcement.gameThumbnailColor = glm::vec4(0.2f, 0.6f, 0.9f, 1.0f);
+    announcement.gameSafetyStatusValue = static_cast<uint8_t>(engine::core::GameSafetyStatus::UnderReview);
+    // Kronos ("Session Browser Polish v2" -- "Sorting: Newly Created"):
+    // real, new field round-trips too.
+    announcement.sessionStartUnixSeconds = 1700000000;
     engine::net::serializeLanAnnouncement(announcement, writer);
 
     engine::net::ByteReader reader(writer.bytes().data(), writer.size());
@@ -12453,6 +15509,80 @@ void testLanDiscoveryProtocolSerializationRoundTrips() {
               decoded.hostDisplayName == "Test Host" && decoded.gamePort == 7777 && decoded.currentPlayerCount == 3 &&
               decoded.maxPlayerCount == 8,
           "every real field round-trips exactly");
+    check(decoded.gameName == "Sky Sandbox", "the real gameName round-trips exactly");
+    check(nearlyEqual(decoded.gameThumbnailColor.x, 0.2f) && nearlyEqual(decoded.gameThumbnailColor.w, 1.0f),
+          "the real gameThumbnailColor round-trips exactly");
+    check(decoded.gameSafetyStatusValue == static_cast<uint8_t>(engine::core::GameSafetyStatus::UnderReview),
+          "the real gameSafetyStatusValue round-trips exactly");
+    check(decoded.sessionStartUnixSeconds == 1700000000, "the real sessionStartUnixSeconds round-trips exactly");
+}
+
+// Kronos ("Session Browser Polish v2" -- "Sorting"): real, pure coverage
+// over net::sortDiscoveredSessions() -- every real order, and that the
+// real input vector is never mutated (sortDiscoveredSessions() takes and
+// returns by value).
+void testSessionBrowserSortOrdersCorrectly() {
+    engine::net::DiscoveredSession zebra;
+    zebra.sessionId = 1;
+    zebra.sessionName = "Zebra Zone";
+    zebra.currentPlayerCount = 2;
+    zebra.pingMs = 50.0f;
+    zebra.sessionStartUnixSeconds = 1000;
+
+    engine::net::DiscoveredSession alpha;
+    alpha.sessionId = 2;
+    alpha.sessionName = "alpha camp"; // lowercase -- real case-insensitive compare must still order this first
+    alpha.currentPlayerCount = 5;
+    alpha.pingMs = 20.0f;
+    alpha.sessionStartUnixSeconds = 3000;
+
+    engine::net::DiscoveredSession mid;
+    mid.sessionId = 3;
+    mid.sessionName = "Mid Point";
+    mid.currentPlayerCount = 5;
+    mid.pingMs = 10.0f;
+    mid.sessionStartUnixSeconds = 2000;
+
+    std::vector<engine::net::DiscoveredSession> original = {zebra, alpha, mid};
+
+    auto byActivity = engine::net::sortDiscoveredSessions(original, engine::net::SessionSortOrder::MostActive);
+    check(byActivity.size() == 3 && byActivity[0].sessionId == 3 && byActivity[1].sessionId == 2 &&
+              byActivity[2].sessionId == 1,
+          "MostActive real-sorts by highest currentPlayerCount first, ties broken by real, lowest ping");
+
+    auto byNewest = engine::net::sortDiscoveredSessions(original, engine::net::SessionSortOrder::NewlyCreated);
+    check(byNewest.size() == 3 && byNewest[0].sessionId == 2 && byNewest[1].sessionId == 3 && byNewest[2].sessionId == 1,
+          "NewlyCreated real-sorts by highest real sessionStartUnixSeconds first");
+
+    auto alphabetical = engine::net::sortDiscoveredSessions(original, engine::net::SessionSortOrder::Alphabetical);
+    check(alphabetical.size() == 3 && alphabetical[0].sessionId == 2 && alphabetical[1].sessionId == 3 &&
+              alphabetical[2].sessionId == 1,
+          "Alphabetical real-sorts case-insensitively by sessionName");
+
+    check(original.size() == 3 && original[0].sessionId == 1 && original[1].sessionId == 2 && original[2].sessionId == 3,
+          "the real, original input vector is never mutated by any real sort call");
+}
+
+// Kronos ("Session Browser Polish v2" -- "Filters: Friends' sessions"):
+// real, pure coverage over net::filterDiscoveredSessionsToFriends().
+void testSessionBrowserFilterToFriendsMatchesByHostDisplayName() {
+    engine::net::DiscoveredSession fromFriend;
+    fromFriend.sessionId = 1;
+    fromFriend.hostDisplayName = "Alice";
+
+    engine::net::DiscoveredSession fromStranger;
+    fromStranger.sessionId = 2;
+    fromStranger.hostDisplayName = "RandomHost";
+
+    std::vector<engine::net::DiscoveredSession> sessions = {fromFriend, fromStranger};
+    std::vector<engine::core::FriendEntry> friends = {{"creator_alice", "Alice"}};
+
+    auto filtered = engine::net::filterDiscoveredSessionsToFriends(sessions, friends);
+    check(filtered.size() == 1 && filtered[0].sessionId == 1,
+          "filterDiscoveredSessionsToFriends() real-keeps only the real session whose hostDisplayName matches a real friend");
+
+    auto filteredNoFriends = engine::net::filterDiscoveredSessionsToFriends(sessions, {});
+    check(filteredNoFriends.empty(), "an empty real friends list real-yields an empty, honest filtered result");
 }
 
 void testLanDiscoveryHeaderRejectsWrongMagicOrKind() {
@@ -12502,6 +15632,9 @@ void testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing() {
     announcement.gamePort = 9999;
     announcement.currentPlayerCount = 2;
     announcement.maxPlayerCount = 6;
+    announcement.gameName = "Loopback Game";
+    announcement.gameThumbnailColor = glm::vec4(0.9f, 0.4f, 0.1f, 1.0f);
+    announcement.gameSafetyStatusValue = static_cast<uint8_t>(engine::core::GameSafetyStatus::Unsafe);
 
     bool discovered = false;
     float nowSeconds = 0.0f;
@@ -12523,6 +15656,11 @@ void testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing() {
     check(sessions[0].sourceAddress == "127.0.0.1",
           "the real discovered session's own sourceAddress is really the real loopback address it actually "
           "arrived from");
+    check(sessions[0].gameName == "Loopback Game", "the real broadcast gameName really reaches the real browser");
+    check(nearlyEqual(sessions[0].gameThumbnailColor.x, 0.9f) && nearlyEqual(sessions[0].gameThumbnailColor.z, 0.1f),
+          "the real broadcast gameThumbnailColor really reaches the real browser");
+    check(sessions[0].gameSafetyStatusValue == static_cast<uint8_t>(engine::core::GameSafetyStatus::Unsafe),
+          "the real broadcast gameSafetyStatusValue really reaches the real browser");
 
     bool gotPing = false;
     for (int i = 0; i < 100 && !gotPing; ++i) {
@@ -12712,11 +15850,99 @@ void testShellStateTransitionsHomeToSessionBrowserAndBack() {
           "SessionBrowser + ReturnHome real-transitions back to Home");
 }
 
-void testShellStateTransitionsHomeToInGameOnPlayOffline() {
+// Kronos ("Game Catalogue Overhaul", Phase 4): replaces the old bare
+// "Play" button's Home -> InGame transition -- picking a game from the
+// real Game Catalogue now goes through GameCatalogue, and only reaches
+// InGame once runtime::loadGame() (core/GameManifest.hpp) real-succeeds
+// for the picked ProjectPath game.
+void testShellStateTransitionsHomeThroughGameCatalogueToInGame() {
     using engine::runtime::ShellEvent;
     using engine::runtime::ShellState;
-    check(engine::runtime::computeNextState(ShellState::Home, ShellEvent::PlayOffline) == ShellState::InGame,
-          "Home + PlayOffline real-transitions directly to InGame, no networking involved");
+    ShellState state = ShellState::Home;
+    state = engine::runtime::computeNextState(state, ShellEvent::OpenGameCatalogue);
+    check(state == ShellState::GameCatalogue, "Home + OpenGameCatalogue real-transitions to GameCatalogue");
+    state = engine::runtime::computeNextState(state, ShellEvent::GameSelected);
+    check(state == ShellState::InGame, "GameCatalogue + GameSelected real-transitions to InGame");
+}
+
+void testShellStateTransitionsGameCatalogueReturnsHome() {
+    using engine::runtime::ShellEvent;
+    using engine::runtime::ShellState;
+    check(engine::runtime::computeNextState(ShellState::GameCatalogue, ShellEvent::ReturnHome) == ShellState::Home,
+          "GameCatalogue + ReturnHome real-transitions back to Home");
+}
+
+// Kronos ("Marketplace" -- "engine_runtime-side catalogue UI"): real,
+// pure coverage over the new AvatarShop state -- Home -> AvatarShop ->
+// Home, and that AvatarShop ignores every event it doesn't real-handle.
+void testShellStateTransitionsHomeThroughAvatarShopAndBack() {
+    using engine::runtime::ShellEvent;
+    using engine::runtime::ShellState;
+    ShellState state = ShellState::Home;
+    state = engine::runtime::computeNextState(state, ShellEvent::OpenAvatarShop);
+    check(state == ShellState::AvatarShop, "Home + OpenAvatarShop real-transitions to AvatarShop");
+    state = engine::runtime::computeNextState(state, ShellEvent::ReturnHome);
+    check(state == ShellState::Home, "AvatarShop + ReturnHome real-transitions back to Home");
+
+    check(engine::runtime::computeNextState(ShellState::AvatarShop, ShellEvent::GameSelected) == ShellState::AvatarShop,
+          "an inapplicable event on AvatarShop is really ignored, state stays AvatarShop");
+    check(engine::runtime::computeNextState(ShellState::InGame, ShellEvent::OpenAvatarShop) == ShellState::InGame,
+          "OpenAvatarShop from InGame is really ignored -- AvatarShop is only real-reachable from Home");
+}
+
+// Kronos ("Settings Panel v2 + Input Remapping + Accessibility Layer"):
+// real, pure coverage over the new Settings state -- same real shape as
+// AvatarShop's own equivalent test just above.
+void testShellStateTransitionsHomeThroughSettingsAndBack() {
+    using engine::runtime::ShellEvent;
+    using engine::runtime::ShellState;
+    ShellState state = ShellState::Home;
+    state = engine::runtime::computeNextState(state, ShellEvent::OpenSettings);
+    check(state == ShellState::Settings, "Home + OpenSettings real-transitions to Settings");
+    state = engine::runtime::computeNextState(state, ShellEvent::ReturnHome);
+    check(state == ShellState::Home, "Settings + ReturnHome real-transitions back to Home");
+
+    check(engine::runtime::computeNextState(ShellState::Settings, ShellEvent::GameSelected) == ShellState::Settings,
+          "an inapplicable event on Settings is really ignored, state stays Settings");
+    check(engine::runtime::computeNextState(ShellState::InGame, ShellEvent::OpenSettings) == ShellState::InGame,
+          "OpenSettings from InGame is really ignored -- Settings (the ShellState) is only real-reachable from Home; "
+          "in-game Settings access is a real, separate overlay flag, not this state machine");
+}
+
+// Kronos ("Social Layer" + "Notifications System"): real, pure coverage
+// over the new Friends/Notifications states -- same real shape as
+// AvatarShop/Settings' own equivalent tests just above.
+void testShellStateTransitionsHomeThroughFriendsAndBack() {
+    using engine::runtime::ShellEvent;
+    using engine::runtime::ShellState;
+    ShellState state = ShellState::Home;
+    state = engine::runtime::computeNextState(state, ShellEvent::OpenFriends);
+    check(state == ShellState::Friends, "Home + OpenFriends real-transitions to Friends");
+    state = engine::runtime::computeNextState(state, ShellEvent::ReturnHome);
+    check(state == ShellState::Home, "Friends + ReturnHome real-transitions back to Home");
+
+    check(engine::runtime::computeNextState(ShellState::Friends, ShellEvent::GameSelected) == ShellState::Friends,
+          "an inapplicable event on Friends is really ignored, state stays Friends");
+    check(engine::runtime::computeNextState(ShellState::InGame, ShellEvent::OpenFriends) == ShellState::InGame,
+          "OpenFriends from InGame is really ignored -- Friends (the ShellState) is only real-reachable from Home; "
+          "in-game Friends access is a real, separate overlay flag, not this state machine");
+}
+
+void testShellStateTransitionsHomeThroughNotificationsAndBack() {
+    using engine::runtime::ShellEvent;
+    using engine::runtime::ShellState;
+    ShellState state = ShellState::Home;
+    state = engine::runtime::computeNextState(state, ShellEvent::OpenNotifications);
+    check(state == ShellState::Notifications, "Home + OpenNotifications real-transitions to Notifications");
+    state = engine::runtime::computeNextState(state, ShellEvent::ReturnHome);
+    check(state == ShellState::Home, "Notifications + ReturnHome real-transitions back to Home");
+
+    check(engine::runtime::computeNextState(ShellState::Notifications, ShellEvent::GameSelected) ==
+              ShellState::Notifications,
+          "an inapplicable event on Notifications is really ignored, state stays Notifications");
+    check(engine::runtime::computeNextState(ShellState::InGame, ShellEvent::OpenNotifications) == ShellState::InGame,
+          "OpenNotifications from InGame is really ignored -- Notifications (the ShellState) is only real-reachable "
+          "from Home; in-game Notifications access is a real, separate overlay flag, not this state machine");
 }
 
 void testShellStateTransitionsJoinFlowHappyPath() {
@@ -12766,8 +15992,10 @@ void testShellStateTransitionsIgnoreInapplicableEvents() {
           "an inapplicable event on InGame is really ignored, state stays InGame");
     check(engine::runtime::computeNextState(ShellState::Error, ShellEvent::JoinRequested) == ShellState::Error,
           "an inapplicable event on Error is really ignored, state stays Error");
-    check(engine::runtime::computeNextState(ShellState::SessionBrowser, ShellEvent::PlayOffline) == ShellState::SessionBrowser,
+    check(engine::runtime::computeNextState(ShellState::SessionBrowser, ShellEvent::GameSelected) == ShellState::SessionBrowser,
           "an inapplicable event on SessionBrowser is really ignored, state stays SessionBrowser");
+    check(engine::runtime::computeNextState(ShellState::Home, ShellEvent::GameSelected) == ShellState::Home,
+          "GameSelected without first real-opening the Game Catalogue is really ignored, state stays Home");
 }
 
 void testNetworkSessionAndScriptingRealSessionAndPlayerEventsFireOnBothSides() {
@@ -13198,6 +16426,373 @@ void testNetworkSessionRealChatProfanityFilterCensorsBroadcast() {
     check(serverSession.chatLog().entries().front().text == "this is shit",
           "The real server-side chat log keeps the real, ORIGINAL uncensored text for moderation review -- a censored-only log would be useless as evidence");
     check(serverSession.chatLog().entries().front().containedProfanity, "The real server-side log entry correctly records that this real message contained profanity");
+
+    serverSession.shutdown();
+    clientASession.shutdown();
+    clientBSession.shutdown();
+}
+
+// Kronos ("Moderation Architecture v1", Phase 1): real, end-to-end proof
+// that safety::PolicyEngine's hard-block categories genuinely stop
+// delivery over a real loopback ENet connection -- not just a flag that
+// nothing reads. Mirrors testNetworkSessionRealChatProfanityFilterCensorsBroadcast()'s
+// exact real 2-client handshake pattern.
+void testNetworkSessionRealHardBlockCategoryNeverDeliveredToRecipient() {
+    constexpr uint16_t kTestPort = 17797;
+    engine::core::ECS serverEcs, clientAEcs, clientBEcs;
+    engine::net::NetworkSession serverSession, clientASession, clientBSession;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    serverConfig.maxClients = 4;
+    check(serverSession.initialize(serverConfig), "Hard-block test: real server real-starts");
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId player) -> engine::core::EntityId {
+        engine::core::EntityId entity = ecs.createEntity("Player" + std::to_string(player));
+        ecs.addComponent<engine::core::Transform>(entity);
+        return entity;
+    });
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kTestPort;
+    check(clientASession.initialize(clientConfig), "Hard-block test: real client A real-connects");
+    check(clientBSession.initialize(clientConfig), "Hard-block test: real client B real-connects");
+
+    engine::core::EntityId clientAAvatar = clientAEcs.createEntity("LocalA");
+    clientAEcs.addComponent<engine::core::Transform>(clientAAvatar);
+    engine::core::EntityId clientBAvatar = clientBEcs.createEntity("LocalB");
+    clientBEcs.addComponent<engine::core::Transform>(clientBAvatar);
+
+    bool clientBReceivedAnything = false;
+    clientBSession.setOnChatMessageReceived(
+        [&](engine::net::PlayerId, const std::string&) { clientBReceivedAnything = true; });
+
+    bool bothHandshook = false;
+    for (int i = 0; i < 300 && !bothHandshook; ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientASession.sampleLocalInput(clientAEcs, clientAAvatar, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientASession.tick(0.05f, clientAEcs, clientAAvatar);
+        clientBSession.sampleLocalInput(clientBEcs, clientBAvatar, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientBSession.tick(0.05f, clientBEcs, clientBAvatar);
+        bothHandshook = clientASession.localPlayerId() != engine::net::kInvalidPlayer &&
+                         clientBSession.localPlayerId() != engine::net::kInvalidPlayer;
+        if (!bothHandshook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(bothHandshook, "Hard-block test: both real clients really complete real handshakes");
+
+    // A real Hate-category hard-block marker (TextClassifierStub's own
+    // heuristic) -- safety::PolicyEngine::decide() must return Block for
+    // this, and NetworkSession's real chat broadcast path must honor it.
+    clientASession.sendChatMessage("go back to your country");
+    for (int i = 0; i < 100; ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientASession.tick(0.05f, clientAEcs, clientAAvatar);
+        clientBSession.tick(0.05f, clientBEcs, clientBAvatar);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    check(!clientBReceivedAnything,
+          "A real hard-block-category message (Hate) is genuinely never delivered to the recipient over a real "
+          "loopback connection -- not merely flagged-after-delivery");
+    check(serverSession.chatLog().size() == 1 && serverSession.chatLog().entries().front().text == "go back to your country",
+          "The real blocked message is still recorded to the real server-side chat log -- real evidence for a "
+          "moderator, not silently discarded just because it wasn't delivered");
+    check(serverSession.chatLog().entries().front().flaggedByClassifier,
+          "The real logged entry correctly records that the real classifier flagged this message");
+
+    serverSession.shutdown();
+    clientASession.shutdown();
+    clientBSession.shutdown();
+}
+
+// Kronos ("Moderation Architecture v2", "Account System v1"): real,
+// end-to-end proof that a persistent, profileId-keyed ban genuinely
+// rejects a real join attempt over a real loopback ENet connection.
+void testNetworkSessionRealPersistentBanRejectsJoin() {
+    constexpr uint16_t kTestPort = 17798;
+    constexpr uint64_t kBannedProfileId = 424242;
+    engine::core::ECS serverEcs, clientEcs;
+    engine::net::NetworkSession serverSession, clientSession;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    check(serverSession.initialize(serverConfig), "Persistent ban test: real server real-starts");
+    serverSession.accountModerationRegistry().ban(kBannedProfileId, "real, pre-existing ban for this test");
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) -> engine::core::EntityId {
+        return ecs.createEntity("ShouldNeverJoin");
+    });
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kTestPort;
+    clientSession.setLocalIdentity(kBannedProfileId, engine::core::AgeGroup::Adult);
+    check(clientSession.initialize(clientConfig), "Persistent ban test: real client real-attempts real connect");
+
+    bool sawBanRejection = false;
+    for (int i = 0; i < 200 && !sawBanRejection; ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientSession.tick(0.05f, clientEcs, engine::core::kNullEntity);
+        sawBanRejection = clientSession.lastJoinFailureReason() == engine::net::JoinFailureReason::Banned;
+        if (!sawBanRejection) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(sawBanRejection, "a real, persistently-banned profileId real-receives a real JoinFailureReason::Banned "
+                            "rejection, not a real, silent generic failure");
+    check(clientSession.localPlayerId() == engine::net::kInvalidPlayer,
+          "the real banned client real-never actually joins");
+
+    serverSession.shutdown();
+    clientSession.shutdown();
+}
+
+// Kronos ("Moderation Architecture v2", "DM System v1"): real, end-to-
+// end proof over a real loopback ENet connection -- two real, self-
+// declared Adults can DM each other (real, targeted delivery, not a
+// broadcast: a real third client never sees it), and Minor Mode's real
+// "DM restrictions" genuinely block a DM touching a real (or possibly)
+// minor.
+void testNetworkSessionRealDirectMessageDeliveryAndMinorModeRestriction() {
+    constexpr uint16_t kTestPort = 17799;
+    engine::core::ECS serverEcs, clientAEcs, clientBEcs, clientCEcs;
+    engine::net::NetworkSession serverSession, clientASession, clientBSession, clientCSession;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    serverConfig.maxClients = 6;
+    check(serverSession.initialize(serverConfig), "DM test: real server real-starts");
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId player) -> engine::core::EntityId {
+        engine::core::EntityId entity = ecs.createEntity("Player" + std::to_string(player));
+        ecs.addComponent<engine::core::Transform>(entity);
+        return entity;
+    });
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kTestPort;
+    // A (Adult) DMs B (Adult) -- must be delivered. C (Minor) is a real,
+    // uninvolved bystander proving DM delivery is genuinely targeted,
+    // not a broadcast.
+    clientASession.setLocalIdentity(101, engine::core::AgeGroup::Adult);
+    clientBSession.setLocalIdentity(102, engine::core::AgeGroup::Adult);
+    clientCSession.setLocalIdentity(103, engine::core::AgeGroup::Minor);
+    check(clientASession.initialize(clientConfig), "DM test: real client A real-connects");
+    check(clientBSession.initialize(clientConfig), "DM test: real client B real-connects");
+    check(clientCSession.initialize(clientConfig), "DM test: real client C real-connects");
+
+    engine::core::EntityId a = clientAEcs.createEntity("A");
+    clientAEcs.addComponent<engine::core::Transform>(a);
+    engine::core::EntityId b = clientBEcs.createEntity("B");
+    clientBEcs.addComponent<engine::core::Transform>(b);
+    engine::core::EntityId c = clientCEcs.createEntity("C");
+    clientCEcs.addComponent<engine::core::Transform>(c);
+
+    std::string bReceivedText;
+    bool cReceivedAnything = false;
+    clientBSession.setOnDirectMessageReceived([&](engine::net::PlayerId, const std::string& text) { bReceivedText = text; });
+    clientCSession.setOnDirectMessageReceived([&](engine::net::PlayerId, const std::string&) { cReceivedAnything = true; });
+
+    bool allHandshook = false;
+    for (int i = 0; i < 300 && !allHandshook; ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientASession.sampleLocalInput(clientAEcs, a, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientASession.tick(0.05f, clientAEcs, a);
+        clientBSession.sampleLocalInput(clientBEcs, b, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientBSession.tick(0.05f, clientBEcs, b);
+        clientCSession.sampleLocalInput(clientCEcs, c, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientCSession.tick(0.05f, clientCEcs, c);
+        allHandshook = clientASession.localPlayerId() != engine::net::kInvalidPlayer &&
+                        clientBSession.localPlayerId() != engine::net::kInvalidPlayer &&
+                        clientCSession.localPlayerId() != engine::net::kInvalidPlayer;
+        if (!allHandshook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(allHandshook, "DM test: all three real clients really complete real handshakes");
+
+    clientASession.sendDirectMessage(clientBSession.localPlayerId(), "a real, adult-to-adult DM");
+    for (int i = 0; i < 150 && bReceivedText.empty(); ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientASession.tick(0.05f, clientAEcs, a);
+        clientBSession.tick(0.05f, clientBEcs, b);
+        clientCSession.tick(0.05f, clientCEcs, c);
+        if (bReceivedText.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(bReceivedText == "a real, adult-to-adult DM",
+          "a real DM between two real, self-declared Adults is genuinely delivered to the real intended recipient");
+    check(!cReceivedAnything, "a real, uninvolved third client genuinely never receives a DM meant for someone else "
+                               "-- real, targeted delivery, not a broadcast");
+
+    // Now A (Adult) DMs C (Minor) -- Minor Mode's real "DM restrictions"
+    // must block this entirely.
+    bool bStillOnlyHasFirstMessage = true;
+    cReceivedAnything = false;
+    clientASession.sendDirectMessage(clientCSession.localPlayerId(), "should never arrive");
+    for (int i = 0; i < 100; ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientASession.tick(0.05f, clientAEcs, a);
+        clientCSession.tick(0.05f, clientCEcs, c);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(!cReceivedAnything, "Minor Mode's real DM restriction genuinely blocks a DM touching a real (or possibly) "
+                               "minor recipient -- never delivered");
+    check(bStillOnlyHasFirstMessage, "sanity: the unrelated real delivery to B from earlier is untouched by this second attempt");
+    check(serverSession.directMessageLog().size() == 2,
+          "both real DM attempts (delivered and Minor-Mode-blocked) are real-recorded to the real server-side DM "
+          "log for moderator review");
+    check(serverSession.directMessageLog().entries()[1].blocked,
+          "the real second, Minor-Mode-blocked DM is real-recorded with blocked=true");
+
+    serverSession.shutdown();
+    clientASession.shutdown();
+    clientBSession.shutdown();
+    clientCSession.shutdown();
+}
+
+// Kronos ("Moderation Architecture v2", item B "Behavioral Model
+// (Heuristic v1)"): real, end-to-end proof a real burst of real DMs
+// through the real NetworkSession send path genuinely escalates the real
+// sender's real server-side risk tier -- not a hand-built sample vector
+// the way the pure BehavioralPatternAnalyzer/TrustSafetyService tests
+// above are, the actual wire-protocol path.
+void testNetworkSessionRealRapidDmBurstEscalatesSenderRiskTier() {
+    constexpr uint16_t kTestPort = 17814;
+    engine::core::ECS serverEcs, clientAEcs, clientBEcs;
+    engine::net::NetworkSession serverSession, clientASession, clientBSession;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    serverConfig.maxClients = 4;
+    check(serverSession.initialize(serverConfig), "rapid-DM test: real server real-starts");
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId player) -> engine::core::EntityId {
+        engine::core::EntityId entity = ecs.createEntity("Player" + std::to_string(player));
+        ecs.addComponent<engine::core::Transform>(entity);
+        return entity;
+    });
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kTestPort;
+    clientASession.setLocalIdentity(201, engine::core::AgeGroup::Adult);
+    clientBSession.setLocalIdentity(202, engine::core::AgeGroup::Adult);
+    check(clientASession.initialize(clientConfig), "rapid-DM test: real client A real-connects");
+    check(clientBSession.initialize(clientConfig), "rapid-DM test: real client B real-connects");
+
+    engine::core::EntityId a = clientAEcs.createEntity("A");
+    clientAEcs.addComponent<engine::core::Transform>(a);
+    engine::core::EntityId b = clientBEcs.createEntity("B");
+    clientBEcs.addComponent<engine::core::Transform>(b);
+
+    bool allHandshook = false;
+    for (int i = 0; i < 300 && !allHandshook; ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientASession.sampleLocalInput(clientAEcs, a, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientASession.tick(0.05f, clientAEcs, a);
+        clientBSession.sampleLocalInput(clientBEcs, b, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientBSession.tick(0.05f, clientBEcs, b);
+        allHandshook = clientASession.localPlayerId() != engine::net::kInvalidPlayer &&
+                        clientBSession.localPlayerId() != engine::net::kInvalidPlayer;
+        if (!allHandshook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(allHandshook, "rapid-DM test: both real clients really complete real handshakes");
+
+    engine::net::PlayerId realSenderId = clientASession.localPlayerId();
+    check(serverSession.trustSafetyService().currentTier(realSenderId) == engine::safety::EscalationTier::Log,
+          "rapid-DM test: the real sender starts at the real baseline tier server-side");
+
+    // 10 real, ordinary DMs -- kRapidMessageCountThreshold's real value --
+    // sent in a real burst, each one real-ticked through to real server
+    // receipt before the next is sent.
+    for (int i = 0; i < 10; ++i) {
+        clientASession.sendDirectMessage(clientBSession.localPlayerId(), "hi");
+        for (int tick = 0; tick < 20; ++tick) {
+            serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+            clientASession.tick(0.05f, clientAEcs, a);
+            clientBSession.tick(0.05f, clientBEcs, b);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
+    check(serverSession.directMessageLog().size() == 10, "rapid-DM test: all 10 real DMs are real-recorded server-side");
+    check(serverSession.trustSafetyService().currentTier(realSenderId) != engine::safety::EscalationTier::Log,
+          "a real burst of 10 real, ordinary DMs within the real recent window genuinely escalates the real "
+          "sender's real risk tier past baseline -- proving BehavioralPatternAnalyzer is real-wired into the "
+          "actual DM send path, not just unit-testable in isolation");
+
+    serverSession.shutdown();
+    clientASession.shutdown();
+    clientBSession.shutdown();
+}
+
+// Kronos ("Moderation Architecture v2", item 5 "Creator Safety Tools" --
+// "WorldSafetySettings improvements"): real, end-to-end proof
+// directMessagesEnabled is a genuinely separate real gate from
+// chatEnabled -- chat stays real-enabled here, only DMs are disabled.
+void testNetworkSessionRealDirectMessagesRespectWorldSafetyDirectMessagesDisabled() {
+    constexpr uint16_t kTestPort = 17816;
+    engine::core::ECS serverEcs, clientAEcs, clientBEcs;
+    engine::net::NetworkSession serverSession, clientASession, clientBSession;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    serverConfig.maxClients = 4;
+    check(serverSession.initialize(serverConfig), "DM-disabled test: real server real-starts");
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId player) -> engine::core::EntityId {
+        engine::core::EntityId entity = ecs.createEntity("Player" + std::to_string(player));
+        ecs.addComponent<engine::core::Transform>(entity);
+        return entity;
+    });
+    serverSession.worldSafetySettings().directMessagesEnabled = false;
+    check(serverSession.worldSafetySettings().chatEnabled,
+          "DM-disabled test: chatEnabled stays real, unaffected -- these are genuinely separate real toggles");
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kTestPort;
+    clientASession.setLocalIdentity(301, engine::core::AgeGroup::Adult);
+    clientBSession.setLocalIdentity(302, engine::core::AgeGroup::Adult);
+    check(clientASession.initialize(clientConfig), "DM-disabled test: real client A real-connects");
+    check(clientBSession.initialize(clientConfig), "DM-disabled test: real client B real-connects");
+
+    engine::core::EntityId a = clientAEcs.createEntity("A");
+    clientAEcs.addComponent<engine::core::Transform>(a);
+    engine::core::EntityId b = clientBEcs.createEntity("B");
+    clientBEcs.addComponent<engine::core::Transform>(b);
+
+    bool allHandshook = false;
+    for (int i = 0; i < 300 && !allHandshook; ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientASession.sampleLocalInput(clientAEcs, a, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientASession.tick(0.05f, clientAEcs, a);
+        clientBSession.sampleLocalInput(clientBEcs, b, glm::vec3(0.0f), false, false, 0.0f, 0.0f, 0.05f);
+        clientBSession.tick(0.05f, clientBEcs, b);
+        allHandshook = clientASession.localPlayerId() != engine::net::kInvalidPlayer &&
+                        clientBSession.localPlayerId() != engine::net::kInvalidPlayer;
+        if (!allHandshook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(allHandshook, "DM-disabled test: both real clients really complete real handshakes");
+
+    bool bReceivedAnything = false;
+    clientBSession.setOnDirectMessageReceived([&](engine::net::PlayerId, const std::string&) { bReceivedAnything = true; });
+
+    clientASession.sendDirectMessage(clientBSession.localPlayerId(), "should never arrive while DMs are disabled");
+    for (int i = 0; i < 60; ++i) {
+        serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+        clientASession.tick(0.05f, clientAEcs, a);
+        clientBSession.tick(0.05f, clientBEcs, b);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(!bReceivedAnything, "a real DM sent while worldSafetySettings().directMessagesEnabled is false is genuinely "
+                               "never delivered");
+    check(serverSession.directMessageLog().size() == 0,
+          "the real, disabled DM attempt is never even real-recorded to the server-side DM log -- it's rejected "
+          "before that point, same as a chat-disabled message");
 
     serverSession.shutdown();
     clientASession.shutdown();
@@ -13691,6 +17286,27 @@ void testSafetyTrustSafetyServiceOnChatMessageRepeatedFlaggedMessagesEscalate() 
     check(muteCalled, "Repeated real flagged chat messages real-accumulate risk through the real escalation pipeline until a real Mute-tier action fires -- one flagged message is normal, a pattern isn't");
 }
 
+// Kronos ("Moderation Architecture v2", "Minor Mode Enforcement"): the
+// real kMinorModeRiskMultiplier -- the exact same one flagged message
+// must contribute *more* real risk for a real, self-declared Minor
+// sender than for a real Adult sender. Compares real risk scores
+// directly after one identical message (not "messages until a tier
+// boundary crosses," which depends on exactly where that boundary
+// happens to sit relative to the per-message weight -- a real, more
+// direct and more robust proof of the real multiplier's effect).
+void testSafetyTrustSafetyServiceMinorAccruesMoreRiskThanAdultForSameMessage() {
+    engine::safety::TrustSafetyService minorService;
+    engine::safety::TrustSafetyService adultService;
+
+    minorService.onChatMessage(1, "add me on discord", engine::safety::AgeGroup::Minor);
+    adultService.onChatMessage(1, "add me on discord", engine::safety::AgeGroup::Adult);
+
+    check(minorService.currentRisk(1) > adultService.currentRisk(1),
+          "the real, identical flagged message contributes real, strictly more risk for a real, self-declared "
+          "Minor sender than for a real Adult sender -- Minor Mode's real 'stricter thresholds', via "
+          "kMinorModeRiskMultiplier");
+}
+
 // --- Additional NetworkSession integration coverage -----------------------------------
 
 void testNetworkSessionRealChatUnmuteRestoresDelivery() {
@@ -13841,6 +17457,12 @@ void testNetworkSessionRealClassifierFlaggedMessageStillDelivered() {
     clientConfig.mode = engine::net::NetworkMode::Client;
     clientConfig.serverAddress = "127.0.0.1";
     clientConfig.port = kTestPort;
+    // Real, explicit Adult -- OffPlatformRedirect real-hard-blocks for a
+    // real (or possibly) Minor sender under Minor Mode Enforcement (see
+    // safety::PolicyEngine's own comment); this test's real premise
+    // ("flagging alone never blocks delivery") is about the general,
+    // ambiguous-category case, which needs a real, explicit Adult sender.
+    clientASession.setLocalIdentity(1, engine::core::AgeGroup::Adult);
     check(clientASession.initialize(clientConfig), "Classifier-flag test: real client A real-connects");
     check(clientBSession.initialize(clientConfig), "Classifier-flag test: real client B real-connects");
 
@@ -22573,6 +26195,23 @@ int main() {
     testIPInfringementScannerMultiToken();
     testCreatorIdentityGuard();
     testAssetSafetyGuard();
+    testImageClassifierStubDetectsNudity();
+    testImageClassifierStubDetectsSexualization();
+    testImageClassifierStubDetectsGore();
+    testImageClassifierStubDetectsExtremistSymbols();
+    testImageClassifierStubCleanFilenameAllows();
+    testPolicyEngineImageGoreAndExtremistSymbolsAlwaysBlock();
+    testPolicyEngineImageNudityBlocksForMinorOrUnknownOnly();
+    testTrustSafetyServiceOnImageUploadBlocksNudityForRealMinorUploader();
+    testTrustSafetyServiceOnImageUploadAllowsCleanFilenameForRealAdultUploader();
+    testBehavioralPatternAnalyzerCleanHistoryIsNone();
+    testBehavioralPatternAnalyzerDetectsRapidDmEscalation();
+    testBehavioralPatternAnalyzerDetectsRepeatedContactWithMinors();
+    testBehavioralPatternAnalyzerRepeatedMinorContactOutranksRapidMessageCount();
+    testBehavioralPatternAnalyzerDetectsHarassmentPattern();
+    testBehavioralPatternAnalyzerDetectsOffPlatformRedirectPattern();
+    testBehavioralPatternAnalyzerIgnoresSamplesOutsideRecentWindow();
+    testTrustSafetyServiceOnDirectMessagePatternEscalatesRiskForRepeatedMinorContact();
     testListingReviewPipeline();
     testCascadeSplitMath();
     testPrefabSaveLoadRoundTrip();
@@ -22589,6 +26228,14 @@ int main() {
     testPluginManifestSaveLoadRoundTrip();
     testScanLocalPluginDirectoryDiscoversRealManifests();
     testScanLocalPluginDirectoryHandlesMissingDirectory();
+    testGameManifestSaveLoadRoundTrip();
+    testIsGameSafeToLaunchForAgeGroup();
+    testFilterCatalogueEntriesForAgeGroupHidesUnsafeFromMinorsOnly();
+    testScanLocalGameDirectoryDiscoversRealManifests();
+    testScanLocalGameDirectoryHandlesMissingDirectory();
+    testShippedGamesDiscoverAndLoadReal();
+    testBuildGameCatalogueEntriesAggregatesRealShippedGames();
+    testLaunchProcessRealSpawnSucceedsAndFailsHonestly();
     testScriptingOnUpdateFiresEveryTickWithRealDt();
     testScriptingFireCollisionReachesRegisteredHandler();
     testScriptingFireInteractReachesRegisteredHandler();
@@ -22614,20 +26261,64 @@ int main() {
     testScriptingEventsOnPlayerJoinAndLeavePassIdAndName();
     testScriptingUnloadPurgesSessionAndPlayerCallbacksForThatScriptOnly();
     testSceneFileSaveLoadRoundTrip();
+    testSceneFileRigidBodyColliderRoundTrip();
     testProjectFileSaveLoadRoundTrip();
     testProjectFileVersionCompatibility();
     testProjectFileRecoveryPathHelpers();
     testDefaultProjectTemplateLoadsReal();
+    testGenerateProjectReadmeIncludesRealMetadata();
     testLocalProfileGenerateIdIsRealAndVaried();
     testLocalProfileSaveLoadRoundTrip();
+    testLocalProfileLoadsPreSkinToneFileWithHonestDefault();
+    testLocalProfileLoadsPreHeadShapeFileWithHonestDefault();
+    testLocalProfileLoadsPreBodyProportionsFileWithHonestDefault();
+    testLocalProfileLoadsPreAnimationOverridesFileWithHonestDefault();
+    testHeadShapeRadiiAndNameAndIndexConversions();
+    testBuildHumanoidMeshDataProducesDistinctOvalAndSphereHeads();
+    testClampBodyProportionsBoundsValues();
+    testApplyBodyProportionsToSkeletonScalesExpectedJoints();
+    testBuildHumanoidMeshDataAppliesWidthAndLimbScaleToMeshDimensions();
+    testBuildHumanoidMeshDataReflectsTorsoLengthAndShoulderWidthViaScaledSkeleton();
+    testResolveSegmentColorsForLoadoutDefaultsToBakedInClothing();
+    testApplySegmentShadingGradientDarkensExtremitiesButPreservesHeadAndAlpha();
+    testBuildHumanoidMeshDataTorsoIsNotABox();
+    testBuildHumanoidMeshDataArmTapersFromShoulderToElbow();
+    testResolveSkinToneColorHandlesValidUnsetAndOutOfRangeIndices();
+    testLocalProfileDefaultsToUnknownAgeGroupAndUnverified();
     testLoadOrCreateProfileCreatesThenReloads();
+    testLoadOrCreateProfileAssignsRealCreatorId();
+    testLoadOrCreateProfileBackfillsCreatorIdForOldProfile();
+    testLocalProfileLoadsPreRatedItemIdsFileWithHonestDefault();
+    testLocalProfileLoadsPreSettingsFileWithHonestDefaults();
+    testLocalProfileLoadsPreSocialFileWithHonestDefaults();
+    testFriendsServiceSendAcceptDeclineTransitions();
+    testFriendsServiceMessagingScopesPerFriend();
+    testFriendsServicePresenceDefaultsToOfflineWithNoRealData();
+    testNotificationServicePushMarkReadAndFilter();
+    testPurchaseItemWithCreditsSucceedsAndDeductsBalance();
+    testPurchaseItemWithCreditsFailsWhenInsufficientBalance();
+    testPurchaseItemWithCreditsFailsWhenAlreadyOwned();
+    testSubmitRatingAggregatesScoreAndPreventsDuplicates();
+    testSubmitRatingClampsOutOfRangeScores();
+    testResolveAvatarIdleClipPathPrefersOverrideThenFallsBackToShipped();
+    testRecommendationScoreRewardsRecencyPopularityAndQuality();
+    testRankRecommendedItemsFiltersNonApprovedAndRespectsMaxResults();
+    testSubmitRatingPushesNotificationToMatchingCreatorProfile();
+    testSubmitRatingSkipsNotificationForMismatchedOrMissingCreatorProfile();
+    testRatingReceivedNotificationPersists();
+    testTransactionLogSaveLoadRoundTrip();
+    testTransactionLogPublishRecordsCoexistWithPurchaseRecords();
+    testTransactionLogLoadsPrePublishCategoryFileWithHonestDefault();
     testSceneManagerCapture();
     testSceneFileHierarchyRoundTrip();
     testSceneManagerNewSceneClearsEcsAndState();
     testSceneManagerLoadSceneHandlesRenderableWithNoMeshSourceHonestly();
+    testSceneManagerLoadSceneAttachesRealPhysicsBodies();
     testAvatarItemValidation();
     testAvatarItemManifestJsonRoundTrip();
+    testAvatarItemModerationStatusAndManifestBackwardCompatibility();
     testCatalogueDatabaseAndIndex();
+    testCatalogueIndexTextQueryModerationAndNewSortOrders();
     testAvatarLoadoutValidation();
     testAvatarAttachmentPropagation();
     testSkeletonHierarchyValidation();
@@ -22643,6 +26334,7 @@ int main() {
     testAvatarControllerBlendTreeTransitions();
     testAvatarControllerEmotePlayback();
     testAvatarControllerFallingAndLandingStates();
+    testSecondaryHeadBobUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates();
     testLoadoutToRiggedMeshGeneration();
     testCollectKeyframeTimes();
     testAnimationItemValidationAndManifestRoundTrip();
@@ -23124,6 +26816,14 @@ int main() {
     testSessionHistoryEntriesMostRecentFirst();
     testSessionHistoryRemoveEntry();
     testSessionHistorySaveLoadRoundTrip();
+    testGamePlayLogRecordAndSaveLoadRoundTrip();
+    testGamePlayLogRecordSessionEndIgnoresNoOpenSession();
+    testGamePlayLogReconcilesUnclosedSessionsAsCrashed();
+    testComputeGamePlayStatsAndQualityScore();
+    testShouldFlagGameForCrashPattern();
+    testTelemetrySenderFlushPersistsRealEventsToDisk();
+    testSelectHiddenGemsPicksHighQualityLowPlayerCountGames();
+    testHiddenGemsMonthlyRecomputeGate();
     testRemoteEventPayloadSerializationRoundTrip();
     testRemoteEventPayloadSerializationTruncatesBeyondMaxFields();
     testEnetTransportRoundTripTimeMsIsZeroBeforeConnection();
@@ -23161,14 +26861,18 @@ int main() {
     testMuteBlockRegistryRemovePlayerClearsAsAMuter();
     testMuteBlockRegistryRemovePlayerClearsAsATarget();
     testMuteBlockRegistryMuteAndBlockAreIndependent();
+    testDirectMessageLogRecordAccumulates();
+    testDirectMessageLogSaveLoadRoundTrip();
     testChatLogRecordAccumulates();
     testChatLogBoundedEviction();
     testChatLogEntriesPreserveRealOrder();
     testChatLogClear();
     testChatLogSizeMatchesEntries();
+    testChatLogSaveLoadRoundTrip();
     testReportLogSubmitAccumulates();
     testReportLogReportsAgainstFiltersCorrectly();
     testReportLogCountAgainstMatchesFilteredSize();
+    testReportLogSaveLoadRoundTrip();
     testReportCategoryNameAbuse();
     testReportCategoryNameCheating();
     testReportCategoryNameInappropriateContent();
@@ -23181,6 +26885,43 @@ int main() {
     testReviewQueueAddAccumulates();
     testReviewQueueClear();
     testReviewQueueLegalReportFlagPreserved();
+    testReviewQueueSaveLoadRoundTrip();
+    testEscalationEventLogRecordAccumulates();
+    testEscalationEventLogSaveLoadRoundTrip();
+    testAppealLogSubmitAccumulates();
+    testAppealLogAppealsForPlayerFiltersCorrectly();
+    testAppealLogAppealsForProfileIdFiltersCorrectly();
+    testAppealLogResolveSetsOutcomeAndReviewerNote();
+    testAppealLogResolveOutOfRangeIndexFailsHonestly();
+    testAppealOutcomeNameAllValues();
+    testAppealLogSaveLoadRoundTripWithMultipleFreeTextFields();
+    testSafetyReportGeneratorSummarizesRealLogsCorrectly();
+    testPolicyEngineGroomingAlwaysBlocksRegardlessOfAge();
+    testPolicyEngineSexualContentBlocksForMinorOrUnknownOnly();
+    testPolicyEngineHateAlwaysBlocks();
+    testPolicyEngineSelfHarmQueuesForReviewNeverBlocks();
+    testPolicyEngineThreatsQueuesForReview();
+    testPolicyEngineHarassmentPiiOffPlatformSpamWarnOnly();
+    testPolicyEngineOffPlatformRedirectBlocksForMinorButWarnsForAdult();
+    testPolicyEngineCleanMessageAllows();
+    testPolicyEngineMostSevereCategoryWinsWhenMultipleFlagged();
+    testTextClassifierStubDetectsGrooming();
+    testTextClassifierStubDetectsHate();
+    testTextClassifierStubDetectsSelfHarm();
+    testTextClassifierStubDetectsThreats();
+    testTextClassifierStubDetectsSpam();
+    testTextClassifierStubDetectsHarassment();
+    testTextClassifierStubDetectsSexualContent();
+    testTrustSafetyServiceOnChatMessageBlocksSexualContentForRealMinorSender();
+    testFormatTrainingDataLineIncludesRealFields();
+    testAppendTrainingDataSampleWritesRealLineToDisk();
+    testTrustSafetyServiceOnChatMessageSetsBlockedForGrooming();
+    testTrustSafetyServiceOnChatMessageDoesNotBlockOrdinaryFlaggedText();
+    testTrustSafetyServiceOnChatMessageWarnCallbackFiresForBorderlineCategory();
+    testAccountModerationRegistryBanAndUnban();
+    testAccountModerationRegistryMuteAndUnmute();
+    testAccountModerationRegistryBanAndMuteAreIndependent();
+    testAccountModerationRegistrySaveLoadRoundTrip();
     testRollingEventCounterCountInWindowZeroInitially();
     testRollingEventCounterRecordsRealEvents();
     testRollingEventCounterPrunesStaleEvents();
@@ -23218,6 +26959,8 @@ int main() {
     testNetworkSessionRealUngracefulDropSynthesizesConnectionLost();
     testNetworkSessionRealPlayerRosterBroadcastsToOtherJoinedClients();
     testLanDiscoveryProtocolSerializationRoundTrips();
+    testSessionBrowserSortOrdersCorrectly();
+    testSessionBrowserFilterToFriendsMatchesByHostDisplayName();
     testLanDiscoveryHeaderRejectsWrongMagicOrKind();
     testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing();
     testLanSessionBrowserPrunesStaleSessionAfterAnnouncerStops();
@@ -23225,7 +26968,12 @@ int main() {
     testLanSessionBrowserRejectsAnnouncementWithWrongProtocolVersion();
     testLanDiscoveryOptOutViaAdvertiseOnLanFalse();
     testShellStateTransitionsHomeToSessionBrowserAndBack();
-    testShellStateTransitionsHomeToInGameOnPlayOffline();
+    testShellStateTransitionsHomeThroughGameCatalogueToInGame();
+    testShellStateTransitionsGameCatalogueReturnsHome();
+    testShellStateTransitionsHomeThroughAvatarShopAndBack();
+    testShellStateTransitionsHomeThroughSettingsAndBack();
+    testShellStateTransitionsHomeThroughFriendsAndBack();
+    testShellStateTransitionsHomeThroughNotificationsAndBack();
     testShellStateTransitionsJoinFlowHappyPath();
     testShellStateTransitionsJoinFlowFailurePath();
     testShellStateTransitionsCancelJoinReturnsHome();
@@ -23236,6 +26984,11 @@ int main() {
     testNetworkSessionRealChatRespectsWorldSafetyChatDisabled();
     testNetworkSessionRealChatRateLimitDropsExcessMessages();
     testNetworkSessionRealChatProfanityFilterCensorsBroadcast();
+    testNetworkSessionRealHardBlockCategoryNeverDeliveredToRecipient();
+    testNetworkSessionRealPersistentBanRejectsJoin();
+    testNetworkSessionRealDirectMessageDeliveryAndMinorModeRestriction();
+    testNetworkSessionRealRapidDmBurstEscalatesSenderRiskTier();
+    testNetworkSessionRealDirectMessagesRespectWorldSafetyDirectMessagesDisabled();
     testNetworkSessionRealMuteBlockPreventsDeliveryToSpecificRecipient();
     testNetworkSessionRealServerMuteDropsMessageEntirely();
     testNetworkSessionRealReportPlayerReachesServerReportLog();
@@ -23264,6 +27017,7 @@ int main() {
     testSafetyTrustSafetyServiceOnChatMessageCleanTextNotFlagged();
     testSafetyTrustSafetyServiceOnChatMessageOffPlatformRedirectFlagged();
     testSafetyTrustSafetyServiceOnChatMessageRepeatedFlaggedMessagesEscalate();
+    testSafetyTrustSafetyServiceMinorAccruesMoreRiskThanAdultForSameMessage();
     testNetworkSessionRealChatUnmuteRestoresDelivery();
     testNetworkSessionRealProfanityFilterDisabledSendsRawText();
     testNetworkSessionRealClassifierFlaggedMessageStillDelivered();

@@ -36,6 +36,13 @@ void serializeLanAnnouncement(const LanSessionAnnouncement& announcement, ByteWr
     writer.writeU32(announcement.gamePort); // real u16 value, widened -- no writeU16 primitive exists in this wire format
     writer.writeU8(announcement.currentPlayerCount);
     writer.writeU8(announcement.maxPlayerCount);
+    writer.writeString(announcement.gameName);
+    writer.writeFloat(announcement.gameThumbnailColor.x);
+    writer.writeFloat(announcement.gameThumbnailColor.y);
+    writer.writeFloat(announcement.gameThumbnailColor.z);
+    writer.writeFloat(announcement.gameThumbnailColor.w);
+    writer.writeU8(announcement.gameSafetyStatusValue);
+    writer.writeU64(static_cast<uint64_t>(announcement.sessionStartUnixSeconds));
 }
 
 bool deserializeLanAnnouncement(ByteReader& reader, LanSessionAnnouncement& outAnnouncement) {
@@ -47,6 +54,13 @@ bool deserializeLanAnnouncement(ByteReader& reader, LanSessionAnnouncement& outA
     parsed.gamePort = static_cast<uint16_t>(reader.readU32());
     parsed.currentPlayerCount = reader.readU8();
     parsed.maxPlayerCount = reader.readU8();
+    parsed.gameName = reader.readString();
+    parsed.gameThumbnailColor.x = reader.readFloat();
+    parsed.gameThumbnailColor.y = reader.readFloat();
+    parsed.gameThumbnailColor.z = reader.readFloat();
+    parsed.gameThumbnailColor.w = reader.readFloat();
+    parsed.gameSafetyStatusValue = reader.readU8();
+    parsed.sessionStartUnixSeconds = static_cast<int64_t>(reader.readU64());
     if (reader.hasError()) return false;
     outAnnouncement = parsed;
     return true;

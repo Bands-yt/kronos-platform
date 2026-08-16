@@ -22,7 +22,24 @@ bool Audio::initialize() {
     initialized_ = true;
     std::fprintf(stdout, "Audio: miniaudio engine initialized (%u channels @ %u Hz)\n",
                  ma_engine_get_channels(engine_), ma_engine_get_sample_rate(engine_));
+    // Real-reapplies whatever master volume was set (or left at its real
+    // default of 1.0f) before initialize() ran -- see setMasterVolume()'s
+    // own comment.
+    ma_engine_set_volume(engine_, masterVolume_);
     return true;
+}
+
+void Audio::setMasterVolume(float volume01) {
+    masterVolume_ = volume01;
+    if (initialized_) ma_engine_set_volume(engine_, masterVolume_);
+}
+
+void Audio::setCategoryVolume(AudioCategory category, float volume01) {
+    if (category == AudioCategory::Music) {
+        musicVolume_ = volume01;
+    } else {
+        sfxVolume_ = volume01;
+    }
 }
 
 void Audio::shutdown() {
@@ -94,7 +111,8 @@ void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward,
         ma_sound_set_position(sound, transform.position.x, transform.position.y, transform.position.z);
         ma_sound_set_min_distance(sound, source.minDistance);
         ma_sound_set_max_distance(sound, source.maxDistance);
-        ma_sound_set_volume(sound, source.volume);
+        float categoryVolume = source.category == AudioCategory::Music ? musicVolume_ : sfxVolume_;
+        ma_sound_set_volume(sound, source.volume * categoryVolume);
         ma_sound_set_looping(sound, source.looping ? MA_TRUE : MA_FALSE);
 
         bool isPlaying = ma_sound_is_playing(sound) == MA_TRUE;

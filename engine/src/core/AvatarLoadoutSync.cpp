@@ -20,6 +20,8 @@ glm::vec3 defaultAttachmentOffset(AvatarItemCategory category) {
         case AvatarItemCategory::Accessory: return glm::vec3(0.0f, 0.5f, 0.0f);
         case AvatarItemCategory::LayeredClothing: return glm::vec3(0.0f, 0.36f, 0.0f);
         case AvatarItemCategory::Emote: return glm::vec3(0.0f);
+        case AvatarItemCategory::Shoes: return glm::vec3(0.0f, -0.9f, 0.0f);
+        case AvatarItemCategory::Back: return glm::vec3(0.0f, 0.35f, -0.15f);
     }
     return glm::vec3(0.0f);
 }

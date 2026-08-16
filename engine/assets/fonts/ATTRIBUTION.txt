@@ -1,0 +1,10 @@
+NotoSans-Regular.ttf / NotoSans-Bold.ttf
+Font: Noto Sans (https://fonts.google.com/noto/specimen/Noto+Sans)
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
+License: SIL Open Font License, Version 1.1 (OFL-1.1) -- full text at
+https://openfontlicense.org
+
+The OFL permits embedding/bundling these font files in software and
+redistributing them as part of it, which is exactly how Kronos Studio and
+engine_runtime use them (ImGui's default text/heading font, replacing
+ImGui's own built-in bitmap font -- see studio/StudioFonts.cpp).

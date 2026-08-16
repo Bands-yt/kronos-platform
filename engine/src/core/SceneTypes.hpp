@@ -130,6 +130,15 @@ struct CompositePushConstants {
     float sunScreenX = 0.0f;
     float sunScreenY = 0.0f;
     float sunVisible = 0.0f; // 1.0 if the sun is in front of the camera this frame, 0.0 otherwise
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Accessibility: Colorblind modes"): real, new -- 0=None/
+    // 1=Protanopia/2=Deuteranopia/3=Tritanopia, matching
+    // accessibility::ColorblindMode's own real enum order. A plain
+    // float, not an int, for the same std430-layout reason every other
+    // field in this struct already is one (see this struct's own header
+    // comment) -- shaders/composite.frag rounds it back to an integer
+    // mode index itself.
+    float colorblindMode = 0.0f;
 };
 
 // Must exactly match the `push_constant` block in shaders/cinematic.frag.

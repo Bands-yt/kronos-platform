@@ -2,6 +2,8 @@
 
 #include <imgui.h>
 
+#include "core/UITheme.hpp"
+
 namespace engine::studio {
 
 namespace {
@@ -16,7 +18,18 @@ ImVec4 accentColor() { return ImGui::GetStyle().Colors[ImGuiCol_CheckMark]; }
 
 void drawPluginHeader(const char* title) {
     ImVec4 accent = accentColor();
+    // Kronos ("UI/UX Revamp" -- "bold, thick, modern text for all item
+    // labels and section headers"): every plugin's own panel title
+    // already funnels through this one real, shared call site -- pushing
+    // the bold font here gets every one of them for free, not a sweep
+    // through each plugin's own drawPanel(). Real, honest null-check:
+    // ImFont::PushFont(nullptr) is undefined in Dear ImGui, so a failed
+    // font load (core::kronosBoldFont()'s own comment) falls back to
+    // whatever font is already active rather than crashing.
+    ImFont* bold = core::kronosBoldFont();
+    if (bold != nullptr) ImGui::PushFont(bold);
     ImGui::TextColored(accent, "%s", title);
+    if (bold != nullptr) ImGui::PopFont();
     ImVec2 lineStart = ImGui::GetCursorScreenPos();
     float width = ImGui::GetContentRegionAvail().x;
     ImGui::GetWindowDrawList()->AddLine(lineStart, ImVec2(lineStart.x + width, lineStart.y),

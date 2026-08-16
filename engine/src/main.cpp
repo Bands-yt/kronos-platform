@@ -121,10 +121,17 @@ int main(int argc, char** argv) {
     bool renderShowcaseMode = false;
     bool tntWarsMode = false;
     std::string tntWarsMapArg; // real, optional positional map-name selector for --tntwars (see below)
+    bool testerSafetyMode = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--server") {
             networkConfig.mode = engine::net::NetworkMode::Server;
+            // Kronos ("Moderation Architecture v1", Phase 1): a real,
+            // long-running production server is exactly the real use
+            // case Config::persistModerationLogs's own comment
+            // describes -- opted in here, not by default (see that
+            // field's own comment for why the default is false).
+            networkConfig.persistModerationLogs = true;
             if (i + 1 < argc) networkConfig.port = static_cast<uint16_t>(std::atoi(argv[++i]));
         } else if (arg == "--client") {
             networkConfig.mode = engine::net::NetworkMode::Client;
@@ -190,6 +197,18 @@ int main(int argc, char** argv) {
             // behaving exactly as before.
             tntWarsMode = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') tntWarsMapArg = argv[++i];
+        } else if (arg == "--tester-mode") {
+            // Kronos ("Moderation Architecture v2", "Tester Safety
+            // Mode"): a real, explicit pre-launch safety default for an
+            // unverified tester build -- see RuntimeShell::
+            // effectiveAgeGroup()'s own comment for exactly what this
+            // forces and why "unverified" is honest here (a real CLI
+            // launch configuration, not a fabricated verification check).
+            // Only meaningful alongside the real Home Screen shell
+            // (homeScreenMode below) -- every other CLI mode
+            // (--tntwars/--server/etc.) has no Catalogue/Session Browser
+            // for this to apply to.
+            testerSafetyMode = true;
         }
     }
 
@@ -212,7 +231,11 @@ int main(int argc, char** argv) {
     engine::core::Application app;
 
     engine::core::Application::CreateInfo info;
-    info.title = "Engine Runtime";
+    // Kronos ("Branding + Release Prep"): real OS window title -- this
+    // used to say the generic "Engine Runtime" (this class's own
+    // internal/legacy name), not the real product name a player actually
+    // sees in their taskbar/window switcher.
+    info.title = "Kronos";
     info.width = 1280;
     info.height = 720;
     info.enableValidation = true;
@@ -1416,6 +1439,23 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // Kronos ("Moderation Architecture v2", "Session Browser Game
+    // Identity"): real "which game is this session actually running,"
+    // derived from the same real rich-mode flags parsed above -- a real,
+    // honest, direct answer for a hosted `--server` session, not a
+    // fabricated lookup. `gameThumbnailColor`/`gameSafetyStatus` stay at
+    // their real, honest defaults here: none of TNT Wars/Mining Sim/
+    // House Demo/Render Showcase have a real core::GameManifest on disk
+    // today (confirmed by grep -- only games/DefaultWorld and
+    // games/SkyGarden exist), so there's nothing real to look either
+    // value up from yet; a real, scoped follow-up once those modes get
+    // real manifests, not built speculatively here.
+    if (tntWarsMode) networkConfig.gameName = "TNT Wars";
+    else if (miningSimMode) networkConfig.gameName = "Mining Simulator";
+    else if (houseDemoMode) networkConfig.gameName = "House Demo";
+    else if (renderShowcaseMode) networkConfig.gameName = "Render Showcase";
+    else networkConfig.gameName = "Default World";
+
     if (networkConfig.mode != engine::net::NetworkMode::Offline) {
         if (!app.startNetworking(networkConfig)) {
             std::fprintf(stderr, "engine_runtime: startNetworking failed.\n");
@@ -1465,20 +1505,23 @@ int main(int argc, char** argv) {
     fallingBoxMeshSource.kind = engine::core::MeshSourceKind::Box;
     fallingBoxMeshSource.params = {0.5f, 0.5f, 0.5f};
 
-    // The playable character -- see core/CharacterController.hpp. A real
-    // capsule mesh now, matching createCharacterCapsule's collision shape
-    // exactly (same radius/halfHeight). A capsule is rotationally
-    // symmetric, though, so on its own it couldn't show that setRotationY
-    // is genuinely turning the body to face movement direction each tick
-    // -- the small "nose" marker mesh (a tiny box) is what CharacterController
-    // positions just in front of it every frame to make that visible.
+    // The playable character -- see core/CharacterController.hpp.
+    // capsuleMesh/noseMesh stay registered (still real, still used below
+    // by the networked-player entity, a deliberately simpler Transform+
+    // Renderable-only avatar -- see startNetworking()'s own comment on
+    // why that path doesn't use a physics capsule at all). The local
+    // player's own body is now the real, 18-bone rigged humanoid avatar
+    // (Kronos "Avatar System" -- see Application::spawnLocalPlayerAvatar()'s
+    // own comment), not this plain capsule mesh.
     uint32_t capsuleMesh = app.meshLibrary().registerMesh(engine::core::Mesh::createCapsule(
         renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.35f, 0.55f));
     uint32_t noseMesh = app.meshLibrary().registerMesh(engine::core::Mesh::createBox(
         renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), glm::vec3(1.0f)));
 
-    auto character = app.characterController().spawn(app.ecs(), app.physics(), {0.0f, 3.0f, -6.0f}, noseMesh);
-    makeRenderable(app.ecs(), character, capsuleMesh, {0.25f, 0.55f, 0.85f}, 0.05f, 0.55f);
+    if (!app.spawnLocalPlayerAvatar({0.0f, 3.0f, -6.0f})) {
+        std::fprintf(stderr, "engine_runtime: spawnLocalPlayerAvatar() failed for the bring-up world.\n");
+    }
+    auto character = app.characterController().entity();
 
     // Sprint 11 ("Networking Foundation"): the real networked-player
     // entity Client mode drives -- see Application::startNetworking()'s
@@ -1975,7 +2018,34 @@ int main(int argc, char** argv) {
             }
             makeRenderable(app.ecs(), networkedPlayer, capsuleMesh, {0.85f, 0.55f, 0.25f}, 0.05f, 0.55f);
             return networkedPlayer;
+        }, [&app](glm::vec4 skinTone, engine::core::HeadShape headShape, engine::core::BodyProportions bodyProportions,
+                  const engine::core::AvatarLoadout& loadout, const engine::core::CatalogueIndex& catalogueIndex,
+                  const engine::core::AnimationOverrides& animationOverrides) -> engine::core::EntityId {
+            // Kronos ("Avatar System" -- "Spawn a default avatar when
+            // entering any world"): the real, same
+            // Application::spawnLocalPlayerAvatar() the bring-up world
+            // above uses -- one real default avatar spawn path, not two
+            // independently-drifting ones. Called here as the real
+            // callback RuntimeShell::selectGame() invokes once
+            // runtime::loadGame() actually succeeds for a picked
+            // ProjectPath Catalogue game. `skinTone`/`headShape`/
+            // `bodyProportions`/`loadout`/`catalogueIndex`/
+            // `animationOverrides` are the real, chosen (or real, honest
+            // default) appearance RuntimeShell resolved from its own
+            // core::LocalProfile plus the real, on-disk avatar catalogue/
+            // loadout/animation database -- this lambda has no profile/
+            // catalogue access of its own, it just forwards what it's
+            // given.
+            glm::vec3 spawnPosition{0.0f, 3.0f, -6.0f};
+            if (!app.spawnLocalPlayerAvatar(spawnPosition, skinTone, headShape, bodyProportions, loadout, catalogueIndex,
+                                             animationOverrides)) {
+                std::fprintf(stderr, "engine_runtime: spawnLocalPlayerAvatar() failed for a Catalogue game.\n");
+                return engine::core::kNullEntity;
+            }
+            app.characterController().setInitialCameraAngles(-90.0f, -15.0f);
+            return app.characterController().entity();
         });
+        shell->setTesterSafetyMode(testerSafetyMode);
         if (!shell->initialize()) {
             std::fprintf(stderr, "engine_runtime: RuntimeShell::initialize failed -- continuing without the real "
                                   "Home Screen shell.\n");

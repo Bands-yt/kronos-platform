@@ -20,6 +20,32 @@ MeshSourceKind meshSourceKindFromIndex(int index) {
     }
 }
 
+// Kronos ("Game Catalogue Overhaul", Phase 1) -- same index-based
+// per-kind convention as meshSourceKindToIndex/FromIndex above, applied
+// to RigidBody/ColliderShape.
+int rigidBodyMotionTypeToIndex(RigidBodyMotionType type) { return static_cast<int>(type); }
+
+RigidBodyMotionType rigidBodyMotionTypeFromIndex(int index) {
+    switch (index) {
+        case 0: return RigidBodyMotionType::Static;
+        case 1: return RigidBodyMotionType::Kinematic;
+        case 2: return RigidBodyMotionType::Dynamic;
+        default: return RigidBodyMotionType::Static; // unrecognized on load -- fail soft
+    }
+}
+
+int colliderShapeKindToIndex(ColliderShapeKind kind) { return static_cast<int>(kind); }
+
+ColliderShapeKind colliderShapeKindFromIndex(int index) {
+    switch (index) {
+        case 0: return ColliderShapeKind::Box;
+        case 1: return ColliderShapeKind::Sphere;
+        case 2: return ColliderShapeKind::Capsule;
+        case 3: return ColliderShapeKind::Mesh;
+        default: return ColliderShapeKind::Box; // unrecognized on load -- fail soft
+    }
+}
+
 } // namespace
 
 bool SceneFile::saveToFile(const std::string& path) const {
@@ -73,6 +99,20 @@ bool SceneFile::saveToFile(const std::string& path) const {
             const auto& l = e.light;
             out << "LIGHT " << (l.enabled ? 1 : 0) << ' ' << l.color.x << ' ' << l.color.y << ' ' << l.color.z
                 << ' ' << l.intensity << ' ' << l.radius << "\n";
+        }
+
+        if (e.hasRigidBody) {
+            out << "RIGIDBODY " << rigidBodyMotionTypeToIndex(e.motionType) << "\n";
+
+            if (e.hasColliderShape) {
+                // Same trailing-path convention as MESHSOURCE above -- path
+                // is last on the line, "-" when empty, so a real path with
+                // spaces round-trips correctly.
+                out << "COLLIDER " << colliderShapeKindToIndex(e.colliderShape.kind) << ' '
+                    << e.colliderShape.params.x << ' ' << e.colliderShape.params.y << ' '
+                    << e.colliderShape.params.z << ' ' << (e.colliderShape.path.empty() ? "-" : e.colliderShape.path)
+                    << "\n";
+            }
         }
     }
 
@@ -148,6 +188,23 @@ bool SceneFile::loadFromFile(const std::string& path) {
             iss >> enabledInt >> current->light.color.x >> current->light.color.y >> current->light.color.z >>
                 current->light.intensity >> current->light.radius;
             current->light.enabled = enabledInt != 0;
+        } else if (line.rfind("RIGIDBODY ", 0) == 0 && current != nullptr) {
+            current->hasRigidBody = true;
+            std::istringstream iss(line.substr(10));
+            int motionTypeIndex = 0;
+            iss >> motionTypeIndex;
+            current->motionType = rigidBodyMotionTypeFromIndex(motionTypeIndex);
+        } else if (line.rfind("COLLIDER ", 0) == 0 && current != nullptr) {
+            current->hasColliderShape = true;
+            std::istringstream iss(line.substr(9));
+            int kindIndex = 0;
+            iss >> kindIndex >> current->colliderShape.params.x >> current->colliderShape.params.y >>
+                current->colliderShape.params.z;
+            current->colliderShape.kind = colliderShapeKindFromIndex(kindIndex);
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
+            current->colliderShape.path = (rest.empty() || rest == "-") ? std::string() : rest;
         } else if (line == "END") {
             break;
         }

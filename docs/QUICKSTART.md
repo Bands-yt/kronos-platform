@@ -53,9 +53,29 @@ Build options (pass as `-D<OPTION>=ON/OFF` at configure time):
 Both need a real Vulkan-capable GPU and driver. `studio` opens with a
 docked Explorer/Inspector/Viewport, a live scene you can fly through and
 edit, and a File menu with Save/Load Scene and Save/Open Project.
-`engine_runtime` boots straight into a playable scene (WASD to move,
-mouse to look, Space to jump, E to interact — mouse is captured on
-launch; Alt+Tab or close the window to release it).
+`engine_runtime` boots into a Home Screen with three real buttons:
+**Launch Studio** (opens the editor as a separate process), **Game
+Catalogue** (browse and play real local games — see below), and
+**Sessions** (join a real LAN multiplayer session someone else is
+hosting). Once in a game, WASD moves, mouse looks, Space jumps, E
+interacts (mouse is captured on entering; Escape returns to the Home
+Screen).
+
+### Game Catalogue and the `games/` folder
+
+The Game Catalogue browses real local games under `games/` (a sibling
+of the source repo's `engine/`) — each is its own folder,
+`games/<Name>/game.gamemanifest` (name, description, genre tags,
+manually-authored effort score) plus either a real `project.project` +
+`.scene` pair `engine_runtime` genuinely loads at runtime
+(`runtime::loadGame()`), or a `CLIFLAG` pointing at one of the launch
+modes in the table below for the still-hardcoded rich modes (TNT
+Wars/Mining Sim/House Demo). Two real example games ship in the repo:
+`games/DefaultWorld` (the original bring-up scene) and `games/SkyGarden`
+(a small floating sandbox) — copy either folder as a starting point for
+a new one. Ranking (Featured/genre rows/Hidden Gems) is computed from a
+real local play-log (`game_play_log.playlog`) that both `studio` and
+`engine_runtime` write/read from the same working directory.
 
 `engine_runtime` also accepts these launch modes:
 
@@ -80,9 +100,10 @@ cd build && ctest --output-on-failure
 
 No GPU, window, or live Vulkan device needed — the whole suite is
 assertion-based checks over pure logic and real, in-process
-client/server networking over real loopback ENet. Run it from
-`engine/build/` (some tests reference fixtures via paths relative to
-that directory, e.g. `../../templates/plugin/example.manifest`).
+client/server networking over real loopback ENet. Real shipped fixtures
+(templates/examples/games/assets) resolve correctly regardless of the
+current working directory or whether you're running the dev build or a
+packaged alpha zip — see `core/ResourcePaths.hpp`.
 
 ## Try the plugin and scripting starting points
 

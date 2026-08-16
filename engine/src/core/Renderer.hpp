@@ -109,13 +109,28 @@ public:
     // Renderer -- it wants a plain clear behind its docked ImGui panels,
     // and calls drawSceneInto() itself, manually, against its own
     // offscreen viewport target instead (see the prePass hook below).
+    // Kronos ("Avatar System" -- real humanoid avatar): `riggedMeshLibrary`
+    // is a real, new, optional 6th pointer (default nullptr, so every
+    // pre-existing caller that only ever passed 5 keeps compiling and
+    // behaving identically -- no skinned entities drawn, same as before
+    // this parameter existed). Real bug this fixes: renderFrame()'s own
+    // main swapchain path (engine_runtime's real, live 3D view) called
+    // drawSceneInto() with no RiggedMeshLibrary* at all, so
+    // drawSkinnedEntities() always real-no-op'd for it -- a real,
+    // GPU-uploaded SkinnedRenderable body was there, ECS-wise, and simply
+    // never got submitted to a draw call. Studio's own AnimationPreviewerPlugin
+    // was never affected (it calls drawSceneInto() directly, with its own
+    // explicit RiggedMeshLibrary&, bypassing setScene() entirely -- see
+    // that overload's own header comment), which is exactly why this real
+    // gap went unnoticed until a live gameplay avatar actually needed it.
     void setScene(ECS* ecs, Camera* camera, MeshLibrary* meshLibrary, ParticleSystem* particleSystem,
-                  TextureLibrary* textureLibrary) {
+                  TextureLibrary* textureLibrary, RiggedMeshLibrary* riggedMeshLibrary = nullptr) {
         sceneEcs_ = ecs;
         sceneCamera_ = camera;
         sceneMeshLibrary_ = meshLibrary;
         sceneParticleSystem_ = particleSystem;
         sceneTextureLibrary_ = textureLibrary;
+        sceneRiggedMeshLibrary_ = riggedMeshLibrary;
     }
     void setLighting(const SceneLighting& lighting) { lighting_ = lighting; }
     // Read-only access to the current lighting -- added for
@@ -347,6 +362,31 @@ public:
     // switched on, not a cosmetic quality slider.
     void setPerformanceMode(bool enabled);
     [[nodiscard]] bool isPerformanceModeEnabled() const { return performanceModeEnabled_; }
+
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Graphics: VSync"): real, live -- choosePresentMode()'s
+    // own long-standing comment already named this exact feature as the
+    // honest way to offer MAILBOX (uncapped, lower-latency, real GPU-
+    // power cost) instead of the real, spec-guaranteed FIFO (real vsync)
+    // default; this is that setting. Real-triggers recreateSwapchain()
+    // immediately when the value actually changes (present mode is a
+    // real, immutable swapchain property in Vulkan -- there's no way to
+    // change it without rebuilding the swapchain) -- the same real
+    // mechanism a window resize already drives, so this is a real,
+    // already-proven-safe code path, not new swapchain-recreation logic.
+    void setVsyncEnabled(bool enabled);
+    [[nodiscard]] bool isVsyncEnabled() const { return vsyncEnabled_; }
+
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "Accessibility: Colorblind modes"): real -- 0=None/
+    // 1=Protanopia/2=Deuteranopia/3=Tritanopia, matching
+    // accessibility::ColorblindMode's own real enum order. Applied as a
+    // real tint-matrix pass inside the existing composite post-process
+    // shader (shaders/composite.frag) -- see that shader's own comment
+    // for the exact real matrices used. Out-of-range values real-clamp
+    // to None (0) rather than reading undefined shader behavior.
+    void setColorblindMode(int mode);
+    [[nodiscard]] int colorblindMode() const { return colorblindModeIndex_; }
 
     // Sprint 16 ("Cinematic Graphics"): one real toggle bundling the new
     // consolidated post-FX stack -- SSAO+DOF+motion blur (drawCinematicPass(),
@@ -1238,6 +1278,12 @@ private:
     // public comment and .cpp implementation comment.
     bool performanceModeEnabled_ = false;
 
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer") -- see setVsyncEnabled()/setColorblindMode()'s own public
+    // comments.
+    bool vsyncEnabled_ = true;
+    int colorblindModeIndex_ = 0;
+
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkFormat swapchainFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D swapchainExtent_{};
@@ -1471,6 +1517,7 @@ private:
     MeshLibrary* sceneMeshLibrary_ = nullptr;
     ParticleSystem* sceneParticleSystem_ = nullptr;
     TextureLibrary* sceneTextureLibrary_ = nullptr;
+    RiggedMeshLibrary* sceneRiggedMeshLibrary_ = nullptr;
     SceneLighting lighting_;
     WeatherState weatherState_;
     // Kronos ("Four RTX Maps" Phase 5b): real accumulated wall-clock

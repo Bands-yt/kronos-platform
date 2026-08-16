@@ -3,15 +3,26 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 #include "core/Components.hpp"
+#include "core/GameCatalogueAggregate.hpp"
+#include "core/GameManifest.hpp"
+#include "core/HiddenGemsSelector.hpp"
+#include "core/KronosVersion.hpp"
+#include "core/ProjectReadmeGenerator.hpp"
+#include "core/QualityScore.hpp"
+#include "core/ResourcePaths.hpp"
+#include "core/UITheme.hpp"
 #include "studio/plugins/AlignPlugin.hpp"
 #include "studio/plugins/AnimatorPlugin.hpp"
 #include "studio/plugins/AudioPreviewPlugin.hpp"
 #include "studio/plugins/AnimationPreviewerPlugin.hpp"
+#include "studio/plugins/AvatarEditor.hpp"
 #include "studio/plugins/AvatarPreviewer.hpp"
 #include "studio/plugins/CataloguePanel.hpp"
 #include "studio/plugins/BlockBuilderPlugin.hpp"
@@ -19,6 +30,7 @@
 #include "studio/plugins/CreatorToolsPlugin.hpp"
 #include "studio/plugins/DiagnosticsPlugin.hpp"
 #include "studio/plugins/ModerationPanel.hpp"
+#include "studio/plugins/SafeContentPreviewPanel.hpp"
 #include "studio/plugins/NetworkOverlayPlugin.hpp"
 #include "studio/plugins/PublishingPanel.hpp"
 #include "studio/plugins/CreatorAssetBrowserPlugin.hpp"
@@ -37,6 +49,8 @@
 #include "studio/plugins/LauncherPlugin.hpp"
 #include "studio/plugins/TrailerPanel.hpp"
 #include "studio/plugins/UploadAnimationPlugin.hpp"
+#include "studio/plugins/CreatorDashboardPanel.hpp"
+#include "studio/plugins/CreatorProfilePanel.hpp"
 #include "studio/plugins/UploadAvatarItemPlugin.hpp"
 #include "studio/StudioStyle.hpp"
 
@@ -59,6 +73,50 @@ void checkVkResult(VkResult err) {
         std::fprintf(stderr, "StudioApp: ImGui Vulkan backend error (VkResult=%d)\n", static_cast<int>(err));
     }
 }
+
+// Kronos ("Game Catalogue Overhaul", Phase 7): the exact same real, local
+// play-log file runtime::GameLoader/RuntimeShell record real sessions
+// into (see runtime/RuntimeShell.cpp's own kGamePlayLogPath) -- Studio
+// reads this same file (never writes it) so a dev's own local playtests
+// through engine_runtime are what real Hidden Gems eligibility is
+// computed from, not a second, disconnected notion of "play data."
+constexpr const char* kGamePlayLogPath = "game_play_log.playlog";
+
+// Real, small, hand-rolled "KEY value / END" persisted cache of the last
+// real Hidden Gems computation -- survives across Studio relaunches
+// within the real same calendar month, same convention as every other
+// save/load struct in this codebase (see core::GameManifest's own
+// comment on the shared "why no JSON library" reasoning).
+constexpr const char* kHiddenGemsStatePath = "hidden_gems_state.txt";
+
+void saveHiddenGemsState(const std::string& monthKey, const std::vector<std::string>& gemNames) {
+    std::ofstream out(kHiddenGemsStatePath, std::ios::trunc);
+    if (!out.is_open()) return; // real, honest no-op -- see this cache's own header comment, it's real but non-critical
+    out << "HIDDENGEMS 1\n";
+    out << "MONTH " << monthKey << "\n";
+    for (const std::string& name : gemNames) out << "GEM " << name << "\n";
+    out << "END\n";
+}
+
+bool loadHiddenGemsState(std::string& outMonthKey, std::vector<std::string>& outGemNames) {
+    std::ifstream in(kHiddenGemsStatePath);
+    if (!in.is_open()) return false;
+    std::string header;
+    if (!std::getline(in, header) || header.rfind("HIDDENGEMS", 0) != 0) return false;
+
+    outGemNames.clear();
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind("MONTH ", 0) == 0) {
+            outMonthKey = line.substr(6);
+        } else if (line.rfind("GEM ", 0) == 0) {
+            outGemNames.push_back(line.substr(4));
+        } else if (line == "END") {
+            return true;
+        }
+    }
+    return false;
+}
 } // namespace
 
 StudioApp::StudioApp() = default;
@@ -66,9 +124,16 @@ StudioApp::~StudioApp() { shutdown(); }
 
 bool StudioApp::initialize() {
     core::Window::CreateInfo windowInfo;
-    windowInfo.title = "Studio";
+    // Kronos ("Branding + Release Prep"): real OS window title -- "Studio"
+    // alone read as a generic app-category name, not this product's own.
+    windowInfo.title = "Kronos Studio";
     windowInfo.width = 1600;
     windowInfo.height = 900;
+    // Kronos ("UI/UX Revamp" -- "App Icon"): same real icon, same real
+    // resolution convention as core::Application::initialize() -- one
+    // real asset, both real windows.
+    windowInfo.iconPath =
+        core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/icons/kronos_icon.png";
     if (!window_.initialize(windowInfo)) {
         std::fprintf(stderr, "StudioApp: Window::initialize failed.\n");
         return false;
@@ -153,6 +218,9 @@ bool StudioApp::initialize() {
         if (animationPreviewerPlugin_ != nullptr && animationPreviewerPlugin_->isOpen()) {
             animationPreviewerPlugin_->renderPreview(cmd, renderer_);
         }
+        if (avatarEditor_ != nullptr && avatarEditor_->isOpen()) {
+            avatarEditor_->renderPreview(cmd, renderer_);
+        }
         if (uploadAnimationPlugin_ != nullptr && uploadAnimationPlugin_->isOpen()) {
             uploadAnimationPlugin_->renderPreview(cmd, renderer_);
         }
@@ -220,6 +288,35 @@ bool StudioApp::initialize() {
     pluginManager_.registerPlugin(std::make_unique<plugins::ModelImporterPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_));
 
+    // Kronos ("Avatar Creation System, Marketplace & Economy" -- "Wire
+    // Wallet -> Catalogue purchases"): real, same "local_profile.profile"
+    // identity/wallet runtime::RuntimeShell's own Home Screen uses (see
+    // plugins::CataloguePanel.cpp's own kLocalProfilePath comment) --
+    // loaded once here, before CataloguePanel (below) is constructed with
+    // a real reference to it. loadOrCreateProfile() real-creates one on
+    // first launch, same as RuntimeShell's own ensureLocalProfileLoaded().
+    localProfile_ = core::loadOrCreateProfile("local_profile.profile");
+    (void)transactionLog_.loadFromFile("transaction_log.transactions");
+    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
+    // Layer" -- "UI scale must affect all panels ... AvatarEditor"):
+    // real, one-time application of the shared LocalProfile's own real
+    // uiScale/textScale -- Studio has no live Settings UI of its own
+    // (that lives in runtime::RuntimeShell); this keeps every Studio
+    // panel (including AvatarEditor, which the spec explicitly names)
+    // visually consistent with whatever the player already chose there,
+    // since both real, separate ImGui contexts load the exact same real,
+    // shared "local_profile.profile" file. A one-time call, not a
+    // per-frame one -- ImGui::GetStyle().ScaleAllSizes() is real but
+    // cumulative, and Studio's own style is only ever set up once here at
+    // startup (no live Settings UI to trigger a second real call).
+    ImGui::GetIO().FontGlobalScale = std::max(localProfile_.textScale, 0.1f);
+    ImGui::GetStyle().ScaleAllSizes(std::max(localProfile_.uiScale, 0.1f));
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Clothing & Accessory
+    // Slots"): a fresh checkout with no prior equips just starts with an
+    // empty loadout, not an error -- same "load if it already exists"
+    // convention as catalogueDatabase_ below.
+    (void)localAvatarLoadout_.loadFromFile(localAvatarLoadoutPath_);
+
     // Avatar Item System / Catalogue / Loadout -- catalogueDatabase_'s
     // on-disk file is loaded here if it already exists (a fresh Studio
     // checkout with no prior uploads just starts with an empty
@@ -249,15 +346,39 @@ bool StudioApp::initialize() {
     avatarPreviewer_ = avatarPreviewer.get();
     pluginManager_.registerPlugin(std::move(avatarPreviewer));
 
+    // Kronos ("Creator Profiles v2 + Marketplace Analytics + Creator
+    // Dashboard" -- "View Profile button"): constructed here, before
+    // cataloguePanel below, since CataloguePanel's own "View Creator
+    // Profile" button needs a real reference to it.
+    auto creatorProfilePanel =
+        std::make_unique<plugins::CreatorProfilePanel>(localProfile_, catalogueDatabase_, transactionLog_);
+    creatorProfilePanel_ = creatorProfilePanel.get();
+    pluginManager_.registerPlugin(std::move(creatorProfilePanel));
+
+    pluginManager_.registerPlugin(
+        std::make_unique<plugins::CreatorDashboardPanel>(localProfile_, catalogueDatabase_, transactionLog_));
+
     auto cataloguePanel = std::make_unique<plugins::CataloguePanel>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_,
-        textureLibrary_, catalogueIndex_, catalogueDatabase_, *avatarPreviewer_);
+        textureLibrary_, catalogueIndex_, catalogueDatabase_, catalogueDatabasePath_, *avatarPreviewer_,
+        *creatorProfilePanel_, localProfile_, transactionLog_);
     cataloguePanel_ = cataloguePanel.get();
     pluginManager_.registerPlugin(std::move(cataloguePanel));
 
+    // Kronos ("Avatar Phase" -- "AvatarEditor: Skin-Tone Selection"):
+    // real, own rigged demo body + PreviewScene, same real precedent
+    // animationPreviewer above already established -- see AvatarEditor's
+    // own class comment.
+    auto avatarEditor = std::make_unique<plugins::AvatarEditor>(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), riggedMeshLibrary_,
+        localProfile_, catalogueIndex_, localAvatarLoadout_, animationDatabase_);
+    avatarEditor_ = avatarEditor.get();
+    pluginManager_.registerPlugin(std::move(avatarEditor));
+
     auto uploadAvatarItem = std::make_unique<plugins::UploadAvatarItemPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_,
-        textureLibrary_, catalogueDatabase_, catalogueIndex_, catalogueDatabasePath_);
+        textureLibrary_, catalogueDatabase_, catalogueIndex_, catalogueDatabasePath_, studioTrustSafetyService_,
+        localProfile_, transactionLog_);
     uploadAvatarItemPlugin_ = uploadAvatarItem.get();
     pluginManager_.registerPlugin(std::move(uploadAvatarItem));
 
@@ -306,6 +427,12 @@ bool StudioApp::initialize() {
     // this is a separate panel rather than a section bolted onto that
     // one.
     pluginManager_.registerPlugin(std::make_unique<plugins::ModerationPanel>(networkSession_));
+
+    // Kronos ("Moderation Architecture v2", item 5 "Creator Safety
+    // Tools"): standalone, no constructor arguments needed -- see
+    // SafeContentPreviewPanel.hpp's own class comment for why it has no
+    // net::NetworkSession dependency, unlike ModerationPanel above.
+    pluginManager_.registerPlugin(std::make_unique<plugins::SafeContentPreviewPanel>());
 
     // Publishing (Sprint 13 "Publishing & Game Packaging" task 5) --
     // real references into sceneManager_/viewportPanel_'s own camera/
@@ -495,6 +622,9 @@ bool StudioApp::initImGuiVulkanBackend() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
     applyStudioStyle(); // Studio's own palette/rounding on top of the stock dark theme -- see StudioStyle.hpp
+    // Kronos ("UI/UX Revamp" -- "bold, thick, modern text"): must load
+    // before ImGui_ImplVulkan_Init() below builds the font atlas texture.
+    core::loadKronosFonts(core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/fonts");
 
     if (!ImGui_ImplSDL2_InitForVulkan(window_.handle())) {
         return false;
@@ -558,14 +688,17 @@ void StudioApp::drawDockspace() {
 
     if (ImGui::BeginMenuBar()) {
         // Sprint 7 ("Studio UI Revamp") task category 1: real branded
-        // header text -- "Bands Studio", tinted with the same accent
-        // StudioStyle.hpp already uses for every interactive element, so
-        // it reads as this app's own identity rather than a stock ImGui
-        // menu bar. A thin vertical separator (drawn manually -- ImGui's
-        // own ImGui::Separator() is horizontal-only and would break the
-        // menu bar's single-line layout) keeps it visually distinct from
-        // the File/Edit/View menus that follow.
-        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "Bands Studio");
+        // header text, tinted with the same accent StudioStyle.hpp
+        // already uses for every interactive element, so it reads as
+        // this app's own identity rather than a stock ImGui menu bar. A
+        // thin vertical separator (drawn manually -- ImGui's own
+        // ImGui::Separator() is horizontal-only and would break the menu
+        // bar's single-line layout) keeps it visually distinct from the
+        // File/Edit/View menus that follow.
+        // Kronos ("Branding + Release Prep"): real fix -- this read
+        // "Bands Studio" (a stale pre-Kronos-rename label that never got
+        // updated) up until now.
+        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "Kronos Studio");
         ImGui::SameLine(0.0f, 12.0f);
         ImVec2 sepTop = ImGui::GetCursorScreenPos();
         float sepHeight = ImGui::GetFrameHeight();
@@ -594,9 +727,16 @@ void StudioApp::drawDockspace() {
             ImGui::EndMenu();
         }
         pluginManager_.drawMenu();
+        // Kronos ("Branding + Release Prep" -- "About panel", "Version
+        // number"): real, minimal Help menu.
+        if (ImGui::BeginMenu("Help")) {
+            if (ImGui::MenuItem("About Kronos Studio")) showAboutPanel_ = true;
+            ImGui::EndMenu();
+        }
         ImGui::EndMenuBar();
     }
 
+    drawAboutPanel();
     drawSceneTabsBar();
     drawRecoveryBanner();
     drawWelcomePanel();
@@ -645,6 +785,25 @@ void StudioApp::drawDockspace() {
     drawPendingFileActionPopup();
 }
 
+void StudioApp::drawAboutPanel() {
+    if (!showAboutPanel_) return;
+    ImGui::SetNextWindowSize(ImVec2(380.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::Begin("About Kronos Studio", &showAboutPanel_, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "KRONOS STUDIO");
+        ImGui::Text("Version %s", core::kKronosVersion);
+        ImGui::TextDisabled("Built %s", core::kKronosBuildDate);
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "Kronos Studio is the real-time 3D editor for the Kronos platform: scene editing, avatar "
+            "creation, marketplace publishing, moderation, and networked playtesting, all in one Alpha "
+            "build.");
+        ImGui::Separator();
+        ImGui::TextDisabled("Project: %s", currentProject_.name.c_str());
+        if (ImGui::Button("Close")) showAboutPanel_ = false;
+    }
+    ImGui::End();
+}
+
 void StudioApp::drawFileMenu() {
     if (!ImGui::BeginMenu("File")) return;
 
@@ -683,6 +842,21 @@ void StudioApp::drawFileMenu() {
         std::string suggested = currentProjectPath_.empty() ? "project.project" : currentProjectPath_;
         std::snprintf(filePathBuffer_, sizeof(filePathBuffer_), "%s", suggested.c_str());
         pendingFileAction_ = PendingFileAction::OpenProject;
+    }
+
+    ImGui::Separator();
+    // Kronos ("Branding + Release Prep" -- "Basic README generator
+    // (Studio)"): real -- pure core::generateProjectReadme() over this
+    // project's own real, already-saved metadata (name/scenes/
+    // timestamps), written next to the real project file on disk.
+    // Disabled until a project has actually been saved somewhere real
+    // (there's no real directory to write README.md into otherwise).
+    if (ImGui::MenuItem("Generate README", nullptr, false, !currentProjectPath_.empty())) {
+        std::string directory = std::filesystem::path(currentProjectPath_).parent_path().string();
+        if (directory.empty()) directory = ".";
+        bool ok = core::writeProjectReadme(currentProject_, directory);
+        fileActionStatus_ = ok ? "Generated " + directory + "/README.md" : "Failed to write README.md";
+        notifications_.push(fileActionStatus_, ok ? NotificationSeverity::Success : NotificationSeverity::Error);
     }
 
     ImGui::Separator();
@@ -771,6 +945,8 @@ void StudioApp::drawPendingFileActionPopup() {
                         projectRecoveryOfferPath_ = core::ProjectFile::hasRecoveryFile(path) ? path : std::string();
                         lastAutosavedSceneCount_ = static_cast<size_t>(-1);
                         lastAutosavedActiveSceneIndex_ = -2;
+                        checkHiddenGemsEligibilityAndNotify(path);
+                        checkCrashPatternAndWarn(path);
                     } else {
                         fileActionStatus_ = "Open failed: " + path;
                     }
@@ -820,7 +996,7 @@ void StudioApp::tickProjectAutosave(float dt) {
     if (currentProjectPath_.empty()) return;
 
     projectAutosaveTimer_ += dt;
-    if (projectAutosaveTimer_ < SceneManager::kAutosaveIntervalSeconds) return;
+    if (projectAutosaveTimer_ < core::SceneManager::kAutosaveIntervalSeconds) return;
     projectAutosaveTimer_ = 0.0f;
 
     // Coarse dirty check, same spirit as SceneManager's own entity-count
@@ -853,7 +1029,7 @@ void StudioApp::drawRecoveryBanner() {
     ImGui::Text("An autosaved recovery snapshot exists for \"%s\" from a previous session.", recoveryOfferPath_.c_str());
     ImGui::SameLine();
     if (ImGui::SmallButton("Recover")) {
-        std::string recoveryPath = SceneManager::recoveryPathFor(recoveryOfferPath_);
+        std::string recoveryPath = core::SceneManager::recoveryPathFor(recoveryOfferPath_);
         std::string originalPath = recoveryOfferPath_;
         if (sceneManager_.loadScene(recoveryPath, ecs_, meshLibrary_, renderer_.allocator(), renderer_.device(),
                                      renderer_.commandPool(), renderer_.graphicsQueue(), viewportPanel_.camera())) {
@@ -873,7 +1049,7 @@ void StudioApp::drawRecoveryBanner() {
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Dismiss")) {
-        (void)std::filesystem::remove(SceneManager::recoveryPathFor(recoveryOfferPath_));
+        (void)std::filesystem::remove(core::SceneManager::recoveryPathFor(recoveryOfferPath_));
         recoveryOfferPath_.clear();
     }
     ImGui::EndChild();
@@ -952,7 +1128,7 @@ void StudioApp::switchToScene(const std::string& path) {
     explorerPanel_.setSelected(core::kNullEntity);
     fileActionStatus_ = "Loaded " + path;
     notifications_.push(fileActionStatus_, NotificationSeverity::Success);
-    recoveryOfferPath_ = SceneManager::hasRecoveryFile(path) ? path : std::string();
+    recoveryOfferPath_ = core::SceneManager::hasRecoveryFile(path) ? path : std::string();
 
     auto& tabs = sceneManager_.openScenePaths();
     auto it = std::find(tabs.begin(), tabs.end(), path);
@@ -961,6 +1137,94 @@ void StudioApp::switchToScene(const std::string& path) {
         sceneManager_.setActiveTabIndex(static_cast<int>(tabs.size()) - 1);
     } else {
         sceneManager_.setActiveTabIndex(static_cast<int>(std::distance(tabs.begin(), it)));
+    }
+}
+
+void StudioApp::checkHiddenGemsEligibilityAndNotify(const std::string& projectPath) {
+    std::filesystem::path gameDir = std::filesystem::path(projectPath).parent_path();
+    core::GameManifest thisGameManifest;
+    if (!thisGameManifest.loadFromFile((gameDir / "game.gamemanifest").string())) {
+        return; // real, honest no-op -- this project isn't a cataloged game at all
+    }
+
+    int64_t now =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    if (hiddenGemsComputedMonthKey_.empty()) {
+        // First real check this Studio session -- pull in whatever a
+        // previous real launch already computed, if any real cache
+        // exists on disk.
+        loadHiddenGemsState(hiddenGemsComputedMonthKey_, cachedHiddenGemNames_);
+    }
+
+    std::string gamesDir = core::resolveResourceDir(core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+    std::vector<core::GameCatalogueEntry> allEntries = core::buildGameCatalogueEntries(gamesDir, kGamePlayLogPath, now);
+
+    if (core::shouldRecomputeHiddenGemsThisMonth(hiddenGemsComputedMonthKey_, now)) {
+        std::vector<core::HiddenGemCandidate> candidates;
+        candidates.reserve(allEntries.size());
+        for (const auto& entry : allEntries) {
+            candidates.push_back(core::HiddenGemCandidate{entry.manifest, entry.qualityScore, entry.launchCount});
+        }
+
+        cachedHiddenGemNames_.clear();
+        for (const auto& manifest : core::selectHiddenGems(candidates)) cachedHiddenGemNames_.push_back(manifest.name);
+        hiddenGemsComputedMonthKey_ = core::monthKeyForUnixSeconds(now);
+        saveHiddenGemsState(hiddenGemsComputedMonthKey_, cachedHiddenGemNames_);
+    }
+
+    bool eligible = std::find(cachedHiddenGemNames_.begin(), cachedHiddenGemNames_.end(), thisGameManifest.name) !=
+                     cachedHiddenGemNames_.end();
+    if (!eligible) return;
+
+    core::GamePlayStats stats;
+    float score = 0.0f;
+    for (const auto& entry : allEntries) {
+        if (entry.manifest.name == thisGameManifest.name) {
+            stats = entry.stats;
+            score = entry.qualityScore;
+            break;
+        }
+    }
+
+    char message[512];
+    std::snprintf(message, sizeof(message),
+                  "\"%s\" is eligible for the Hidden Gems row this month! QualityScore %.2f (floor %.2f) -- "
+                  "%.0f avg session min, %.0f%% return rate, %.0f%% crash rate, effort %.2f",
+                  thisGameManifest.name.c_str(), static_cast<double>(score),
+                  static_cast<double>(core::kHiddenGemsQualityScoreFloor), static_cast<double>(stats.avgSessionLengthMinutes),
+                  static_cast<double>(stats.distinctDaysPlayedRatio) * 100.0, static_cast<double>(stats.crashRate) * 100.0,
+                  static_cast<double>(thisGameManifest.effortScore));
+    notifications_.push(message, NotificationSeverity::Success);
+}
+
+void StudioApp::checkCrashPatternAndWarn(const std::string& projectPath) {
+    std::filesystem::path gameDir = std::filesystem::path(projectPath).parent_path();
+    core::GameManifest thisGameManifest;
+    if (!thisGameManifest.loadFromFile((gameDir / "game.gamemanifest").string())) {
+        return; // real, honest no-op -- this project isn't a cataloged game at all
+    }
+    if (thisGameManifest.safetyStatus != core::GameSafetyStatus::Safe) {
+        return; // a real human already flagged this game -- don't re-warn about the same thing every open
+    }
+
+    int64_t now =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    std::string gamesDir = core::resolveResourceDir(core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+    std::vector<core::GameCatalogueEntry> allEntries = core::buildGameCatalogueEntries(gamesDir, kGamePlayLogPath, now);
+
+    for (const auto& entry : allEntries) {
+        if (entry.manifest.name != thisGameManifest.name) continue;
+        if (!core::shouldFlagGameForCrashPattern(entry.stats.crashRate, entry.launchCount)) return;
+
+        char message[512];
+        std::snprintf(message, sizeof(message),
+                      "\"%s\" has crashed in %.0f%% of its last %lld real sessions -- consider marking it Under "
+                      "Review in game.gamemanifest until the cause is found.",
+                      thisGameManifest.name.c_str(), static_cast<double>(entry.stats.crashRate) * 100.0,
+                      static_cast<long long>(entry.launchCount));
+        notifications_.push(message, NotificationSeverity::Warning);
+        return;
     }
 }
 
@@ -1105,6 +1369,24 @@ void StudioApp::run() {
             std::fprintf(stderr, "StudioApp: renderFrame() reported an unrecoverable error.\n");
             break;
         }
+
+        // Kronos ("UI/UX Revamp" / "Avatar & Chat System" -- "Confirm
+        // frame-rate limiter (180 fps) is active in both Studio and
+        // runtime"): real, previously missing here -- runtime::GameLoop::
+        // run() has always had this exact real sleep-based pacer
+        // (targetRenderDt, default 1/180s), Studio's own separate main
+        // loop (this function) never did, so Studio rendered fully
+        // uncapped -- bounded only by whatever Renderer::choosePresentMode()
+        // picked (see that function's own comment on the real fan-spike/
+        // coil-whine finding this fixes together with that change). Same
+        // real target/technique as GameLoop's, not a second, drifting
+        // convention.
+        constexpr float kTargetRenderDt = 1.0f / 180.0f;
+        float frameElapsed = std::chrono::duration<float>(Clock::now() - now).count();
+        float remaining = kTargetRenderDt - frameElapsed;
+        if (remaining > 0.0f) {
+            std::this_thread::sleep_for(std::chrono::duration<float>(remaining));
+        }
     }
 }
 
@@ -1124,6 +1406,7 @@ void StudioApp::shutdown() {
     if (cataloguePanel_ != nullptr) cataloguePanel_->shutdown(renderer_);
     if (uploadAvatarItemPlugin_ != nullptr) uploadAvatarItemPlugin_->shutdown(renderer_);
     if (animationPreviewerPlugin_ != nullptr) animationPreviewerPlugin_->shutdown(renderer_);
+    if (avatarEditor_ != nullptr) avatarEditor_->shutdown(renderer_);
     if (uploadAnimationPlugin_ != nullptr) uploadAnimationPlugin_->shutdown(renderer_);
     if (materialPlugin_ != nullptr) materialPlugin_->shutdown(renderer_);
     if (particleEditorPlugin_ != nullptr) particleEditorPlugin_->shutdown(renderer_);
