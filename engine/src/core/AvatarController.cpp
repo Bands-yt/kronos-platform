@@ -200,23 +200,66 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
 
     // A real, mutable copy -- player_.skinningMatrices() is const (shared
     // read-only state every skinned entity would otherwise reference
-    // directly); the head-bob offset below needs to mutate just the one
-    // head-joint entry before handing the result off.
+    // directly); the head-bob/facial-expression offsets below need to
+    // mutate individual joint entries before handing the result off.
     std::vector<glm::mat4> skinningMatrices = player_.skinningMatrices();
     int headJointIndex = player_.skeleton().findJointIndex("head");
     if (headJointIndex >= 0 && static_cast<size_t>(headJointIndex) < skinningMatrices.size()) {
         float bobDegrees = computeSecondaryHeadBobDegrees(state_, secondaryMotionPhase_, settings_.idleSwayDegrees,
                                                             settings_.walkBobDegrees, settings_.runBobDegrees);
-        // Right-multiplied -- rotates the head mesh in its own bind-local
-        // frame (real, standard "procedural bone tweak on top of a
-        // skinning matrix" technique), around local X (a nod-style bob),
-        // same real convention core::Camera's own rollDegrees rotation
-        // already establishes for "small, additive, doesn't disturb the
-        // rest of the transform."
-        skinningMatrices[static_cast<size_t>(headJointIndex)] =
-            skinningMatrices[static_cast<size_t>(headJointIndex)] *
-            glm::rotate(glm::mat4(1.0f), glm::radians(bobDegrees), glm::vec3(1.0f, 0.0f, 0.0f));
+        // Kronos ("Avatar 2.0" real correctness fix): pivots around the
+        // real head joint's own bind-pose world position, not the rig's
+        // local origin -- a plain right-multiplied rotate() alone rotates
+        // *around whatever point the mesh's own vertices were baked
+        // relative to* (world/rig-space origin here, since
+        // buildHumanoidMeshData() bakes vertices at their real bind-pose
+        // world position, see that function's own worldPos() lambda),
+        // which would swing the head several centimeters sideways per
+        // degree instead of nodding in place. translate(+headPos) *
+        // rotate * translate(-headPos) is the standard "rotate about an
+        // arbitrary point" construction; the facial-expression transforms
+        // just below need the exact same real fix, and reuse `headPos`.
+        glm::vec3 headPos = glm::vec3(player_.skeleton().bindPoseMatrices()[static_cast<size_t>(headJointIndex)][3]);
+        glm::mat4 bob = glm::translate(glm::mat4(1.0f), headPos) *
+                         glm::rotate(glm::mat4(1.0f), glm::radians(bobDegrees), glm::vec3(1.0f, 0.0f, 0.0f)) *
+                         glm::translate(glm::mat4(1.0f), -headPos);
+        skinningMatrices[static_cast<size_t>(headJointIndex)] = skinningMatrices[static_cast<size_t>(headJointIndex)] * bob;
     }
+
+    // Kronos ("Avatar 2.0" -- "Facial System" -- real, automatic,
+    // periodic blinking): a real triangle-shaped open->closed->open
+    // envelope over autoBlinkDurationSeconds, writing straight into
+    // targetFacialExpression_.blinkWeight so it composes naturally with
+    // whatever a real caller has already set via setFacialExpression()
+    // for the other three channels.
+    autoBlinkTimer_ -= dt;
+    if (autoBlinkTimer_ <= 0.0f && autoBlinkProgress_ < 0.0f) {
+        autoBlinkProgress_ = 0.0f;
+        autoBlinkTimer_ = settings_.autoBlinkIntervalSeconds;
+    }
+    if (autoBlinkProgress_ >= 0.0f) {
+        autoBlinkProgress_ += dt;
+        float durationFraction = autoBlinkProgress_ / std::max(settings_.autoBlinkDurationSeconds, 0.001f);
+        if (durationFraction >= 1.0f) {
+            autoBlinkProgress_ = -1.0f;
+            targetFacialExpression_.blinkWeight = 0.0f;
+        } else {
+            targetFacialExpression_.blinkWeight = std::sin(durationFraction * 3.14159265f);
+        }
+    }
+
+    // Kronos ("Avatar 2.0" -- "Facial System" -- "Ensure facial
+    // expressions can be driven by animation curves"): real -- the
+    // currently-blended expression (see setFacialExpression()'s own
+    // comment for how targetFacialExpression_ is set and blended toward)
+    // is applied on top of whatever locomotion pose is already playing,
+    // every real tick, so a real gameplay caller can drive blink/smile/
+    // frown/talk continuously (e.g. from a Luau script reading a
+    // dialogue system's own talk-amplitude) and see it smoothly land on
+    // the actual rigged avatar.
+    currentFacialExpression_ = blendFacialExpressionTowards(currentFacialExpression_, targetFacialExpression_, dt,
+                                                              settings_.facialExpressionBlendSpeed);
+    applyFacialExpressionToSkinningMatrices(skinningMatrices, player_.skeleton(), currentFacialExpression_);
 
     for (EntityId entity : skinnedEntities) {
         if (auto* t = ecs.tryGetComponent<Transform>(entity)) *t = characterTransform;

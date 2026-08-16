@@ -9,6 +9,7 @@
 
 #include "core/AnimationDatabase.hpp"
 #include "core/AnimationPlayer.hpp"
+#include "core/AvatarFace.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueIndex.hpp"
 #include "core/LocalProfile.hpp"
@@ -88,6 +89,20 @@ private:
     std::vector<core::EntityId> skinnedEntities_;
     core::Skeleton skeleton_;
     std::unique_ptr<core::AnimationPlayer> previewPlayer_;
+
+    // Kronos ("Avatar 2.0" -- "Runtime Integration" -- "Ensure Home
+    // avatar preview supports facial expressions"): real -- the Home
+    // preview has no gameplay AvatarController to drive this (it's
+    // view-only), so it ticks the exact same real, shared
+    // core::blendFacialExpressionTowards()/applyFacialExpressionToSkinningMatrices()
+    // pure functions directly, with its own small, real, periodic
+    // auto-blink -- same "a face that never blinks reads as broken"
+    // reasoning AvatarController's own auto-blink already establishes,
+    // duplicated here (not shared as a class) since this preview has no
+    // locomotion state machine to hang a shared owner off of.
+    core::AvatarFacialExpression facialExpression_;
+    float autoBlinkTimer_ = 3.0f;
+    float autoBlinkProgress_ = -1.0f;
 };
 
 } // namespace engine::runtime

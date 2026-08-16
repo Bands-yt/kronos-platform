@@ -2070,6 +2070,26 @@ bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skin
         return false;
     }
 
+    // Kronos ("Avatar 2.0" -- "Facial System" -- "Ensure in-game avatars
+    // update instantly when equipping new items"... and, more directly,
+    // "the actual playable avatar has a real face"): spawns the five
+    // real facial feature entities and folds them into the exact same
+    // skinnedAvatarEntities_ list AvatarController::tick() already
+    // drives every frame -- one real update loop, not a second one. A
+    // real, honest, logged-but-non-fatal degrade if this fails (same
+    // "the avatar itself is still real and already spawned" precedent
+    // the animation-clip loading loop just below already establishes) --
+    // a faceless-but-otherwise-correct avatar is still real and playable.
+    std::vector<EntityId> faceEntities;
+    std::string faceError;
+    if (spawnAvatarFace(ecs_, skeleton, skinTone, riggedMeshLibrary_, renderer_.allocator(), renderer_.device(),
+                         renderer_.commandPool(), renderer_.graphicsQueue(), faceEntities, faceError)) {
+        skinnedAvatarEntities_.insert(skinnedAvatarEntities_.end(), faceEntities.begin(), faceEntities.end());
+    } else {
+        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarFace() failed: %s\n",
+                     faceError.c_str());
+    }
+
     avatarController_ = std::make_unique<AvatarController>(skeleton);
 
     // Real, shipped clips (engine/assets/animations/*.anim) -- same

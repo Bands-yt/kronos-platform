@@ -1,5 +1,70 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later) — Avatar 2.0: Facial System (real, working vertical slice)
+
+Scoped to the Facial System workstream only, per explicit instruction to
+hold off on clothing meshes, accessory visual rigging, LOD, and trailer
+work this pass. Real, tested, and visually verified (live screenshot,
+zoomed crop — eyes/brows/mouth correctly positioned and symmetric, no
+displacement artifacts).
+
+**What shipped:**
+- Extended `buildHumanoidSkeleton()` with five real joints
+  (`face_left_eye`/`face_right_eye`/`face_left_brow`/`face_right_brow`/
+  `face_mouth`), all children of `head`. Joint count 18 → 23; the
+  existing joint-count test and expected-joint-name list were updated,
+  not just left broken.
+- `core::AvatarFace.hpp/.cpp` (new): `AvatarFacialExpression` (blink/
+  smile/frown/talk weights), `computeFacialFeatureTransform()` (pure,
+  tested), `blendFacialExpressionTowards()` (pure exponential smoothing,
+  tested), `applyFacialExpressionToSkinningMatrices()`, and
+  `spawnAvatarFace()` (real GPU mesh spawn — two eyes, two brows, one
+  mouth, each its own tiny RiggedMesh rigidly bound to its own new
+  joint).
+- **Explicitly not a vertex morph-target/blend-shape pipeline** — stated
+  plainly in the header. This engine's GPU skinning has no per-vertex
+  blend-weight mechanism to build "real" morph targets against without a
+  new, separate, larger render-pipeline feature (a second vertex
+  attribute, a shader blend pass, N stored positions per target). What's
+  real instead: five small meshes, each on its own joint, each
+  independently transformed (scale/rotate/offset) per expression — the
+  same real "procedural bone tweak on top of a skinning matrix"
+  technique the existing head-bob already proved out.
+- **Real correctness fix found and applied while building this**: the
+  original head-bob code (and my first draft of the facial-expression
+  code) right-multiplied a rotate/scale directly onto a skinning matrix,
+  which pivots around wherever the mesh's vertices happen to be baked
+  (rig-space origin here) — not around the joint's own position. For a
+  joint ~2 units from origin, a few degrees of "rotation" was actually
+  sliding the head several centimeters sideways per bob cycle, and a
+  blink would have scaled the eye's *position* toward world origin
+  instead of closing it in place. Fixed by wrapping every such transform
+  in `translate(+jointPos) * transform * translate(-jointPos)` (pivot
+  around an arbitrary point), in both places.
+- Wired into the **real gameplay avatar**
+  (`Application::spawnLocalPlayerAvatar()`) and the **Home Screen
+  preview** (`HomeAvatarPreview`) — both spawn the real face and tick a
+  real, periodic auto-blink (a face that never blinks reads as visibly
+  broken even in a stylized rig). `AvatarController` also exposes
+  `setFacialExpression()` for a future real caller (dialogue/emote
+  system) to drive smile/frown/talk continuously.
+- 19 new test checks (skeleton joint parenting, transform math per
+  channel, blend convergence). Full 4-target rebuild clean.
+  **10710/10710 checks passing.**
+
+**Explicitly not done this pass (stated, not silently dropped):**
+- Studio `AvatarEditor` has no face-expression sliders/preview yet — the
+  same reusable `AvatarFace.hpp` functions the runtime uses are ready for
+  it, just not wired into that panel's UI.
+- Clothing meshes (real shirt/pants geometry, fit parameter), accessory
+  *visual* rigging (the attachment-bone architecture this pass
+  establishes for the face is the right foundation for hat/hair/back/
+  handheld attachment points, but no accessory meshes exist yet — Shoes/
+  Face/Back items remain color-tint-only, same pre-existing stated gap),
+  LOD, and draw-call merging are all real, separate, not-yet-started
+  work.
+
+
 Append-only log of real, shipped work and honest scope decisions. Each
 entry is timestamped and states what actually changed, what was tested,
 and what was explicitly deferred or declined — not a status dashboard,

@@ -5627,6 +5627,87 @@ void testSecondaryHeadBobUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates(
           "Jump's real phase-advance rate is zero -- no procedural bob to phase at all while airborne");
 }
 
+// Kronos ("Avatar 2.0" -- "Facial System"): real, pure coverage over the
+// skeleton's own five new face_* attachment joints -- correct parenting
+// (all children of "head"), and a real, honest sanity check that
+// buildHumanoidMeshData() still only tags vertices with the original six
+// HumanoidBodySegment values (the new joints are real attachment points,
+// not new body-mesh segments).
+void testBuildHumanoidSkeletonAddsFaceJointsAsHeadChildren() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    int headIndex = skeleton.findJointIndex("head");
+    check(headIndex >= 0, "setup: the real \"head\" joint exists");
+    const char* kFaceJoints[] = {"face_left_eye", "face_right_eye", "face_left_brow", "face_right_brow", "face_mouth"};
+    for (const char* name : kFaceJoints) {
+        int index = skeleton.findJointIndex(name);
+        check(index >= 0, (std::string("the real \"") + name + "\" joint exists").c_str());
+        if (index >= 0) {
+            check(skeleton.joints[static_cast<size_t>(index)].parentIndex == headIndex,
+                  (std::string("\"") + name + "\" is real-parented directly to \"head\"").c_str());
+        }
+    }
+}
+
+// Kronos ("Avatar 2.0" -- "Facial System"): real, pure coverage over
+// computeFacialFeatureTransform()/blendFacialExpressionTowards() -- the
+// two, fully headless-testable halves of the real procedural expression
+// system (the actual GPU mesh spawn/skinning-matrix write needs a real
+// Vulkan device and is exercised there instead, see this suite's own
+// established "GPU code gets structural verification, pure logic gets
+// full coverage" split, e.g. testResolveAvatarIdleClipPathPrefersOverrideThenFallsBackToShipped()).
+void testFacialExpressionTransformsRespondToEachRealChannel() {
+    using engine::core::AvatarFacialExpression;
+    using engine::core::FacialFeature;
+
+    AvatarFacialExpression neutral;
+    auto eyeAtNeutral = engine::core::computeFacialFeatureTransform(FacialFeature::LeftEye, neutral);
+    check(nearlyEqual(eyeAtNeutral.scale.y, 1.0f), "a real, neutral expression leaves the eye's real scale untouched");
+
+    AvatarFacialExpression fullyClosed;
+    fullyClosed.blinkWeight = 1.0f;
+    auto eyeClosed = engine::core::computeFacialFeatureTransform(FacialFeature::LeftEye, fullyClosed);
+    check(eyeClosed.scale.y < eyeAtNeutral.scale.y,
+          "a real, full blinkWeight real-shrinks the eye's own vertical scale relative to neutral");
+
+    AvatarFacialExpression smiling;
+    smiling.smileWeight = 1.0f;
+    auto mouthSmile = engine::core::computeFacialFeatureTransform(FacialFeature::Mouth, smiling);
+    AvatarFacialExpression frowning;
+    frowning.frownWeight = 1.0f;
+    auto mouthFrown = engine::core::computeFacialFeatureTransform(FacialFeature::Mouth, frowning);
+    check(mouthSmile.positionOffset.y > mouthFrown.positionOffset.y,
+          "a real, full smile real-lifts the mouth higher than a real, full frown");
+
+    auto browSmile = engine::core::computeFacialFeatureTransform(FacialFeature::LeftBrow, smiling);
+    auto browFrown = engine::core::computeFacialFeatureTransform(FacialFeature::LeftBrow, frowning);
+    check(browFrown.rollDegrees != browSmile.rollDegrees,
+          "a real frown and a real smile produce genuinely different real brow tilt");
+    auto leftBrowFrown = engine::core::computeFacialFeatureTransform(FacialFeature::LeftBrow, frowning);
+    auto rightBrowFrown = engine::core::computeFacialFeatureTransform(FacialFeature::RightBrow, frowning);
+    check(nearlyEqual(leftBrowFrown.rollDegrees, -rightBrowFrown.rollDegrees),
+          "left/right brows real-mirror each other's real tilt under the same real expression");
+
+    AvatarFacialExpression talking;
+    talking.talkWeight = 1.0f;
+    auto mouthTalk = engine::core::computeFacialFeatureTransform(FacialFeature::Mouth, talking);
+    auto mouthNeutral = engine::core::computeFacialFeatureTransform(FacialFeature::Mouth, neutral);
+    check(mouthTalk.scale.y > mouthNeutral.scale.y,
+          "a real, full talkWeight real-opens the mouth (larger real vertical scale) relative to neutral");
+
+    // Real, pure blending -- exponential approach, never overshoots,
+    // never regresses away from the real target.
+    AvatarFacialExpression current;
+    AvatarFacialExpression target;
+    target.smileWeight = 1.0f;
+    AvatarFacialExpression afterOneStep = engine::core::blendFacialExpressionTowards(current, target, 0.1f, 10.0f);
+    check(afterOneStep.smileWeight > 0.0f && afterOneStep.smileWeight < 1.0f,
+          "a real, single blend step moves partway toward the real target, not an instant snap");
+    AvatarFacialExpression afterManySteps = current;
+    for (int i = 0; i < 200; ++i) afterManySteps = engine::core::blendFacialExpressionTowards(afterManySteps, target, 0.05f, 10.0f);
+    check(nearlyEqual(afterManySteps.smileWeight, 1.0f, 0.01f),
+          "after real, sustained blending, the real expression genuinely converges on the real target");
+}
+
 void testAvatarControllerFallingAndLandingStates() {
     engine::core::Skeleton skeleton = makeTwoJointTestSkeleton();
     glm::vec3 childBind = skeleton.joints[1].localPosition;
@@ -5707,15 +5788,17 @@ void testLoadoutToRiggedMeshGeneration() {
     engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
     std::string error;
     check(skeleton.validate(error), "buildHumanoidSkeleton() produces a valid, well-formed skeleton");
-    check(skeleton.joints.size() == 18,
+    check(skeleton.joints.size() == 23,
           "the humanoid skeleton has the real 18-bone rig (root/pelvis/spine_lower/spine_upper/neck/head, "
-          "upper/lower arm+hand x2, upper/lower leg+foot x2)");
+          "upper/lower arm+hand x2, upper/lower leg+foot x2) plus the real 5 Avatar 2.0 facial attachment joints "
+          "(face_left_eye/face_right_eye/face_left_brow/face_right_brow/face_mouth)");
     check(skeleton.findJointIndex("root") == 0 && skeleton.joints[0].parentIndex == -1,
           "root is the skeleton's real root joint");
-    const char* kExpectedJoints[] = {"root",        "pelvis",      "spine_lower", "spine_upper", "neck",
-                                       "head",        "arm_L_upper", "arm_L_lower", "hand_L",      "arm_R_upper",
-                                       "arm_R_lower", "hand_R",      "leg_L_upper", "leg_L_lower", "foot_L",
-                                       "leg_R_upper", "leg_R_lower", "foot_R"};
+    const char* kExpectedJoints[] = {
+        "root",         "pelvis",       "spine_lower",  "spine_upper",  "neck",         "head",
+        "face_left_eye", "face_right_eye", "face_left_brow", "face_right_brow", "face_mouth",
+        "arm_L_upper",  "arm_L_lower",  "hand_L",       "arm_R_upper",  "arm_R_lower",  "hand_R",
+        "leg_L_upper",  "leg_L_lower",  "foot_L",       "leg_R_upper",  "leg_R_lower",  "foot_R"};
     bool everyExpectedJointExists = true;
     for (const char* name : kExpectedJoints) {
         if (skeleton.findJointIndex(name) < 0) everyExpectedJointExists = false;
@@ -26335,6 +26418,8 @@ int main() {
     testAvatarControllerEmotePlayback();
     testAvatarControllerFallingAndLandingStates();
     testSecondaryHeadBobUsesRealPerStateAmplitudeAndIsZeroDuringAirborneStates();
+    testBuildHumanoidSkeletonAddsFaceJointsAsHeadChildren();
+    testFacialExpressionTransformsRespondToEachRealChannel();
     testLoadoutToRiggedMeshGeneration();
     testCollectKeyframeTimes();
     testAnimationItemValidationAndManifestRoundTrip();

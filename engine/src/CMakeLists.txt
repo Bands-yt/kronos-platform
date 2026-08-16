@@ -114,6 +114,7 @@ add_library(engine_core STATIC
     core/RiggedMesh.cpp
     core/AnimationPlayer.cpp
     core/RiggedAvatar.cpp
+    core/AvatarFace.cpp
     core/AvatarController.cpp
     core/AnimationItem.cpp
     core/AnimationManifest.cpp

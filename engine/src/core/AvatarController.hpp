@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/AnimationPlayer.hpp"
+#include "core/AvatarFace.hpp"
 #include "core/ECS.hpp"
 #include "core/Physics.hpp"
 #include "core/Skeleton.hpp"
@@ -108,6 +109,20 @@ public:
         float idleSwayHz = 0.3f;
         float walkBobHz = 1.8f;
         float runBobHz = 2.6f;
+
+        // Kronos ("Avatar 2.0" -- "Facial System"): real, tuned so a
+        // real 0.15s auto-blink (autoBlinkDurationSeconds) still reads
+        // as an actual blink rather than a barely-visible flicker (see
+        // blendFacialExpressionTowards()'s own "1 - exp(-dt*speed)"
+        // convention -- ~90% converged within roughly 1/speed seconds).
+        float facialExpressionBlendSpeed = 15.0f;
+        // Real, periodic, automatic blinking -- a character with a real
+        // face that never blinks reads as visibly "off" even in a
+        // stylized rig; this is the same real, small "alive" cue
+        // secondary motion (head-bob) already establishes, applied to
+        // the face instead of the whole head.
+        float autoBlinkIntervalSeconds = 4.0f;
+        float autoBlinkDurationSeconds = 0.15f;
     };
 
     // Two constructors rather than one with `Settings settings = {}` --
@@ -185,6 +200,19 @@ public:
     // additive, not a breaking change.
     void tickAnimation(float dt, float horizontalSpeed, bool grounded, float verticalVelocity = 0.0f);
 
+    // Kronos ("Avatar 2.0" -- "Facial System" -- "expressions can be
+    // driven by animation curves"): real, sets the real TARGET
+    // expression -- tick() blends currentFacialExpression_ toward this
+    // every frame (see Settings::facialExpressionBlendSpeed), smoothly,
+    // not a hard cut. A real caller (a future dialogue/emote system)
+    // drives this continuously for e.g. real lip-sync-adjacent talk
+    // amplitude; the real, periodic auto-blink (see Settings::
+    // autoBlinkIntervalSeconds) writes blinkWeight here too, so a
+    // caller-set expression and the automatic blink compose naturally
+    // rather than fighting over two separate mechanisms.
+    void setFacialExpression(const AvatarFacialExpression& target) { targetFacialExpression_ = target; }
+    [[nodiscard]] const AvatarFacialExpression& facialExpression() const { return currentFacialExpression_; }
+
     [[nodiscard]] AvatarLocomotionState locomotionState() const { return state_; }
     [[nodiscard]] const AnimationPlayer& animationPlayer() const { return player_; }
     [[nodiscard]] const Skeleton& skeleton() const { return player_.skeleton(); }
@@ -230,6 +258,17 @@ private:
     // secondaryHeadBobHzForState()'s own rate for whichever state is
     // currently active.
     float secondaryMotionPhase_ = 0.0f;
+
+    // Kronos ("Avatar 2.0" -- "Facial System"): real expression state --
+    // see setFacialExpression()'s own comment. autoBlinkTimer_ counts
+    // down to the next real, automatic blink; autoBlinkProgress_ < 0
+    // means "not currently blinking", otherwise it's real elapsed
+    // seconds into the current blink (see tick()'s own triangle-shaped
+    // open->closed->open envelope).
+    AvatarFacialExpression currentFacialExpression_;
+    AvatarFacialExpression targetFacialExpression_;
+    float autoBlinkTimer_ = 4.0f;
+    float autoBlinkProgress_ = -1.0f;
 };
 
 } // namespace engine::core

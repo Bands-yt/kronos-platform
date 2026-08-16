@@ -1,5 +1,6 @@
 #include "runtime/HomeAvatarPreview.hpp"
 
+#include <cmath>
 #include <cstdio>
 
 #include "core/Animation.hpp"
@@ -80,6 +81,22 @@ void HomeAvatarPreview::spawnPreviewBody() {
                                   initialHeadShape, proportions)) {
         std::fprintf(stderr, "HomeAvatarPreview: failed to spawn preview body: %s\n", error.c_str());
     }
+
+    // Kronos ("Avatar 2.0" -- "Runtime Integration" -- "Ensure Home
+    // avatar preview supports facial expressions"): real -- same
+    // spawnAvatarFace() call core::Application::spawnLocalPlayerAvatar()
+    // makes for the real gameplay avatar, folded into the same
+    // skinnedEntities_ list so update()'s existing "assign the current
+    // pose to every skinned entity" loop covers the face for free.
+    std::vector<core::EntityId> faceEntities;
+    std::string faceError;
+    if (core::spawnAvatarFace(scene_.ecs(), scaledSkeleton, initialTone, *riggedMeshLibrary_, allocator_, device_,
+                               cmdPool_, queue_, faceEntities, faceError)) {
+        skinnedEntities_.insert(skinnedEntities_.end(), faceEntities.begin(), faceEntities.end());
+    } else {
+        std::fprintf(stderr, "HomeAvatarPreview: failed to spawn face: %s\n", faceError.c_str());
+    }
+
     previewPlayer_ = std::make_unique<core::AnimationPlayer>(scaledSkeleton);
 
     // Kronos ("Home Screen Avatar Preview" -- "idle animation"): real,
@@ -102,7 +119,29 @@ void HomeAvatarPreview::update(float dt) {
     if (!previewPlayer_) return;
     previewPlayer_->tick(dt);
     (void)previewPlayer_->consumeFiredEvents(); // no consumer wired up here -- draining keeps the queue from growing unbounded
-    const auto& matrices = previewPlayer_->skinningMatrices();
+
+    // Kronos ("Avatar 2.0" -- "Facial System"): real, same small,
+    // periodic auto-blink AvatarController's own gameplay path
+    // establishes -- see this class's own header comment on why it's
+    // duplicated here rather than shared.
+    autoBlinkTimer_ -= dt;
+    if (autoBlinkTimer_ <= 0.0f && autoBlinkProgress_ < 0.0f) {
+        autoBlinkProgress_ = 0.0f;
+        autoBlinkTimer_ = 3.0f;
+    }
+    if (autoBlinkProgress_ >= 0.0f) {
+        autoBlinkProgress_ += dt;
+        float durationFraction = autoBlinkProgress_ / 0.15f;
+        if (durationFraction >= 1.0f) {
+            autoBlinkProgress_ = -1.0f;
+            facialExpression_.blinkWeight = 0.0f;
+        } else {
+            facialExpression_.blinkWeight = std::sin(durationFraction * 3.14159265f);
+        }
+    }
+
+    std::vector<glm::mat4> matrices = previewPlayer_->skinningMatrices();
+    core::applyFacialExpressionToSkinningMatrices(matrices, previewPlayer_->skeleton(), facialExpression_);
     for (core::EntityId entity : skinnedEntities_) {
         if (auto* skinned = scene_.ecs().tryGetComponent<core::SkinnedRenderable>(entity)) {
             skinned->skinningMatrices = matrices;

@@ -328,7 +328,52 @@ Skeleton buildHumanoidSkeleton() {
     head.name = "head";
     head.parentIndex = neckIndex;
     head.localPosition = {0.0f, 0.2f, 0.0f};
-    skeleton.addJoint(head);
+    int headIndex = skeleton.addJoint(head);
+
+    // Kronos ("Avatar 2.0" -- "Facial System"): five real, new attachment
+    // joints, children of "head" -- NOT a vertex morph-target/blend-shape
+    // system (this rig's GPU skinning pipeline has no per-vertex blend
+    // weight support to build that against without a much larger render-
+    // pipeline change, see AvatarFace.hpp's own header comment for the
+    // real, honest scope this took instead). Each real facial feature
+    // mesh (spawnAvatarFace(), AvatarFace.cpp) is rigidly bound 100% to
+    // its own joint here, so "expression" is real, per-joint procedural
+    // transform (scale/rotate/offset), applied the exact same
+    // right-multiply-onto-the-skinning-matrix way the existing head-bob
+    // (AvatarController::tick()) already proves out -- not four separate
+    // new mechanisms. Positions are real, hand-placed offsets on the
+    // real head ellipsoid's own front hemisphere (+Z is this rig's own
+    // real "forward" -- see CharacterController::tick()'s own
+    // faceDir = (sin(yaw), 0, cos(yaw)), which is 0,0,1 at yaw 0).
+    Joint leftEye;
+    leftEye.name = "face_left_eye";
+    leftEye.parentIndex = headIndex;
+    leftEye.localPosition = {-0.06f, 0.03f, 0.14f};
+    skeleton.addJoint(leftEye);
+
+    Joint rightEye;
+    rightEye.name = "face_right_eye";
+    rightEye.parentIndex = headIndex;
+    rightEye.localPosition = {0.06f, 0.03f, 0.14f};
+    skeleton.addJoint(rightEye);
+
+    Joint leftBrow;
+    leftBrow.name = "face_left_brow";
+    leftBrow.parentIndex = headIndex;
+    leftBrow.localPosition = {-0.06f, 0.09f, 0.135f};
+    skeleton.addJoint(leftBrow);
+
+    Joint rightBrow;
+    rightBrow.name = "face_right_brow";
+    rightBrow.parentIndex = headIndex;
+    rightBrow.localPosition = {0.06f, 0.09f, 0.135f};
+    skeleton.addJoint(rightBrow);
+
+    Joint mouth;
+    mouth.name = "face_mouth";
+    mouth.parentIndex = headIndex;
+    mouth.localPosition = {0.0f, -0.07f, 0.145f};
+    skeleton.addJoint(mouth);
 
     Joint armLUpper;
     armLUpper.name = "arm_L_upper";
