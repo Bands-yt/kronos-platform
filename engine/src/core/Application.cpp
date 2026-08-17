@@ -557,7 +557,22 @@ bool Application::initialize(const CreateInfo& info) {
         // washed-out/neutral render that looked like an exposure bug but
         // wasn't one. Camera-showcase mode owns its own lighting outright
         // and never wants the generic day/night cycle touching it.
-        if (!cameraShowcaseModeEnabled_) {
+        if (!cameraShowcaseModeEnabled_ && indoorLightingModeEnabled_) {
+            // Kronos ("Avatar Gameplay Lighting Harmonisation Pass"):
+            // real, deliberate skip of the whole day/night/atmosphere-
+            // override/TNT-Wars-zone block below -- an indoor scene
+            // uses the same real, shared "neutral indoor" preset the
+            // avatar preview panels use (see setIndoorLightingMode()'s
+            // own comment for why no caller enables this yet), and real-
+            // forces weather back to Clear every tick so a live outdoor
+            // weather event can never perturb it -- "Weather Isolation"
+            // per this pass's own explicit requirement. 0.0f transition
+            // seconds is a real, immediate snap, not a fade -- an indoor
+            // scene should never visibly "clear up," it was never
+            // supposed to have weather in the first place.
+            renderer_.setLighting(avatarIndoorPreviewLighting());
+            renderer_.setWeather(WeatherKind::Clear, 0.0f);
+        } else if (!cameraShowcaseModeEnabled_) {
             tickTimeOfDay(timeOfDayState_, dt, dayLengthSeconds_);
             SceneLighting tickLighting = computeLightingForTimeOfDay(timeOfDayState_.hours);
             if (hasAtmosphereOverride_) {

@@ -1,5 +1,66 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still, part 9) — Avatar Gameplay Lighting Harmonisation Pass
+
+**Real finding that reframed this pass, surfaced before writing any
+code**: dispatched a real investigation into whether "indoor gameplay
+scene" is an identifiable category anywhere in this codebase today. It
+is not, at any level -- no `GameManifest` field, no CLI-mode flag, no
+per-map tag. More importantly, **no existing gameplay map is actually
+enclosed at the whole-map level**: every TNT Wars map (Sky/Space/Volcano/
+Trenches/Underwater) is open-sky terrain with only small local covered
+bunkers/corridors; Mining Sim's own "Dungeon" spawns floor slabs and a
+beacon pillar per room but genuinely no walls or ceiling despite the
+name; House Demo is outdoor rolling-hill terrain with one small, real,
+fully-walled-and-roofed house sitting on it. Asked the user how to scope
+"apply indoor lighting to indoor gameplay scenes" given this -- chosen
+answer: **build the real mechanism, activate it for no existing mode**,
+rather than fabricating a fake "indoor" flag on a map that isn't
+actually enclosed, or scope-creeping into a bigger real-time
+player-position-based indoor/outdoor detection system for House Demo's
+one real interior.
+
+**What shipped**: `core::Application::setIndoorLightingMode(bool)`/
+`indoorLightingModeEnabled()` (`Application.hpp`), the same real
+"caller sets a plain bool, the pre-tick hook checks it" shape
+`cameraShowcaseModeEnabled_` already establishes. When enabled,
+`Application::tick()`'s own per-tick lighting block skips the real
+day/night cycle and every atmosphere-override/TNT-Wars-zone computation
+entirely, calling `renderer_.setLighting(avatarIndoorPreviewLighting())`
+instead -- the exact same shared "neutral indoor" preset (ambient, warm
+key light, `fogDensity = 0.006`) the previous pass already built for the
+avatar preview panels, so "Home's ambient values for indoor gameplay"
+and "clamp fogDensity to 0.006" are satisfied by real reuse, not a
+second, independently-drifting copy of the same numbers.
+
+**Weather Isolation**: the same block also real-forces
+`renderer_.setWeather(WeatherKind::Clear, 0.0f)` every tick while indoor
+mode is active -- an immediate snap (not a fade), continuously
+re-asserted every tick regardless of whether the player presses the real
+weather-cycle keybind (`Application.cpp`'s own `"CycleWeather"` input
+check runs earlier in the same tick, so this real, later re-assertion
+always wins within that same frame). `applyWeather()` already treats
+Clear as an exact identity (established in the previous pass), so this
+is a real, exact no-op for the lighting math, not an approximation.
+
+**Explicitly not built this pass, and why**: no caller sets
+`setIndoorLightingMode(true)` anywhere -- there is real, honest nothing
+to turn it on for yet. A future real enclosed map/mode (or real-time
+player-position detection for House Demo's own one interior) is a real,
+separate, larger feature, not a silent gap.
+
+**Tests**: no new dedicated test -- `Application` isn't headlessly
+constructible (needs a real Vulkan device/Renderer/ECS, same as its
+sibling `cameraShowcaseModeEnabled_`, which also has no direct test),
+and the two real pieces of logic this pass actually exercises
+(`avatarIndoorPreviewLighting()`'s own values, `applyWeather()`'s Clear-
+is-identity guarantee) already have real, passing coverage from earlier
+passes. Full suite re-run to confirm still green: **10769/10769 checks
+passing**, clean 4-target rebuild. Verified via live screenshot that
+every existing mode (the flag defaults `false` everywhere) renders
+pixel-identical to before this pass -- zero behavior change for anything
+that exists today, exactly as intended.
+
 ## 2026-08-16 (later still, part 8) — Avatar Scene Lighting Calibration Pass
 
 Direct follow-up to the previous pass's audit -- this time with real,

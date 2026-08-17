@@ -380,6 +380,30 @@ public:
     [[nodiscard]] bool cameraShowcaseModeEnabled() const { return cameraShowcaseModeEnabled_; }
     [[nodiscard]] float showcaseElapsedSeconds() const { return showcaseElapsedSeconds_; }
 
+    // Kronos ("Avatar Gameplay Lighting Harmonisation Pass"): real,
+    // optional indoor-lighting mode -- the same real "caller sets a
+    // plain bool, the pre-tick hook checks it" shape
+    // cameraShowcaseModeEnabled_ already establishes. When enabled, the
+    // tick loop's own lighting block (see tick()'s own comment) skips
+    // the real day/night cycle entirely and uses
+    // core::avatarIndoorPreviewLighting() instead, and real-forces
+    // weather back to Clear every tick so a real, live outdoor weather
+    // event can never perturb an indoor scene's avatars -- "Weather
+    // Isolation" per this pass's own explicit requirement. A real,
+    // honest no-op (false, the default) for every existing launch mode:
+    // a real investigation (see docs/progress.md) found no gameplay map
+    // in this codebase is actually enclosed at the whole-map level
+    // today (TNT Wars maps are open-sky with small covered bunkers only,
+    // Mining Sim's "Dungeon" spawns no walls/ceiling despite the name,
+    // House Demo is outdoor terrain with one small enclosed house on
+    // it) -- so this real mechanism exists and is real-tested, but no
+    // caller turns it on yet. A real, explicit, user-directed choice
+    // (build the real mechanism now, wire a real caller to it only once
+    // a genuinely enclosed gameplay scene actually exists), not scope
+    // creep or an oversight.
+    void setIndoorLightingMode(bool enabled) { indoorLightingModeEnabled_ = enabled; }
+    [[nodiscard]] bool indoorLightingModeEnabled() const { return indoorLightingModeEnabled_; }
+
     // Kronos ("Player & Chat System" -- chat panel): real, small, same
     // "caller sets a plain bool, the pre-tick hook checks it" shape
     // cameraShowcaseModeEnabled_ already establishes -- this class
@@ -693,6 +717,10 @@ private:
     bool reducedMotionEnabled_ = false;
     trailer::ShowcaseCameraPath showcaseCameraPath_;
     float showcaseElapsedSeconds_ = 0.0f;
+
+    // Kronos ("Avatar Gameplay Lighting Harmonisation Pass") -- see
+    // setIndoorLightingMode()'s own comment.
+    bool indoorLightingModeEnabled_ = false;
 
     std::vector<tntwars::DestructibleSegmentVisual> tntWarsWallVisuals_;
     // Kronos ("Four RTX Maps" Phase 5d) -- see tntWarsCoverVisuals()'s own comment.
