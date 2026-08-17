@@ -13668,6 +13668,142 @@ void testEnetTransportRealSendReceivesPayload() {
     server.shutdown();
 }
 
+void testEnetTransportSimulatedConditioningDefaultsToOff() {
+    engine::net::ENetTransport transport;
+    check(transport.simulatedLatencyMs() == 0, "ENetTransport starts with real 0ms simulated latency (no emulation) by default");
+    check(transport.simulatedPacketLossPercent() == 0, "ENetTransport starts with real 0% simulated packet loss by default");
+}
+
+void testEnetTransportSimulatedLatencyDelaysReliableDelivery() {
+    engine::net::ENetTransport server;
+    check(server.hostServer(17820, 4), "Sanity: real server real-hosts for the simulated-latency test");
+    engine::net::ENetTransport client;
+    check(client.connectToServer("127.0.0.1", 17820), "Sanity: real client real-connects for the simulated-latency test");
+
+    engine::net::ENetTransport::PeerId serverSidePeer = 0;
+    for (int i = 0; i < 200 && serverSidePeer == 0; ++i) {
+        engine::net::ENetTransport::Callbacks serverCallbacks;
+        serverCallbacks.onPeerConnected = [&](engine::net::ENetTransport::PeerId peer) { serverSidePeer = peer; };
+        server.poll(0, serverCallbacks);
+        engine::net::ENetTransport::Callbacks clientCallbacks;
+        client.poll(0, clientCallbacks);
+        if (serverSidePeer == 0) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(serverSidePeer != 0, "Sanity: real handshake completed before the simulated-latency test");
+
+    client.setSimulatedLatencyMs(150);
+    std::vector<uint8_t> payload{9, 8, 7};
+    client.send(engine::net::ENetTransport::kBroadcast, payload.data(), payload.size(), 0, true);
+
+    std::vector<uint8_t> received;
+    auto pollBoth = [&]() {
+        engine::net::ENetTransport::Callbacks serverCallbacks;
+        serverCallbacks.onPacketReceived = [&](engine::net::ENetTransport::PeerId, const uint8_t* data, size_t size, uint8_t) {
+            received.assign(data, data + size);
+        };
+        server.poll(0, serverCallbacks);
+        engine::net::ENetTransport::Callbacks clientCallbacks; // real client poll() drains client's own delayed-send queue
+        client.poll(0, clientCallbacks);
+    };
+
+    // Real, honest "not yet" check -- 150ms of *real* simulated latency
+    // means a real ~60ms of elapsed wall-clock polling should not have
+    // delivered it yet (client.poll() hasn't even called the real
+    // enet_peer_send() for this packet at this point).
+    for (int i = 0; i < 12 && received.empty(); ++i) {
+        pollBoth();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(received.empty(), "A reliable send with 150ms simulated latency is real-not delivered within ~60ms of real elapsed time");
+
+    for (int i = 0; i < 200 && received.empty(); ++i) {
+        pollBoth();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(received == payload, "The same reliable send real-arrives once real elapsed time clears the simulated 150ms latency");
+
+    client.shutdown();
+    server.shutdown();
+}
+
+void testEnetTransportSimulatedPacketLossNeverDropsReliable() {
+    engine::net::ENetTransport server;
+    check(server.hostServer(17821, 4), "Sanity: real server real-hosts for the reliable-never-dropped test");
+    engine::net::ENetTransport client;
+    check(client.connectToServer("127.0.0.1", 17821), "Sanity: real client real-connects for the reliable-never-dropped test");
+
+    engine::net::ENetTransport::PeerId serverSidePeer = 0;
+    for (int i = 0; i < 200 && serverSidePeer == 0; ++i) {
+        engine::net::ENetTransport::Callbacks serverCallbacks;
+        serverCallbacks.onPeerConnected = [&](engine::net::ENetTransport::PeerId peer) { serverSidePeer = peer; };
+        server.poll(0, serverCallbacks);
+        engine::net::ENetTransport::Callbacks clientCallbacks;
+        client.poll(0, clientCallbacks);
+        if (serverSidePeer == 0) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(serverSidePeer != 0, "Sanity: real handshake completed before the reliable-never-dropped test");
+
+    client.setSimulatedPacketLossPercent(100); // maximum real loss
+    std::vector<uint8_t> payload{4, 2};
+    client.send(engine::net::ENetTransport::kBroadcast, payload.data(), payload.size(), 0, /*reliable=*/true);
+
+    std::vector<uint8_t> received;
+    for (int i = 0; i < 200 && received.empty(); ++i) {
+        engine::net::ENetTransport::Callbacks serverCallbacks;
+        serverCallbacks.onPacketReceived = [&](engine::net::ENetTransport::PeerId, const uint8_t* data, size_t size, uint8_t) {
+            received.assign(data, data + size);
+        };
+        server.poll(0, serverCallbacks);
+        engine::net::ENetTransport::Callbacks clientCallbacks;
+        client.poll(0, clientCallbacks);
+        if (received.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(received == payload, "Even at 100% simulated packet loss, a real reliable send still real-arrives -- loss only applies to unreliable sends");
+
+    client.shutdown();
+    server.shutdown();
+}
+
+void testEnetTransportSimulatedPacketLossDropsUnreliable() {
+    engine::net::ENetTransport server;
+    check(server.hostServer(17822, 4), "Sanity: real server real-hosts for the unreliable-dropped test");
+    engine::net::ENetTransport client;
+    check(client.connectToServer("127.0.0.1", 17822), "Sanity: real client real-connects for the unreliable-dropped test");
+
+    engine::net::ENetTransport::PeerId serverSidePeer = 0;
+    for (int i = 0; i < 200 && serverSidePeer == 0; ++i) {
+        engine::net::ENetTransport::Callbacks serverCallbacks;
+        serverCallbacks.onPeerConnected = [&](engine::net::ENetTransport::PeerId peer) { serverSidePeer = peer; };
+        server.poll(0, serverCallbacks);
+        engine::net::ENetTransport::Callbacks clientCallbacks;
+        client.poll(0, clientCallbacks);
+        if (serverSidePeer == 0) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(serverSidePeer != 0, "Sanity: real handshake completed before the unreliable-dropped test");
+
+    client.setSimulatedPacketLossPercent(100); // deterministic: every unreliable send is real-dropped
+    std::vector<uint8_t> payload{1};
+    for (int i = 0; i < 20; ++i) {
+        client.send(engine::net::ENetTransport::kBroadcast, payload.data(), payload.size(), 0, /*reliable=*/false);
+    }
+
+    bool receivedAny = false;
+    for (int i = 0; i < 40; ++i) {
+        engine::net::ENetTransport::Callbacks serverCallbacks;
+        serverCallbacks.onPacketReceived = [&](engine::net::ENetTransport::PeerId, const uint8_t*, size_t, uint8_t) {
+            receivedAny = true;
+        };
+        server.poll(0, serverCallbacks);
+        engine::net::ENetTransport::Callbacks clientCallbacks;
+        client.poll(0, clientCallbacks);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(!receivedAny, "At 100% simulated packet loss, real unreliable sends are real-dropped before ever reaching enet_peer_send()");
+
+    client.shutdown();
+    server.shutdown();
+}
+
 // --- NetworkSession: real, in-process, loopback-ENet integration tests --------
 // No GPU/window involved -- net::NetworkSession has zero rendering
 // dependency (see its own class comment), so these stand up two real
@@ -27477,6 +27613,10 @@ int main() {
     testEnetTransportConnectToServerSucceeds();
     testEnetTransportRealHandshakeFiresCallbacks();
     testEnetTransportRealSendReceivesPayload();
+    testEnetTransportSimulatedConditioningDefaultsToOff();
+    testEnetTransportSimulatedLatencyDelaysReliableDelivery();
+    testEnetTransportSimulatedPacketLossNeverDropsReliable();
+    testEnetTransportSimulatedPacketLossDropsUnreliable();
     testNetworkSessionRealClientServerHandshakeAndSnapshotSync();
     testNetworkSessionRealTeleportRequestAppliesServerSideAndPropagatesToClient();
     testNetworkSessionRealTwoClientsSeeEachOtherViaInterpolation();

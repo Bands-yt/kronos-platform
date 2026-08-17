@@ -266,6 +266,17 @@ public:
         transport_.setPeerTimeout(timeoutLimit, timeoutMinimumMs, timeoutMaximumMs);
     }
 
+    // Kronos ("Studio QoL Sprint" -- "Integrated Network Emulation Bar"):
+    // thin passthrough to the real ENetTransport-level conditioning (see
+    // ENetTransport::setSimulatedLatencyMs()/setSimulatedPacketLossPercent()'s
+    // own comments for exactly what each does and why loss is
+    // unreliable-only). Works in either Server or Client mode -- both
+    // own their own `transport_` and send() through it.
+    void setSimulatedLatencyMs(uint32_t ms) { transport_.setSimulatedLatencyMs(ms); }
+    void setSimulatedPacketLossPercent(uint8_t percent) { transport_.setSimulatedPacketLossPercent(percent); }
+    [[nodiscard]] uint32_t simulatedLatencyMs() const { return transport_.simulatedLatencyMs(); }
+    [[nodiscard]] uint8_t simulatedPacketLossPercent() const { return transport_.simulatedPacketLossPercent(); }
+
     // Server-only: registers `entity` as networked, owned by `player`
     // (kInvalidPlayer for server-owned world state -- an ore node, a
     // prop). Attaches a real net::NetworkIdentity with a freshly

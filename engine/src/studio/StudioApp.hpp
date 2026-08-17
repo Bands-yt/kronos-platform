@@ -126,6 +126,12 @@ private:
     [[nodiscard]] std::vector<PaletteCommand> searchEntitiesForPalette(const std::string& query);
     void drawFileMenu();
     void drawPendingFileActionPopup();
+    // Kronos ("Studio QoL Sprint" -- "Integrated Network Emulation Bar"):
+    // real Latency/Packet Loss dropdowns wired directly to
+    // networkSession_'s ENetTransport-level conditioning -- see
+    // net::ENetTransport::setSimulatedLatencyMs()'s own comment for what
+    // each control actually does on the wire.
+    void drawNetworkEmulationBar();
     // Kronos ("Branding + Release Prep" -- "About panel"): real, small,
     // version/build info -- see core/KronosVersion.hpp.
     void drawAboutPanel();

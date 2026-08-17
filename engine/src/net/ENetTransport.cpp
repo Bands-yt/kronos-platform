@@ -1,6 +1,8 @@
 #include "net/ENetTransport.hpp"
 
+#include <algorithm>
 #include <cstdio>
+#include <random>
 
 #include <enet/enet.h>
 
@@ -80,6 +82,12 @@ void ENetTransport::shutdown() {
         host_ = nullptr;
     }
     serverPeer_ = nullptr;
+    // Real correctness requirement, not cleanup for its own sake: a
+    // pending DelayedSend holds a peer id/index into *this* host's now-
+    // destroyed peer array -- letting one fire after a later
+    // hostServer()/connectToServer() reused this same transport object
+    // would send to whatever unrelated peer now sits at that index.
+    delayedSends_.clear();
 }
 
 void ENetTransport::disconnectPeerGracefully(PeerId peer) {
@@ -103,8 +111,31 @@ void ENetTransport::flush() {
     if (host_) enet_host_flush(host_);
 }
 
+void ENetTransport::setSimulatedPacketLossPercent(uint8_t percent) {
+    simulatedPacketLossPercent_ = std::min<uint8_t>(percent, 100);
+}
+
+void ENetTransport::flushDueDelayedSends() {
+    if (delayedSends_.empty()) return;
+    auto now = std::chrono::steady_clock::now();
+    auto it = delayedSends_.begin();
+    while (it != delayedSends_.end()) {
+        if (it->sendAt <= now) {
+            sendNow(it->peer, it->data.data(), it->data.size(), it->channel, it->reliable);
+            it = delayedSends_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void ENetTransport::poll(uint32_t timeoutMs, const Callbacks& callbacks) {
     if (!host_) return;
+
+    // Real due delayed sends go out before this poll's own event pump --
+    // see setSimulatedLatencyMs()'s comment. Harmless no-op when nothing
+    // is queued (the common, unconditioned case).
+    flushDueDelayedSends();
 
     ENetEvent event;
     while (enet_host_service(host_, &event, timeoutMs) > 0) {
@@ -138,6 +169,27 @@ void ENetTransport::poll(uint32_t timeoutMs, const Callbacks& callbacks) {
 }
 
 void ENetTransport::send(PeerId peer, const uint8_t* data, size_t size, uint8_t channel, bool reliable) {
+    if (!host_) return;
+
+    // Real, unreliable-only loss simulation -- see setSimulatedPacketLossPercent()'s
+    // own comment on why reliable sends are never dropped here.
+    if (!reliable && simulatedPacketLossPercent_ > 0) {
+        static std::mt19937_64 rng{std::random_device{}()};
+        std::uniform_int_distribution<int> roll(0, 99);
+        if (roll(rng) < simulatedPacketLossPercent_) return; // real, honest "this packet never left"
+    }
+
+    if (simulatedLatencyMs_ > 0) {
+        delayedSends_.push_back(DelayedSend{peer, std::vector<uint8_t>(data, data + size), channel, reliable,
+                                             std::chrono::steady_clock::now() +
+                                                 std::chrono::milliseconds(simulatedLatencyMs_)});
+        return;
+    }
+
+    sendNow(peer, data, size, channel, reliable);
+}
+
+void ENetTransport::sendNow(PeerId peer, const uint8_t* data, size_t size, uint8_t channel, bool reliable) {
     if (!host_) return;
 
     ENetPacket* packet = enet_packet_create(data, size, reliable ? ENET_PACKET_FLAG_RELIABLE : 0);

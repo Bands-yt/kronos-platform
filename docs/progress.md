@@ -1,5 +1,58 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 4: Integrated Network Emulation Bar
+
+**Confirmed genuinely new before writing any code**: grepped `net/` for
+any existing latency/loss throttling -- none exists. Checked the
+vendored ENet library itself for a built-in knob too: it has a
+read-only `ENetPeer::packetLoss` stat (observed, not simulated) and a
+raw-incoming-UDP `intercept` callback, neither of which is a real
+outgoing-side simulate-loss/delay control. This needed a real,
+from-scratch implementation, not wiring to something that already
+existed.
+
+**`net::ENetTransport`** (`ENetTransport.hpp/.cpp`) gained
+`setSimulatedLatencyMs(uint32_t)` / `setSimulatedPacketLossPercent(uint8_t)`
+(both default to 0/off, at which point `send()` takes the exact same
+synchronous path it always has -- zero behavior change for every
+existing caller/test that doesn't opt in):
+- **Latency**: delays the real `enet_peer_send()`/`enet_host_broadcast()`
+  call itself via a local software queue (`delayedSends_`, flushed from
+  `poll()`), applied to reliable and unreliable sends alike -- real
+  added round-trip time, not a fake stat, and doesn't touch ENet's own
+  reliability machinery.
+- **Packet loss**: applied ONLY to unreliable sends, decided at `send()`
+  time (dropped before `enet_peer_send()` ever sees it). Reliable sends
+  are deliberately NEVER dropped by this simulation -- discarding a
+  reliable packet with no retry would silently break the reliable-
+  delivery guarantee instead of emulating loss on top of it; this
+  boundary is stated explicitly in the header, not left implicit.
+- `shutdown()` now clears any pending `delayedSends_` -- a real
+  correctness fix, not just cleanup: a queued send holds a peer index
+  into the just-destroyed host's peer array, which would silently
+  misdeliver to an unrelated peer if this same transport object were
+  reused for a later session.
+
+**`net::NetworkSession`** gained thin passthrough
+`setSimulatedLatencyMs`/`setSimulatedPacketLossPercent`/getters, working
+in either Server or Client mode.
+
+**Studio toolbar**: `StudioApp::drawNetworkEmulationBar()`, wired into
+the existing dockspace menu bar -- two small combo dropdowns (Latency:
+0/50/150/300ms, Packet Loss: 0/2/5/10%) reading/writing
+`networkSession_` directly, with tooltips stating the reliable-loss
+boundary above plainly rather than leaving it a silent surprise.
+
+**Verification**: 4 new real, loopback-ENet headless tests (default-off
+state; a reliable send with 150ms simulated latency real-doesn't arrive
+within ~60ms but real-does arrive once elapsed time clears it; a
+reliable send at 100% simulated loss still real-arrives; 20 unreliable
+sends at 100% simulated loss real-never arrive) -- 10813/10813 passing
+(was 10798). All 3 targets rebuild clean, zero warnings. Manually
+launched `studio` post-build and confirmed clean, stable startup.
+
+**Next**: QoL Sprint item 4 (Auto-Recovery & Delta Scene Snapshots).
+
 ## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 3: Lua Script Hot-Reload (HMR)
 
 **Real gap found before writing any code**: `core::Application::tick()`

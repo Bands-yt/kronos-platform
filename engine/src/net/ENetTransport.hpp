@@ -1,8 +1,10 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 struct _ENetHost;
 struct _ENetPeer;
@@ -109,11 +111,57 @@ public:
     // error.
     [[nodiscard]] float roundTripTimeMs(PeerId peer) const;
 
+    // Kronos ("Studio QoL Sprint" -- "Integrated Network Emulation Bar"):
+    // real, local send-side conditioning -- no existing latency/loss
+    // simulation exists anywhere in this codebase (confirmed by grep;
+    // ENet itself has no built-in outgoing-side simulate-loss/delay
+    // knob, only a read-only `packetLoss` stat and a raw-incoming-UDP
+    // `intercept` hook, neither of which fits this need). Both default
+    // to 0/off, and at 0/0 send() takes the exact same synchronous path
+    // it always has -- zero behavior change for every existing caller
+    // and test that doesn't opt in.
+    //
+    // Latency: delays the real enet_peer_send()/enet_host_broadcast()
+    // call itself by `ms` (a local software queue, flushed from poll()),
+    // applied to reliable and unreliable packets alike -- this is real
+    // added round-trip time, not a fake stat; it doesn't touch ENet's
+    // own reliability machinery, it just holds the call.
+    //
+    // Packet loss: applied ONLY to unreliable sends, decided at send()
+    // time -- a "lost" unreliable packet is dropped before
+    // enet_peer_send() ever sees it, exactly matching what real UDP loss
+    // does to an unreliable channel. Reliable sends are deliberately
+    // NEVER dropped by this simulation: ENet's own retransmission is
+    // what makes a reliable channel reliable on a real lossy network too
+    // -- discarding a reliable packet here with no retry would silently
+    // break that guarantee instead of emulating loss on top of it. State
+    // this boundary plainly rather than pretend "packet loss %" applies
+    // uniformly to every channel.
+    void setSimulatedLatencyMs(uint32_t ms) { simulatedLatencyMs_ = ms; }
+    void setSimulatedPacketLossPercent(uint8_t percent);
+    [[nodiscard]] uint32_t simulatedLatencyMs() const { return simulatedLatencyMs_; }
+    [[nodiscard]] uint8_t simulatedPacketLossPercent() const { return simulatedPacketLossPercent_; }
+
 private:
+    void flushDueDelayedSends();
+    void sendNow(PeerId peer, const uint8_t* data, size_t size, uint8_t channel, bool reliable);
+
+    struct DelayedSend {
+        PeerId peer;
+        std::vector<uint8_t> data;
+        uint8_t channel;
+        bool reliable;
+        std::chrono::steady_clock::time_point sendAt;
+    };
+
     ENetHost* host_ = nullptr;
     ENetPeer* serverPeer_ = nullptr; // valid only in client mode, after connect
     bool isServer_ = false;
     static uint32_t instanceCount_; // enet_initialize/deinitialize are process-global and refcounted here
+
+    uint32_t simulatedLatencyMs_ = 0;
+    uint8_t simulatedPacketLossPercent_ = 0;
+    std::vector<DelayedSend> delayedSends_;
 };
 
 } // namespace engine::net

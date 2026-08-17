@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <iterator>
 #include <chrono>
 #include <thread>
 #include <cstdio>
@@ -735,6 +736,7 @@ void StudioApp::drawDockspace() {
             if (ImGui::MenuItem("About Kronos Studio")) showAboutPanel_ = true;
             ImGui::EndMenu();
         }
+        drawNetworkEmulationBar();
         ImGui::EndMenuBar();
     }
 
@@ -890,6 +892,62 @@ std::vector<PaletteCommand> StudioApp::searchEntitiesForPalette(const std::strin
                             }});
     }
     return results;
+}
+
+void StudioApp::drawNetworkEmulationBar() {
+    // Real, fixed option sets, matching exactly what the sprint asked
+    // for -- indices double as both the combo's selection and the
+    // lookup into the value arrays below, so "currently selected"
+    // always reads directly off networkSession_ itself (the real source
+    // of truth) rather than a separate, driftable member.
+    static constexpr uint32_t kLatencyOptionsMs[] = {0, 50, 150, 300};
+    static constexpr const char* kLatencyLabels[] = {"0ms", "50ms", "150ms", "300ms"};
+    static constexpr uint8_t kLossOptionsPercent[] = {0, 2, 5, 10};
+    static constexpr const char* kLossLabels[] = {"0%", "2%", "5%", "10%"};
+
+    uint32_t currentLatency = networkSession_.simulatedLatencyMs();
+    int latencyIndex = 0;
+    for (int i = 0; i < static_cast<int>(std::size(kLatencyOptionsMs)); ++i) {
+        if (kLatencyOptionsMs[i] == currentLatency) latencyIndex = i;
+    }
+    uint8_t currentLoss = networkSession_.simulatedPacketLossPercent();
+    int lossIndex = 0;
+    for (int i = 0; i < static_cast<int>(std::size(kLossOptionsPercent)); ++i) {
+        if (kLossOptionsPercent[i] == currentLoss) lossIndex = i;
+    }
+
+    ImGui::SameLine(0.0f, 24.0f);
+    ImGui::TextDisabled("Network:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(72.0f);
+    if (ImGui::BeginCombo("##NetLatency", kLatencyLabels[latencyIndex])) {
+        for (int i = 0; i < static_cast<int>(std::size(kLatencyOptionsMs)); ++i) {
+            bool selected = (i == latencyIndex);
+            if (ImGui::Selectable(kLatencyLabels[i], selected)) {
+                networkSession_.setSimulatedLatencyMs(kLatencyOptionsMs[i]);
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Simulated added round-trip latency, applied to every real send() while testing multiplayer.");
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(64.0f);
+    if (ImGui::BeginCombo("##NetLoss", kLossLabels[lossIndex])) {
+        for (int i = 0; i < static_cast<int>(std::size(kLossOptionsPercent)); ++i) {
+            bool selected = (i == lossIndex);
+            if (ImGui::Selectable(kLossLabels[i], selected)) {
+                networkSession_.setSimulatedPacketLossPercent(kLossOptionsPercent[i]);
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Simulated packet loss on unreliable sends only -- reliable channels are never dropped, see ENetTransport::setSimulatedPacketLossPercent().");
+    }
 }
 
 void StudioApp::drawFileMenu() {
