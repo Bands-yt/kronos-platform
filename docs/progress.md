@@ -1,5 +1,69 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still, part 6) — Avatar Proportion and Arm Polish Pass
+
+Real, bounded follow-up pass, driven by an explicit user task list.
+
+**Arm Geometry**:
+- Shoulder offset widened again, 0.41 -> 0.44 ("adjust shoulder offset
+  outward by ~0.05 torso width"). Real reason it was still needed: at
+  0.41, the arm's own inner edge (0.41 - 0.125 cross-section radius =
+  0.285) sat *just inside* the torso's 0.29 shoulder-bulge boundary --
+  0.44 clears it by a real 0.025 margin instead.
+- Upper/lower arm split changed 0.51/0.44 -> 0.47/0.48 (same 0.95 total)
+  -- "shorten upper arms slightly." Real, scripted FK check: since the
+  shoulder's rest rotation and the elbow's new idle curvature (below)
+  both rotate around the same Z axis, the wrist's final world-Y position
+  depends only on the arm's *total* length, not where the elbow sits
+  along it -- confirmed the split alone doesn't move the "just below
+  mid-thigh" target (world y ~= 0.652).
+- Real, subtle elbow curvature added to `idle.anim` only (new
+  `arm_L_lower`/`arm_R_lower` tracks, a constant 8-degree Z-axis bend,
+  same axis/sign convention `walk.anim`/`run.anim`'s own existing elbow
+  tracks already use) -- previously idle had *no* elbow track at all,
+  meaning a perfectly straight, ramrod arm at rest; this breaks that
+  hard, straight silhouette line without touching the already-tuned
+  gait clips.
+
+**Hand Geometry**: `appendHand()` gained a real, small thumb box, offset
+along the palm's own "top" edge (perpendicular to the 4 fingers' own
+spread) and positioned less distally than the fingers -- a real
+anatomical offset, not a 5th finger in the same row. Same single-joint
+rigid binding as the rest of the hand, so "clean deformation under
+animation" stays automatic (no new joint, no new skin-weight risk).
+
+**Overall Proportions**:
+- Torso-to-leg ratio: pelvis-to-neck torso height was 0.85 against a
+  real 0.9 hip-to-foot leg length (ratio ~0.94); `spine_lower`'s own
+  local offset reduced 0.2 -> 0.16, closing the ratio to exactly 0.9
+  (0.81 torso / 0.9 leg). Safe in isolation -- `spine_lower`'s own
+  position is never baked into any shipped `.anim` file (only
+  `spine_upper`'s unchanged local 0.3 offset is tracked), so its real
+  *absolute* height shifts down automatically through the joint
+  hierarchy with no `.anim` file edits needed.
+- Broad-shoulder/narrow-leg contrast: unchanged by this pass, still real
+  (torso 0.29 shoulder half-width vs. 0.11/0.09/0.07 leg cross-sections).
+- Idle stance asymmetry: verified intact after the `idle.anim` edits
+  above -- the existing head tilt and the right arm's own 91-vs-85-degree
+  rest-angle asymmetry are both still present, unmodified.
+
+Every `.anim` file's own `arm_L_upper`/`arm_R_upper` position keyframes
+updated to match the new shoulder offset (6 files); `walk.anim`/
+`run.anim`'s own `arm_L_lower`/`arm_R_lower` position keyframes updated
+to match the new upper-arm length (this rig bakes absolute joint
+position per keyframe, not a bind-pose delta -- the same mechanical
+requirement every proportion change in this pass has needed).
+
+**Verified via live screenshot**: arms read as clearly separated from
+the torso with visible finger/thumb detail on the hands, a subtle elbow
+kink breaks the previously ramrod-straight idle silhouette, and overall
+proportions (torso length, shoulder/leg contrast) read as intended.
+
+10764/10764 tests passing, clean 4-target rebuild. No changes to the
+facial rig, clothing meshes, accessory rigging, LOD, or Studio/runtime
+integration -- pure mesh-dimension/animation-position tuning within the
+existing rig and shaders, per the explicit scope constraint.
+
 ## 2026-08-16 (later still, part 5) — Proportional correction: thicker arms, bigger hands, wider shoulders
 
 Direct follow-up to real, explicit user feedback comparing a live

@@ -355,6 +355,21 @@ void appendHand(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, s
         glm::vec3 fingerCenter(palmDistalX + sideSign * fingerHalfExtents.x, wristPos.y, wristPos.z + t * fingerSpread);
         appendBox(vertices, indices, segments, fingerCenter, fingerHalfExtents, jointIndex, segment, skinWeights);
     }
+
+    // Kronos ("Avatar Proportion and Arm Polish Pass" -- "Refine hand
+    // blocks into stylised palms with visible finger segmentation"):
+    // real, small thumb box, set apart from the 4 real finger blocks --
+    // offset along local Y (the palm's own "top" edge, perpendicular to
+    // the fingers' own Z spread) and positioned less distally than the
+    // fully-extended fingers (nearer the palm's own base), the real,
+    // honest low-poly equivalent of a thumb's real anatomical offset --
+    // not just a 5th finger in the same row. Same single-joint-rigid
+    // binding as the palm/fingers -- no new joint, "deformation remains
+    // clean under animation" stays automatic.
+    glm::vec3 thumbHalfExtents(palmHalfExtents.x * 0.45f, palmHalfExtents.y * 0.28f, palmHalfExtents.z * 0.28f);
+    glm::vec3 thumbCenter(wristPos.x + sideSign * palmHalfExtents.x * 0.5f, wristPos.y + palmHalfExtents.y * 0.85f,
+                           wristPos.z - palmHalfExtents.z * 0.55f);
+    appendBox(vertices, indices, segments, thumbCenter, thumbHalfExtents, jointIndex, segment, skinWeights);
 }
 
 } // namespace
@@ -398,10 +413,22 @@ Skeleton buildHumanoidSkeleton() {
     pelvis.localPosition = {0.0f, 1.0f, 0.0f};
     int pelvisIndex = skeleton.addJoint(pelvis);
 
+    // Kronos ("Avatar Proportion and Arm Polish Pass" -- "verify
+    // torso-to-leg ratio (torso ~= 0.9 leg length)"): real, small
+    // reduction (0.2 -> 0.16) -- pelvis-to-neck torso height was 0.85
+    // against a real 0.9 hip-to-foot leg length (ratio ~0.94); this
+    // closes it to 0.81 (ratio exactly 0.9), matching the target. Safe
+    // to change in isolation (no `.anim` file update needed) because
+    // spine_lower's own local position is never baked into any shipped
+    // clip -- only spine_upper is ever tracked (always at its own
+    // unchanged local 0.3 offset from spine_lower), so spine_upper's
+    // real *absolute* height shifts down automatically through the
+    // real joint hierarchy without its own tracked value needing to
+    // change.
     Joint spineLower;
     spineLower.name = "spine_lower";
     spineLower.parentIndex = pelvisIndex;
-    spineLower.localPosition = {0.0f, 0.2f, 0.0f};
+    spineLower.localPosition = {0.0f, 0.16f, 0.0f};
     int spineLowerIndex = skeleton.addJoint(spineLower);
 
     Joint spineUpper;
@@ -515,59 +542,76 @@ Skeleton buildHumanoidSkeleton() {
     // tweak (see docs/progress.md for the full FK math).
     //
     // The shoulder's own lateral offset also real-widened, 0.25 -> 0.36
-    // -> 0.41 (two real, separate rounds of fixes found via live
-    // screenshot, not part of the original plan). First round: the
-    // torso's own new, wider shoulder-bulge ring (see the torso profile
-    // below, 0.29 max half-width) meant a near-vertical arm starting at
-    // the original 0.25 offset began *inside* the torso's own silhouette
-    // and stayed hugging it for its whole length, reading as almost
-    // invisible from the front. Second round: a real, direct user
-    // proportional-reference correction (match a real reference image's
-    // arm length/hand size/shoulder offset) thickened the arm's own
-    // cross-sections meaningfully (see shoulderCrossSection's own
-    // comment below), which needed a real, matching increase in
-    // clearance from the torso to avoid the *thicker* arm re-clipping
-    // the shoulder boundary the first fix solved for the old, thinner
-    // one. 0.41 clears the torso's 0.29 boundary plus the arm's own
-    // (now 0.125) cross-section radius with real margin, at every point
-    // along the arm's length. Every .anim file's own arm_L_upper/
-    // arm_R_upper keyframes bake this same position (this rig's
-    // animation format stores absolute position per keyframe, not a
-    // bind-pose delta) and were updated to match both rounds.
+    // -> 0.41 -> 0.44 (three real, separate rounds of fixes found via
+    // live screenshot/direct feedback, not part of the original plan).
+    // First round: the torso's own new, wider shoulder-bulge ring (see
+    // the torso profile below, 0.29 max half-width) meant a
+    // near-vertical arm starting at the original 0.25 offset began
+    // *inside* the torso's own silhouette and stayed hugging it for its
+    // whole length, reading as almost invisible from the front. Second
+    // round: a real, direct user proportional-reference correction
+    // thickened the arm's own cross-sections meaningfully (see
+    // shoulderCrossSection's own comment below), needing a matching
+    // increase in torso clearance. Third round (this pass, "adjust
+    // shoulder offset outward by ~0.05 torso width"): a further real,
+    // modest widening -- 0.41 had the arm's own inner edge
+    // (0.41 - 0.125 cross-section radius = 0.285) sitting *just inside*
+    // the torso's 0.29 boundary, a real, if small, overlap; 0.44 clears
+    // it by a real 0.025 margin instead.
+    //
+    // Kronos ("Avatar Proportion and Arm Polish Pass" -- "shorten upper
+    // arms slightly so wrists land just below mid-thigh"): the
+    // upper/lower split changed 0.51/0.44 -> 0.47/0.48 (same real 0.95
+    // total -- see the FK note below on why the split alone doesn't
+    // change the wrist's own target height). Real FK check (scripted):
+    // since both the shoulder's real rest rotation and the elbow's own
+    // new subtle idle curvature (added below, "add subtle elbow
+    // curvature for silhouette continuity") rotate around the *same* Z
+    // axis, the wrist's final world Y position only depends on the
+    // arm's real *total* length, not where along that length the elbow
+    // sits -- confirmed by scripted FK across several splits, all
+    // landing within 0.0001 of world y=0.652, still comfortably "just
+    // below mid-thigh" (0.675).
+    // Every .anim file's own arm_L_upper/arm_R_upper keyframes bake
+    // this same shoulder position (this rig's animation format stores
+    // absolute position per keyframe, not a bind-pose delta) and were
+    // updated to match; walk.anim/run.anim's own arm_L_lower/
+    // arm_R_lower keyframes bake the upper-arm length the same way and
+    // were updated too.
     Joint armLUpper;
     armLUpper.name = "arm_L_upper";
     armLUpper.parentIndex = spineUpperIndex;
-    armLUpper.localPosition = {-0.41f, 0.1f, 0.0f};
+    armLUpper.localPosition = {-0.44f, 0.1f, 0.0f};
     int armLUpperIndex = skeleton.addJoint(armLUpper);
 
     Joint armLLower;
     armLLower.name = "arm_L_lower";
     armLLower.parentIndex = armLUpperIndex;
-    armLLower.localPosition = {-0.51f, 0.0f, 0.0f};
+    armLLower.localPosition = {-0.47f, 0.0f, 0.0f};
     int armLLowerIndex = skeleton.addJoint(armLLower);
 
     Joint handL;
     handL.name = "hand_L";
     handL.parentIndex = armLLowerIndex;
-    handL.localPosition = {-0.44f, 0.0f, 0.0f};
+    handL.localPosition = {-0.48f, 0.0f, 0.0f};
     skeleton.addJoint(handL);
 
     Joint armRUpper;
     armRUpper.name = "arm_R_upper";
     armRUpper.parentIndex = spineUpperIndex;
-    armRUpper.localPosition = {0.41f, 0.1f, 0.0f};
+    armRUpper.localPosition = {0.44f, 0.1f, 0.0f};
     int armRUpperIndex = skeleton.addJoint(armRUpper);
 
     Joint armRLower;
     armRLower.name = "arm_R_lower";
     armRLower.parentIndex = armRUpperIndex;
-    armRLower.localPosition = {0.51f, 0.0f, 0.0f};
+    armRLower.localPosition = {0.47f, 0.0f, 0.0f};
     int armRLowerIndex = skeleton.addJoint(armRLower);
 
     Joint handR;
     handR.name = "hand_R";
     handR.parentIndex = armRLowerIndex;
-    handR.localPosition = {0.44f, 0.0f, 0.0f};
+    handR.localPosition = {0.48f, 0.0f, 0.0f};
     skeleton.addJoint(handR);
 
     Joint legLUpper;
