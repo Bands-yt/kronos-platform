@@ -820,6 +820,60 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
                               torsoProfile, jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, data.skinWeights);
     }
 
+    float ls = bodyProportions.limbScale;
+
+    // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Shoulder Redesign"):
+    // real, rounded dome geometry bridging the torso's own shoulder-bulge
+    // ring (0.29*w above) and each arm's proximal cylinder ring
+    // (shoulderCrossSection, 0.125*ls below) -- appendSphere() already
+    // computes correct per-vertex smooth normals (see its own comment),
+    // so this reads as a soft, rounded cap rather than another hard
+    // block. Positioned at each arm's real bind-pose shoulder joint, but
+    // rigidly bound to spine_upper (the torso's own joint) -- NOT the arm
+    // joint -- so the cap stays fixed to the torso's own shoulder bulge
+    // as the arm swings during animation, instead of swinging away from
+    // it and reopening the exact gap this is meant to close.
+    // HumanoidBodySegment::LeftArm/RightArm (not Torso) -- correctly
+    // reflects that this cap is anchored to the arm's own shoulder joint
+    // (governed by the real, separate `shoulderWidth` proportion, not
+    // `width`) rather than the torso's own body, and keeps
+    // testBuildHumanoidMeshDataAppliesWidthAndLimbScaleToMeshDimensions()'s
+    // real "wider `width` -> wider Torso bbox" check meaningful (a
+    // Torso-tagged cap whose own size/position never responds to `width`
+    // would dominate and flatten that measurement). Colors identically to
+    // the torso either way -- LeftArm/RightArm also use
+    // kDefaultShirtColor (see resolveSegmentColorsForLoadout()) -- and
+    // still binds to spine_upper for skinning (the segment tag only
+    // affects coloring/bounding-box grouping, not which joint deforms
+    // it, see appendSphere()'s own jointIndex parameter).
+    float shoulderCapRadius = 0.15f * ls;
+    appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_upper"), glm::vec3(shoulderCapRadius),
+                 jointIndexFor("spine_upper"), HumanoidBodySegment::LeftArm, data.skinWeights);
+    appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("arm_R_upper"), glm::vec3(shoulderCapRadius),
+                 jointIndexFor("spine_upper"), HumanoidBodySegment::RightArm, data.skinWeights);
+
+    // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Unified Lower Body"):
+    // real, rounded ellipsoid cap bridging the torso's own waist ring
+    // (bottom of the barrel above sits exactly at pelvisPos's own Y,
+    // since torsoCenter +/- torsoHalfHeight collapses to pelvisPos/neckPos
+    // on a purely-vertical spine) and both thighs' own proximal rings,
+    // which start 0.1 units *below* pelvisPos per buildHumanoidSkeleton()
+    // -- that 0.1-unit vertical span, previously open background, is
+    // exactly the visible hip gap this closes. Rigidly bound to the
+    // pelvis joint -- not either individual leg -- so it stays fixed and
+    // shared as each leg swings independently during walk/run, rather
+    // than tearing toward whichever single leg it would otherwise follow.
+    // A real ellipsoid, not a sphere: X radius real-derived from the
+    // actual (already width-scaled, via worldPos rather than a hardcoded
+    // literal) hip joint offset plus the hip cross-section radius below,
+    // so this stays correct under any real BodyProportions.width; Z
+    // matches the torso's own waist depth (0.12*w).
+    glm::vec3 pelvisPos = worldPos("pelvis");
+    float hipLateralReach = std::abs(worldPos("leg_L_upper").x - pelvisPos.x) + 0.11f * ls;
+    glm::vec3 hipCapRadii(hipLateralReach, 0.09f, 0.13f * bodyProportions.width);
+    appendSphere(data.vertices, data.indices, data.vertexSegments, pelvisPos + glm::vec3(0.0f, -0.05f, 0.0f), hipCapRadii,
+                 jointIndexFor("pelvis"), HumanoidBodySegment::Torso, data.skinWeights);
+
     // Arms -- real smooth-blended upper-to-lower chain (the actual elbow
     // bend the spec asks for), capped with a real palm + finger-block
     // hand (see appendHand()'s own comment). A real, slight taper
@@ -837,7 +891,6 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     // classic blocky-avatar arm stays thick along most of its length
     // (elbow only slightly narrower than the shoulder, not a steep
     // taper) and ends in a real, large, clearly-visible hand.
-    float ls = bodyProportions.limbScale;
     glm::vec2 shoulderCrossSection(0.125f * ls, 0.125f * ls);
     glm::vec2 elbowCrossSection(0.105f * ls, 0.105f * ls);
     glm::vec2 wristCrossSection(0.095f * ls, 0.095f * ls);
@@ -877,6 +930,17 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     // chunkier, more stable-reading stylized foot -- Z (length) is
     // unchanged.
     glm::vec3 footBoxHalfExtents(0.13f * ls, 0.07f * ls, 0.18f * ls);
+    // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Add Real Hands/Feet
+    // Geometry" -- "defined shoe/foot primitives"): real, second box --
+    // a wider, flatter sole beneath the existing foot box -- giving a
+    // simple, real 2-part shoe silhouette (upper + sole) instead of one
+    // undifferentiated block, matching "static shape only" scope (same
+    // single foot_L/foot_R joint binding, no new joints). Positioned so
+    // its top edge sits flush against (with a small, deliberate 0.01
+    // overlap into) the existing foot box's own bottom edge -- no visible
+    // seam between the two.
+    glm::vec3 soleHalfExtents(0.145f * ls, 0.03f * ls, 0.21f * ls);
+    glm::vec3 soleOffset(0.0f, -0.04f - footBoxHalfExtents.y - soleHalfExtents.y + 0.01f, 0.08f);
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_L_upper"), worldPos("leg_L_lower"),
                       hipCrossSection, kneeCrossSection, jointIndexFor("leg_L_upper"), jointIndexFor("leg_L_lower"),
                       HumanoidBodySegment::LeftLeg, data.skinWeights);
@@ -885,6 +949,8 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
                       HumanoidBodySegment::LeftLeg, data.skinWeights);
     appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_L") + glm::vec3(0.0f, -0.04f, 0.08f),
               footBoxHalfExtents, jointIndexFor("foot_L"), HumanoidBodySegment::LeftLeg, data.skinWeights);
+    appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_L") + soleOffset, soleHalfExtents,
+              jointIndexFor("foot_L"), HumanoidBodySegment::LeftLeg, data.skinWeights);
 
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_R_upper"), worldPos("leg_R_lower"),
                       hipCrossSection, kneeCrossSection, jointIndexFor("leg_R_upper"), jointIndexFor("leg_R_lower"),
@@ -894,6 +960,8 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
                       HumanoidBodySegment::RightLeg, data.skinWeights);
     appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_R") + glm::vec3(0.0f, -0.04f, 0.08f),
               footBoxHalfExtents, jointIndexFor("foot_R"), HumanoidBodySegment::RightLeg, data.skinWeights);
+    appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_R") + soleOffset, soleHalfExtents,
+              jointIndexFor("foot_R"), HumanoidBodySegment::RightLeg, data.skinWeights);
 
     return data;
 }
