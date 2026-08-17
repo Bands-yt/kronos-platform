@@ -366,4 +366,23 @@ struct SceneLighting {
     std::vector<PointLight> pointLights;
 };
 
+// Kronos ("Avatar Scene Lighting Calibration Pass" -- "avatar renders
+// identically in Home, Studio, and gameplay under neutral lighting"):
+// the real, single, shared "neutral indoor" preview lighting preset --
+// a warm, low-key directional key light plus a cool rim point light for
+// silhouette separation. Originally lived only inside
+// runtime::HomeAvatarPreview.cpp as its own file-local
+// `cinematicPreviewLighting()`; extracted here as the one real source of
+// truth so Home's preview and Studio's AvatarEditor preview can share it
+// by real reference instead of by two independently-drifting copies of
+// the same numbers -- exactly the risk this pass exists to close.
+// Deliberately NOT wired in as `studio::PreviewScene`'s own default:
+// every *other* PreviewScene consumer (MaterialPlugin, CataloguePanel,
+// AnimationPreviewerPlugin, etc.) still gets that class's own flat,
+// neutral-white "lightbox" default -- a warm tint here would bias how a
+// material's own true color reads, which those panels specifically need
+// to avoid. Only avatar-showing previews opt in, explicitly, via
+// `PreviewScene::render()`'s own `lightingOverride` parameter.
+[[nodiscard]] const SceneLighting& avatarIndoorPreviewLighting();
+
 } // namespace engine::core

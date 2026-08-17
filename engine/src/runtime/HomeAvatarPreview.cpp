@@ -17,36 +17,6 @@ std::string shippedIdleClipPath() {
     return engine::core::resolveResourceDir(engine::core::executableDirectory(), "assets", ENGINE_ASSET_DIR) +
            "/animations/idle.anim";
 }
-
-// Kronos ("Home Screen Avatar Preview" -- "cinematic lighting preset"):
-// a real, deliberately different look from studio::PreviewScene's own
-// flat "studio lightbox" default (see that file's own previewLighting())
-// -- a warm, low-key directional key light (dimmer ambient than the
-// lightbox default, for real contrast/shadow instead of flat, even
-// fill) plus a cool rim point light placed behind-and-above the focus
-// point for silhouette separation from the background, the standard
-// three-point-lighting-inspired combination a real character showcase
-// uses. Real, already-existing engine features (SceneLighting's own
-// ambient/directional terms, Sprint 16's real point lights) -- not a new
-// rendering capability, just a deliberately different real preset.
-const core::SceneLighting& cinematicPreviewLighting() {
-    static const core::SceneLighting kLighting = [] {
-        core::SceneLighting lighting;
-        lighting.directionWS = glm::vec3(-0.55f, -0.65f, -0.3f);
-        lighting.color = glm::vec3(1.0f, 0.92f, 0.78f); // warm key
-        lighting.intensity = 2.6f;
-        lighting.ambient = glm::vec3(0.06f, 0.07f, 0.11f);       // dim, cool sky fill
-        lighting.ambientGround = glm::vec3(0.04f, 0.035f, 0.03f); // dim, warm ground fill
-        lighting.pointLights.push_back(core::SceneLighting::PointLight{
-            glm::vec3(-1.4f, 2.4f, 1.6f), // behind-and-above the real {0,1,0} focus point
-            6.0f,
-            glm::vec3(0.55f, 0.7f, 1.0f), // cool rim
-            2.2f,
-        });
-        return lighting;
-    }();
-    return kLighting;
-}
 } // namespace
 
 HomeAvatarPreview::HomeAvatarPreview(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
@@ -208,7 +178,7 @@ void HomeAvatarPreview::renderPreview(VkCommandBuffer cmd, core::Renderer& rende
     // class already establishes (see AvatarEditor::renderPreview()).
     static core::MeshLibrary sUnusedMeshLibrary;
     static core::TextureLibrary sUnusedTextureLibrary;
-    const core::SceneLighting& lighting = cinematicPreviewLighting();
+    const core::SceneLighting& lighting = core::avatarIndoorPreviewLighting();
     scene_.render(cmd, renderer, sUnusedMeshLibrary, sUnusedTextureLibrary, riggedMeshLibrary_, &lighting);
 }
 

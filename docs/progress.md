@@ -1,5 +1,76 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still, part 8) — Avatar Scene Lighting Calibration Pass
+
+Direct follow-up to the previous pass's audit -- this time with real,
+concrete targets to hit, and one real bug the audit's own "check for
+unintended Weather.cpp desaturation" item surfaced.
+
+**Real, shared "neutral indoor" lighting preset**: `core::
+avatarIndoorPreviewLighting()` (new, `core/SceneTypes.hpp/.cpp`) extracts
+what was previously `runtime::HomeAvatarPreview.cpp`'s own file-local
+`cinematicPreviewLighting()` into one real, shared source of truth --
+same exact values (ambient `(0.06,0.07,0.11)`, ambientGround
+`(0.04,0.035,0.03)`, warm key + cool rim point light), plus a new,
+explicit `fogDensity = 0.006` (was an implicit `0.0` default) per this
+pass's own "clamp fogDensity to 0.006 for neutral indoor scenes" target.
+`HomeAvatarPreview.cpp` now calls the shared function instead of its own
+copy. `studio::plugins::AvatarEditor::renderPreview()` now passes this
+same shared lighting as an explicit override to `PreviewScene::render()`
+-- previously it silently fell through to `PreviewScene`'s own flat,
+neutral-white "lightbox" default (correct for `MaterialPlugin`/
+`CataloguePanel`/etc., which need a true, unbiased material-color read,
+so that shared class default was deliberately left untouched -- only
+`AvatarEditor` opts into the avatar-specific preset).
+
+**Real bug found and fixed**: `Renderer::drawSceneIntoImpl()` -- the one
+function both the main viewport and every `PreviewScene`/
+`HomeAvatarPreview` auxiliary render share -- was unconditionally
+composing live outdoor weather (`applyWeather(lighting_, currentBlendedProfile(weatherState_))`)
+into *every* render, including preview scenes. Concretely: if it's
+raining or foggy in the real gameplay world and a player opens Home's
+avatar preview, the Avatar Shop, or Studio's AvatarEditor while that
+weather is active, the preview's own carefully-set "neutral indoor"
+lighting would silently pick up real, unwanted desaturation/dimming from
+weather it has nothing to do with -- exactly the "unintended
+desaturation from core::Weather.cpp perturbations" this pass's own
+Material Validation item asked to check for, found real, not
+hypothetical. Fixed with a new `applyWeatherEffects` parameter
+(`Renderer.hpp`/`.cpp`, default `true`): the main-viewport
+`drawSceneInto()` overload keeps the real, unchanged default; the
+`AuxiliarySceneHandle` overload now passes `false`, substituting
+`weatherProfileFor(WeatherKind::Clear)` -- a real, exact no-op
+(`applyWeather()` already treats Clear as an identity), not an
+approximation.
+
+**Verified, not changed**: `Renderer::exposure_` is still the single
+global `1.0f` it was found to be in the previous audit (no per-scene
+divergence exists to fix). `core::TimeOfDay.cpp`'s own real fog range
+(0.004-0.012) is unchanged -- only the *indoor preview* preset needed a
+real, separate fixed value, not the outdoor day/night curve itself, per
+this pass's own "maintain dynamic day/night lighting only for outdoor
+gameplay scenes." Avatar material values (hair roughness 0.28/metallic
+0.12, body segments 0.55-0.66) re-confirmed unchanged in
+`RiggedAvatar.cpp`/`AvatarHair.cpp` -- this pass touched lighting/weather
+plumbing only, not material data.
+
+**Tests**: 5 new checks (`testAvatarIndoorPreviewLightingMatchesStatedBaseline`)
+-- real values match the stated baseline, the new fogDensity clamp is
+exactly 0.006, and the function returns a real cached singleton (Home
+and Studio share the exact same instance, not two copies that could
+drift). The `drawSceneIntoImpl()` weather-bypass itself is GPU-embedded
+logic (a two-line ternary inside a large render function) -- verified
+structurally by reading, not extracted into a separately-testable pure
+function for its own sake, matching this suite's own established "GPU
+code gets structural + visual verification" convention.
+
+**Verified via live screenshot**: Home preview renders pixel-identical
+to before this pass (confirming the `cinematicPreviewLighting()` ->
+`avatarIndoorPreviewLighting()` extraction changed no values, only
+where they live) -- no regression from the refactor.
+
+**10769/10769 checks passing**, clean 4-target rebuild.
+
 ## 2026-08-16 (later still, part 7) — Avatar Lighting and Proportion Polish Pass: real audit, no code changes needed
 
 **Arm and Hand Proportions**: this item's own wording (shoulder offset

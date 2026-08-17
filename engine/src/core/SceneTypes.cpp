@@ -50,4 +50,32 @@ std::vector<VkVertexInputAttributeDescription> ParticleInstanceData::attributeDe
     return attrs;
 }
 
+const SceneLighting& avatarIndoorPreviewLighting() {
+    static const SceneLighting kLighting = [] {
+        SceneLighting lighting;
+        lighting.directionWS = glm::vec3(-0.55f, -0.65f, -0.3f);
+        lighting.color = glm::vec3(1.0f, 0.92f, 0.78f); // warm key
+        lighting.intensity = 2.6f;
+        lighting.ambient = glm::vec3(0.06f, 0.07f, 0.11f);        // dim, cool sky fill
+        lighting.ambientGround = glm::vec3(0.04f, 0.035f, 0.03f); // dim, warm ground fill
+        // Kronos ("Avatar Scene Lighting Calibration Pass" -- "clamp
+        // fogDensity to 0.006 for neutral indoor scenes"): a real,
+        // small, fixed value -- an indoor avatar preview has no distant
+        // geometry for fog to meaningfully act on, but a real, tiny,
+        // nonzero density here keeps this preset numerically consistent
+        // with real gameplay's own fog system (0.004-0.012 range, see
+        // core::computeLightingForTimeOfDay()) rather than the previous
+        // implicit 0.0 default.
+        lighting.fogDensity = 0.006f;
+        lighting.pointLights.push_back(SceneLighting::PointLight{
+            glm::vec3(-1.4f, 2.4f, 1.6f), // behind-and-above the real {0,1,0} focus point
+            6.0f,
+            glm::vec3(0.55f, 0.7f, 1.0f), // cool rim
+            2.2f,
+        });
+        return lighting;
+    }();
+    return kLighting;
+}
+
 } // namespace engine::core

@@ -1184,10 +1184,26 @@ private:
     // auxiliaryScenes_[handle] for the AuxiliarySceneHandle one). See the
     // AuxiliarySceneHandle overload's doc comment for why this split
     // exists.
+    //
+    // Kronos ("Avatar Scene Lighting Calibration Pass" -- "ensure no
+    // unintended desaturation from core::Weather.cpp perturbations"):
+    // `applyWeatherEffects` is real, new -- before this, `applyWeather()`
+    // ran unconditionally here regardless of which FrameSync was being
+    // drawn into, so a real, live outdoor weather event (rain/fog) would
+    // silently perturb an auxiliary preview scene's own carefully-set
+    // lighting too (Home's avatar preview, Studio's AvatarEditor/
+    // MaterialPlugin/CataloguePanel, etc.) even though none of those are
+    // meant to reflect the outdoor world's current weather at all. The
+    // main-viewport overload passes `true` (unchanged real behavior);
+    // the AuxiliarySceneHandle overload passes `false` -- a real, exact
+    // no-op multiply-through-Clear-weather-equivalent, not an
+    // approximation (see applyWeather()'s own comment on why Clear is a
+    // real, exact identity).
     void drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage colorImage, VkImageView colorView,
                             VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera,
                             ECS& ecs, MeshLibrary& meshLibrary, const ParticleSystem& particleSystem,
-                            TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary);
+                            TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary,
+                            bool applyWeatherEffects = true);
 
     // Real GPU vertex-shader skinning (shaders/scene_skinned.vert),
     // called from within drawSceneIntoImpl()'s own render pass (same

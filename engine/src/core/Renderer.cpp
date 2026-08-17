@@ -4129,7 +4129,8 @@ void Renderer::recordDraw(uint32_t indexOrVertexCount, uint32_t instanceCount) {
 void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage colorImage, VkImageView colorView,
                                   VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera,
                                   ECS& ecs, MeshLibrary& meshLibrary, const ParticleSystem& particleSystem,
-                                  TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary) {
+                                  TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary,
+                                  bool applyWeatherEffects) {
     // (Re)creates frame.hdrImage/bloomImage if `extent` changed since the
     // last call -- see FrameSync's comment and OffscreenTarget::ensureSize()
     // for the same lazy-resize pattern applied elsewhere in this codebase.
@@ -4217,7 +4218,15 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // reference-equal value in that case). Every caller of setLighting()
     // gets weather "for free," including this same struct's own
     // WeatherProfile::wetness feeding renderFlags.z below.
-    WeatherProfile weatherProfile = currentBlendedProfile(weatherState_);
+    //
+    // Kronos ("Avatar Scene Lighting Calibration Pass"): `applyWeatherEffects`
+    // (false for every auxiliary/preview scene, see this function's own
+    // header comment) real-substitutes `weatherProfileFor(WeatherKind::Clear)`
+    // in place of the outdoor world's own current blended weather --
+    // `applyWeather()` already treats Clear as a real, exact identity, so
+    // this is a genuine no-op for preview scenes, not an approximation.
+    WeatherProfile weatherProfile =
+        applyWeatherEffects ? currentBlendedProfile(weatherState_) : weatherProfileFor(WeatherKind::Clear);
     SceneLighting effectiveLighting = applyWeather(lighting_, weatherProfile);
     ubo.lightDirectionWS = glm::vec4(glm::normalize(effectiveLighting.directionWS), 0.0f);
     ubo.lightColorIntensity = glm::vec4(effectiveLighting.color, effectiveLighting.intensity);
@@ -4566,8 +4575,13 @@ void Renderer::drawSceneInto(AuxiliarySceneHandle handle, VkCommandBuffer cmd, V
         std::fprintf(stderr, "Renderer: drawSceneInto() called with an invalid AuxiliarySceneHandle.\n");
         return;
     }
+    // Kronos ("Avatar Scene Lighting Calibration Pass"): real,
+    // explicit `false` -- see drawSceneIntoImpl()'s own header comment
+    // on why every auxiliary/preview scene (Home's avatar preview,
+    // every Studio PreviewScene consumer) must not inherit the outdoor
+    // world's own live weather perturbation.
     drawSceneIntoImpl(auxiliaryScenes_[handle], cmd, colorImage, colorView, depthImage, depthView, extent, camera, ecs,
-                       meshLibrary, particleSystem, textureLibrary, riggedMeshLibrary);
+                       meshLibrary, particleSystem, textureLibrary, riggedMeshLibrary, /*applyWeatherEffects=*/false);
 }
 
 Renderer::AuxiliarySceneHandle Renderer::createAuxiliaryScene() {

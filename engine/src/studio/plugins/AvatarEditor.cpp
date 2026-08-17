@@ -481,7 +481,18 @@ void AvatarEditor::renderPreview(VkCommandBuffer cmd, core::Renderer& renderer) 
     // renderPreview() already establishes.
     static core::MeshLibrary sUnusedMeshLibrary;
     static core::TextureLibrary sUnusedTextureLibrary;
-    scene_.render(cmd, renderer, sUnusedMeshLibrary, sUnusedTextureLibrary, riggedMeshLibrary_);
+    // Kronos ("Avatar Scene Lighting Calibration Pass" -- "avatar
+    // renders identically in Home, Studio, and gameplay under neutral
+    // lighting"): real, explicit override -- without this, `render()`
+    // falls back to `PreviewScene`'s own flat, neutral-white "lightbox"
+    // default (correct for MaterialPlugin/CataloguePanel/etc., which
+    // need a true, unbiased material color read, but not what an avatar
+    // preview should look like). Passing the same real, shared
+    // `core::avatarIndoorPreviewLighting()` runtime::HomeAvatarPreview
+    // now also uses is what actually keeps this panel's own preview
+    // visually consistent with Home, not just similarly-worded.
+    const core::SceneLighting& lighting = core::avatarIndoorPreviewLighting();
+    scene_.render(cmd, renderer, sUnusedMeshLibrary, sUnusedTextureLibrary, riggedMeshLibrary_, &lighting);
 }
 
 void AvatarEditor::shutdown(core::Renderer& renderer) { scene_.destroy(renderer, allocator_, device_); }

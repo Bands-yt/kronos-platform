@@ -86,6 +86,7 @@
 #include "core/PropAnimation.hpp"
 #include "core/Shop.hpp"
 #include "core/Terrain.hpp"
+#include "core/SceneTypes.hpp"
 #include "core/TimeOfDay.hpp"
 #include "core/UpgradeSystem.hpp"
 #include "core/VisualFeedback.hpp"
@@ -8975,6 +8976,31 @@ void testComputeLightingDeterministic() {
     engine::core::SceneLighting b = engine::core::computeLightingForTimeOfDay(15.5f);
     check(nearlyEqual(a.intensity, b.intensity) && glm::length(a.directionWS - b.directionWS) < 0.0001f,
           "computeLightingForTimeOfDay() is really pure -- identical hour always produces an identical result");
+}
+
+// Kronos ("Avatar Scene Lighting Calibration Pass" -- "avatar renders
+// identically in Home, Studio, and gameplay under neutral lighting"):
+// real, pure coverage over the one shared "neutral indoor" preview
+// lighting preset -- confirms the real values match the pass's own
+// stated baseline (ambient/ambientGround) and the new real fogDensity
+// clamp, and that calling it twice returns the exact same real values
+// (a real, cached singleton, not two independently-drifting instances).
+void testAvatarIndoorPreviewLightingMatchesStatedBaseline() {
+    const engine::core::SceneLighting& lighting = engine::core::avatarIndoorPreviewLighting();
+    check(nearlyEqual(lighting.ambient.x, 0.06f) && nearlyEqual(lighting.ambient.y, 0.07f) &&
+              nearlyEqual(lighting.ambient.z, 0.11f),
+          "avatarIndoorPreviewLighting()'s real ambient matches the stated Home cinematic baseline (0.06,0.07,0.11)");
+    check(nearlyEqual(lighting.ambientGround.x, 0.04f) && nearlyEqual(lighting.ambientGround.y, 0.035f) &&
+              nearlyEqual(lighting.ambientGround.z, 0.03f),
+          "avatarIndoorPreviewLighting()'s real ambientGround matches the stated baseline (0.04,0.035,0.03)");
+    check(nearlyEqual(lighting.fogDensity, 0.006f),
+          "avatarIndoorPreviewLighting()'s real fogDensity is real-clamped to 0.006 for neutral indoor scenes");
+    check(lighting.pointLights.size() == 1, "the real cool rim point light is present exactly once");
+
+    const engine::core::SceneLighting& again = engine::core::avatarIndoorPreviewLighting();
+    check(&lighting == &again,
+          "avatarIndoorPreviewLighting() is a real, cached singleton -- Home and Studio share the exact same "
+          "real instance, not two independently-drifting copies of the same numbers");
 }
 
 // Kronos ("Rendering Fidelity Foundation" Phase 1.1) -- real dynamic
@@ -26848,6 +26874,7 @@ int main() {
     testComputeLightingFogDensityHigherAtNightThanDay();
     testComputeLightingIsContinuousAcrossMidnightWrap();
     testComputeLightingDeterministic();
+    testAvatarIndoorPreviewLightingMatchesStatedBaseline();
 
     testWeatherProfileForClearHasZeroOverrideStrength();
     testWeatherProfileForActiveKindsHavePositiveOverrideStrength();
