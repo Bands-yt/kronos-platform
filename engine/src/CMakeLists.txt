@@ -459,6 +459,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/StudioStyle.cpp
         studio/StudioIcons.cpp
         studio/PluginChrome.cpp
+        studio/CommandPalette.cpp
         # Kronos ("UI/UX Revamp"): see engine_runtime's own source list
         # above for why this lives here (and there) instead of in
         # engine_core.

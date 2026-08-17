@@ -21,6 +21,7 @@
 #include "marketplace/TransactionLog.hpp"
 #include "net/NetworkSession.hpp"
 #include "safety/TrustSafetyService.hpp"
+#include "studio/CommandPalette.hpp"
 #include "studio/Notification.hpp"
 #include "studio/OffscreenTarget.hpp"
 #include "studio/PluginManager.hpp"
@@ -110,6 +111,19 @@ private:
     [[nodiscard]] bool initImGuiVulkanBackend();
 
     void buildBringUpScene();
+    // Kronos ("Studio QoL Sprint" -- "VS Code-Style Command Palette"):
+    // the real, concrete action list -- Spawn Baseplate, Toggle Physics
+    // Debug, Clear Engine Log, etc. -- built fresh each time the palette
+    // opens (cheap, and always reflects current state, e.g. whether
+    // physicsPreviewPlugin_ exists yet).
+    [[nodiscard]] std::vector<PaletteCommand> buildCommandPaletteCommands();
+    // Kronos ("...type an entity name to jump the viewport camera
+    // directly to it"): real, substring name search over every real
+    // core::Name in the live ECS, each result's own `execute` real-moves
+    // viewportPanel_'s camera to frame that entity (see .cpp for the
+    // real "keep facing direction, reposition at a fixed distance"
+    // math).
+    [[nodiscard]] std::vector<PaletteCommand> searchEntitiesForPalette(const std::string& query);
     void drawFileMenu();
     void drawPendingFileActionPopup();
     // Kronos ("Branding + Release Prep" -- "About panel"): real, small,
@@ -309,6 +323,13 @@ private:
     // Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) handled in run() -- see UndoStack.hpp
     // for exactly which edits currently push commands onto this.
     UndoStack undoStack_;
+
+    // Kronos ("Studio QoL Sprint" -- "VS Code-Style Command Palette"):
+    // Ctrl+K / Ctrl+P handled in run(), same "checked once per frame"
+    // convention as the Ctrl+Z/Ctrl+S block just above -- see
+    // buildCommandPaletteCommands()/searchEntitiesForPalette() for the
+    // real command list and entity-search hook this actually wires up.
+    CommandPalette commandPalette_;
 
     // Sprint 7 -- see notifications() above.
     NotificationCenter notifications_;

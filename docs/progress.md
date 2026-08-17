@@ -1,5 +1,40 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 2: Command Palette
+
+**VS Code-style Command Palette (Ctrl+K / Ctrl+P)**: new
+`studio::CommandPalette` (`studio/CommandPalette.hpp/.cpp`) -- a real,
+generic, floating (non-modal) ImGui window, substring/case-insensitive
+filtered against a caller-supplied command list, with Up/Down keyboard
+navigation, Enter-to-execute, click-to-execute, and Escape/title-bar
+close. Deliberately knows nothing about ECS/Camera/Renderer itself --
+`StudioApp::buildCommandPaletteCommands()` supplies the real actions
+(`Spawn Baseplate`, `Toggle Physics Debug` when the physics preview
+plugin is active, `Clear Engine Log`), and
+`StudioApp::searchEntitiesForPalette()` supplies real entity-name
+search (substring match over every `core::Name` component, each result's
+own `execute` moving the viewport camera to sit `kFocusDistance` back
+from the matched entity along its current forward vector). Wired into
+`StudioApp::run()`'s existing per-frame keybind block alongside
+Ctrl+Z/Ctrl+Y/Ctrl+S. Non-modal by design (`ImGui::Begin`, not
+`BeginPopupModal`) so the 3D viewport keeps rendering behind it.
+
+**Verification**: `studio` target rebuilds clean; full suite still
+10788/10788 (no new pure/headless surface added by this feature -- it's
+UI-only, wired against already-tested ECS/Camera APIs). Manual
+click-through verification was **not** performed this pass -- an
+earlier attempt at simulated mouse input for UI testing this session
+visibly interfered with the user's real desktop cursor, so further
+simulated-input verification was intentionally ruled out; this is
+stated here explicitly rather than claiming a screenshot-verified pass
+that didn't happen.
+
+**Next**: QoL Sprint item 3 (Instant Lua Script Hot-Reload) -- the hard
+part (granular per-script reload without resetting physics/ECS/camera)
+already exists (`Application.cpp:502-524`); the real gap is
+`ScriptEditorPanel` not being wired to any real `Script` component/file
+at all yet.
+
 ## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 1: pipeline re-audit, client theme, asset validation
 
 **Render pipeline re-audit (real, code-level, using the actual codebase's

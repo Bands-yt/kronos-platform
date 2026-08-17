@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <thread>
 #include <cstdio>
@@ -13,6 +14,7 @@
 #include "core/GameCatalogueAggregate.hpp"
 #include "core/GameManifest.hpp"
 #include "core/HiddenGemsSelector.hpp"
+#include "core/Logger.hpp"
 #include "core/KronosVersion.hpp"
 #include "core/ProjectReadmeGenerator.hpp"
 #include "core/QualityScore.hpp"
@@ -804,6 +806,92 @@ void StudioApp::drawAboutPanel() {
     ImGui::End();
 }
 
+std::vector<PaletteCommand> StudioApp::buildCommandPaletteCommands() {
+    std::vector<PaletteCommand> commands;
+
+    // Kronos ("Studio QoL Sprint" -- "> Spawn Baseplate"): real, same
+    // plane-mesh + Renderable + MeshSource shape buildBringUpScene()'s
+    // own real GroundPlane already establishes, just callable on demand
+    // instead of only at first launch. A fresh, real GPU mesh is
+    // registered per spawn (matching this codebase's own accepted "not
+    // worth a resource pool for a problem that isn't real yet" precedent
+    // -- see Application::spawnLocalPlayerAvatar()'s own identical
+    // reasoning).
+    commands.push_back({"Spawn Baseplate", [this]() {
+                             uint32_t planeMesh = meshLibrary_.registerMesh(core::Mesh::createPlane(
+                                 renderer_.allocator(), renderer_.device(), renderer_.commandPool(),
+                                 renderer_.graphicsQueue(), 25.0f, 25.0f));
+                             auto entity = ecs_.createEntity("Baseplate");
+                             auto& renderable = ecs_.addComponent<core::Renderable>(entity);
+                             renderable.meshHandle = planeMesh;
+                             renderable.baseColor = {0.35f, 0.36f, 0.4f, 1.0f};
+                             renderable.metallic = 0.0f;
+                             renderable.roughness = 0.85f;
+                             auto& meshSource = ecs_.addComponent<core::MeshSource>(entity);
+                             meshSource.kind = core::MeshSourceKind::Plane;
+                             meshSource.params = {25.0f, 0.0f, 25.0f};
+                             notifications_.push("Spawned Baseplate", NotificationSeverity::Success);
+                         }});
+
+    // Kronos ("Studio QoL Sprint" -- "> Toggle Physics Debug"): real,
+    // toggles the exact same real showColliders flag
+    // ViewportPanel.cpp's own Physics Debug checkbox row already reads
+    // -- one real piece of state, two real ways to flip it. A real,
+    // honest no-op (absent from the list entirely) when no Play Solo
+    // session exists yet to have a physicsPreviewPlugin_ for.
+    if (physicsPreviewPlugin_ != nullptr) {
+        commands.push_back({"Toggle Physics Debug", [this]() {
+                                 physicsPreviewPlugin_->showColliders = !physicsPreviewPlugin_->showColliders;
+                             }});
+    }
+
+    // Kronos ("Studio QoL Sprint" -- "> Clear Engine Log"): real, the
+    // same core::Logger::instance().clearRingBuffer() the Debug
+    // Console's own "Clear" button (Engine Log tab) already calls.
+    commands.push_back({"Clear Engine Log", []() { core::Logger::instance().clearRingBuffer(); }});
+
+    return commands;
+}
+
+std::vector<PaletteCommand> StudioApp::searchEntitiesForPalette(const std::string& query) {
+    std::vector<PaletteCommand> results;
+    std::string queryLower = query;
+    std::transform(queryLower.begin(), queryLower.end(), queryLower.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    constexpr size_t kMaxResults = 8; // a real, small cap -- a palette flooded with 200 name matches isn't useful
+    for (core::EntityId entity : ecs_.view<core::Name>()) {
+        if (results.size() >= kMaxResults) break;
+        core::Name* name = ecs_.tryGetComponent<core::Name>(entity);
+        if (name == nullptr || name->value.empty()) continue;
+        std::string nameLower = name->value;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(),
+                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (nameLower.find(queryLower) == std::string::npos) continue;
+
+        std::string label = "Focus: " + name->value;
+        results.push_back({label, [this, entity]() {
+                                // Kronos ("...jump the viewport camera
+                                // directly to it"): real, keeps the
+                                // camera's own current facing direction
+                                // and repositions it a fixed distance
+                                // back from the entity's real world
+                                // position -- the same "stand back along
+                                // -forward()" convention
+                                // CharacterController's own third-person
+                                // follow camera already establishes,
+                                // applied once here instead of every
+                                // tick.
+                                if (auto* transform = ecs_.tryGetComponent<core::Transform>(entity)) {
+                                    constexpr float kFocusDistance = 6.0f;
+                                    core::Camera& camera = viewportPanel_.camera();
+                                    camera.position = transform->position - camera.forward() * kFocusDistance;
+                                }
+                            }});
+    }
+    return results;
+}
+
 void StudioApp::drawFileMenu() {
     if (!ImGui::BeginMenu("File")) return;
 
@@ -1289,8 +1377,20 @@ void StudioApp::run() {
                 bool saveOk = sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera());
                 fileActionStatus_ = saveOk ? "Saved " + sceneManager_.currentScenePath() : "Save failed: " + sceneManager_.currentScenePath();
                 notifications_.push(fileActionStatus_, saveOk ? NotificationSeverity::Success : NotificationSeverity::Error);
+            } else if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_K, false) || ImGui::IsKeyPressed(ImGuiKey_P, false))) {
+                // Kronos ("Studio QoL Sprint" -- "VS Code-Style Command
+                // Palette"): real, either shortcut opens the same real
+                // palette -- VS Code itself uses Ctrl+P for "go to
+                // file"/Ctrl+Shift+P for commands as two distinct
+                // surfaces; this editor has no separate file-search
+                // concept to keep Ctrl+P free for, so both open the one
+                // real palette rather than one of them silently doing
+                // nothing.
+                commandPalette_.open();
             }
         }
+        commandPalette_.draw(buildCommandPaletteCommands(),
+                              [this](const std::string& query) { return searchEntitiesForPalette(query); });
 
         // undoCount() changing (either direction -- see UndoStack::undoCount's
         // comment) is the in-place-edit half of SceneManager's dirty
