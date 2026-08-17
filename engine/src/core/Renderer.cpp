@@ -4148,7 +4148,8 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
                                   VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera,
                                   ECS& ecs, MeshLibrary& meshLibrary, const ParticleSystem& particleSystem,
                                   TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary,
-                                  bool applyWeatherEffects, bool applyBloom, bool suppressSunDisk) {
+                                  bool applyWeatherEffects, bool applyBloom, bool suppressSunDisk,
+                                  bool useFlatBackground) {
     // (Re)creates frame.hdrImage/bloomImage if `extent` changed since the
     // last call -- see FrameSync's comment and OffscreenTarget::ensureSize()
     // for the same lazy-resize pattern applied elsewhere in this codebase.
@@ -4357,7 +4358,17 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.clearValue.color = {{0.04f, 0.045f, 0.06f, 1.0f}};
+    // Kronos ("Avatar Preview Rendering" pre-launch fix -- direct,
+    // guaranteed hardware-level override, not another indirect shader
+    // tuning pass): every auxiliary/preview scene (useFlatBackground)
+    // gets a real, fixed dark-slate clear color here, and the sky pass
+    // below is skipped for it entirely -- no sky.frag draw call at all,
+    // so nothing (gradient, sun disk, atmosphere, clouds, any future sky
+    // feature) can ever paint over this clear value for these scenes.
+    // The main viewport is completely unaffected (useFlatBackground
+    // stays false there, exact prior behavior).
+    colorAttachment.clearValue.color =
+        useFlatBackground ? VkClearColorValue{{0.08f, 0.09f, 0.13f, 1.0f}} : VkClearColorValue{{0.04f, 0.045f, 0.06f, 1.0f}};
 
     VkRenderingAttachmentInfo depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     depthAttachment.imageView = depthView;
@@ -4386,11 +4397,17 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // sky gradient only ever shows through where nothing else was drawn.
     // Same fullscreen-triangle draw shape drawBloomAndComposite() already
     // uses (vkCmdDraw(3,...), no vertex/index buffer bound).
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipelineLayout_, 0, 1, &frame.sceneDescriptorSet,
-                             0, nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    recordDraw(3, 1);
+    // Kronos ("Avatar Preview Rendering" pre-launch fix): skipped
+    // entirely for useFlatBackground scenes -- see colorAttachment's own
+    // clearValue comment just above. The clear color alone is the whole
+    // background for these scenes now.
+    if (!useFlatBackground) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipelineLayout_, 0, 1,
+                                 &frame.sceneDescriptorSet, 0, nullptr);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        recordDraw(3, 1);
+    }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 0, 1,
@@ -4606,11 +4623,14 @@ void Renderer::drawSceneInto(AuxiliarySceneHandle handle, VkCommandBuffer cmd, V
     // explicit `false` for bloom -- see drawBloomAndComposite()'s own
     // comment on why a close-up preview's bloom bleed reads as a much
     // larger washed-out effect than the same settings produce on a
-    // normal full-scene shot. And real, explicit `true` for
-    // suppressSunDisk -- see shaders/sky.frag's own comment.
+    // normal full-scene shot. Real, explicit `true` for suppressSunDisk
+    // -- see shaders/sky.frag's own comment. And real, explicit `true`
+    // for useFlatBackground -- the direct, guaranteed hardware-level
+    // override: a fixed dark-slate clear color with the sky pass
+    // skipped entirely, see this function's own header comment.
     drawSceneIntoImpl(auxiliaryScenes_[handle], cmd, colorImage, colorView, depthImage, depthView, extent, camera, ecs,
                        meshLibrary, particleSystem, textureLibrary, riggedMeshLibrary, /*applyWeatherEffects=*/false,
-                       /*applyBloom=*/false, /*suppressSunDisk=*/true);
+                       /*applyBloom=*/false, /*suppressSunDisk=*/true, /*useFlatBackground=*/true);
 }
 
 Renderer::AuxiliarySceneHandle Renderer::createAuxiliaryScene() {

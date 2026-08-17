@@ -1213,11 +1213,23 @@ private:
     // why a fixed, saturated sun-disk marker meant for outdoor gameplay
     // cameras can blow out a tight preview frame if the orbit camera
     // happens to point anywhere near the light direction.
+    // `useFlatBackground` (Kronos "Avatar Preview Rendering" pre-launch
+    // fix -- the direct, guaranteed hardware-level override): true for
+    // AuxiliarySceneHandle only. Sets the opaque pass's own color
+    // attachment clearValue directly to a fixed dark-slate
+    // (0.08, 0.09, 0.13, 1.0) and skips the sky.frag draw call
+    // entirely for that scene -- no shader-side gradient, sun disk,
+    // atmosphere, or cloud logic can paint over it, unlike
+    // suppressSunDisk above (which only turns off one specific sky.frag
+    // feature but still runs the sky pass). The main viewport is
+    // completely unaffected (default false, exact prior clear color and
+    // sky draw, unchanged).
     void drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage colorImage, VkImageView colorView,
                             VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera,
                             ECS& ecs, MeshLibrary& meshLibrary, const ParticleSystem& particleSystem,
                             TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary,
-                            bool applyWeatherEffects = true, bool applyBloom = true, bool suppressSunDisk = false);
+                            bool applyWeatherEffects = true, bool applyBloom = true, bool suppressSunDisk = false,
+                            bool useFlatBackground = false);
 
     // Real GPU vertex-shader skinning (shaders/scene_skinned.vert),
     // called from within drawSceneIntoImpl()'s own render pass (same
