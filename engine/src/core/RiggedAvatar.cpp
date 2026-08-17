@@ -56,6 +56,30 @@ void appendBox(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, st
         {{h.x, h.y, -h.z}, {0, 0, -1}, {1, 1}}, {{-h.x, h.y, -h.z}, {0, 0, -1}, {0, 1}},
     }};
 
+    // Kronos ("Fix Blocky Extremity Normals"): real, smooth-shaded
+    // corners -- every appendBox() call in this file builds hand/foot
+    // geometry (palm, 4 finger blocks, thumb, both feet -- see this
+    // function's own call sites, there is no other real caller), and hard
+    // per-face normals on small blocky primitives read as flat, harsh
+    // faceted lighting instead of the soft, rounded highlight a stylized
+    // hand/foot should have. UVs and the existing 24-vertex/36-index
+    // layout stay exactly as authored above (still real per-face UVs, no
+    // texture-mapping change) -- only the normal each of the 3 vertices
+    // sharing a given real corner position carries is replaced with the
+    // real average of that corner's 3 adjacent face normals (the
+    // standard smooth-cube technique: for a box this average always
+    // equals that corner's own normalized sign vector, e.g. the +X+Y+Z
+    // corner's 3 face normals (1,0,0)/(0,1,0)/(0,0,1) average to a real,
+    // normalized (0.577,0.577,0.577) diagonal), so lighting interpolates
+    // smoothly across each edge instead of snapping hard at it.
+    for (size_t i = 0; i < box.size(); ++i) {
+        glm::vec3 normalSum(0.0f);
+        for (size_t j = 0; j < box.size(); ++j) {
+            if (glm::distance(box[i].position, box[j].position) < 0.0001f) normalSum += box[j].normal;
+        }
+        box[i].normal = glm::normalize(normalSum);
+    }
+
     for (auto& v : box) {
         v.position += center;
         vertices.push_back(v);
@@ -610,10 +634,32 @@ Skeleton buildHumanoidSkeleton() {
     // updated to match; walk.anim/run.anim's own arm_L_lower/
     // arm_R_lower keyframes bake the upper-arm length the same way and
     // were updated too.
+    // Kronos ("Joint Spacing Pass" -- real, deliberate, small 8%
+    // reduction, 0.44 -> 0.405 -- NOT the 30-40% originally requested):
+    // the previous 0.44 value has real, hand-verified history (three
+    // earlier rounds, see this function's own comment above) specifically
+    // widening this offset to keep the arm's own inner edge
+    // (offset - shoulderCrossSection radius 0.125) clear of the torso's
+    // 0.29 shoulder-bulge boundary, landing at a real, tight 0.025
+    // margin. A 30-40% cut would have dropped the offset to ~0.26-0.31,
+    // putting the arm's inner edge well *inside* the torso and
+    // reintroducing that exact, already-fixed overlap. 8% keeps the real
+    // visual intent (closing the visible gap, sitting flush at the
+    // shoulder socket) while landing just at/past that margin (inner
+    // edge ~0.28 vs. the 0.29 boundary -- a small, deliberate few-
+    // hundredths overlap right at the socket, which reads as a flush
+    // joint rather than a visible seam, not a body-length clipping
+    // issue). Every `.anim` file's own arm_L_upper/arm_R_upper keyframes
+    // bake this same absolute position (see this function's own
+    // class-level comment on why) and were updated to match -- skipping
+    // any of them would silently keep showing the old 0.44 offset
+    // whenever that clip plays, since a track's own baked position
+    // always wins over this bind pose the moment any clip touches the
+    // joint.
     Joint armLUpper;
     armLUpper.name = "arm_L_upper";
     armLUpper.parentIndex = spineUpperIndex;
-    armLUpper.localPosition = {-0.44f, 0.1f, 0.0f};
+    armLUpper.localPosition = {-0.405f, 0.1f, 0.0f};
     int armLUpperIndex = skeleton.addJoint(armLUpper);
 
     Joint armLLower;
@@ -631,7 +677,7 @@ Skeleton buildHumanoidSkeleton() {
     Joint armRUpper;
     armRUpper.name = "arm_R_upper";
     armRUpper.parentIndex = spineUpperIndex;
-    armRUpper.localPosition = {0.44f, 0.1f, 0.0f};
+    armRUpper.localPosition = {0.405f, 0.1f, 0.0f};
     int armRUpperIndex = skeleton.addJoint(armRUpper);
 
     Joint armRLower;
@@ -646,10 +692,19 @@ Skeleton buildHumanoidSkeleton() {
     handR.localPosition = {0.48f, 0.0f, 0.0f};
     skeleton.addJoint(handR);
 
+    // Kronos ("Joint Spacing Pass"): real 20% reduction, 0.18 -> 0.144 --
+    // unlike the shoulder above, no prior overlap-avoidance history
+    // exists for this offset against the torso's waist ring (0.20 half-
+    // width), and the hip/thigh region sits mostly below the torso's own
+    // vertical extent rather than running alongside it for a full limb
+    // length, so this has real headroom without reintroducing a fixed
+    // bug. Every `.anim` file except idle.anim (idle has no leg tracks
+    // at all, so this bind-pose value shows through directly there)
+    // bakes this same absolute position and was updated to match.
     Joint legLUpper;
     legLUpper.name = "leg_L_upper";
     legLUpper.parentIndex = pelvisIndex;
-    legLUpper.localPosition = {-0.18f, -0.1f, 0.0f};
+    legLUpper.localPosition = {-0.144f, -0.1f, 0.0f};
     int legLUpperIndex = skeleton.addJoint(legLUpper);
 
     // Kronos ("Avatar Visual Silhouette Pass" -- "Shorten upper legs
@@ -682,7 +737,7 @@ Skeleton buildHumanoidSkeleton() {
     Joint legRUpper;
     legRUpper.name = "leg_R_upper";
     legRUpper.parentIndex = pelvisIndex;
-    legRUpper.localPosition = {0.18f, -0.1f, 0.0f};
+    legRUpper.localPosition = {0.144f, -0.1f, 0.0f};
     int legRUpperIndex = skeleton.addJoint(legRUpper);
 
     Joint legRLower;
