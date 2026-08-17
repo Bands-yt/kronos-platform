@@ -1,5 +1,57 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still, part 4) — Default look: swept-side hair + dark jacket color story
+
+Direct follow-up to a real reference image the user provided (a
+screenshot of a classic blocky avatar: swept side-part wavy brown hair,
+black jacket over a blue tee, dark jeans, white sneakers), with an
+explicit instruction to keep the current skin tone and match "the rest."
+Since this project's own stated direction (set by the user at the start
+of the Silhouette Pass) is "familiar... but original to Kronos," this
+was treated as a real style/color reference -- matching the silhouette,
+hairstyle concept, and color story -- not an attempt to reproduce a
+specific third party's mesh/textures verbatim (which a single screenshot
+couldn't provide the data for regardless).
+
+**Hair -- rebuilt a third time, spikes -> swept layered locks**:
+`AvatarHair.cpp`'s `appendHairSpike()` (straight-up, radiating short
+spikes) replaced with `appendHairLock()` -- the same real tapered-frustum
+shape but with independent, non-square base/tip half-extents (a
+flattened "strand" cross-section instead of a round spike) and every
+lock's own base/tip positioned along one consistent sweep direction
+(+X), layered at different heights and lengths for a real "wavy,
+side-swept" read instead of a symmetric radiating cluster. One rounded
+base-coverage blob (crown + forehead) underneath, same real per-vertex
+root-to-tip color ramp as before.
+
+**Default clothing colors**: `kDefaultShirtColor`/`kDefaultTrouserColor`
+(RiggedAvatar.hpp) darkened from the previous teal/slate tones to a real
+charcoal/near-black jacket-and-jeans pairing, matching the reference's
+dominant color story. The reference's own lighter-blue undershirt
+(visible only in a small chest V, under the jacket) is a real, honest,
+stated gap -- this rig's Torso is one flat shell color; showing two
+garments at once needs real layered-clothing geometry
+(`AvatarItemCategory::LayeredClothing` exists as a real equip slot
+already, but has no mesh-generation path yet, the same "real slot, no
+visual behind it yet" gap this codebase already states honestly for
+Shoes/Back/Accessory). White sneakers (vs. the current pants-colored
+feet) are a similar, real, stated gap -- this rig's feet share their
+parent leg segment's own single color; giving them a genuinely distinct
+tint would need either a new HumanoidBodySegment (the same kind of
+larger, deferred restructuring the Performance/LOD pass's body-segment
+draw-call merge already declined for a similar reason) or a real
+above-1.0 vertex-color hack that wouldn't read as convincingly white --
+neither was worth the risk for this pass. Skin tone: untouched, per
+explicit instruction.
+
+**Verified via live screenshot**: swept, layered hair (not spikes/horns,
+not a bun), dark jacket + dark jeans, original face/skin tone intact.
+
+Clean 4-target rebuild. **10764/10764 checks passing** (pure geometry/
+color data changes -- no new pure-logic surface this round, verified
+structurally via the unchanged existing suite plus the live screenshot,
+same discipline as the rest of this pass).
+
 ## 2026-08-16 (later still, part 3) — Avatar Silhouette Polish: real vertex-color pipeline + spike-based hair
 
 Direct follow-up to the Silhouette Pass below, driven by two rounds of

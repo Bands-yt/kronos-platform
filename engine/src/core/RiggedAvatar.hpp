@@ -236,8 +236,20 @@ struct HumanoidMeshData {
 // struct's own comment) -- fully tintable, and instantly overridden the
 // moment a real clothing item is equipped in that category; nothing is
 // baked into the mesh itself.
-constexpr glm::vec4 kDefaultShirtColor(0.35f, 0.55f, 0.62f, 1.0f);
-constexpr glm::vec4 kDefaultTrouserColor(0.24f, 0.27f, 0.32f, 1.0f);
+//
+// Kronos ("Avatar Silhouette Pass" -- style-reference update): real,
+// darker charcoal/near-black tones (was a teal shirt + slate trousers),
+// matching a real reference image's dark jacket + dark jeans color
+// story. The reference's own lighter-blue undershirt (visible only in a
+// small V at the chest) is a real, honest, stated gap this pass doesn't
+// build -- this rig's Torso segment is one flat shell color, and showing
+// two garments at once needs real layered clothing geometry
+// (AvatarItemCategory::LayeredClothing exists as a real equip slot, but
+// has no mesh-generation path yet -- the same "real slot, no fabricated
+// visual behind it yet" pattern this codebase already states honestly
+// for Shoes/Back/Accessory).
+constexpr glm::vec4 kDefaultShirtColor(0.13f, 0.13f, 0.15f, 1.0f);
+constexpr glm::vec4 kDefaultTrouserColor(0.15f, 0.16f, 0.20f, 1.0f);
 
 // Resolves each HumanoidBodySegment's SkinnedRenderable::baseColor from
 // `loadout`'s equipped item in categoryForBodySegment(segment)'s category
