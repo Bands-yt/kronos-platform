@@ -1206,11 +1206,18 @@ private:
     // close-up preview render's bloom bleed reads as a much larger,
     // more washed-out effect than the same bloom settings produce on a
     // normal full-scene shot.
+    // `suppressSunDisk` (Kronos "Avatar Preview Rendering" pre-launch
+    // fix): same real "main viewport true (i.e. not suppressed... default
+    // false), AuxiliarySceneHandle true" scoping as applyBloom/
+    // applyWeatherEffects above -- see shaders/sky.frag's own comment on
+    // why a fixed, saturated sun-disk marker meant for outdoor gameplay
+    // cameras can blow out a tight preview frame if the orbit camera
+    // happens to point anywhere near the light direction.
     void drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage colorImage, VkImageView colorView,
                             VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera,
                             ECS& ecs, MeshLibrary& meshLibrary, const ParticleSystem& particleSystem,
                             TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary,
-                            bool applyWeatherEffects = true, bool applyBloom = true);
+                            bool applyWeatherEffects = true, bool applyBloom = true, bool suppressSunDisk = false);
 
     // Real GPU vertex-shader skinning (shaders/scene_skinned.vert),
     // called from within drawSceneIntoImpl()'s own render pass (same

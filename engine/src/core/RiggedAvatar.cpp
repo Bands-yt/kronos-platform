@@ -202,15 +202,47 @@ void appendSmoothLimb(std::vector<Vertex>& vertices, std::vector<uint32_t>& indi
     glm::vec3 midPos = (startPos + endPos) * 0.5f;
     glm::vec2 crossSectionMid = (crossSectionStart + crossSectionEnd) * 0.5f;
 
+    // Kronos ("Avatar Redesign & Geometry Fixes" pre-launch fix -- real,
+    // confirmed via a direct GPU-readback capture of bind pose vs. idle
+    // pose): the ring's cross-section basis used to be hard-coded to the
+    // XZ-plane (offset varying X/Z only, Y fixed at the ring's own
+    // center) -- correct only for a bone that extends along world Y
+    // (true for the legs/torso, which is why they've always looked
+    // right), but wrong for any limb whose real bone direction isn't
+    // close to Y. The arm bone is horizontal in bind pose (T-pose,
+    // extends along X) and, even once idle.anim rotates the shoulder to
+    // hang the arm down, a single rigid rotation can't fix a
+    // cross-section that was already built in the wrong plane -- it
+    // just carries the same wrong shape along for the ride, producing a
+    // flattened, bone-axis-aligned "ribbon" instead of a round tube, and
+    // reading as a visibly detached/malformed limb once away from the
+    // one direction (Y) the old hard-coded plane happened to match.
+    // basisA/basisB are the real, standard "orthonormal frame from one
+    // direction vector" construction, spanning the plane genuinely
+    // perpendicular to this limb's own real bone direction -- correct
+    // for any bone orientation, not just Y-aligned ones.
+    glm::vec3 boneDir = endPos - startPos;
+    if (glm::length(boneDir) < 1e-5f) boneDir = glm::vec3(0.0f, -1.0f, 0.0f); // degenerate zero-length bone -- fall back to straight down
+    boneDir = glm::normalize(boneDir);
+    glm::vec3 reference = std::abs(boneDir.y) > 0.99f ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+    glm::vec3 basisA = glm::normalize(glm::cross(reference, boneDir));
+    glm::vec3 basisB = glm::normalize(glm::cross(boneDir, basisA));
+
     auto makeRing = [&](glm::vec3 center, glm::vec2 crossSection, int jointA, float weightA, int jointB,
                          float weightB) -> std::vector<uint32_t> {
         std::vector<uint32_t> result(kLimbSegments);
         for (uint32_t i = 0; i < kLimbSegments; ++i) {
             float theta = (static_cast<float>(i) / static_cast<float>(kLimbSegments)) * 2.0f * 3.14159265f;
-            glm::vec3 offset(std::cos(theta) * crossSection.x, 0.0f, std::sin(theta) * crossSection.y);
+            // Real generalization of the original XZ-plane ellipse
+            // (radius crossSection.x along what used to be hard-coded
+            // world-X, crossSection.y along hard-coded world-Z): same
+            // per-axis radii, now measured along basisA/basisB (the
+            // plane genuinely perpendicular to this limb's own bone
+            // direction) instead of always world-X/world-Z.
+            glm::vec3 offset = basisA * (std::cos(theta) * crossSection.x) + basisB * (std::sin(theta) * crossSection.y);
             Vertex v;
             v.position = center + offset;
-            v.normal = glm::vec3(std::cos(theta), 0.0f, std::sin(theta));
+            v.normal = glm::normalize(offset);
             v.uv = {static_cast<float>(i) / static_cast<float>(kLimbSegments), 0.0f};
             uint32_t index = static_cast<uint32_t>(vertices.size());
             vertices.push_back(v);

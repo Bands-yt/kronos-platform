@@ -4148,7 +4148,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
                                   VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera,
                                   ECS& ecs, MeshLibrary& meshLibrary, const ParticleSystem& particleSystem,
                                   TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary,
-                                  bool applyWeatherEffects, bool applyBloom) {
+                                  bool applyWeatherEffects, bool applyBloom, bool suppressSunDisk) {
     // (Re)creates frame.hdrImage/bloomImage if `extent` changed since the
     // last call -- see FrameSync's comment and OffscreenTarget::ensureSize()
     // for the same lazy-resize pattern applied elsewhere in this codebase.
@@ -4318,6 +4318,10 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     ubo.atmosphereParams.x = atmosphereScatteringEnabled_ ? 1.0f : 0.0f;
     ubo.atmosphereParams.y = atmosphereSunIntensity_;
     ubo.atmosphereParams.z = atmosphereMieStrength_;
+    // Kronos ("Avatar Preview Rendering" pre-launch fix): real, previously
+    // spare .w slot -- see shaders/sky.frag's own comment on why every
+    // auxiliary/preview scene suppresses the sun disk/glow entirely.
+    ubo.atmosphereParams.w = suppressSunDisk ? 1.0f : 0.0f;
     // Kronos ("Rendering Fidelity" -- volumetric cloud layer): see
     // SceneUBO::cloudParams's own comment.
     ubo.cloudParams.x = cloudsEnabled_ ? 1.0f : 0.0f;
@@ -4602,10 +4606,11 @@ void Renderer::drawSceneInto(AuxiliarySceneHandle handle, VkCommandBuffer cmd, V
     // explicit `false` for bloom -- see drawBloomAndComposite()'s own
     // comment on why a close-up preview's bloom bleed reads as a much
     // larger washed-out effect than the same settings produce on a
-    // normal full-scene shot.
+    // normal full-scene shot. And real, explicit `true` for
+    // suppressSunDisk -- see shaders/sky.frag's own comment.
     drawSceneIntoImpl(auxiliaryScenes_[handle], cmd, colorImage, colorView, depthImage, depthView, extent, camera, ecs,
                        meshLibrary, particleSystem, textureLibrary, riggedMeshLibrary, /*applyWeatherEffects=*/false,
-                       /*applyBloom=*/false);
+                       /*applyBloom=*/false, /*suppressSunDisk=*/true);
 }
 
 Renderer::AuxiliarySceneHandle Renderer::createAuxiliaryScene() {

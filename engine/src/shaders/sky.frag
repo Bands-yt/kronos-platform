@@ -351,12 +351,33 @@ void main() {
     // shaders commonly draw their sun disk as its own tuned color for
     // exactly this reason, rather than literally re-deriving it from a
     // physically "correct" but perceptually washed-out light color.
-    const vec3 kSunDiskColor = vec3(1.0, 0.75, 0.35);
-    float sunDot = clamp(dot(rayDir, sunDir), 0.0, 1.0);
-    float sunGlow = pow(sunDot, 256.0) * 0.6;           // broad, soft halo
-    float sunDisk = smoothstep(0.9994, 0.9998, sunDot); // tight, bright core
-    sky += kSunDiskColor * sunGlow;
-    sky = mix(sky, kSunDiskColor * 2.2, sunDisk);
+    // Kronos ("Avatar Preview Rendering" pre-launch fix -- real, confirmed
+    // via a direct GPU-readback capture): scene.atmosphereParams.w (a
+    // real, previously-unused spare slot in this same vec4 -- .x/.y/.z
+    // are all already real atmosphere-scattering params, see their own
+    // real callers) is 1.0 for every real auxiliary/preview scene (Home's
+    // avatar preview, every Studio PreviewScene consumer). This disc is
+    // a fixed, saturated kSunDiskColor * 2.2 -- more than double a
+    // typical bright surface's own linear value -- and a tight, close-up
+    // orbit camera has real odds of pointing near enough to sunDir for
+    // sunDot to cross the disk's own threshold, especially for a preset
+    // never tuned against any one fixed camera angle. On a normal
+    // outdoor gameplay camera the disk is a real, deliberate, small
+    // marker; in a tight preview box, that same real value can dominate
+    // enough of the small frame to read as the whole background blown
+    // out white -- confirmed live: a raw HDR readback of exactly this
+    // preview matched kSunDiskColor * 2.2 almost exactly at the
+    // background pixel sampled. Suppressing it here (not down-scaling
+    // it) is the honest fix -- a preview lightbox has no real "where's
+    // the sun" question to answer in the first place.
+    if (scene.atmosphereParams.w < 0.5) {
+        const vec3 kSunDiskColor = vec3(1.0, 0.75, 0.35);
+        float sunDot = clamp(dot(rayDir, sunDir), 0.0, 1.0);
+        float sunGlow = pow(sunDot, 256.0) * 0.6;           // broad, soft halo
+        float sunDisk = smoothstep(0.9994, 0.9998, sunDot); // tight, bright core
+        sky += kSunDiskColor * sunGlow;
+        sky = mix(sky, kSunDiskColor * 2.2, sunDisk);
+    }
 
     // Kronos ("Rendering Fidelity" -- volumetric cloud layer): real,
     // composited last -- clouds sit physically closer than the sun/
