@@ -6268,12 +6268,10 @@ void testLoadoutToRiggedMeshGeneration() {
     engine::core::CatalogueIndex index;
     index.rebuild(database);
 
-    // Kronos ("Avatar Phase" -- "AvatarEditor: Clothing & Accessory
-    // Slots"): Shoes/Back are real, new, equippable categories with no
-    // real HumanoidBodySegment mapping yet (an honest, stated gap, same
-    // as Hair/Face/Accessory/LayeredClothing/Emote already had) --
-    // equipping them must be a real, successful loadout change that has
-    // zero effect on any segment's resolved color.
+    // Kronos ("Multi-Region Clothing Shader & Palette System"): Shoes is
+    // now a real, mapped category (LeftFoot/RightFoot,
+    // categoryForBodySegment()) -- Back remains a real, honest,
+    // unmapped gap, same as Hair/Face/Accessory/LayeredClothing/Emote.
     engine::core::AvatarItemManifest boots;
     boots.item.id = "green_boots";
     boots.item.category = engine::core::AvatarItemCategory::Shoes;
@@ -6311,11 +6309,31 @@ void testLoadoutToRiggedMeshGeneration() {
     // skin-toned legs, is the real, honest default look).
     check(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::LeftLeg)] == engine::core::kDefaultTrouserColor,
           "an unequipped Legs category real-falls back to the real, honest baked-in trouser color, not raw skin tone");
+    // Kronos ("Multi-Region Clothing Shader & Palette System"): hands
+    // stay real skin tone even with a shirt/hat equipped -- the
+    // equipped-item override loop deliberately skips them (see
+    // resolveSegmentColorsForLoadout()'s own comment).
+    check(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::LeftHand)] == skinColor &&
+              colors[static_cast<size_t>(engine::core::HumanoidBodySegment::RightHand)] == skinColor,
+          "hands stay real skin tone regardless of any equipped clothing, never inheriting the shirt's own red or "
+          "the hat's own blue baseColor");
     for (size_t i = 0; i < colors.size(); ++i) {
-        check(!nearlyEqual(colors[i].x, boots.item.baseColor.x) || !nearlyEqual(colors[i].y, boots.item.baseColor.y) ||
-                  !nearlyEqual(colors[i].z, boots.item.baseColor.z),
-              "no real segment picks up the equipped Shoes item's own color -- the honest, stated 'no visual "
-              "mapping yet' gap");
+        auto segment = static_cast<engine::core::HumanoidBodySegment>(i);
+        bool isFootSegment =
+            segment == engine::core::HumanoidBodySegment::LeftFoot || segment == engine::core::HumanoidBodySegment::RightFoot;
+        if (isFootSegment) {
+            // Kronos ("Multi-Region Clothing Shader & Palette System"):
+            // real, new, positive assertion -- LeftFoot/RightFoot now
+            // genuinely pick up the equipped Shoes item's own color,
+            // closing the previous "no visual mapping yet" gap.
+            check(nearlyEqual(colors[i].x, boots.item.baseColor.x) && nearlyEqual(colors[i].y, boots.item.baseColor.y) &&
+                      nearlyEqual(colors[i].z, boots.item.baseColor.z),
+                  "the real LeftFoot/RightFoot segment picks up the equipped Shoes item's own green baseColor");
+        } else {
+            check(!nearlyEqual(colors[i].x, boots.item.baseColor.x) || !nearlyEqual(colors[i].y, boots.item.baseColor.y) ||
+                      !nearlyEqual(colors[i].z, boots.item.baseColor.z),
+                  "no segment other than the real feet picks up the equipped Shoes item's own color");
+        }
         check(!nearlyEqual(colors[i].x, cape.item.baseColor.x) || !nearlyEqual(colors[i].y, cape.item.baseColor.y) ||
                   !nearlyEqual(colors[i].z, cape.item.baseColor.z),
               "no real segment picks up the equipped Back item's own color either, same honest gap");
@@ -6506,22 +6524,25 @@ void testAvatarSilhouettePassArmLengthenedAndLegTotalLengthPreserved() {
 // Kronos ("Avatar Visual Silhouette Pass" -- "Hands" -- "Add palm volume
 // and simple finger segmentation"): real, pure proof the hand now
 // produces meaningfully more geometry than the old single 24-vertex
-// "mitten" box -- a real palm box (24 verts) plus 4 real finger boxes (24
-// verts each = 96) is 120 real new hand vertices alone, on top of the two
-// unchanged 24-vertex smooth-limb rings -- comfortably more than the old
-// arm total (72), the same "vertex count real-increased, genuinely new
-// geometry" proof testBuildHumanoidMeshDataTorsoIsNotABox() already
-// establishes for the torso.
+// "mitten" box -- a real palm box (24 verts) + 4 real finger boxes (24
+// verts each = 96) + 1 real thumb box (24 verts) = 144 real vertices.
+// Kronos ("Multi-Region Clothing Shader & Palette System"): hand geometry
+// now lives in its own real LeftHand segment (previously folded into
+// LeftArm), so this checks that segment directly and exactly -- no
+// arm-cylinder vertices to separate out anymore, the same "vertex count
+// real-increased, genuinely new geometry" proof
+// testBuildHumanoidMeshDataTorsoIsNotABox() already establishes for the
+// torso.
 void testBuildHumanoidMeshDataHandHasRealFingerGeometry() {
     engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
     engine::core::HumanoidMeshData data = engine::core::buildHumanoidMeshData(skeleton);
-    size_t leftArmVertexCount = 0;
+    size_t leftHandVertexCount = 0;
     for (auto s : data.vertexSegments) {
-        if (s == engine::core::HumanoidBodySegment::LeftArm) ++leftArmVertexCount;
+        if (s == engine::core::HumanoidBodySegment::LeftHand) ++leftHandVertexCount;
     }
-    check(leftArmVertexCount > 72 + 90,
-          "the real, new hand (palm + 4 finger blocks) real-produces meaningfully more LeftArm vertices than the "
-          "old single hand-box rig ever could -- genuinely new finger geometry, not a relabeled box");
+    check(leftHandVertexCount == 144,
+          "the real LeftHand segment holds exactly the palm (24) + 4 fingers (96) + thumb (24) = 144 real "
+          "vertices -- genuinely new finger geometry, not a relabeled box");
 }
 
 // Kronos ("Avatar Visual Silhouette Pass" -- "Widen feet for stability
@@ -6539,9 +6560,16 @@ void testBuildHumanoidMeshDataFootIsWiderThanOriginal() {
     int ankleIndex = skeleton.findJointIndex("foot_L");
     float ankleY = world[static_cast<size_t>(ankleIndex)][3].y;
 
+    // Kronos ("Multi-Region Clothing Shader & Palette System"): foot
+    // geometry now lives in its own real LeftFoot segment (previously
+    // folded into LeftLeg) -- the below-ankle Y filter is no longer
+    // strictly needed to separate it from the shin cylinder (LeftFoot
+    // holds only foot/sole geometry now), but is kept as a real, still-
+    // true sanity check that this segment's geometry genuinely sits
+    // where a foot should.
     float minX = 1e9f, maxX = -1e9f;
     for (size_t i = 0; i < data.vertices.size(); ++i) {
-        if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::LeftLeg) continue;
+        if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::LeftFoot) continue;
         if (data.vertices[i].position.y > ankleY - 0.02f) continue; // only the foot box sits this low
         minX = std::min(minX, data.vertices[i].position.x);
         maxX = std::max(maxX, data.vertices[i].position.x);
@@ -7020,9 +7048,19 @@ void testAnimationThumbnailPoseSnapshotPipeline() {
     check(anyRightArmVertexMoved, "the right arm's vertices actually move under the posed snapshot, proving the "
                                     "clip's rotation reached the baked-out vertices");
 
+    // Kronos ("Multi-Region Clothing Shader & Palette System"): real,
+    // necessary addition -- RightHand is now its own segment (previously
+    // folded into RightArm), but hand_R is still a real child of
+    // arm_R_upper in the skeletal hierarchy (hand_R -> arm_R_lower ->
+    // arm_R_upper), so rotating arm_R_upper correctly propagates down and
+    // moves the hand's own vertices too -- that's real, expected forward-
+    // kinematics behavior, not a bug, so RightHand must be excluded from
+    // the "stayed at bind pose" check the same way RightArm already is.
     bool everyOtherSegmentUnmoved = true;
     for (size_t i = 0; i < posed.size(); ++i) {
-        if (bindMeshData.vertexSegments[i] == engine::core::HumanoidBodySegment::RightArm) continue;
+        if (bindMeshData.vertexSegments[i] == engine::core::HumanoidBodySegment::RightArm ||
+            bindMeshData.vertexSegments[i] == engine::core::HumanoidBodySegment::RightHand)
+            continue;
         if (!nearlyEqual(posed[i].position.x, bindMeshData.vertices[i].position.x, 0.01f) ||
             !nearlyEqual(posed[i].position.y, bindMeshData.vertices[i].position.y, 0.01f) ||
             !nearlyEqual(posed[i].position.z, bindMeshData.vertices[i].position.z, 0.01f)) {
@@ -7030,7 +7068,9 @@ void testAnimationThumbnailPoseSnapshotPipeline() {
             break;
         }
     }
-    check(everyOtherSegmentUnmoved, "only the animated joint's own segment moves -- the rest of the body stays at bind pose");
+    check(everyOtherSegmentUnmoved,
+          "only the animated joint's own segment (and its real, downstream RightHand child) moves -- the rest of "
+          "the body stays at bind pose");
 }
 
 void testResolveEmoteClip() {

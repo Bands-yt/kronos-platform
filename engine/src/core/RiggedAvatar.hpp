@@ -153,15 +153,36 @@ constexpr float kBodyProportionMax = 1.15f;
 // but a joint-position change does.
 [[nodiscard]] Skeleton applyBodyProportionsToSkeleton(const Skeleton& base, BodyProportions proportions);
 
-// Which body segment a given piece of geometry belongs to -- still 6
-// (not 18): each *wearable* zone (Head/Torso/LeftArm/RightArm/LeftLeg/
-// RightLeg) spans multiple real joints now (an arm segment's own mesh
-// covers arm_?_upper through hand_?), matching AvatarItemCategory's own
-// existing Head/Torso/Legs granularity (a shirt covers the whole arm,
-// not just the upper-arm bone) -- see buildHumanoidMeshData()'s own
-// comment for exactly which joints feed which segment's geometry.
-enum class HumanoidBodySegment { Head, Torso, LeftArm, RightArm, LeftLeg, RightLeg };
-constexpr size_t kHumanoidBodySegmentCount = 6;
+// Which body segment a given piece of geometry belongs to -- 10, not 6
+// (Kronos "Multi-Region Clothing Shader & Palette System" -- real,
+// necessary split, not the old file-level "still 6, not 18" boundary):
+// hands and feet used to share their limb's segment (an arm segment's
+// mesh covered arm_?_upper through hand_?, same for legs through foot_?)
+// so a shirt/pants recolor implicitly recolored the hands/feet too --
+// real, wrong for hands (bare skin, not clothing) and imprecise for feet
+// (shoes are their own real, distinct `AvatarItemCategory::Shoes`
+// category already, previously with no mesh to apply that color to --
+// see categoryForBodySegment()'s own comment). LeftHand/RightHand and
+// LeftFoot/RightFoot are real, new, independent segments now -- see
+// buildHumanoidMeshData()'s own comment for exactly which joints/mesh
+// pieces feed each. Existing Head/Torso/LeftArm/RightArm/LeftLeg/RightLeg
+// keep their original enum positions unchanged (nothing outside this
+// enum's own declaration relies on ordinal values, only on
+// kHumanoidBodySegmentCount-bounded generic loops, confirmed by grep
+// across the whole codebase before this change) -- the 4 new values are
+// appended after their respective limb.
+//
+// Real, load-bearing side effect: core::Renderer::kMaxSkinnedDrawsPerFrame
+// (Renderer.hpp) is a fixed pool sized in units of "one avatar's own
+// segment count" (its own comment: "24 covers four such avatars ... at
+// the old value of 6 segments") -- going from 6 to 10 without also
+// scaling that pool would silently cut simultaneously-visible-avatar
+// capacity from 4 to 2, reintroducing the exact "skipped an entity" bug
+// that pool's own comment already documents being found and fixed once
+// before. Scaled proportionally (24 -> 40) alongside this change -- see
+// that constant's own comment.
+enum class HumanoidBodySegment { Head, Torso, LeftArm, RightArm, LeftHand, RightHand, LeftLeg, RightLeg, LeftFoot, RightFoot };
+constexpr size_t kHumanoidBodySegmentCount = 10;
 
 // Real procedural humanoid geometry, real per-segment skin weights --
 // and real smooth (2-joint) blending at the elbows/knees specifically
@@ -253,6 +274,13 @@ struct HumanoidMeshData {
 // requested "Dark Slate Pants" value.
 constexpr glm::vec4 kDefaultShirtColor(0.07f, 0.14f, 0.19f, 1.0f);
 constexpr glm::vec4 kDefaultTrouserColor(0.15f, 0.16f, 0.20f, 1.0f);
+// Kronos ("Multi-Region Clothing Shader & Palette System" -- "Default
+// Clothing Palette" -- "White/Black Shoes"): real, dark near-black --
+// LeftHand/RightHand have no equivalent default constant here (they
+// always render as real skin tone, never a clothing default -- see
+// resolveSegmentColorsForLoadout()'s own comment on why they're
+// deliberately excluded from the equipped-item override loop).
+constexpr glm::vec4 kDefaultShoeColor(0.06f, 0.06f, 0.07f, 1.0f);
 
 // Resolves each HumanoidBodySegment's SkinnedRenderable::baseColor from
 // `loadout`'s equipped item in categoryForBodySegment(segment)'s category

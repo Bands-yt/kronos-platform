@@ -649,20 +649,26 @@ private:
     // below) -- a real, small, fixed pool, not an unbounded one, sized
     // for "a handful of simultaneously-visible rigged characters." One
     // real avatar/demo body (core::spawnRiggedAvatar(), see
-    // RiggedAvatar.hpp) costs kHumanoidBodySegmentCount (6) slots, not 1
+    // RiggedAvatar.hpp) costs kHumanoidBodySegmentCount (10) slots, not 1
     // -- it's split into one SkinnedRenderable per body segment so each
     // segment can carry its own flat color (a shirt tinted differently
-    // from skin), not a single merged mesh. 24 covers four such
+    // from skin), not a single merged mesh. 40 covers four such
     // avatars/demo bodies fully visible at once (one player + a few NPCs,
     // or Studio's Animation Previewer demo body alongside a live runtime
     // session's own avatar) -- still a real, small, fixed pool, not a
-    // general skeletal-crowd renderer. Found undersized (at the old value
-    // of 4 -- barely half of one avatar's 6 segments) by live-running
-    // Studio's Animation Previewer for the first time and seeing "skipped
-    // an entity" spam in the log every frame; see README's Known Issues
-    // for the write-up.
+    // general skeletal-crowd renderer. Found undersized once already (at
+    // the old value of 4 -- barely half of one avatar's then-6 segments)
+    // by live-running Studio's Animation Previewer for the first time and
+    // seeing "skipped an entity" spam in the log every frame; see
+    // README's Known Issues for that write-up. Kronos ("Multi-Region
+    // Clothing Shader & Palette System"): real, scaled proportionally
+    // (24 -> 40) alongside kHumanoidBodySegmentCount's own 6 -> 10 change
+    // -- silently leaving this at 24 would have quietly cut
+    // simultaneously-visible-avatar capacity from 4 to 2.4, reintroducing
+    // that exact same bug this comment already documents being found and
+    // fixed once before.
     static constexpr uint32_t kMaxJointsPerSkeleton = 64;
-    static constexpr uint32_t kMaxSkinnedDrawsPerFrame = 24;
+    static constexpr uint32_t kMaxSkinnedDrawsPerFrame = 40;
 
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphics;

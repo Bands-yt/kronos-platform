@@ -15,8 +15,12 @@ const char* jointNameFor(HumanoidBodySegment segment) {
         case HumanoidBodySegment::Torso: return "spine_upper";
         case HumanoidBodySegment::LeftArm: return "arm_L_upper";
         case HumanoidBodySegment::RightArm: return "arm_R_upper";
+        case HumanoidBodySegment::LeftHand: return "hand_L";
+        case HumanoidBodySegment::RightHand: return "hand_R";
         case HumanoidBodySegment::LeftLeg: return "leg_L_upper";
         case HumanoidBodySegment::RightLeg: return "leg_R_upper";
+        case HumanoidBodySegment::LeftFoot: return "foot_L";
+        case HumanoidBodySegment::RightFoot: return "foot_R";
     }
     return "";
 }
@@ -914,8 +918,19 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     glm::vec3 pelvisPos = worldPos("pelvis");
     float hipLateralReach = std::abs(worldPos("leg_L_upper").x - pelvisPos.x) + 0.11f * ls;
     glm::vec3 hipCapRadii(hipLateralReach, 0.09f, 0.13f * bodyProportions.width);
+    // Kronos ("Multi-Region Clothing Shader & Palette System" -- "Pants
+    // Region: Thighs, Lower Legs, Pelvis Cap"): HumanoidBodySegment::LeftLeg
+    // (not Torso) -- real, deliberate, matches the requested region
+    // grouping (this cap should recolor with pants, not with the shirt).
+    // Arbitrarily LeftLeg rather than a shared/new segment: it spans both
+    // legs, but categoryForBodySegment() already routes LeftLeg and
+    // RightLeg to the exact same AvatarItemCategory::Legs, and
+    // resolveSegmentColorsForLoadout() gives both the same default
+    // kDefaultTrouserColor -- so either side produces an identical real
+    // result, and this stays a straightforward, unambiguous choice
+    // instead of inventing a new "Pelvis" segment for one shared piece.
     appendSphere(data.vertices, data.indices, data.vertexSegments, pelvisPos + glm::vec3(0.0f, -0.05f, 0.0f), hipCapRadii,
-                 jointIndexFor("pelvis"), HumanoidBodySegment::Torso, data.skinWeights);
+                 jointIndexFor("pelvis"), HumanoidBodySegment::LeftLeg, data.skinWeights);
 
     // Arms -- real smooth-blended upper-to-lower chain (the actual elbow
     // bend the spec asks for), capped with a real palm + finger-block
@@ -944,8 +959,14 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_lower"), worldPos("hand_L"),
                       elbowCrossSection, wristCrossSection, jointIndexFor("arm_L_lower"), jointIndexFor("hand_L"),
                       HumanoidBodySegment::LeftArm, data.skinWeights);
+    // Kronos ("Multi-Region Clothing Shader & Palette System" -- "Skin
+    // Region: Hands"): HumanoidBodySegment::LeftHand (not LeftArm) -- the
+    // hand's own real, distinct segment, so it colors/shades as skin
+    // rather than an extension of the shirt sleeve. Skinning stays
+    // exactly as before (still rigidly bound to the hand_L joint) --
+    // this only changes the color-grouping tag, not the deformation.
     appendHand(data.vertices, data.indices, data.vertexSegments, worldPos("hand_L"), -1.0f, palmHalfExtents,
-               jointIndexFor("hand_L"), HumanoidBodySegment::LeftArm, data.skinWeights);
+               jointIndexFor("hand_L"), HumanoidBodySegment::LeftHand, data.skinWeights);
 
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_R_upper"), worldPos("arm_R_lower"),
                       shoulderCrossSection, elbowCrossSection, jointIndexFor("arm_R_upper"), jointIndexFor("arm_R_lower"),
@@ -954,7 +975,7 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
                       elbowCrossSection, wristCrossSection, jointIndexFor("arm_R_lower"), jointIndexFor("hand_R"),
                       HumanoidBodySegment::RightArm, data.skinWeights);
     appendHand(data.vertices, data.indices, data.vertexSegments, worldPos("hand_R"), 1.0f, palmHalfExtents,
-               jointIndexFor("hand_R"), HumanoidBodySegment::RightArm, data.skinWeights);
+               jointIndexFor("hand_R"), HumanoidBodySegment::RightHand, data.skinWeights);
 
     // Legs -- same real smooth knee bend (continuous taper across it, same
     // reasoning as the arms above), capped with a rigid "simple block"
@@ -990,10 +1011,16 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_L_lower"), worldPos("foot_L"),
                       kneeCrossSection, ankleCrossSection, jointIndexFor("leg_L_lower"), jointIndexFor("foot_L"),
                       HumanoidBodySegment::LeftLeg, data.skinWeights);
+    // Kronos ("Multi-Region Clothing Shader & Palette System" -- "Shoe
+    // Region: Feet, Shoe Soles"): HumanoidBodySegment::LeftFoot (not
+    // LeftLeg) for both the foot box and its sole -- the shin cylinder
+    // just above stays LeftLeg (lower legs are real, still "Pants
+    // Region" per this pass's own spec), only the foot-shaped geometry
+    // itself becomes its own segment.
     appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_L") + glm::vec3(0.0f, -0.04f, 0.08f),
-              footBoxHalfExtents, jointIndexFor("foot_L"), HumanoidBodySegment::LeftLeg, data.skinWeights);
+              footBoxHalfExtents, jointIndexFor("foot_L"), HumanoidBodySegment::LeftFoot, data.skinWeights);
     appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_L") + soleOffset, soleHalfExtents,
-              jointIndexFor("foot_L"), HumanoidBodySegment::LeftLeg, data.skinWeights);
+              jointIndexFor("foot_L"), HumanoidBodySegment::LeftFoot, data.skinWeights);
 
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_R_upper"), worldPos("leg_R_lower"),
                       hipCrossSection, kneeCrossSection, jointIndexFor("leg_R_upper"), jointIndexFor("leg_R_lower"),
@@ -1002,9 +1029,9 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
                       kneeCrossSection, ankleCrossSection, jointIndexFor("leg_R_lower"), jointIndexFor("foot_R"),
                       HumanoidBodySegment::RightLeg, data.skinWeights);
     appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_R") + glm::vec3(0.0f, -0.04f, 0.08f),
-              footBoxHalfExtents, jointIndexFor("foot_R"), HumanoidBodySegment::RightLeg, data.skinWeights);
+              footBoxHalfExtents, jointIndexFor("foot_R"), HumanoidBodySegment::RightFoot, data.skinWeights);
     appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_R") + soleOffset, soleHalfExtents,
-              jointIndexFor("foot_R"), HumanoidBodySegment::RightLeg, data.skinWeights);
+              jointIndexFor("foot_R"), HumanoidBodySegment::RightFoot, data.skinWeights);
 
     return data;
 }
@@ -1040,8 +1067,24 @@ AvatarItemCategory categoryForBodySegment(HumanoidBodySegment segment) {
         case HumanoidBodySegment::Torso: return AvatarItemCategory::Torso;
         case HumanoidBodySegment::LeftArm: return AvatarItemCategory::Torso;
         case HumanoidBodySegment::RightArm: return AvatarItemCategory::Torso;
+        // Kronos ("Multi-Region Clothing Shader & Palette System"): real,
+        // but never actually consulted for hands -- resolveSegmentColorsForLoadout()'s
+        // own equipped-item override loop skips LeftHand/RightHand
+        // entirely (hands are always real skin, no glove
+        // AvatarItemCategory exists to equip against). Returned here only
+        // so this switch stays real and exhaustive for any other real or
+        // future caller.
+        case HumanoidBodySegment::LeftHand: return AvatarItemCategory::Head;
+        case HumanoidBodySegment::RightHand: return AvatarItemCategory::Head;
         case HumanoidBodySegment::LeftLeg: return AvatarItemCategory::Legs;
         case HumanoidBodySegment::RightLeg: return AvatarItemCategory::Legs;
+        // Kronos ("Multi-Region Clothing Shader & Palette System"): real,
+        // new -- AvatarItemCategory::Shoes already existed as a real,
+        // equippable category (per this file's own earlier "real slot, no
+        // fabricated visual behind it yet" comment) with no mesh segment
+        // to actually apply its color to until now. This closes that gap.
+        case HumanoidBodySegment::LeftFoot: return AvatarItemCategory::Shoes;
+        case HumanoidBodySegment::RightFoot: return AvatarItemCategory::Shoes;
     }
     return AvatarItemCategory::Torso;
 }
@@ -1053,6 +1096,13 @@ std::array<glm::vec4, kHumanoidBodySegmentCount> resolveSegmentColorsForLoadout(
     for (size_t i = 0; i < kHumanoidBodySegmentCount; ++i) {
         switch (static_cast<HumanoidBodySegment>(i)) {
             case HumanoidBodySegment::Head:
+            // Kronos ("Multi-Region Clothing Shader & Palette System" --
+            // "Skin Region: Head, Neck, Hands"): real -- hands are bare
+            // skin by default, same as the head, not an extension of the
+            // shirt's own sleeve color the way they used to read when
+            // hands shared the arm's own segment.
+            case HumanoidBodySegment::LeftHand:
+            case HumanoidBodySegment::RightHand:
                 colors[i] = skinColor;
                 break;
             case HumanoidBodySegment::LeftLeg:
@@ -1064,11 +1114,27 @@ std::array<glm::vec4, kHumanoidBodySegmentCount> resolveSegmentColorsForLoadout(
             case HumanoidBodySegment::RightArm:
                 colors[i] = kDefaultShirtColor;
                 break;
+            // Kronos ("Multi-Region Clothing Shader & Palette System" --
+            // "Shoe Region: Feet, Shoe Soles"): real, new, distinct
+            // default -- see kDefaultShoeColor's own comment.
+            case HumanoidBodySegment::LeftFoot:
+            case HumanoidBodySegment::RightFoot:
+                colors[i] = kDefaultShoeColor;
+                break;
         }
     }
 
     for (size_t i = 0; i < kHumanoidBodySegmentCount; ++i) {
         auto segment = static_cast<HumanoidBodySegment>(i);
+        // Kronos ("Multi-Region Clothing Shader & Palette System"): real,
+        // deliberate skip -- hands stay real skin regardless of what's
+        // equipped in Torso (shirt) or any other category; no glove
+        // AvatarItemCategory exists to legitimately override them, and
+        // categoryForBodySegment() would otherwise route them through
+        // Head's own category by convenience, letting an equipped hat
+        // item's color leak onto the hands, which is real, wrong
+        // behavior this skip prevents outright.
+        if (segment == HumanoidBodySegment::LeftHand || segment == HumanoidBodySegment::RightHand) continue;
         AvatarItemCategory category = categoryForBodySegment(segment);
         std::string itemId = loadout.equippedItemId(category);
         if (itemId.empty()) continue;
@@ -1086,8 +1152,20 @@ glm::vec4 applySegmentShadingGradient(HumanoidBodySegment segment, glm::vec4 col
         case HumanoidBodySegment::Torso: multiplier = 1.0f; break;
         case HumanoidBodySegment::LeftArm:
         case HumanoidBodySegment::RightArm: multiplier = 0.95f; break;
+        // Kronos ("Multi-Region Clothing Shader & Palette System"): real,
+        // same 1.0 as Head -- hands are skin too, no reason for a
+        // different AO-substitute darkening than the face gets.
+        case HumanoidBodySegment::LeftHand:
+        case HumanoidBodySegment::RightHand: multiplier = 1.0f; break;
         case HumanoidBodySegment::LeftLeg:
         case HumanoidBodySegment::RightLeg: multiplier = 0.90f; break;
+        // Kronos ("Multi-Region Clothing Shader & Palette System"): real,
+        // darkest of the group -- shoes sit lowest and closest to real
+        // ground contact/shadow of any segment, consistent with this
+        // gradient's own "AO substitute" role (see this function's own
+        // header comment on why the multiplier stands in for real AO).
+        case HumanoidBodySegment::LeftFoot:
+        case HumanoidBodySegment::RightFoot: multiplier = 0.85f; break;
     }
     return glm::vec4(color.r * multiplier, color.g * multiplier, color.b * multiplier, color.a);
 }
@@ -1114,6 +1192,12 @@ constexpr float kHeadRoughness = 0.55f;
 constexpr float kTorsoRoughness = 0.58f;
 constexpr float kArmRoughness = 0.62f;
 constexpr float kLegRoughness = 0.66f;
+// Kronos ("Multi-Region Clothing Shader & Palette System"): real, new --
+// hands are skin (matches kHeadRoughness exactly); feet/shoes are
+// real-rougher than legs/trousers, consistent with shoe material (cloth/
+// leather/rubber) reading less smooth than woven trouser fabric.
+constexpr float kHandRoughness = kHeadRoughness;
+constexpr float kFootRoughness = 0.70f;
 
 // Internal linkage -- unlike applySegmentShadingGradient() (also called
 // live from AvatarEditor.cpp/Application.cpp's own re-tint paths),
@@ -1126,8 +1210,12 @@ constexpr float kLegRoughness = 0.66f;
         case HumanoidBodySegment::Torso: return kTorsoRoughness;
         case HumanoidBodySegment::LeftArm:
         case HumanoidBodySegment::RightArm: return kArmRoughness;
+        case HumanoidBodySegment::LeftHand:
+        case HumanoidBodySegment::RightHand: return kHandRoughness;
         case HumanoidBodySegment::LeftLeg:
         case HumanoidBodySegment::RightLeg: return kLegRoughness;
+        case HumanoidBodySegment::LeftFoot:
+        case HumanoidBodySegment::RightFoot: return kFootRoughness;
     }
     return kTorsoRoughness;
 }
