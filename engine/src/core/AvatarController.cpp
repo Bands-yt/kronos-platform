@@ -211,6 +211,25 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
     Transform characterTransform;
     if (auto* t = ecs.tryGetComponent<Transform>(character)) characterTransform = *t;
 
+    // Kronos ("Avatar Preview Rendering" pre-launch fix -- real,
+    // confirmed via live debug output): the physics capsule's own
+    // Transform (synced straight from Jolt in Physics::syncTransforms())
+    // tracks its real geometric CENTER, not its feet -- Jolt positions
+    // every shape by its own local origin, and a capsule's local origin
+    // is its center. At rest that center sits at
+    // capsuleHalfHeight + capsuleRadius above the ground (0.55 + 0.35 =
+    // 0.9 with this rig's real default settings), confirmed live:
+    // characterTransform.position.y settles at ~0.9, not ~0.0. The
+    // avatar skeleton's own root/feet sit at local Y=0 by design (see
+    // buildHumanoidSkeleton()'s own "root sits at the ground" comment),
+    // so copying characterTransform straight onto the mesh's Transform
+    // (as every call below used to) placed the feet at world Y~0.9 --
+    // visibly floating, not grounded. meshTransform applies the real,
+    // exact inverse of that same offset so the skeleton's own local
+    // Y=0 point lands at the real world ground contact point instead.
+    Transform meshTransform = characterTransform;
+    meshTransform.position.y -= (settings_.capsuleHalfHeight + settings_.capsuleRadius);
+
     // A real, mutable copy -- player_.skinningMatrices() is const (shared
     // read-only state every skinned entity would otherwise reference
     // directly); the head-bob/facial-expression offsets below need to
@@ -316,7 +335,7 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
                                               secondaryMotionPhase_);
 
     for (EntityId entity : skinnedEntities) {
-        if (auto* t = ecs.tryGetComponent<Transform>(entity)) *t = characterTransform;
+        if (auto* t = ecs.tryGetComponent<Transform>(entity)) *t = meshTransform;
         if (auto* skinned = ecs.tryGetComponent<SkinnedRenderable>(entity)) skinned->skinningMatrices = skinningMatrices;
     }
 }

@@ -3970,7 +3970,7 @@ void Renderer::drawLuminancePass(VkCommandBuffer cmd, FrameSync& frame) {
 }
 
 void Renderer::drawBloomAndComposite(VkCommandBuffer cmd, FrameSync& frame, VkImage colorImage, VkImageView colorView,
-                                      VkExtent2D extent, glm::vec2 sunScreenUV, bool sunVisible) {
+                                      VkExtent2D extent, glm::vec2 sunScreenUV, bool sunVisible, bool applyBloom) {
     // frame.hdrImage (and, if Cinematic Mode ran this frame,
     // frame.cinematicImage) is already in SHADER_READ_ONLY_OPTIMAL by the
     // time this runs -- see drawSceneIntoImpl()'s own transition, done
@@ -3995,7 +3995,25 @@ void Renderer::drawBloomAndComposite(VkCommandBuffer cmd, FrameSync& frame, VkIm
     bloomRenderingInfo.colorAttachmentCount = 1;
     bloomRenderingInfo.pColorAttachments = &bloomAttachment;
 
-    if (performanceModeEnabled_) {
+    // Kronos ("Avatar Preview Rendering" pre-launch fix): real bloom
+    // bleed, not the sky/lighting values themselves, was washing out
+    // close-up preview renders (HomeAvatarPreview's "Your Avatar" box,
+    // Studio's AvatarEditor/CataloguePanel/etc.) -- confirmed the actual
+    // UBO sky colors reach the shader correctly (verified live via a
+    // temporary debug print), so the remaining candidate was
+    // post-process: bloomThreshold_'s real default (1.0, HDR linear)
+    // is easily exceeded by a well-lit close-up subject under this
+    // preset's own 2.6-intensity key light, and a tight preview frame
+    // where the subject fills most of the image has proportionally far
+    // more of its area affected by that bloom bleed than a normal
+    // full-scene outdoor shot would. `applyBloom=false` for every
+    // auxiliary/preview scene (see drawSceneInto()'s AuxiliarySceneHandle
+    // overload) reuses this exact same real, already-proven
+    // "performanceModeEnabled_" zero-bloom path -- a real "product
+    // photography lightbox" backdrop shouldn't show HDR bloom blowout at
+    // all, independent of whether this fully explains every washed-out
+    // report.
+    if (performanceModeEnabled_ || !applyBloom) {
         // Sprint 14 ("Performance Mode"): a real clear (VK_ATTACHMENT_LOAD_OP_CLEAR,
         // no draw call at all) instead of running bloomExtractPipeline_'s
         // real fragment shader across every bloom-res pixel -- a real,
@@ -4130,7 +4148,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
                                   VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera,
                                   ECS& ecs, MeshLibrary& meshLibrary, const ParticleSystem& particleSystem,
                                   TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary,
-                                  bool applyWeatherEffects) {
+                                  bool applyWeatherEffects, bool applyBloom) {
     // (Re)creates frame.hdrImage/bloomImage if `extent` changed since the
     // last call -- see FrameSync's comment and OffscreenTarget::ensureSize()
     // for the same lazy-resize pattern applied elsewhere in this codebase.
@@ -4555,7 +4573,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // ensureCinematicTarget()'s source-repoint logic) back, writes the
     // caller's actual colorImage/colorView as the final step -- see that
     // method's comment for the pass structure.
-    drawBloomAndComposite(cmd, frame, colorImage, colorView, extent, sunScreenUV, sunVisible);
+    drawBloomAndComposite(cmd, frame, colorImage, colorView, extent, sunScreenUV, sunVisible, applyBloom);
 }
 
 void Renderer::drawSceneInto(VkCommandBuffer cmd, VkImage colorImage, VkImageView colorView, VkImage depthImage,
@@ -4580,8 +4598,14 @@ void Renderer::drawSceneInto(AuxiliarySceneHandle handle, VkCommandBuffer cmd, V
     // on why every auxiliary/preview scene (Home's avatar preview,
     // every Studio PreviewScene consumer) must not inherit the outdoor
     // world's own live weather perturbation.
+    // Kronos ("Avatar Preview Rendering" pre-launch fix): also real,
+    // explicit `false` for bloom -- see drawBloomAndComposite()'s own
+    // comment on why a close-up preview's bloom bleed reads as a much
+    // larger washed-out effect than the same settings produce on a
+    // normal full-scene shot.
     drawSceneIntoImpl(auxiliaryScenes_[handle], cmd, colorImage, colorView, depthImage, depthView, extent, camera, ecs,
-                       meshLibrary, particleSystem, textureLibrary, riggedMeshLibrary, /*applyWeatherEffects=*/false);
+                       meshLibrary, particleSystem, textureLibrary, riggedMeshLibrary, /*applyWeatherEffects=*/false,
+                       /*applyBloom=*/false);
 }
 
 Renderer::AuxiliarySceneHandle Renderer::createAuxiliaryScene() {

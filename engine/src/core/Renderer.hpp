@@ -1098,7 +1098,7 @@ private:
     // state this function doesn't otherwise take), see that call site's
     // own comment for exactly how.
     void drawBloomAndComposite(VkCommandBuffer cmd, FrameSync& frame, VkImage colorImage, VkImageView colorView,
-                                VkExtent2D extent, glm::vec2 sunScreenUV, bool sunVisible);
+                                VkExtent2D extent, glm::vec2 sunScreenUV, bool sunVisible, bool applyBloom = true);
 
     // Buckets every Renderable+Transform entity with `instanced == true`
     // by meshHandle, uploads each bucket's InstanceData into
@@ -1199,11 +1199,18 @@ private:
     // no-op multiply-through-Clear-weather-equivalent, not an
     // approximation (see applyWeather()'s own comment on why Clear is a
     // real, exact identity).
+    // `applyBloom` (Kronos "Avatar Preview Rendering" pre-launch fix):
+    // same real "main viewport true, AuxiliarySceneHandle false"
+    // scoping as `applyWeatherEffects` just above, for a different real
+    // reason -- see drawBloomAndComposite()'s own comment on why a
+    // close-up preview render's bloom bleed reads as a much larger,
+    // more washed-out effect than the same bloom settings produce on a
+    // normal full-scene shot.
     void drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage colorImage, VkImageView colorView,
                             VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera,
                             ECS& ecs, MeshLibrary& meshLibrary, const ParticleSystem& particleSystem,
                             TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary,
-                            bool applyWeatherEffects = true);
+                            bool applyWeatherEffects = true, bool applyBloom = true);
 
     // Real GPU vertex-shader skinning (shaders/scene_skinned.vert),
     // called from within drawSceneIntoImpl()'s own render pass (same
