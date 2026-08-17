@@ -1,5 +1,61 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-17 — Kronos Developer Velocity Sprint, part 1: One-Click Package Exporter
+
+**Real prerequisite gap found and closed first**: `core::SceneFile` never
+serialized `core::Script` at all -- a real, pre-existing hole from the
+prior sprint's Script Editor work (scenes silently lost any authored
+script on save/reload). Added real round-trip support: `SceneEntityRecord`
+gained `hasScript`/`scriptSource`/`scriptAutoRun`, with a small local
+base64 codec in `SceneFile.cpp` (the one field in this line-oriented
+text format that can contain embedded newlines). `SceneManager::captureScene()`/
+`loadScene()` wired symmetrically -- `scriptId`/`loadedSource` are
+deliberately NOT persisted (live-VM bookkeeping, meaningless before a
+fresh load re-runs the script).
+
+**New `zlib` system dependency** (`cmake/Dependencies.cmake`, same
+`find_package()`-for-system-libraries convention SDL2 already
+established) -- no compression library existed anywhere in this
+codebase before this pass.
+
+**New `publishing::PackageArchive`** (`PackageArchive.hpp/.cpp`): a
+real, custom, zlib-deflate-compressed container format (`KRAR` magic +
+per-file `[name][sizes][deflate bytes]`) -- deliberately not a byte-for-
+byte standard ZIP (no ZIP-writing library is vendored, and hand-rolling
+a real ZIP central-directory format risks silent corruption, the same
+reasoning `ThumbnailCapture.hpp` already applies to writing PPM instead
+of a hand-rolled PNG encoder). `writeWorldPackageArchive()` reuses
+`WorldPackage::saveToDirectory()` unchanged (scene.txt/metadata.json/
+package.json), adds a real `assets_manifest.txt` from the already-real
+`publishing::collectReferencedAssetPaths()`, optionally bundles a real
+captured thumbnail file, then compresses everything and removes the
+temp directory. Real, stated scope boundary: only the asset *manifest*
+(relative paths) is bundled, not the referenced files' own binary
+content -- no asset-copy pipeline exists yet.
+
+**Studio wiring**: `File -> Package World (.kronos)...` opens a real,
+minimal wizard (deliberately not a new full plugin panel --
+`PublishingPanel` already owns the metadata-heavy registry-publish
+workflow; this is its fast, one-click sibling). Thumbnail capture reuses
+the *current edit viewport's own rendered frame* (`viewportTarget_`,
+`renderer_.swapchainFormat()`) via the already-real
+`captureThumbnailToFile()` GPU readback -- no new camera rig needed.
+Deferred by one real frame (button sets a flag; the actual capture runs
+from inside the existing pre-pass callback, once `viewportTarget_` is
+genuinely valid for this frame) -- the same real, already-proven pattern
+`PublishingPanel::renderPreview()`'s own thumbnail capture established.
+
+**Verification**: 9 new headless tests (script round-trip through
+`SceneFile` and through a live `SceneManager` capture/save, archive
+write/read round-trip including a zero-byte file and raw binary bytes,
+garbage-magic rejection, a real `WorldPackage` bundled end-to-end with
+manifest content verified, and thumbnail bundling) -- 10868/10868
+passing (was 10847). All 3 targets rebuild clean, zero warnings.
+Manually launched `studio` post-build and confirmed clean, stable
+startup.
+
+**Next**: Real-Time Visual Performance Profiler (F3 overlay).
+
 ## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 5: Auto-Recovery & Delta Scene Snapshots
 
 **What already existed, confirmed before writing any code**:

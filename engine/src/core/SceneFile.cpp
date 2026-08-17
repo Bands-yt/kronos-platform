@@ -46,6 +46,65 @@ ColliderShapeKind colliderShapeKindFromIndex(int index) {
     }
 }
 
+// Small, real, local base64 codec -- SCRIPT is the one field in this
+// whole line-oriented text format that can legitimately contain embedded
+// newlines (a script's own source), which every other field's plain
+// space-separated convention can't represent safely. No external
+// dependency needed for something this small and self-contained.
+constexpr char kBase64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string base64Encode(const std::string& input) {
+    std::string out;
+    out.reserve(((input.size() + 2) / 3) * 4);
+    size_t i = 0;
+    while (i + 2 < input.size()) {
+        uint32_t chunk = (static_cast<uint8_t>(input[i]) << 16) | (static_cast<uint8_t>(input[i + 1]) << 8) |
+                          static_cast<uint8_t>(input[i + 2]);
+        out += kBase64Chars[(chunk >> 18) & 0x3F];
+        out += kBase64Chars[(chunk >> 12) & 0x3F];
+        out += kBase64Chars[(chunk >> 6) & 0x3F];
+        out += kBase64Chars[chunk & 0x3F];
+        i += 3;
+    }
+    size_t remaining = input.size() - i;
+    if (remaining == 1) {
+        uint32_t chunk = static_cast<uint8_t>(input[i]) << 16;
+        out += kBase64Chars[(chunk >> 18) & 0x3F];
+        out += kBase64Chars[(chunk >> 12) & 0x3F];
+        out += "==";
+    } else if (remaining == 2) {
+        uint32_t chunk = (static_cast<uint8_t>(input[i]) << 16) | (static_cast<uint8_t>(input[i + 1]) << 8);
+        out += kBase64Chars[(chunk >> 18) & 0x3F];
+        out += kBase64Chars[(chunk >> 12) & 0x3F];
+        out += kBase64Chars[(chunk >> 6) & 0x3F];
+        out += '=';
+    }
+    return out;
+}
+
+std::string base64Decode(const std::string& input) {
+    int reverseTable[256];
+    for (int& v : reverseTable) v = -1;
+    for (int i = 0; i < 64; ++i) reverseTable[static_cast<unsigned char>(kBase64Chars[i])] = i;
+
+    std::string out;
+    out.reserve((input.size() / 4) * 3);
+    uint32_t buffer = 0;
+    int bitsCollected = 0;
+    for (char c : input) {
+        if (c == '=' || c == '\r' || c == '\n') continue;
+        int value = reverseTable[static_cast<unsigned char>(c)];
+        if (value < 0) continue; // real, honest skip of anything malformed rather than aborting the whole decode
+        buffer = (buffer << 6) | static_cast<uint32_t>(value);
+        bitsCollected += 6;
+        if (bitsCollected >= 8) {
+            bitsCollected -= 8;
+            out += static_cast<char>((buffer >> bitsCollected) & 0xFF);
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 bool SceneFile::saveToFile(const std::string& path) const {
@@ -113,6 +172,10 @@ bool SceneFile::saveToFile(const std::string& path) const {
                     << e.colliderShape.params.z << ' ' << (e.colliderShape.path.empty() ? "-" : e.colliderShape.path)
                     << "\n";
             }
+        }
+
+        if (e.hasScript) {
+            out << "SCRIPT " << (e.scriptAutoRun ? 1 : 0) << ' ' << base64Encode(e.scriptSource) << "\n";
         }
     }
 
@@ -205,6 +268,15 @@ bool SceneFile::loadFromFile(const std::string& path) {
             std::getline(iss, rest);
             if (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
             current->colliderShape.path = (rest.empty() || rest == "-") ? std::string() : rest;
+        } else if (line.rfind("SCRIPT ", 0) == 0 && current != nullptr) {
+            current->hasScript = true;
+            std::string rest = line.substr(7);
+            std::istringstream iss(rest);
+            int autoRunInt = 1;
+            std::string encoded;
+            iss >> autoRunInt >> encoded;
+            current->scriptAutoRun = autoRunInt != 0;
+            current->scriptSource = base64Decode(encoded);
         } else if (line == "END") {
             break;
         }

@@ -391,6 +391,27 @@ private:
     char filePathBuffer_[256] = "";
     std::string fileActionStatus_;
 
+    // Kronos ("Developer Velocity Sprint" -- "One-Click Package
+    // Exporter"): File -> Package World. Real, minimal wizard state --
+    // deliberately not a whole new plugin panel (studio::plugins::
+    // PublishingPanel already owns the full metadata/registry-publish
+    // workflow; this is the fast, one-click sibling of it, matching the
+    // sprint's own "One-Click" framing). Thumbnail capture is real but
+    // asynchronous by one frame (see the pre-pass callback in
+    // initialize()'s renderer_.setPrePassCallback lambda, same real
+    // "button marks intent, the actual capture happens next time the
+    // frame's viewportTarget_ is valid" pattern
+    // PublishingPanel::renderPreview() already established) -- these
+    // three fields are that handoff.
+    void drawPackageWorldWizard();
+    void exportPackageWorldNow(const std::string& thumbnailPath);
+    bool packageWizardOpen_ = false;
+    char packageOutputPathBuffer_[256] = "world_export.kronos";
+    bool packageCaptureThumbnail_ = true;
+    bool packageThumbnailCaptureRequested_ = false;
+    std::string pendingPackageThumbnailPath_;
+    std::string packageStatusMessage_;
+
     // Non-empty whenever the scene just loaded at that path has a pending
     // autosave recovery file newer-than-nothing (see
     // SceneManager::hasRecoveryFile) -- drives the "Recover unsaved

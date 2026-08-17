@@ -27,6 +27,13 @@ find_package(Threads REQUIRED)
 # --- SDL2 (system) ----------------------------------------------------------
 find_package(SDL2 CONFIG REQUIRED)
 
+# --- zlib (system) -- Kronos ("Developer Velocity Sprint" -- "One-Click
+# Package Exporter" needs a real compressed archive format; deflate is
+# the honest, well-understood choice, and a ubiquitous system library,
+# same "don't reinvent/vendor what the host OS already provides reliably"
+# reasoning as SDL2 above) --------------------------------------------------
+find_package(ZLIB REQUIRED)
+
 # --- EnTT (ECS) ---------------------------------------------------------------
 FetchContent_Declare(
     entt

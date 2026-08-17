@@ -105,6 +105,17 @@ SceneFile SceneManager::captureScene(ECS& ecs, const Camera& camera) const {
             record.colliderShape = *colliderShape;
         }
 
+        // Kronos ("Developer Velocity Sprint" -- packaging needs real
+        // scripts to bundle, which surfaced this real, pre-existing gap):
+        // scriptId/loadedSource are deliberately NOT captured -- see
+        // SceneEntityRecord::hasScript's own comment on why they're live-
+        // VM bookkeeping, not authored data.
+        if (const auto* script = ecs.tryGetComponent<Script>(entity)) {
+            record.hasScript = true;
+            record.scriptSource = script->source;
+            record.scriptAutoRun = script->autoRun;
+        }
+
         // Real parent, by name -- see SceneEntityRecord::parentName's own
         // comment on why name (not EntityId) is the only thing a future
         // load can resolve this against. A parent with no name (or an
@@ -238,6 +249,18 @@ bool SceneManager::loadScene(const std::string& path, ECS& ecs, MeshLibrary& mes
                 std::fprintf(stderr, "SceneManager: \"%s\" kept its saved physics data but real body attachment failed\n",
                              record.name.c_str());
             }
+        }
+
+        if (record.hasScript) {
+            auto& script = ecs.addComponent<Script>(entity);
+            script.source = record.scriptSource;
+            script.autoRun = record.scriptAutoRun;
+            // scriptId/loadedSource stay at their real defaults
+            // (kInvalidScript/empty) -- a fresh load means no VM has
+            // loaded this yet; whichever real Scripting session owns
+            // this ECS next (Application::tick()'s hot-reload loop, or
+            // PhysicsPreviewPlugin's Play session) real-loads it the same
+            // way it would any newly-saved script.
         }
     }
 

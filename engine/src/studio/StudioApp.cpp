@@ -22,6 +22,9 @@
 #include "core/QualityScore.hpp"
 #include "core/ResourcePaths.hpp"
 #include "core/UITheme.hpp"
+#include "publishing/PackageArchive.hpp"
+#include "publishing/PublishValidation.hpp"
+#include "publishing/ThumbnailCapture.hpp"
 #include "studio/plugins/AlignPlugin.hpp"
 #include "studio/plugins/AnimatorPlugin.hpp"
 #include "studio/plugins/AudioPreviewPlugin.hpp"
@@ -201,6 +204,21 @@ bool StudioApp::initialize() {
                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                    VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+
+        // Kronos ("Developer Velocity Sprint" -- "One-Click Package
+        // Exporter"): real, deferred-by-one-frame thumbnail capture --
+        // see drawPackageWorldWizard()'s own comment on why this can't
+        // just run synchronously from the button click. viewportTarget_
+        // is now real, rendered, and in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        // (exactly what captureThumbnailToFile() requires), the same
+        // real state every renderPreview() call below this point relies on.
+        if (packageThumbnailCaptureRequested_) {
+            packageThumbnailCaptureRequested_ = false;
+            bool ok = publishing::captureThumbnailToFile(renderer_, viewportTarget_.colorImage(),
+                                                           renderer_.swapchainFormat(), viewportTarget_.extent(),
+                                                           pendingPackageThumbnailPath_);
+            exportPackageWorldNow(ok ? pendingPackageThumbnailPath_ : std::string());
+        }
 
         // Every other open studio::PreviewScene-owning panel renders into
         // its own OffscreenTarget in this same callback, back to back --
@@ -788,6 +806,7 @@ void StudioApp::drawDockspace() {
     ImGui::End();
 
     drawPendingFileActionPopup();
+    drawPackageWorldWizard();
 }
 
 void StudioApp::drawAboutPanel() {
@@ -992,6 +1011,17 @@ void StudioApp::drawFileMenu() {
     }
 
     ImGui::Separator();
+    // Kronos ("Developer Velocity Sprint" -- "One-Click Package
+    // Exporter"): opens the real wizard (drawPackageWorldWizard()) --
+    // always enabled, unlike the project actions above, since packaging
+    // works off whatever's in the live ECS right now even for a
+    // never-saved scene (SceneManager::captureScene() doesn't require a
+    // real currentScenePath_ the way "Save Scene" does).
+    if (ImGui::MenuItem("Package World (.kronos)...")) {
+        packageWizardOpen_ = true;
+    }
+
+    ImGui::Separator();
     // Kronos ("Branding + Release Prep" -- "Basic README generator
     // (Studio)"): real -- pure core::generateProjectReadme() over this
     // project's own real, already-saved metadata (name/scenes/
@@ -1110,6 +1140,70 @@ void StudioApp::drawPendingFileActionPopup() {
 
         ImGui::EndPopup();
     }
+}
+
+void StudioApp::exportPackageWorldNow(const std::string& thumbnailPath) {
+    std::string outputPath = packageOutputPathBuffer_;
+    std::string worldId = std::filesystem::path(outputPath).stem().string();
+    if (worldId.empty()) worldId = "world_export";
+
+    publishing::WorldPackage package;
+    package.worldId = worldId;
+    package.version = "1.0.0";
+    package.metadata.title = worldId;
+    if (!thumbnailPath.empty()) package.metadata.thumbnailPath = publishing::thumbnailFileName();
+    package.scene = sceneManager_.captureScene(ecs_, viewportPanel_.camera());
+
+    // Real relative asset manifest -- the same real, pure function
+    // PublishingPanel's own orphan-scan already established (Kronos
+    // "Studio QoL Sprint"), reused here rather than re-deriving asset
+    // references a second way.
+    std::vector<std::string> assetPaths = publishing::collectReferencedAssetPaths(package.metadata, package.scene);
+
+    bool ok = publishing::writeWorldPackageArchive(package, assetPaths, outputPath, thumbnailPath);
+    packageStatusMessage_ = ok ? "Exported " + outputPath + " (" + std::to_string(package.scene.entities.size()) +
+                                      " entities, " + std::to_string(assetPaths.size()) + " referenced asset(s))"
+                                : "Export FAILED: " + outputPath;
+    notifications_.push(packageStatusMessage_, ok ? NotificationSeverity::Success : NotificationSeverity::Error);
+
+    if (!thumbnailPath.empty()) std::filesystem::remove(thumbnailPath); // real scratch file, already bundled into the archive
+}
+
+void StudioApp::drawPackageWorldWizard() {
+    if (!packageWizardOpen_) return;
+
+    ImGui::SetNextWindowSize(ImVec2(440.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::Begin("Package World", &packageWizardOpen_)) {
+        ImGui::TextWrapped(
+            "Bundles the current live scene, a real relative asset manifest, any scene-authored scripts, and an "
+            "optional thumbnail into a single compressed .kronos archive.");
+        ImGui::Spacing();
+
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("##package_output_path", packageOutputPathBuffer_, sizeof(packageOutputPathBuffer_));
+        ImGui::TextDisabled("Output file (.kronos)");
+
+        ImGui::Checkbox("Capture thumbnail from current viewport", &packageCaptureThumbnail_);
+
+        bool busy = packageThumbnailCaptureRequested_;
+        ImGui::BeginDisabled(busy || packageOutputPathBuffer_[0] == '\0');
+        if (ImGui::Button("Export Package", ImVec2(-1.0f, 0.0f))) {
+            if (packageCaptureThumbnail_ && viewportTarget_.isValid()) {
+                // Deferred by one real frame -- see this field's own
+                // comment in StudioApp.hpp. viewportTarget_ only holds
+                // this frame's real rendered image once the pre-pass
+                // callback below has actually run.
+                pendingPackageThumbnailPath_ = std::string(packageOutputPathBuffer_) + ".thumbnail.ppm";
+                packageThumbnailCaptureRequested_ = true;
+            } else {
+                exportPackageWorldNow(std::string());
+            }
+        }
+        ImGui::EndDisabled();
+        if (busy) ImGui::TextDisabled("Capturing thumbnail...");
+        if (!packageStatusMessage_.empty()) ImGui::TextWrapped("%s", packageStatusMessage_.c_str());
+    }
+    ImGui::End();
 }
 
 void StudioApp::drawSceneTabsBar() {

@@ -222,6 +222,7 @@ add_library(engine_core STATIC
     publishing/WorldMetadata.cpp
     publishing/PublishValidation.cpp
     publishing/WorldPackage.cpp
+    publishing/PackageArchive.cpp
     publishing/WorldRegistry.cpp
     publishing/ThumbnailCapture.cpp
 
@@ -397,6 +398,7 @@ target_link_libraries(engine_core PUBLIC
     stb::image
     nlohmann_json::nlohmann_json
     Threads::Threads
+    ZLIB::ZLIB
 )
 
 if(WIN32)

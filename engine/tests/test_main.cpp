@@ -168,6 +168,7 @@
 #include "publishing/PublishValidation.hpp"
 #include "publishing/ThumbnailCapture.hpp"
 #include "publishing/WorldMetadata.hpp"
+#include "publishing/PackageArchive.hpp"
 #include "publishing/WorldPackage.hpp"
 #include "publishing/WorldRegistry.hpp"
 #include "runtime/ShellState.hpp"
@@ -4136,6 +4137,55 @@ void testTransactionLogLoadsPrePublishCategoryFileWithHonestDefault() {
     check(loaded.publishRecords()[0].category.empty(),
           "a missing PUBCATEGORY line real-defaults to an empty string, not a parse failure");
     std::remove(path);
+}
+
+void testSceneFileRoundTripsScriptComponent() {
+    engine::core::SceneFile file;
+    engine::core::SceneEntityRecord record;
+    record.name = "Scripted";
+    record.hasScript = true;
+    // Real, deliberately awkward source -- embedded newlines, quotes,
+    // and a trailing space, exactly the content a naive space-delimited
+    // line format would corrupt; base64 is what makes this survive.
+    record.scriptSource = "local x = \"hi\"\nprint(x)\n-- trailing space \n";
+    record.scriptAutoRun = false;
+    file.entities.push_back(record);
+
+    const char* path = "test_scene_file_script_roundtrip.scene";
+    check(file.saveToFile(path), "SceneFile::saveToFile() real-succeeds with a scripted entity");
+
+    engine::core::SceneFile reloaded;
+    check(reloaded.loadFromFile(path), "SceneFile::loadFromFile() real-succeeds reading it back");
+    check(reloaded.entities.size() == 1, "Sanity: one real entity round-tripped");
+    check(reloaded.entities[0].hasScript, "hasScript real-round-trips true");
+    check(reloaded.entities[0].scriptSource == record.scriptSource,
+          "the real script source -- newlines, quotes, and all -- round-trips byte-for-byte via base64");
+    check(!reloaded.entities[0].scriptAutoRun, "scriptAutoRun real-round-trips false");
+
+    std::remove(path);
+}
+
+void testSceneManagerCaptureAndLoadRoundTripScriptComponent() {
+    engine::core::ECS ecs;
+    engine::core::EntityId entity = ecs.createEntity("Scripted");
+    auto& script = ecs.addComponent<engine::core::Script>(entity);
+    script.source = "return 42\n";
+    script.autoRun = true;
+    script.scriptId = 7; // live-VM bookkeeping -- must NOT survive the round trip, see SceneEntityRecord's comment
+    script.loadedSource = "return 42\n";
+
+    engine::core::Camera camera;
+    engine::core::SceneManager sceneManager;
+    const char* path = "test_scene_manager_script_roundtrip.scene";
+    check(sceneManager.saveScene(path, ecs, camera), "SceneManager::saveScene() real-succeeds with a live Script component");
+
+    engine::core::SceneFile reread;
+    check(reread.loadFromFile(path) && reread.entities.size() == 1 && reread.entities[0].hasScript &&
+              reread.entities[0].scriptSource == "return 42\n",
+          "the real saved file genuinely contains the live script's source");
+
+    std::remove(path);
+    std::remove(engine::core::SceneManager::recoveryPathFor(path).c_str());
 }
 
 void testSceneManagerCapture() {
@@ -19013,6 +19063,113 @@ void testWorldPackageSaveLoadRoundTrip() {
     check(loaded.scene.entities.size() == package.scene.entities.size(), "WorldPackage real-round-trips its real embedded scene entity count");
 }
 
+// --- PackageArchive --------------------------------------------------------------
+
+void testPackageArchiveWriteReadRoundTrip() {
+    std::vector<engine::publishing::ArchiveFileEntry> files;
+    // A real, deliberately compressible file (deflate should shrink this
+    // a lot) plus a real zero-byte file (an edge case compress2()/
+    // uncompress() must both handle cleanly) plus real binary-ish bytes
+    // (0x00-0xFF, not just printable text).
+    std::string repeated(2000, 'A');
+    files.push_back({"repeated.txt", std::vector<uint8_t>(repeated.begin(), repeated.end())});
+    files.push_back({"empty.txt", {}});
+    std::vector<uint8_t> binary;
+    for (int i = 0; i < 256; ++i) binary.push_back(static_cast<uint8_t>(i));
+    files.push_back({"binary.bin", binary});
+
+    const char* archivePath = "test_package_archive_roundtrip.kronos";
+    check(engine::publishing::writeArchive(archivePath, files), "writeArchive() real-succeeds writing 3 real files");
+
+    std::vector<engine::publishing::ArchiveFileEntry> readBack;
+    check(engine::publishing::readArchive(archivePath, readBack), "readArchive() real-succeeds reading them back");
+    check(readBack.size() == 3, "readArchive() real-reports all 3 real files");
+
+    for (const auto& original : files) {
+        auto it = std::find_if(readBack.begin(), readBack.end(),
+                                [&](const engine::publishing::ArchiveFileEntry& e) { return e.relativePath == original.relativePath; });
+        check(it != readBack.end(), ("readArchive() real-contains \"" + original.relativePath + "\"").c_str());
+        if (it != readBack.end()) {
+            check(it->data == original.data,
+                  ("\"" + original.relativePath + "\"'s real content round-trips byte-for-byte through real deflate/inflate").c_str());
+        }
+    }
+
+    std::remove(archivePath);
+}
+
+void testPackageArchiveReadRejectsGarbageFile() {
+    const char* path = "test_package_archive_garbage.kronos";
+    { std::ofstream out(path, std::ios::binary); out << "not a real archive"; }
+    std::vector<engine::publishing::ArchiveFileEntry> files;
+    check(!engine::publishing::readArchive(path, files), "readArchive() real-rejects a file with the wrong magic instead of crashing");
+    std::remove(path);
+}
+
+void testWriteWorldPackageArchiveProducesReadableArchive() {
+    engine::publishing::WorldPackage package;
+    package.worldId = "test_archive_pkg";
+    package.version = "1.0.0";
+    package.metadata = makeValidMetadata();
+    package.scene = makeNonEmptyScene();
+
+    std::vector<std::string> assetPaths{"meshes/rock.obj", "textures/rock_albedo.png"};
+    const char* archivePath = "test_write_world_package.kronos";
+    check(engine::publishing::writeWorldPackageArchive(package, assetPaths, archivePath),
+          "writeWorldPackageArchive() real-succeeds bundling a real WorldPackage");
+
+    // Real, honest cleanup check -- the temp build directory must not
+    // survive a successful archive write.
+    check(!std::filesystem::exists(std::string(archivePath) + ".tmp_build"),
+          "writeWorldPackageArchive() real-cleans up its own temp directory after a successful write");
+
+    std::vector<engine::publishing::ArchiveFileEntry> files;
+    check(engine::publishing::readArchive(archivePath, files), "the real archive writeWorldPackageArchive() wrote real-reads back");
+
+    auto find = [&](const std::string& name) -> const engine::publishing::ArchiveFileEntry* {
+        for (const auto& f : files) if (f.relativePath == name) return &f;
+        return nullptr;
+    };
+    check(find("scene.txt") != nullptr, "the real archive real-contains scene.txt");
+    check(find("metadata.json") != nullptr, "the real archive real-contains metadata.json");
+    check(find("package.json") != nullptr, "the real archive real-contains package.json");
+    const auto* manifest = find(engine::publishing::assetManifestFileName());
+    check(manifest != nullptr, "the real archive real-contains the real asset manifest file");
+    if (manifest != nullptr) {
+        std::string manifestText(manifest->data.begin(), manifest->data.end());
+        check(manifestText.find("meshes/rock.obj") != std::string::npos &&
+                  manifestText.find("textures/rock_albedo.png") != std::string::npos,
+              "the real bundled asset manifest genuinely lists the real referenced asset paths");
+    }
+
+    std::remove(archivePath);
+}
+
+void testWriteWorldPackageArchiveBundlesRealThumbnail() {
+    engine::publishing::WorldPackage package;
+    package.worldId = "test_archive_thumb_pkg";
+    package.version = "1.0.0";
+    package.metadata = makeValidMetadata();
+    package.metadata.thumbnailPath = engine::publishing::thumbnailFileName();
+    package.scene = makeNonEmptyScene();
+
+    const char* thumbSource = "test_archive_thumb_source.ppm";
+    { std::ofstream out(thumbSource, std::ios::binary); out << "P6\n1 1\n255\n" << char(255) << char(0) << char(0); }
+
+    const char* archivePath = "test_write_world_package_thumb.kronos";
+    check(engine::publishing::writeWorldPackageArchive(package, {}, archivePath, thumbSource),
+          "writeWorldPackageArchive() real-succeeds with a real thumbnail source file");
+
+    std::vector<engine::publishing::ArchiveFileEntry> files;
+    check(engine::publishing::readArchive(archivePath, files), "the real archive with a bundled thumbnail real-reads back");
+    bool foundThumbnail = false;
+    for (const auto& f : files) if (f.relativePath == engine::publishing::thumbnailFileName()) foundThumbnail = true;
+    check(foundThumbnail, "the real archive genuinely contains the real bundled thumbnail file");
+
+    std::remove(thumbSource);
+    std::remove(archivePath);
+}
+
 void testWorldPackageLoadFromNonexistentDirectoryFails() {
     engine::publishing::WorldPackage package;
     check(!package.loadFromDirectory("this_directory_really_does_not_exist_98765"),
@@ -27175,6 +27332,8 @@ int main() {
     testTransactionLogSaveLoadRoundTrip();
     testTransactionLogPublishRecordsCoexistWithPurchaseRecords();
     testTransactionLogLoadsPrePublishCategoryFileWithHonestDefault();
+    testSceneFileRoundTripsScriptComponent();
+    testSceneManagerCaptureAndLoadRoundTripScriptComponent();
     testSceneManagerCapture();
     testSceneManagerTickAutosaveMajorEditTriggersImmediateSnapshot();
     testSceneHistoryRecordSnapshotRejectsEmptyScenePath();
@@ -27995,6 +28154,10 @@ int main() {
     testWorldPackagePathHelpersUseRealFixedNames();
     testWorldPackageSaveToDirectoryCreatesRealFiles();
     testWorldPackageSaveLoadRoundTrip();
+    testPackageArchiveWriteReadRoundTrip();
+    testPackageArchiveReadRejectsGarbageFile();
+    testWriteWorldPackageArchiveProducesReadableArchive();
+    testWriteWorldPackageArchiveBundlesRealThumbnail();
     testWorldPackageLoadFromNonexistentDirectoryFails();
     testWorldPackageLoadFailsIfPackageInfoMissing();
     testWorldPackageRoundTripPreservesMultipleEntities();

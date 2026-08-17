@@ -80,6 +80,20 @@ struct SceneEntityRecord {
     RigidBodyMotionType motionType = RigidBodyMotionType::Static;
     bool hasColliderShape = false;
     ColliderShape colliderShape;
+
+    // Kronos ("Developer Velocity Sprint" -- "One-Click Package
+    // Exporter" needs real scripts to bundle, which surfaced this real,
+    // pre-existing gap): a scene-authored core::Script -- source is
+    // base64-encoded on the wire (see SceneFile.cpp's own small local
+    // encoder) since it's the one field in this whole format that can
+    // contain embedded newlines, which this line-oriented text format
+    // otherwise can't represent safely. `loadedSource`/`scriptId` are
+    // deliberately NOT persisted -- they're live-VM bookkeeping (see
+    // Components.hpp's own Script comment), meaningless before a fresh
+    // load re-runs the script from scratch.
+    bool hasScript = false;
+    std::string scriptSource;
+    bool scriptAutoRun = true;
 };
 
 // A full scene -- every SceneEntityRecord worth persisting, plus the
@@ -99,6 +113,13 @@ struct SceneEntityRecord {
 // texture-pipeline equivalent of MeshSource and deserves its own pass).
 // core::AudioSource isn't included either: no audio-source authoring UI
 // exists anywhere yet, so there is nothing yet to round-trip.
+//
+// core::Script IS now covered (Kronos "Developer Velocity Sprint") --
+// this used to be a stated gap ("Studio's scripting surfaces are Debug
+// Console/plugin-scoped, not scene-authored content"), but that's no
+// longer true since the Script Editor QoL work wired a real, entity-
+// attached, scene-authorable core::Script -- see SceneEntityRecord's own
+// comment.
 //
 // core::RigidBody/ColliderShape ARE now covered (Kronos "Game Catalogue
 // Overhaul", Phase 1) -- Studio itself still creates no physics entities
