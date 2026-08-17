@@ -37,6 +37,7 @@
 
 #include "core/Animation.hpp"
 #include "core/AnimationDatabase.hpp"
+#include "core/AvatarHair.hpp"
 #include "core/AvatarIdleClipResolution.hpp"
 #include "core/AvatarLOD.hpp"
 #include "core/AnimationItem.hpp"
@@ -6249,6 +6250,128 @@ void testBuildHumanoidMeshDataArmTapersFromShoulderToElbow() {
     check(shoulderRadius > elbowRadius + 0.005f,
           "the real, generated arm is real-thicker at the shoulder than at the elbow -- a genuine, real taper, not a "
           "uniform tube");
+}
+
+// Kronos ("Avatar Visual Silhouette Pass" -- "Arms, Legs, and Feet"):
+// real, pure skeleton coverage -- arms are real-longer than the original
+// rig (total shoulder-to-hand reach), and legs preserve their real total
+// hip-to-foot length (0.9, unchanged) even though the thigh/shin split
+// moved -- the real, critical grounding invariant this pass's own
+// "shorten upper legs" change depends on (see buildHumanoidSkeleton()'s
+// own comment: a mismatch here would leave the character's feet
+// floating above or sunk below the real ground plane).
+void testAvatarSilhouettePassArmLengthenedAndLegTotalLengthPreserved() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    auto localX = [&](const char* name) {
+        int index = skeleton.findJointIndex(name);
+        return skeleton.joints[static_cast<size_t>(index)].localPosition.x;
+    };
+    auto localY = [&](const char* name) {
+        int index = skeleton.findJointIndex(name);
+        return skeleton.joints[static_cast<size_t>(index)].localPosition.y;
+    };
+
+    float armReach = std::abs(localX("arm_L_lower")) + std::abs(localX("hand_L"));
+    check(armReach > 0.6f + 0.2f,
+          "the real, new arm (upper + lower segment length) real-reaches meaningfully farther than the original "
+          "0.32+0.28=0.6 rig -- the real 'land just below mid-thigh' silhouette change");
+    check(nearlyEqual(std::abs(localX("arm_L_lower")) + std::abs(localX("hand_L")),
+                       std::abs(localX("arm_R_lower")) + std::abs(localX("hand_R"))),
+          "left/right arm real length stays symmetric in the real, structural skeleton (asymmetry is a real, "
+          "idle.anim-only pose choice, not a structural rig change)");
+
+    float legTotalLeft = std::abs(localY("leg_L_lower")) + std::abs(localY("foot_L"));
+    float legTotalRight = std::abs(localY("leg_R_lower")) + std::abs(localY("foot_R"));
+    check(nearlyEqual(legTotalLeft, 0.9f, 0.0001f) && nearlyEqual(legTotalRight, 0.9f, 0.0001f),
+          "the real, total hip-to-foot leg length stays exactly 0.9 (the original rig's own real total) even "
+          "though the upper/lower split moved -- feet stay real-grounded at y=0, not floating or sunk");
+    check(std::abs(localY("leg_L_lower")) < 0.45f,
+          "the real upper leg (thigh) is real-shorter than the original rig's own 0.45, per 'shorten upper legs "
+          "slightly for balance'");
+}
+
+// Kronos ("Avatar Visual Silhouette Pass" -- "Hands" -- "Add palm volume
+// and simple finger segmentation"): real, pure proof the hand now
+// produces meaningfully more geometry than the old single 24-vertex
+// "mitten" box -- a real palm box (24 verts) plus 4 real finger boxes (24
+// verts each = 96) is 120 real new hand vertices alone, on top of the two
+// unchanged 24-vertex smooth-limb rings -- comfortably more than the old
+// arm total (72), the same "vertex count real-increased, genuinely new
+// geometry" proof testBuildHumanoidMeshDataTorsoIsNotABox() already
+// establishes for the torso.
+void testBuildHumanoidMeshDataHandHasRealFingerGeometry() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    engine::core::HumanoidMeshData data = engine::core::buildHumanoidMeshData(skeleton);
+    size_t leftArmVertexCount = 0;
+    for (auto s : data.vertexSegments) {
+        if (s == engine::core::HumanoidBodySegment::LeftArm) ++leftArmVertexCount;
+    }
+    check(leftArmVertexCount > 72 + 90,
+          "the real, new hand (palm + 4 finger blocks) real-produces meaningfully more LeftArm vertices than the "
+          "old single hand-box rig ever could -- genuinely new finger geometry, not a relabeled box");
+}
+
+// Kronos ("Avatar Visual Silhouette Pass" -- "Widen feet for stability
+// and clearer silhouette"): real, pure proof the foot box itself (not
+// just the leg's own hip/knee/ankle cross-sections) is real-wider than
+// before -- isolates foot vertices by real, low world Y (below the ankle
+// joint, where only the foot box's own vertices exist) rather than
+// comparing the segment's overall bounding box (which would be
+// misleadingly dominated by the hip cross-section already being as wide
+// as the old foot).
+void testBuildHumanoidMeshDataFootIsWiderThanOriginal() {
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    engine::core::HumanoidMeshData data = engine::core::buildHumanoidMeshData(skeleton);
+    std::vector<glm::mat4> world = skeleton.bindPoseMatrices();
+    int ankleIndex = skeleton.findJointIndex("foot_L");
+    float ankleY = world[static_cast<size_t>(ankleIndex)][3].y;
+
+    float minX = 1e9f, maxX = -1e9f;
+    for (size_t i = 0; i < data.vertices.size(); ++i) {
+        if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::LeftLeg) continue;
+        if (data.vertices[i].position.y > ankleY - 0.02f) continue; // only the foot box sits this low
+        minX = std::min(minX, data.vertices[i].position.x);
+        maxX = std::max(maxX, data.vertices[i].position.x);
+    }
+    check(maxX > minX, "real foot geometry exists below the ankle");
+    check(maxX - minX > 0.2f + 0.02f,
+          "the real, new foot box is real-wider (2*0.13=0.26) than the original rig's own foot (2*0.1=0.2)");
+}
+
+// Kronos ("Avatar Visual Silhouette Pass" -- "Head and Hair"): real
+// proof spawnAvatarDefaultHair() genuinely skips (real, honest no-op,
+// still returns true) when a real Hair accessory item is already
+// equipped -- reached entirely before any Vulkan handle is touched (the
+// real equip check happens first), so VK_NULL_HANDLE for every Vulkan
+// parameter is honest here, same real "no GPU upload attempted on this
+// path" precedent SceneManager's own VK_NULL_HANDLE tests already
+// establish.
+void testSpawnAvatarDefaultHairSkipsWhenHairItemEquipped() {
+    engine::core::CatalogueDatabase database;
+    engine::core::AvatarItemManifest hair;
+    hair.item.id = "real_hair_item";
+    hair.item.category = engine::core::AvatarItemCategory::Hair;
+    hair.item.baseColor = {0.1f, 0.1f, 0.1f, 1.0f};
+    database.upsert(hair);
+    engine::core::CatalogueIndex index;
+    index.rebuild(database);
+
+    engine::core::AvatarLoadout loadout;
+    check(loadout.equip("real_hair_item", index), "equipping the real Hair item succeeds");
+
+    engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    engine::core::ECS ecs;
+    engine::core::RiggedMeshLibrary riggedMeshLibrary;
+    std::vector<engine::core::EntityId> hairEntities{
+        static_cast<engine::core::EntityId>(123)}; // pre-populated, must be real-cleared
+    std::string error;
+    bool ok = engine::core::spawnAvatarDefaultHair(ecs, skeleton, loadout, engine::core::kDefaultHairColor,
+                                                    riggedMeshLibrary, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                                    VK_NULL_HANDLE, hairEntities, error);
+    check(ok, "spawnAvatarDefaultHair() real-succeeds (a real, honest no-op) when a Hair item is already equipped");
+    check(hairEntities.empty(),
+          "outHairEntities is real-cleared, not left with stale/placeholder entries, when skipping for an equipped "
+          "Hair item");
 }
 
 // Kronos ("Avatar Phase" -- "Avatar Head System"): real, pure coverage
@@ -26560,6 +26683,10 @@ int main() {
     testClothingFitConversionsAndScaleMultiplier();
     testBuildHumanoidMeshDataTorsoIsNotABox();
     testBuildHumanoidMeshDataArmTapersFromShoulderToElbow();
+    testAvatarSilhouettePassArmLengthenedAndLegTotalLengthPreserved();
+    testBuildHumanoidMeshDataHandHasRealFingerGeometry();
+    testBuildHumanoidMeshDataFootIsWiderThanOriginal();
+    testSpawnAvatarDefaultHairSkipsWhenHairItemEquipped();
     testResolveSkinToneColorHandlesValidUnsetAndOutOfRangeIndices();
     testLocalProfileDefaultsToUnknownAgeGroupAndUnverified();
     testLoadOrCreateProfileCreatesThenReloads();

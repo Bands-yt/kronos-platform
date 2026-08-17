@@ -19,11 +19,26 @@ VkVertexInputBindingDescription Vertex::bindingDescription() {
 }
 
 std::vector<VkVertexInputAttributeDescription> Vertex::attributeDescriptions() {
-    std::vector<VkVertexInputAttributeDescription> attrs(4);
+    std::vector<VkVertexInputAttributeDescription> attrs(5);
     attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
     attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
     attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)};
     attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)};
+    // Kronos ("Avatar Visual Silhouette Pass" -- real per-vertex color):
+    // location 11, deliberately past every location any pipeline sharing
+    // this binding-0 Vertex data already uses (GpuSkinVertex claims 4-5
+    // on binding 1 for the skinned pipeline, InstanceData claims 4-10 on
+    // binding 1 for the instanced pipeline -- see those types' own
+    // attributeDescriptions() comments) -- picking a location past the
+    // highest of either avoids colliding with both regardless of which
+    // pipeline this Vertex data feeds into. Unused (and harmless --
+    // Vulkan only requires a pipeline's attribute descriptions be a
+    // superset of what its vertex shader actually declares, the same
+    // real precedent Renderer::createShadowPipeline() already relies on
+    // for `tangent`, which shadow.vert never reads either) by any
+    // pipeline whose vertex shader doesn't declare a matching
+    // `layout(location = 11) in vec4 inColor`.
+    attrs[4] = {11, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)};
     return attrs;
 }
 

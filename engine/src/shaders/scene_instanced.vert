@@ -15,6 +15,10 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec4 inTangent; // xyz: tangent, w: handedness -- see Mesh.hpp's Vertex::tangent
+// Kronos ("Avatar Visual Silhouette Pass" -- real per-vertex color):
+// location 11, same real reasoning as scene.vert's own inColor -- past
+// this pipeline's own binding-1 instance data (locations 4-10).
+layout(location = 11) in vec4 inColor;
 
 // Per-instance attributes -- glm::mat4 consumes 4 consecutive locations
 // (one per column; see core::InstanceData::attributeDescriptions). Start
@@ -34,6 +38,12 @@ layout(location = 5) out flat vec4 outEmissive;
 // -- see that file's comment on why this is appended at 6 rather than
 // renumbering the outputs above.
 layout(location = 6) out vec4 outWorldTangent;
+// Kronos ("Avatar Visual Silhouette Pass" -- real per-vertex color): not
+// flat -- see scene.vert's own comment on outVertexColor. Instanced
+// meshes never set Vertex::color today (no instanced-drawn avatar piece
+// exists), so this is always the real, honest white default here -- a
+// real no-op multiply in scene.frag, not a fabricated feature.
+layout(location = 7) out vec4 outVertexColor;
 
 layout(set = 0, binding = 0) uniform SceneUBO {
     mat4 view;
@@ -68,5 +78,6 @@ void main() {
     outBaseColor = inInstanceBaseColor;
     outMetallicRoughness = inInstanceMetallicRoughness;
     outEmissive = inInstanceEmissive;
+    outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
 }

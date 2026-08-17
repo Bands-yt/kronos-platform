@@ -2135,6 +2135,22 @@ bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skin
                      accessoryError.c_str());
     }
 
+    // Kronos ("Avatar Visual Silhouette Pass" -- "Head and Hair"): real,
+    // same fold-into-skinnedAvatarEntities_ pattern as face/clothing/
+    // accessories above -- real, honest no-op (empty outHairEntities,
+    // still returns true) if a Hair accessory item is already equipped,
+    // see spawnAvatarDefaultHair()'s own comment.
+    std::vector<EntityId> hairEntities;
+    std::string hairError;
+    if (spawnAvatarDefaultHair(ecs_, skeleton, loadout, kDefaultHairColor, riggedMeshLibrary_, renderer_.allocator(),
+                                renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), hairEntities,
+                                hairError)) {
+        skinnedAvatarEntities_.insert(skinnedAvatarEntities_.end(), hairEntities.begin(), hairEntities.end());
+    } else {
+        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarDefaultHair() failed: %s\n",
+                     hairError.c_str());
+    }
+
     avatarController_ = std::make_unique<AvatarController>(skeleton);
 
     // Real, shipped clips (engine/assets/animations/*.anim) -- same

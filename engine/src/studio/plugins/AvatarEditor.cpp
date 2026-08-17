@@ -131,6 +131,17 @@ void AvatarEditor::spawnDemoBody() {
     } else {
         std::fprintf(stderr, "AvatarEditor: failed to spawn accessories: %s\n", accessoryError.c_str());
     }
+    // Kronos ("Avatar Visual Silhouette Pass" -- "Head and Hair"): real,
+    // same fold pattern as face/clothing/accessories above.
+    std::vector<core::EntityId> hairEntities;
+    std::string hairError;
+    if (core::spawnAvatarDefaultHair(scene_.ecs(), scaledSkeleton, *loadout_, core::kDefaultHairColor,
+                                      *riggedMeshLibrary_, allocator_, device_, cmdPool_, queue_, hairEntities,
+                                      hairError)) {
+        skinnedEntities_.insert(skinnedEntities_.end(), hairEntities.begin(), hairEntities.end());
+    } else {
+        std::fprintf(stderr, "AvatarEditor: failed to spawn hair: %s\n", hairError.c_str());
+    }
 
     // Kronos ("Avatar Phase" -- "AvatarEditor: Animation Overrides"): real
     // rebuild against the same scaled skeleton the body was just spawned

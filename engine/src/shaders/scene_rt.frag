@@ -21,6 +21,9 @@ layout(location = 3) in flat vec4 inBaseColor;
 layout(location = 4) in flat vec4 inMetallicRoughness;
 layout(location = 5) in flat vec4 inEmissive;
 layout(location = 6) in vec4 inWorldTangent;
+// Kronos ("Avatar Visual Silhouette Pass"): same real, interpolated
+// per-vertex color as shaders/scene.frag -- see that file's own comment.
+layout(location = 7) in vec4 inVertexColor;
 
 layout(location = 0) out vec4 outColor;
 
@@ -502,11 +505,11 @@ void main() {
     if (useTriplanar) {
         vec3 baseAlbedo = sampleTriplanar(albedoTexture, inWorldPos, triWeights, kTriplanarScale).rgb;
         vec3 detailAlbedo = sampleTriplanar(albedoTexture, inWorldPos, triWeights, kMicroDetailScale).rgb;
-        albedo = inBaseColor.rgb * mix(baseAlbedo, baseAlbedo * detailAlbedo * 1.6, 0.35);
+        albedo = inBaseColor.rgb * mix(baseAlbedo, baseAlbedo * detailAlbedo * 1.6, 0.35) * inVertexColor.rgb;
         metallic = clamp(inMetallicRoughness.x * sampleTriplanar(metallicTexture, inWorldPos, triWeights, kTriplanarScale).r, 0.0, 1.0);
         roughness = clamp(inMetallicRoughness.y * sampleTriplanar(roughnessTexture, inWorldPos, triWeights, kTriplanarScale).r, 0.045, 1.0);
     } else {
-        albedo = inBaseColor.rgb * texture(albedoTexture, inUV).rgb;
+        albedo = inBaseColor.rgb * texture(albedoTexture, inUV).rgb * inVertexColor.rgb;
         metallic = clamp(inMetallicRoughness.x * texture(metallicTexture, inUV).r, 0.0, 1.0);
         roughness = clamp(inMetallicRoughness.y * texture(roughnessTexture, inUV).r, 0.045, 1.0);
     }

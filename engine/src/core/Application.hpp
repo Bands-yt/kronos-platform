@@ -7,6 +7,7 @@
 #include "core/Audio.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/AvatarController.hpp"
+#include "core/AvatarHair.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/Camera.hpp"
 #include "core/CatalogueIndex.hpp"

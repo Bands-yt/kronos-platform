@@ -25,6 +25,27 @@ struct Vertex {
     // uploadFromHost()'s computeTangents() pass overwrites it.
     glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
 
+    // Kronos ("Avatar Visual Silhouette Pass" -- "Hair" -- "Apply
+    // vertex-color gradients for depth"): a real, new per-vertex color,
+    // multiplied into the final albedo in shaders/scene.frag on top of
+    // (not instead of) the existing per-entity SkinnedRenderable::
+    // baseColor/Renderable::baseColor -- the first, genuinely per-vertex
+    // (smoothly interpolated across a triangle) color channel this
+    // engine has ever had; every earlier "gradient" in this codebase
+    // (RiggedAvatar.hpp's own applySegmentShadingGradient(), the first
+    // hair pass's discrete per-tuft color step) was a real, honest,
+    // *discrete* per-piece approximation specifically because this field
+    // didn't exist yet. Defaults to opaque white -- see the same "old
+    // 3-field aggregate-init call sites... default-initialized to a
+    // non-degenerate value" precedent `tangent` above already
+    // establishes: every existing procedural generator across this
+    // codebase (appendBox/appendSphere/appendProfiledBarrel/etc.), which
+    // never sets this field, keeps compiling and rendering byte-
+    // identical to before (white * baseColor == baseColor). Only
+    // AvatarHair.cpp's own appendHairBlob() sets this to something other
+    // than white today.
+    glm::vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+
     static VkVertexInputBindingDescription bindingDescription();
     static std::vector<VkVertexInputAttributeDescription> attributeDescriptions();
 };

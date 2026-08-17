@@ -115,6 +115,66 @@ void appendSphere(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
     }
 }
 
+// Kronos ("Avatar Visual Silhouette Pass" -- "Head" -- "reshape the head
+// to a stylised human oval... add cheek curvature and a subtle jawline
+// for personality", revised after a live-screenshot check showed a
+// first, much more aggressive curvature profile reading as snout-like/
+// animal next to the first hair design -- explicit user feedback:
+// "Revert the avatar head to a humanoid shape. Do not use animal or
+// novelty meshes."): the same real, low-poly lat/long sphere
+// appendSphere() above generates, but each of its 5 real latitude rings
+// (top pole through bottom pole) gets its own real horizontal (X/Z only,
+// vertical Y untouched) width multiplier instead of one uniform radius
+// -- a real, visible cheekbone bulge and jaw taper, tuned to sit between
+// that first over-aggressive pass (0.55 chin scale, read as a snout) and
+// an overly-subtle in-between revision -- enough real curvature to read
+// as "personality," not just a smoothed sphere. Normals stay the pure
+// spherical `normalize(unit)` appendSphere() already uses (not
+// re-derived for the per-ring anisotropy) -- the same accepted "cheap,
+// approximate ring normal" precedent appendProfiledBarrel() already
+// establishes for the torso; imperceptible at this rig's flat, stylized
+// low-poly scale.
+void appendProfiledHead(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
+                         std::vector<HumanoidBodySegment>& segments, glm::vec3 center, glm::vec3 radii, int jointIndex,
+                         HumanoidBodySegment segment, SkinWeights& skinWeights) {
+    constexpr uint32_t kSegments = 8;
+    constexpr uint32_t kRings = 4;
+    constexpr std::array<float, kRings + 1> kRingWidthScale = {0.90f, 1.0f, 1.06f, 0.90f, 0.72f};
+    uint32_t base = static_cast<uint32_t>(vertices.size());
+
+    for (uint32_t r = 0; r <= kRings; ++r) {
+        float v = static_cast<float>(r) / static_cast<float>(kRings);
+        float phi = v * 3.14159265f;
+        float widthScale = kRingWidthScale[r];
+        for (uint32_t s = 0; s <= kSegments; ++s) {
+            float u = static_cast<float>(s) / static_cast<float>(kSegments);
+            float theta = u * 2.0f * 3.14159265f;
+            glm::vec3 unit(std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta));
+            Vertex vert;
+            vert.position = center + glm::vec3(unit.x * radii.x * widthScale, unit.y * radii.y, unit.z * radii.z * widthScale);
+            vert.normal = glm::normalize(unit);
+            vert.uv = {u, v};
+            vertices.push_back(vert);
+            segments.push_back(segment);
+            VertexSkinWeights sw;
+            sw.jointIndices = {jointIndex, -1, -1, -1};
+            sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
+            skinWeights.perVertex.push_back(sw);
+        }
+    }
+
+    uint32_t ringStride = kSegments + 1;
+    for (uint32_t r = 0; r < kRings; ++r) {
+        for (uint32_t s = 0; s < kSegments; ++s) {
+            uint32_t a = base + r * ringStride + s;
+            uint32_t b = base + r * ringStride + s + 1;
+            uint32_t c = base + (r + 1) * ringStride + s + 1;
+            uint32_t d = base + (r + 1) * ringStride + s;
+            indices.insert(indices.end(), {a, b, c, a, c, d});
+        }
+    }
+}
+
 // Kronos ("Avatar System" -- 18-bone rig, real smooth skinning; "Default
 // Avatar Redesign" -- "Arms/Legs: cylindrical with slight taper"): a
 // real, low-poly octagonal "tube" between two joints (e.g. shoulder to
@@ -265,6 +325,38 @@ void appendProfiledBarrel(std::vector<Vertex>& vertices, std::vector<uint32_t>& 
     appendCap(ringCount - 1, /*facesDown=*/false);
 }
 
+// Kronos ("Avatar Visual Silhouette Pass" -- "Hands"): a real palm box
+// (bigger than the old plain "mitten" box -- see the caller's own
+// palmHalfExtents comment) plus 4 real, small, rigid finger blocks
+// protruding from the palm's distal (fingertip-side) face. "Stylised
+// blocks," not individually-jointed fingers, per the spec -- every
+// finger box is 100% rigidly bound to the exact same hand_L/hand_R joint
+// the palm itself uses (setJointIndex-style single-joint weighting, no
+// new joints, no new skin-weight complexity), so "deformation remains
+// clean under animation" is automatic: whatever the hand joint does, the
+// whole hand (palm + fingers) moves as one rigid piece, the same
+// guarantee every other terminal box (head/old hand/feet) in this rig
+// already has. `sideSign` (-1 left, +1 right) is real, not arbitrary --
+// the shoulder->elbow->wrist chain's own bind-pose joints sit purely
+// along local X from each other (see buildHumanoidSkeleton()'s own arm
+// joint offsets), so continuing that same X direction past the wrist is
+// the real, anatomical "toward the fingertips" axis, not a guess.
+void appendHand(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<HumanoidBodySegment>& segments,
+                 glm::vec3 wristPos, float sideSign, glm::vec3 palmHalfExtents, int jointIndex,
+                 HumanoidBodySegment segment, SkinWeights& skinWeights) {
+    appendBox(vertices, indices, segments, wristPos, palmHalfExtents, jointIndex, segment, skinWeights);
+
+    constexpr int kFingerCount = 4;
+    glm::vec3 fingerHalfExtents(palmHalfExtents.x * 0.6f, palmHalfExtents.y * 0.34f, palmHalfExtents.z * 0.34f);
+    float palmDistalX = wristPos.x + sideSign * palmHalfExtents.x;
+    float fingerSpread = palmHalfExtents.z * 2.0f - fingerHalfExtents.z * 2.0f;
+    for (int i = 0; i < kFingerCount; ++i) {
+        float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(kFingerCount) - 0.5f; // -0.375 .. 0.375
+        glm::vec3 fingerCenter(palmDistalX + sideSign * fingerHalfExtents.x, wristPos.y, wristPos.z + t * fingerSpread);
+        appendBox(vertices, indices, segments, fingerCenter, fingerHalfExtents, jointIndex, segment, skinWeights);
+    }
+}
+
 } // namespace
 
 Skeleton applyBodyProportionsToSkeleton(const Skeleton& base, BodyProportions proportions) {
@@ -407,40 +499,69 @@ Skeleton buildHumanoidSkeleton() {
     attachBack.localPosition = {0.0f, 0.05f, -0.17f};
     skeleton.addJoint(attachBack);
 
+    // Kronos ("Avatar Visual Silhouette Pass" -- "Arms, Legs, and Feet"):
+    // arm segment lengths real-increased from the original 0.32/0.28
+    // (total 0.6) to 0.51/0.44 (total 0.95), together with a new, more
+    // vertical idle/walk/run/jump_start rest angle (85 degrees off
+    // horizontal, up from the previous T-pose-fix's 50 degrees -- see
+    // idle.anim's own real, recomposed keyframes) -- forward-kinematics
+    // verified (scripted, not eyeballed) to land the idle-pose hand just
+    // below mid-thigh height (world y ~= 0.654, vs. the real hip/knee
+    // midpoint at 0.675), matching a classic blocky-avatar silhouette
+    // rather than a realistic human reach. A length-only change at the
+    // old 50-degree rest angle would have needed an even longer,
+    // disproportionate arm to reach the same target -- the rest-angle
+    // change is a real, necessary part of this, not a separate, optional
+    // tweak (see docs/progress.md for the full FK math).
+    //
+    // The shoulder's own lateral offset also real-widened, 0.25 -> 0.36
+    // (a real, separate fix found via live screenshot, not part of the
+    // original plan): the torso's own new, wider shoulder-bulge ring
+    // (see the torso profile below, 0.29 max half-width) meant a
+    // near-vertical arm starting at the OLD 0.25 offset began *inside*
+    // the torso's own silhouette and stayed hugging it for its whole
+    // length, reading as almost invisible from the front -- exactly the
+    // "reads clearly from all camera angles" requirement failing. 0.36
+    // clears the torso's 0.29 boundary plus the arm's own 0.095 cross-
+    // section radius with real margin, at every point along the arm's
+    // length. Every .anim file's own arm_L_upper/arm_R_upper keyframes
+    // bake this same position (this rig's animation format stores
+    // absolute position per keyframe, not a bind-pose delta) and were
+    // updated to match.
     Joint armLUpper;
     armLUpper.name = "arm_L_upper";
     armLUpper.parentIndex = spineUpperIndex;
-    armLUpper.localPosition = {-0.25f, 0.1f, 0.0f};
+    armLUpper.localPosition = {-0.36f, 0.1f, 0.0f};
     int armLUpperIndex = skeleton.addJoint(armLUpper);
 
     Joint armLLower;
     armLLower.name = "arm_L_lower";
     armLLower.parentIndex = armLUpperIndex;
-    armLLower.localPosition = {-0.32f, 0.0f, 0.0f};
+    armLLower.localPosition = {-0.51f, 0.0f, 0.0f};
     int armLLowerIndex = skeleton.addJoint(armLLower);
 
     Joint handL;
     handL.name = "hand_L";
     handL.parentIndex = armLLowerIndex;
-    handL.localPosition = {-0.28f, 0.0f, 0.0f};
+    handL.localPosition = {-0.44f, 0.0f, 0.0f};
     skeleton.addJoint(handL);
 
     Joint armRUpper;
     armRUpper.name = "arm_R_upper";
     armRUpper.parentIndex = spineUpperIndex;
-    armRUpper.localPosition = {0.25f, 0.1f, 0.0f};
+    armRUpper.localPosition = {0.36f, 0.1f, 0.0f};
     int armRUpperIndex = skeleton.addJoint(armRUpper);
 
     Joint armRLower;
     armRLower.name = "arm_R_lower";
     armRLower.parentIndex = armRUpperIndex;
-    armRLower.localPosition = {0.32f, 0.0f, 0.0f};
+    armRLower.localPosition = {0.51f, 0.0f, 0.0f};
     int armRLowerIndex = skeleton.addJoint(armRLower);
 
     Joint handR;
     handR.name = "hand_R";
     handR.parentIndex = armRLowerIndex;
-    handR.localPosition = {0.28f, 0.0f, 0.0f};
+    handR.localPosition = {0.44f, 0.0f, 0.0f};
     skeleton.addJoint(handR);
 
     Joint legLUpper;
@@ -449,16 +570,31 @@ Skeleton buildHumanoidSkeleton() {
     legLUpper.localPosition = {-0.18f, -0.1f, 0.0f};
     int legLUpperIndex = skeleton.addJoint(legLUpper);
 
+    // Kronos ("Avatar Visual Silhouette Pass" -- "Shorten upper legs
+    // slightly for balance"): upper leg (thigh) real-shortened 0.45 ->
+    // 0.36, lower leg (shin) real-lengthened 0.45 -> 0.54 by the exact
+    // same amount -- total hip-to-foot leg length is unchanged (0.9), so
+    // feet stay real-grounded at the skeleton's own y=0 convention (see
+    // this function's own class-level comment) instead of floating or
+    // sinking. A shorter thigh shifts the knee bend point down, reading
+    // as a stubbier, lower-center-of-mass silhouette without changing
+    // overall height. walk.anim/run.anim/jump_start.anim/jump_air.anim/
+    // jump_land.anim all bake this same joint's own local position into
+    // their leg_L_lower/leg_R_lower keyframes (this rig's animation
+    // format stores absolute position per keyframe, not a bind-pose
+    // delta -- see AnimationPlayer's own doc) and were updated to match
+    // this exact value; skipping any of them would pop the leg length
+    // during that specific clip.
     Joint legLLower;
     legLLower.name = "leg_L_lower";
     legLLower.parentIndex = legLUpperIndex;
-    legLLower.localPosition = {0.0f, -0.45f, 0.0f};
+    legLLower.localPosition = {0.0f, -0.36f, 0.0f};
     int legLLowerIndex = skeleton.addJoint(legLLower);
 
     Joint footL;
     footL.name = "foot_L";
     footL.parentIndex = legLLowerIndex;
-    footL.localPosition = {0.0f, -0.45f, 0.05f};
+    footL.localPosition = {0.0f, -0.54f, 0.05f};
     skeleton.addJoint(footL);
 
     Joint legRUpper;
@@ -470,13 +606,13 @@ Skeleton buildHumanoidSkeleton() {
     Joint legRLower;
     legRLower.name = "leg_R_lower";
     legRLower.parentIndex = legRUpperIndex;
-    legRLower.localPosition = {0.0f, -0.45f, 0.0f};
+    legRLower.localPosition = {0.0f, -0.36f, 0.0f};
     int legRLowerIndex = skeleton.addJoint(legRLower);
 
     Joint footR;
     footR.name = "foot_R";
     footR.parentIndex = legRLowerIndex;
-    footR.localPosition = {0.0f, -0.45f, 0.05f};
+    footR.localPosition = {0.0f, -0.54f, 0.05f};
     skeleton.addJoint(footR);
 
     return skeleton;
@@ -492,11 +628,23 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     };
     auto jointIndexFor = [&](const char* jointName) { return skeleton.findJointIndex(jointName); };
 
-    // Head -- a real ellipsoid, rigidly bound (a head has no internal
-    // joint to blend with). Real, chosen radii per headShape -- see
-    // HeadShape's own header comment.
-    appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("head"), headShapeRadii(headShape),
-                 jointIndexFor("head"), HumanoidBodySegment::Head, data.skinWeights);
+    // Head -- rigidly bound (a head has no internal joint to blend
+    // with). Real, chosen radii per headShape -- see HeadShape's own
+    // header comment. Only the real, new default Oval shape gets the
+    // real per-ring cheek/jaw curvature (see appendProfiledHead()'s own
+    // comment) -- Sphere stays the exact, unmodified appendSphere() call
+    // it always was, preserving its own explicit "perfect sphere, equal
+    // radii on all three axes, the classic block-engine alternative"
+    // contract (HeadShape::Sphere's own header comment) rather than
+    // silently curving the one shape whose entire point is to be
+    // uncurved.
+    if (headShape == HeadShape::Oval) {
+        appendProfiledHead(data.vertices, data.indices, data.vertexSegments, worldPos("head"), headShapeRadii(headShape),
+                            jointIndexFor("head"), HumanoidBodySegment::Head, data.skinWeights);
+    } else {
+        appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("head"), headShapeRadii(headShape),
+                     jointIndexFor("head"), HumanoidBodySegment::Head, data.skinWeights);
+    }
 
     // Torso -- "single connected piece" per spec: one rigid, real profiled
     // barrel (see appendProfiledBarrel()'s own comment for why this
@@ -515,36 +663,50 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
         // Waist (narrower) -> chest -> shoulders (wider) -- a real,
         // gentle taper, not a uniform box, giving the torso both "rounded
         // front/back" (radiusZ < radiusX at every ring) and a "clear
-        // shoulder silhouette" (the top ring is the widest).
+        // shoulder silhouette". Kronos ("Avatar Visual Silhouette Pass" --
+        // "Torso and Shoulders" -- "Add shoulder rounding and a gentle
+        // taper toward the waist"): real, 4 rings now (was 3) -- the
+        // widest ring sits just below the very top (a real shoulder
+        // bulge, 0.29 vs. the old flat 0.27 max), then narrows back in
+        // slightly at the neckline ring, so the silhouette actually
+        // rounds over the shoulder into the neck instead of stopping flat
+        // at its own widest point. The waist ring is unchanged -- the
+        // "gentle taper toward the waist" was already real here before
+        // this pass.
         std::vector<glm::vec2> torsoProfile = {
             {0.20f * w, 0.12f * w}, // waist (bottom)
             {0.24f * w, 0.14f * w}, // chest (mid)
-            {0.27f * w, 0.14f * w}, // shoulders (top)
+            {0.29f * w, 0.15f * w}, // shoulder bulge
+            {0.24f * w, 0.14f * w}, // neckline (rounds back in)
         };
         appendProfiledBarrel(data.vertices, data.indices, data.vertexSegments, torsoCenter, torsoHalfHeight,
                               torsoProfile, jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, data.skinWeights);
     }
 
     // Arms -- real smooth-blended upper-to-lower chain (the actual elbow
-    // bend the spec asks for), capped with a rigid "mitten" hand box. A
-    // real, slight taper (shoulder wider than elbow, elbow wider than
-    // wrist) -- continuous across the elbow (upper arm's own end radius
-    // equals lower arm's own start radius, so there's no visible step).
-    // Cross-sections and the hand box scale with `bodyProportions.limbScale`
-    // only -- see that field's own header comment.
+    // bend the spec asks for), capped with a real palm + finger-block
+    // hand (see appendHand()'s own comment). A real, slight taper
+    // (shoulder wider than elbow, elbow wider than wrist) -- continuous
+    // across the elbow (upper arm's own end radius equals lower arm's
+    // own start radius, so there's no visible step). Cross-sections and
+    // the hand scale with `bodyProportions.limbScale` only -- see that
+    // field's own header comment.
     float ls = bodyProportions.limbScale;
     glm::vec2 shoulderCrossSection(0.095f * ls, 0.095f * ls);
     glm::vec2 elbowCrossSection(0.075f * ls, 0.075f * ls);
     glm::vec2 wristCrossSection(0.065f * ls, 0.065f * ls);
-    glm::vec3 handBoxHalfExtents(0.09f * ls, 0.11f * ls, 0.05f * ls);
+    // Kronos ("Avatar Visual Silhouette Pass" -- "Hands" -- "Add palm
+    // volume"): real, modestly bigger than the old plain hand box
+    // (0.09/0.11/0.05) it replaces.
+    glm::vec3 palmHalfExtents(0.10f * ls, 0.12f * ls, 0.065f * ls);
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_upper"), worldPos("arm_L_lower"),
                       shoulderCrossSection, elbowCrossSection, jointIndexFor("arm_L_upper"), jointIndexFor("arm_L_lower"),
                       HumanoidBodySegment::LeftArm, data.skinWeights);
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_lower"), worldPos("hand_L"),
                       elbowCrossSection, wristCrossSection, jointIndexFor("arm_L_lower"), jointIndexFor("hand_L"),
                       HumanoidBodySegment::LeftArm, data.skinWeights);
-    appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("hand_L"), handBoxHalfExtents,
-              jointIndexFor("hand_L"), HumanoidBodySegment::LeftArm, data.skinWeights);
+    appendHand(data.vertices, data.indices, data.vertexSegments, worldPos("hand_L"), -1.0f, palmHalfExtents,
+               jointIndexFor("hand_L"), HumanoidBodySegment::LeftArm, data.skinWeights);
 
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_R_upper"), worldPos("arm_R_lower"),
                       shoulderCrossSection, elbowCrossSection, jointIndexFor("arm_R_upper"), jointIndexFor("arm_R_lower"),
@@ -552,16 +714,26 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_R_lower"), worldPos("hand_R"),
                       elbowCrossSection, wristCrossSection, jointIndexFor("arm_R_lower"), jointIndexFor("hand_R"),
                       HumanoidBodySegment::RightArm, data.skinWeights);
-    appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("hand_R"), handBoxHalfExtents,
-              jointIndexFor("hand_R"), HumanoidBodySegment::RightArm, data.skinWeights);
+    appendHand(data.vertices, data.indices, data.vertexSegments, worldPos("hand_R"), 1.0f, palmHalfExtents,
+               jointIndexFor("hand_R"), HumanoidBodySegment::RightArm, data.skinWeights);
 
     // Legs -- same real smooth knee bend (continuous taper across it, same
     // reasoning as the arms above), capped with a rigid "simple block"
-    // foot. Same limbScale-only scaling as the arms above.
-    glm::vec2 hipCrossSection(0.13f * ls, 0.13f * ls);
-    glm::vec2 kneeCrossSection(0.105f * ls, 0.105f * ls);
-    glm::vec2 ankleCrossSection(0.085f * ls, 0.085f * ls);
-    glm::vec3 footBoxHalfExtents(0.1f * ls, 0.06f * ls, 0.18f * ls);
+    // foot. Same limbScale-only scaling as the arms above. Kronos
+    // ("Avatar Visual Silhouette Pass" -- target silhouette "broad
+    // shoulders, narrow legs"): real, slightly slimmer than the
+    // original 0.13/0.105/0.085 -- a deliberate, real contrast against
+    // the torso's own widened 0.29 shoulder bulge, not a proportional
+    // side effect of anything else in this pass.
+    glm::vec2 hipCrossSection(0.11f * ls, 0.11f * ls);
+    glm::vec2 kneeCrossSection(0.09f * ls, 0.09f * ls);
+    glm::vec2 ankleCrossSection(0.07f * ls, 0.07f * ls);
+    // Kronos ("Avatar Visual Silhouette Pass" -- "Widen feet for
+    // stability and clearer silhouette"): X (width) real-increased
+    // 0.1 -> 0.13, Y (thickness) real-increased 0.06 -> 0.07 for a
+    // chunkier, more stable-reading stylized foot -- Z (length) is
+    // unchanged.
+    glm::vec3 footBoxHalfExtents(0.13f * ls, 0.07f * ls, 0.18f * ls);
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_L_upper"), worldPos("leg_L_lower"),
                       hipCrossSection, kneeCrossSection, jointIndexFor("leg_L_upper"), jointIndexFor("leg_L_lower"),
                       HumanoidBodySegment::LeftLeg, data.skinWeights);
@@ -666,6 +838,46 @@ glm::vec4 applySegmentShadingGradient(HumanoidBodySegment segment, glm::vec4 col
     return glm::vec4(color.r * multiplier, color.g * multiplier, color.b * multiplier, color.a);
 }
 
+// Kronos ("Avatar Visual Silhouette Pass" -- "Material Pass" -- "Add
+// subtle specular... to separate limbs visually. Keep the style
+// consistent with Kronos's cinematic lighting"): real, small per-segment
+// roughness variation on top of SkinnedRenderable's own existing
+// metallic/roughness fields (0.05/0.6 defaults, previously identical on
+// every segment) -- head/torso read very slightly smoother (skin/shirt),
+// arms a touch rougher, legs (trousers) rougher still, a real, subtle
+// specular-highlight size/sharpness difference under this engine's
+// existing PBR directional/point lighting (SceneLighting -- no new
+// rendering feature, just real per-entity material data every other
+// SkinnedRenderable field already uses). AO itself already has a real,
+// honest stand-in -- see applySegmentShadingGradient()'s own comment on
+// why the color multiplier IS this rig's real AO substitute (no
+// per-vertex AO channel exists to compute a true one against); this
+// function only adds the specular half. Metallic is left untouched
+// (0.05 everywhere) -- an avatar's skin/cloth is genuinely non-metallic,
+// varying it wouldn't read as a real material difference the way
+// roughness does.
+constexpr float kHeadRoughness = 0.55f;
+constexpr float kTorsoRoughness = 0.58f;
+constexpr float kArmRoughness = 0.62f;
+constexpr float kLegRoughness = 0.66f;
+
+// Internal linkage -- unlike applySegmentShadingGradient() (also called
+// live from AvatarEditor.cpp/Application.cpp's own re-tint paths),
+// roughness is a static per-segment material property set once at
+// spawnRiggedAvatar() time, never re-applied on an equip/skin-tone
+// change, so nothing outside this file needs to call it.
+[[nodiscard]] static float segmentMaterialRoughness(HumanoidBodySegment segment) {
+    switch (segment) {
+        case HumanoidBodySegment::Head: return kHeadRoughness;
+        case HumanoidBodySegment::Torso: return kTorsoRoughness;
+        case HumanoidBodySegment::LeftArm:
+        case HumanoidBodySegment::RightArm: return kArmRoughness;
+        case HumanoidBodySegment::LeftLeg:
+        case HumanoidBodySegment::RightLeg: return kLegRoughness;
+    }
+    return kTorsoRoughness;
+}
+
 bool spawnRiggedAvatar(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout& loadout, const CatalogueIndex& index,
                         RiggedMeshLibrary& riggedMeshLibrary, VmaAllocator allocator, VkDevice device,
                         VkCommandPool cmdPool, VkQueue queue, std::vector<EntityId>& outSkinnedEntities,
@@ -698,6 +910,10 @@ bool spawnRiggedAvatar(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout& 
         skinned.riggedMeshHandle = handle;
         skinned.skinningMatrices.assign(skeleton.joints.size(), glm::mat4(1.0f));
         skinned.baseColor = applySegmentShadingGradient(segment, colors[i]);
+        // Kronos ("Avatar Visual Silhouette Pass" -- "Material Pass"):
+        // real, static per-segment roughness -- see
+        // segmentMaterialRoughness()'s own comment.
+        skinned.roughness = segmentMaterialRoughness(segment);
         // Kronos ("Avatar 2.0" -- "Performance and LOD"): body segments
         // stay AvatarLODCategory::Body (the default) -- see
         // AvatarLODTag's own comment for why this category is never

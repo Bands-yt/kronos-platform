@@ -11,6 +11,7 @@
 #include "core/AnimationPlayer.hpp"
 #include "core/AvatarAccessories.hpp"
 #include "core/AvatarFace.hpp"
+#include "core/AvatarHair.hpp"
 #include "core/AvatarLOD.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueIndex.hpp"

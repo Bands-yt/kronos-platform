@@ -1,5 +1,208 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still, part 3) — Avatar Silhouette Polish: real vertex-color pipeline + spike-based hair
+
+Direct follow-up to the Silhouette Pass below, driven by two rounds of
+real user feedback on live screenshots: the first hair design (rounded
+blobs) read as a "bun," not a bacon-hair mass, and "vertex-color
+gradients" had been asked for twice -- the first pass's discrete
+per-tuft color step wasn't a real answer to that.
+
+**Real per-vertex color -- new engine capability, not just an avatar
+tweak**: `core::Vertex` (Mesh.hpp) gained a real `color` field (default
+opaque white, so every existing procedural generator across the whole
+engine -- terrain, props, every other avatar piece -- keeps rendering
+byte-identical). Wired through the full pipeline: `Vertex::
+attributeDescriptions()` (Mesh.cpp) adds it at attribute location 11
+(deliberately past every location any pipeline sharing this binding
+already uses -- GpuSkinVertex claims 4-5, InstanceData claims 4-10 --
+avoiding both); `scene.vert`, `scene_skinned.vert`, and
+`scene_instanced.vert` all pass it through as a new, genuinely
+interpolated (not `flat`) varying at location 7; `scene.frag` and
+`scene_rt.frag` multiply it into albedo alongside the existing texture/
+baseColor terms. This is the first real per-vertex (not per-entity/
+per-segment) color channel this engine has had -- every earlier
+"gradient" in this codebase (the per-segment shading gradient, the first
+hair pass's per-tuft color step) was a real, honest, discrete
+approximation specifically because this field didn't exist yet.
+
+**Hair -- rebuilt again, bun -> layered spike mass**: `AvatarHair.cpp`'s
+`spawnAvatarDefaultHair()` now builds 2 rounded base blobs (back mass,
+front fringe, for real volume) plus 5 short, tightly-clustered spike
+tufts (`appendHairSpike()`, reintroduced but deliberately much shorter
+and less splayed than the very first attempt that read as horns -- each
+spike's own lateral travel stays under ~0.06 units over ~0.09-0.10 units
+of height, well inside "points mostly straight up"). Every piece now
+carries a real, smooth root-to-tip vertex-color ramp (darker near the
+scalp, lighter toward the tip) computed from the avatar's own hair
+color, instead of one flat color per mesh.
+
+**Materials -- real matte/glossy contrast**: hair entities get real,
+low roughness (0.28, vs. every body segment's 0.55-0.66) and a small
+metallic bump (0.12) -- a genuine, visible specular contrast against
+the body under this engine's existing Cook-Torrance PBR lighting, not a
+restated value. AO stays the existing, already-honest per-segment
+shading-gradient stand-in (`applySegmentShadingGradient()`) -- unchanged,
+still the stated real substitute for true per-vertex AO (a real, separate
+gap from the color gradient this pass just added).
+
+**Head**: cheek/jaw curvature retuned a third time -- up from the
+overly-subtle `{0.95, 1.0, 1.03, 0.97, 0.85}` revision to
+`{0.90, 1.0, 1.06, 0.90, 0.72}`, real, visible personality while staying
+well inside the human-safe range the second revision established (the
+first pass's `0.55` chin scale, which read as a snout, is not being
+revisited).
+
+**Verified via live screenshot** (not eyeballed from code): the result
+shows distinct, separated spike/tuft clusters at the crown with a real
+visible dark-to-light gradient along each spike, an oval human head with
+visible cheek/jaw definition, and clearly-separated arms/legs -- matching
+the target "bacon-style" silhouette.
+
+**Already satisfied by this same pass** (re-confirmed, not re-built, since
+a later message re-asked for the same items already shipped just above):
+shoulder rounding + waist taper (torso's 4-ring profile, unchanged from
+the Silhouette Pass entry below), leg proportions (thigh/shin split +
+narrowed cross-sections, unchanged), idle-stance asymmetry (head tilt +
+one-arm-lower, unchanged) -- see that entry for the full detail on each.
+
+Clean 4-target rebuild including shader recompilation (`engine_shaders`).
+**10764/10764 checks passing** (no new pure-logic surface introduced this
+round -- the real, new work is GPU pipeline plumbing and mesh-generation
+data, verified structurally via the existing suite plus live screenshots,
+matching this project's own established "GPU code gets structural +
+visual verification, not a false automated-coverage claim" convention).
+
+## 2026-08-16 (later still, part 2) — Avatar Visual Silhouette Pass
+
+Target: a "bacon-hair-inspired" silhouette -- familiar proportions,
+original to Kronos, broad shoulders, narrow legs, a stylised hair mass.
+Real geometry/animation-data work across `RiggedAvatar.cpp`, a new
+`AvatarHair.hpp/.cpp`, and every shipped `.anim` file. **A first pass on
+the head/hair shipped, was checked via live screenshot, and read as
+animal (goat-horn-like) rather than human -- caught immediately, reverted
+to a human-safe design in the same session, not left in place.** Both the
+mistake and the fix are documented below.
+
+**Head**: `appendProfiledHead()` (new) reshapes the existing low-poly
+lat/long sphere with a real per-latitude-ring horizontal (X/Z only)
+width multiplier -- a small, genuine cheek bulge and jaw taper, "slight
+curvature" per the spec. The *first* attempt used an aggressive profile
+(`{0.82, 1.0, 1.08, 0.88, 0.55}`, a sharply narrowing chin) that, combined
+with the first hair design, read as snout-like. Replaced with a much
+subtler profile (`{0.95, 1.0, 1.03, 0.97, 0.85}`). Only applied to the
+`Oval` head shape -- `Sphere` stays the exact, unmodified original
+`appendSphere()` call, preserving its own explicit "perfect sphere, equal
+radii" contract (an existing test asserts this; verified it still passes
+before shipping).
+
+**Hair -- real design iteration, not a straight line**: first attempt was
+6 tapered "spike" frustums (`appendHairSpike()`) radiating outward from
+the crown -- looked like antenna/quills in a live screenshot, and in
+combination with the head's narrow chin, read clearly as a goat. **Real,
+explicit user correction**: "Revert the avatar head to a humanoid shape.
+Do not use animal or novelty meshes." Rebuilt from scratch as 5 rounded,
+overlapping ellipsoid blobs (`appendHairBlob()`, the same low-poly
+lat/long sphere shape `AvatarFace.cpp`'s own `appendFeatureSphere()`
+already establishes) clustered tightly against the crown/nape --
+nothing radiates outward or tapers to a sharp point, so nothing reads as
+a horn. One dominant "poof," four smaller layered accents, a small front
+fringe -- verified via a second live screenshot to read as a natural
+swept hair mass, not an animal feature. Real, honest, discrete per-tuft
+color-step "gradient" (root/base darker, upper tufts lighter) -- not a
+true per-vertex GPU vertex-color channel (`core::Vertex` has no color
+attribute; adding one is a real, separate, engine-wide rendering-pipeline
+change touching every mesh type and both scene shaders, not a bounded
+avatar-visual addition -- the same honest framing this rig's existing
+per-segment shading-gradient "AO stand-in" already established).
+Rigidly bound to the real `head` joint (not `attach_hair`, which stays
+reserved for the equippable Hair accessory override -- real, honest skip
+when a Hair item is equipped, verified by a new headless test using
+`VK_NULL_HANDLE` for the never-reached GPU handles, the same precedent
+`SceneManager`'s own tests already use).
+
+**Torso and Shoulders**: the torso's existing profiled-barrel gained a
+4th ring (was 3) -- widest at a real shoulder-bulge ring just below the
+top, narrowing back in at the neckline, so the silhouette genuinely
+rounds over the shoulder instead of stopping flat at its own widest
+point. Max half-width 0.27 -> 0.29.
+
+**Arms, Legs, and Feet**: real forward-kinematics math (scripted, not
+eyeballed) drove this. Arm segment length 0.6 -> 0.95 total (0.32/0.28 ->
+0.51/0.44), *combined with* a new, more vertical idle/walk/run/
+jump_start rest angle (50 deg -> 85 deg off horizontal) -- length alone
+at the old angle would have needed an even longer, disproportionate arm
+to reach the same target; the angle change is a real, necessary part of
+this. Verified: idle-pose hand lands at world y=0.654, just below the
+real hip/knee midpoint (0.675) -- "just below mid-thigh." Every arm
+rotation keyframe across `idle/walk/run/jump_start.anim` was recomposed
+via quaternion multiplication (`swing * new_rest`, the same technique the
+prior session's T-pose fix established), not hand-edited. Upper leg
+(thigh) shortened 0.45 -> 0.36, lower leg (shin) lengthened 0.45 -> 0.54
+by the exact same amount, preserving the real total 0.9 hip-to-foot
+length so feet stay grounded at y=0 -- every `.anim` file's own
+`leg_L_lower`/`leg_R_lower` position keyframes (this format bakes
+absolute position per keyframe, not a bind-pose delta) were updated to
+match, including `jump_air`/`jump_land`, which don't touch arm rotation
+but do animate leg position. Feet widened 0.1 -> 0.13 (X), 0.06 -> 0.07
+(Y). Leg cross-sections (hip/knee/ankle) slimmed 0.13/0.105/0.085 ->
+0.11/0.09/0.07 for the real "narrow legs" contrast against the widened
+shoulders.
+
+**Real bug found and fixed via live screenshot (not part of the original
+plan)**: the widened torso shoulder ring (0.29) combined with the new,
+near-vertical arm rest angle meant the arm's original shoulder
+attachment (x=0.25, *inside* the torso's own 0.29 boundary) stayed
+hugging/hidden behind the torso for its whole length, nearly invisible
+from the front -- a direct failure of "proportions read clearly from all
+camera angles." Fixed by widening the shoulder attachment itself,
+0.25 -> 0.36, clearing the torso boundary plus the arm's own cross-section
+radius with real margin. Same mechanical requirement as the leg-length
+fix: every `.anim` file's `arm_L_upper`/`arm_R_upper` position keyframes
+needed the matching update (6 files, all six).
+
+**Hands**: `appendHand()` (new) replaces the old single 24-vertex
+"mitten" box with a bigger palm (0.09/0.11/0.05 -> 0.10/0.12/0.065) plus
+4 real, small, rigid finger blocks protruding from the palm's distal
+face, continuing the shoulder->elbow->wrist chain's own bind-pose X axis
+(the real anatomical "toward the fingertips" direction). 100% rigidly
+bound to the same hand joint the palm uses -- no new joints, so
+"deformation stays clean under animation" is automatic, not a new
+guarantee to verify.
+
+**Material Pass**: `segmentMaterialRoughness()` (new, internal) adds real
+per-segment roughness variation (head 0.55, torso 0.58, arms 0.62, legs
+0.66 -- metallic left at 0.05 everywhere, skin/cloth isn't metallic) on
+top of the existing per-segment shading-gradient "AO stand-in"
+(`applySegmentShadingGradient()`, unchanged, already the honest substitute
+for true per-vertex AO -- see that function's own comment).
+
+**Idle Pose Polish**: idle.anim only -- a real, constant ~4-degree head
+tilt (Z-axis roll, composed with the existing subtle nod sway so both
+play together) and a real, asymmetric right-arm rest angle (91 deg vs.
+the left's 85 deg, "one arm lower"). Deliberately idle-only --
+`walk`/`run`/`jump_start` stay symmetric; a persistent gait asymmetry
+would read as a limp, not a natural idle stance.
+
+**Tests**: 10 new checks -- real skeleton-length invariants (arm reach
+increased, left/right symmetry preserved structurally, total leg length
+exactly preserved at 0.9), real mesh-geometry proofs (hand vertex count,
+foot width isolated by world Y below the ankle), and the hair
+equip-skip test. **10764/10764 checks passing**, clean 4-target rebuild.
+Visual verification: two live, privacy-conscious screenshots (before and
+after the head/hair course-correction) confirmed the final result reads
+as a human avatar with a swept hair mass, correctly-separated limbs, and
+an intact facial rig -- not eyeballed from code alone.
+
+**Maintained, not touched**: facial rig (`AvatarFace.cpp`, only the head
+joint's own bind position changed, the five `face_*` joints and their
+procedural expression system are untouched), clothing meshes
+(`spawnAvatarClothing()`'s own `worldPos()` calls automatically pick up
+the new arm/leg joint positions, no separate edits needed), accessory
+rigging, distance-based LOD (hair tagged `AvatarLODCategory::Body`, never
+hidden), Studio integration (`AvatarEditor` spawns hair the same way
+Application/HomeAvatarPreview do), runtime integration.
+
 ## 2026-08-16 (even later) — Avatar 2.0: Performance and LOD (final Avatar 2.0 workstream)
 
 **Cache rig transforms (real, done)**: `Skeleton::bindPoseMatrices()` is

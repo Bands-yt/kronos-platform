@@ -4,6 +4,10 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec4 inTangent; // xyz: tangent, w: handedness -- see Mesh.hpp's Vertex::tangent
+// Kronos ("Avatar Visual Silhouette Pass" -- real per-vertex color):
+// location 11 -- see Vertex::attributeDescriptions()'s own comment
+// (Mesh.cpp) for why this specific location.
+layout(location = 11) in vec4 inColor;
 
 layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) out vec3 outWorldNormal;
@@ -22,6 +26,12 @@ layout(location = 5) out flat vec4 outEmissive;
 // renumbering the outputs above (keeps this diff to an addition, not a
 // renumbering, everywhere that already reads locations 0-5).
 layout(location = 6) out vec4 outWorldTangent;
+// Kronos ("Avatar Visual Silhouette Pass" -- real per-vertex color):
+// deliberately NOT flat -- this is the one real, smoothly-interpolated
+// varying in this whole shader, the entire point being a genuine
+// per-fragment gradient across a triangle, not one flat value per
+// primitive the way outBaseColor/outMetallicRoughness/outEmissive are.
+layout(location = 7) out vec4 outVertexColor;
 
 // Per-frame data -- one instance per frame-in-flight, bound once per
 // drawSceneInto() call (see Renderer.cpp). Not rebound per-object; only
@@ -70,5 +80,6 @@ void main() {
     outBaseColor = object.baseColor;
     outMetallicRoughness = object.metallicRoughness;
     outEmissive = object.emissive;
+    outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
 }

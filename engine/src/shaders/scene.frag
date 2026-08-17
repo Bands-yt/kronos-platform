@@ -17,6 +17,15 @@ layout(location = 5) in flat vec4 inEmissive;
 // shader -- see scene.vert's comment on why this is at location 6, not
 // renumbered in with 3/4/5 above.
 layout(location = 6) in vec4 inWorldTangent;
+// Kronos ("Avatar Visual Silhouette Pass" -- "Hair" -- "Apply
+// vertex-color gradients for depth; avoid flat brown shading"): real,
+// genuinely interpolated (not flat) per-vertex color, multiplied into
+// albedo below -- the first real per-vertex (not per-entity/per-segment)
+// color channel this shader has ever consumed. Defaults to opaque white
+// for every mesh that never sets Vertex::color (Mesh.hpp), so this is a
+// real no-op multiply everywhere except the new hair mesh
+// (AvatarHair.cpp) that actually varies it.
+layout(location = 7) in vec4 inVertexColor;
 
 layout(location = 0) out vec4 outColor;
 
@@ -449,11 +458,11 @@ void main() {
     if (useTriplanar) {
         vec3 baseAlbedo = sampleTriplanar(albedoTexture, inWorldPos, triWeights, kTriplanarScale).rgb;
         vec3 detailAlbedo = sampleTriplanar(albedoTexture, inWorldPos, triWeights, kMicroDetailScale).rgb;
-        albedo = inBaseColor.rgb * mix(baseAlbedo, baseAlbedo * detailAlbedo * 1.6, 0.35);
+        albedo = inBaseColor.rgb * mix(baseAlbedo, baseAlbedo * detailAlbedo * 1.6, 0.35) * inVertexColor.rgb;
         metallic = clamp(inMetallicRoughness.x * sampleTriplanar(metallicTexture, inWorldPos, triWeights, kTriplanarScale).r, 0.0, 1.0);
         roughness = clamp(inMetallicRoughness.y * sampleTriplanar(roughnessTexture, inWorldPos, triWeights, kTriplanarScale).r, 0.045, 1.0);
     } else {
-        albedo = inBaseColor.rgb * texture(albedoTexture, inUV).rgb;
+        albedo = inBaseColor.rgb * texture(albedoTexture, inUV).rgb * inVertexColor.rgb;
         metallic = clamp(inMetallicRoughness.x * texture(metallicTexture, inUV).r, 0.0, 1.0);
         roughness = clamp(inMetallicRoughness.y * texture(roughnessTexture, inUV).r, 0.045, 1.0); // avoid a singular GGX at roughness 0
     }

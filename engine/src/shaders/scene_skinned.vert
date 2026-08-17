@@ -18,6 +18,10 @@ layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec4 inTangent;
 layout(location = 4) in ivec4 inJointIndices; // -1 = unused influence slot
 layout(location = 5) in vec4 inJointWeights;  // 0.0 for an unused slot -- see main()'s clamp comment
+// Kronos ("Avatar Visual Silhouette Pass" -- real per-vertex color):
+// location 11, same real reasoning as scene.vert's own inColor -- past
+// this pipeline's own binding-1 skin data (locations 4-5).
+layout(location = 11) in vec4 inColor;
 
 layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) out vec3 outWorldNormal;
@@ -26,6 +30,9 @@ layout(location = 3) out flat vec4 outBaseColor;
 layout(location = 4) out flat vec4 outMetallicRoughness;
 layout(location = 5) out flat vec4 outEmissive;
 layout(location = 6) out vec4 outWorldTangent;
+// Kronos ("Avatar Visual Silhouette Pass" -- real per-vertex color): not
+// flat -- see scene.vert's own comment on outVertexColor.
+layout(location = 7) out vec4 outVertexColor;
 
 layout(set = 0, binding = 0) uniform SceneUBO {
     mat4 view;
@@ -87,5 +94,6 @@ void main() {
     outBaseColor = object.baseColor;
     outMetallicRoughness = object.metallicRoughness;
     outEmissive = object.emissive;
+    outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
 }
