@@ -9205,8 +9205,23 @@ void testAvatarIndoorPreviewLightingMatchesStatedBaseline() {
     check(nearlyEqual(lighting.ambientGround.x, 0.04f) && nearlyEqual(lighting.ambientGround.y, 0.035f) &&
               nearlyEqual(lighting.ambientGround.z, 0.03f),
           "avatarIndoorPreviewLighting()'s real ambientGround matches the stated baseline (0.04,0.035,0.03)");
-    check(nearlyEqual(lighting.fogDensity, 0.006f),
-          "avatarIndoorPreviewLighting()'s real fogDensity is real-clamped to 0.006 for neutral indoor scenes");
+    // Kronos (real bug found via correctly-synchronized GPU readbacks of
+    // HomeAvatarPreview's actual offscreen texture, matched by hand
+    // against shaders/volumetric_fog.frag's own math): the previous
+    // 0.006 value here was chosen to be "numerically consistent with
+    // real gameplay's own fog system" on the stated assumption that "an
+    // indoor avatar preview has no distant geometry for fog to
+    // meaningfully act on" -- true for gameplay scenes, false for this
+    // preset's own background pixels, which volumetric_fog.frag's real
+    // isBackground branch raymarches out to the full, real
+    // volumetricFogMaxDistance_ (120 units) regardless, integrating real
+    // in-scattered radiance dominated by this preset's own bright warm
+    // key light and washing the entire "Your Avatar" preview panel out
+    // to near-white. This preset really has no distant geometry for fog
+    // to act on at all (the original stated intent), so fogDensity is
+    // really, honestly 0.0f.
+    check(nearlyEqual(lighting.fogDensity, 0.0f),
+          "avatarIndoorPreviewLighting() has no real distant geometry for fog to act on, so fogDensity is really 0");
     check(lighting.pointLights.size() == 1, "the real cool rim point light is present exactly once");
 
     // Kronos ("Avatar Vulkan Pipeline & Avatar Preview Rendering"): real

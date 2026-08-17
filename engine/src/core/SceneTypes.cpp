@@ -79,15 +79,37 @@ const SceneLighting& avatarIndoorPreviewLighting() {
         // through an indoor scene.
         lighting.skyZenithColor = glm::vec3(0.05f, 0.055f, 0.08f);
         lighting.skyHorizonColor = glm::vec3(0.09f, 0.095f, 0.12f);
-        // Kronos ("Avatar Scene Lighting Calibration Pass" -- "clamp
-        // fogDensity to 0.006 for neutral indoor scenes"): a real,
-        // small, fixed value -- an indoor avatar preview has no distant
-        // geometry for fog to meaningfully act on, but a real, tiny,
-        // nonzero density here keeps this preset numerically consistent
-        // with real gameplay's own fog system (0.004-0.012 range, see
-        // core::computeLightingForTimeOfDay()) rather than the previous
-        // implicit 0.0 default.
-        lighting.fogDensity = 0.006f;
+        // Kronos (real bug found via two correctly-synchronized GPU
+        // readbacks of HomeAvatarPreview's actual offscreen texture --
+        // the "Your Avatar" white background persisted through several
+        // earlier, individually-correct fixes, including a first attempt
+        // at this exact line that only darkened fogColor and made no
+        // measurable difference): this preset used to set a real,
+        // nonzero fogDensity (0.006, "consistent with real gameplay's
+        // own fog system") on the stated assumption that "an indoor
+        // avatar preview has no distant geometry for fog to meaningfully
+        // act on" -- true for gameplay scenes with real walls/floors
+        // close by, false here. shaders/volumetric_fog.frag's own
+        // isBackground branch raymarches every max-depth pixel (which,
+        // via useFlatBackground above, is every background pixel behind
+        // this tight orbit camera) out to the full, real
+        // volumetricFogMaxDistance_ (120 world units), integrating real
+        // in-scattered radiance dominated by this preset's own bright
+        // warm key light (color*intensity = (2.6, 2.39, 2.03) --
+        // fogColor's own contribution is scaled down by
+        // volumetricFogAmbientContribution_ (0.35) and was never the
+        // dominant term, which is why darkening it alone didn't fix
+        // this). Integrated over 120 units that light term alone
+        // resolves to roughly (2.07, 1.90, 1.61) linear -- verified by
+        // hand against the real captured pixel value, which ACES-
+        // tonemaps and gamma-encodes to almost exactly what both real
+        // captures showed. Real fix: this preset has no real distant
+        // geometry for fog to act on at all (the stated original
+        // assumption), so fogDensity is really, honestly 0.0f -- and
+        // shaders/volumetric_fog.frag's own `density <= 0.0` branch is a
+        // real, exact early-out (byte-for-byte passthrough of the opaque
+        // pass's own output), not an approximation.
+        lighting.fogDensity = 0.0f;
         lighting.pointLights.push_back(SceneLighting::PointLight{
             glm::vec3(-1.4f, 2.4f, 1.6f), // behind-and-above the real {0,1,0} focus point
             6.0f,
