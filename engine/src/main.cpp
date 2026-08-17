@@ -1518,7 +1518,15 @@ int main(int argc, char** argv) {
     uint32_t noseMesh = app.meshLibrary().registerMesh(engine::core::Mesh::createBox(
         renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), glm::vec3(1.0f)));
 
-    if (!app.spawnLocalPlayerAvatar({0.0f, 3.0f, -6.0f})) {
+    // Kronos ("Avatar Preview Rendering" pre-launch fix): real, minimal
+    // spawn clearance above the ground plane (Y=0), not the previous
+    // Y=3.0 -- the character capsule (capsuleRadius 0.35 + capsuleHalfHeight
+    // 0.55, ~1.8 units tall including caps) needs its center at least
+    // ~0.9 above ground to avoid spawning embedded in it; Y=1.0 gives a
+    // real, small, correct clearance instead of a real, visible multi-
+    // unit fall/settle window the very first frames this bring-up
+    // world's local player avatar is visible behind the Home screen.
+    if (!app.spawnLocalPlayerAvatar({0.0f, 1.0f, -6.0f})) {
         std::fprintf(stderr, "engine_runtime: spawnLocalPlayerAvatar() failed for the bring-up world.\n");
     }
     auto character = app.characterController().entity();
