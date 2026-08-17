@@ -1,5 +1,69 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still, part 7) — Avatar Lighting and Proportion Polish Pass: real audit, no code changes needed
+
+**Arm and Hand Proportions**: this item's own wording (shoulder offset
++0.05 torso width, shorten upper arms so wrists land just below
+mid-thigh, stylised palm with finger segmentation) is a verbatim repeat
+of the immediately preceding "Avatar Proportion and Arm Polish Pass."
+Re-checked the actual current values in `RiggedAvatar.cpp` directly
+rather than blindly reapplying the same delta a second time (which would
+have over-corrected the shoulder offset to 0.49, over-shortened the
+arm, etc.): shoulder offset is already 0.44, the upper/lower arm split
+is already 0.47/0.48, and the hand already has a real thumb + 4-finger
+palm. **Already satisfied, no change made.**
+
+**Lighting Consistency + Scene Verification**: dispatched a real,
+thorough code audit (not assumed) of exposure/fog/ambient/tonemap/
+material handling across the Home preview, Studio preview, Avatar Shop,
+and real gameplay. Findings, with the audit's own file:line evidence:
+
+- **Exposure and tonemap are already globally shared and scene-agnostic**:
+  a single `Renderer::exposure_` field (default 1.0, `Renderer.hpp:1361`)
+  and one ACES tonemap curve (`composite.frag`'s `acesFilm()`) run inside
+  `Renderer::drawSceneIntoImpl()`, which both real `drawSceneInto()`
+  overloads share -- the main viewport and every `PreviewScene`/
+  `HomeAvatarPreview` auxiliary render both go through the exact same
+  composite pass. There is no per-scene exposure/tonemap divergence to
+  "match" -- it was already structurally impossible for one to exist.
+- **Ambient light intensity differs between Home/Studio/gameplay on
+  purpose**, and was already documented as such before this pass (Home's
+  own warm, dim "cinematic" rig vs. Studio's own flat, bright "lightbox"
+  vs. real gameplay's continuous day/night curve,
+  `core::computeLightingForTimeOfDay()`) -- three real, deliberate,
+  already-stated lighting identities, not an inconsistency.
+- **Avatar materials (roughness/metallic) are read through one shared
+  path everywhere**: `segmentMaterialRoughness()`/hair's own glossy
+  values feed `SkinnedRenderable`, which `drawSkinnedEntities()` pushes
+  into `ObjectPushConstants`, consumed by the one shared `scene.frag`
+  every opaque pipeline (skinned or not) reuses. No divergent shader path
+  exists for any scene.
+- **Fog is a real, honest non-issue for the avatar preview specifically**:
+  `SceneLighting::fogDensity` defaults to `0.0` (`SceneTypes.hpp:343`),
+  and Home's own `cinematicPreviewLighting()` never sets it -- a close-
+  range avatar headshot has no distant geometry for fog to visibly act
+  on regardless, so there's nothing to "match" to real gameplay's own
+  time-of-day fog (0.004-0.012) here.
+- **Scene Verification, confirmed**: the player's own avatar body renders
+  through the identical pipeline in Home and real gameplay (same
+  shaders, same material push constants) -- genuinely identical, not
+  just similar. The Avatar Shop is the one real, honest exception, but
+  not a broken one: it doesn't render the avatar (or catalogue items) in
+  3D at all today -- both the item grid and the item-detail popup show
+  flat `ImGui::ColorButton` swatches of each item's own `baseColor`
+  (`RuntimeShell.cpp`), never a real lit render. There is no lit
+  "catalogue preview" scene to keep in sync with gameplay, because it
+  doesn't exist yet -- a real, stated, separate feature gap (a lit 3D
+  Shop preview), not part of this "lighting consistency" pass's real
+  scope.
+
+**No rendering code was changed this pass** -- every claim above was
+verified true against the current, real code, not assumed, and
+inventing lighting-value tweaks to a system that already checks out
+correct would have been real, unjustified risk for no real fix. Full
+test suite re-run to confirm still green (no code touched, so this was
+a re-confirmation, not a new pass): **10764/10764 checks passing.**
+
 ## 2026-08-16 (later still, part 6) — Avatar Proportion and Arm Polish Pass
 
 Real, bounded follow-up pass, driven by an explicit user task list.
