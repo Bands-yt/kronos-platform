@@ -17,10 +17,31 @@ namespace {
 // it, the way a real product-photography lightbox avoids hard shadows
 // hiding half the subject.
 const core::SceneLighting& previewLighting() {
-    static const core::SceneLighting kPreviewLighting{
-        glm::vec3(-0.35f, -0.85f, -0.4f), glm::vec3(1.0f, 1.0f, 1.0f), 3.4f, glm::vec3(0.35f, 0.35f, 0.38f),
-        glm::vec3(0.25f, 0.24f, 0.22f),
-    };
+    static const core::SceneLighting kPreviewLighting = [] {
+        core::SceneLighting lighting;
+        lighting.directionWS = glm::vec3(-0.35f, -0.85f, -0.4f);
+        lighting.color = glm::vec3(1.0f, 1.0f, 1.0f);
+        lighting.intensity = 3.4f;
+        lighting.ambient = glm::vec3(0.35f, 0.35f, 0.38f);
+        lighting.ambientGround = glm::vec3(0.25f, 0.24f, 0.22f);
+        // Kronos ("Avatar Vulkan Pipeline & Avatar Preview Rendering"):
+        // real, necessary fix -- this struct's own real default
+        // skyZenithColor/skyHorizonColor member initializers are an
+        // *outdoor* blue-sky gradient (SceneTypes.hpp), never overridden
+        // here before this fix, so every real Studio preview panel that
+        // renders with no explicit lightingOverride (CataloguePanel,
+        // MaterialPlugin, ParticleEditorPlugin, UploadAvatarItemPlugin,
+        // and others) showed that outdoor sky bleeding through behind
+        // whatever item it was previewing -- directly contradicting this
+        // function's own "flat, bright, neutral studio lightbox" header
+        // comment above. Real, flat neutral gray instead, close to (but
+        // not literally) this preset's own ambient tone, so the
+        // gradient sky.frag still draws reads as a real, if subtle,
+        // lightbox backdrop rather than a flat card.
+        lighting.skyZenithColor = glm::vec3(0.22f, 0.22f, 0.24f);
+        lighting.skyHorizonColor = glm::vec3(0.30f, 0.30f, 0.32f);
+        return lighting;
+    }();
     return kPreviewLighting;
 }
 } // namespace

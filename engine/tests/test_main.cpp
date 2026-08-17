@@ -9209,6 +9209,22 @@ void testAvatarIndoorPreviewLightingMatchesStatedBaseline() {
           "avatarIndoorPreviewLighting()'s real fogDensity is real-clamped to 0.006 for neutral indoor scenes");
     check(lighting.pointLights.size() == 1, "the real cool rim point light is present exactly once");
 
+    // Kronos ("Avatar Vulkan Pipeline & Avatar Preview Rendering"): real
+    // regression guard -- this preset used to default-construct
+    // SceneLighting and never touch skyZenithColor/skyHorizonColor,
+    // silently leaving them at SceneLighting's own *outdoor* blue-sky
+    // defaults (0.25,0.45,0.85 / 0.75,0.80,0.85 -- already pale before
+    // tonemapping). For this preset's own real close-up-camera callers
+    // (HomeAvatarPreview, AvatarEditor), that pale outdoor horizon
+    // dominates the visible background and reads as a near-solid white
+    // backdrop. Asserting these are real, dark, and distinct from
+    // SceneLighting's own outdoor defaults keeps this specific bug from
+    // silently coming back.
+    check(lighting.skyZenithColor.x < 0.5f && lighting.skyZenithColor.y < 0.5f && lighting.skyZenithColor.z < 0.5f,
+          "avatarIndoorPreviewLighting()'s real skyZenithColor is dark, not the pale outdoor default");
+    check(lighting.skyHorizonColor.x < 0.5f && lighting.skyHorizonColor.y < 0.5f && lighting.skyHorizonColor.z < 0.5f,
+          "avatarIndoorPreviewLighting()'s real skyHorizonColor is dark, not the pale-near-white outdoor default (0.75,0.80,0.85)");
+
     const engine::core::SceneLighting& again = engine::core::avatarIndoorPreviewLighting();
     check(&lighting == &again,
           "avatarIndoorPreviewLighting() is a real, cached singleton -- Home and Studio share the exact same "

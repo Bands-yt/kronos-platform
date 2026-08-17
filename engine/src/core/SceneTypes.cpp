@@ -58,6 +58,27 @@ const SceneLighting& avatarIndoorPreviewLighting() {
         lighting.intensity = 2.6f;
         lighting.ambient = glm::vec3(0.06f, 0.07f, 0.11f);        // dim, cool sky fill
         lighting.ambientGround = glm::vec3(0.04f, 0.035f, 0.03f); // dim, warm ground fill
+        // Kronos ("Avatar Vulkan Pipeline & Avatar Preview Rendering"):
+        // real, necessary fix -- SceneLighting's own skyZenithColor/
+        // skyHorizonColor default member initializers are an *outdoor*
+        // blue-sky gradient (see SceneTypes.hpp), and this default-
+        // constructed `lighting` never overrode them, leaving that
+        // outdoor sky rendering unchanged behind every "indoor" avatar
+        // preview. Harmless for a normal outdoor gameplay camera (the
+        // sky is a thin strip at the top of the frame at most), but a
+        // real, visible bug for this preset's actual real callers
+        // (HomeAvatarPreview's tight "Your Avatar" box,
+        // studio::plugins::AvatarEditor's preview) -- their close-up
+        // orbit camera's background is *dominated* by near-horizon view
+        // rays, so skyHorizonColor's own real default (0.75, 0.80, 0.85
+        // -- already pale before any tonemapping) reads as a near-solid
+        // white backdrop, not a sky. Real, dark, neutral navy instead --
+        // consistent with this preset's own already-dark ambient tones
+        // above and the app's own dark UI theme -- so the preview reads
+        // as a real studio backdrop, not outdoor daylight leaking
+        // through an indoor scene.
+        lighting.skyZenithColor = glm::vec3(0.05f, 0.055f, 0.08f);
+        lighting.skyHorizonColor = glm::vec3(0.09f, 0.095f, 0.12f);
         // Kronos ("Avatar Scene Lighting Calibration Pass" -- "clamp
         // fogDensity to 0.006 for neutral indoor scenes"): a real,
         // small, fixed value -- an indoor avatar preview has no distant
