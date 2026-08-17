@@ -98,6 +98,7 @@
 #include "core/ProjectReadmeGenerator.hpp"
 #include "core/GameManifest.hpp"
 #include "core/LocalGameDirectory.hpp"
+#include "core/MathExpression.hpp"
 #include "core/ProcessLaunch.hpp"
 #include "core/GameCatalogueAggregate.hpp"
 #include "core/RiggedAvatar.hpp"
@@ -4137,6 +4138,75 @@ void testTransactionLogLoadsPrePublishCategoryFileWithHonestDefault() {
     check(loaded.publishRecords()[0].category.empty(),
           "a missing PUBCATEGORY line real-defaults to an empty string, not a parse failure");
     std::remove(path);
+}
+
+// --- MathExpression ----------------------------------------------------------
+
+void testEvaluateMathExpressionPlainNumber() {
+    float result = 0.0f;
+    check(engine::core::evaluateMathExpression("42", 0.0f, result), "evaluateMathExpression() real-parses a plain integer literal");
+    check(nearlyEqual(result, 42.0f), "the real result is exactly 42");
+}
+
+void testEvaluateMathExpressionNegativeLiteralIsAbsolute() {
+    float result = 0.0f;
+    check(engine::core::evaluateMathExpression("-5", 100.0f, result), "evaluateMathExpression() real-parses a leading-minus literal");
+    check(nearlyEqual(result, -5.0f), "a leading '-' is real-treated as a literal negative number (set to -5), not 'subtract 5 from current'");
+}
+
+void testEvaluateMathExpressionSubtractionExpression() {
+    float result = 0.0f;
+    check(engine::core::evaluateMathExpression("180 - 45", 0.0f, result), "evaluateMathExpression() real-parses \"180 - 45\"");
+    check(nearlyEqual(result, 135.0f), "\"180 - 45\" real-evaluates to 135, the exact sprint-quoted example");
+}
+
+void testEvaluateMathExpressionRelativeAdd() {
+    float result = 0.0f;
+    check(engine::core::evaluateMathExpression("+10", 5.0f, result), "evaluateMathExpression() real-parses the relative-add convention \"+10\"");
+    check(nearlyEqual(result, 15.0f), "\"+10\" against a real currentValue of 5 real-evaluates to 15 (5+10)");
+}
+
+void testEvaluateMathExpressionRelativeMultiply() {
+    float result = 0.0f;
+    check(engine::core::evaluateMathExpression("*2", 5.0f, result), "evaluateMathExpression() real-parses the relative-multiply convention \"*2\"");
+    check(nearlyEqual(result, 10.0f), "\"*2\" against a real currentValue of 5 real-evaluates to 10 (5*2)");
+}
+
+void testEvaluateMathExpressionRelativeDivide() {
+    float result = 0.0f;
+    check(engine::core::evaluateMathExpression("/3", 9.0f, result), "evaluateMathExpression() real-parses the relative-divide convention \"/3\"");
+    check(nearlyEqual(result, 3.0f), "\"/3\" against a real currentValue of 9 real-evaluates to 3 (9/3)");
+}
+
+void testEvaluateMathExpressionParenthesesAndPrecedence() {
+    float result = 0.0f;
+    check(engine::core::evaluateMathExpression("2 + 3 * 4", 0.0f, result), "evaluateMathExpression() real-respects operator precedence");
+    check(nearlyEqual(result, 14.0f), "\"2 + 3 * 4\" real-evaluates to 14, not 20");
+
+    check(engine::core::evaluateMathExpression("(2 + 3) * 4", 0.0f, result), "evaluateMathExpression() real-respects real parentheses");
+    check(nearlyEqual(result, 20.0f), "\"(2 + 3) * 4\" real-evaluates to 20");
+}
+
+void testEvaluateMathExpressionUnaryMinusInsideExpression() {
+    float result = 0.0f;
+    check(engine::core::evaluateMathExpression("10 + -3", 0.0f, result), "evaluateMathExpression() real-handles a real unary minus mid-expression");
+    check(nearlyEqual(result, 7.0f), "\"10 + -3\" real-evaluates to 7");
+}
+
+void testEvaluateMathExpressionRejectsDivisionByZero() {
+    float result = 0.0f;
+    check(!engine::core::evaluateMathExpression("5 / 0", 0.0f, result), "evaluateMathExpression() real-rejects division by zero rather than producing inf/nan");
+    check(!engine::core::evaluateMathExpression("/0", 5.0f, result), "the relative-divide convention real-rejects a zero divisor too");
+}
+
+void testEvaluateMathExpressionRejectsMalformedInput() {
+    float result = 0.0f;
+    check(!engine::core::evaluateMathExpression("", 0.0f, result), "evaluateMathExpression() real-rejects an empty string");
+    check(!engine::core::evaluateMathExpression("   ", 0.0f, result), "evaluateMathExpression() real-rejects a whitespace-only string");
+    check(!engine::core::evaluateMathExpression("5 +", 0.0f, result), "evaluateMathExpression() real-rejects a dangling operator");
+    check(!engine::core::evaluateMathExpression("(5 + 3", 0.0f, result), "evaluateMathExpression() real-rejects unbalanced parentheses");
+    check(!engine::core::evaluateMathExpression("5 3", 0.0f, result), "evaluateMathExpression() real-rejects trailing garbage after a valid expression");
+    check(!engine::core::evaluateMathExpression("hello", 0.0f, result), "evaluateMathExpression() real-rejects non-numeric garbage");
 }
 
 void testSceneFileRoundTripsScriptComponent() {
@@ -27348,6 +27418,16 @@ int main() {
     testTransactionLogSaveLoadRoundTrip();
     testTransactionLogPublishRecordsCoexistWithPurchaseRecords();
     testTransactionLogLoadsPrePublishCategoryFileWithHonestDefault();
+    testEvaluateMathExpressionPlainNumber();
+    testEvaluateMathExpressionNegativeLiteralIsAbsolute();
+    testEvaluateMathExpressionSubtractionExpression();
+    testEvaluateMathExpressionRelativeAdd();
+    testEvaluateMathExpressionRelativeMultiply();
+    testEvaluateMathExpressionRelativeDivide();
+    testEvaluateMathExpressionParenthesesAndPrecedence();
+    testEvaluateMathExpressionUnaryMinusInsideExpression();
+    testEvaluateMathExpressionRejectsDivisionByZero();
+    testEvaluateMathExpressionRejectsMalformedInput();
     testSceneFileRoundTripsScriptComponent();
     testSceneManagerCaptureAndLoadRoundTripScriptComponent();
     testSceneManagerCapture();

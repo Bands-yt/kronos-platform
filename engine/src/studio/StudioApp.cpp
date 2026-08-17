@@ -1557,7 +1557,7 @@ void StudioApp::run() {
         debugConsolePanel_.tick(deltaTime);
 
         explorerPanel_.draw(ecs_);
-        inspectorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), undoStack_);
+        inspectorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities(), undoStack_);
 
         // Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) -- checked once per frame,
         // not per-widget, so it works regardless of which panel has

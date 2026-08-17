@@ -157,6 +157,7 @@ add_library(engine_core STATIC
     core/Audio.cpp
     core/Scripting.cpp
     core/ScriptHotReload.cpp
+    core/MathExpression.cpp
 
     runtime/GameLoop.cpp
 
@@ -464,6 +465,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/StudioIcons.cpp
         studio/PluginChrome.cpp
         studio/CommandPalette.cpp
+        studio/MathExpressionPopup.cpp
         # Kronos ("UI/UX Revamp"): see engine_runtime's own source list
         # above for why this lives here (and there) instead of in
         # engine_core.

@@ -18,7 +18,8 @@ bool InspectorPanel::hasInvalidComponents(glm::vec3 v) {
     return glm::any(glm::isnan(v)) || glm::any(glm::isinf(v));
 }
 
-void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& undoStack) {
+void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities,
+                           UndoStack& undoStack) {
     ImGui::Begin("Inspector");
 
     if (selected == core::kNullEntity) {
@@ -28,6 +29,8 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& un
         return;
     }
 
+    bool multiSelected = selectedEntities.size() > 1;
+
     if (auto* name = ecs.tryGetComponent<core::Name>(selected)) {
         char buf[128];
         std::snprintf(buf, sizeof(buf), "%s", name->value.c_str());
@@ -36,7 +39,12 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& un
             name->value = buf;
         }
     }
-    ImGui::TextDisabled("Entity ID %u", static_cast<uint32_t>(selected));
+    if (multiSelected) {
+        ImGui::TextColored(ImVec4(0.35f, 0.72f, 0.85f, 1.0f), "%zu entities selected -- Position edits apply to all of them (same relative offset each keeps); Rotation/Scale/other fields edit \"%s\" only.",
+                            selectedEntities.size(), ecs.tryGetComponent<core::Name>(selected) ? ecs.tryGetComponent<core::Name>(selected)->value.c_str() : "the primary selection");
+    } else {
+        ImGui::TextDisabled("Entity ID %u", static_cast<uint32_t>(selected));
+    }
     ImGui::Spacing();
 
     // Consistent label column width across every section below, rather
@@ -47,8 +55,28 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& un
     if (auto* transform = ecs.tryGetComponent<core::Transform>(selected);
         transform != nullptr &&
         ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Kronos ("Developer Velocity Sprint" -- "Multi-Selection
+        // Property Inspector"): Position edits apply as a real shared
+        // delta across every selected entity -- see this class's own
+        // header comment on why (matches ViewportPanel gizmo group-move
+        // exactly). Captured once per commit (drag release, or formula
+        // Apply), not per-frame -- the same "one undo command per
+        // gesture" granularity this field's undo integration already
+        // uses.
+        auto applyPositionDeltaToGroup = [&](glm::vec3 before, glm::vec3 after) {
+            glm::vec3 delta = after - before;
+            if (delta == glm::vec3(0.0f)) return;
+            for (core::EntityId other : selectedEntities) {
+                if (other == selected) continue;
+                if (auto* otherTransform = ecs.tryGetComponent<core::Transform>(other)) {
+                    otherTransform->position += delta;
+                }
+            }
+        };
+
         ImGui::TextUnformatted("Position");
         ImGui::DragFloat3("##position", &transform->position.x, 0.05f);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) positionFormulaPopup_.open();
         // Real validation: position can legitimately be any finite value
         // (unlike scale/collider dimensions below, there's no natural
         // [min,max] to clamp against), but NaN/Inf can still creep in
@@ -63,6 +91,7 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& un
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             glm::vec3 before = positionBeforeEdit_;
             glm::vec3 after = transform->position;
+            applyPositionDeltaToGroup(before, after);
             core::EntityId entity = selected;
             undoStack.push({"Move Entity",
                              [&ecs, entity, before]() {
@@ -72,10 +101,26 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& un
                                  if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->position = after;
                              }});
         }
+        {
+            glm::vec3 beforeFormula = transform->position;
+            if (positionFormulaPopup_.draw("position_formula_popup", &transform->position)) {
+                glm::vec3 after = transform->position;
+                applyPositionDeltaToGroup(beforeFormula, after);
+                core::EntityId entity = selected;
+                undoStack.push({"Move Entity (Formula)",
+                                 [&ecs, entity, beforeFormula]() {
+                                     if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->position = beforeFormula;
+                                 },
+                                 [&ecs, entity, after]() {
+                                     if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->position = after;
+                                 }});
+            }
+        }
 
         ImGui::TextUnformatted("Rotation");
         glm::vec3 eulerDegrees = glm::degrees(glm::eulerAngles(transform->rotation));
         bool rotationEdited = ImGui::DragFloat3("##rotation", &eulerDegrees.x, 1.0f);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) rotationFormulaPopup_.open();
         if (ImGui::IsItemActivated()) rotationBeforeEdit_ = transform->rotation;
         if (rotationEdited) {
             transform->rotation = glm::quat(glm::radians(eulerDegrees));
@@ -92,6 +137,22 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& un
                                  if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->rotation = after;
                              }});
         }
+        {
+            glm::vec3 eulerForFormula = eulerDegrees;
+            if (rotationFormulaPopup_.draw("rotation_formula_popup", &eulerForFormula)) {
+                glm::quat before = transform->rotation;
+                transform->rotation = glm::quat(glm::radians(eulerForFormula));
+                glm::quat after = transform->rotation;
+                core::EntityId entity = selected;
+                undoStack.push({"Rotate Entity (Formula)",
+                                 [&ecs, entity, before]() {
+                                     if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->rotation = before;
+                                 },
+                                 [&ecs, entity, after]() {
+                                     if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->rotation = after;
+                                 }});
+            }
+        }
 
         ImGui::TextUnformatted("Scale");
         // AlwaysClamp: without it, ImGui only clamps drag-gesture input --
@@ -99,6 +160,7 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& un
         // so a typed "-5" would silently produce an inverted/degenerate
         // scale. Real validation, not just a visual range hint.
         ImGui::DragFloat3("##scale", &transform->scale.x, 0.05f, 0.001f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) scaleFormulaPopup_.open();
         if (ImGui::IsItemActivated()) scaleBeforeEdit_ = transform->scale;
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             glm::vec3 before = scaleBeforeEdit_;
@@ -111,6 +173,24 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, UndoStack& un
                              [&ecs, entity, after]() {
                                  if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->scale = after;
                              }});
+        }
+        {
+            glm::vec3 beforeScaleFormula = transform->scale;
+            if (scaleFormulaPopup_.draw("scale_formula_popup", &transform->scale)) {
+                glm::vec3 after = transform->scale;
+                core::EntityId entity = selected;
+                undoStack.push({"Scale Entity (Formula)",
+                                 [&ecs, entity, beforeScaleFormula]() {
+                                     if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->scale = beforeScaleFormula;
+                                 },
+                                 [&ecs, entity, after]() {
+                                     if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->scale = after;
+                                 }});
+            }
+        }
+
+        if (multiSelected) {
+            ImGui::TextDisabled("Right-click Position/Rotation/Scale to enter a formula (e.g. +10, *2, 180 - 45).");
         }
     }
 
