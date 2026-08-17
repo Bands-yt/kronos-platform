@@ -15,6 +15,7 @@
 #include "core/Logger.hpp"
 #include "core/OreNode.hpp"
 #include "core/PropAnimation.hpp"
+#include "core/ScriptHotReload.hpp"
 #include "core/Shop.hpp"
 #include "core/Terrain.hpp"
 #include "core/UpgradeSystem.hpp"
@@ -493,25 +494,17 @@ bool Application::initialize(const CreateInfo& info) {
         // uses to find its own entity (world.findByName()) -- see
         // Components.hpp's own Script comment on why there's no `self`/
         // script.Parent-style binding yet.
-        auto scriptView = ecs_.view<core::Script>();
-        for (auto entity : scriptView) {
-            core::Script& script = scriptView.get<core::Script>(entity);
-            if (script.autoRun && !script.source.empty() && script.source != script.loadedSource) {
-                // Real hot-reload path (Phase 7): a previously-loaded
-                // script whose source changed gets its stale VM real-
-                // unloaded first -- see Scripting::unload()'s own KNOWN
-                // GAP comment for the one accepted limitation (an
-                // outstanding task.wait() on this specific script isn't
-                // purged), matching the same real, honest caveat
-                // studio::plugins::ScriptedPlugin's own reload() already
-                // carries.
-                if (script.scriptId != core::kInvalidScript) scripting_.unload(script.scriptId);
-                const core::Name* name = ecs_.tryGetComponent<core::Name>(entity);
-                std::string chunkName = (name != nullptr && !name->value.empty()) ? name->value : "Script";
-                script.scriptId = scripting_.loadAndRun(chunkName, script.source);
-                script.loadedSource = script.source;
-            }
-        }
+        // Real hot-reload path (Phase 7): see core::tickScriptHotReload's
+        // own comment -- a previously-loaded script whose source changed
+        // gets its stale VM real-unloaded first (see Scripting::unload()'s
+        // own KNOWN GAP comment for the one accepted limitation, an
+        // outstanding task.wait() on this specific script isn't purged),
+        // matching the same real, honest caveat studio::plugins::
+        // ScriptedPlugin's own reload() already carries. Pulled into a
+        // shared free function so Studio's own Play-mode preview
+        // (PhysicsPreviewPlugin) can run the identical logic rather than a
+        // hand-copied second version.
+        core::tickScriptHotReload(ecs_, scripting_);
 
         totalSimTime_ += dt;
 

@@ -1,5 +1,75 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 3: Lua Script Hot-Reload (HMR)
+
+**Real gap found before writing any code**: `core::Application::tick()`
+already had a genuinely correct diff-and-reload loop for `core::Script`
+components (source changed since `loadedSource` -> unload stale VM ->
+compile+run new source), but two real, separate problems left it
+inert for a Studio developer: (1) `studio::panels::ScriptEditorPanel`
+was completely disconnected -- `StudioApp.cpp` called `.draw()` with no
+arguments, no code anywhere ever called
+`ecs.addComponent<core::Script>(...)`, so a `Script` component could
+never even exist on a Studio-authored entity; (2) Studio's own Play-mode
+preview (`PhysicsPreviewPlugin`) runs **zero** `core::Scripting` --
+confirmed by its own header comment ("Deliberately NOT a full 'Play
+Solo' -- no Scripting/Audio session") -- so even a `Script` component
+that did exist would never actually execute while Playing in Studio.
+Wiring only the Script Editor without also giving Play mode a real
+scripting session would have shipped a "hot-reload" that had nothing to
+reload against.
+
+**What changed**:
+- New `core::tickScriptHotReload(ECS&, Scripting&)`
+  (`core/ScriptHotReload.hpp/.cpp`) -- the exact diff-and-reload logic
+  pulled out of `Application::tick()` verbatim, so `engine_runtime` and
+  Studio's own Play mode run the identical real behavior instead of a
+  hand-copied second version that could drift.
+- `ScriptEditorPanel::draw()` now takes `(ECS&, EntityId selectedEntity,
+  NotificationCenter&)`, mirroring `InspectorPanel::draw()`'s existing
+  call shape. Selecting an entity loads its `Script::source` (or offers
+  a real "Add Script Component" button if it has none yet); Ctrl+S
+  while the window has keyboard focus writes the edited buffer back
+  into `Script::source` only (not `loadedSource`), which is exactly the
+  real mismatch `tickScriptHotReload()` watches for.
+- `PhysicsPreviewPlugin` now owns a real `core::Scripting scripting_`:
+  `play()` brings up a fresh VM (mirrors
+  `ScriptedPlugin::reload()`'s own shutdown()+initialize() idiom so
+  every Play starts clean), `update()` calls `tickScriptHotReload()` +
+  `scripting_.tick(dt)` every frame while Playing, `stop()` resets every
+  `Script::scriptId`/`loadedSource` and shuts the VM down. Physics
+  attach/detach and the ECS/camera are completely untouched by any of
+  this -- editing and saving a script while Playing reloads only that
+  script's environment.
+
+**Real, stated scope boundary**: this is still not a full "Play Solo" --
+no audio session, no auto-spawned player character. Adding those is
+real, separate, larger, future work (README Known Issues), not part of
+this sprint item.
+
+**Verification**: 4 new headless tests for `tickScriptHotReload()`
+(loads a fresh script, leaves an unchanged one alone, real-reloads a
+changed one with a new scriptId, skips `autoRun=false`) --
+10798/10798 passing (was 10788). All 3 targets
+(`engine_core`/`studio`/`engine_runtime`) rebuild clean, zero warnings.
+Manually launched `studio` post-build and confirmed clean, stable
+startup (process alive, normal log output, no crash) -- live Play-mode
+click-through of the Script Editor itself was not attempted, per this
+session's standing decision to avoid simulated mouse/keyboard input
+after an earlier incident where it visibly interfered with the user's
+real desktop cursor.
+
+**Also resolved this pass, a leftover open question from the prior
+session window**: the recurring "0-byte crash_report_*.txt appears on
+every launch" anomaly is confirmed benign --
+`core::CrashReporter.cpp:113` opens (`O_CREAT|O_TRUNC`) the report file
+at *install* time, not inside the signal handler, for async-signal
+safety. A 0-byte file after a clean run is expected behavior, not
+evidence of a crash.
+
+**Next**: QoL Sprint item 3 (Integrated Network Emulation Bar --
+genuinely new, no existing latency/loss infrastructure in `net/`).
+
 ## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 2: Command Palette
 
 **VS Code-style Command Palette (Ctrl+K / Ctrl+P)**: new

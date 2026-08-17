@@ -1410,7 +1410,7 @@ void StudioApp::run() {
         viewportDebugContext.renderer = &renderer_;
         viewportPanel_.draw(deltaTime, viewportTarget_.imguiTextureId(), viewportTarget_.extent(), &ecs_,
                              &meshLibrary_, explorerPanel_, physicsPreviewPlugin_, viewportDebugContext);
-        scriptEditorPanel_.draw();
+        scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
         debugConsolePanel_.draw();
 
         // Sprint 8 ("Performance Stats & Debug Tools"): compose this

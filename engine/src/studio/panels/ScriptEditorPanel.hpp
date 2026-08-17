@@ -3,6 +3,12 @@
 #include <memory>
 #include <string>
 
+#include "core/ECS.hpp"
+
+namespace engine::studio {
+class NotificationCenter;
+}
+
 namespace engine::studio::panels {
 
 // docs/ARCHITECTURE.md §5/§9's Script Editor panel: "Monaco + Luau's own
@@ -67,17 +73,33 @@ private:
     std::string pendingSource_;
 };
 
+// Kronos ("Studio QoL Sprint" -- "Instant Lua Script Hot-Reload"): real
+// wiring to a live entity's core::Script component -- previously this
+// panel was a genuinely functional text box with nothing on either end
+// of it (StudioApp.cpp called draw() with no arguments at all, and
+// nothing anywhere in Studio ever called addComponent<core::Script>()).
+// Selecting an entity with a Script component loads its `source`; Ctrl+S
+// while this window has keyboard focus writes the edited buffer back
+// into `Script::source` (leaving `loadedSource` alone) -- exactly the
+// change core::tickScriptHotReload() (core/ScriptHotReload.hpp) watches
+// for, whether that's engine_runtime's own Application::tick() or
+// Studio's own PhysicsPreviewPlugin while Playing.
 class ScriptEditorPanel {
 public:
     ScriptEditorPanel();
 
-    void draw();
+    void draw(core::ECS& ecs, core::EntityId selectedEntity, NotificationCenter& notifications);
 
     void loadSource(const std::string& source) { backend_->setSource(source); }
     [[nodiscard]] const std::string& source() const { return backend_->source(); }
 
 private:
+    void loadFromEntity(core::ECS& ecs, core::EntityId entity);
+    void saveToEntity(core::ECS& ecs, NotificationCenter& notifications);
+
     std::unique_ptr<IScriptEditorBackend> backend_;
+    core::EntityId targetEntity_ = core::kNullEntity;
+    bool targetHasScript_ = false;
 };
 
 } // namespace engine::studio::panels

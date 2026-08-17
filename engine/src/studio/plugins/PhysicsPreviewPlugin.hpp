@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 
 #include "core/Physics.hpp"
+#include "core/Scripting.hpp"
 #include "studio/IStudioPlugin.hpp"
 
 namespace engine::studio::plugins {
@@ -27,10 +28,17 @@ namespace engine::studio::plugins {
 // scene exactly as authored, the real "safe teardown + recreation" this
 // task category asks for.
 //
-// Deliberately NOT a full "Play Solo" (no Scripting/Audio session, no
-// character spawned automatically) -- see README's Known Issues for what
-// a real Play Solo would still need; this is specifically the physics
-// half.
+// Deliberately NOT a full "Play Solo" (no Audio session, no character
+// spawned automatically) -- see README's Known Issues for what a real
+// Play Solo would still need. It does now run a real core::Scripting
+// session alongside the physics one (Kronos "Studio QoL Sprint" --
+// "Instant Lua Script Hot-Reload"): play() brings up a fresh VM and
+// loads every entity's core::Script, update() ticks it and runs the
+// same core::tickScriptHotReload() diff-and-reload Application.cpp's
+// own real hot-reload path uses, and stop() tears it back down --
+// so editing a script in the Script Editor and saving while Playing
+// reloads that one script's environment in place, without resetting
+// physics, the ECS, or the viewport camera.
 class PhysicsPreviewPlugin final : public IStudioPlugin {
 public:
     [[nodiscard]] const char* name() const override { return "Physics Preview"; }
@@ -79,6 +87,7 @@ public:
 
 private:
     core::Physics physics_;
+    core::Scripting scripting_;
     bool physicsInitialized_ = false;
     bool playing_ = false;
     std::vector<core::EntityId> attachedEntities_;

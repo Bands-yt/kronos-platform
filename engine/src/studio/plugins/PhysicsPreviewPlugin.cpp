@@ -3,6 +3,7 @@
 #include <imgui.h>
 
 #include "core/Components.hpp"
+#include "core/ScriptHotReload.hpp"
 
 namespace engine::studio::plugins {
 
@@ -46,6 +47,17 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
         }
     }
 
+    // Real, fresh scripting session every Play (mirrors
+    // studio::plugins::ScriptedPlugin::reload()'s own shutdown()+
+    // initialize() idiom) -- core::tickScriptHotReload() below then
+    // real-loads every entity's core::Script the same way a freshly-
+    // started engine_runtime session would (source != loadedSource is
+    // trivially true the first time, since loadedSource was just reset
+    // by the previous stop()).
+    if (!scripting_.initialize()) {
+        statusMessage_ = "Scripting failed to initialize -- scripts will not run this session.";
+    }
+
     playing_ = true;
     statusMessage_ = "Playing -- " + std::to_string(attachedEntities_.size()) + " bodies simulating";
     if (skippedMesh > 0) {
@@ -59,6 +71,20 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
     attachedEntities_.clear();
     recentContacts_.clear();
     hasTestRay_ = false;
+
+    // Real teardown, matching the physics detach above: every entity's
+    // Script goes back to "never loaded" so the *next* Play starts a
+    // fresh scriptId in the fresh VM scripting_.shutdown() is about to
+    // tear down, instead of core::tickScriptHotReload() wrongly thinking
+    // an unchanged `source` means nothing needs (re)loading.
+    auto scriptView = ecs.view<core::Script>();
+    for (auto entity : scriptView) {
+        core::Script& script = scriptView.get<core::Script>(entity);
+        script.scriptId = core::kInvalidScript;
+        script.loadedSource.clear();
+    }
+    scripting_.shutdown();
+
     playing_ = false;
     statusMessage_ = "Stopped -- every entity reverted to its plain, physics-free authored state.";
 }
@@ -68,6 +94,13 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
     if (!playing_) return;
     physics_.step(dt, ecs);
     recentContacts_ = physics_.drainCollisionEvents();
+
+    // Real hot-reload: a script saved from the Script Editor while
+    // Playing gets diffed and (re)loaded here, then ticked -- see
+    // core::tickScriptHotReload()'s own comment. Physics/ECS/camera are
+    // completely untouched by this.
+    core::tickScriptHotReload(ecs, scripting_);
+    scripting_.tick(dt);
 }
 
 void PhysicsPreviewPlugin::castTestRay(glm::vec3 origin, glm::vec3 direction, float maxDistance) {

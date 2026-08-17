@@ -105,6 +105,7 @@
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/SceneFile.hpp"
 #include "core/ScenePicking.hpp"
+#include "core/ScriptHotReload.hpp"
 #include "core/ScriptNetworkApi.hpp"
 #include "core/Scripting.hpp"
 #include "core/ScriptUiApi.hpp"
@@ -18679,6 +18680,72 @@ void testAvatarItemValidateRejectsAbsoluteTexturePath() {
     check(!valid, "AvatarItem::validate() real-rejects a real absolute texture path");
 }
 
+// --- ScriptHotReload -------------------------------------------------------------
+
+void testTickScriptHotReloadLoadsNewScript() {
+    engine::core::ECS ecs;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptHotReload test: Scripting::initialize() succeeds");
+
+    auto entity = ecs.createEntity("Scripted");
+    auto& script = ecs.addComponent<engine::core::Script>(entity);
+    script.source = "return 1\n";
+
+    engine::core::tickScriptHotReload(ecs, scripting);
+    check(script.scriptId != engine::core::kInvalidScript, "tickScriptHotReload() real-loads a fresh Script's source");
+    check(script.loadedSource == script.source, "tickScriptHotReload() real-records loadedSource after a real load");
+    scripting.shutdown();
+}
+
+void testTickScriptHotReloadSkipsUnchangedScript() {
+    engine::core::ECS ecs;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptHotReload test: Scripting::initialize() succeeds");
+
+    auto entity = ecs.createEntity("Scripted");
+    auto& script = ecs.addComponent<engine::core::Script>(entity);
+    script.source = "return 1\n";
+    engine::core::tickScriptHotReload(ecs, scripting);
+    engine::core::ScriptId firstId = script.scriptId;
+
+    engine::core::tickScriptHotReload(ecs, scripting);
+    check(script.scriptId == firstId, "tickScriptHotReload() real-leaves an unchanged script's scriptId alone, no needless reload");
+    scripting.shutdown();
+}
+
+void testTickScriptHotReloadReloadsChangedScript() {
+    engine::core::ECS ecs;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptHotReload test: Scripting::initialize() succeeds");
+
+    auto entity = ecs.createEntity("Scripted");
+    auto& script = ecs.addComponent<engine::core::Script>(entity);
+    script.source = "return 1\n";
+    engine::core::tickScriptHotReload(ecs, scripting);
+    engine::core::ScriptId firstId = script.scriptId;
+
+    script.source = "return 2\n";
+    engine::core::tickScriptHotReload(ecs, scripting);
+    check(script.scriptId != firstId, "tickScriptHotReload() real-reloads (a fresh scriptId) when source genuinely changed");
+    check(script.loadedSource == "return 2\n", "tickScriptHotReload() real-updates loadedSource to the new source");
+    scripting.shutdown();
+}
+
+void testTickScriptHotReloadSkipsWhenAutoRunFalse() {
+    engine::core::ECS ecs;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptHotReload test: Scripting::initialize() succeeds");
+
+    auto entity = ecs.createEntity("Scripted");
+    auto& script = ecs.addComponent<engine::core::Script>(entity);
+    script.source = "return 1\n";
+    script.autoRun = false;
+
+    engine::core::tickScriptHotReload(ecs, scripting);
+    check(script.scriptId == engine::core::kInvalidScript, "tickScriptHotReload() real-leaves autoRun=false scripts unloaded");
+    scripting.shutdown();
+}
+
 // --- WorldPackage --------------------------------------------------------------
 
 void testWorldPackagePathHelpersUseRealFixedNames() {
@@ -27685,6 +27752,10 @@ int main() {
     testScanForOrphanedAssetFilesMissingDirectoryReturnsEmpty();
     testAvatarItemValidateRejectsAbsoluteMeshPath();
     testAvatarItemValidateRejectsAbsoluteTexturePath();
+    testTickScriptHotReloadLoadsNewScript();
+    testTickScriptHotReloadSkipsUnchangedScript();
+    testTickScriptHotReloadReloadsChangedScript();
+    testTickScriptHotReloadSkipsWhenAutoRunFalse();
     testWorldPackagePathHelpersUseRealFixedNames();
     testWorldPackageSaveToDirectoryCreatesRealFiles();
     testWorldPackageSaveLoadRoundTrip();

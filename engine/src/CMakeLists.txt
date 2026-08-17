@@ -155,6 +155,7 @@ add_library(engine_core STATIC
     core/ResourcePaths.cpp
     core/Audio.cpp
     core/Scripting.cpp
+    core/ScriptHotReload.cpp
 
     runtime/GameLoop.cpp
 
