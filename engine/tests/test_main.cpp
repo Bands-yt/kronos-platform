@@ -18537,6 +18537,148 @@ void testValidateForPublishCombinesMetadataAndSceneErrors() {
     check(result.errors.size() >= 5, "validateForPublish() real-combines world-id, version, metadata, AND scene errors into one real complete list");
 }
 
+// Kronos ("Studio QoL Sprint" -- "catching absolute local path
+// references... so all assets use relative package URIs" / "flagging
+// orphaned asset files"): real, pure coverage over isAbsoluteAssetPath(),
+// collectReferencedAssetPaths(), validateAssetPathsAreRelative(), and
+// findOrphanedAssetFiles() -- plus one real filesystem test for
+// scanForOrphanedAssetFiles(), the one function in this file that isn't
+// pure, matching testWorldPackageSaveToDirectoryCreatesRealFiles()'s own
+// real-temp-directory precedent just above.
+
+void testIsAbsoluteAssetPathRejectsRelative() {
+    check(!engine::publishing::isAbsoluteAssetPath("meshes/hat.obj"), "a real relative path is real-not absolute");
+    check(!engine::publishing::isAbsoluteAssetPath(""), "a real empty path is real-not absolute (nothing to flag)");
+}
+
+void testIsAbsoluteAssetPathAcceptsUnixAbsolute() {
+    check(engine::publishing::isAbsoluteAssetPath("/home/creator/hat.obj"), "a real Unix-style absolute path is real-detected");
+}
+
+void testIsAbsoluteAssetPathAcceptsWindowsAbsolute() {
+    check(engine::publishing::isAbsoluteAssetPath("C:/Users/creator/hat.obj"), "a real Windows drive-letter path (forward slash) is real-detected");
+    check(engine::publishing::isAbsoluteAssetPath("C:\\Users\\creator\\hat.obj"), "a real Windows drive-letter path (backslash) is real-detected");
+}
+
+void testCollectReferencedAssetPathsGathersThumbnailAndObjMeshes() {
+    auto metadata = makeValidMetadata(); // thumbnailPath = "thumb.ppm"
+    engine::core::SceneFile scene;
+    engine::core::SceneEntityRecord objEntity;
+    objEntity.name = "ObjEntity";
+    objEntity.hasMeshSource = true;
+    objEntity.meshSource.kind = engine::core::MeshSourceKind::Obj;
+    objEntity.meshSource.path = "meshes/hat.obj";
+    scene.entities.push_back(objEntity);
+    engine::core::SceneEntityRecord boxEntity; // procedural -- no real file to reference
+    boxEntity.name = "BoxEntity";
+    boxEntity.hasMeshSource = true;
+    boxEntity.meshSource.kind = engine::core::MeshSourceKind::Box;
+    boxEntity.meshSource.path = "should_be_ignored.obj"; // Box never reads its own path field
+    scene.entities.push_back(boxEntity);
+
+    auto paths = engine::publishing::collectReferencedAssetPaths(metadata, scene);
+    check(std::find(paths.begin(), paths.end(), "thumb.ppm") != paths.end(), "the real thumbnail path is real-collected");
+    check(std::find(paths.begin(), paths.end(), "meshes/hat.obj") != paths.end(), "a real Obj mesh's own path is real-collected");
+    check(std::find(paths.begin(), paths.end(), "should_be_ignored.obj") == paths.end(),
+          "a real Box-kind entity's own path field is real-ignored -- it's procedural, not a real file reference");
+}
+
+void testValidateAssetPathsAreRelativePassesForRelativePaths() {
+    auto result = engine::publishing::validateAssetPathsAreRelative(makeValidMetadata(), makeNonEmptyScene());
+    check(result.valid, "validateAssetPathsAreRelative() real-passes when every real referenced path is relative");
+}
+
+void testValidateAssetPathsAreRelativeRejectsAbsoluteThumbnail() {
+    auto metadata = makeValidMetadata();
+    metadata.thumbnailPath = "/home/creator/thumb.ppm";
+    auto result = engine::publishing::validateAssetPathsAreRelative(metadata, makeNonEmptyScene());
+    check(!result.valid, "validateAssetPathsAreRelative() real-rejects a real absolute thumbnail path");
+}
+
+void testValidateAssetPathsAreRelativeRejectsAbsoluteMeshPath() {
+    engine::core::SceneFile scene;
+    engine::core::SceneEntityRecord entity;
+    entity.name = "ObjEntity";
+    entity.hasMeshSource = true;
+    entity.meshSource.kind = engine::core::MeshSourceKind::Obj;
+    entity.meshSource.path = "C:/Users/creator/hat.obj";
+    scene.entities.push_back(entity);
+    auto result = engine::publishing::validateAssetPathsAreRelative(makeValidMetadata(), scene);
+    check(!result.valid, "validateAssetPathsAreRelative() real-rejects a real absolute mesh path");
+}
+
+void testFindOrphanedAssetFilesReturnsUnreferencedFilesOnly() {
+    std::vector<std::string> filesOnDisk = {"meshes/hat.obj", "meshes/unused_prop.obj", "textures/hat.png"};
+    std::vector<std::string> referenced = {"meshes/hat.obj", "textures/hat.png"};
+    auto orphans = engine::publishing::findOrphanedAssetFiles(filesOnDisk, referenced);
+    check(orphans.size() == 1, "findOrphanedAssetFiles() real-finds exactly the one real unreferenced file");
+    check(orphans[0] == "meshes/unused_prop.obj", "the real orphan found is the real, specific unreferenced file, not just any of them");
+}
+
+void testFindOrphanedAssetFilesEmptyWhenAllReferenced() {
+    std::vector<std::string> filesOnDisk = {"meshes/hat.obj"};
+    std::vector<std::string> referenced = {"meshes/hat.obj"};
+    check(engine::publishing::findOrphanedAssetFiles(filesOnDisk, referenced).empty(),
+          "findOrphanedAssetFiles() real-returns empty when every real file on disk is referenced");
+}
+
+void testScanForOrphanedAssetFilesRealDirectoryScan() {
+    const char* directory = "test_orphan_scan_dir";
+    std::filesystem::create_directories(directory);
+    {
+        std::ofstream referencedFile(std::string(directory) + "/referenced.obj");
+        referencedFile << "v 0 0 0\n";
+    }
+    {
+        std::ofstream orphanFile(std::string(directory) + "/orphan.obj");
+        orphanFile << "v 0 0 0\n";
+    }
+
+    engine::core::SceneFile scene;
+    engine::core::SceneEntityRecord entity;
+    entity.name = "ObjEntity";
+    entity.hasMeshSource = true;
+    entity.meshSource.kind = engine::core::MeshSourceKind::Obj;
+    entity.meshSource.path = std::string(directory) + "/referenced.obj";
+    scene.entities.push_back(entity);
+
+    auto orphans = engine::publishing::scanForOrphanedAssetFiles(directory, makeValidMetadata(), scene);
+    check(orphans.size() == 1, "scanForOrphanedAssetFiles() real-scans the real directory and finds exactly the one real orphan");
+    check(!orphans.empty() && orphans[0].find("orphan.obj") != std::string::npos,
+          "the real orphan found is real-the unreferenced file, not the referenced one");
+
+    std::filesystem::remove_all(directory);
+}
+
+void testScanForOrphanedAssetFilesMissingDirectoryReturnsEmpty() {
+    auto orphans = engine::publishing::scanForOrphanedAssetFiles("test_orphan_scan_dir_does_not_exist",
+                                                                    makeValidMetadata(), makeNonEmptyScene());
+    check(orphans.empty(), "scanForOrphanedAssetFiles() real-returns an honest empty result for a real, nonexistent directory, not an error");
+}
+
+void testAvatarItemValidateRejectsAbsoluteMeshPath() {
+    engine::core::AvatarItem item;
+    item.id = "hat_1";
+    item.name = "Hat";
+    item.meshPath = "/home/creator/hat.obj";
+    std::string error;
+    check(!item.validate(error), "AvatarItem::validate() real-rejects a real absolute mesh path");
+}
+
+void testAvatarItemValidateRejectsAbsoluteTexturePath() {
+    engine::core::AvatarItem item;
+    item.id = "hat_1";
+    item.name = "Hat";
+    item.meshPath = "meshes/hat.obj"; // must pass the earlier real-file-existence check to reach the texture check
+    std::filesystem::create_directories("meshes");
+    { std::ofstream f("meshes/hat.obj"); f << "v 0 0 0\n"; }
+    item.texturePath = "C:/Users/creator/hat.png";
+    std::string error;
+    bool valid = item.validate(error);
+    std::filesystem::remove_all("meshes");
+    check(!valid, "AvatarItem::validate() real-rejects a real absolute texture path");
+}
+
 // --- WorldPackage --------------------------------------------------------------
 
 void testWorldPackagePathHelpersUseRealFixedNames() {
@@ -27530,6 +27672,19 @@ int main() {
     testValidateForPublishEmptyWorldIdFails();
     testValidateForPublishInvalidVersionFails();
     testValidateForPublishCombinesMetadataAndSceneErrors();
+    testIsAbsoluteAssetPathRejectsRelative();
+    testIsAbsoluteAssetPathAcceptsUnixAbsolute();
+    testIsAbsoluteAssetPathAcceptsWindowsAbsolute();
+    testCollectReferencedAssetPathsGathersThumbnailAndObjMeshes();
+    testValidateAssetPathsAreRelativePassesForRelativePaths();
+    testValidateAssetPathsAreRelativeRejectsAbsoluteThumbnail();
+    testValidateAssetPathsAreRelativeRejectsAbsoluteMeshPath();
+    testFindOrphanedAssetFilesReturnsUnreferencedFilesOnly();
+    testFindOrphanedAssetFilesEmptyWhenAllReferenced();
+    testScanForOrphanedAssetFilesRealDirectoryScan();
+    testScanForOrphanedAssetFilesMissingDirectoryReturnsEmpty();
+    testAvatarItemValidateRejectsAbsoluteMeshPath();
+    testAvatarItemValidateRejectsAbsoluteTexturePath();
     testWorldPackagePathHelpersUseRealFixedNames();
     testWorldPackageSaveToDirectoryCreatesRealFiles();
     testWorldPackageSaveLoadRoundTrip();

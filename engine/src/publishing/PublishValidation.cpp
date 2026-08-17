@@ -1,6 +1,8 @@
 #include "publishing/PublishValidation.hpp"
 
 #include <cctype>
+#include <filesystem>
+#include <unordered_set>
 
 #include "core/SceneFile.hpp"
 
@@ -71,9 +73,68 @@ PublishValidationResult validateForPublish(const std::string& worldId, const std
 
     mergeInto(result, validateWorldMetadata(metadata));
     mergeInto(result, validateSceneContent(scene));
+    mergeInto(result, validateAssetPathsAreRelative(metadata, scene));
 
     result.valid = result.errors.empty();
     return result;
+}
+
+bool isAbsoluteAssetPath(const std::string& path) {
+    if (path.empty()) return false;
+    if (path.front() == '/' || path.front() == '\\') return true; // Unix absolute, or a bare UNC/rooted Windows path
+    // Windows drive-letter absolute: "C:/..." or "C:\\..."
+    if (path.size() >= 3 && std::isalpha(static_cast<unsigned char>(path[0])) != 0 && path[1] == ':' &&
+        (path[2] == '/' || path[2] == '\\')) {
+        return true;
+    }
+    return false;
+}
+
+std::vector<std::string> collectReferencedAssetPaths(const WorldMetadata& metadata, const core::SceneFile& scene) {
+    std::vector<std::string> paths;
+    if (!metadata.thumbnailPath.empty()) paths.push_back(metadata.thumbnailPath);
+    for (const core::SceneEntityRecord& entity : scene.entities) {
+        if (!entity.hasMeshSource) continue;
+        if (entity.meshSource.kind != core::MeshSourceKind::Obj) continue; // Box/Plane/Capsule/Quad are procedural, no real file
+        if (!entity.meshSource.path.empty()) paths.push_back(entity.meshSource.path);
+    }
+    return paths;
+}
+
+PublishValidationResult validateAssetPathsAreRelative(const WorldMetadata& metadata, const core::SceneFile& scene) {
+    PublishValidationResult result;
+    for (const std::string& path : collectReferencedAssetPaths(metadata, scene)) {
+        if (isAbsoluteAssetPath(path)) {
+            result.errors.push_back("Asset path \"" + path +
+                                     "\" is an absolute local path -- publish only accepts package-relative paths, "
+                                     "or it will silently break for anyone else who loads this package.");
+        }
+    }
+    result.valid = result.errors.empty();
+    return result;
+}
+
+std::vector<std::string> findOrphanedAssetFiles(const std::vector<std::string>& filesOnDisk,
+                                                  const std::vector<std::string>& referencedPaths) {
+    std::unordered_set<std::string> referenced(referencedPaths.begin(), referencedPaths.end());
+    std::vector<std::string> orphans;
+    for (const std::string& file : filesOnDisk) {
+        if (referenced.find(file) == referenced.end()) orphans.push_back(file);
+    }
+    return orphans;
+}
+
+std::vector<std::string> scanForOrphanedAssetFiles(const std::string& assetDirectory, const WorldMetadata& metadata,
+                                                      const core::SceneFile& scene) {
+    std::vector<std::string> filesOnDisk;
+    std::error_code ec;
+    if (!std::filesystem::exists(assetDirectory, ec) || ec) return {}; // real, honest empty result, not an error
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             assetDirectory, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if (ec) break; // a real, mid-scan filesystem error -- return whatever was found before it, not a crash
+        if (entry.is_regular_file(ec) && !ec) filesOnDisk.push_back(entry.path().generic_string());
+    }
+    return findOrphanedAssetFiles(filesOnDisk, collectReferencedAssetPaths(metadata, scene));
 }
 
 } // namespace engine::publishing

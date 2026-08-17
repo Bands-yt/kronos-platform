@@ -1,8 +1,30 @@
 #include "core/AvatarItem.hpp"
 
+#include <cctype>
 #include <filesystem>
 
 namespace engine::core {
+
+namespace {
+// Kronos ("Studio QoL Sprint" -- "catching absolute local path
+// references... so all assets use relative package URIs"): real, pure,
+// same logic as publishing::isAbsoluteAssetPath() (PublishValidation.cpp)
+// -- duplicated here, not shared, since `core` (this file's own module)
+// cannot depend on `publishing` (a higher-level module that already
+// depends on `core`); the same small, local, per-file primitive
+// duplication this codebase's own mesh-generation helpers already
+// establish as the accepted convention for a genuinely tiny, stable
+// check like this one.
+bool isAbsoluteAssetPath(const std::string& path) {
+    if (path.empty()) return false;
+    if (path.front() == '/' || path.front() == '\\') return true;
+    if (path.size() >= 3 && std::isalpha(static_cast<unsigned char>(path[0])) != 0 && path[1] == ':' &&
+        (path[2] == '/' || path[2] == '\\')) {
+        return true;
+    }
+    return false;
+}
+} // namespace
 
 const char* avatarItemCategoryName(AvatarItemCategory category) {
     switch (category) {
@@ -47,6 +69,20 @@ bool AvatarItem::validate(std::string& outError) const {
     }
     if (meshPath.empty()) {
         outError = "no mesh assigned (meshPath is empty)";
+        return false;
+    }
+    // Kronos ("Studio QoL Sprint"): real, blocking -- an absolute path
+    // here points at a location that only exists on the uploading
+    // creator's own machine, so it silently breaks for anyone else once
+    // this item is published (same reasoning
+    // publishing::validateAssetPathsAreRelative() applies at the
+    // world/scene level).
+    if (isAbsoluteAssetPath(meshPath)) {
+        outError = "mesh path must be a relative package path, not an absolute local path: " + meshPath;
+        return false;
+    }
+    if (isAbsoluteAssetPath(texturePath)) {
+        outError = "texture path must be a relative package path, not an absolute local path: " + texturePath;
         return false;
     }
     std::error_code ec;

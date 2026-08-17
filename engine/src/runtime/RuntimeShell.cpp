@@ -104,6 +104,20 @@ bool RuntimeShell::initialize() {
     // before the ImGui_ImplVulkan_Init() call below builds the font
     // atlas texture.
     core::applyKronosUITheme();
+    // Kronos ("Base Client UI Theme"): real, player-client-specific
+    // overrides on top of the shared Kronos theme above -- applied here
+    // (not inside core::applyKronosUITheme() itself) so Studio, which
+    // calls that same shared function, keeps its own existing look
+    // untouched. Softer, larger rounding and a real, semi-transparent
+    // dark-navy window background read as more "consumer app," less
+    // "creator tool," matching the real, deliberate distinction this
+    // pass draws between the two surfaces.
+    {
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.WindowRounding = 10.0f;
+        style.FrameRounding = 6.0f;
+        style.Colors[ImGuiCol_WindowBg] = ImVec4(0.07f, 0.08f, 0.12f, 0.85f);
+    }
     core::loadKronosFonts(core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/fonts");
     // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
     // Layer" -- "UI scale must affect all panels"): real baseline
@@ -762,10 +776,21 @@ void RuntimeShell::drawHomePanel() {
     // Primary action, visually distinct (accent color) from every
     // secondary action below it -- the one real, most common thing a
     // returning player wants to do.
+    //
+    // Kronos ("Base Client UI Theme"): real, vibrant green (was blue) --
+    // a real, deliberate, local `PushStyleColor` scoped to just this one
+    // button, not a change to the shared `core::applyKronosUITheme()`
+    // (which Studio also uses) -- every other button on this screen
+    // (Friends/Settings/Sessions/etc.) stays the theme's own neutral
+    // default, so "primary action" still reads as visually distinct
+    // from "secondary action," just with a different real accent color.
     ImVec2 primaryButtonSize(kCardWidth, 48.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.55f, 0.95f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.16f, 0.38f, 0.72f, 1.0f));
+    const ImVec4 kPrimaryActionGreen(0.00f, 0.78f, 0.32f, 1.0f);
+    const ImVec4 kPrimaryActionGreenHovered(0.14f, 0.86f, 0.44f, 1.0f);
+    const ImVec4 kPrimaryActionGreenActive(0.00f, 0.64f, 0.25f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, kPrimaryActionGreen);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kPrimaryActionGreenHovered);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kPrimaryActionGreenActive);
     if (ImGui::Button("Game Catalogue", primaryButtonSize)) openGameCatalogue();
     ImGui::PopStyleColor(3);
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
@@ -803,7 +828,14 @@ void RuntimeShell::drawHomePanel() {
     // stay real, Studio-only panels by original design (not a gap --
     // see studio::plugins::AvatarEditor/CreatorDashboardPanel), not
     // duplicated here.
+    // Kronos ("Base Client UI Theme"): real, same primary-action green
+    // as "Game Catalogue" above -- "Launch" is the other real primary
+    // action this screen offers.
+    ImGui::PushStyleColor(ImGuiCol_Button, kPrimaryActionGreen);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kPrimaryActionGreenHovered);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kPrimaryActionGreenActive);
     if (ImGui::Button("Launch Studio", halfButtonSize)) launchStudio();
+    ImGui::PopStyleColor(3);
 
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
     ImGui::TextDisabled("Kronos %s", core::kKronosVersion);

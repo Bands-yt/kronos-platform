@@ -131,6 +131,24 @@ void PublishingPanel::drawValidationSection(core::ECS& ecs) {
         ImGui::TextColored(ImVec4(0.90f, 0.30f, 0.30f, 1.0f), "%zu real validation error(s):", result.errors.size());
         for (const auto& error : result.errors) ImGui::BulletText("%s", error.c_str());
     }
+
+    // Kronos ("Studio QoL Sprint" -- "flagging orphaned asset files"):
+    // real, advisory (never blocks `result.valid` above) -- an orphaned
+    // file is real hygiene/package-bloat feedback, not a correctness
+    // failure the way a missing title or an absolute path is.
+    ImGui::Spacing();
+    ImGui::InputText("Asset Directory (for orphan scan)", assetDirectoryBuffer_, sizeof(assetDirectoryBuffer_));
+    if (assetDirectoryBuffer_[0] != '\0') {
+        std::vector<std::string> orphans =
+            publishing::scanForOrphanedAssetFiles(assetDirectoryBuffer_, package.metadata, package.scene);
+        if (orphans.empty()) {
+            ImGui::TextDisabled("No orphaned asset files found under \"%s\".", assetDirectoryBuffer_);
+        } else {
+            ImGui::TextColored(ImVec4(0.90f, 0.70f, 0.20f, 1.0f),
+                                "%zu file(s) in this directory aren't referenced by anything:", orphans.size());
+            for (const std::string& orphan : orphans) ImGui::BulletText("%s", orphan.c_str());
+        }
+    }
 }
 
 void PublishingPanel::drawTestPublishSection(core::ECS& ecs) {

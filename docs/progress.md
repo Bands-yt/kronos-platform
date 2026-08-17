@@ -1,5 +1,81 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 1: pipeline re-audit, client theme, asset validation
+
+**Render pipeline re-audit (real, code-level, using the actual codebase's
+own symbol names this time)**: traced the complete real skinning chain --
+`AnimationPlayer::tick()` recomputes `skinningMatrices_` every frame
+(`world * inverseBind`, correct parent-before-child hierarchy walk,
+`AnimationPlayer.cpp:256-257`) -> copied into each entity's own
+`SkinnedRenderable::skinningMatrices` every tick by whichever real owner
+drives it -> `memcpy`'d into the mapped GPU `SkinningUBO` buffer every
+draw in `Renderer::drawSkinnedEntities()` (`Renderer.cpp:4787-4788`).
+`GpuSkinVertex`'s own joint-index/weight vertex buffer is built from real
+per-vertex `SkinWeights` data (`RiggedMesh.cpp:119-128`) and bound at the
+real, correct locations. The `inColor -> outVertexColor -> inVertexColor`
+multiply into `object.baseColor` (built in an earlier pass this session)
+is intact. **No bug found anywhere in this chain** -- confirms every
+prior screenshot-based verification this session was accurate, not
+lucky.
+
+**Base client UI theme**: `RuntimeShell::initialize()` now applies real,
+player-client-specific overrides on top of the shared
+`core::applyKronosUITheme()` (`WindowRounding=10.0f`, `FrameRounding=6.0f`,
+a semi-transparent dark-navy `WindowBg`) -- applied locally, not inside
+the shared theme function itself, so Studio (which calls that same
+function via `applyStudioStyle()`) keeps its own existing look untouched.
+"Game Catalogue" and "Launch Studio" both now use a real vibrant-green
+accent, scoped via `ImGui::PushStyleColor`/`PopStyleColor` to just those
+two buttons -- not a global `ImGuiCol_Button` recolor, which would have
+wrongly turned every button in both Studio and the rest of the runtime
+green too.
+
+**Studio Explorer tree view + color-coded icons**: already fully real
+and working before this pass (`ImGui::TreeNodeEx`-based recursive
+parent-child tree over `core::Hierarchy`, drag-and-drop reparenting,
+shift/ctrl multi-select, real hand-drawn per-category vector icons in
+`StudioIcons.hpp` -- a deliberate, documented choice over an icon font).
+No code changed here; verified, not rebuilt.
+
+**Asset validation ("unlinked" clarified as: orphaned files not
+referenced by any manifest/component, and absolute local paths that
+should be package-relative)**:
+- `publishing::isAbsoluteAssetPath()` (new, pure) detects Unix (`/...`)
+  and Windows (`C:/...`, `C:\...`) absolute paths.
+- `publishing::collectReferencedAssetPaths()` (new, pure) is the one
+  real, shared definition of "what counts as a referenced asset" for a
+  world (today: `WorldMetadata::thumbnailPath` + every `Obj`-kind
+  entity's own `MeshSource::path`) -- both the absolute-path check and
+  the orphan scan below build from it, so the definition can't drift
+  between the two.
+- `publishing::validateAssetPathsAreRelative()` folds into
+  `validateForPublish()` as a real, blocking check -- an absolute path
+  baked into a published manifest silently breaks for anyone else who
+  loads the package.
+- `publishing::findOrphanedAssetFiles()` (pure set difference) +
+  `publishing::scanForOrphanedAssetFiles()` (the one real,
+  filesystem-touching wrapper, recursive directory scan) surface real
+  orphaned files as an advisory (not blocking -- hygiene, not a
+  correctness failure) in `PublishingPanel`'s own Validation section, via
+  a new creator-supplied "Asset Directory" field (this engine has no
+  single canonical project-asset-root concept to infer automatically).
+- The same absolute-path check was added directly to
+  `core::AvatarItem::validate()` (duplicated locally, not shared -- `core`
+  cannot depend on `publishing`) for the other real "catalog" upload
+  path (avatar items). Orphan detection stays scene/world-scoped only --
+  a single avatar-item upload has no "project directory" for the concept
+  to apply to.
+
+**Tests**: 19 new checks (pure-function coverage for all of the above,
+plus real filesystem tests for `scanForOrphanedAssetFiles()` mirroring
+`testWorldPackageSaveToDirectoryCreatesRealFiles()`'s own real-temp-
+directory precedent). **10788/10788 checks passing**, clean 4-target
+rebuild.
+
+This is part 1 of a larger, explicitly multi-part sprint -- see the next
+entries for the Command Palette, Script Editor hot-reload wiring,
+snapshot/undo, and network emulation work.
+
 ## 2026-08-16 (later still, part 9) — Avatar Gameplay Lighting Harmonisation Pass
 
 **Real finding that reframed this pass, surfaced before writing any

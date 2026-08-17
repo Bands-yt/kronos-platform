@@ -82,6 +82,17 @@ private:
     int creatorPlayerId_ = 1; // manually supplied, same real convention UploadAvatarItemPlugin's creatorIdBuffer_ already established
 
     char publishDirectoryBuffer_[256] = "published_worlds";
+    // Kronos ("Studio QoL Sprint" -- "flagging orphaned asset files in
+    // the project directory that aren't referenced by any ECS component
+    // or manifest entry"): real, creator-supplied -- this engine has no
+    // single canonical "project asset root" concept to infer this from
+    // automatically (a scene's own referenced paths can point anywhere),
+    // so the creator points the scan at whichever directory their real
+    // asset files actually live in. Empty (the default) means "don't
+    // scan" -- drawValidationSection() real-skips the orphan check
+    // entirely rather than scanning an empty/current-directory path by
+    // accident.
+    char assetDirectoryBuffer_[256] = "";
 
     ThumbnailCameraRig thumbnailRig_;
     bool hasCapturedThumbnail_ = false;
