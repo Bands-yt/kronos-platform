@@ -1,5 +1,49 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-16 (later still, part 5) — Proportional correction: thicker arms, bigger hands, wider shoulders
+
+Direct follow-up to real, explicit user feedback comparing a live
+screenshot side-by-side against the same reference image from the
+previous entry: "match the arm length, hand size and shoulder offset.
+Keep Kronos's current rig and shaders intact." A real, bounded
+proportion-tuning pass -- no skeleton joint changes, no shader changes,
+just `RiggedAvatar.cpp`'s own numeric mesh-generation parameters, per
+the explicit scope constraint.
+
+**Root cause of the previous "not doing it right" result**: the arm's
+cross-sections (0.095/0.075/0.065 shoulder/elbow/wrist) were thin enough,
+relative to the torso and the arm's own real length, that the limb read
+as a nearly-invisible sliver next to the body from most camera angles --
+correct in position, wrong in scale. The reference image's own arms stay
+thick along nearly their whole length (minimal taper) and end in a real,
+large, clearly-visible hand -- the opposite of a slender, steeply-tapered
+limb.
+
+**Real fix**: `shoulderCrossSection`/`elbowCrossSection`/
+`wristCrossSection` thickened 0.095/0.075/0.065 -> 0.125/0.105/0.095 (a
+real, much gentler taper, closer to the reference's near-uniform blocky
+arm). `palmHalfExtents` (the hand box `appendHand()` builds fingers off
+of) grown 0.10/0.12/0.065 -> 0.13/0.15/0.085 -- a real, notably bigger,
+more visible hand (finger geometry scales with it automatically, since
+`appendHand()`'s own finger dimensions are already derived proportionally
+from the palm). Shoulder attachment offset widened again, 0.36 -> 0.41,
+matching real, necessary clearance for the now-thicker arm against the
+torso's own 0.29 shoulder-bulge boundary (the same real reason the
+previous 0.25 -> 0.36 widening was needed for the original, thinner arm
+-- a thicker arm needs proportionally more room to clear the same
+boundary). Every `.anim` file's own `arm_L_upper`/`arm_R_upper` position
+keyframes were updated to match (this rig bakes absolute joint position
+per keyframe, not a bind-pose delta -- the same mechanical requirement
+every previous proportion change in this pass has needed).
+
+**Verified via live screenshot**: arms now read as real, clearly visible,
+chunky limbs with large, distinct hands, and a real, visible shoulder gap
+from the torso -- matching the reference's block-limbed proportions.
+
+10764/10764 tests passing, clean 4-target rebuild. No rig (skeleton
+joint count/hierarchy) or shader changes -- pure mesh-dimension/
+animation-position data, per the explicit scope constraint.
+
 ## 2026-08-16 (later still, part 4) — Default look: swept-side hair + dark jacket color story
 
 Direct follow-up to a real reference image the user provided (a

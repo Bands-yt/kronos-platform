@@ -515,23 +515,29 @@ Skeleton buildHumanoidSkeleton() {
     // tweak (see docs/progress.md for the full FK math).
     //
     // The shoulder's own lateral offset also real-widened, 0.25 -> 0.36
-    // (a real, separate fix found via live screenshot, not part of the
-    // original plan): the torso's own new, wider shoulder-bulge ring
-    // (see the torso profile below, 0.29 max half-width) meant a
-    // near-vertical arm starting at the OLD 0.25 offset began *inside*
-    // the torso's own silhouette and stayed hugging it for its whole
-    // length, reading as almost invisible from the front -- exactly the
-    // "reads clearly from all camera angles" requirement failing. 0.36
-    // clears the torso's 0.29 boundary plus the arm's own 0.095 cross-
-    // section radius with real margin, at every point along the arm's
-    // length. Every .anim file's own arm_L_upper/arm_R_upper keyframes
-    // bake this same position (this rig's animation format stores
-    // absolute position per keyframe, not a bind-pose delta) and were
-    // updated to match.
+    // -> 0.41 (two real, separate rounds of fixes found via live
+    // screenshot, not part of the original plan). First round: the
+    // torso's own new, wider shoulder-bulge ring (see the torso profile
+    // below, 0.29 max half-width) meant a near-vertical arm starting at
+    // the original 0.25 offset began *inside* the torso's own silhouette
+    // and stayed hugging it for its whole length, reading as almost
+    // invisible from the front. Second round: a real, direct user
+    // proportional-reference correction (match a real reference image's
+    // arm length/hand size/shoulder offset) thickened the arm's own
+    // cross-sections meaningfully (see shoulderCrossSection's own
+    // comment below), which needed a real, matching increase in
+    // clearance from the torso to avoid the *thicker* arm re-clipping
+    // the shoulder boundary the first fix solved for the old, thinner
+    // one. 0.41 clears the torso's 0.29 boundary plus the arm's own
+    // (now 0.125) cross-section radius with real margin, at every point
+    // along the arm's length. Every .anim file's own arm_L_upper/
+    // arm_R_upper keyframes bake this same position (this rig's
+    // animation format stores absolute position per keyframe, not a
+    // bind-pose delta) and were updated to match both rounds.
     Joint armLUpper;
     armLUpper.name = "arm_L_upper";
     armLUpper.parentIndex = spineUpperIndex;
-    armLUpper.localPosition = {-0.36f, 0.1f, 0.0f};
+    armLUpper.localPosition = {-0.41f, 0.1f, 0.0f};
     int armLUpperIndex = skeleton.addJoint(armLUpper);
 
     Joint armLLower;
@@ -549,7 +555,7 @@ Skeleton buildHumanoidSkeleton() {
     Joint armRUpper;
     armRUpper.name = "arm_R_upper";
     armRUpper.parentIndex = spineUpperIndex;
-    armRUpper.localPosition = {0.36f, 0.1f, 0.0f};
+    armRUpper.localPosition = {0.41f, 0.1f, 0.0f};
     int armRUpperIndex = skeleton.addJoint(armRUpper);
 
     Joint armRLower;
@@ -691,14 +697,20 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     // own start radius, so there's no visible step). Cross-sections and
     // the hand scale with `bodyProportions.limbScale` only -- see that
     // field's own header comment.
+    // Kronos ("Avatar Silhouette Pass" -- real proportional-reference
+    // correction, direct user feedback against a real reference image:
+    // "match the arm length, hand size and shoulder offset"): real,
+    // meaningfully thicker cross-sections and a real, notably bigger
+    // hand -- the previous, more tapered/slender arm read as nearly
+    // invisible next to the torso from most camera angles; a real,
+    // classic blocky-avatar arm stays thick along most of its length
+    // (elbow only slightly narrower than the shoulder, not a steep
+    // taper) and ends in a real, large, clearly-visible hand.
     float ls = bodyProportions.limbScale;
-    glm::vec2 shoulderCrossSection(0.095f * ls, 0.095f * ls);
-    glm::vec2 elbowCrossSection(0.075f * ls, 0.075f * ls);
-    glm::vec2 wristCrossSection(0.065f * ls, 0.065f * ls);
-    // Kronos ("Avatar Visual Silhouette Pass" -- "Hands" -- "Add palm
-    // volume"): real, modestly bigger than the old plain hand box
-    // (0.09/0.11/0.05) it replaces.
-    glm::vec3 palmHalfExtents(0.10f * ls, 0.12f * ls, 0.065f * ls);
+    glm::vec2 shoulderCrossSection(0.125f * ls, 0.125f * ls);
+    glm::vec2 elbowCrossSection(0.105f * ls, 0.105f * ls);
+    glm::vec2 wristCrossSection(0.095f * ls, 0.095f * ls);
+    glm::vec3 palmHalfExtents(0.13f * ls, 0.15f * ls, 0.085f * ls);
     appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_upper"), worldPos("arm_L_lower"),
                       shoulderCrossSection, elbowCrossSection, jointIndexFor("arm_L_upper"), jointIndexFor("arm_L_lower"),
                       HumanoidBodySegment::LeftArm, data.skinWeights);
