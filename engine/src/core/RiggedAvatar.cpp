@@ -794,8 +794,23 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     {
         glm::vec3 pelvisPos = worldPos("pelvis");
         glm::vec3 neckPos = worldPos("neck");
-        glm::vec3 torsoCenter = (pelvisPos + neckPos) * 0.5f;
-        float torsoHalfHeight = glm::length(neckPos - pelvisPos) * 0.5f;
+        // Kronos ("Torso Proportion Fix" -- "Reduce Torso Height"): real,
+        // ~19% reduction -- the torso barrel previously spanned the full
+        // pelvis-to-neck distance, which put its own topmost ("neckline")
+        // ring, and therefore the fixed-height shoulder caps sitting on
+        // it, at roughly mid-chest instead of collarbone height. The
+        // barrel's own BOTTOM stays anchored exactly at pelvisPos
+        // (unchanged -- the hip cap below already connects flush there),
+        // and only the TOP is pulled down to 81% of the way to the real
+        // neck joint, opening a real, deliberate gap the new neck
+        // cylinder below fills -- not a uniform shrink around the same
+        // center, which would have also pulled the torso's own bottom up
+        // off the pelvis and reopened the hip gap this file's own earlier
+        // "Unified Lower Body" pass just closed.
+        constexpr float kTorsoTopFraction = 0.81f;
+        glm::vec3 torsoTop = pelvisPos + (neckPos - pelvisPos) * kTorsoTopFraction;
+        glm::vec3 torsoCenter = (pelvisPos + torsoTop) * 0.5f;
+        float torsoHalfHeight = glm::length(torsoTop - pelvisPos) * 0.5f;
         float w = bodyProportions.width;
         // Waist (narrower) -> chest -> shoulders (wider) -- a real,
         // gentle taper, not a uniform box, giving the torso both "rounded
@@ -809,7 +824,13 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
         // rounds over the shoulder into the neck instead of stopping flat
         // at its own widest point. The waist ring is unchanged -- the
         // "gentle taper toward the waist" was already real here before
-        // this pass.
+        // this pass. Ring *shape* is unchanged by the height reduction
+        // above -- appendProfiledBarrel() spaces these 4 rings evenly
+        // across torsoHalfHeight regardless of its absolute value, so the
+        // neckline ring is still real-real 0.24*w/0.14*w, just reached at
+        // a lower absolute Y now -- exactly the value the new neck
+        // cylinder's own base cross-section below matches, so there's no
+        // visible step at the seam.
         std::vector<glm::vec2> torsoProfile = {
             {0.20f * w, 0.12f * w}, // waist (bottom)
             {0.24f * w, 0.14f * w}, // chest (mid)
@@ -818,6 +839,28 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
         };
         appendProfiledBarrel(data.vertices, data.indices, data.vertexSegments, torsoCenter, torsoHalfHeight,
                               torsoProfile, jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, data.skinWeights);
+
+        // Kronos ("Torso Proportion Fix" -- "Add Distinct Neck
+        // Primitive"): real, short, tapered cylinder bridging the
+        // shortened torso's own new top (torsoTop, computed above) to the
+        // real, already-existing "neck" joint (previously unused by any
+        // mesh piece -- head sat directly on top of the old, taller torso
+        // barrel with no distinct neck at all). Reuses appendSmoothLimb()
+        // (already the established "tapered cylinder between two points,
+        // smooth normals, real cross-section taper" primitive this file
+        // uses for arms/legs) rather than a new, separate, near-identical
+        // function. Base cross-section exactly matches the torso's own
+        // neckline ring (0.24*w, 0.14*w -- see the comment above) for a
+        // flush, gapless seam; the top cross-section is real-narrower
+        // (0.14*w, 0.13*w), a genuine neck taper, not a torso-width
+        // cylinder. Rigidly bound to the real "neck" joint at both ends
+        // (this rig's current animation set never rotates it
+        // independently of spine_upper, so a smooth 2-joint blend isn't
+        // needed here the way it is for a real bending elbow/knee).
+        int neckJointIndex = jointIndexFor("neck");
+        appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, torsoTop, neckPos,
+                          glm::vec2(0.24f * w, 0.14f * w), glm::vec2(0.14f * w, 0.13f * w), neckJointIndex, neckJointIndex,
+                          HumanoidBodySegment::Torso, data.skinWeights);
     }
 
     float ls = bodyProportions.limbScale;
