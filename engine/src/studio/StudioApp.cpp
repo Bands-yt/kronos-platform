@@ -746,6 +746,14 @@ void StudioApp::drawDockspace() {
             ImGui::MenuItem("Script Editor", nullptr, true, false);
             ImGui::MenuItem("Stats", nullptr, true, false);
             ImGui::MenuItem("Scene Search", nullptr, true, false);
+            // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
+            // Performance Profiler"): unlike the disabled placeholders
+            // above (permanent dock panels with no real toggle yet),
+            // this one is a genuinely real, clickable toggle -- same
+            // real state F3 flips.
+            if (ImGui::MenuItem("Performance Overlay", "F3", performanceOverlay_.isOpen())) {
+                performanceOverlay_.toggle();
+            }
             ImGui::EndMenu();
         }
         pluginManager_.drawMenu();
@@ -1583,6 +1591,15 @@ void StudioApp::run() {
                 // nothing.
                 commandPalette_.open();
             }
+
+            // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
+            // Performance Profiler"): F3, no modifier, checked once per
+            // frame same as the block above -- WantCaptureKeyboard still
+            // gates it so an active text field doesn't fight a widget
+            // that happens to bind F3 for its own purpose.
+            if (!io.WantCaptureKeyboard && ImGui::IsKeyPressed(ImGuiKey_F3, false)) {
+                performanceOverlay_.toggle();
+            }
         }
         commandPalette_.draw(buildCommandPaletteCommands(),
                               [this](const std::string& query) { return searchEntitiesForPalette(query); });
@@ -1638,6 +1655,9 @@ void StudioApp::run() {
             profiler_.recordSnapshot(lastPerformanceMetrics_, nowSeconds);
         }
         statsPanel_.draw(lastPerformanceMetrics_);
+        performanceOverlay_.draw(lastPerformanceMetrics_, (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying())
+                                                                ? &physicsPreviewPlugin_->scripting()
+                                                                : nullptr);
         if (core::EntityId searchClicked = sceneSearchPanel_.draw(ecs_, explorerPanel_.selectedEntity());
             searchClicked != core::kNullEntity) {
             explorerPanel_.setSelected(searchClicked);

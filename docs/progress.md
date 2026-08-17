@@ -1,5 +1,47 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-17 — Kronos Developer Velocity Sprint, part 2: Real-Time Visual Performance Profiler (F3)
+
+**What already existed, confirmed before writing any code**: a real,
+working `core::Profiler` (spike/stall detection, JSON recording) and a
+real, always-docked `StatsPanel` with live `ImGui::PlotLines()` graphs
+for frame time/draw calls/memory, backed by real `core::PerformanceHistory`
+ring buffers -- all from an earlier "Performance Stats & Debug Tools"
+pass. `StatsPanel` is drawn unconditionally every frame (no open/close
+flag at all), so it wasn't the "F3-toggleable overlay" the sprint asked
+for -- left completely untouched to avoid regressing it.
+
+**New `studio::panels::PerformanceOverlayPanel`**
+(`PerformanceOverlayPanel.hpp/.cpp`): a real, separate, F3-toggleable
+floating window (also reachable from View -> Performance Overlay, the
+first genuinely interactive item in that menu -- every other entry
+there is a disabled placeholder for a permanent dock panel with no real
+toggle yet). Reuses the exact same `core::PerformanceHistory` +
+`ImGui::PlotLines()` convention `StatsPanel` already established for its
+frame-time graph, plus real draw-call/GPU-memory numbers already in
+`core::PerformanceMetrics` (GPU memory is honestly labeled "GPU memory
+(VMA)" -- total VMA-tracked allocation, not an isolated VBO-only figure;
+no per-usage-type VMA accounting exists in this codebase to split that
+out).
+
+**Real, new Lua memory reading**: `core::Scripting::totalUsedMemoryBytes()`
+-- the per-script `AllocatorState::used` byte count was already tracked
+internally for the per-script memory ceiling, just never exposed
+publicly before this. Only meaningful while Studio's Play mode
+(`PhysicsPreviewPlugin`, which now owns the one real live
+`core::Scripting` instance Studio ever runs, from the packaging sprint's
+prerequisite work) is actually running -- the overlay shows a real,
+honest "N/A (not Playing)" rather than a fabricated zero otherwise.
+
+**Verification**: 1 new headless test (`totalUsedMemoryBytes()` is 0
+before any script loads, and genuinely reflects a real script's real
+table allocation afterward) -- 10872/10872 passing (was 10868). All 3
+targets rebuild clean, zero warnings. Manually launched `studio`
+post-build and confirmed clean, stable startup.
+
+**Next**: Viewport Surface Alignment & Snap Controls (Drop-to-Ground,
+Grid/Angle snap presets).
+
 ## 2026-08-17 — Kronos Developer Velocity Sprint, part 1: One-Click Package Exporter
 
 **Real prerequisite gap found and closed first**: `core::SceneFile` never

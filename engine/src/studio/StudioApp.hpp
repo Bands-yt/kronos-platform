@@ -32,6 +32,7 @@
 #include "studio/panels/InspectorPanel.hpp"
 #include "studio/panels/SceneSearchPanel.hpp"
 #include "studio/panels/ScriptEditorPanel.hpp"
+#include "studio/panels/PerformanceOverlayPanel.hpp"
 #include "studio/panels/StatsPanel.hpp"
 #include "studio/panels/ViewportPanel.hpp"
 
@@ -209,6 +210,11 @@ private:
     panels::ViewportPanel viewportPanel_;
     panels::ScriptEditorPanel scriptEditorPanel_;
     panels::StatsPanel statsPanel_;
+    // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
+    // Performance Profiler"): F3-toggleable, separate from the always-
+    // docked statsPanel_ above -- see PerformanceOverlayPanel's own
+    // class comment.
+    panels::PerformanceOverlayPanel performanceOverlay_;
     panels::SceneSearchPanel sceneSearchPanel_;
     panels::DebugConsolePanel debugConsolePanel_;
 

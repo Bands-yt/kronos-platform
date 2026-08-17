@@ -18959,6 +18959,22 @@ void testAvatarItemValidateRejectsAbsoluteTexturePath() {
 
 // --- ScriptHotReload -------------------------------------------------------------
 
+void testScriptingTotalUsedMemoryBytesReflectsRealAllocations() {
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "totalUsedMemoryBytes test: Scripting::initialize() succeeds");
+    check(scripting.totalUsedMemoryBytes() == 0, "a real Scripting instance with no scripts loaded real-reports 0 used bytes");
+
+    // A real script that allocates a real, sizeable table -- exercises
+    // the actual Luau allocator, not a fabricated number.
+    engine::core::ScriptId id =
+        scripting.loadAndRun("MemTest", "local t = {}\nfor i = 1, 5000 do t[i] = tostring(i) end\n_G.keepAlive = t\n");
+    check(id != engine::core::kInvalidScript, "Sanity: the real memory-allocating script real-loaded successfully");
+    check(scripting.totalUsedMemoryBytes() > 0, "totalUsedMemoryBytes() real-reflects the real script's real live allocations");
+
+    scripting.unload(id);
+    scripting.shutdown();
+}
+
 void testTickScriptHotReloadLoadsNewScript() {
     engine::core::ECS ecs;
     engine::core::Scripting scripting;
@@ -28147,6 +28163,7 @@ int main() {
     testScanForOrphanedAssetFilesMissingDirectoryReturnsEmpty();
     testAvatarItemValidateRejectsAbsoluteMeshPath();
     testAvatarItemValidateRejectsAbsoluteTexturePath();
+    testScriptingTotalUsedMemoryBytesReflectsRealAllocations();
     testTickScriptHotReloadLoadsNewScript();
     testTickScriptHotReloadSkipsUnchangedScript();
     testTickScriptHotReloadReloadsChangedScript();

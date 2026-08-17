@@ -55,6 +55,14 @@ public:
     void drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) override;
 
     [[nodiscard]] bool isPlaying() const { return playing_; }
+
+    // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
+    // Performance Profiler" -- "Lua runtime memory allocations"): the
+    // one real, live core::Scripting instance Studio ever runs (see this
+    // class's own header comment) -- the F3 overlay reads
+    // scripting().totalUsedMemoryBytes() through this while Playing.
+    [[nodiscard]] const core::Scripting& scripting() const { return scripting_; }
+
     void play(core::ECS& ecs);
     void stop(core::ECS& ecs);
 

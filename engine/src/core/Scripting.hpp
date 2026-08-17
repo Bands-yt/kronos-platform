@@ -59,6 +59,15 @@ public:
     void setMaxExecutionMillisPerTick(double ms) { maxExecutionMillisPerTick_ = ms; }
     void setMaxMemoryBytesPerScript(size_t bytes) { maxMemoryBytesPerScript_ = bytes; }
 
+    // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
+    // Performance Profiler" -- "Lua runtime memory allocations"): real,
+    // live sum of every currently-alive script's own allocator
+    // bookkeeping (see Scripting.cpp's AllocatorState -- already tracked
+    // internally for the per-script memory ceiling, just never exposed
+    // publicly before this). 0 for an instance with no scripts loaded --
+    // a real, honest "nothing running" value, not an error.
+    [[nodiscard]] size_t totalUsedMemoryBytes() const;
+
     // Called once at the end of registerBindings() for every new script
     // VM, after print/engine/task/events are already set up -- the seam a
     // higher layer (Application, which owns the ECS/Renderer/Physics/

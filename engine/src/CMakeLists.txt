@@ -480,6 +480,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/panels/InspectorPanel.cpp
         studio/panels/ScriptEditorPanel.cpp
         studio/panels/StatsPanel.cpp
+        studio/panels/PerformanceOverlayPanel.cpp
         studio/panels/SceneSearchPanel.cpp
         studio/panels/DebugConsolePanel.cpp
         studio/plugins/AnimatorPlugin.cpp

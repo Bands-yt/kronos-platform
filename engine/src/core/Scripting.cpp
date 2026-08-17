@@ -46,6 +46,15 @@ bool Scripting::initialize() {
     return true;
 }
 
+size_t Scripting::totalUsedMemoryBytes() const {
+    size_t total = 0;
+    for (const auto& script : scripts_) {
+        if (!script.alive || script.allocatorState == nullptr) continue;
+        total += static_cast<const AllocatorState*>(script.allocatorState)->used;
+    }
+    return total;
+}
+
 void Scripting::closeAllScripts() {
     for (auto& script : scripts_) {
         unload(static_cast<ScriptId>(&script - &scripts_[0]));
