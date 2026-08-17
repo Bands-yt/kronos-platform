@@ -4208,6 +4208,8 @@ void testSceneManagerCapture() {
     sceneManager.tickAutosave(engine::core::SceneManager::kAutosaveIntervalSeconds + 1.0f, ecs, camera);
     check(engine::core::SceneManager::hasRecoveryFile(path), "tickAutosave() past the interval writes a recovery file");
     check(sceneManager.isDirty(), "autosave does not clear the dirty flag (only a real Save does)");
+    check(!engine::core::SceneHistory::listSnapshots(path).empty(),
+          "a real periodic tickAutosave() also feeds a real SceneHistory snapshot");
 
     check(sceneManager.saveScene(path, ecs, camera), "re-saving the scene succeeds");
     check(!engine::core::SceneManager::hasRecoveryFile(path),
@@ -4215,6 +4217,95 @@ void testSceneManagerCapture() {
 
     std::remove(path);
     std::remove(engine::core::SceneManager::recoveryPathFor(path).c_str());
+    std::filesystem::remove_all(engine::core::SceneHistory::historyDirectoryFor(path));
+}
+
+// --- SceneHistory ----------------------------------------------------------------
+// Kronos ("Studio QoL Sprint" -- "Auto-Recovery & Delta Scene Snapshots"):
+// real, rotating, multi-slot snapshot history. Every test below uses a
+// real minimal SceneFile (via a real SceneManager::captureScene() over a
+// tiny fixture ECS) and real on-disk files under a fixture path's own
+// `.history/` directory, cleaned up at the end of each test.
+
+engine::core::SceneFile makeSceneHistoryFixtureFile() {
+    engine::core::ECS ecs;
+    (void)ecs.createEntity("Fixture");
+    engine::core::Camera camera;
+    engine::core::SceneManager sceneManager;
+    return sceneManager.captureScene(ecs, camera);
+}
+
+void testSceneManagerTickAutosaveMajorEditTriggersImmediateSnapshot() {
+    engine::core::ECS ecs;
+    (void)ecs.createEntity("A");
+    engine::core::Camera camera;
+    engine::core::SceneManager sceneManager;
+    const char* path = "test_scene_manager_major_edit.scene";
+    check(sceneManager.saveScene(path, ecs, camera), "Sanity: real save for the major-edit snapshot test");
+
+    (void)ecs.createEntity("B"); // a real major edit: entity count changed
+    check(engine::core::SceneHistory::listSnapshots(path).empty(), "no snapshot yet before this tick");
+    sceneManager.tickAutosave(1.0f, ecs, camera); // well under kAutosaveIntervalSeconds
+    check(!engine::core::SceneHistory::listSnapshots(path).empty(),
+          "a major edit (entity-count change) real-triggers an immediate snapshot, not just the periodic 60s one");
+
+    std::remove(path);
+    std::remove(engine::core::SceneManager::recoveryPathFor(path).c_str());
+    std::filesystem::remove_all(engine::core::SceneHistory::historyDirectoryFor(path));
+}
+
+void testSceneHistoryRecordSnapshotRejectsEmptyScenePath() {
+    engine::core::SceneFile file = makeSceneHistoryFixtureFile();
+    check(!engine::core::SceneHistory::recordSnapshot("", file),
+          "SceneHistory::recordSnapshot() real-rejects an empty scenePath -- nothing to snapshot for a never-saved scene");
+}
+
+void testSceneHistoryRecordAndListSnapshots() {
+    const char* path = "test_scene_history_fixture.scene";
+    engine::core::SceneFile file = makeSceneHistoryFixtureFile();
+
+    check(engine::core::SceneHistory::listSnapshots(path).empty(),
+          "no snapshots exist before any recordSnapshot() call");
+    check(engine::core::SceneHistory::recordSnapshot(path, file), "recordSnapshot() real-succeeds writing a fresh slot");
+    check(engine::core::SceneHistory::recordSnapshot(path, file), "a second recordSnapshot() real-succeeds too (a real new slot, not an overwrite)");
+
+    auto snapshots = engine::core::SceneHistory::listSnapshots(path);
+    check(snapshots.size() == 2, "listSnapshots() real-reports both real snapshots written above");
+    check(snapshots[0].unixSeconds >= snapshots[1].unixSeconds,
+          "listSnapshots() real-orders newest first");
+
+    std::filesystem::remove_all(engine::core::SceneHistory::historyDirectoryFor(path));
+}
+
+void testSceneHistoryLoadSnapshotRoundTrips() {
+    const char* path = "test_scene_history_roundtrip.scene";
+    engine::core::SceneFile file = makeSceneHistoryFixtureFile();
+    check(engine::core::SceneHistory::recordSnapshot(path, file), "Sanity: real snapshot recorded for the round-trip test");
+
+    auto snapshots = engine::core::SceneHistory::listSnapshots(path);
+    check(snapshots.size() == 1, "Sanity: exactly one real snapshot exists");
+
+    engine::core::SceneFile loaded;
+    check(engine::core::SceneHistory::loadSnapshot(snapshots[0].path, loaded), "loadSnapshot() real-loads the file it just wrote");
+    check(loaded.entities.size() == file.entities.size() && loaded.entities[0].name == "Fixture",
+          "the real loaded snapshot's content genuinely matches what was captured");
+
+    std::filesystem::remove_all(engine::core::SceneHistory::historyDirectoryFor(path));
+}
+
+void testSceneHistoryPrunesOldestBeyondCap() {
+    const char* path = "test_scene_history_prune.scene";
+    engine::core::SceneFile file = makeSceneHistoryFixtureFile();
+
+    for (size_t i = 0; i < engine::core::SceneHistory::kMaxSnapshots + 3; ++i) {
+        check(engine::core::SceneHistory::recordSnapshot(path, file), "recordSnapshot() real-succeeds for every real slot in this loop");
+    }
+
+    auto snapshots = engine::core::SceneHistory::listSnapshots(path);
+    check(snapshots.size() == engine::core::SceneHistory::kMaxSnapshots,
+          "SceneHistory real-prunes down to exactly kMaxSnapshots, a real rotating buffer not an ever-growing log");
+
+    std::filesystem::remove_all(engine::core::SceneHistory::historyDirectoryFor(path));
 }
 
 // Kronos (Alpha Roadmap Phase 2, "Scene system") -- real Hierarchy
@@ -27085,6 +27176,11 @@ int main() {
     testTransactionLogPublishRecordsCoexistWithPurchaseRecords();
     testTransactionLogLoadsPrePublishCategoryFileWithHonestDefault();
     testSceneManagerCapture();
+    testSceneManagerTickAutosaveMajorEditTriggersImmediateSnapshot();
+    testSceneHistoryRecordSnapshotRejectsEmptyScenePath();
+    testSceneHistoryRecordAndListSnapshots();
+    testSceneHistoryLoadSnapshotRoundTrips();
+    testSceneHistoryPrunesOldestBeyondCap();
     testSceneFileHierarchyRoundTrip();
     testSceneManagerNewSceneClearsEcsAndState();
     testSceneManagerLoadSceneHandlesRenderableWithNoMeshSourceHonestly();

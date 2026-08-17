@@ -96,6 +96,7 @@ add_library(engine_core STATIC
     core/GameManifest.cpp
     core/LocalGameDirectory.cpp
     core/SceneManager.cpp
+    core/SceneHistory.cpp
     core/ProcessLaunch.cpp
     core/QualityScore.cpp
     core/HiddenGemsSelector.cpp

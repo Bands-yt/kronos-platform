@@ -5,6 +5,7 @@
 #include <cctype>
 #include <iterator>
 #include <chrono>
+#include <ctime>
 #include <thread>
 #include <cstdio>
 #include <cstring>
@@ -1200,6 +1201,48 @@ void StudioApp::drawRecoveryBanner() {
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
+
+    // Kronos ("Studio QoL Sprint" -- "Auto-Recovery & Delta Scene
+    // Snapshots"): the single-slot banner above always offers the very
+    // latest autosave; this real, optional extra section is for when
+    // that latest snapshot isn't the one wanted (it's itself corrupted,
+    // or an edit a few steps back is what's actually needed) -- lists
+    // every real snapshot core::SceneHistory has on disk, newest first.
+    if (!recoveryOfferPath_.empty()) {
+        std::vector<core::SceneSnapshotEntry> snapshots = core::SceneHistory::listSnapshots(recoveryOfferPath_);
+        if (!snapshots.empty()) {
+            std::string header = "Older snapshots (" + std::to_string(snapshots.size()) + ")##SceneHistory";
+            if (ImGui::TreeNode(header.c_str())) {
+                for (const core::SceneSnapshotEntry& snapshot : snapshots) {
+                    std::time_t t = static_cast<std::time_t>(snapshot.unixSeconds);
+                    char buf[32];
+                    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+                    ImGui::Text("%s", buf);
+                    ImGui::SameLine();
+                    std::string restoreLabel = "Restore##" + snapshot.path;
+                    if (ImGui::SmallButton(restoreLabel.c_str())) {
+                        core::SceneFile file;
+                        if (core::SceneHistory::loadSnapshot(snapshot.path, file) &&
+                            file.saveToFile(core::SceneManager::recoveryPathFor(recoveryOfferPath_)) &&
+                            sceneManager_.loadScene(core::SceneManager::recoveryPathFor(recoveryOfferPath_), ecs_,
+                                                     meshLibrary_, renderer_.allocator(), renderer_.device(),
+                                                     renderer_.commandPool(), renderer_.graphicsQueue(),
+                                                     viewportPanel_.camera())) {
+                            (void)sceneManager_.saveScene(recoveryOfferPath_, ecs_, viewportPanel_.camera());
+                            explorerPanel_.setSelected(core::kNullEntity);
+                            fileActionStatus_ = "Restored snapshot from " + std::string(buf);
+                            notifications_.push(fileActionStatus_, NotificationSeverity::Success);
+                            recoveryOfferPath_.clear();
+                        } else {
+                            fileActionStatus_ = "Snapshot restore failed: " + snapshot.path;
+                            notifications_.push(fileActionStatus_, NotificationSeverity::Error);
+                        }
+                    }
+                }
+                ImGui::TreePop();
+            }
+        }
+    }
 
     if (projectRecoveryOfferPath_.empty()) return;
 

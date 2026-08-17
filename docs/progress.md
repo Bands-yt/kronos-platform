@@ -1,5 +1,62 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 5: Auto-Recovery & Delta Scene Snapshots
+
+**What already existed, confirmed before writing any code**:
+`core::SceneManager` already had a real, working single-slot autosave
+(`tickAutosave()`, a dirty-gated 60s timer writing to
+`<scenePath>.autosave`) and a real recovery-offer banner in Studio
+(`drawRecoveryBanner()`, offering "Recover"/"Dismiss" on next open of a
+scene with a pending autosave). This already covers "restore on crash"
+in spirit -- a crash leaves the `.autosave` file behind the same way an
+ordinary unclean exit would, and the banner already offers it back. Two
+real, concrete gaps against the sprint's own ask: (1) only ever the one
+single most-recent slot is kept, so a corrupted or unwanted latest
+autosave has nothing to fall back to; (2) the trigger was *only* the
+60s timer (dirty just gated whether that periodic write happened) --
+never an immediate write "on major scene edits" as asked.
+
+**New `core::SceneHistory`** (`core/SceneHistory.hpp/.cpp`): a real,
+rotating, multi-slot snapshot history layered on top of (not replacing)
+the existing single-slot autosave. Real, stated honesty: there is no
+binary-diff/delta serialization anywhere in this codebase
+(`core::SceneFile` round-trips a full scene, nothing partial) -- "delta"
+here honestly means a full point-in-time snapshot kept alongside
+earlier ones instead of overwriting them, the same real idiom the
+existing autosave already established. Snapshots live in
+`<scenePath>.history/<unixSeconds>[_N].scene`, capped at
+`kMaxSnapshots = 8`, oldest pruned automatically on every write; same-
+second collisions get a real disambiguating suffix instead of silently
+overwriting each other.
+
+**`SceneManager::tickAutosave()`** now feeds `SceneHistory::recordSnapshot()`
+on every real write -- still the periodic 60s cadence, PLUS an immediate
+extra snapshot the moment a "major edit" (an entity-count change, the
+exact same coarse-dirty definition this class's own header comment
+already established) is seen, gated by a 5-second
+`kMinMajorEditSnapshotIntervalSeconds` cooldown so a rapid multi-entity
+create/delete burst doesn't hammer disk I/O with one snapshot per
+frame.
+
+**Studio's recovery banner** gained a real, optional "Older snapshots
+(N)" collapsible section listing every real `SceneHistory` entry
+(newest first, human-readable timestamp), each with its own real
+Restore button -- reuses the exact same load-into-`.autosave`-then-
+commit-to-real-path flow the existing single "Recover" button already
+uses, so a corrupted latest autosave still leaves earlier real points
+recoverable.
+
+**Verification**: 5 new headless tests (empty-path rejection, real
+record+list ordering, real load round-trip, real pruning down to
+`kMaxSnapshots`, and the immediate major-edit trigger firing well under
+the 60s interval) plus one extended existing test -- 10839/10839 passing
+(was 10813). All 3 targets rebuild clean, zero warnings. Manually
+launched `studio` post-build and confirmed clean, stable startup.
+
+**QoL Sprint complete** -- all 4 items (Hot-Reload, Command Palette,
+Network Emulation Bar, Auto-Recovery & Delta Scene Snapshots) plus item
+0 (asset validation) are now real and committed.
+
 ## 2026-08-17 — Kronos Studio & Platform QoL Sprint, part 4: Integrated Network Emulation Bar
 
 **Confirmed genuinely new before writing any code**: grepped `net/` for

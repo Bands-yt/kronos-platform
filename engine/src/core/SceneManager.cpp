@@ -276,13 +276,16 @@ void SceneManager::newScene(ECS& ecs) {
     currentScenePath_.clear();
     dirty_ = false;
     autosaveTimer_ = 0.0f;
+    sinceLastMajorEditSnapshot_ = kMinMajorEditSnapshotIntervalSeconds;
     lastSeenEntityCount_ = ecs.entityCount();
 }
 
 void SceneManager::tickAutosave(float dt, ECS& ecs, const Camera& camera) {
     size_t currentEntityCount = ecs.entityCount();
+    bool majorEdit = false;
     if (currentEntityCount != lastSeenEntityCount_) {
         dirty_ = true;
+        majorEdit = true;
         lastSeenEntityCount_ = currentEntityCount;
     }
 
@@ -292,13 +295,23 @@ void SceneManager::tickAutosave(float dt, ECS& ecs, const Camera& camera) {
     }
 
     autosaveTimer_ += dt;
-    if (autosaveTimer_ < kAutosaveIntervalSeconds) return;
+    sinceLastMajorEditSnapshot_ += dt;
+
+    bool periodicDue = autosaveTimer_ >= kAutosaveIntervalSeconds;
+    bool majorEditDue = majorEdit && sinceLastMajorEditSnapshot_ >= kMinMajorEditSnapshotIntervalSeconds;
+    if (!periodicDue && !majorEditDue) return;
+
     autosaveTimer_ = 0.0f;
+    sinceLastMajorEditSnapshot_ = 0.0f;
 
     SceneFile file = captureScene(ecs, camera);
     if (!file.saveToFile(recoveryPathFor(currentScenePath_))) {
         std::fprintf(stderr, "SceneManager: autosave to \"%s\" failed\n", recoveryPathFor(currentScenePath_).c_str());
     }
+    // Real, rotating multi-slot history -- see SceneHistory's own class
+    // comment and tickAutosave()'s header comment on why this fires
+    // alongside the single-slot autosave above rather than replacing it.
+    SceneHistory::recordSnapshot(currentScenePath_, file);
     // dirty_ deliberately NOT cleared here -- an autosave protects
     // against loss, it isn't equivalent to the user's own Save (which
     // does clear dirty_, see saveScene()).

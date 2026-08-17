@@ -11,6 +11,7 @@
 #include "core/Mesh.hpp"
 #include "core/Physics.hpp"
 #include "core/SceneFile.hpp"
+#include "core/SceneHistory.hpp"
 
 namespace engine::core {
 
@@ -110,12 +111,24 @@ public:
     // No-ops (and resets the timer) whenever there's no current scene
     // path or nothing is dirty by the heuristic above -- see class
     // comment.
+    //
+    // Kronos ("Studio QoL Sprint" -- "Auto-Recovery & Delta Scene
+    // Snapshots"): every real write here also feeds a real
+    // core::SceneHistory rotating snapshot (recordSnapshot()) -- fired on
+    // the same kAutosaveIntervalSeconds cadence as before, PLUS an
+    // immediate extra snapshot the moment a "major edit" (an entity-count
+    // change -- the exact same coarse-dirty definition this class's own
+    // header comment already establishes) is seen, subject to
+    // kMinMajorEditSnapshotIntervalSeconds so a rapid multi-entity
+    // create/delete burst doesn't hammer disk I/O with one snapshot per
+    // frame.
     void tickAutosave(float dt, ECS& ecs, const Camera& camera);
 
     [[nodiscard]] static std::string recoveryPathFor(const std::string& scenePath);
     [[nodiscard]] static bool hasRecoveryFile(const std::string& scenePath);
 
     static constexpr float kAutosaveIntervalSeconds = 60.0f;
+    static constexpr float kMinMajorEditSnapshotIntervalSeconds = 5.0f;
 
     // The pure in-memory half of saveScene() (that method is just this
     // plus a file write + bookkeeping), made public for its second real
@@ -131,6 +144,7 @@ private:
     int activeTabIndex_ = -1;
 
     float autosaveTimer_ = 0.0f;
+    float sinceLastMajorEditSnapshot_ = kMinMajorEditSnapshotIntervalSeconds; // starts "ready", not on cooldown
     size_t lastSeenEntityCount_ = 0;
 };
 
