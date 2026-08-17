@@ -1,5 +1,53 @@
 # Kronos Platform — Progress Log
 
+## 2026-08-17 — Kronos Developer Velocity Sprint, part 3: Viewport Surface Alignment & Snap Controls
+
+**What already existed, confirmed before writing any code**: a real,
+working ImGuizmo translate/rotate/scale gizmo with real grid/angle/scale
+snapping already wired (`ViewportPanel`'s `gizmoSnapEnabled_`/
+`translateSnap_`/`rotateSnapDegrees_`/`scaleSnap_`), applied by ImGuizmo
+internally during the drag itself -- and a real, physics-independent
+scene raycast (`core::pickEntity()`, `ScenePicking.hpp`) already backing
+click-to-select, deliberately not built on `core::Physics::raycast()`
+since Studio runs no live Physics outside Play mode. The real gaps were
+narrower than the sprint's framing implied: exact preset increments on
+the existing snap controls, and a genuinely new drop-to-ground shortcut.
+
+**Drop-to-Ground (End key)**: `core::pickEntity()` gained an optional
+`excludeEntity` parameter (default `kNullEntity`, every existing call
+site unaffected) -- needed because a downward raycast starting at the
+selected entity's own Transform position would otherwise trivially
+self-hit its own AABB at distance ~0. New `ViewportPanel::dropSelectedToGround()`
+raycasts straight down, excluding the selected entity, and repositions
+it so its own mesh's local-space bottom (scaled by `Transform::scale.y`)
+rests on the hit surface -- not its raw origin, which would sink a
+center-origin mesh like a Box halfway into the ground. Real, stated
+scope simplification: only `scale.y` is applied, not the full rotation
+(correct for the common unrotated/Y-only-rotated case; a fully general
+rotated-AABB solve is a harder, separate problem). Bound to the End key
+in the same gated block (`!WantCaptureKeyboard`, hovered, gizmo not
+mid-drag) the existing W/E/R shortcuts already use.
+
+**Grid & Angle Snap presets**: the viewport toolbar's single free-form
+snap-value drag (which silently swapped between translate/rotate/scale
+meaning depending on the *currently active* gizmo mode) is now three
+always-visible, independently-toggleable controls -- Grid Snap
+(0.25m/1.0m/5.0m dropdown, applies to Translate), Angle Snap
+(15°/45°/90° dropdown, applies to Rotate), and Scale Snap (kept as the
+original free-form drag, not named in the sprint's own ask). Switching
+gizmo modes no longer silently changes what's currently snapping.
+
+**Verification**: `pickEntity()`/`dropSelectedToGround()` need a real
+GPU-backed `core::Mesh`/`MeshLibrary` and have no existing headless test
+coverage to extend (consistent with this codebase's own established "GPU
+code gets structural verification, not pixel verification" precedent,
+stated plainly rather than a fabricated coverage claim). Full suite
+still 10872/10872 (no regression). All 3 targets rebuild clean, zero
+warnings. Manually launched `studio` post-build and confirmed clean,
+stable startup.
+
+**Next**: Live Math Evaluation & Multi-Selection Property Inspector.
+
 ## 2026-08-17 — Kronos Developer Velocity Sprint, part 2: Real-Time Visual Performance Profiler (F3)
 
 **What already existed, confirmed before writing any code**: a real,

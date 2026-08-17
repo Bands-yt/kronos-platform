@@ -43,7 +43,13 @@ struct ScenePickResult {
 // look-to-interact trigger -- see core::ScriptWorldApi / Application.cpp.
 // Two different queries for two genuinely different situations, not a
 // duplicated implementation of the same one.
+// `excludeEntity` (default kNullEntity, matching every existing call
+// site's real behavior unchanged) skips one specific entity entirely --
+// Kronos ("Developer Velocity Sprint" -- "Drop-to-Ground") needs this
+// for a downward raycast starting at the selected entity's own origin,
+// which would otherwise trivially self-hit its own AABB at distance ~0
+// instead of finding the real ground surface below it.
 [[nodiscard]] ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin, glm::vec3 direction,
-                                          float maxDistance);
+                                          float maxDistance, EntityId excludeEntity = kNullEntity);
 
 } // namespace engine::core

@@ -123,6 +123,20 @@ private:
     void handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibrary, ExplorerPanel& explorer, ImVec2 imageOrigin,
                           ImVec2 imageSize);
 
+    // Kronos ("Developer Velocity Sprint" -- "Drop-to-Ground Shortcut
+    // (End Key)"): a real, physics-independent downward raycast
+    // (core::pickEntity(), the same one click-to-select already uses --
+    // Studio runs no live core::Physics outside Play mode, see that
+    // function's own header comment) from `selected`'s current Transform
+    // position, excluding `selected` itself. On a real hit, repositions
+    // `selected` so its own mesh's local-space bottom (scaled by
+    // Transform::scale.y, ignoring rotation -- a real, stated scope
+    // simplification, see this method's own .cpp comment) rests exactly
+    // on the hit surface, not its raw origin (which would sink a
+    // center-origin mesh like a Box halfway into the ground). A real,
+    // honest no-op if there's nothing selected or nothing below it.
+    void dropSelectedToGround(core::ECS& ecs, core::MeshLibrary& meshLibrary, core::EntityId selected);
+
     // World -> screen projection shared by every debug-draw shape below --
     // same convention handleSelection()'s drag-select rectangle test
     // already uses (NDC from view*proj, then flip Y for screen space).
@@ -161,7 +175,17 @@ private:
     VkExtent2D desiredExtent_{0, 0};
     GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
     GizmoSpace gizmoSpace_ = GizmoSpace::World;
-    bool gizmoSnapEnabled_ = false;
+    // Kronos ("Developer Velocity Sprint" -- "Grid & Rotation Snapping"):
+    // split from one combined toggle into two independent ones -- Grid
+    // Snap (translate) and Angle Snap (rotate) are real, separately
+    // stated toolbar controls, not one flag that happens to apply to
+    // whichever gizmo mode is currently active. Scale keeps its own
+    // separate toggle (scaleSnapEnabled_) -- the sprint's own ask names
+    // only Grid/Angle Snap, so Scale's existing free-form control is
+    // left exactly as it was.
+    bool gridSnapEnabled_ = false;
+    bool angleSnapEnabled_ = false;
+    bool scaleSnapEnabled_ = false;
     float translateSnap_ = 1.0f;
     float rotateSnapDegrees_ = 15.0f;
     float scaleSnap_ = 0.1f;

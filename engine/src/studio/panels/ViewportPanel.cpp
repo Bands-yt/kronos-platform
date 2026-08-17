@@ -83,14 +83,17 @@ void ViewportPanel::drawGizmo(core::ECS& ecs, core::EntityId selected, const std
     // dragged values land exactly on-grid rather than needing a second
     // manual snap pass.
     float snapValues[3] = {translateSnap_, translateSnap_, translateSnap_};
+    bool snapEnabledForThisOp = gridSnapEnabled_;
     if (gizmoOperation_ == GizmoOperation::Rotate) {
         snapValues[0] = snapValues[1] = snapValues[2] = rotateSnapDegrees_;
+        snapEnabledForThisOp = angleSnapEnabled_;
     } else if (gizmoOperation_ == GizmoOperation::Scale) {
         snapValues[0] = snapValues[1] = snapValues[2] = scaleSnap_;
+        snapEnabledForThisOp = scaleSnapEnabled_;
     }
 
     ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, mode, glm::value_ptr(model), nullptr,
-                          gizmoSnapEnabled_ ? snapValues : nullptr);
+                          snapEnabledForThisOp ? snapValues : nullptr);
 
     if (ImGuizmo::IsUsing()) {
         glm::vec3 translation, scale, skew;
@@ -164,6 +167,32 @@ void ViewportPanel::computeMouseRay(ImVec2 mousePos, ImVec2 imageOrigin, ImVec2 
 
     outOrigin = glm::vec3(nearPoint);
     outDirection = glm::normalize(glm::vec3(farPoint) - glm::vec3(nearPoint));
+}
+
+void ViewportPanel::dropSelectedToGround(core::ECS& ecs, core::MeshLibrary& meshLibrary, core::EntityId selected) {
+    auto* transform = ecs.tryGetComponent<core::Transform>(selected);
+    if (transform == nullptr) return;
+
+    constexpr float kMaxDropDistance = 1000.0f;
+    core::ScenePickResult result = core::pickEntity(ecs, meshLibrary, transform->position, glm::vec3(0.0f, -1.0f, 0.0f),
+                                                      kMaxDropDistance, selected);
+    if (!result.hit) return;
+
+    // Real, stated scope simplification: only Transform::scale.y is
+    // applied to the mesh's own local-space bottom extent, not the full
+    // rotation -- correct for the overwhelmingly common "unrotated or
+    // Y-axis-only-rotated prop" case this shortcut targets, and a
+    // meaningfully harder problem (rotating the local AABB itself) for
+    // an arbitrarily-tilted entity, which real DCC "drop to floor" tools
+    // usually don't attempt either without a full mesh-vs-mesh contact
+    // solve.
+    float bottomOffset = 0.0f;
+    if (auto* renderable = ecs.tryGetComponent<core::Renderable>(selected)) {
+        if (const core::Mesh* mesh = meshLibrary.get(renderable->meshHandle)) {
+            bottomOffset = mesh->localBoundsMin().y * transform->scale.y;
+        }
+    }
+    transform->position.y = result.point.y - bottomOffset;
 }
 
 void ViewportPanel::handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibrary, ExplorerPanel& explorer,
@@ -565,6 +594,14 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         if (ImGui::IsKeyPressed(ImGuiKey_W)) gizmoOperation_ = GizmoOperation::Translate;
         if (ImGui::IsKeyPressed(ImGuiKey_E)) gizmoOperation_ = GizmoOperation::Rotate;
         if (ImGui::IsKeyPressed(ImGuiKey_R)) gizmoOperation_ = GizmoOperation::Scale;
+
+        // Kronos ("Developer Velocity Sprint" -- "Drop-to-Ground Shortcut
+        // (End Key)"): same gating as W/E/R above (hovered, not fighting
+        // an active gizmo drag or a focused text field).
+        if (ImGui::IsKeyPressed(ImGuiKey_End) && ecs != nullptr && meshLibrary != nullptr &&
+            explorer.selectedEntity() != core::kNullEntity) {
+            dropSelectedToGround(*ecs, *meshLibrary, explorer.selectedEntity());
+        }
     }
 
     // Drawn on a split channel so the background panel (whose size
@@ -606,16 +643,67 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         gizmoSpace_ = worldSpace ? GizmoSpace::Local : GizmoSpace::World;
     }
     ImGui::SameLine();
-    if (iconButton("gizmo_snap", Icon::Snap, iconSize, gizmoSnapEnabled_, gizmoSnapEnabled_ ? "Snapping On" : "Snapping Off")) {
-        gizmoSnapEnabled_ = !gizmoSnapEnabled_;
+    ImGui::Dummy(ImVec2(6.0f, 0.0f));
+    ImGui::SameLine();
+
+    // Kronos ("Developer Velocity Sprint" -- "Grid & Rotation Snapping"):
+    // real, always-visible preset dropdowns (not swapped based on the
+    // currently-active gizmo operation the way the single free-form drag
+    // control used to be) -- Grid Snap and Angle Snap are independently
+    // toggleable and apply to Translate/Rotate respectively regardless
+    // of which one is currently selected, so switching gizmo modes never
+    // silently changes what's snapping.
+    if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_, gridSnapEnabled_ ? "Grid Snap On" : "Grid Snap Off")) {
+        gridSnapEnabled_ = !gridSnapEnabled_;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(64.0f);
+    static constexpr float kGridSnapPresets[] = {0.25f, 1.0f, 5.0f};
+    char gridPresetLabel[16];
+    std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%.2fm", translateSnap_);
+    if (ImGui::BeginCombo("##grid_snap_preset", gridPresetLabel)) {
+        for (float preset : kGridSnapPresets) {
+            char label[16];
+            std::snprintf(label, sizeof(label), "%.2fm", preset);
+            bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
+            if (ImGui::Selectable(label, selected)) translateSnap_ = preset;
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(6.0f, 0.0f));
+    ImGui::SameLine();
+
+    if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_, angleSnapEnabled_ ? "Angle Snap On" : "Angle Snap Off")) {
+        angleSnapEnabled_ = !angleSnapEnabled_;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(64.0f);
+    static constexpr float kAngleSnapPresets[] = {15.0f, 45.0f, 90.0f};
+    char anglePresetLabel[16];
+    std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f%s", rotateSnapDegrees_, "\xc2\xb0"); // UTF-8 degree sign
+    if (ImGui::BeginCombo("##angle_snap_preset", anglePresetLabel)) {
+        for (float preset : kAngleSnapPresets) {
+            char label[16];
+            std::snprintf(label, sizeof(label), "%.0f%s", preset, "\xc2\xb0");
+            bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
+            if (ImGui::Selectable(label, selected)) rotateSnapDegrees_ = preset;
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(6.0f, 0.0f));
+    ImGui::SameLine();
+    if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_, scaleSnapEnabled_ ? "Scale Snap On" : "Scale Snap Off")) {
+        scaleSnapEnabled_ = !scaleSnapEnabled_;
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0f);
-    switch (gizmoOperation_) {
-        case GizmoOperation::Translate: ImGui::DragFloat("##snapval", &translateSnap_, 0.05f, 0.05f, 100.0f, "%.2f"); break;
-        case GizmoOperation::Rotate: ImGui::DragFloat("##snapval", &rotateSnapDegrees_, 1.0f, 1.0f, 180.0f, "%.0f deg"); break;
-        case GizmoOperation::Scale: ImGui::DragFloat("##snapval", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f"); break;
-    }
+    ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
     ImGui::EndGroup();
 
     ImVec2 groupMin = ImGui::GetItemRectMin();

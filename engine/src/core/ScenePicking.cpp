@@ -30,7 +30,7 @@ bool rayIntersectsAabb(glm::vec3 origin, glm::vec3 end, glm::vec3 boundsMin, glm
 }
 
 ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin, glm::vec3 direction,
-                            float maxDistance) {
+                            float maxDistance, EntityId excludeEntity) {
     ScenePickResult result;
     float dirLen = glm::length(direction);
     if (dirLen < 1e-6f || maxDistance <= 0.0f) return result;
@@ -41,6 +41,7 @@ ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin,
     float closestT = 1.0f; // t in [0,1] along origin->worldEnd; 1.0 = "nothing closer than maxDistance yet"
     auto view = ecs.view<Transform, Renderable>();
     for (auto entity : view) {
+        if (entity == excludeEntity) continue;
         auto& renderable = view.get<Renderable>(entity);
         if (!renderable.visible) continue;
         const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
