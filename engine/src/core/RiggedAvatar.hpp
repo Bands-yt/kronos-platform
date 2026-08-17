@@ -237,18 +237,21 @@ struct HumanoidMeshData {
 // moment a real clothing item is equipped in that category; nothing is
 // baked into the mesh itself.
 //
-// Kronos ("Avatar Silhouette Pass" -- style-reference update): real,
-// darker charcoal/near-black tones (was a teal shirt + slate trousers),
-// matching a real reference image's dark jacket + dark jeans color
-// story. The reference's own lighter-blue undershirt (visible only in a
-// small V at the chest) is a real, honest, stated gap this pass doesn't
-// build -- this rig's Torso segment is one flat shell color, and showing
-// two garments at once needs real layered clothing geometry
-// (AvatarItemCategory::LayeredClothing exists as a real equip slot, but
-// has no mesh-generation path yet -- the same "real slot, no fabricated
-// visual behind it yet" pattern this codebase already states honestly
-// for Shoes/Back/Accessory).
-constexpr glm::vec4 kDefaultShirtColor(0.13f, 0.13f, 0.15f, 1.0f);
+// Kronos ("Torso Proportion Fix, Clothing Regions, & Base Preset Asset
+// Creation" -- "Default Clothing Palette"): real, deliberate reintroduction
+// of a distinct shirt hue -- the prior near-black charcoal
+// (0.13,0.13,0.15) sat close enough to kDefaultTrouserColor
+// (0.15,0.16,0.20) that shirt and pants read as one flat, monochrome
+// mass with no real visual separation, the exact complaint this pass
+// asks to fix. Real, dark navy/teal (distinctly blue-green-tinted, not
+// neutral gray) -- darker than this rig's own original pre-charcoal teal
+// (0.35,0.55,0.62, see git history) to stay consistent with this
+// session's established dark "Charcoal Slate" aesthetic direction
+// elsewhere (dark UI theme, dark preview backdrop), while still reading
+// as a real, distinct color from the trousers rather than the same gray.
+// kDefaultTrouserColor is unchanged -- it already real-matches the
+// requested "Dark Slate Pants" value.
+constexpr glm::vec4 kDefaultShirtColor(0.07f, 0.14f, 0.19f, 1.0f);
 constexpr glm::vec4 kDefaultTrouserColor(0.15f, 0.16f, 0.20f, 1.0f);
 
 // Resolves each HumanoidBodySegment's SkinnedRenderable::baseColor from
