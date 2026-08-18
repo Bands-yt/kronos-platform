@@ -113,6 +113,26 @@ enum class ShellEvent {
 // state is a real, honest no-op (returns `current` unchanged) rather
 // than an assertion/crash -- a stray/duplicate event (e.g. a double
 // click) should never corrupt shell state.
+// Kronos ("Redesigned Persistent Tab Bar"): real -- the five ShellStates
+// a player can jump directly between via the shared tab bar
+// (RuntimeShell::drawHubTabBar()) without bouncing back through Home
+// first, per the cross-navigation rules computeNextState() now grants
+// each of them below. Home/SessionBrowser/Loading/InGame/Error are
+// deliberately excluded -- they're either the launch point, a transient
+// state, or a state with no tab-bar chrome drawn over it.
+[[nodiscard]] inline bool isHubState(ShellState state) {
+    switch (state) {
+        case ShellState::GameCatalogue:
+        case ShellState::AvatarShop:
+        case ShellState::Settings:
+        case ShellState::Friends:
+        case ShellState::Notifications:
+            return true;
+        default:
+            return false;
+    }
+}
+
 [[nodiscard]] inline ShellState computeNextState(ShellState current, ShellEvent event) {
     switch (current) {
         case ShellState::Home:
@@ -151,18 +171,38 @@ enum class ShellEvent {
             // relaxed guard), not just from the standalone Session
             // Browser panel.
             if (event == ShellEvent::JoinRequested) return ShellState::Loading;
+            if (event == ShellEvent::OpenAvatarShop) return ShellState::AvatarShop;
+            if (event == ShellEvent::OpenSettings) return ShellState::Settings;
+            if (event == ShellEvent::OpenFriends) return ShellState::Friends;
+            if (event == ShellEvent::OpenNotifications) return ShellState::Notifications;
             return current;
         case ShellState::AvatarShop:
             if (event == ShellEvent::ReturnHome) return ShellState::Home;
+            if (event == ShellEvent::OpenGameCatalogue) return ShellState::GameCatalogue;
+            if (event == ShellEvent::OpenSettings) return ShellState::Settings;
+            if (event == ShellEvent::OpenFriends) return ShellState::Friends;
+            if (event == ShellEvent::OpenNotifications) return ShellState::Notifications;
             return current;
         case ShellState::Settings:
             if (event == ShellEvent::ReturnHome) return ShellState::Home;
+            if (event == ShellEvent::OpenGameCatalogue) return ShellState::GameCatalogue;
+            if (event == ShellEvent::OpenAvatarShop) return ShellState::AvatarShop;
+            if (event == ShellEvent::OpenFriends) return ShellState::Friends;
+            if (event == ShellEvent::OpenNotifications) return ShellState::Notifications;
             return current;
         case ShellState::Friends:
             if (event == ShellEvent::ReturnHome) return ShellState::Home;
+            if (event == ShellEvent::OpenGameCatalogue) return ShellState::GameCatalogue;
+            if (event == ShellEvent::OpenAvatarShop) return ShellState::AvatarShop;
+            if (event == ShellEvent::OpenSettings) return ShellState::Settings;
+            if (event == ShellEvent::OpenNotifications) return ShellState::Notifications;
             return current;
         case ShellState::Notifications:
             if (event == ShellEvent::ReturnHome) return ShellState::Home;
+            if (event == ShellEvent::OpenGameCatalogue) return ShellState::GameCatalogue;
+            if (event == ShellEvent::OpenAvatarShop) return ShellState::AvatarShop;
+            if (event == ShellEvent::OpenFriends) return ShellState::Friends;
+            if (event == ShellEvent::OpenSettings) return ShellState::Settings;
             return current;
         case ShellState::InGame:
             if (event == ShellEvent::SessionEnded) return ShellState::Home;

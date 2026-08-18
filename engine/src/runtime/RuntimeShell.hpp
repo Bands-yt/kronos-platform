@@ -234,6 +234,16 @@ private:
     void ensureHomeAvatarPreviewLoaded();
 
     void drawHomePanel();
+    // Kronos ("Redesigned Persistent Tab Bar"): real, shared navigation
+    // strip drawn at the top of every Hub panel (GameCatalogue/
+    // AvatarShop/Friends/Settings/Notifications) so switching sections
+    // never has to bounce back through Home -- calls the exact same
+    // openGameCatalogue()/openAvatarShop()/openSettings()/openFriends()/
+    // openNotifications() a Home button press already calls (their own
+    // ShellState::Home guard is relaxed via ShellState.hpp's
+    // isHubState() to also permit hub-to-hub calls), so no second,
+    // drifting "how do I open X" code path exists.
+    bool drawHubTabBar();
     void drawSessionBrowserPanel();
     void drawLoadingPanel();
     void drawErrorPanel();
@@ -411,6 +421,12 @@ private:
     // Layer"): same real dual "Home state + in-game overlay" shape as
     // showAvatarShopOverlay_ above.
     bool showSettingsOverlay_ = false;
+    // Kronos ("Redesigned Settings Panel" -- "left icon sidebar"): real
+    // -- indexes {Graphics, Audio, Controls, Accessibility}, the same
+    // four real sections drawSettingsPanel() already had as sequential
+    // SeparatorText headers before this, now selected one-at-a-time via
+    // a sidebar instead of all stacked in one scrolling column.
+    int settingsSidebarIndex_ = 0;
     // Kronos ("Input Remapping System"): real key-capture state -- empty
     // = not currently rebinding anything; non-empty = the real action
     // name currently "listening" for the next real key press (see
@@ -430,6 +446,9 @@ private:
     // Kronos ("Social Layer"): same real dual "Home state + in-game
     // overlay" shape showAvatarShopOverlay_ already establishes.
     bool showFriendsOverlay_ = false;
+    // Kronos ("Redesigned Friends List" -- "Online/Offline toggle"): real
+    // -- drives drawFriendsPanel()'s own Online/Offline section split.
+    bool friendsHideOfflineFilter_ = false;
     char addFriendIdBuffer_[64] = "";
     char addFriendNameBuffer_[64] = "";
     std::string friendsStatusMessage_;
