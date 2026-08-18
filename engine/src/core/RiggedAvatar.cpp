@@ -1425,6 +1425,30 @@ bool spawnAvatarClothing(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout
         appendProfiledBarrel(vertices, indices, unusedSegments, torsoCenter, torsoHalfHeight, shirtProfile,
                               jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, skinWeights);
 
+        // Kronos ("Critical Visual Fixes" -- "Neck Protrudes Unnaturally
+        // From Shirt"): real fix for a real regression the chest-clipping
+        // fix above introduced -- correctly shortening the main shirt
+        // barrel to torsoTop (matching the base body's own real height)
+        // also stopped it from covering any of the real, separate neck
+        // cylinder above torsoTop (buildHumanoidMeshData()'s own "Add
+        // Distinct Neck Primitive" pass), which the shirt's old, taller
+        // (if width-misaligned) barrel used to hide almost entirely by
+        // accident. A real, short collar cylinder closes that gap --
+        // tapered the same way the neck cylinder itself is (its own base/
+        // top cross-sections at kCollarNeckFraction, scaled outward by
+        // `shell` so it never clips the real skin underneath), covering
+        // just the lower real neck the way a real crew-neck collar does
+        // and leaving the rest of the neck genuinely bare, not the whole
+        // thing.
+        constexpr float kCollarNeckFraction = 0.4f;
+        glm::vec3 collarTop = torsoTop + (neckPos - torsoTop) * kCollarNeckFraction;
+        glm::vec2 collarBaseCS = shirtProfile.back(); // exact seam match with the main barrel's own neckline ring
+        glm::vec2 collarTopCS(glm::mix(0.24f, 0.14f, kCollarNeckFraction) * w * shell,
+                               glm::mix(0.14f, 0.13f, kCollarNeckFraction) * w * shell);
+        int neckJointIndex = jointIndexFor("neck");
+        appendSmoothLimb(vertices, indices, unusedSegments, torsoTop, collarTop, collarBaseCS, collarTopCS,
+                          neckJointIndex, neckJointIndex, HumanoidBodySegment::Torso, skinWeights);
+
         glm::vec2 shoulderCS(0.095f * ls * shell, 0.095f * ls * shell);
         glm::vec2 sleeveCS(0.085f * ls * shell, 0.085f * ls * shell);
         appendSmoothLimb(vertices, indices, unusedSegments, worldPos("arm_L_upper"), worldPos("arm_L_lower"), shoulderCS,
