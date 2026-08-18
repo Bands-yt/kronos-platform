@@ -440,7 +440,7 @@ void RuntimeShell::leaveSession() {
 }
 
 void RuntimeShell::openGameCatalogue() {
-    if (state_ != ShellState::Home && !isHubState(state_)) return;
+    if (state_ != ShellState::Home) return;
     // Real, fresh disk read every time the catalogue is actually opened
     // (a deliberate user action, not a hot path) -- not cached across a
     // whole session, so Featured/Hidden-Gems ranking reflects whatever
@@ -773,13 +773,7 @@ void RuntimeShell::tick(float dt) {
                 }
                 break;
         }
-        // Kronos ("Redesigned Persistent Tab Bar"): real -- About is now
-        // reachable from the tab bar on every Hub panel (drawHubTabBar()'s
-        // own "About" button), not just Home, so this gate widened from
-        // Home-only to "Home or any Hub state" to match. Still never
-        // drawn during InGame/Loading/Error/SessionBrowser -- those have
-        // no tab bar and no real "About" entry point.
-        if ((state_ == ShellState::Home || isHubState(state_)) && showAboutOverlay_) drawAboutPanel();
+        if (state_ == ShellState::Home && showAboutOverlay_) drawAboutPanel();
     }
     ImGui::PopStyleVar();
     drawToasts();
@@ -864,62 +858,6 @@ void drawAnimatedHourglass(ImDrawList* drawList, ImVec2 center, float halfWidth,
     drawList->AddLine(bottomLeft, bottomRight, kFrameColor, 2.0f);
 }
 } // namespace
-
-// Kronos ("Redesigned Persistent Tab Bar"): returns true the one real
-// frame a click here actually changed state_ -- every caller (one per
-// Hub panel) checks this and, matching the exact same "Back button
-// already clicked, stop drawing, End() once, return" pattern each panel
-// already used before this tab bar existed, bails out immediately
-// instead of drawing a frame's worth of now-stale content underneath
-// the new state.
-bool RuntimeShell::drawHubTabBar() {
-    struct HubTab {
-        const char* label;
-        ShellState state;
-    };
-    static constexpr HubTab kHubTabs[] = {
-        {"Game Catalogue", ShellState::GameCatalogue}, {"Avatar Shop", ShellState::AvatarShop},
-        {"Friends", ShellState::Friends},               {"Settings", ShellState::Settings},
-        {"Notifications", ShellState::Notifications},
-    };
-
-    bool navigated = false;
-    if (ImGui::Button("Home")) {
-        state_ = computeNextState(state_, ShellEvent::ReturnHome);
-        navigated = true;
-    }
-    for (const HubTab& tab : kHubTabs) {
-        ImGui::SameLine();
-        ImGui::PushID(tab.label);
-        bool isCurrent = state_ == tab.state;
-        std::string label = tab.label;
-        if (tab.state == ShellState::Friends && !localProfile_.pendingRequests.empty()) {
-            label += " (" + std::to_string(localProfile_.pendingRequests.size()) + ")";
-        } else if (tab.state == ShellState::Notifications) {
-            size_t unread = notification::unreadCount(localProfile_);
-            if (unread > 0) label += " (" + std::to_string(unread) + ")";
-        }
-        if (isCurrent) pushPrimaryActionButtonColors();
-        bool clicked = ImGui::Button(label.c_str());
-        if (isCurrent) popPrimaryActionButtonColors();
-        if (clicked && !isCurrent) {
-            switch (tab.state) {
-                case ShellState::GameCatalogue: openGameCatalogue(); break;
-                case ShellState::AvatarShop: openAvatarShop(); break;
-                case ShellState::Friends: openFriends(); break;
-                case ShellState::Settings: openSettings(); break;
-                case ShellState::Notifications: openNotifications(); break;
-                default: break;
-            }
-            navigated = true;
-        }
-        ImGui::PopID();
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("About")) showAboutOverlay_ = true;
-    ImGui::Separator();
-    return navigated;
-}
 
 void RuntimeShell::drawHomePanel() {
     ensureLocalProfileLoaded();
@@ -1100,22 +1038,14 @@ void RuntimeShell::drawAboutPanel() {
     ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
     bool open = true;
     if (ImGui::Begin("About Kronos", &open, ImGuiWindowFlags_NoCollapse)) {
-        // Kronos ("Redesigned About Screen" -- "small hourglass icon"):
-        // real, same procedural drawAnimatedHourglass() every other real
-        // loading beat in this shell uses -- ImGui::GetTime() is a real,
-        // monotonic engine clock (not a fabricated counter), so this
-        // small icon animates continuously while the panel is open.
-        ImVec2 iconCenter = ImVec2(ImGui::GetCursorScreenPos().x + 14.0f, ImGui::GetCursorScreenPos().y + 18.0f);
-        drawAnimatedHourglass(ImGui::GetWindowDrawList(), iconCenter, 10.0f, 14.0f,
-                               static_cast<float>(ImGui::GetTime()));
-        ImGui::Dummy(ImVec2(0.0f, 30.0f));
-        ImGui::TextColored(ImVec4(0.28f, 0.55f, 0.95f, 1.0f), "KRONOS PLATFORM");
+        ImGui::TextColored(ImVec4(0.28f, 0.55f, 0.95f, 1.0f), "KRONOS");
+        ImGui::Text("Version %s", core::kKronosVersion);
+        ImGui::TextDisabled("Built %s", core::kKronosBuildDate);
         ImGui::Separator();
-        ImGui::BulletText("Version %s", core::kKronosVersion);
-        ImGui::BulletText("Built %s", core::kKronosBuildDate);
-        ImGui::BulletText("Real-time 3D engine + Studio editor + runtime shell");
-        ImGui::BulletText("Avatar marketplace, social layer, and LAN multiplayer");
-        ImGui::BulletText("A local, solo-developer game platform -- Alpha build");
+        ImGui::TextWrapped(
+            "Kronos is a local, solo-developer game platform: a real-time 3D engine, a Studio "
+            "editor, and a runtime shell with an avatar marketplace, social layer, and LAN "
+            "multiplayer -- all in one Alpha build.");
         ImGui::Separator();
         ImGui::TextDisabled("Your Profile Id: %s", localProfile_.creatorId.c_str());
         if (ImGui::Button("Close")) open = false;
@@ -1286,12 +1216,7 @@ namespace {
 // QualityScore badge. Returns true if this card's own "Play" was
 // clicked.
 constexpr float kCardWidth = 220.0f;
-// Kronos ("Merged Game Catalogue & Sessions View" -- "inline SESSIONS
-// rows"): real, taller than before -- the card now reserves a fixed
-// real area at the bottom for the always-visible "SESSIONS" list
-// (drawGameCard()'s own comment below), not a popup a player has to
-// open first.
-constexpr float kCardHeight = 260.0f;
+constexpr float kCardHeight = 170.0f;
 
 // Kronos ("Merged Game Catalogue & Sessions View"): real result --
 // either the card's own "Play" button (launch this game locally) or a
@@ -1365,32 +1290,34 @@ GameCardResult drawGameCard(const core::GameCatalogueEntry& game,
     for (const auto& session : allDiscoveredSessions) {
         if (session.gameName == game.manifest.name) liveSessions.push_back(&session);
     }
-
-    // Kronos ("Merged Game Catalogue & Sessions View" -- "inline SESSIONS
-    // rows"): real -- replaces the old "Live Sessions (N)" popup button
-    // with an always-visible list directly under the card, one real row
-    // per session ("<host> ... <players> players ... JOIN"), matching
-    // the mockup exactly. A real, honest "No live sessions" placeholder
-    // row when the count is 0 -- not hidden, not fabricated.
-    ImGui::TextDisabled("SESSIONS");
-    ImGui::BeginChild("##sessions", ImVec2(kCardWidth, 68.0f), true);
-    if (liveSessions.empty()) {
-        ImGui::TextDisabled("No live sessions");
-    } else {
+    ImGui::BeginDisabled(liveSessions.empty());
+    if (ImGui::Button(liveSessions.empty() ? "No live sessions" : "Live Sessions", ImVec2(kCardWidth, 0.0f))) {
+        ImGui::OpenPopup("LiveSessions");
+    }
+    ImGui::EndDisabled();
+    if (!liveSessions.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d)", static_cast<int>(liveSessions.size()));
+    }
+    if (ImGui::BeginPopup("LiveSessions")) {
+        ImGui::TextDisabled("Live sessions for %s", game.manifest.name.c_str());
+        ImGui::Separator();
         for (const net::DiscoveredSession* session : liveSessions) {
             ImGui::PushID(static_cast<int>(session->sessionId));
-            ImGui::TextWrapped(
-                "%s", session->sessionName.empty() ? session->hostDisplayName.c_str() : session->sessionName.c_str());
+            ImGui::Text("%s", session->sessionName.empty() ? session->hostDisplayName.c_str() : session->sessionName.c_str());
+            ImGui::SameLine();
             ImGui::TextDisabled("%d/%d players", session->currentPlayerCount, session->maxPlayerCount);
             ImGui::SameLine();
             pushPrimaryActionButtonColors();
-            if (ImGui::SmallButton("Join")) result.toJoin = session;
+            if (ImGui::SmallButton("Join")) {
+                result.toJoin = session;
+                ImGui::CloseCurrentPopup();
+            }
             popPrimaryActionButtonColors();
-            ImGui::Separator();
             ImGui::PopID();
         }
+        ImGui::EndPopup();
     }
-    ImGui::EndChild();
 
     ImGui::EndGroup();
     ImGui::PopID();
@@ -1427,7 +1354,8 @@ void RuntimeShell::drawGameCataloguePanel() {
     ImGui::Begin("Game Catalogue", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    if (drawHubTabBar()) {
+    if (ImGui::Button("Back")) {
+        state_ = computeNextState(state_, ShellEvent::ReturnHome);
         ImGui::End();
         return;
     }
@@ -1551,7 +1479,7 @@ std::string formatAvatarShopRatingStars(float ratingScore, int32_t ratingCount) 
 } // namespace
 
 void RuntimeShell::openAvatarShop() {
-    if (state_ != ShellState::Home && !isHubState(state_)) return;
+    if (state_ != ShellState::Home) return;
     ensureLocalProfileLoaded();
     ensureAvatarCatalogueLoaded();
     state_ = computeNextState(state_, ShellEvent::OpenAvatarShop);
@@ -1566,23 +1494,18 @@ void RuntimeShell::drawAvatarShopPanel() {
 
     // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
     // live re-equip while InGame): real -- when opened as the InGame HUD
-    // overlay (see showAvatarShopOverlay_'s own comment), a plain "Back"
-    // closes the overlay and resumes movement input instead of
-    // real-transitioning ShellState (there is no "Home" to transition to
-    // -- a real game is still live underneath, and no other Hub tab is
-    // reachable mid-game either). The real, standalone Hub state instead
-    // gets the full shared tab bar (Kronos "Redesigned Persistent Tab
-    // Bar") so switching to Friends/Settings/etc. never bounces through
-    // Home first.
-    if (showAvatarShopOverlay_) {
-        if (ImGui::Button("Back")) {
+    // overlay (see showAvatarShopOverlay_'s own comment), "Back" closes
+    // the overlay and resumes movement input instead of real-transitioning
+    // ShellState (there is no "Home" to transition to -- a real game is
+    // still live underneath).
+    if (ImGui::Button("Back")) {
+        if (showAvatarShopOverlay_) {
             showAvatarShopOverlay_ = false;
             avatarShopDetailOpen_ = false;
             app_.setMovementInputSuspended(false);
-            ImGui::End();
-            return;
+        } else {
+            state_ = computeNextState(state_, ShellEvent::ReturnHome);
         }
-    } else if (drawHubTabBar()) {
         ImGui::End();
         return;
     }
@@ -1631,42 +1554,13 @@ void RuntimeShell::drawAvatarShopPanel() {
         }
     }
 
-    // Kronos ("Redesigned Avatar Shop" -- "left category icon sidebar"):
-    // real -- drives the exact same avatarShopCategoryFilterIndex_ the
-    // old dropdown used (kept below, just no longer the primary control),
-    // indexing into the same kAvatarShopCategoryFilterNames/Values pair.
-    // A curated subset (not all 11 raw AvatarItemCategory values) so the
-    // sidebar reads as a real storefront's top-level departments rather
-    // than a dump of the enum -- "Hats" is real AvatarItemCategory::Head
-    // (see that enum's own comment: Head generically covers hats), not a
-    // fabricated new category.
-    struct ShopSidebarEntry {
-        const char* label;
-        int filterIndex; // index into kAvatarShopCategoryFilterNames/Values, 0 = "Any"
-    };
-    static constexpr ShopSidebarEntry kShopSidebar[] = {
-        {"All", 0}, {"Hats", 1 /* Head */}, {"Shirts", 4 /* Torso */}, {"Accessories", 6 /* Accessory */},
-        {"Faces", 3 /* Face */},            {"Bundles", 11 /* Bundle */},
-    };
-
-    ImGui::BeginChild("avatar_shop_sidebar", ImVec2(130.0f, 0.0f), true);
-    for (const ShopSidebarEntry& entry : kShopSidebar) {
-        bool isCurrent = avatarShopCategoryFilterIndex_ == entry.filterIndex;
-        if (isCurrent) pushPrimaryActionButtonColors();
-        if (ImGui::Button(entry.label, ImVec2(-1.0f, 0.0f))) avatarShopCategoryFilterIndex_ = entry.filterIndex;
-        if (isCurrent) popPrimaryActionButtonColors();
-    }
-    ImGui::EndChild();
-    ImGui::SameLine();
-
-    constexpr float kAvatarPreviewColumnWidth = 230.0f;
-    float mainColumnWidth = std::max(280.0f, ImGui::GetContentRegionAvail().x - kAvatarPreviewColumnWidth -
-                                                  ImGui::GetStyle().ItemSpacing.x);
-    ImGui::BeginChild("avatar_shop_main", ImVec2(mainColumnWidth, 0.0f));
-
     ImGui::SetNextItemWidth(220.0f);
     ImGui::InputTextWithHint("##avatar_shop_search", "Search by name, tag, or creator...", avatarShopSearchText_,
                               sizeof(avatarShopSearchText_));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::Combo("Category", &avatarShopCategoryFilterIndex_, kAvatarShopCategoryFilterNames,
+                 IM_ARRAYSIZE(kAvatarShopCategoryFilterNames));
     ImGui::SameLine();
     ImGui::SetNextItemWidth(180.0f);
     ImGui::Combo("Sort", &avatarShopSortOrderIndex_, kAvatarShopSortNames, IM_ARRAYSIZE(kAvatarShopSortNames));
@@ -1732,25 +1626,6 @@ void RuntimeShell::drawAvatarShopPanel() {
             }
         }
     }
-    ImGui::EndChild();
-    ImGui::EndChild(); // avatar_shop_main
-
-    // Kronos ("Redesigned Avatar Shop" -- "Your Avatar preview"): real,
-    // same live orbit-able homeAvatarPreview_ Home's own panel already
-    // draws -- one real, shared instance/GPU resource (see
-    // ensureHomeAvatarPreviewLoaded()'s own "load once" comment), not a
-    // second preview scene. Equip/unequip below (drawAvatarShopDetailPopup())
-    // already calls homeAvatarPreview_->refresh() so this column reflects
-    // a change immediately, without needing to leave the Shop.
-    ImGui::SameLine();
-    ImGui::BeginChild("avatar_shop_preview_column", ImVec2(kAvatarPreviewColumnWidth, 0.0f), true);
-    ensureHomeAvatarPreviewLoaded();
-    ImGui::TextDisabled("Your Avatar");
-    ImGui::BeginChild("##avatar_shop_preview_viewport", ImVec2(0.0f, kAvatarPreviewColumnWidth * 1.2f), true);
-    if (homeAvatarPreview_) homeAvatarPreview_->draw();
-    ImGui::EndChild();
-    ImGui::TextDisabled("Drag to orbit, scroll to zoom");
-    ImGui::TextWrapped("Click an item above to Preview or Buy it.");
     ImGui::EndChild();
 
     ImGui::End();
@@ -2028,7 +1903,7 @@ void RuntimeShell::applyAllSettingsFromProfile() {
 }
 
 void RuntimeShell::openSettings() {
-    if (state_ != ShellState::Home && !isHubState(state_)) return;
+    if (state_ != ShellState::Home) return;
     ensureLocalProfileLoaded();
     state_ = computeNextState(state_, ShellEvent::OpenSettings);
 }
@@ -2040,15 +1915,13 @@ void RuntimeShell::drawSettingsPanel() {
     ImGui::Begin("Settings", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    if (showSettingsOverlay_) {
-        if (ImGui::Button("Back")) {
+    if (ImGui::Button("Back")) {
+        if (showSettingsOverlay_) {
             showSettingsOverlay_ = false;
             app_.setMovementInputSuspended(false);
-            rebindingActionName_.clear();
-            ImGui::End();
-            return;
+        } else {
+            state_ = computeNextState(state_, ShellEvent::ReturnHome);
         }
-    } else if (drawHubTabBar()) {
         rebindingActionName_.clear();
         ImGui::End();
         return;
@@ -2056,136 +1929,108 @@ void RuntimeShell::drawSettingsPanel() {
 
     bool changed = false;
 
-    // Kronos ("Redesigned Settings Panel" -- "left icon sidebar"): real
-    // -- these four sections were already real, existing groupings
-    // (SeparatorText headers in one long scrolling column); this just
-    // moves the same four real groups behind a left sidebar selector
-    // instead of stacking them all in one page. Kept the engine's own
-    // real category names (Graphics/Audio/Controls/Accessibility) rather
-    // than forcing them into the mockup's generic General/Account labels
-    // -- there is no real settings content that maps onto "Account" here
-    // (LocalProfile has no account system, see its own header comment).
-    static constexpr const char* kSettingsSections[] = {"Graphics", "Audio", "Controls", "Accessibility"};
-    ImGui::BeginChild("settings_sidebar", ImVec2(150.0f, 0.0f), true);
-    for (int i = 0; i < IM_ARRAYSIZE(kSettingsSections); ++i) {
-        bool isCurrent = settingsSidebarIndex_ == i;
-        if (isCurrent) pushPrimaryActionButtonColors();
-        if (ImGui::Button(kSettingsSections[i], ImVec2(-1.0f, 0.0f))) settingsSidebarIndex_ = i;
-        if (isCurrent) popPrimaryActionButtonColors();
+    ImGui::SeparatorText("Graphics");
+    if (ImGui::Combo("Quality Preset", &localProfile_.qualityPresetIndex, kQualityPresetNames,
+                      IM_ARRAYSIZE(kQualityPresetNames))) {
+        applyQualityPreset(localProfile_.qualityPresetIndex);
+        changed = true;
     }
-    ImGui::EndChild();
-    ImGui::SameLine();
-    ImGui::BeginChild("settings_content");
+    if (ImGui::Checkbox("VSync", &localProfile_.vsyncEnabled)) {
+        app_.renderer().setVsyncEnabled(localProfile_.vsyncEnabled);
+        changed = true;
+    }
+    if (ImGui::SliderInt("FPS Cap (0 = uncapped)", &localProfile_.fpsCap, 0, 240)) {
+        if (app_.gameLoop() != nullptr) {
+            app_.gameLoop()->setTargetRenderDt(localProfile_.fpsCap > 0 ? 1.0f / static_cast<float>(localProfile_.fpsCap)
+                                                                         : 0.0f);
+        }
+        changed = true;
+    }
+    // Kronos ("Settings Panel v2" -- real, honest scope note): live
+    // resolution/fullscreen switching is NOT implemented -- see
+    // core::LocalProfile::qualityPresetIndex's own comment for exactly
+    // why (core::Window has no runtime resolution/fullscreen setter at
+    // all today).
+    ImGui::TextDisabled("Resolution/Fullscreen: not yet supported -- core::Window has no runtime mode switch yet.");
 
-    if (settingsSidebarIndex_ == 0) {
-        ImGui::SeparatorText("Graphics");
-        if (ImGui::Combo("Quality Preset", &localProfile_.qualityPresetIndex, kQualityPresetNames,
-                          IM_ARRAYSIZE(kQualityPresetNames))) {
-            applyQualityPreset(localProfile_.qualityPresetIndex);
-            changed = true;
+    ImGui::SeparatorText("Audio");
+    if (ImGui::SliderFloat("Master Volume", &localProfile_.masterVolume, 0.0f, 1.0f)) {
+        app_.audio().setMasterVolume(localProfile_.masterVolume);
+        changed = true;
+    }
+    if (ImGui::SliderFloat("Music Volume", &localProfile_.musicVolume, 0.0f, 1.0f)) {
+        app_.audio().setCategoryVolume(core::AudioCategory::Music, localProfile_.musicVolume);
+        changed = true;
+    }
+    if (ImGui::SliderFloat("SFX Volume", &localProfile_.sfxVolume, 0.0f, 1.0f)) {
+        app_.audio().setCategoryVolume(core::AudioCategory::SFX, localProfile_.sfxVolume);
+        changed = true;
+    }
+
+    ImGui::SeparatorText("Controls");
+    ImGui::TextWrapped("Click a binding, then press any key to rebind it.");
+    for (const auto& action : kRemappableActions) {
+        ImGui::PushID(action.actionName);
+        bool isListening = rebindingActionName_ == action.actionName;
+        int currentScancode = action.defaultScancode;
+        auto overrideIt = localProfile_.inputBindingOverrides.find(action.actionName);
+        if (overrideIt != localProfile_.inputBindingOverrides.end()) currentScancode = overrideIt->second;
+        std::string keyLabel = isListening ? "Press a key..."
+                                            : SDL_GetScancodeName(static_cast<SDL_Scancode>(currentScancode));
+        ImGui::Text("%s", action.displayLabel);
+        ImGui::SameLine(220.0f);
+        if (ImGui::Button(keyLabel.c_str(), ImVec2(160.0f, 0.0f))) {
+            rebindingActionName_ = action.actionName;
         }
-        if (ImGui::Checkbox("VSync", &localProfile_.vsyncEnabled)) {
-            app_.renderer().setVsyncEnabled(localProfile_.vsyncEnabled);
-            changed = true;
-        }
-        if (ImGui::SliderInt("FPS Cap (0 = uncapped)", &localProfile_.fpsCap, 0, 240)) {
-            if (app_.gameLoop() != nullptr) {
-                app_.gameLoop()->setTargetRenderDt(localProfile_.fpsCap > 0
-                                                        ? 1.0f / static_cast<float>(localProfile_.fpsCap)
-                                                        : 0.0f);
-            }
-            changed = true;
-        }
-        // Kronos ("Settings Panel v2" -- real, honest scope note): live
-        // resolution/fullscreen switching is NOT implemented -- see
-        // core::LocalProfile::qualityPresetIndex's own comment for
-        // exactly why (core::Window has no runtime resolution/fullscreen
-        // setter at all today).
-        ImGui::TextDisabled("Resolution/Fullscreen: not yet supported -- core::Window has no runtime mode switch yet.");
-    } else if (settingsSidebarIndex_ == 1) {
-        ImGui::SeparatorText("Audio");
-        if (ImGui::SliderFloat("Master Volume", &localProfile_.masterVolume, 0.0f, 1.0f)) {
-            app_.audio().setMasterVolume(localProfile_.masterVolume);
-            changed = true;
-        }
-        if (ImGui::SliderFloat("Music Volume", &localProfile_.musicVolume, 0.0f, 1.0f)) {
-            app_.audio().setCategoryVolume(core::AudioCategory::Music, localProfile_.musicVolume);
-            changed = true;
-        }
-        if (ImGui::SliderFloat("SFX Volume", &localProfile_.sfxVolume, 0.0f, 1.0f)) {
-            app_.audio().setCategoryVolume(core::AudioCategory::SFX, localProfile_.sfxVolume);
-            changed = true;
-        }
-    } else if (settingsSidebarIndex_ == 2) {
-        ImGui::SeparatorText("Controls");
-        ImGui::TextWrapped("Click a binding, then press any key to rebind it.");
-        for (const auto& action : kRemappableActions) {
-            ImGui::PushID(action.actionName);
-            bool isListening = rebindingActionName_ == action.actionName;
-            int currentScancode = action.defaultScancode;
-            auto overrideIt = localProfile_.inputBindingOverrides.find(action.actionName);
-            if (overrideIt != localProfile_.inputBindingOverrides.end()) currentScancode = overrideIt->second;
-            std::string keyLabel = isListening ? "Press a key..."
-                                                : SDL_GetScancodeName(static_cast<SDL_Scancode>(currentScancode));
-            ImGui::Text("%s", action.displayLabel);
-            ImGui::SameLine(220.0f);
-            if (ImGui::Button(keyLabel.c_str(), ImVec2(160.0f, 0.0f))) {
-                rebindingActionName_ = action.actionName;
-            }
-            ImGui::PopID();
-        }
-        if (ImGui::Button("Reset All Bindings to Default")) {
-            localProfile_.inputBindingOverrides.clear();
-            applyInputBindingOverrides();
-            changed = true;
-        }
-        // Kronos ("Input Remapping System"): real SDL keyboard-state
-        // polling -- not an ImGui-specific key-event hook, since we need
-        // to capture *any* physical key across the whole real scancode
-        // range, not one this frame's ImGui already knows to look for.
-        // Skips the frame a rebind was just requested on (avoids the
-        // same click that opened "Press a key..." also being read as
-        // the new binding).
-        if (!rebindingActionName_.empty()) {
-            int numKeys = 0;
-            const Uint8* keyState = SDL_GetKeyboardState(&numKeys);
-            for (int scancode = 0; scancode < numKeys; ++scancode) {
-                if (!keyState[scancode]) continue;
-                if (scancode == SDL_SCANCODE_ESCAPE) { // real, honest "cancel rebind" escape hatch
-                    rebindingActionName_.clear();
-                    break;
-                }
-                localProfile_.inputBindingOverrides[rebindingActionName_] = scancode;
+        ImGui::PopID();
+    }
+    if (ImGui::Button("Reset All Bindings to Default")) {
+        localProfile_.inputBindingOverrides.clear();
+        applyInputBindingOverrides();
+        changed = true;
+    }
+    // Kronos ("Input Remapping System"): real SDL keyboard-state polling
+    // -- not an ImGui-specific key-event hook, since we need to capture
+    // *any* physical key across the whole real scancode range, not one
+    // this frame's ImGui already knows to look for. Skips the frame a
+    // rebind was just requested on (avoids the same click that opened
+    // "Press a key..." also being read as the new binding).
+    if (!rebindingActionName_.empty()) {
+        int numKeys = 0;
+        const Uint8* keyState = SDL_GetKeyboardState(&numKeys);
+        for (int scancode = 0; scancode < numKeys; ++scancode) {
+            if (!keyState[scancode]) continue;
+            if (scancode == SDL_SCANCODE_ESCAPE) { // real, honest "cancel rebind" escape hatch
                 rebindingActionName_.clear();
-                applyInputBindingOverrides();
-                changed = true;
                 break;
             }
-        }
-    } else {
-        ImGui::SeparatorText("Accessibility");
-        if (ImGui::SliderFloat("Text Size", &localProfile_.textScale, 0.5f, 2.0f)) {
-            ImGui::GetIO().FontGlobalScale = std::max(localProfile_.textScale, 0.1f);
+            localProfile_.inputBindingOverrides[rebindingActionName_] = scancode;
+            rebindingActionName_.clear();
+            applyInputBindingOverrides();
             changed = true;
-        }
-        if (ImGui::SliderFloat("UI Scale", &localProfile_.uiScale, 0.5f, 2.0f)) {
-            ImGui::GetStyle() = baseUIStyle_;
-            ImGui::GetStyle().ScaleAllSizes(std::max(localProfile_.uiScale, 0.1f));
-            changed = true;
-        }
-        if (ImGui::Combo("Colorblind Mode", &localProfile_.colorblindModeIndex, kColorblindModeNames,
-                          IM_ARRAYSIZE(kColorblindModeNames))) {
-            app_.renderer().setColorblindMode(localProfile_.colorblindModeIndex);
-            changed = true;
-        }
-        if (ImGui::Checkbox("Reduced Motion (less camera shake, no cutscene FOV changes)",
-                             &localProfile_.reducedMotion)) {
-            app_.setReducedMotionEnabled(localProfile_.reducedMotion);
-            changed = true;
+            break;
         }
     }
 
-    ImGui::EndChild();
+    ImGui::SeparatorText("Accessibility");
+    if (ImGui::SliderFloat("Text Size", &localProfile_.textScale, 0.5f, 2.0f)) {
+        ImGui::GetIO().FontGlobalScale = std::max(localProfile_.textScale, 0.1f);
+        changed = true;
+    }
+    if (ImGui::SliderFloat("UI Scale", &localProfile_.uiScale, 0.5f, 2.0f)) {
+        ImGui::GetStyle() = baseUIStyle_;
+        ImGui::GetStyle().ScaleAllSizes(std::max(localProfile_.uiScale, 0.1f));
+        changed = true;
+    }
+    if (ImGui::Combo("Colorblind Mode", &localProfile_.colorblindModeIndex, kColorblindModeNames,
+                      IM_ARRAYSIZE(kColorblindModeNames))) {
+        app_.renderer().setColorblindMode(localProfile_.colorblindModeIndex);
+        changed = true;
+    }
+    if (ImGui::Checkbox("Reduced Motion (less camera shake, no cutscene FOV changes)", &localProfile_.reducedMotion)) {
+        app_.setReducedMotionEnabled(localProfile_.reducedMotion);
+        changed = true;
+    }
 
     if (changed) (void)localProfile_.saveToFile(kLocalProfilePath);
 
@@ -2234,7 +2079,7 @@ void RuntimeShell::drawToasts() {
 }
 
 void RuntimeShell::openFriends() {
-    if (state_ != ShellState::Home && !isHubState(state_)) return;
+    if (state_ != ShellState::Home) return;
     ensureLocalProfileLoaded();
     state_ = computeNextState(state_, ShellEvent::OpenFriends);
 }
@@ -2246,15 +2091,13 @@ void RuntimeShell::drawFriendsPanel() {
     ImGui::Begin("Friends", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    if (showFriendsOverlay_) {
-        if (ImGui::Button("Back")) {
+    if (ImGui::Button("Back")) {
+        if (showFriendsOverlay_) {
             showFriendsOverlay_ = false;
             app_.setMovementInputSuspended(false);
-            openConversationFriendId_.clear();
-            ImGui::End();
-            return;
+        } else {
+            state_ = computeNextState(state_, ShellEvent::ReturnHome);
         }
-    } else if (drawHubTabBar()) {
         openConversationFriendId_.clear();
         ImGui::End();
         return;
@@ -2337,45 +2180,22 @@ void RuntimeShell::drawFriendsPanel() {
     }
 
     ImGui::SeparatorText("Friends");
-    // Kronos ("Redesigned Friends List" -- "Online/Offline toggle" +
-    // "filter dropdown"): real -- social::computeFriendPresence() (see
-    // its own header comment) is computed once per friend, per frame,
-    // here, then bucketed client-side into two real groups; the data
-    // model itself already supported this (nothing invented at the data
-    // layer, see the earlier real research pass this redesign was based
-    // on). "Hide Offline" narrows the list to Online/In Game only,
-    // matching the mockup's own toggle.
-    ImGui::Checkbox("Hide Offline", &friendsHideOfflineFilter_);
     if (localProfile_.friends.empty()) {
         ImGui::TextDisabled("No friends yet -- send a request above using someone's real Friend Id.");
     }
-
-    struct PresentFriend {
-        const core::FriendEntry* entry;
-        social::PresenceState presence;
-    };
-    std::vector<PresentFriend> onlineFriends, offlineFriends;
+    std::string removeId;
     for (const auto& friendEntry : localProfile_.friends) {
+        ImGui::PushID(friendEntry.friendId.c_str());
         social::PresenceState presence = social::computeFriendPresence(
             friendEntry.displayName, lanBrowserRunning_ ? &lanBrowser_ : nullptr,
             app_.networkSession().isActive() ? &app_.networkSession() : nullptr);
-        if (presence == social::PresenceState::Offline) {
-            offlineFriends.push_back({&friendEntry, presence});
-        } else {
-            onlineFriends.push_back({&friendEntry, presence});
-        }
-    }
-
-    std::string removeId;
-    auto drawFriendRow = [&](const PresentFriend& pf) {
-        const core::FriendEntry& friendEntry = *pf.entry;
-        ImGui::PushID(friendEntry.friendId.c_str());
-        const char* presenceLabel = pf.presence == social::PresenceState::InGame   ? "In Game"
-                                     : pf.presence == social::PresenceState::Online ? "Online"
-                                                                                     : "Offline";
-        ImVec4 presenceColor = pf.presence == social::PresenceState::InGame   ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f)
-                                : pf.presence == social::PresenceState::Online ? ImVec4(0.6f, 0.85f, 1.0f, 1.0f)
-                                                                                : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+        const char* presenceLabel =
+            presence == social::PresenceState::InGame ? "In Game"
+            : presence == social::PresenceState::Online ? "Online"
+                                                          : "Offline";
+        ImVec4 presenceColor = presence == social::PresenceState::InGame ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f)
+                                : presence == social::PresenceState::Online ? ImVec4(0.6f, 0.85f, 1.0f, 1.0f)
+                                                                             : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
         ImGui::Text("%s", friendEntry.displayName.empty() ? friendEntry.friendId.c_str() : friendEntry.displayName.c_str());
         ImGui::SameLine();
         ImGui::TextColored(presenceColor, "[%s]", presenceLabel);
@@ -2384,16 +2204,6 @@ void RuntimeShell::drawFriendsPanel() {
         ImGui::SameLine();
         if (ImGui::SmallButton("Remove")) removeId = friendEntry.friendId;
         ImGui::PopID();
-    };
-
-    if (!onlineFriends.empty()) {
-        ImGui::TextDisabled("Online (%zu)", onlineFriends.size());
-        for (const PresentFriend& pf : onlineFriends) drawFriendRow(pf);
-    }
-    if (!friendsHideOfflineFilter_ && !offlineFriends.empty()) {
-        ImGui::Dummy(ImVec2(0.0f, 6.0f));
-        ImGui::TextDisabled("Offline (%zu)", offlineFriends.size());
-        for (const PresentFriend& pf : offlineFriends) drawFriendRow(pf);
     }
     if (!removeId.empty()) {
         social::removeFriend(localProfile_, removeId);
@@ -2427,7 +2237,7 @@ void RuntimeShell::drawFriendsPanel() {
 }
 
 void RuntimeShell::openNotifications() {
-    if (state_ != ShellState::Home && !isHubState(state_)) return;
+    if (state_ != ShellState::Home) return;
     ensureLocalProfileLoaded();
     state_ = computeNextState(state_, ShellEvent::OpenNotifications);
 }
@@ -2444,14 +2254,13 @@ void RuntimeShell::drawNotificationsPanel() {
     ImGui::Begin("Notifications", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    if (showNotificationsOverlay_) {
-        if (ImGui::Button("Back")) {
+    if (ImGui::Button("Back")) {
+        if (showNotificationsOverlay_) {
             showNotificationsOverlay_ = false;
             app_.setMovementInputSuspended(false);
-            ImGui::End();
-            return;
+        } else {
+            state_ = computeNextState(state_, ShellEvent::ReturnHome);
         }
-    } else if (drawHubTabBar()) {
         ImGui::End();
         return;
     }
@@ -2478,44 +2287,17 @@ void RuntimeShell::drawNotificationsPanel() {
     for (size_t index : indices) {
         const core::NotificationRecord& record = localProfile_.notifications[index];
         ImGui::PushID(static_cast<int>(index));
-        // Kronos ("Redesigned Notifications Feed" -- "card feed"): real,
-        // one bordered child per notification (not a flat text list) --
-        // each real NotificationKind gets a real "View" destination that
-        // actually navigates to the Hub tab that notification concerns,
-        // rather than a fabricated Accept/Decline action this codebase
-        // has no real, incoming (server-delivered) friend-request notion
-        // to back (see social::sendFriendRequest()'s own "local
-        // simulation only" scope note -- the real accept/decline flow
-        // for a *sent* request already lives in drawFriendsPanel()'s own
-        // "Pending Requests" section).
-        ImGui::BeginChild(ImGui::GetID((void*)&record), ImVec2(0.0f, 74.0f), true);
-        if (!record.read) {
-            ImGui::Bullet();
-            ImGui::SameLine();
-        }
+        if (!record.read) ImGui::Bullet();
+        ImGui::SameLine();
         ImGui::TextWrapped("%s", record.title.c_str());
         ImGui::TextWrapped("%s", record.body.c_str());
-        bool viewed = false;
-        switch (record.kind) {
-            case core::NotificationKind::FriendRequest:
-                if (ImGui::SmallButton("View")) { openFriends(); viewed = true; }
-                ImGui::SameLine();
-                break;
-            case core::NotificationKind::ItemPurchase:
-            case core::NotificationKind::RatingReceived:
-                if (ImGui::SmallButton("View")) { openAvatarShop(); viewed = true; }
-                ImGui::SameLine();
-                break;
-            default:
-                break;
-        }
         if (!record.read) {
-            if (ImGui::SmallButton("Mark Read") || viewed) {
+            if (ImGui::SmallButton("Mark Read")) {
                 notification::markRead(localProfile_, index);
                 (void)localProfile_.saveToFile(kLocalProfilePath);
             }
         }
-        ImGui::EndChild();
+        ImGui::Separator();
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -2553,23 +2335,6 @@ void RuntimeShell::drawLoadingPanel() {
         ImGui::Text("Connecting to %s%s", lastJoinedHostDisplayName_.empty() ? "session" : lastJoinedHostDisplayName_.c_str(),
                     dots.c_str());
     }
-    // Kronos ("New Kronos Loading Screen Template" -- "percentage
-    // readout" + "progress bar"): real, honest ESTIMATE, not a fabricated
-    // fraction-of-real-work-done number -- neither runtime::loadGame()
-    // (a synchronous, single-shot call) nor a real network join reports
-    // real incremental progress anywhere in this codebase, so this is
-    // the same real, standard "elapsed time against an expected duration"
-    // curve most loading screens use, deliberately capped below 100% (it
-    // never claims done until state_ actually leaves Loading on a real
-    // completion event) rather than presenting an invented precise
-    // number as ground truth.
-    constexpr float kEstimatedLoadDurationSeconds = 1.6f;
-    float progressFraction =
-        std::clamp(1.0f - std::exp(-stateTransitionClock_ / kEstimatedLoadDurationSeconds), 0.0f, 0.97f);
-    ImGui::TextDisabled("LOADING...");
-    char progressLabel[16];
-    std::snprintf(progressLabel, sizeof(progressLabel), "%.0f%%", static_cast<double>(progressFraction * 100.0f));
-    ImGui::ProgressBar(progressFraction, ImVec2(200.0f, 0.0f), progressLabel);
     if (ImGui::Button("Cancel")) cancelJoin();
     ImGui::EndGroup();
 
