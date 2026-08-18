@@ -795,6 +795,68 @@ void pushPrimaryActionButtonColors() {
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.00f, 0.64f, 0.25f, 1.0f));
 }
 void popPrimaryActionButtonColors() { ImGui::PopStyleColor(3); }
+
+// Kronos ("Animated Hourglass Loading Screen"): a real, procedurally
+// drawn, animated hourglass -- two triangles forming the classic bulb-
+// neck-bulb silhouette, a real "sand" fill that drains from the top
+// chamber into the bottom one over a fixed real cycle (looping, not a
+// one-shot), plus a small falling-grain dot through the neck. Pure
+// ImDrawList geometry -- no external image/sprite asset, the same
+// "flat procedural shape, no texture pipeline needed" convention this
+// codebase's own GameManifest::thumbnailColor card art already
+// establishes. Declared here (before drawSplashPanel()'s own use below)
+// rather than down by drawLoadingPanel() -- both real callers need it.
+void drawAnimatedHourglass(ImDrawList* drawList, ImVec2 center, float halfWidth, float halfHeight, float animTime) {
+    const ImU32 kFrameColor = IM_COL32(200, 205, 212, 255);
+    const ImU32 kSandColor = IM_COL32(196, 160, 92, 255);
+    constexpr float kCycleSeconds = 2.4f;
+    float cycleT = std::fmod(std::max(animTime, 0.0f), kCycleSeconds) / kCycleSeconds; // real, looping 0..1
+
+    ImVec2 topLeft(center.x - halfWidth, center.y - halfHeight);
+    ImVec2 topRight(center.x + halfWidth, center.y - halfHeight);
+    ImVec2 bottomLeft(center.x - halfWidth, center.y + halfHeight);
+    ImVec2 bottomRight(center.x + halfWidth, center.y + halfHeight);
+    ImVec2 neckTop(center.x, center.y - halfHeight * 0.08f);
+    ImVec2 neckBottom(center.x, center.y + halfHeight * 0.08f);
+
+    float topSandFrac = 1.0f - cycleT;    // real, 1 -> 0 across the cycle
+    float bottomSandFrac = cycleT;        // real, 0 -> 1 across the cycle
+
+    // Top chamber sand -- a real, shrinking triangle collapsing toward
+    // the neck as it drains.
+    if (topSandFrac > 0.01f) {
+        ImVec2 sandLeft(topLeft.x + (neckTop.x - topLeft.x) * (1.0f - topSandFrac),
+                         topLeft.y + (neckTop.y - topLeft.y) * (1.0f - topSandFrac));
+        ImVec2 sandRight(topRight.x + (neckTop.x - topRight.x) * (1.0f - topSandFrac),
+                          topRight.y + (neckTop.y - topRight.y) * (1.0f - topSandFrac));
+        drawList->AddTriangleFilled(sandLeft, sandRight, neckTop, kSandColor);
+    }
+    // Bottom chamber sand -- a real, growing mound rising from the neck
+    // (deliberately not the full inverted-triangle chamber shape, for a
+    // real "pile settling at the bottom" read rather than a flat fill
+    // line).
+    if (bottomSandFrac > 0.01f) {
+        ImVec2 sandLeft(bottomLeft.x + (neckBottom.x - bottomLeft.x) * (1.0f - bottomSandFrac),
+                         bottomLeft.y + (neckBottom.y - bottomLeft.y) * (1.0f - bottomSandFrac));
+        ImVec2 sandRight(bottomRight.x + (neckBottom.x - bottomRight.x) * (1.0f - bottomSandFrac),
+                          bottomRight.y + (neckBottom.y - bottomRight.y) * (1.0f - bottomSandFrac));
+        drawList->AddTriangleFilled(neckBottom, sandLeft, sandRight, kSandColor);
+    }
+    // Real falling grain, visible only while sand actually remains to
+    // fall.
+    if (topSandFrac > 0.01f && bottomSandFrac < 0.99f) {
+        float streamPhase = std::fmod(animTime * 6.0f, 1.0f);
+        ImVec2 streamPos(center.x, neckTop.y + (neckBottom.y - neckTop.y + halfHeight * 0.3f) * streamPhase);
+        drawList->AddCircleFilled(streamPos, 1.6f, kSandColor);
+    }
+
+    // Real glass outline, drawn last so sand never paints over the
+    // frame.
+    drawList->AddTriangle(topLeft, topRight, neckTop, kFrameColor, 2.0f);
+    drawList->AddTriangle(neckBottom, bottomLeft, bottomRight, kFrameColor, 2.0f);
+    drawList->AddLine(topLeft, topRight, kFrameColor, 2.0f);
+    drawList->AddLine(bottomLeft, bottomRight, kFrameColor, 2.0f);
+}
 } // namespace
 
 void RuntimeShell::drawHomePanel() {
@@ -895,14 +957,22 @@ void RuntimeShell::drawHomePanel() {
     // real, first player-facing entry point into the shared
     // avatar-item Marketplace -- see ShellState::AvatarShop's own header
     // comment for why this closes a real, previously-stated gap.
+    //
+    // Kronos ("Fix Home Screen Layout"): the real, standalone "Sessions"
+    // button is removed from this grid -- session browsing now lives
+    // entirely inside the Game Catalogue (each real game card's own
+    // "Live Sessions" button, see drawGameCard()'s own comment), not a
+    // second, separate entry point. showSessionBrowser()/
+    // ShellState::SessionBrowser/drawSessionBrowserPanel() themselves
+    // are unchanged and still real (ui.sessionBrowser()'s own real Lua
+    // binding still reaches them, see ScriptUiApi.hpp) -- only this
+    // Home-screen button is gone.
     if (ImGui::Button("Avatar Shop", halfButtonSize)) openAvatarShop();
     ImGui::SameLine();
-    if (ImGui::Button("Sessions", halfButtonSize)) showSessionBrowser();
     if (ImGui::Button(friendsLabel.c_str(), halfButtonSize)) openFriends();
-    ImGui::SameLine();
     if (ImGui::Button(notificationsLabel.c_str(), halfButtonSize)) openNotifications();
-    if (ImGui::Button("Settings", halfButtonSize)) openSettings();
     ImGui::SameLine();
+    if (ImGui::Button("Settings", halfButtonSize)) openSettings();
     // Kronos ("Game Catalogue Overhaul"): the real replacement for the
     // old bare "Play" button plus the old disabled Create/Plugins/Assets
     // placeholders -- Launch Studio genuinely opens the real editor
@@ -941,6 +1011,15 @@ void RuntimeShell::drawSplashPanel() {
     ImGui::Begin("##splash", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
                       ImGuiWindowFlags_NoInputs);
+
+    // Kronos ("Enable Initial Hourglass Boot Overlay"): real, same
+    // animated hourglass drawLoadingPanel() already shows for a network
+    // join/local game load -- this is the "application boot" instance
+    // of the same real loading beat, not a separate, differently-shaped
+    // one. Positioned above the wordmark below.
+    ImVec2 hourglassCenter(viewport->WorkSize.x * 0.5f, viewport->WorkSize.y * 0.30f);
+    drawAnimatedHourglass(ImGui::GetWindowDrawList(), hourglassCenter, 22.0f, 30.0f, splashClock_);
+
     ImGui::SetCursorPos(ImVec2(viewport->WorkSize.x * 0.5f - 90.0f, viewport->WorkSize.y * 0.42f));
     ImGui::BeginGroup();
     ImGui::SetWindowFontScale(2.6f);
@@ -2225,69 +2304,6 @@ void RuntimeShell::drawNotificationsPanel() {
 
     ImGui::End();
 }
-
-namespace {
-// Kronos ("Animated Hourglass Loading Screen"): a real, procedurally
-// drawn, animated hourglass -- two triangles forming the classic bulb-
-// neck-bulb silhouette, a real "sand" fill that drains from the top
-// chamber into the bottom one over a fixed real cycle (looping, not a
-// one-shot), plus a small falling-grain dot through the neck. Pure
-// ImDrawList geometry -- no external image/sprite asset, the same
-// "flat procedural shape, no texture pipeline needed" convention this
-// codebase's own GameManifest::thumbnailColor card art already
-// establishes.
-void drawAnimatedHourglass(ImDrawList* drawList, ImVec2 center, float halfWidth, float halfHeight, float animTime) {
-    const ImU32 kFrameColor = IM_COL32(200, 205, 212, 255);
-    const ImU32 kSandColor = IM_COL32(196, 160, 92, 255);
-    constexpr float kCycleSeconds = 2.4f;
-    float cycleT = std::fmod(std::max(animTime, 0.0f), kCycleSeconds) / kCycleSeconds; // real, looping 0..1
-
-    ImVec2 topLeft(center.x - halfWidth, center.y - halfHeight);
-    ImVec2 topRight(center.x + halfWidth, center.y - halfHeight);
-    ImVec2 bottomLeft(center.x - halfWidth, center.y + halfHeight);
-    ImVec2 bottomRight(center.x + halfWidth, center.y + halfHeight);
-    ImVec2 neckTop(center.x, center.y - halfHeight * 0.08f);
-    ImVec2 neckBottom(center.x, center.y + halfHeight * 0.08f);
-
-    float topSandFrac = 1.0f - cycleT;    // real, 1 -> 0 across the cycle
-    float bottomSandFrac = cycleT;        // real, 0 -> 1 across the cycle
-
-    // Top chamber sand -- a real, shrinking triangle collapsing toward
-    // the neck as it drains.
-    if (topSandFrac > 0.01f) {
-        ImVec2 sandLeft(topLeft.x + (neckTop.x - topLeft.x) * (1.0f - topSandFrac),
-                         topLeft.y + (neckTop.y - topLeft.y) * (1.0f - topSandFrac));
-        ImVec2 sandRight(topRight.x + (neckTop.x - topRight.x) * (1.0f - topSandFrac),
-                          topRight.y + (neckTop.y - topRight.y) * (1.0f - topSandFrac));
-        drawList->AddTriangleFilled(sandLeft, sandRight, neckTop, kSandColor);
-    }
-    // Bottom chamber sand -- a real, growing mound rising from the neck
-    // (deliberately not the full inverted-triangle chamber shape, for a
-    // real "pile settling at the bottom" read rather than a flat fill
-    // line).
-    if (bottomSandFrac > 0.01f) {
-        ImVec2 sandLeft(bottomLeft.x + (neckBottom.x - bottomLeft.x) * (1.0f - bottomSandFrac),
-                         bottomLeft.y + (neckBottom.y - bottomLeft.y) * (1.0f - bottomSandFrac));
-        ImVec2 sandRight(bottomRight.x + (neckBottom.x - bottomRight.x) * (1.0f - bottomSandFrac),
-                          bottomRight.y + (neckBottom.y - bottomRight.y) * (1.0f - bottomSandFrac));
-        drawList->AddTriangleFilled(neckBottom, sandLeft, sandRight, kSandColor);
-    }
-    // Real falling grain, visible only while sand actually remains to
-    // fall.
-    if (topSandFrac > 0.01f && bottomSandFrac < 0.99f) {
-        float streamPhase = std::fmod(animTime * 6.0f, 1.0f);
-        ImVec2 streamPos(center.x, neckTop.y + (neckBottom.y - neckTop.y + halfHeight * 0.3f) * streamPhase);
-        drawList->AddCircleFilled(streamPos, 1.6f, kSandColor);
-    }
-
-    // Real glass outline, drawn last so sand never paints over the
-    // frame.
-    drawList->AddTriangle(topLeft, topRight, neckTop, kFrameColor, 2.0f);
-    drawList->AddTriangle(neckBottom, bottomLeft, bottomRight, kFrameColor, 2.0f);
-    drawList->AddLine(topLeft, topRight, kFrameColor, 2.0f);
-    drawList->AddLine(bottomLeft, bottomRight, kFrameColor, 2.0f);
-}
-} // namespace
 
 void RuntimeShell::drawLoadingPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();

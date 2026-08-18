@@ -512,13 +512,20 @@ private:
     // documents.
     int trailerExportPresetIndex_ = 0;
 
-    // Kronos ("Branding + Release Prep"): a real, brief, one-time splash
-    // (shown for kSplashDurationSeconds the very first time this shell
-    // ever reaches Home, never again after) -- see drawSplashPanel()'s
-    // own comment for why this is a text wordmark, not an image.
+    // Kronos ("Branding + Release Prep", extended by "Fix Home Screen
+    // Layout & Enable Initial Hourglass Boot Overlay"): a real, brief,
+    // one-time splash (shown for kSplashDurationSeconds the very first
+    // time this shell ever reaches Home, never again after) -- see
+    // drawSplashPanel()'s own comment for why the wordmark is real text,
+    // not an image, and for the real animated hourglass now shown
+    // alongside it (reusing drawAnimatedHourglass(), the same real
+    // component drawLoadingPanel() already uses).
     bool showSplash_ = true;
     float splashClock_ = 0.0f;
-    static constexpr float kSplashDurationSeconds = 1.6f;
+    // Kronos ("Enable Initial Hourglass Boot Overlay"): real, 1.6 -> 2.0
+    // -- close enough to the user's own literal "~2 seconds" ask that a
+    // new, separate timing constant wasn't warranted.
+    static constexpr float kSplashDurationSeconds = 2.0f;
     void drawSplashPanel();
 
     // Real, Home-reachable "About" overlay -- version/build info, same
