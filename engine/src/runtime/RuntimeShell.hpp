@@ -339,18 +339,7 @@ private:
                                   const core::AnimationOverrides& animationOverrides, core::ClothingFit clothingFit)>
         spawnOfflinePlayerEntity_;
 
-    // Kronos ("Force Boot Into Unified Tab Bar Hub"): real -- the
-    // application now boots directly into the real Hub landing tab, not
-    // the legacy Home button-grid (see tick()'s own splash-completion
-    // comment for the one real, one-time boot setup this still needs --
-    // ShellState alone isn't enough, openGameCatalogue()'s own real
-    // games/ scan + LAN browser start still has to run once).
-    // ShellState::Home itself still exists and is still a real,
-    // reachable transition target (SessionEnded/CancelJoin/Error's
-    // ReturnHome all still land there) -- it's just never the boot
-    // default anymore, and every real path into it gets redirected back
-    // to the Hub the instant it's entered (see the same tick() comment).
-    ShellState state_ = ShellState::GameCatalogue;
+    ShellState state_ = ShellState::Home;
     ShellErrorInfo lastError_;
 
     net::LanSessionBrowser lanBrowser_;
@@ -484,7 +473,7 @@ private:
     // to 1 over kStateTransitionFadeSeconds. Toasts are pushed/popped
     // outside this alpha scope (see tick()'s own real ordering) so an
     // in-flight toast never fades with the panel underneath it.
-    ShellState previousDrawState_ = ShellState::GameCatalogue;
+    ShellState previousDrawState_ = ShellState::Home;
     float stateTransitionClock_ = 0.0f;
     static constexpr float kStateTransitionFadeSeconds = 0.25f;
 
