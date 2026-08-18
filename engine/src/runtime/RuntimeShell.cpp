@@ -186,16 +186,11 @@ bool RuntimeShell::initialize() {
     // anywhere else in engine_runtime, free to claim (see
     // studio::PreviewScene's own class comment on why only one real
     // PrePassCallback can be active at a time). Gated to only actually
-    // render while its one real caller (Avatar Shop's own preview
-    // column, see drawAvatarShopPanel()'s own comment) is genuinely
-    // visible, matching every PreviewScene-owning Studio plugin's own
-    // "don't render a closed/invisible preview" convention. Kronos
-    // ("Force Boot Into Unified Tab Bar Hub"): real -- was gated on
-    // ShellState::Home before Home's own grid screen was bypassed
-    // everywhere; AvatarShop is the one real place this preview widget
-    // still draws.
+    // render while Home is genuinely visible, matching every
+    // PreviewScene-owning Studio plugin's own "don't render a closed/
+    // invisible preview" convention.
     renderer.setPrePassCallback([this](VkCommandBuffer cmd) {
-        if (state_ == ShellState::AvatarShop && homeAvatarPreview_) {
+        if (state_ == ShellState::Home && !showSplash_ && homeAvatarPreview_) {
             homeAvatarPreview_->renderPreview(cmd, app_.renderer());
         }
     });
@@ -726,13 +721,11 @@ void RuntimeShell::tick(float dt) {
         telemetryFlushClock_ = 0.0f;
         telemetrySender_.flush();
     }
-    // Kronos ("Home Screen Avatar Preview" / "Force Boot Into Unified Tab
-    // Bar Hub"): real, only ticked while actually visible (Avatar Shop's
-    // own preview column now -- see the prePassCallback comment above
-    // for why this gate moved off ShellState::Home) -- an idle preview
-    // no one is looking at still costs nothing extra beyond this one
-    // real check.
-    if (state_ == ShellState::AvatarShop && homeAvatarPreview_) homeAvatarPreview_->update(dt);
+    // Kronos ("Home Screen Avatar Preview"): real, only ticked while
+    // actually visible (Home, past the splash) -- an idle preview no one
+    // is looking at still costs nothing extra beyond this one real
+    // check.
+    if (state_ == ShellState::Home && !showSplash_ && homeAvatarPreview_) homeAvatarPreview_->update(dt);
 
     // Kronos ("Home UI Polish" -- "Smooth transitions"): real, general
     // fade-in on every real state change -- see stateTransitionClock_'s
@@ -755,26 +748,7 @@ void RuntimeShell::tick(float dt) {
         if (splashClock_ >= kSplashDurationSeconds) showSplash_ = false;
         drawSplashPanel();
     } else {
-        // Kronos ("Force Boot Into Unified Tab Bar Hub"): real -- Home's
-        // own button-grid screen is never actually drawn as the live
-        // interface anymore. Every real path that lands on Home (initial
-        // boot the instant the splash finishes, SessionEnded, CancelJoin,
-        // Error's ReturnHome) redirects straight into the real Hub
-        // landing tab here instead, calling the exact same
-        // openGameCatalogue() the tab bar's own "Game Catalogue" button
-        // calls -- no second, drifting "how do I open the Catalogue" path.
-        // ShellState::Home itself stays real and reachable as a
-        // transition target (every existing "-> Home" rule in
-        // ShellState.hpp still means something and is still exercised by
-        // the existing tests) -- it's just redirected onward the instant
-        // it's actually entered, one real frame before drawHomePanel()
-        // would otherwise run.
-        if (state_ == ShellState::Home) openGameCatalogue();
         switch (state_) {
-            // Real, defensive only -- the redirect immediately above
-            // means state_ can never actually equal Home by the time
-            // this switch runs; kept (rather than dropped from the
-            // switch) so the enum stays exhaustively handled.
             case ShellState::Home: drawHomePanel(); break;
             case ShellState::SessionBrowser: drawSessionBrowserPanel(); break;
             case ShellState::Loading: drawLoadingPanel(); break;
@@ -909,15 +883,13 @@ bool RuntimeShell::drawHubTabBar() {
         {"Notifications", ShellState::Notifications},
     };
 
-    // Kronos ("Force Boot Into Unified Tab Bar Hub"): real -- no "Home"
-    // entry here anymore, matching the mockup's own tab set exactly
-    // (Game Catalogue | Avatar Shop | Friends | Settings | Notifications
-    // | About, no separate Home tab) -- ShellState::Home is real-bypassed
-    // everywhere now (see tick()'s own redirect comment), so a tab-bar
-    // button that led to it would just be dead, confusing UI.
     bool navigated = false;
+    if (ImGui::Button("Home")) {
+        state_ = computeNextState(state_, ShellEvent::ReturnHome);
+        navigated = true;
+    }
     for (const HubTab& tab : kHubTabs) {
-        if (&tab != &kHubTabs[0]) ImGui::SameLine();
+        ImGui::SameLine();
         ImGui::PushID(tab.label);
         bool isCurrent = state_ == tab.state;
         std::string label = tab.label;
@@ -1459,29 +1431,6 @@ void RuntimeShell::drawGameCataloguePanel() {
         ImGui::End();
         return;
     }
-
-    // Kronos ("Force Boot Into Unified Tab Bar Hub"): real -- this panel
-    // is now the real boot/landing destination (Home's own grid is
-    // bypassed everywhere, see tick()'s own redirect comment), so its
-    // real "Playing As" name editor and "Launch Studio" entry point move
-    // here rather than becoming unreachable. The "Your Avatar" preview
-    // widget deliberately did NOT get a second copy here -- it already
-    // lives one tab away in Avatar Shop (see that panel's own preview
-    // column), and duplicating homeAvatarPreview_'s real GPU preview
-    // scene into a second, simultaneously-visible location isn't needed.
-    ensureLocalProfileLoaded();
-    ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::InputText("##playing_as", displayNameBuffer_, sizeof(displayNameBuffer_))) {
-        localProfile_.displayName = displayNameBuffer_;
-        (void)localProfile_.saveToFile(kLocalProfilePath);
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("Playing As");
-    ImGui::SameLine(0.0f, 24.0f);
-    pushPrimaryActionButtonColors();
-    if (ImGui::Button("Launch Studio")) launchStudio();
-    popPrimaryActionButtonColors();
-    ImGui::Separator();
 
     if (discoveredGames_.empty()) {
         ImGui::TextDisabled(
