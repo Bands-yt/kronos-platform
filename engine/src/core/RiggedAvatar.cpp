@@ -1440,14 +1440,50 @@ bool spawnAvatarClothing(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout
         // just the lower real neck the way a real crew-neck collar does
         // and leaving the rest of the neck genuinely bare, not the whole
         // thing.
+        // Kronos ("Final Visual Patch" -- "Neck-to-Collar Intersection"):
+        // real root cause, found by tracing both ring-generation functions'
+        // actual math, not just their radii -- appendSmoothLimb() and
+        // appendProfiledBarrel() use genuinely different ring
+        // parametrizations. appendProfiledBarrel() places ring vertices at
+        // `(cos(theta)*radii.x, 0, sin(theta)*radii.y)` -- theta=0 sits on
+        // world +X. appendSmoothLimb() instead builds a basisA/basisB frame
+        // from the limb's own bone direction (real, correct for a
+        // diagonal limb like an arm, see its own header comment), which
+        // for this near-vertical bone works out to
+        // `(sin(theta)*crossSection.y, 0, cos(theta)*crossSection.x)` --
+        // theta=0 on world +Z, with X and Z swapped relative to
+        // crossSection.x/.y. Even with matching radii and an exactly
+        // matching seam *position* (the previous pass's own fix, still
+        // correct and kept below), the two rings were real, different
+        // ellipses rotated ~90 degrees from each other -- corners of one
+        // poking past the other's own edges, exactly the "z-fighting/
+        // protrusion" reported. The real fix: build the collar with
+        // appendProfiledBarrel() too (a second, separate barrel call, not
+        // a taller single one -- see kCollarNeckFraction's own comment
+        // below for why it can't just be a 5th ring on the main barrel),
+        // so both real pieces share the exact same ring math and the seam
+        // is truly seamless, not just close.
+        glm::vec3 shirtBarrelTop(torsoCenter.x, torsoCenter.y + torsoHalfHeight, torsoCenter.z);
         constexpr float kCollarNeckFraction = 0.4f;
         glm::vec3 collarTop = torsoTop + (neckPos - torsoTop) * kCollarNeckFraction;
         glm::vec2 collarBaseCS = shirtProfile.back(); // exact seam match with the main barrel's own neckline ring
         glm::vec2 collarTopCS(glm::mix(0.24f, 0.14f, kCollarNeckFraction) * w * shell,
                                glm::mix(0.14f, 0.13f, kCollarNeckFraction) * w * shell);
         int neckJointIndex = jointIndexFor("neck");
-        appendSmoothLimb(vertices, indices, unusedSegments, torsoTop, collarTop, collarBaseCS, collarTopCS,
-                          neckJointIndex, neckJointIndex, HumanoidBodySegment::Torso, skinWeights);
+        // Kronos: `kCollarNeckFraction` deliberately isn't just a 5th
+        // ring appended to the main torso barrel's own profile -- that
+        // barrel's rings are always spaced *evenly* across its own real
+        // halfHeight (appendProfiledBarrel()'s own real, fixed
+        // convention), so adding a ring and extending the height would
+        // have shifted rings 0-3's own real positions too, undoing the
+        // chest/shoulder-bulge alignment the earlier fix in this same
+        // pass depends on. A real, separate, short second barrel avoids
+        // that entirely -- its own 2 rings only ever affect its own span.
+        glm::vec3 collarCenter = (shirtBarrelTop + collarTop) * 0.5f;
+        float collarHalfHeight = glm::length(collarTop - shirtBarrelTop) * 0.5f;
+        std::vector<glm::vec2> collarProfile = {collarBaseCS, collarTopCS};
+        appendProfiledBarrel(vertices, indices, unusedSegments, collarCenter, collarHalfHeight, collarProfile,
+                              neckJointIndex, HumanoidBodySegment::Torso, skinWeights);
 
         glm::vec2 shoulderCS(0.095f * ls * shell, 0.095f * ls * shell);
         glm::vec2 sleeveCS(0.085f * ls * shell, 0.085f * ls * shell);
