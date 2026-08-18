@@ -228,6 +228,17 @@ struct LocalProfile {
     int qualityPresetIndex = 1; // 0=Low, 1=Medium (default), 2=High
     bool vsyncEnabled = true;
     int fpsCap = 180; // matches core::GameLoop's own pre-existing 1/180s pacer default
+    // Kronos ("Graphics Setting -- Volumetric Fog Toggle"): real, explicit
+    // override on top of qualityPresetIndex's own bundled default
+    // (Low=off, Medium/High=on -- see RuntimeShell::applyQualityPreset()'s
+    // own comment) -- a player who wants fog off on Medium/High (or on at
+    // Low) doesn't have to give up every other effect that preset bundles.
+    // applyAllSettingsFromProfile() applies this *after* the preset's own
+    // bundled default, so the explicit choice here always wins. Defaults
+    // true, matching qualityPresetIndex's own default of 1 (Medium, which
+    // already turns fog on) -- an old profile with no line for this real-
+    // loads unchanged.
+    bool volumetricFogEnabled = true;
 
     // Audio: real master/music/SFX volume multipliers -- see
     // core::Audio::setMasterVolume()/setCategoryVolume()'s own comments

@@ -1882,6 +1882,12 @@ void RuntimeShell::applyInputBindingOverrides() {
 
 void RuntimeShell::applyAllSettingsFromProfile() {
     applyQualityPreset(localProfile_.qualityPresetIndex);
+    // Kronos ("Graphics Setting -- Volumetric Fog Toggle"): real, explicit
+    // override -- applied *after* applyQualityPreset() above so a
+    // player's own choice here always wins over whatever that preset
+    // bundles by default (see LocalProfile::volumetricFogEnabled's own
+    // comment).
+    app_.renderer().setVolumetricFogEnabled(localProfile_.volumetricFogEnabled);
     app_.renderer().setVsyncEnabled(localProfile_.vsyncEnabled);
     if (app_.gameLoop() != nullptr) {
         app_.gameLoop()->setTargetRenderDt(localProfile_.fpsCap > 0 ? 1.0f / static_cast<float>(localProfile_.fpsCap)
@@ -1942,6 +1948,16 @@ void RuntimeShell::drawSettingsPanel() {
     if (ImGui::Combo("Quality Preset", &localProfile_.qualityPresetIndex, kQualityPresetNames,
                       IM_ARRAYSIZE(kQualityPresetNames))) {
         applyQualityPreset(localProfile_.qualityPresetIndex);
+        // Kronos ("Graphics Setting -- Volumetric Fog Toggle"): real --
+        // applyQualityPreset() just bundled its own default fog state in
+        // with everything else; re-apply the player's own explicit
+        // volumetricFogEnabled choice right after so switching presets
+        // doesn't silently clobber it.
+        app_.renderer().setVolumetricFogEnabled(localProfile_.volumetricFogEnabled);
+        changed = true;
+    }
+    if (ImGui::Checkbox("Volumetric Fog", &localProfile_.volumetricFogEnabled)) {
+        app_.renderer().setVolumetricFogEnabled(localProfile_.volumetricFogEnabled);
         changed = true;
     }
     if (ImGui::Checkbox("VSync", &localProfile_.vsyncEnabled)) {

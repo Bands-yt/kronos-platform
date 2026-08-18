@@ -62,6 +62,7 @@ bool LocalProfile::saveToFile(const std::string& path) const {
     out << "QUALITYPRESET " << qualityPresetIndex << "\n";
     out << "VSYNCENABLED " << (vsyncEnabled ? 1 : 0) << "\n";
     out << "FPSCAP " << fpsCap << "\n";
+    out << "VOLUMETRICFOGENABLED " << (volumetricFogEnabled ? 1 : 0) << "\n";
     out << "MASTERVOLUME " << masterVolume << "\n";
     out << "MUSICVOLUME " << musicVolume << "\n";
     out << "SFXVOLUME " << sfxVolume << "\n";
@@ -161,6 +162,8 @@ bool LocalProfile::loadFromFile(const std::string& path) {
             loaded.vsyncEnabled = std::atoi(line.substr(13).c_str()) != 0;
         } else if (line.rfind("FPSCAP ", 0) == 0) {
             loaded.fpsCap = std::atoi(line.substr(7).c_str());
+        } else if (line.rfind("VOLUMETRICFOGENABLED ", 0) == 0) {
+            loaded.volumetricFogEnabled = std::atoi(line.substr(21).c_str()) != 0;
         } else if (line.rfind("MASTERVOLUME ", 0) == 0) {
             loaded.masterVolume = std::strtof(line.substr(13).c_str(), nullptr);
         } else if (line.rfind("MUSICVOLUME ", 0) == 0) {

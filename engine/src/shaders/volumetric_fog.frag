@@ -78,6 +78,10 @@ int selectCascade(float viewDepth) {
 // Renderer::drawVolumetricFogPass()'s own real bypass, so it doesn't need
 // its own Performance-Mode single-tap fallback the way scene.frag's
 // always-runs shadow sampling does).
+// See sampleFogShadow()'s own comment -- the real base bias, before the
+// per-cascade scale that was previously missing entirely.
+const float kFogShadowBaseBias = 0.0015;
+
 float sampleFogShadow(vec3 worldPos, float viewDepth) {
     int cascade = selectCascade(viewDepth);
     vec4 lightSpacePos = scene.lightViewProj[cascade] * vec4(worldPos, 1.0);
@@ -85,9 +89,30 @@ float sampleFogShadow(vec3 worldPos, float viewDepth) {
     vec2 uv = projected.xy * 0.5 + 0.5;
     float currentDepth = projected.z;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || currentDepth > 1.0) return 1.0;
-    const float kFixedBias = 0.0015;
+    // Kronos ("Fix Avatar Scattering Darkening Artifact"): real fix -- this
+    // was a single flat bias with no per-cascade scaling at all, unlike
+    // scene.frag's own sampleCascadeShadow(), whose header comment already
+    // states exactly why that's wrong: "the same fixed bias constant is
+    // wrong for every cascade except the one it happens to match, showing
+    // up as acne... that differs by which cascade is currently active
+    // (i.e. by distance from the camera, which reads as 'looks wrong from
+    // some angles')". A raymarch sample near a close, dynamic mesh (an
+    // avatar orbiting a few units from camera) sits in the nearest,
+    // smallest-texel cascade far more often than a raymarch sample against
+    // distant static geometry does, so an under-scaled bias there produced
+    // real shadow acne right along the avatar's own body -- every acne
+    // sample's visibility flickering to 0 drops that step's real in-
+    // scattered light term (stepRadiance's own real light contribution),
+    // which reads as the avatar looking artificially darker at exactly the
+    // camera angles/cascades where the acne appears. Reusing the same real
+    // per-cascade scene.cascadeBiasScale[cascade] the main shading already
+    // uses (no real surface normal exists for a raymarch sample in open
+    // space, so this can't also carry a slope-scaled NdotL term the way
+    // sampleCascadeShadow() does -- the per-cascade scale alone is the
+    // real, missing piece here).
+    float bias = kFogShadowBaseBias * scene.cascadeBiasScale[cascade];
     float sampledDepth = texture(shadowMapArray, vec3(uv, float(cascade))).r;
-    return (currentDepth - kFixedBias > sampledDepth) ? 0.0 : 1.0;
+    return (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
 }
 
 void main() {
