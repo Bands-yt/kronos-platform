@@ -1847,3 +1847,60 @@ Avatar Shop items — clicking an item already opens the real detail
 popup (Equip/Unequip/Purchase), which is what "Preview" maps onto today;
 a separate temporary-equip preview was not built without a more
 specific ask.
+
+## 2026-08-18 (later still) — Force Boot Into Unified Tab Bar Hub
+
+The previous entry above built the persistent Hub tab bar but left
+`ShellState::Home`'s own button-grid as the real boot destination and
+the real target of every "-> Home" transition (`SessionEnded`,
+`CancelJoin`, Error's `ReturnHome`) — so the legacy grid kept
+resurfacing. This pass makes the Hub the one real, always-current
+interface.
+
+### The real fix
+
+- `tick()`: the instant `state_ == ShellState::Home` and the one-time
+  splash has finished, it now calls `openGameCatalogue()` — the exact
+  same real setup (games/ rescan, LAN browser start) the tab bar's own
+  "Game Catalogue" button already calls — before the panel switch even
+  runs. `drawHomePanel()` can now never actually execute (kept as a
+  real, defensive `case` so the switch stays exhaustive over
+  `ShellState`, not deleted). `ShellState::Home` itself is untouched in
+  `ShellState.hpp` — every existing "-> Home" rule still means
+  something, it's just redirected onward one real frame later, so no
+  enum/test churn was needed.
+- `drawHubTabBar()`'s own "Home" entry removed — the mockup's tab set
+  never had one either (Game Catalogue | Avatar Shop | Friends |
+  Settings | Notifications | About only).
+- Real functionality that only used to live on Home — the "Playing As"
+  name editor and "Launch Studio" — moved into the Game Catalogue
+  panel's header (now the real landing screen) so they don't become
+  unreachable. The standalone "Your Avatar" preview widget was *not*
+  duplicated there — it already lives one tab away in Avatar Shop.
+- Found and fixed a real bug this surfaced: the live avatar-preview's
+  GPU render (`Renderer::setPrePassCallback`) and its `update(dt)` call
+  were still gated on `state_ == ShellState::Home`, a leftover from
+  before Avatar Shop grew its own preview column last pass — meaning
+  Avatar Shop's preview would have shown a stale/blank texture the
+  moment Home stopped being reachable. Both gates now check
+  `state_ == ShellState::AvatarShop`, the one real place this widget
+  draws today.
+
+### Explicitly not changed this pass
+
+`showSessionBrowser()`'s own guard (`state_ != ShellState::Home`) —
+unrelated to this fix and not touched; Session Browser is reachable via
+the real `ui.sessionBrowser()` Lua binding, not a Home button (already
+removed in an earlier pass). `ShellState::Home`/`drawHomePanel()`
+themselves were not deleted — only bypassed at the one real call site
+that used to render them, to keep this a surgical, low-risk fix rather
+than an enum/test-suite rewrite.
+
+### Build/test status
+
+Full rebuild (`engine_runtime`, `studio`, `engine_tests`) clean, zero
+new warnings. **11022/11022 checks still passing** — unchanged, since
+no `ShellState`/`ShellEvent` value was added, removed, or renamed, only
+a runtime redirect and a render-gate fix. Verified with a fresh launch
+(old process killed first, confirmed via `ps aux`): clean startup, no
+crash report written, stable ~175-183 fps, ~336 MB RSS.
