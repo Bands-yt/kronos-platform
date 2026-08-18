@@ -158,6 +158,13 @@ void LightingToolsPlugin::drawRenderingModeSection() {
         ImGui::SliderFloat("Saturation", &saturation_, 0.0f, 2.0f, "%.2f");
         ImGui::SliderFloat("God Rays", &godRayStrength_, 0.0f, 1.0f, "%.2f");
         renderer_->setSsaoParams(ssaoRadius_, ssaoStrength_);
+        // Kronos ("Critical Visual Fixes" -- "High Quality Graphics
+        // Blurriness"): real, explicit opt-in -- DOF is no longer an
+        // unconditional part of Cinematic Mode (see Renderer::
+        // setDepthOfFieldEnabled()'s own comment); this panel's own live
+        // sliders above are a real, deliberate DOF preview, so it stays on
+        // for as long as this section is visible (cinematicEnabled).
+        renderer_->setDepthOfFieldEnabled(true);
         renderer_->setDepthOfFieldParams(dofFocusDistance_, dofFocusRange_, dofMaxCoCRadiusPx_);
         renderer_->setMotionBlurShutterAngle(shutterAngleDegrees_);
         renderer_->setVignetteAndChromaticAberration(vignetteStrength_, chromaticAberrationStrength_);

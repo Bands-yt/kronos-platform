@@ -428,6 +428,13 @@ bool Application::initialize(const CreateInfo& info) {
             // real reasons (materials catching motion, the camera-system
             // demo's own rack-focus).
             renderer_.setDepthOfFieldParams(40.0f, 40.0f, 1.0f);
+            // Kronos ("Critical Visual Fixes" -- "High Quality Graphics
+            // Blurriness"): real, explicit opt-in -- DOF is no longer an
+            // unconditional part of Cinematic Mode (see Renderer::
+            // setDepthOfFieldEnabled()'s own comment); this showcase's own
+            // scene-scoped tuning above (and the Zone 3 rack-focus below)
+            // is real and wanted, so it stays on for the whole showcase.
+            renderer_.setDepthOfFieldEnabled(true);
             renderer_.setMotionBlurShutterAngle(0.0f);
             // Real, live-flagged feedback: volumetric fog read as too
             // heavy/hazy across the whole showcase -- off everywhere now.

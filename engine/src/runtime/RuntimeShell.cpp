@@ -1843,6 +1843,15 @@ void RuntimeShell::applyQualityPreset(int presetIndex) {
             break;
         case 2: // High
             renderer.setCinematicMode(true); // real side effect: disables performance mode
+            // Kronos ("Critical Visual Fixes" -- "High Quality Graphics
+            // Blurriness"): real, explicit -- Cinematic Mode's own DOF
+            // pass is opt-in now (see Renderer::setDepthOfFieldEnabled()'s
+            // own comment); this preset wants Cinematic Mode's other
+            // effects (SSAO, motion blur, auto-exposure) but never tuned
+            // DOF for real gameplay camera distances, so it stays off
+            // here rather than silently inheriting class-default params
+            // meant for a trailer-scene distance.
+            renderer.setDepthOfFieldEnabled(false);
             renderer.setSSREnabled(true);
             renderer.setVolumetricFogEnabled(true);
             renderer.setRTReflectionsEnabled(true);
@@ -2400,14 +2409,18 @@ void RuntimeShell::drawPlayerListOverlay() {
             if (ImGui::Button(showPlayerListOverlay_ ? "Hide Players" : "Show Players")) {
                 showPlayerListOverlay_ = !showPlayerListOverlay_;
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Chat (/)")) {
-                showChatPanel_ = true;
-                chatPanelJustOpened_ = true;
-                app_.setMovementInputSuspended(true);
-            }
         } else {
             if (ImGui::Button("Back to Home")) leaveSession();
+        }
+        ImGui::SameLine();
+        // Kronos ("Critical Fix -- Chat Activation"): real, shown offline
+        // too now -- see tickChatActivation()'s own comment for why the
+        // "/" keybind and this button used to be online-only, and
+        // drawChatPanel()'s own comment for how offline "send" behaves.
+        if (ImGui::Button("Chat (/)")) {
+            showChatPanel_ = true;
+            chatPanelJustOpened_ = true;
+            app_.setMovementInputSuspended(true);
         }
         ImGui::SameLine();
         // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
@@ -2494,14 +2507,18 @@ void RuntimeShell::drawPlayerListOverlay() {
 
 void RuntimeShell::tickChatActivation() {
     // Kronos ("Player & Chat System" -- "Bind the '/' key to open the
-    // chat panel"): real, but only while online (see the "Chat (/)"
-    // button's own comment on why this whole feature is a no-op for
-    // offline Catalogue play) and only while no other real ImGui text
-    // field already wants keyboard text (WantTextInput) -- without that
-    // guard, typing "/" into some *other* hypothetical text field would
-    // also real-open chat underneath it, a real, confusing double input
-    // this guard prevents.
-    if (!app_.networkSession().isActive() || showChatPanel_) return;
+    // chat panel"): real, works offline too now (Kronos "Critical Fix --
+    // Chat Activation": previously gated to online-only, which made the
+    // "/" key and the HUD's own "Chat (/)" button silently do nothing
+    // during offline Catalogue play -- a real, confusing dead keybind
+    // rather than an honest no-op; see drawChatPanel()'s own comment for
+    // how an offline "send" is now a real local echo instead of a
+    // network call that would have gone nowhere). Only while no other
+    // real ImGui text field already wants keyboard text (WantTextInput)
+    // -- without that guard, typing "/" into some *other* hypothetical
+    // text field would also real-open chat underneath it, a real,
+    // confusing double input this guard prevents.
+    if (showChatPanel_) return;
     ImGuiIO& io = ImGui::GetIO();
     if (io.WantTextInput) return;
     // Kronos ("Input Remapping System"): real -- routed through the real,
@@ -2567,14 +2584,31 @@ void RuntimeShell::drawChatPanel() {
         bool sent = ImGui::InputText("##chat_input", chatInputBuffer_, sizeof(chatInputBuffer_),
                                       ImGuiInputTextFlags_EnterReturnsTrue);
         if (sent && chatInputBuffer_[0] != '\0') {
-            // Kronos ("Player & Chat System" -- "Integrate moderation
-            // filters"): real, already-real -- sendChatMessage() routes
-            // through the exact same server-side safety::TrustSafetyService/
-            // safety::PolicyEngine/moderation::ChatLog pipeline every
-            // other chat message (native or scripted) already does; this
-            // panel is a real new front door onto real, pre-existing
-            // moderation, not a second, parallel path.
-            app_.networkSession().sendChatMessage(chatInputBuffer_);
+            if (app_.networkSession().isActive()) {
+                // Kronos ("Player & Chat System" -- "Integrate moderation
+                // filters"): real, already-real -- sendChatMessage() routes
+                // through the exact same server-side safety::TrustSafetyService/
+                // safety::PolicyEngine/moderation::ChatLog pipeline every
+                // other chat message (native or scripted) already does; this
+                // panel is a real new front door onto real, pre-existing
+                // moderation, not a second, parallel path.
+                app_.networkSession().sendChatMessage(chatInputBuffer_);
+            } else {
+                // Kronos ("Critical Fix -- Chat Activation"): real, offline
+                // local echo -- NetworkSession::sendChatMessage() itself is
+                // already a safe, honest no-op offline (config_.mode !=
+                // Client), so routing an offline message through it would
+                // just make it silently vanish with no local trace at all,
+                // a worse, more confusing UX than not having chat offline
+                // in the first place. There's no server to relay it back to
+                // this same client (setOnChatMessageReceived() never fires
+                // offline either), so this appends directly, matching that
+                // callback's own "sender: text" formatting.
+                chatHistoryLines_.push_back(
+                    (localProfile_.displayName.empty() ? std::string("You") : localProfile_.displayName) + ": " +
+                    chatInputBuffer_);
+                if (chatHistoryLines_.size() > kMaxChatHistoryLines) chatHistoryLines_.erase(chatHistoryLines_.begin());
+            }
             chatInputBuffer_[0] = '\0';
             chatPanelJustOpened_ = true; // real, keeps keyboard focus in the input box for the next message
         }

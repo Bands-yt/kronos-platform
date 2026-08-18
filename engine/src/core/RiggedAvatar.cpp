@@ -385,6 +385,43 @@ void appendProfiledBarrel(std::vector<Vertex>& vertices, std::vector<uint32_t>& 
     appendCap(ringCount - 1, /*facesDown=*/false);
 }
 
+// Kronos ("Critical Visual Fixes" -- "Avatar Chest Mesh Clipping"): real,
+// shared torso ring shape -- factored out so both the base body mesh
+// (buildHumanoidMeshData()'s own torso block) and the separate clothing
+// shirt shell (spawnAvatarClothing()) always describe literally the same
+// silhouette, just at two different outward scales. Before this, the
+// shirt shell kept its own, independently hand-tuned 3-ring profile
+// (missing the base body's real 4th "shoulder bulge" control point
+// entirely) -- at the shoulder/chest band the base body's own 0.29*w
+// bulge was wider than the shirt shell's ~0.26*w interpolated radius
+// even at a "Tight" 1.06x shell scale, so real skin-colored torso
+// geometry poked through the shirt there. Reusing this exact profile
+// (scaled outward by `outwardScale`) guarantees the shirt always fully
+// encloses the base body at every ring, not just at the two endpoints,
+// and stays correct automatically if the base torso's own shape is ever
+// retuned again. `outwardScale` folds in clothingFitScaleMultiplier()
+// for a real shirt shell, or is 1.0f for the base body itself.
+std::vector<glm::vec2> torsoProfileFor(float w, float outwardScale) {
+    return {
+        {0.20f * w * outwardScale, 0.12f * w * outwardScale}, // waist (bottom)
+        {0.24f * w * outwardScale, 0.14f * w * outwardScale}, // chest (mid)
+        {0.29f * w * outwardScale, 0.15f * w * outwardScale}, // shoulder bulge
+        {0.24f * w * outwardScale, 0.14f * w * outwardScale}, // neckline (rounds back in)
+    };
+}
+
+// Kronos ("Torso Proportion Fix" / "Avatar Chest Mesh Clipping"): real,
+// shared -- the fraction of the way from pelvis to neck the torso
+// barrel's own top ring sits at (see buildHumanoidMeshData()'s own
+// "Reduce Torso Height" comment for why 0.81, not the full pelvis-to-neck
+// span). The base body and the shirt shell both need to agree on this
+// exact value so their real rings land at the same real heights --
+// previously the shirt shell used the *full* pelvis-to-neck span here
+// while the base body used 0.81 of it, so even where the two profiles'
+// own numbers matched, they landed at different absolute heights and no
+// longer lined up.
+constexpr float kTorsoTopFraction = 0.81f;
+
 // Kronos ("Avatar Visual Silhouette Pass" -- "Hands"): a real palm box
 // (bigger than the old plain "mitten" box -- see the caller's own
 // palmHalfExtents comment) plus 4 real, small, rigid finger blocks
@@ -824,7 +861,6 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
         // center, which would have also pulled the torso's own bottom up
         // off the pelvis and reopened the hip gap this file's own earlier
         // "Unified Lower Body" pass just closed.
-        constexpr float kTorsoTopFraction = 0.81f;
         glm::vec3 torsoTop = pelvisPos + (neckPos - pelvisPos) * kTorsoTopFraction;
         glm::vec3 torsoCenter = (pelvisPos + torsoTop) * 0.5f;
         float torsoHalfHeight = glm::length(torsoTop - pelvisPos) * 0.5f;
@@ -848,12 +884,7 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
         // a lower absolute Y now -- exactly the value the new neck
         // cylinder's own base cross-section below matches, so there's no
         // visible step at the seam.
-        std::vector<glm::vec2> torsoProfile = {
-            {0.20f * w, 0.12f * w}, // waist (bottom)
-            {0.24f * w, 0.14f * w}, // chest (mid)
-            {0.29f * w, 0.15f * w}, // shoulder bulge
-            {0.24f * w, 0.14f * w}, // neckline (rounds back in)
-        };
+        std::vector<glm::vec2> torsoProfile = torsoProfileFor(w, 1.0f);
         appendProfiledBarrel(data.vertices, data.indices, data.vertexSegments, torsoCenter, torsoHalfHeight,
                               torsoProfile, jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, data.skinWeights);
 
@@ -1373,13 +1404,24 @@ bool spawnAvatarClothing(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout
 
         glm::vec3 pelvisPos = worldPos("pelvis");
         glm::vec3 neckPos = worldPos("neck");
-        glm::vec3 torsoCenter = (pelvisPos + neckPos) * 0.5f;
-        float torsoHalfHeight = glm::length(neckPos - pelvisPos) * 0.5f * 1.03f; // real, slight over-extension so the shell doesn't clip through the neck/waist seam
-        std::vector<glm::vec2> shirtProfile = {
-            {0.20f * w * shell, 0.12f * w * shell},
-            {0.24f * w * shell, 0.14f * w * shell},
-            {0.27f * w * shell, 0.14f * w * shell},
-        };
+        // Kronos ("Critical Visual Fixes" -- "Avatar Chest Mesh
+        // Clipping"): real fix -- this shell used to span the *full*
+        // pelvis-to-neck distance and its own independently hand-tuned
+        // 3-ring profile, while the base body torso barrel it's meant to
+        // cover had already been shortened to kTorsoTopFraction (0.81) of
+        // that span and grown a real 4th "shoulder bulge" ring. The two
+        // barrels' rings no longer lined up at the same real heights, and
+        // even where they did, the shirt had no ring matching the base
+        // body's wider shoulder bulge -- so the base body's own skin-
+        // colored torso geometry poked through the shirt at the chest/
+        // shoulder band. Reusing the exact same kTorsoTopFraction span and
+        // torsoProfileFor() ring shape (scaled outward by `shell`)
+        // guarantees the shirt fully encloses the base body at every ring,
+        // not just the two endpoints.
+        glm::vec3 torsoTop = pelvisPos + (neckPos - pelvisPos) * kTorsoTopFraction;
+        glm::vec3 torsoCenter = (pelvisPos + torsoTop) * 0.5f;
+        float torsoHalfHeight = glm::length(torsoTop - pelvisPos) * 0.5f * 1.03f; // real, slight over-extension so the shell doesn't clip through the neck/waist seam
+        std::vector<glm::vec2> shirtProfile = torsoProfileFor(w, shell);
         appendProfiledBarrel(vertices, indices, unusedSegments, torsoCenter, torsoHalfHeight, shirtProfile,
                               jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, skinWeights);
 

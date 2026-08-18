@@ -3899,7 +3899,13 @@ void Renderer::drawCinematicPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent
     push.motionBlurStrength = motionBlurStrength_;
     push.ssaoRadius = ssaoRadius_;
     push.ssaoStrength = ssaoStrength_;
-    push.dofEnabled = 1.0f;
+    // Kronos ("Critical Visual Fixes" -- "High Quality Graphics
+    // Blurriness"): real -- was unconditionally 1.0f, so any Cinematic
+    // Mode caller (including RuntimeShell's own "High" quality preset,
+    // which never tunes DOF for gameplay distances) got the class-default
+    // DOF params applied full-strength. See setDepthOfFieldEnabled()'s
+    // own comment.
+    push.dofEnabled = depthOfFieldEnabled_ ? 1.0f : 0.0f;
     push.ssaoEnabled = 1.0f;
     push.heatDistortionStrength = heatDistortionEnabled_ ? heatDistortionStrength_ : 0.0f;
     push.time = totalElapsedTimeSeconds_;

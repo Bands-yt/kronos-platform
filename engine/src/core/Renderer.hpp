@@ -463,6 +463,29 @@ public:
         dofFocusRange_ = focusRange;
         dofMaxCoCRadiusPx_ = maxCoCRadiusPx;
     }
+    // Kronos ("Critical Visual Fixes" -- "High Quality Graphics
+    // Blurriness"): real, independent gate -- drawCinematicPass() used to
+    // force `push.dofEnabled = 1.0f` unconditionally whenever Cinematic
+    // Mode was on at all, so RuntimeShell's own "High" quality preset
+    // (which just calls setCinematicMode(true) for its other real
+    // effects -- SSAO, motion blur, auto-exposure, vignette/god-rays)
+    // inherited depthOfFieldParams' *class defaults* (15/10/6), tuned for
+    // a completely different context (trailer-scene distances), never for
+    // an ordinary close-up third-person gameplay camera. At typical
+    // avatar-following camera distances (a few units), that meant almost
+    // the entire visible frame sat outside the in-focus range and blurred
+    // at close to the max 6px disk radius -- not a subtle bokeh effect, a
+    // pervasively blurry screen. Real DOF-specific callers (the mining-sim
+    // RTX scene, the render-showcase trailer camera, Studio's
+    // LightingToolsPlugin dev panel) already call setDepthOfFieldParams()
+    // with their own real, scene-appropriate tuning -- they now also call
+    // this to explicitly opt in, rather than DOF being an unconditional,
+    // un-tunable side effect of Cinematic Mode as a whole. Defaults to
+    // false so ordinary gameplay (including the "High" quality preset)
+    // gets Cinematic Mode's other effects without an unwanted blur nobody
+    // asked for.
+    void setDepthOfFieldEnabled(bool enabled) { depthOfFieldEnabled_ = enabled; }
+    [[nodiscard]] bool isDepthOfFieldEnabled() const { return depthOfFieldEnabled_; }
     // `degrees`: a real photographic shutter angle (0-360; 180 is the
     // classic "natural"-looking film default) -- converted to a real
     // [0,1]-ish UV-space blur strength as degrees/360, the standard
@@ -1420,6 +1443,9 @@ private:
     float dofFocusDistance_ = 15.0f;
     float dofFocusRange_ = 10.0f;
     float dofMaxCoCRadiusPx_ = 6.0f;
+    // See setDepthOfFieldEnabled()'s own comment -- real, independent of
+    // cinematicModeEnabled_ itself.
+    bool depthOfFieldEnabled_ = false;
     float motionBlurStrength_ = 0.0f;
     float ssaoRadius_ = 0.5f;
     float ssaoStrength_ = 1.0f;

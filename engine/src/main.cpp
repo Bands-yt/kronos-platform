@@ -355,6 +355,12 @@ int main(int argc, char** argv) {
         // here keeps most of this specific scene in real focus rather
         // than reusing defaults tuned for a different scene's scale.
         app.renderer().setDepthOfFieldParams(20.0f, 22.0f, 5.0f);
+        // Kronos ("Critical Visual Fixes" -- "High Quality Graphics
+        // Blurriness"): real, explicit opt-in -- DOF is no longer an
+        // unconditional part of Cinematic Mode (see Renderer::
+        // setDepthOfFieldEnabled()'s own comment); this scene's own
+        // tuning above is real and wanted, so it turns DOF on for itself.
+        app.renderer().setDepthOfFieldEnabled(true);
 
         // A real starting viewpoint outside the cavern's south wall,
         // looking north across the drill toward the crystal cluster --
