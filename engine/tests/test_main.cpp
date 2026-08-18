@@ -16795,11 +16795,14 @@ void testShellStateTransitionsHomeToSessionBrowserAndBack() {
           "SessionBrowser + ReturnHome real-transitions back to Home");
 }
 
-// Kronos ("Game Catalogue Overhaul", Phase 4): replaces the old bare
-// "Play" button's Home -> InGame transition -- picking a game from the
-// real Game Catalogue now goes through GameCatalogue, and only reaches
-// InGame once runtime::loadGame() (core/GameManifest.hpp) real-succeeds
-// for the picked ProjectPath game.
+// Kronos ("Game Catalogue Overhaul", Phase 4 -- updated by "Animated
+// Hourglass Loading Screen"): replaces the old bare "Play" button's
+// Home -> InGame transition -- picking a game from the real Game
+// Catalogue now goes through GameCatalogue, then a real Loading beat
+// (RuntimeShell::finishPendingGameLoad()'s own deferred
+// runtime::loadGame() call, so the loading panel's own hourglass
+// genuinely renders first), and only reaches InGame once that real load
+// succeeds.
 void testShellStateTransitionsHomeThroughGameCatalogueToInGame() {
     using engine::runtime::ShellEvent;
     using engine::runtime::ShellState;
@@ -16807,7 +16810,9 @@ void testShellStateTransitionsHomeThroughGameCatalogueToInGame() {
     state = engine::runtime::computeNextState(state, ShellEvent::OpenGameCatalogue);
     check(state == ShellState::GameCatalogue, "Home + OpenGameCatalogue real-transitions to GameCatalogue");
     state = engine::runtime::computeNextState(state, ShellEvent::GameSelected);
-    check(state == ShellState::InGame, "GameCatalogue + GameSelected real-transitions to InGame");
+    check(state == ShellState::Loading, "GameCatalogue + GameSelected real-transitions to Loading");
+    state = engine::runtime::computeNextState(state, ShellEvent::GameLoadFinished);
+    check(state == ShellState::InGame, "Loading + GameLoadFinished real-transitions to InGame");
 }
 
 void testShellStateTransitionsGameCatalogueReturnsHome() {
@@ -16815,6 +16820,18 @@ void testShellStateTransitionsGameCatalogueReturnsHome() {
     using engine::runtime::ShellState;
     check(engine::runtime::computeNextState(ShellState::GameCatalogue, ShellEvent::ReturnHome) == ShellState::Home,
           "GameCatalogue + ReturnHome real-transitions back to Home");
+}
+
+// Kronos ("Merged Game Catalogue & Sessions View"): real, new -- a
+// live session discovered while browsing the Game Catalogue can now be
+// joined directly (RuntimeShell::joinSession()'s own relaxed guard),
+// the same real JoinRequested -> Loading path SessionBrowser already
+// had, not a second, separately-drifting join flow.
+void testShellStateTransitionsGameCatalogueJoinRequestedGoesToLoading() {
+    using engine::runtime::ShellEvent;
+    using engine::runtime::ShellState;
+    check(engine::runtime::computeNextState(ShellState::GameCatalogue, ShellEvent::JoinRequested) == ShellState::Loading,
+          "GameCatalogue + JoinRequested real-transitions to Loading, same as SessionBrowser's own real path");
 }
 
 // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI"): real,
@@ -28280,6 +28297,7 @@ int main() {
     testShellStateTransitionsHomeToSessionBrowserAndBack();
     testShellStateTransitionsHomeThroughGameCatalogueToInGame();
     testShellStateTransitionsGameCatalogueReturnsHome();
+    testShellStateTransitionsGameCatalogueJoinRequestedGoesToLoading();
     testShellStateTransitionsHomeThroughAvatarShopAndBack();
     testShellStateTransitionsHomeThroughSettingsAndBack();
     testShellStateTransitionsHomeThroughFriendsAndBack();

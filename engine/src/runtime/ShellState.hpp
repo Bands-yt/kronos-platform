@@ -88,7 +88,14 @@ enum class ShellEvent {
     JoinFailed,          // Loading -> Error
     CancelJoin,          // Loading -> Home (the player backed out of a real, still-in-flight join attempt)
     OpenGameCatalogue,   // Home -> GameCatalogue (Kronos "Game Catalogue Overhaul" -- replaces the old bare Play button)
-    GameSelected,        // GameCatalogue -> InGame (runtime::loadGame() real-succeeded for the picked ProjectPath game)
+    GameSelected,        // GameCatalogue -> Loading (Kronos "Animated Hourglass Loading Screen": a game was picked,
+                         // real runtime::loadGame() work is about to start -- used to go straight to InGame,
+                         // see RuntimeShell::finishPendingGameLoad()'s own comment for why a real Loading beat
+                         // was inserted)
+    GameLoadFinished,    // Loading -> InGame (the deferred runtime::loadGame() from GameSelected above real-succeeded)
+    GameLoadFailed,      // Loading -> GameCatalogue (the deferred runtime::loadGame() real-failed -- matches the
+                         // real, original pre-Loading-beat behavior of just staying on the Catalogue, not a
+                         // formal Error panel; a local game-load failure isn't a network problem)
     SessionEnded,        // InGame -> Home (a real, graceful or ungraceful disconnect/leave)
     OpenAvatarShop,      // Home -> AvatarShop
     OpenSettings,        // Home -> Settings
@@ -124,10 +131,26 @@ enum class ShellEvent {
             if (event == ShellEvent::JoinSucceeded) return ShellState::InGame;
             if (event == ShellEvent::JoinFailed) return ShellState::Error;
             if (event == ShellEvent::CancelJoin) return ShellState::Home;
+            // Kronos ("Animated Hourglass Loading Screen"): real, same
+            // Loading state a network join already uses -- a real local
+            // game load now shows the same real loading beat instead of
+            // jumping straight from GameCatalogue to InGame.
+            if (event == ShellEvent::GameLoadFinished) return ShellState::InGame;
+            if (event == ShellEvent::GameLoadFailed) return ShellState::GameCatalogue;
             return current;
         case ShellState::GameCatalogue:
             if (event == ShellEvent::ReturnHome) return ShellState::Home;
-            if (event == ShellEvent::GameSelected) return ShellState::InGame;
+            // Kronos ("Animated Hourglass Loading Screen"): real, changed
+            // from a direct -> InGame jump -- see
+            // RuntimeShell::selectGame()'s own comment.
+            if (event == ShellEvent::GameSelected) return ShellState::Loading;
+            // Kronos ("Merged Game Catalogue & Sessions View"): real,
+            // same rule SessionBrowser already has above -- a card's own
+            // expanded live-session list can now real-join directly from
+            // GameCatalogue (see RuntimeShell::joinSession()'s own
+            // relaxed guard), not just from the standalone Session
+            // Browser panel.
+            if (event == ShellEvent::JoinRequested) return ShellState::Loading;
             return current;
         case ShellState::AvatarShop:
             if (event == ShellEvent::ReturnHome) return ShellState::Home;

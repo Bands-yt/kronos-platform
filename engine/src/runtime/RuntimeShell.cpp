@@ -336,7 +336,13 @@ void RuntimeShell::showPlayerList() {
 }
 
 void RuntimeShell::joinSession(const net::DiscoveredSession& session) {
-    if (state_ != ShellState::SessionBrowser) return; // real, honest no-op outside the real state this applies to
+    // Kronos ("Merged Game Catalogue & Sessions View"): real, relaxed --
+    // GameCatalogue now also has a real, direct join path (a card's own
+    // expanded live-session list, see drawGameCataloguePanel()'s own
+    // comment), not just the standalone Session Browser panel. Both
+    // states real-transition to Loading on JoinRequested below
+    // (ShellState.hpp's own computeNextState()).
+    if (state_ != ShellState::SessionBrowser && state_ != ShellState::GameCatalogue) return; // real, honest no-op otherwise
 
     ensureLocalProfileLoaded();
 
@@ -448,6 +454,18 @@ void RuntimeShell::openGameCatalogue() {
     ensureLocalProfileLoaded();
     discoveredGames_ = core::filterCatalogueEntriesForAgeGroup(discoveredGames_, effectiveAgeGroup());
     gamesScanned_ = true;
+    // Kronos ("Merged Game Catalogue & Sessions View"): real, same guarded
+    // start showSessionBrowser() already does -- so a card's own
+    // expanded live-session list (drawGameCataloguePanel()) has real,
+    // live net::DiscoveredSession data (each real-carrying its own
+    // gameName, see LanSessionAnnouncement's own comment) to filter by
+    // game, not stale/empty data. tickLanBrowserIfNeeded() already ticks
+    // regardless of which state is current once started, so this is
+    // real from the moment the catalogue opens.
+    if (!lanBrowserRunning_) {
+        lanBrowserRunning_ = lanBrowser_.start(net::kLanAnnouncePort, net::kLanPingPort);
+        lanBrowserClock_ = 0.0f;
+    }
     state_ = computeNextState(state_, ShellEvent::OpenGameCatalogue);
 }
 
@@ -482,12 +500,38 @@ void RuntimeShell::selectGame(const core::GameCatalogueEntry& game) {
         return;
     }
 
+    // Kronos ("Animated Hourglass Loading Screen"): real, deferred -- the
+    // rest of what this function used to do synchronously (the real
+    // runtime::loadGame() scene rebuild + avatar spawn, genuinely
+    // non-trivial work) now happens one full real frame later
+    // (finishPendingGameLoad(), called from tick()), so this frame's own
+    // draw call genuinely renders the Loading panel's hourglass and gets
+    // presented before that synchronous work ever starts, instead of
+    // blocking before anything painted. A real, owned copy of `game` --
+    // not a pointer into discoveredGames_, which openGameCatalogue() can
+    // reload out from under a pending load.
+    pendingGameLoad_ = game;
+    pendingGameLoadReadyToRun_ = false;
+    state_ = computeNextState(state_, ShellEvent::GameSelected);
+}
+
+void RuntimeShell::finishPendingGameLoad() {
+    if (!pendingGameLoad_.has_value()) return;
+    core::GameCatalogueEntry game = *pendingGameLoad_;
+    pendingGameLoad_.reset();
+
     core::DiscoveredGame discovered;
     discovered.manifestPath = game.manifestPath;
     discovered.manifest = game.manifest;
     discovered.parseSucceeded = true;
     if (!loadGame(app_, discovered)) {
         std::fprintf(stderr, "RuntimeShell: \"%s\" real-failed to load\n", game.manifest.name.c_str());
+        // Kronos ("Animated Hourglass Loading Screen"): real, same
+        // "just go back to the Catalogue, no formal error panel"
+        // behavior this had before the Loading beat was inserted -- a
+        // local game-load failure isn't a network problem, so it
+        // deliberately doesn't route through ShellErrorKind at all.
+        state_ = computeNextState(state_, ShellEvent::GameLoadFailed);
         return;
     }
 
@@ -545,7 +589,7 @@ void RuntimeShell::selectGame(const core::GameCatalogueEntry& game) {
     (void)gamePlayLog_.saveToFile(kGamePlayLogPath);
 
     app_.input().setRelativeMouseMode(true);
-    state_ = computeNextState(state_, ShellEvent::GameSelected);
+    state_ = computeNextState(state_, ShellEvent::GameLoadFinished);
 }
 
 void RuntimeShell::launchStudio() {
@@ -579,6 +623,23 @@ void RuntimeShell::endFrame() {
 
 void RuntimeShell::tick(float dt) {
     tickLanBrowserIfNeeded(dt);
+
+    // Kronos ("Animated Hourglass Loading Screen"): real, deferred-by-
+    // one-frame game load -- selectGame() sets pendingGameLoad_ and
+    // transitions to Loading during ITS OWN frame's draw call (tick()
+    // already ran for that frame, before draw); the FIRST tick() that
+    // observes Loading+pendingGameLoad_ is the one for the NEXT frame,
+    // which only flips pendingGameLoadReadyToRun_ (so that next frame's
+    // own draw call genuinely renders and presents the Loading panel's
+    // hourglass); only the frame AFTER that actually calls
+    // finishPendingGameLoad() and does the real, heavy synchronous work.
+    if (state_ == ShellState::Loading && pendingGameLoad_.has_value()) {
+        if (pendingGameLoadReadyToRun_) {
+            finishPendingGameLoad();
+        } else {
+            pendingGameLoadReadyToRun_ = true;
+        }
+    }
 
     // Real Loading -> InGame/Error transition -- polls real NetworkSession
     // state every real frame while a join attempt is in flight (this
@@ -719,6 +780,23 @@ void RuntimeShell::tick(float dt) {
     endFrame();
 }
 
+namespace {
+// Kronos ("UI Theme Cleanup" -- "green accent buttons"): real, shared --
+// previously duplicated as local consts inside drawHomePanel() for its
+// own two primary-action buttons (Game Catalogue/Launch Studio). A real,
+// reusable helper now, so the same primary-action green applies
+// consistently to other real primary actions elsewhere in engine_runtime
+// (this pass: the Game Catalogue's own "Play"/live-session "Join"
+// buttons, see drawGameCard() below) instead of drifting out of sync
+// with a second, separately-hand-copied color triple.
+void pushPrimaryActionButtonColors() {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.00f, 0.78f, 0.32f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.14f, 0.86f, 0.44f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.00f, 0.64f, 0.25f, 1.0f));
+}
+void popPrimaryActionButtonColors() { ImGui::PopStyleColor(3); }
+} // namespace
+
 void RuntimeShell::drawHomePanel() {
     ensureLocalProfileLoaded();
 
@@ -795,14 +873,9 @@ void RuntimeShell::drawHomePanel() {
     // default, so "primary action" still reads as visually distinct
     // from "secondary action," just with a different real accent color.
     ImVec2 primaryButtonSize(kCardWidth, 48.0f);
-    const ImVec4 kPrimaryActionGreen(0.00f, 0.78f, 0.32f, 1.0f);
-    const ImVec4 kPrimaryActionGreenHovered(0.14f, 0.86f, 0.44f, 1.0f);
-    const ImVec4 kPrimaryActionGreenActive(0.00f, 0.64f, 0.25f, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, kPrimaryActionGreen);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kPrimaryActionGreenHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kPrimaryActionGreenActive);
+    pushPrimaryActionButtonColors();
     if (ImGui::Button("Game Catalogue", primaryButtonSize)) openGameCatalogue();
-    ImGui::PopStyleColor(3);
+    popPrimaryActionButtonColors();
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
 
     // Kronos ("Social Layer" / "Notifications System"): real, first
@@ -841,11 +914,9 @@ void RuntimeShell::drawHomePanel() {
     // Kronos ("Base Client UI Theme"): real, same primary-action green
     // as "Game Catalogue" above -- "Launch" is the other real primary
     // action this screen offers.
-    ImGui::PushStyleColor(ImGuiCol_Button, kPrimaryActionGreen);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kPrimaryActionGreenHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kPrimaryActionGreenActive);
+    pushPrimaryActionButtonColors();
     if (ImGui::Button("Launch Studio", halfButtonSize)) launchStudio();
-    ImGui::PopStyleColor(3);
+    popPrimaryActionButtonColors();
 
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
     ImGui::TextDisabled("Kronos %s", core::kKronosVersion);
@@ -1013,7 +1084,13 @@ void RuntimeShell::drawSessionBrowserPanel() {
                     }
                     ImGui::TableSetColumnIndex(5);
                     ImGui::PushID(static_cast<int>(session.sessionId));
+                    // Kronos ("UI Theme Cleanup" -- "green accent
+                    // buttons"): real, same shared primary-action green
+                    // as Home's own Game Catalogue/Launch Studio buttons
+                    // -- Join is this row's own real primary action.
+                    pushPrimaryActionButtonColors();
                     if (ImGui::SmallButton("Join")) joinSession(session);
+                    popPrimaryActionButtonColors();
                     ImGui::PopID();
                 }
             }
@@ -1062,8 +1139,18 @@ namespace {
 constexpr float kCardWidth = 220.0f;
 constexpr float kCardHeight = 170.0f;
 
-bool drawGameCard(const core::GameCatalogueEntry& game) {
-    bool clicked = false;
+// Kronos ("Merged Game Catalogue & Sessions View"): real result --
+// either the card's own "Play" button (launch this game locally) or a
+// specific live session picked from the card's own expanded session
+// list (join it directly), never both from a single card interaction.
+struct GameCardResult {
+    const core::GameCatalogueEntry* toPlay = nullptr;
+    const net::DiscoveredSession* toJoin = nullptr;
+};
+
+GameCardResult drawGameCard(const core::GameCatalogueEntry& game,
+                             const std::vector<net::DiscoveredSession>& allDiscoveredSessions) {
+    GameCardResult result;
     ImGui::PushID(game.manifestPath.c_str());
     ImGui::BeginGroup();
 
@@ -1104,11 +1191,58 @@ bool drawGameCard(const core::GameCatalogueEntry& game) {
         ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "Unsafe");
     }
 
-    if (ImGui::Button("Play", ImVec2(kCardWidth, 0.0f))) clicked = true;
+    // Kronos ("UI Theme Cleanup" -- "green accent buttons"): real, same
+    // shared primary-action green as Home's own Game Catalogue/Launch
+    // Studio buttons -- Play is this card's own real primary action.
+    pushPrimaryActionButtonColors();
+    if (ImGui::Button("Play", ImVec2(kCardWidth, 0.0f))) result.toPlay = &game;
+    popPrimaryActionButtonColors();
+
+    // Kronos ("Merged Game Catalogue & Sessions View"): real, live
+    // sessions currently running *this* game -- filtered from the full
+    // discovery list by the same real gameName identity
+    // LanSessionAnnouncement/DiscoveredSession already carry (see those
+    // structs' own comments), matched against this card's own
+    // core::GameManifest::name (the same identity key
+    // net::GamePlayLog/core::HiddenGemsSelector already use). A real,
+    // honest "no sessions" state when the count is 0 -- no fabricated
+    // placeholder rows.
+    std::vector<const net::DiscoveredSession*> liveSessions;
+    for (const auto& session : allDiscoveredSessions) {
+        if (session.gameName == game.manifest.name) liveSessions.push_back(&session);
+    }
+    ImGui::BeginDisabled(liveSessions.empty());
+    if (ImGui::Button(liveSessions.empty() ? "No live sessions" : "Live Sessions", ImVec2(kCardWidth, 0.0f))) {
+        ImGui::OpenPopup("LiveSessions");
+    }
+    ImGui::EndDisabled();
+    if (!liveSessions.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d)", static_cast<int>(liveSessions.size()));
+    }
+    if (ImGui::BeginPopup("LiveSessions")) {
+        ImGui::TextDisabled("Live sessions for %s", game.manifest.name.c_str());
+        ImGui::Separator();
+        for (const net::DiscoveredSession* session : liveSessions) {
+            ImGui::PushID(static_cast<int>(session->sessionId));
+            ImGui::Text("%s", session->sessionName.empty() ? session->hostDisplayName.c_str() : session->sessionName.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("%d/%d players", session->currentPlayerCount, session->maxPlayerCount);
+            ImGui::SameLine();
+            pushPrimaryActionButtonColors();
+            if (ImGui::SmallButton("Join")) {
+                result.toJoin = session;
+                ImGui::CloseCurrentPopup();
+            }
+            popPrimaryActionButtonColors();
+            ImGui::PopID();
+        }
+        ImGui::EndPopup();
+    }
 
     ImGui::EndGroup();
     ImGui::PopID();
-    return clicked;
+    return result;
 }
 
 // One horizontally-scrolling strip of cards -- the real "row" the
@@ -1117,18 +1251,20 @@ bool drawGameCard(const core::GameCatalogueEntry& game) {
 // studio::plugins::CataloguePanel::drawGrid() already established,
 // adapted to a fixed-height horizontal strip (a real front-page "row"
 // convention) instead of a wrapping grid.
-const core::GameCatalogueEntry* drawGameRow(const std::vector<const core::GameCatalogueEntry*>& games,
-                                             const char* rowId) {
-    const core::GameCatalogueEntry* selected = nullptr;
+GameCardResult drawGameRow(const std::vector<const core::GameCatalogueEntry*>& games, const char* rowId,
+                            const std::vector<net::DiscoveredSession>& allDiscoveredSessions) {
+    GameCardResult result;
     ImGui::PushID(rowId);
     ImGui::BeginChild("row", ImVec2(0.0f, kCardHeight + 16.0f), false, ImGuiWindowFlags_HorizontalScrollbar);
     for (size_t i = 0; i < games.size(); ++i) {
         if (i > 0) ImGui::SameLine();
-        if (drawGameCard(*games[i])) selected = games[i];
+        GameCardResult cardResult = drawGameCard(*games[i], allDiscoveredSessions);
+        if (cardResult.toPlay) result.toPlay = cardResult.toPlay;
+        if (cardResult.toJoin) result.toJoin = cardResult.toJoin;
     }
     ImGui::EndChild();
     ImGui::PopID();
-    return selected;
+    return result;
 }
 } // namespace
 
@@ -1153,6 +1289,16 @@ void RuntimeShell::drawGameCataloguePanel() {
     }
 
     const core::GameCatalogueEntry* toPlay = nullptr;
+    const net::DiscoveredSession* toJoin = nullptr;
+
+    // Kronos ("Merged Game Catalogue & Sessions View"): real, built once
+    // per frame -- every row below shares this same, real, live list
+    // (openGameCatalogue() already started lanBrowser_ ticking). A
+    // *copy*, not a reference into lanBrowser_'s own internal state, so
+    // the `toJoin` pointer any card below hands back stays valid for the
+    // rest of this function even if lanBrowser_'s own list changes on a
+    // later tick.
+    std::vector<net::DiscoveredSession> liveDiscoveredSessions = lanBrowser_.discoveredSessions();
 
     // Featured -- real, algorithm-selected: top real QualityScore
     // entries, not raw player count (per the user's own spec).
@@ -1166,7 +1312,11 @@ void RuntimeShell::drawGameCataloguePanel() {
     std::vector<const core::GameCatalogueEntry*> featured(
         sortedByQuality.begin(), sortedByQuality.begin() + static_cast<long>(std::min<size_t>(5, sortedByQuality.size())));
     ImGui::SeparatorText("Featured");
-    if (const auto* clicked = drawGameRow(featured, "featured")) toPlay = clicked;
+    {
+        GameCardResult rowResult = drawGameRow(featured, "featured", liveDiscoveredSessions);
+        if (rowResult.toPlay) toPlay = rowResult.toPlay;
+        if (rowResult.toJoin) toJoin = rowResult.toJoin;
+    }
 
     // Genre rows -- one real row per distinct genre tag actually present
     // across the real scanned games, sorted the same way Featured is.
@@ -1185,7 +1335,9 @@ void RuntimeShell::drawGameCataloguePanel() {
             }
         }
         ImGui::SeparatorText(genre.c_str());
-        if (const auto* clicked = drawGameRow(inGenre, genre.c_str())) toPlay = clicked;
+        GameCardResult rowResult = drawGameRow(inGenre, genre.c_str(), liveDiscoveredSessions);
+        if (rowResult.toPlay) toPlay = rowResult.toPlay;
+        if (rowResult.toJoin) toJoin = rowResult.toJoin;
     }
 
     // Hidden Gems -- real selection (core::selectHiddenGems(),
@@ -1207,10 +1359,13 @@ void RuntimeShell::drawGameCataloguePanel() {
     }
     if (!hiddenGems.empty()) {
         ImGui::SeparatorText("Hidden Gems");
-        if (const auto* clicked = drawGameRow(hiddenGems, "hidden_gems")) toPlay = clicked;
+        GameCardResult rowResult = drawGameRow(hiddenGems, "hidden_gems", liveDiscoveredSessions);
+        if (rowResult.toPlay) toPlay = rowResult.toPlay;
+        if (rowResult.toJoin) toJoin = rowResult.toJoin;
     }
 
     if (toPlay) selectGame(*toPlay);
+    if (toJoin) joinSession(*toJoin);
 
     ImGui::End();
 }
@@ -2071,6 +2226,69 @@ void RuntimeShell::drawNotificationsPanel() {
     ImGui::End();
 }
 
+namespace {
+// Kronos ("Animated Hourglass Loading Screen"): a real, procedurally
+// drawn, animated hourglass -- two triangles forming the classic bulb-
+// neck-bulb silhouette, a real "sand" fill that drains from the top
+// chamber into the bottom one over a fixed real cycle (looping, not a
+// one-shot), plus a small falling-grain dot through the neck. Pure
+// ImDrawList geometry -- no external image/sprite asset, the same
+// "flat procedural shape, no texture pipeline needed" convention this
+// codebase's own GameManifest::thumbnailColor card art already
+// establishes.
+void drawAnimatedHourglass(ImDrawList* drawList, ImVec2 center, float halfWidth, float halfHeight, float animTime) {
+    const ImU32 kFrameColor = IM_COL32(200, 205, 212, 255);
+    const ImU32 kSandColor = IM_COL32(196, 160, 92, 255);
+    constexpr float kCycleSeconds = 2.4f;
+    float cycleT = std::fmod(std::max(animTime, 0.0f), kCycleSeconds) / kCycleSeconds; // real, looping 0..1
+
+    ImVec2 topLeft(center.x - halfWidth, center.y - halfHeight);
+    ImVec2 topRight(center.x + halfWidth, center.y - halfHeight);
+    ImVec2 bottomLeft(center.x - halfWidth, center.y + halfHeight);
+    ImVec2 bottomRight(center.x + halfWidth, center.y + halfHeight);
+    ImVec2 neckTop(center.x, center.y - halfHeight * 0.08f);
+    ImVec2 neckBottom(center.x, center.y + halfHeight * 0.08f);
+
+    float topSandFrac = 1.0f - cycleT;    // real, 1 -> 0 across the cycle
+    float bottomSandFrac = cycleT;        // real, 0 -> 1 across the cycle
+
+    // Top chamber sand -- a real, shrinking triangle collapsing toward
+    // the neck as it drains.
+    if (topSandFrac > 0.01f) {
+        ImVec2 sandLeft(topLeft.x + (neckTop.x - topLeft.x) * (1.0f - topSandFrac),
+                         topLeft.y + (neckTop.y - topLeft.y) * (1.0f - topSandFrac));
+        ImVec2 sandRight(topRight.x + (neckTop.x - topRight.x) * (1.0f - topSandFrac),
+                          topRight.y + (neckTop.y - topRight.y) * (1.0f - topSandFrac));
+        drawList->AddTriangleFilled(sandLeft, sandRight, neckTop, kSandColor);
+    }
+    // Bottom chamber sand -- a real, growing mound rising from the neck
+    // (deliberately not the full inverted-triangle chamber shape, for a
+    // real "pile settling at the bottom" read rather than a flat fill
+    // line).
+    if (bottomSandFrac > 0.01f) {
+        ImVec2 sandLeft(bottomLeft.x + (neckBottom.x - bottomLeft.x) * (1.0f - bottomSandFrac),
+                         bottomLeft.y + (neckBottom.y - bottomLeft.y) * (1.0f - bottomSandFrac));
+        ImVec2 sandRight(bottomRight.x + (neckBottom.x - bottomRight.x) * (1.0f - bottomSandFrac),
+                          bottomRight.y + (neckBottom.y - bottomRight.y) * (1.0f - bottomSandFrac));
+        drawList->AddTriangleFilled(neckBottom, sandLeft, sandRight, kSandColor);
+    }
+    // Real falling grain, visible only while sand actually remains to
+    // fall.
+    if (topSandFrac > 0.01f && bottomSandFrac < 0.99f) {
+        float streamPhase = std::fmod(animTime * 6.0f, 1.0f);
+        ImVec2 streamPos(center.x, neckTop.y + (neckBottom.y - neckTop.y + halfHeight * 0.3f) * streamPhase);
+        drawList->AddCircleFilled(streamPos, 1.6f, kSandColor);
+    }
+
+    // Real glass outline, drawn last so sand never paints over the
+    // frame.
+    drawList->AddTriangle(topLeft, topRight, neckTop, kFrameColor, 2.0f);
+    drawList->AddTriangle(neckBottom, bottomLeft, bottomRight, kFrameColor, 2.0f);
+    drawList->AddLine(topLeft, topRight, kFrameColor, 2.0f);
+    drawList->AddLine(bottomLeft, bottomRight, kFrameColor, 2.0f);
+}
+} // namespace
+
 void RuntimeShell::drawLoadingPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -2078,15 +2296,29 @@ void RuntimeShell::drawLoadingPanel() {
     ImGui::Begin("Connecting", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    ImGui::SetCursorPos(ImVec2(viewport->WorkSize.x * 0.5f - 100.0f, viewport->WorkSize.y * 0.45f));
+    // Kronos ("Animated Hourglass Loading Screen"): real, shared by both
+    // real Loading sources -- a network join (unchanged text) and a real
+    // local game load (pendingGameLoad_, "Animated Hourglass Loading
+    // Screen" -- "scene loads"), which now shows the picked game's own
+    // real name instead of a generic "session".
+    ImVec2 hourglassCenter(viewport->WorkSize.x * 0.5f, viewport->WorkSize.y * 0.42f);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawAnimatedHourglass(drawList, hourglassCenter, 26.0f, 34.0f, stateTransitionClock_);
+
+    ImGui::SetCursorPos(ImVec2(viewport->WorkSize.x * 0.5f - 100.0f, viewport->WorkSize.y * 0.42f + 50.0f));
     ImGui::BeginGroup();
     // Kronos ("Session Browser Polish v2" -- "Join feedback (loading
     // indicator)"): a real, cheap animated dot count driven by the same
     // real stateTransitionClock_ every panel's fade-in already uses --
     // not just a static "Connecting..." string sitting there indefinitely.
     int dotCount = 1 + static_cast<int>(stateTransitionClock_ * 2.0f) % 3;
-    ImGui::Text("Connecting to %s%s", lastJoinedHostDisplayName_.empty() ? "session" : lastJoinedHostDisplayName_.c_str(),
-                std::string(static_cast<size_t>(dotCount), '.').c_str());
+    std::string dots(static_cast<size_t>(dotCount), '.');
+    if (pendingGameLoad_.has_value()) {
+        ImGui::Text("Loading %s%s", pendingGameLoad_->manifest.name.c_str(), dots.c_str());
+    } else {
+        ImGui::Text("Connecting to %s%s", lastJoinedHostDisplayName_.empty() ? "session" : lastJoinedHostDisplayName_.c_str(),
+                    dots.c_str());
+    }
     if (ImGui::Button("Cancel")) cancelJoin();
     ImGui::EndGroup();
 

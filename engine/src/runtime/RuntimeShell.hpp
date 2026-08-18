@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 
 #include <glm/glm.hpp>
@@ -533,6 +534,23 @@ private:
     // already establishes.
     std::vector<core::GameCatalogueEntry> discoveredGames_;
     bool gamesScanned_ = false;
+
+    // Kronos ("Animated Hourglass Loading Screen" -- "scene loads"):
+    // real, deferred game-load state -- selectGame() used to call
+    // loadGame() synchronously and jump straight to InGame, with no
+    // visible loading beat at all for what's a real, non-trivial
+    // synchronous scene/avatar rebuild. Now: selectGame() stores the
+    // picked game here and transitions to a real Loading state; tick()
+    // waits one full real frame (pendingGameLoadReadyToRun_) so the
+    // Loading panel's own hourglass genuinely renders and presents
+    // before the heavy synchronous work runs, then performs the real
+    // load and fires GameLoadFinished. A real std::optional, not a raw
+    // pointer into discoveredGames_ -- that vector can be reloaded
+    // (openGameCatalogue()) while a load is pending, which would dangle
+    // a pointer but not a real, owned copy.
+    std::optional<core::GameCatalogueEntry> pendingGameLoad_;
+    bool pendingGameLoadReadyToRun_ = false;
+    void finishPendingGameLoad();
 
     // Kronos ("Game Catalogue Overhaul", Phase 6): the real, local,
     // persisted retention-data source core::computeGamePlayStats()/
