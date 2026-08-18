@@ -1618,3 +1618,109 @@ production builds, and the security review (deliberately deferred
 until the gameplay API surface — just expanded this pass — actually
 stabilizes, rather than reviewing a surface mid-change). Not silently
 dropped — just not yet real.
+
+## 2026-08-18 — Final Visual Refinements & Combined Catalogue View
+
+Real, targeted v0.1.0-alpha UI pass: avatar alignment/recolor, an
+animated loading screen, a real Game Catalogue + Sessions merge, and
+engine_runtime theme consistency. Two items (the Catalogue/Sessions
+merge and the theme scope) were confirmed with the user first given
+real architecture questions — a "merge sessions into the catalogue" ask
+turned out to need checking whether the LAN protocol already carried
+game identity (it did, from an earlier pass), and "theme cleanup"
+needed a scope call between engine_runtime alone vs. also re-theming
+Studio's own established teal accent (kept engine_runtime-only, per the
+user's own answer).
+
+### Avatar alignment & recolor
+
+- Shoulder joints (`arm_L_upper`/`arm_R_upper`) raised from Y=0.1 to
+  Y=0.2 relative to spine_upper, landing the shoulder (and its cap
+  sphere) at the torso's real top instead of visibly below it —
+  propagated through all 6 `.anim` files' own baked keyframes (a track's
+  baked position always wins over bind pose).
+- Hair (`kDefaultHairColor`) and eyebrows (`browColor`) changed to real,
+  fixed pure black (hair was a warm chestnut brown; brows were a
+  skin-tone-derived shade).
+- Arms split off from Torso's shared default shirt color into their own
+  new `kDefaultArmColor` (pure black) — torso keeps its own navy/teal,
+  arms now read as a distinct sleeve. Still shares Torso's
+  `AvatarItemCategory` for equip purposes.
+- The neck cylinder (added in a prior pass) retagged from the Torso
+  segment to Head, so it resolves to real skin tone instead of shirt
+  color — still rigidly bound to its own "neck" joint for skinning.
+- Fixed 4 real test regressions this surfaced (two tests assumed "Head
+  segment" meant only the head sphere on a single joint; a loadout test
+  asserted the old shared shirt color for arms).
+- Verified via a correctly-synchronized real GPU capture of
+  HomeAvatarPreview: black hair/arms, a visible pale neck at the collar,
+  skin-toned hands, shoulders at the torso's top edge.
+
+### Animated Hourglass Loading Screen
+
+- A real, procedurally-drawn, looping hourglass (ImDrawList triangles +
+  an animated sand fill/falling grain, no external asset) added to the
+  existing `ShellState::Loading` panel.
+- Real, new deferred-load mechanism for local game loads (previously
+  jumped straight `GameCatalogue -> InGame` with zero loading
+  indicator despite `runtime::loadGame()` + avatar spawn being genuine,
+  non-trivial synchronous work): `selectGame()` now stores the picked
+  game and transitions to Loading; `tick()` waits one full real frame
+  before performing the actual load, so the hourglass genuinely renders
+  and presents first. New `ShellEvent::GameLoadFinished`/`GameLoadFailed`.
+
+### Merged Game Catalogue & Sessions View
+
+- Real research first: the LAN discovery protocol already carries game
+  identity end-to-end (`LanSessionAnnouncement::gameName`, populated
+  from `NetworkSession::Config::gameName`, parsed into
+  `DiscoveredSession::gameName`) from an earlier "Session Browser Game
+  Identity" pass — not a gap needing a new protocol field.
+- The real remaining gap was UI-only: `openGameCatalogue()` now also
+  starts the LAN browser; each game card shows a real "Live Sessions
+  (N)" button (filtered by `gameName` match) opening a popup with real
+  player counts and a direct Join, reusing the existing `joinSession()`
+  (guard relaxed to accept `GameCatalogue`, not just `SessionBrowser`).
+  The standalone Sessions panel is unchanged.
+
+### UI Theme Cleanup (engine_runtime only)
+
+- Extracted Home's previously twice-duplicated local green
+  primary-action button colors into shared
+  `pushPrimaryActionButtonColors()`/`popPrimaryActionButtonColors()`
+  helpers, applied to the new Catalogue Play/Join buttons and the
+  standalone Session Browser's own Join button, for one consistent
+  "primary action" green across engine_runtime. Studio's own established
+  teal accent (`core::applyKronosUITheme()`) left untouched.
+
+### Verification note (stated honestly)
+
+The hourglass animation and the catalogue's live-session popup are real
+UI rendered into the main swapchain (not an auxiliary preview scene),
+so this session's own GPU-capture diagnostic technique doesn't reach
+them, and no simulated mouse/keyboard input is used in this
+environment. Verified instead via real, new state-machine tests
+(`GameSelected -> Loading -> GameLoadFinished/GameLoadFailed`,
+`JoinRequested -> Loading` from `GameCatalogue`) plus a clean launch
+with no crash — not a live screenshot of the interaction itself. The
+avatar alignment/recolor work above *was* verified with a real GPU
+capture, since that path goes through the existing auxiliary-scene
+diagnostic.
+
+### Build/test status
+
+Full 4-target rebuild (`engine_core`, `studio`, `engine_runtime`,
+`engine_tests`) clean. **11022/11022 checks passing** (10923 baseline +
+1 avatar-alignment/recolor test fix + 2 new shell-state-transition
+tests, net of the updates described above).
+
+### Explicitly not started this pass
+
+A boot-time (pre-window/pre-ImGui) splash screen — the hourglass only
+covers the existing `ShellState::Loading` beat (session join, local game
+load), not the lower-level Vulkan/window initialization that happens
+before any shell state exists. Removing/consolidating the standalone
+Session Browser panel now that the Catalogue has its own live-session
+view — kept both, per the user's own request to *add* the Catalogue
+view, not replace the existing one. Not silently dropped — just not yet
+real.
