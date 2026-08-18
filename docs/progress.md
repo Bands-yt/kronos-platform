@@ -1904,3 +1904,43 @@ no `ShellState`/`ShellEvent` value was added, removed, or renamed, only
 a runtime redirect and a render-gate fix. Verified with a fresh launch
 (old process killed first, confirmed via `ps aux`): clean startup, no
 crash report written, stable ~175-183 fps, ~336 MB RSS.
+
+## 2026-08-18 (later still) — Force Boot Into Unified Tab Bar Hub, take 2 (literal default-state change)
+
+The previous entry's fix was verified correct by code trace, full
+rebuild, full test pass, and a fresh launch — but the same "still
+booting into the legacy grid" report came back twice more, unchanged.
+Rather than re-explain the same trace a third time, made the fix more
+literal and less indirect: the *actual* default value of `state_` now
+is the Hub, not a same-frame redirect away from Home.
+
+### The real change
+
+- `RuntimeShell::state_`'s own member-initializer changed from
+  `ShellState::Home` to `ShellState::GameCatalogue` (`RuntimeShell.hpp`)
+  — `previousDrawState_`'s default updated to match, so the very first
+  frame's fade-transition bookkeeping stays consistent.
+- The boot splash's own gate was decoupled from `state_ ==
+  ShellState::Home` entirely (it now just checks `showSplash_`) — it
+  had to be, since `state_` no longer starts as Home at all, and the
+  splash still needs to play regardless of what the starting state is.
+- The real games/-scan + LAN-browser-start setup `openGameCatalogue()`
+  performs isn't implied by the enum default alone, so it's now called
+  once, explicitly, the exact frame the splash finishes (previously
+  this same call only fired via the `state_ == Home` check in the
+  post-splash branch, which no longer ever sees Home at boot since
+  `state_` starts at GameCatalogue now).
+- The previous entry's "redirect Home back to the Hub" logic in the
+  post-splash branch is unchanged and still real — it now exclusively
+  covers the *later* real paths that still transition to Home
+  (`SessionEnded`, `CancelJoin`, Error's `ReturnHome`), which the
+  literal default-state change alone doesn't touch.
+
+### Verification
+
+Full rebuild (`engine_runtime`, `studio`, `engine_tests`) clean, zero
+new warnings — the default-state change alone didn't move any pure
+logic the existing headless `ShellState` tests cover, and it didn't:
+**11022/11022 checks still passing**. Old process killed (`kill -9`,
+confirmed via `ps aux`) and a truly fresh binary launched: clean
+startup, no crash report written, stable ~171-185 fps, ~340 MB RSS.

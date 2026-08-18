@@ -747,27 +747,45 @@ void RuntimeShell::tick(float dt) {
 
     beginFrame();
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, transitionAlpha);
-    // Kronos ("Branding + Release Prep"): a real, one-time splash --
-    // takes over the very first few real Home frames, then never shows
-    // again this run.
-    if (state_ == ShellState::Home && showSplash_) {
+    // Kronos ("Branding + Release Prep" / "Force Boot Into Unified Tab
+    // Bar Hub"): a real, one-time splash -- takes over the very first
+    // few real frames regardless of state_ (decoupled from
+    // ShellState::Home now that GameCatalogue, not Home, is the real
+    // boot default -- see state_'s own comment), then never shows again
+    // this run.
+    if (showSplash_) {
         splashClock_ += dt;
-        if (splashClock_ >= kSplashDurationSeconds) showSplash_ = false;
+        if (splashClock_ >= kSplashDurationSeconds) {
+            showSplash_ = false;
+            // Kronos ("Force Boot Into Unified Tab Bar Hub"): real,
+            // one-time boot setup -- runs exactly once, the instant the
+            // splash finishes, regardless of state_'s own starting
+            // value. state_ defaulting to ShellState::GameCatalogue
+            // alone doesn't populate the real games/ scan or start the
+            // LAN browser the Catalogue panel actually needs -- this
+            // real call is what does that, the same one a manual tab
+            // click already uses.
+            openGameCatalogue();
+        }
         drawSplashPanel();
     } else {
         // Kronos ("Force Boot Into Unified Tab Bar Hub"): real -- Home's
         // own button-grid screen is never actually drawn as the live
-        // interface anymore. Every real path that lands on Home (initial
-        // boot the instant the splash finishes, SessionEnded, CancelJoin,
-        // Error's ReturnHome) redirects straight into the real Hub
-        // landing tab here instead, calling the exact same
-        // openGameCatalogue() the tab bar's own "Game Catalogue" button
-        // calls -- no second, drifting "how do I open the Catalogue" path.
-        // ShellState::Home itself stays real and reachable as a
-        // transition target (every existing "-> Home" rule in
-        // ShellState.hpp still means something and is still exercised by
-        // the existing tests) -- it's just redirected onward the instant
-        // it's actually entered, one real frame before drawHomePanel()
+        // interface anymore. The initial boot case is handled by the
+        // splash block above (state_ defaults straight to GameCatalogue,
+        // never Home, now); this covers every *later* real path that
+        // still lands on Home (SessionEnded, CancelJoin, Error's
+        // ReturnHome -- ShellState.hpp's own transition rules still
+        // target Home for these, unchanged), redirecting it straight
+        // into the real Hub landing tab here instead, via the exact
+        // same openGameCatalogue() the tab bar's own "Game Catalogue"
+        // button calls -- no second, drifting "how do I open the
+        // Catalogue" path. ShellState::Home itself stays real and
+        // reachable as a transition target (every existing "-> Home"
+        // rule in ShellState.hpp still means something and is still
+        // exercised by the existing tests) -- it's just redirected
+        // onward the instant it's actually entered, one real frame
+        // before drawHomePanel()
         // would otherwise run.
         if (state_ == ShellState::Home) openGameCatalogue();
         switch (state_) {
