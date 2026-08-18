@@ -1,9 +1,10 @@
 # Kronos 0.1.0-alpha
 
 This is the first alpha release of Kronos — a Vulkan-based reference
-game engine and creator platform, built from source with a 10,898-check
-automated test suite backing it. Every feature below is real, working
-code in this repository, not a mockup or a stated future plan.
+game engine and creator platform, built from source with an
+11,022-check automated test suite backing it. Every feature below is
+real, working code in this repository, not a mockup or a stated future
+plan.
 
 ## Kronos Core Engine
 
@@ -86,7 +87,7 @@ code in this repository, not a mockup or a stated future plan.
 - 4 build targets (`engine_core`, `studio`, `engine_runtime`,
   `engine_tests`), each rebuilt clean from scratch for this release with
   **zero compiler warnings**.
-- **10,898 / 10,898** automated checks passing.
+- **11,022 / 11,022** automated checks passing.
 - Both `studio` and `engine_runtime` manually launched and confirmed
   stable post-build.
 
