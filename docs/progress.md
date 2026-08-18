@@ -1513,3 +1513,108 @@ moderation infrastructure already exists, see `safety::`/`moderation::`,
 this would extend it, not build from scratch), payments spec, messaging
 transport abstraction, and release branch/notes prep. Not silently
 dropped — just not yet real.
+
+## 2026-08-18 — Kronos Scripting Environment: gap analysis + launch-gap bindings
+
+**Scope note first:** this entry responds to a 15-item, 5-phase
+"Scripting Environment Development" roadmap (VM stabilization, a
+binding layer, a Studio script editor with syntax highlighting/
+autocomplete, hot reload, a debugger with breakpoints/step execution,
+sandbox enforcement, a full gameplay API, a custom event bus, ImGui UI
+scripting, script packaging/security review, and full documentation).
+Before writing any code, three parallel research passes read every
+relevant file in full (`core/Scripting.cpp/.hpp`, `ScriptWorldApi`,
+`ScriptNetworkApi`, `ScriptUiApi`, `ScriptedPlugin`, `ScriptEditorPanel`,
+`DebugConsolePanel`, `SceneFile`, `WorldPackage`, all existing Lua docs
+and example scripts) rather than assuming a blank slate — the Luau 0.732
+integration turned out to already be genuinely mature: real VM
+lifecycle/reload, real sandboxing (memory budget + interrupt-based
+infinite-loop protection), a real (if fixed, 8-event) callback set, and
+a real `world`/`network`/`ui` binding surface already existed. Two of
+the user's own four named "gaps" turned out to already work:
+`object:setColor()` (already `world.setColor`) and "tying script
+metadata to asset spawning" (`core::SceneFile` already round-trips
+`Script.source`/`autoRun`, and `WorldPackage::save()` already goes
+through that same `SceneFile::saveToFile()` — its own header comment
+claiming otherwise was stale and has been corrected, not the underlying
+behavior). Debugger, Studio editor upgrades, a generic custom event bus,
+ImGui-scriptable UI, packaging/bytecode-stripping, and a full security
+review are real, substantial, correctly out-of-scope-this-pass items —
+see the full gap analysis in this session's own plan file for the
+complete reasoning per item.
+
+### Real, verified-missing gaps closed this pass
+
+- **`world.raycast(originX,originY,originZ,dirX,dirY,dirZ,maxDistance)`**
+  (`ScriptWorldApi.cpp`) — real wrap of the already-tested
+  `Physics::raycast()`. Returns `{hit=true, entityId=, x=,y=,z=,
+  nx=,ny=,nz=, distance=}` or `nil` — flat fields, not a nested
+  "Vector3" table, matching this API's own established "no partial
+  Instance-API imitation" contract.
+- **`world.spawnPlayer(x,y,z)`** and **`avatar.playEmote(entity,
+  emoteName, looping?)`** (new `core/ScriptAvatarApi.hpp/.cpp`) — real
+  orchestration added to `Application` (`respawnLocalPlayer()`,
+  `tryPlayEmoteForEntity()`), backed by the already-real
+  `spawnLocalPlayerAvatar()`/`resolveEmoteClip()`/`AvatarController::
+  playEmote()`. Deliberately scoped to the local player only — no
+  per-player targeting concept exists anywhere in this engine (only
+  ever "the" local player has a live `AvatarController`); building one
+  to control other, non-local players from script would be a real,
+  separate, much larger networking-authority feature, not a same-shape
+  binding addition, and wasn't silently assumed.
+- Required a real, small `Application` API expansion to wire correctly:
+  a nullable `avatarController()` accessor, and a late-bound
+  `setAnimationDatabase()` setter (`AnimationDatabase` is owned by
+  `RuntimeShell`, not `Application`, and only becomes available lazily
+  at `ensureAvatarCatalogueLoaded()` time — wired in there).
+- **Real bug found and fixed along the way, unrelated to scripting**: a
+  fresh `cmake` reconfigure surfaced a genuine latent compile error in
+  `core/Physics.cpp` — `BPLayerInterfaceImpl` never implemented
+  `JPH::BroadPhaseLayerInterface::GetBroadPhaseLayerName()`, which is
+  only pure-virtual under Jolt's own `JPH_EXTERNAL_PROFILE`/
+  `JPH_PROFILE_ENABLED` guards. Fixed with real, correctly-guarded layer
+  names, not a workaround.
+- Verified live: `world.raycast()` has real, new, headless test coverage
+  (a real Jolt static box hit case + a real miss case,
+  `testScriptWorldApiRaycast`). `world.spawnPlayer()`/`avatar.playEmote()`
+  can't be headlessly unit tested (real avatar spawning needs live GPU
+  resources) — verified instead via a temporary script injected into
+  `main.cpp`'s real bring-up world, a real `engine_runtime` launch, and
+  real log output, then fully reverted before committing (net-zero diff
+  on `main.cpp`). That live check also surfaced a real, correct (not a
+  bug) characteristic worth documenting: like every other Physics
+  position write in this API (`applyImpulse`/`setVelocity`),
+  `world.spawnPlayer()`'s position change only becomes visible via
+  `world.getPosition()` after the next real physics step, not
+  same-tick — now stated explicitly in both the `.hpp` doc comment and
+  `docs/LUA_API.md`.
+- `docs/LUA_API.md` updated with all three new bindings (signatures,
+  real usage examples, the new `avatar` table's own availability-table
+  row).
+
+### Build/test status
+
+Full 4-target rebuild (`engine_core`, `studio`, `engine_runtime`,
+`engine_tests`) clean. **10923/10923 checks passing** (10900 baseline +
+17 from the prior avatar-mesh pass + 6 new real `world.raycast` checks).
+`engine_runtime` launches and holds steady ~183fps with no crash.
+
+### Explicitly not started this pass
+
+Everything in the "Post-Launch Roadmap" bucket of the gap analysis:
+a real C++ Luau debugger (breakpoints/step execution/call-stack
+viewer — zero existing scaffolding found anywhere), Studio Script
+Editor upgrades (today it's plain `ImGui::InputTextMultiline`, zero
+syntax highlighting/autocomplete — `MonacoWebViewEditor::initialize()`
+always returns `false`, needs a real embedded webview that doesn't
+exist), a generic custom/pub-sub event bus for scripts (today's
+`events.*` is a fixed, closed set of 8 engine hooks by design),
+ImGui-scriptable UI beyond `ui.drawText`/`drawRect` (explicitly
+declared out of scope twice in existing code comments), `onChat`/
+`onDamage` events (a real product decision on raw-chat script access
+is needed first, given `safety::TrustSafetyService` already gates chat
+server-side), script packaging validation/bytecode stripping for
+production builds, and the security review (deliberately deferred
+until the gameplay API surface — just expanded this pass — actually
+stabilizes, rather than reviewing a surface mid-change). Not silently
+dropped — just not yet real.

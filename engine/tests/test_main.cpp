@@ -2218,6 +2218,59 @@ void testScriptWorldApiRemainingBindingsFullCoverage() {
     scripting.shutdown();
 }
 
+// Kronos ("Kronos Scripting Environment" -- "Immediate Gaps for Launch"):
+// real, headless, end-to-end coverage of world.raycast() -- a real static
+// Jolt box the ray should hit, and a real miss case (aimed away from
+// everything) to prove the honest `nil` return path too.
+void testScriptWorldApiRaycast() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "raycast test: real Physics initializes headlessly");
+    engine::core::RuntimeAnimationPlayer animationPlayer;
+
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "raycast test: real Scripting initializes headlessly");
+    engine::core::ScriptWorldApi worldApi(ecs, physics, animationPlayer);
+    scripting.setBindingsHook([&](lua_State* L) { worldApi.registerInto(L); });
+
+    physics.createStaticBox(ecs, glm::vec3(0.0f, 0.0f, 5.0f), glm::vec3(1.0f, 1.0f, 1.0f));
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    size_t before = output.size();
+    engine::core::ScriptId hitId = scripting.loadAndRun(
+        "RaycastHit",
+        "local result = world.raycast(0, 0, 0, 0, 0, 1, 20)\n"
+        "assert(result ~= nil, \"expected a real hit against the real static box\")\n"
+        "assert(result.hit == true, \"result.hit should be true\")\n"
+        "assert(math.abs(result.z - 4.0) < 0.05, \"expected the hit point at the box's near face, z~=4: \" .. "
+        "tostring(result.z))\n"
+        "assert(math.abs(result.nz - (-1.0)) < 0.05, \"expected a real hit normal pointing back at the ray origin\")\n"
+        "assert(result.distance > 3.9 and result.distance < 4.1, \"expected distance~=4: \" .. tostring(result.distance))\n"
+        "assert(type(result.entityId) == \"number\", \"expected a real numeric entityId\")\n");
+    check(hitId != engine::core::kInvalidScript, "RaycastHit real-compiles with no error");
+    check(noRuntimeErrorSince(before),
+          "world.raycast() real-hits the real static Jolt box with every real assert() (hit/point/normal/distance/"
+          "entityId) passing");
+
+    size_t beforeMiss = output.size();
+    engine::core::ScriptId missId =
+        scripting.loadAndRun("RaycastMiss", "local result = world.raycast(0, 0, 0, 0, 1, 0, 20)\n"
+                                             "assert(result == nil, \"expected a real nil for a real miss\")\n");
+    check(missId != engine::core::kInvalidScript, "RaycastMiss real-compiles with no error");
+    check(noRuntimeErrorSince(beforeMiss),
+          "world.raycast() real-returns nil (not an error/empty table) when the real ray hits nothing");
+
+    scripting.shutdown();
+}
+
 // Kronos (Alpha Completion Checklist, "Engine Validation Pass" -- "Validate
 // all Lua bindings"): core::ScriptUiApi's `ui` table had zero test
 // coverage. Its real render flush needs a live core::UIRenderer, which
@@ -27423,6 +27476,7 @@ int main() {
     testScriptedPluginRealNetworkAccessAndOnUnloadFiresOnReload();
     testScriptWorldApiCreateEntityAndHierarchy();
     testScriptWorldApiRemainingBindingsFullCoverage();
+    testScriptWorldApiRaycast();
     testScriptUiApiRegistersAndAcceptsRealCalls();
     testScriptUiApiSessionBindingsAreHonestNoOpsWithoutShellController();
     testScriptUiApiSessionBindingsForwardToRealShellController();

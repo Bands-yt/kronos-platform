@@ -277,6 +277,16 @@ void RuntimeShell::ensureAvatarCatalogueLoaded() {
     (void)avatarLoadout_.loadFromFile(kAvatarLoadoutPath);
     (void)animationDatabase_.loadFromFile(kAnimationDatabasePath);
     (void)transactionLog_.loadFromFile(kTransactionLogPath);
+    // Kronos ("Kronos Scripting Environment" -- "avatar.playEmote"): real
+    // late-binding -- animationDatabase_ only exists from this point
+    // onward (this function is lazy, called on first Home/Avatar Shop
+    // open, not at startup), and Application itself doesn't own an
+    // AnimationDatabase -- see Application::setAnimationDatabase()'s own
+    // header comment for why this is a setter call here rather than a
+    // constructor parameter there. A script calling avatar.playEmote()
+    // before this has ever run gets a real, honest false (not a crash) --
+    // see Application::tryPlayEmoteForEntity()'s own null check.
+    app_.setAnimationDatabase(animationDatabase_);
     avatarCatalogueLoaded_ = true;
 }
 

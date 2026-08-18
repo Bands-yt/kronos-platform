@@ -100,10 +100,20 @@ bool Application::initialize(const CreateInfo& info) {
     // NetworkSession's own methods are documented no-ops outside their
     // relevant mode).
     scriptNetworkApi_ = std::make_unique<ScriptNetworkApi>(networkSession_, scripting_);
+    // Kronos ("Kronos Scripting Environment"): the real `world.spawnPlayer`
+    // + `avatar` table -- see ScriptAvatarApi.hpp's own header comment.
+    // Holds `*this` (always valid), so no ordering constraint the way
+    // scriptWorldApi_ above has.
+    scriptAvatarApi_ = std::make_unique<ScriptAvatarApi>(*this);
     scripting_.setBindingsHook([this](lua_State* L) {
         scriptWorldApi_->registerInto(L);
         scriptNetworkApi_->registerInto(L);
         scriptUiApi_.registerInto(L);
+        // Must run after scriptWorldApi_->registerInto(L) above --
+        // ScriptAvatarApi::registerInto() appends world.spawnPlayer onto
+        // the `world` global table scriptWorldApi_ just created, it
+        // doesn't create its own.
+        scriptAvatarApi_->registerInto(L);
         // Sprint 15 ("TNT-Wars Trailer Production"): the real `cinematic`
         // table -- only registered when setTrailerDirector() has been
         // called (engine_runtime's own --trailer mode; see main.cpp),
@@ -2225,6 +2235,54 @@ bool Application::playEquippedEmote(const AvatarLoadout& loadout, const Animatio
                                      std::string& outError) {
     if (!avatarController_) return false; // real, honest no-op -- no avatar currently spawned
     return engine::core::playEquippedEmote(loadout, animationDatabase, *avatarController_, outError);
+}
+
+EntityId Application::respawnLocalPlayer(glm::vec3 position) {
+    if (avatarController_) {
+        // Kronos ("Kronos Scripting Environment" -- "world.spawnPlayer"):
+        // real "respawn," not a fresh spawn -- an avatar already exists,
+        // so this just teleports the real, live character entity via the
+        // exact same Physics::setPosition() every other position-setting
+        // script binding (ScriptWorldApi::luaSetPosition) already uses,
+        // rather than re-running full cosmetic/clothing/hair spawn logic
+        // a second time for what's really a position change.
+        EntityId entity = characterController_.entity();
+        if (entity != kNullEntity) physics_.setPosition(entity, ecs_, position);
+        return entity;
+    }
+    // No avatar spawned yet -- a real, fresh spawn with the same default
+    // cosmetics main.cpp's own bring-up world already uses (this class's
+    // own spawnLocalPlayerAvatar() overload with only `spawnPosition`
+    // given -- see that method's own default-argument list).
+    if (!spawnLocalPlayerAvatar(position)) return kNullEntity;
+    return characterController_.entity();
+}
+
+bool Application::tryPlayEmoteForEntity(EntityId entity, const std::string& emoteId, bool looping,
+                                         std::string& outError) {
+    outError.clear();
+    // Real, honest false, not a crash -- no avatar spawned, or no
+    // AnimationDatabase has been wired in yet (RuntimeShell wires this in
+    // lazily at ensureAvatarCatalogueLoaded() time, which may not have
+    // run yet for a script that fires very early -- see
+    // setAnimationDatabase()'s own header comment).
+    if (avatarController_ == nullptr || animationDatabase_ == nullptr) return false;
+    // Kronos ("Kronos Scripting Environment"): only the local player has
+    // a real, live AvatarController today (avatarController_ is a single
+    // instance, not a per-entity registry -- see Application.hpp's own
+    // member comment) -- any other entity id is a real, honest false, not
+    // a silent no-op pretending it worked. A future per-NPC/remote-player
+    // AvatarController registry would relax this check, not this
+    // function's own contract.
+    if (entity != characterController_.entity()) return false;
+    AnimationClip clip;
+    if (!resolveEmoteClip(emoteId, *animationDatabase_, clip, outError)) return false;
+    // Kronos: real, full-body playback -- the same choice
+    // core::playEquippedEmote() already makes ("classic Roblox-style
+    // emotes take over the whole character," EmoteSystem.hpp's own
+    // comment), not a partial upper-body override.
+    avatarController_->playEmote(std::move(clip), looping, /*fullBody=*/true);
+    return true;
 }
 
 bool Application::startNetworking(const net::NetworkSession::Config& config) {

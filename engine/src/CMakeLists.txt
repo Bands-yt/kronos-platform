@@ -82,6 +82,7 @@ add_library(engine_core STATIC
     core/RuntimeAnimationPlayer.cpp
     core/ScriptWorldApi.cpp
     core/ScriptNetworkApi.cpp
+    core/ScriptAvatarApi.cpp
     core/ScriptUiApi.cpp
     core/TrailerScriptApi.cpp
     core/ScenePicking.cpp

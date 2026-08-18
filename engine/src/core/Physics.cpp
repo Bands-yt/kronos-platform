@@ -66,6 +66,21 @@ public:
     JPH::BroadPhaseLayer GetBroadPhaseLayer(JPH::ObjectLayer layer) const override {
         return objectToBroadPhase_[layer];
     }
+#if defined(JPH_EXTERNAL_PROFILE) || defined(JPH_PROFILE_ENABLED)
+    // JPH::BroadPhaseLayerInterface::GetBroadPhaseLayerName() is only a
+    // pure virtual under this same guard (BroadPhaseLayer.h) -- Jolt's
+    // own profiler zones use it for debugging labels only, real gameplay
+    // behavior never reads it. Real, honest names for this class's own
+    // 2 broad-phase layers (BroadPhaseLayers::NUM_LAYERS above), not a
+    // placeholder.
+    const char* GetBroadPhaseLayerName(JPH::BroadPhaseLayer layer) const override {
+        switch (static_cast<JPH::BroadPhaseLayer::Type>(layer)) {
+            case static_cast<JPH::BroadPhaseLayer::Type>(BroadPhaseLayers::NON_MOVING): return "NON_MOVING";
+            case static_cast<JPH::BroadPhaseLayer::Type>(BroadPhaseLayers::MOVING): return "MOVING";
+            default: return "INVALID";
+        }
+    }
+#endif
 
 private:
     JPH::BroadPhaseLayer objectToBroadPhase_[kCollisionLayerCount];

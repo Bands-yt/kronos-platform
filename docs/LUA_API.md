@@ -20,6 +20,7 @@ a global table: `world.setPosition(id, x, y, z)`.
 |---|---|---|---|
 | `print`, `engine.log`, `task.*`, `events.*` | ✅ | ✅ | ✅ |
 | `world.*` (full) | ✅ (`core::ScriptWorldApi`) | ✅ (smaller — no Physics/Animation, see below) | ✅ (same as plugins) |
+| `world.spawnPlayer`, `avatar.*` | ✅ (`core::ScriptAvatarApi`) | ❌ | ❌ |
 | `network.*` | ✅ | ✅ | ❌ |
 | `ui.*` | ✅ | ❌ | ❌ |
 
@@ -120,6 +121,59 @@ noted.
 - **`world.playAnimation(path, looping?)`** → handle or `nil` —
   engine_runtime only.
 - **`world.stopAnimation(handle)`** — engine_runtime only.
+- **`world.raycast(originX, originY, originZ, dirX, dirY, dirZ, maxDistance)`**
+  → a result table, or `nil` on a miss — engine_runtime only (needs
+  `Physics`). `direction` need not be normalized; `maxDistance` is the
+  ray's real length regardless of `direction`'s own magnitude. On a hit,
+  returns `{hit = true, entityId = <number>, x = , y = , z = , nx = ,
+  ny = , nz = , distance = }` — flat `x/y/z`/`nx/ny/nz` fields (the hit
+  point and surface normal), not a nested "Vector3" sub-table, matching
+  every other position-shaped value in this API (`getPosition` etc.).
+  ```lua
+  local result = world.raycast(0, 1, 0, 0, 0, 1, 20)
+  if result then
+      print("hit entity " .. result.entityId .. " at distance " .. result.distance)
+  end
+  ```
+- **`world.spawnPlayer(x, y, z)`** → id or `nil` — engine_runtime only.
+  Real player spawn/respawn control, scoped to the local player (no
+  per-player targeting concept exists in this engine — see
+  `ScriptAvatarApi.hpp`'s own header comment). If no avatar is currently
+  spawned, does a real, fresh spawn at `(x, y, z)` with default cosmetics;
+  if one already exists, real-teleports it there instead (a "respawn").
+  Like every other Physics position write in this API
+  (`applyImpulse`/`setVelocity`), the move takes effect on the real Jolt
+  body immediately but only becomes visible via `world.getPosition()`
+  after the *next* real physics step — reading it back in the same tick
+  as the `spawnPlayer()` call sees the pre-move position.
+  ```lua
+  local playerId = world.spawnPlayer(0, 2, 0)
+  ```
+
+## `avatar` — local player avatar control
+
+engine_runtime only. Real, but currently scoped to the local player only
+— there is no per-entity `AvatarController` registry yet (only ever "the"
+local player has a live one), so `entity` below is checked, not just
+accepted — any id other than the real local player entity gets an
+honest `false`, not a silent no-op pretending to succeed.
+
+- **`avatar.playEmote(entity, emoteName, looping?)`** → `true`/`false`,
+  `errorMessage?` — resolves `emoteName` against the real catalogue/
+  animation-database link (`core::resolveEmoteClip`, same convention a
+  purchasable Emote item's id already follows) and plays it full-body on
+  the local player. Returns `false` (with no error message) if no avatar
+  is currently spawned, the avatar catalogue hasn't loaded yet, or
+  `entity` isn't the local player; returns `false` with a real error
+  message only when `emoteName` itself is a genuine data problem (listed
+  in the catalogue but its clip fails to load).
+  ```lua
+  local playerId = world.spawnPlayer(0, 2, 0)
+  local played, err = avatar.playEmote(playerId, "wave")
+  if not played and err then
+      print("emote failed: " .. err)
+  end
+  ```
 
 ## `network` — real client/server RPC
 

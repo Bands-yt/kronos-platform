@@ -192,6 +192,38 @@ int ScriptWorldApi::luaStopAnimation(lua_State* L) {
     return 0;
 }
 
+int ScriptWorldApi::luaRaycast(lua_State* L) {
+    glm::vec3 origin(luaL_checknumber(L, 1), luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+    glm::vec3 direction(luaL_checknumber(L, 4), luaL_checknumber(L, 5), luaL_checknumber(L, 6));
+    float maxDistance = static_cast<float>(luaL_checknumber(L, 7));
+    Physics& physics = selfFromUpvalue(L)->physics_;
+    Physics::RaycastHit hit = physics.raycast(origin, direction, maxDistance);
+    if (!hit.hit) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -2, "hit");
+    lua_pushnumber(L, static_cast<double>(static_cast<uint32_t>(hit.entity)));
+    lua_setfield(L, -2, "entityId");
+    lua_pushnumber(L, hit.point.x);
+    lua_setfield(L, -2, "x");
+    lua_pushnumber(L, hit.point.y);
+    lua_setfield(L, -2, "y");
+    lua_pushnumber(L, hit.point.z);
+    lua_setfield(L, -2, "z");
+    lua_pushnumber(L, hit.normal.x);
+    lua_setfield(L, -2, "nx");
+    lua_pushnumber(L, hit.normal.y);
+    lua_setfield(L, -2, "ny");
+    lua_pushnumber(L, hit.normal.z);
+    lua_setfield(L, -2, "nz");
+    lua_pushnumber(L, hit.distance);
+    lua_setfield(L, -2, "distance");
+    return 1;
+}
+
 void ScriptWorldApi::registerInto(lua_State* L) {
     struct Entry {
         const char* name;
@@ -215,6 +247,7 @@ void ScriptWorldApi::registerInto(lua_State* L) {
         {"setVelocity", &ScriptWorldApi::luaSetVelocity},
         {"playAnimation", &ScriptWorldApi::luaPlayAnimation},
         {"stopAnimation", &ScriptWorldApi::luaStopAnimation},
+        {"raycast", &ScriptWorldApi::luaRaycast},
     };
 
     lua_newtable(L);

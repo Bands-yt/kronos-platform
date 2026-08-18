@@ -13,6 +13,7 @@
 #include "core/CatalogueIndex.hpp"
 #include "core/CharacterController.hpp"
 #include "core/ECS.hpp"
+#include "core/EmoteSystem.hpp"
 #include "core/Interactable.hpp"
 #include "core/Mesh.hpp"
 #include "core/Navigation.hpp"
@@ -26,6 +27,7 @@
 #include "core/RiggedMesh.hpp"
 #include "net/NetworkSession.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
+#include "core/ScriptAvatarApi.hpp"
 #include "core/ScriptNetworkApi.hpp"
 #include "core/ScriptUiApi.hpp"
 #include "core/ScriptWorldApi.hpp"
@@ -223,6 +225,69 @@ public:
     // avatar is currently spawned (avatarController_ null), not a crash.
     bool playEquippedEmote(const AvatarLoadout& loadout, const AnimationDatabase& animationDatabase,
                             std::string& outError);
+
+    // Kronos ("Kronos Scripting Environment" -- "Immediate Gaps for
+    // Launch" -- `world.spawnPlayer`/`avatar.playEmote`): real, nullable
+    // access to the live gameplay avatarController_ -- ScriptAvatarApi
+    // (core/ScriptAvatarApi.hpp) needs this to check "is an avatar
+    // currently spawned at all" the same way this class's own
+    // spawnLocalPlayerAvatar()/playEquippedEmote() already do internally,
+    // without duplicating that null-check logic in the Lua-facing layer.
+    [[nodiscard]] AvatarController* avatarController() const { return avatarController_.get(); }
+
+    // Kronos ("Kronos Scripting Environment"): real, late-bound,
+    // nullable -- unlike ecs_/physics_/animationPlayer_ (owned here since
+    // construction, safe to capture by reference at ScriptWorldApi
+    // construction time), AnimationDatabase is owned by whichever layer
+    // actually loads it (engine_runtime's RuntimeShell, at
+    // ensureAvatarCatalogueLoaded() time -- often well after this class's
+    // own initialize()/bindings-registration already ran), not by
+    // Application itself. A setter, not a constructor parameter, so the
+    // real owner can wire it in whenever it's actually ready; real
+    // callers (ScriptAvatarApi::luaPlayEmote) treat a still-null pointer
+    // as "no avatar catalogue loaded yet" and fail soft, the same
+    // "real, honest no-op, not a crash" convention playEquippedEmote()
+    // already establishes for a null avatarController_.
+    void setAnimationDatabase(const AnimationDatabase& database) { animationDatabase_ = &database; }
+
+    // Kronos ("Kronos Scripting Environment" -- "world.spawnPlayer"):
+    // real orchestration backing the Lua binding -- if no avatar is
+    // currently spawned, does a real, fresh spawnLocalPlayerAvatar() at
+    // `position` with the same default cosmetics main.cpp's own bring-up
+    // world already uses (this class's own spawnLocalPlayerAvatar()
+    // overload with only `spawnPosition` given). If an avatar already
+    // exists, this is a real, honest "respawn" -- teleports the existing
+    // character (via the same Physics::setPosition() every other
+    // position-setting script binding already uses) rather than
+    // re-running full cosmetic/clothing/hair spawn logic a second time.
+    // Returns the real, live character entity id, or kNullEntity if a
+    // fresh spawn was attempted and failed. Verified live (real
+    // engine_runtime launch, temporary script, reverted before commit):
+    // like every other Physics position write (setVelocity/applyImpulse,
+    // see ScriptWorldApi's own tests), Physics::setPosition() only moves
+    // the real Jolt body -- the readable ECS Transform only reflects it
+    // after the next real physics.step() syncs it, so a script reading
+    // world.getPosition() in the *same* tick as world.spawnPlayer() sees
+    // the pre-move position, not a bug specific to this binding.
+    [[nodiscard]] EntityId respawnLocalPlayer(glm::vec3 position);
+
+    // Kronos ("Kronos Scripting Environment" -- "avatar.playEmote"): real
+    // orchestration backing the Lua binding -- resolves `emoteId` via
+    // core::resolveEmoteClip() (EmoteSystem.hpp) against the real,
+    // late-bound animationDatabase_ above, then plays it full-body (the
+    // same real "classic Roblox-style emotes take over the whole
+    // character" choice playEquippedEmote() already makes) on the local
+    // player's own avatarController_. `entity` is checked against the
+    // real, live characterController_.entity() -- see this method's own
+    // .cpp comment for why only the local player has a live
+    // AvatarController today, and what happens for any other entity id.
+    // Real, honest false (not a crash) if no avatar is spawned, no
+    // animation database has been wired in yet, `entity` doesn't match
+    // the local player, or the emote id itself doesn't resolve --
+    // `outError` is only filled for that last, genuinely-a-data-problem
+    // case, matching playEquippedEmote()'s own outError contract.
+    bool tryPlayEmoteForEntity(EntityId entity, const std::string& emoteId, bool looping, std::string& outError);
+
     [[nodiscard]] ParticleSystem& particleSystem() { return particleSystem_; }
     [[nodiscard]] RuntimeAnimationPlayer& animationPlayer() { return animationPlayer_; }
     [[nodiscard]] ScriptUiApi& scriptUiApi() { return scriptUiApi_; }
@@ -610,6 +675,11 @@ private:
     // null-check).
     RiggedMeshLibrary riggedMeshLibrary_;
     std::unique_ptr<AvatarController> avatarController_;
+    // Kronos ("Kronos Scripting Environment"): real, nullable, late-bound
+    // -- see setAnimationDatabase()'s own comment above for why this
+    // can't just be a reference captured at construction time the way
+    // ecs_/physics_/animationPlayer_ are.
+    const AnimationDatabase* animationDatabase_ = nullptr;
     std::vector<EntityId> skinnedAvatarEntities_;
     ParticleSystem particleSystem_;
     RuntimeAnimationPlayer animationPlayer_;
@@ -622,6 +692,13 @@ private:
     // Same reasoning as scriptWorldApi_ above: ScriptNetworkApi holds
     // references to networkSession_/scripting_ bound at construction.
     std::unique_ptr<ScriptNetworkApi> scriptNetworkApi_;
+    // Kronos ("Kronos Scripting Environment"): holds an `Application&`
+    // (i.e. `*this`) -- always valid regardless of member-construction
+    // order, unlike scriptWorldApi_/scriptNetworkApi_ above, but kept as
+    // a unique_ptr anyway for the same deferred-construction-in-
+    // initialize() shape those two already establish, not constructed
+    // inline as a plain member.
+    std::unique_ptr<ScriptAvatarApi> scriptAvatarApi_;
     // Plain member, not unique_ptr -- ScriptUiApi holds no references at
     // all (it's a pure queue, flushed externally via flushInto()), so it
     // needs no deferred-construction seam the way scriptWorldApi_/

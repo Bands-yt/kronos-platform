@@ -72,6 +72,20 @@ private:
     static int luaSetVelocity(lua_State* L);
     static int luaPlayAnimation(lua_State* L);
     static int luaStopAnimation(lua_State* L);
+    // Kronos ("Kronos Scripting Environment" -- "Immediate Gaps for
+    // Launch"): real wrap of the already-real, already-tested
+    // Physics::raycast() (Physics.hpp's own header comment already names
+    // core::ScriptWorldApi as this query's intended script consumer).
+    // world.raycast(originX,originY,originZ,dirX,dirY,dirZ,maxDistance)
+    // -> a real result table {hit=true, entityId=, x=,y=,z=, nx=,ny=,nz=,
+    // distance=} on a hit, or nil on a miss -- flat x/y/z fields, not a
+    // nested "Vector3" sub-table, matching this class's own established
+    // "entities are plain numbers, positions are flat x/y/z, no partial
+    // Instance-API imitation" contract (see this file's own header
+    // comment) -- inventing a Vector3-shaped return value here would be
+    // exactly the "half-built Instance illusion" that comment warns
+    // against.
+    static int luaRaycast(lua_State* L);
 
     ECS& ecs_;
     Physics& physics_;
