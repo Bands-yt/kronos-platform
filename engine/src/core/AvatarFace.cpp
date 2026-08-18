@@ -231,13 +231,14 @@ bool spawnAvatarFace(ECS& ecs, const Skeleton& skeleton, glm::vec4 skinTone, Rig
                       std::vector<EntityId>& outFaceEntities, std::string& outError) {
     // Real, honest, fixed colors -- eyes/mouth are not skin-tone-derived
     // (a sclera-less dark eye and a muted mouth tone read correctly
-    // against every real skin tone this rig offers); brows ARE
-    // skin-tone-derived (a real, darkened shade of the player's own
-    // chosen tone), same "respects skin tone" requirement this feature
-    // was asked to honor.
+    // against every real skin tone this rig offers). Kronos ("Final
+    // Visual Refinements" -- "Set ... eyebrows color to pure black"):
+    // brows used to be a skin-tone-derived darkened shade; real,
+    // deliberate, fixed pure black now instead, matching hair/arms in
+    // this same pass.
     constexpr glm::vec4 kEyeColor(0.08f, 0.08f, 0.1f, 1.0f);
     constexpr glm::vec4 kMouthColor(0.5f, 0.28f, 0.28f, 1.0f);
-    glm::vec4 browColor(skinTone.r * 0.55f, skinTone.g * 0.5f, skinTone.b * 0.45f, 1.0f);
+    constexpr glm::vec4 browColor(0.0f, 0.0f, 0.0f, 1.0f);
 
     // Real bind-pose world (rig-space) position for each joint -- a
     // skinning matrix is IDENTITY at bind pose by construction

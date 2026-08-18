@@ -660,10 +660,23 @@ Skeleton buildHumanoidSkeleton() {
     // whenever that clip plays, since a track's own baked position
     // always wins over this bind pose the moment any clip touches the
     // joint.
+    // Kronos ("Final Visual Refinements" -- "Adjust shoulder joint
+    // attachment height to align with the top of the torso"): real,
+    // 0.1 -> 0.2 -- the torso's own real top (torsoTop in
+    // buildHumanoidMeshData(), pelvis + (neck-pelvis)*0.81) sits at
+    // local Y~=1.656 (pelvis 1.0 + spineLower 0.16 + spineUpper 0.3 =
+    // spine_upper at 1.46, *0.81 fraction of the remaining pelvis-to-neck
+    // span above that); this joint's own Y offset from spine_upper
+    // (0.2) lands the shoulder (and the shoulder-cap sphere sitting on
+    // it) at Y~=1.66, matching that top within a few hundredths rather
+    // than the old 0.1's Y~=1.56, which sat visibly below it. Every
+    // `.anim` file's own arm_L_upper/arm_R_upper keyframes bake this
+    // same absolute Y (see this function's own class-level comment) and
+    // were updated to match.
     Joint armLUpper;
     armLUpper.name = "arm_L_upper";
     armLUpper.parentIndex = spineUpperIndex;
-    armLUpper.localPosition = {-0.405f, 0.1f, 0.0f};
+    armLUpper.localPosition = {-0.405f, 0.2f, 0.0f};
     int armLUpperIndex = skeleton.addJoint(armLUpper);
 
     Joint armLLower;
@@ -681,7 +694,7 @@ Skeleton buildHumanoidSkeleton() {
     Joint armRUpper;
     armRUpper.name = "arm_R_upper";
     armRUpper.parentIndex = spineUpperIndex;
-    armRUpper.localPosition = {0.405f, 0.1f, 0.0f};
+    armRUpper.localPosition = {0.405f, 0.2f, 0.0f};
     int armRUpperIndex = skeleton.addJoint(armRUpper);
 
     Joint armRLower;
@@ -861,10 +874,19 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
         // (this rig's current animation set never rotates it
         // independently of spine_upper, so a smooth 2-joint blend isn't
         // needed here the way it is for a real bending elbow/knee).
+        // Kronos ("Final Visual Refinements" -- "Match neck ... color
+        // precisely to the face skin tone"): real, HumanoidBodySegment::Head
+        // (not Torso) -- a neck is bare skin, not shirt fabric; Head
+        // already resolves to the real skinColor argument in
+        // resolveSegmentColorsForLoadout(), so this reuses that existing
+        // skin-region grouping rather than inventing a new one (same
+        // "reuse the existing category, don't grow the enum again"
+        // choice this file already made for the pelvis cap ->
+        // LeftLeg).
         int neckJointIndex = jointIndexFor("neck");
         appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, torsoTop, neckPos,
                           glm::vec2(0.24f * w, 0.14f * w), glm::vec2(0.14f * w, 0.13f * w), neckJointIndex, neckJointIndex,
-                          HumanoidBodySegment::Torso, data.skinWeights);
+                          HumanoidBodySegment::Head, data.skinWeights);
     }
 
     float ls = bodyProportions.limbScale;
@@ -1110,9 +1132,21 @@ std::array<glm::vec4, kHumanoidBodySegmentCount> resolveSegmentColorsForLoadout(
                 colors[i] = kDefaultTrouserColor;
                 break;
             case HumanoidBodySegment::Torso:
+                colors[i] = kDefaultShirtColor;
+                break;
+            // Kronos ("Final Visual Refinements" -- "Set ... arms ...
+            // color to pure black"): real, split off from Torso's own
+            // kDefaultShirtColor -- arms and torso now real-differ by
+            // default (a dark sleeve against a lighter shirt body), not
+            // one flat shirt color everywhere. Still routes through
+            // AvatarItemCategory::Torso in categoryForBodySegment() below
+            // for equip purposes -- a real, equipped shirt item still
+            // legitimately recolors torso+arms together (a real shirt
+            // naturally covers both), this only changes the *default*,
+            // unequipped look.
             case HumanoidBodySegment::LeftArm:
             case HumanoidBodySegment::RightArm:
-                colors[i] = kDefaultShirtColor;
+                colors[i] = kDefaultArmColor;
                 break;
             // Kronos ("Multi-Region Clothing Shader & Palette System" --
             // "Shoe Region: Feet, Shoe Soles"): real, new, distinct

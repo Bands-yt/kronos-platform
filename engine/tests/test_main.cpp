@@ -6255,21 +6255,54 @@ void testLoadoutToRiggedMeshGeneration() {
     check(fullBody.skinWeights.validate(fullBody.vertices.size(), static_cast<int>(skeleton.joints.size()), error),
           "the generated skin weights validate against the generated skeleton -- a real mesh->skeleton binding");
 
-    // Every vertex tagged Head must be rigidly bound (100%) to the "head"
-    // joint -- a real sphere, but still a single terminal joint with
-    // nothing to smoothly blend with (see buildHumanoidMeshData()'s own
-    // comment).
+    // Every vertex tagged Head must be rigidly bound (100%) to *either*
+    // the "head" joint (the real sphere itself, a single terminal joint
+    // with nothing to smoothly blend with) *or* the "neck" joint (Kronos
+    // "Final Visual Refinements" -- "Match neck ... color precisely to
+    // the face skin tone": the real neck cylinder, HumanoidBodySegment::Head
+    // -tagged for skin coloring but rigidly bound to its own "neck"
+    // joint, not "head" -- see buildHumanoidMeshData()'s own comment on
+    // why the segment tag and the skinning joint are independent here) --
+    // never a third joint, and never a smooth multi-joint blend (neither
+    // piece needs one).
     int headJoint = skeleton.findJointIndex("head");
-    bool allHeadVerticesBoundToHeadJoint = true;
+    int neckJoint = skeleton.findJointIndex("neck");
+    // appendSmoothLimb()'s own mid-ring always splits weight across its
+    // start/end joint *slots* (real, generic 50/50-blend code, see that
+    // function's own comment) -- the neck cylinder was appended with
+    // startJoint == endJoint == neckJoint (a real, deliberate rigid bind,
+    // see buildHumanoidMeshData()'s own comment), so a mid-ring neck
+    // vertex legitimately carries neckJoint across *two* weight slots
+    // (0.5 + 0.5) rather than one slot at 1.0 -- summing every slot that
+    // matches a given joint (not just slot 0) is the real, correct way
+    // to check "100% bound to this joint" here.
+    auto totalWeightForJoint = [](const engine::core::VertexSkinWeights& sw, int joint) {
+        float total = 0.0f;
+        for (int slot = 0; slot < 4; ++slot) {
+            if (sw.jointIndices[static_cast<size_t>(slot)] == joint) total += sw.weights[static_cast<size_t>(slot)];
+        }
+        return total;
+    };
+    bool allHeadVerticesBoundToHeadOrNeckJoint = true;
     int headVertexCount = 0;
+    int neckVertexCount = 0;
     for (size_t i = 0; i < fullBody.vertices.size(); ++i) {
         if (fullBody.vertexSegments[i] != engine::core::HumanoidBodySegment::Head) continue;
         ++headVertexCount;
         const auto& sw = fullBody.skinWeights.perVertex[i];
-        if (sw.jointIndices[0] != headJoint || !nearlyEqual(sw.weights[0], 1.0f)) allHeadVerticesBoundToHeadJoint = false;
+        float headWeight = totalWeightForJoint(sw, headJoint);
+        float neckWeight = totalWeightForJoint(sw, neckJoint);
+        if (nearlyEqual(neckWeight, 1.0f)) {
+            ++neckVertexCount;
+        } else if (!nearlyEqual(headWeight, 1.0f)) {
+            allHeadVerticesBoundToHeadOrNeckJoint = false;
+        }
     }
     check(headVertexCount > 0, "the procedural head produces real geometry");
-    check(allHeadVerticesBoundToHeadJoint, "every Head-segment vertex is rigidly bound to the head joint");
+    check(neckVertexCount > 0, "the real neck cylinder real-produces real geometry tagged into the Head segment");
+    check(allHeadVerticesBoundToHeadOrNeckJoint,
+          "every Head-segment vertex is rigidly bound (100%, possibly split across multiple weight slots pointing "
+          "at the same joint) to either the real head joint or the real neck joint");
 
     // Real smooth-skinning check: the LeftArm segment must contain at
     // least one vertex with TWO real, non-zero joint influences (the
@@ -6409,10 +6442,15 @@ void testResolveSegmentColorsForLoadoutDefaultsToBakedInClothing() {
 
     check(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::Head)] == skinColor,
           "the Head segment real-defaults to the real, passed-in skin color -- a head has no baked-in clothing");
-    for (auto segment : {engine::core::HumanoidBodySegment::Torso, engine::core::HumanoidBodySegment::LeftArm,
-                          engine::core::HumanoidBodySegment::RightArm}) {
-        check(colors[static_cast<size_t>(segment)] == engine::core::kDefaultShirtColor,
-              "Torso/LeftArm/RightArm real-default to the real, honest baked-in shirt color when nothing is equipped");
+    check(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::Torso)] == engine::core::kDefaultShirtColor,
+          "Torso real-defaults to the real, honest baked-in shirt color when nothing is equipped");
+    // Kronos ("Final Visual Refinements" -- "Set ... arms ... color to
+    // pure black"): LeftArm/RightArm now real-default to their own
+    // kDefaultArmColor, split off from Torso's kDefaultShirtColor -- see
+    // resolveSegmentColorsForLoadout()'s own comment.
+    for (auto segment : {engine::core::HumanoidBodySegment::LeftArm, engine::core::HumanoidBodySegment::RightArm}) {
+        check(colors[static_cast<size_t>(segment)] == engine::core::kDefaultArmColor,
+              "LeftArm/RightArm real-default to the real, honest baked-in arm color when nothing is equipped");
     }
     for (auto segment : {engine::core::HumanoidBodySegment::LeftLeg, engine::core::HumanoidBodySegment::RightLeg}) {
         check(colors[static_cast<size_t>(segment)] == engine::core::kDefaultTrouserColor,
@@ -6701,12 +6739,22 @@ void testHeadShapeRadiiAndNameAndIndexConversions() {
 // same real radii.
 void testBuildHumanoidMeshDataProducesDistinctOvalAndSphereHeads() {
     engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
+    int headJoint = skeleton.findJointIndex("head");
 
+    // Kronos ("Final Visual Refinements" -- "Match neck ... color
+    // precisely to the face skin tone"): the real neck cylinder is now
+    // also tagged HumanoidBodySegment::Head (for skin coloring, see
+    // buildHumanoidMeshData()'s own comment) but rigidly bound to the
+    // "neck" joint, not "head" -- filtering by that skinning joint
+    // isolates just the real head sphere/oval's own vertices for this
+    // shape-symmetry measurement, the same way the head-joint-binding
+    // test above does.
     auto headExtents = [&](engine::core::HeadShape shape) {
         engine::core::HumanoidMeshData data = engine::core::buildHumanoidMeshData(skeleton, shape);
         glm::vec3 minP(1e9f), maxP(-1e9f);
         for (size_t i = 0; i < data.vertices.size(); ++i) {
             if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::Head) continue;
+            if (data.skinWeights.perVertex[i].jointIndices[0] != headJoint) continue;
             minP = glm::min(minP, data.vertices[i].position);
             maxP = glm::max(maxP, data.vertices[i].position);
         }

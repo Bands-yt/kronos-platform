@@ -15,12 +15,16 @@
 
 namespace engine::core {
 
-// Real, fixed default -- a warm chestnut brown, the classic "bacon hair"
-// reference tone. No hair-color picker/customization UI exists yet (this
-// pass is a silhouette/geometry pass, not a new customization surface) --
-// a real, stated, small follow-up, not silently pretended to already
-// exist.
-constexpr glm::vec4 kDefaultHairColor(0.36f, 0.22f, 0.14f, 1.0f);
+// Kronos ("Final Visual Refinements" -- "Set hair ... color to pure
+// black"): real, fixed default -- was a warm chestnut brown ("bacon
+// hair" reference tone), now pure black. Only affects the *default*
+// procedural hair -- a player with a real Hair accessory item equipped
+// sees that item's own catalogue baseColor instead (see this file's own
+// spawnAvatarDefaultHair()'s real, honest skip when one is equipped).
+// No hair-color picker/customization UI exists yet (this pass is a
+// silhouette/geometry pass, not a new customization surface) -- a real,
+// stated, small follow-up, not silently pretended to already exist.
+constexpr glm::vec4 kDefaultHairColor(0.0f, 0.0f, 0.0f, 1.0f);
 
 // Kronos ("Avatar Visual Silhouette Pass" -- "Head and Hair" -- "Add a
 // unified stylised hair mass (layered tufts/spikes)"): real, default,
