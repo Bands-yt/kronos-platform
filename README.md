@@ -56,6 +56,13 @@ scoped down or explicitly flagged rather than half-built — see
 [docs/ALPHA_COMPLETION_CHECKLIST.md](docs/ALPHA_COMPLETION_CHECKLIST.md)
 for the honest, current list.
 
+## License
+
+All rights reserved — see [LICENSE](LICENSE). This source is public for
+viewing and evaluation only; copying, modifying, redistributing, or
+using it (commercially or otherwise) requires the copyright holder's
+prior written permission.
+
 ## Repository layout
 
 ```
