@@ -1,0 +1,125 @@
+name: Build Kronos
+
+# Kronos ("Release Packaging CI"): fires on any pushed version tag
+# (v0.1.0-alpha, v1.2.3, ...) -- the same trigger a `git tag vX.Y.Z &&
+# git push origin vX.Y.Z` already uses to cut a GitHub Release, so a
+# tag push is the one real, deliberate "build and publish" signal this
+# workflow needs.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Required so softprops/action-gh-release can create/update the Release
+# and upload assets to it using the workflow's own GITHUB_TOKEN.
+permissions:
+  contents: write
+
+env:
+  # engine/ is the real CMake project root in this repo (see
+  # engine/CMakeLists.txt) -- every configure/build step below runs
+  # with this as -S/working-directory, not the repo root.
+  ENGINE_DIR: engine
+  BUILD_DIR: engine/build
+
+jobs:
+  build-linux:
+    name: Linux (x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Real build-time deps this project's CMake actually needs on
+      # Linux: build-essential (gcc/g++/make) + cmake for the toolchain,
+      # libvulkan-dev for the Vulkan loader/headers, libsdl2-dev + zlib
+      # for the two find_package(... REQUIRED) system deps
+      # engine/cmake/Dependencies.cmake declares (everything else --
+      # EnTT, glm, volk, Jolt, Luau, ENet, Dear ImGui -- is fetched and
+      # built from source by CMake's own FetchContent, no separate
+      # install needed).
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            pkg-config \
+            libvulkan-dev \
+            libsdl2-dev \
+            zlib1g-dev
+
+      - name: Configure (Release)
+        run: |
+          cmake -S "$ENGINE_DIR" -B "$BUILD_DIR" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build "$BUILD_DIR" --config Release --parallel
+
+      # Kronos: packages the real compiled outputs a tester actually
+      # needs to run the engine -- the three built binaries plus their
+      # real compiled shaders (ENGINE_SHADER_DIR's own runtime fallback
+      # dir), not the whole build tree (object files/CMake cache).
+      - name: Package (.tar.gz)
+        run: |
+          set -euo pipefail
+          PKG_DIR="kronos-linux-x64"
+          mkdir -p "$PKG_DIR/shaders"
+          cp "$BUILD_DIR/src/engine_runtime" "$PKG_DIR/"
+          cp "$BUILD_DIR/src/studio" "$PKG_DIR/"
+          cp "$BUILD_DIR/tests/engine_tests" "$PKG_DIR/"
+          cp "$BUILD_DIR"/shaders/*.spv "$PKG_DIR/shaders/"
+          tar -czf "kronos-${{ github.ref_name }}-linux-x64.tar.gz" "$PKG_DIR"
+
+      - name: Upload archive to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kronos-${{ github.ref_name }}-linux-x64.tar.gz
+
+  build-windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # windows-latest runners ship vcpkg pre-installed
+      # (%VCPKG_INSTALLATION_ROOT%) -- used here only for the two real
+      # system deps CMake's find_package() needs (SDL2, zlib); every
+      # other dependency is FetchContent-built from source by CMake
+      # itself, same as the Linux job.
+      - name: Install Windows dependencies (vcpkg)
+        run: |
+          vcpkg install sdl2:x64-windows zlib:x64-windows
+
+      - name: Configure (Release)
+        run: |
+          cmake -S "$env:ENGINE_DIR" -B "$env:BUILD_DIR" `
+            -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=Release
+
+      # Visual Studio's generator is multi-config -- CMAKE_BUILD_TYPE
+      # above is a no-op for it; --config Release is the real switch
+      # that picks the Release configuration here.
+      - name: Build
+        run: cmake --build "$env:BUILD_DIR" --config Release --parallel
+
+      - name: Package (.zip)
+        run: |
+          $pkgDir = "kronos-windows-x64"
+          New-Item -ItemType Directory -Force -Path "$pkgDir\shaders" | Out-Null
+          Copy-Item "$env:BUILD_DIR\src\Release\engine_runtime.exe" "$pkgDir\"
+          Copy-Item "$env:BUILD_DIR\src\Release\studio.exe" "$pkgDir\"
+          Copy-Item "$env:BUILD_DIR\tests\Release\engine_tests.exe" "$pkgDir\"
+          Copy-Item "$env:BUILD_DIR\shaders\*.spv" "$pkgDir\shaders\"
+          Compress-Archive -Path $pkgDir -DestinationPath "kronos-${{ github.ref_name }}-windows-x64.zip"
+
+      - name: Upload archive to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kronos-${{ github.ref_name }}-windows-x64.zip
