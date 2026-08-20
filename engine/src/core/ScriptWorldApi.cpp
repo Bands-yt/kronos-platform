@@ -3,6 +3,8 @@
 
 #include "core/ScriptWorldApi.hpp"
 
+#include <algorithm>
+
 #include <lua.h>
 #include <lualib.h>
 
@@ -224,6 +226,58 @@ int ScriptWorldApi::luaRaycast(lua_State* L) {
     return 1;
 }
 
+int ScriptWorldApi::luaSpawnDynamicBox(lua_State* L) {
+    ScriptWorldApi* self = selfFromUpvalue(L);
+    if (self->spawnBoxMeshHandle_ == 0xFFFFFFFFu) {
+        // Real, honest failure -- no spawn-box mesh has been registered
+        // yet (see setSpawnBoxMeshHandle()'s own comment); a bare
+        // physics body with an invalid meshHandle would silently fail
+        // to render, which is a much harder bug for a script author to
+        // notice than a clean `nil` return here.
+        lua_pushnil(L);
+        return 1;
+    }
+
+    glm::vec3 position(luaL_checknumber(L, 1), luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+    glm::vec3 halfExtent(luaL_checknumber(L, 4), luaL_checknumber(L, 5), luaL_checknumber(L, 6));
+    float mass = static_cast<float>(luaL_checknumber(L, 7));
+    glm::vec4 color(luaL_optnumber(L, 8, 0.8), luaL_optnumber(L, 9, 0.8), luaL_optnumber(L, 10, 0.8), 1.0);
+
+    // Kronos ("securely expose... physics functions"): a script-supplied
+    // shape/mass is real-clamped before it ever reaches Jolt -- a
+    // zero/negative extent would produce a degenerate collision shape,
+    // and an unbounded one could tank frame time or blow past this
+    // Alpha's real memory/perf budgets. Matches the sane, small range
+    // every hand-authored physics prop elsewhere in this codebase
+    // (main.cpp's own pushableBox/slidingCrate/oreDrop props) already
+    // sits within.
+    constexpr float kMinHalfExtent = 0.05f;
+    constexpr float kMaxHalfExtent = 5.0f;
+    constexpr float kMinMass = 0.01f;
+    constexpr float kMaxMass = 500.0f;
+    halfExtent = glm::clamp(halfExtent, glm::vec3(kMinHalfExtent), glm::vec3(kMaxHalfExtent));
+    mass = std::clamp(mass, kMinMass, kMaxMass);
+
+    EntityId entity = self->physics_.createDynamicBox(self->ecs_, position, halfExtent, mass);
+
+    // The shared spawn-box mesh is a fixed 1x1x1 unit cube (see
+    // setSpawnBoxMeshHandle()'s own real caller in main.cpp) -- Transform
+    // scale stretches it to actually match the real, requested
+    // half-extent, so the visible box is the real size it looks like it
+    // is, not just "close enough" the way a couple of main.cpp's own
+    // older hand-placed props already accept.
+    if (auto* renderable = self->ecs_.tryGetComponent<Renderable>(entity)) {
+        renderable->meshHandle = self->spawnBoxMeshHandle_;
+        renderable->baseColor = color;
+    }
+    if (auto* transform = self->ecs_.tryGetComponent<Transform>(entity)) {
+        transform->scale = halfExtent / 0.5f;
+    }
+
+    lua_pushnumber(L, static_cast<double>(static_cast<uint32_t>(entity)));
+    return 1;
+}
+
 void ScriptWorldApi::registerInto(lua_State* L) {
     struct Entry {
         const char* name;
@@ -248,6 +302,7 @@ void ScriptWorldApi::registerInto(lua_State* L) {
         {"playAnimation", &ScriptWorldApi::luaPlayAnimation},
         {"stopAnimation", &ScriptWorldApi::luaStopAnimation},
         {"raycast", &ScriptWorldApi::luaRaycast},
+        {"spawnDynamicBox", &ScriptWorldApi::luaSpawnDynamicBox},
     };
 
     lua_newtable(L);

@@ -1,6 +1,6 @@
 GAMEMANIFEST 1
 NAME Default World
-DESCRIPTION The original Kronos bring-up world -- a ground plane and a real falling box, plus a scripting smoke test.
+DESCRIPTION The Kronos physics showcase -- a ground plane and a real falling box. Press Interact to launch it and spawn a burst of fresh dynamic boxes.
 GENRETAG Sandbox
 THUMBNAILCOLOR 0.35 0.55 0.85 1
 EFFORTSCORE 0.5

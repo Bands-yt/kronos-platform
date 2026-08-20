@@ -1485,6 +1485,16 @@ int main(int argc, char** argv) {
         renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 25.0f, 25.0f));
     uint32_t boxMesh = app.meshLibrary().registerMesh(engine::core::Mesh::createBox(
         renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), {0.5f, 0.5f, 0.5f}));
+    // Kronos ("Alpha v1 Polish" -- "world.spawnDynamicBox"): real, same
+    // 1x1x1 unit-cube handle every other hand-placed box prop in this
+    // bring-up scene already shares -- registered once here, for the
+    // whole process lifetime, so it's already real and available by the
+    // time any later-loaded game's own script (e.g. games/DefaultWorld/
+    // Scripts/Main.lua, picked from the Game Catalogue) calls
+    // world.spawnDynamicBox() -- see ScriptWorldApi::
+    // setSpawnBoxMeshHandle()'s own comment for why this is a one-time
+    // setter rather than a live per-call GPU mesh build.
+    app.setScriptSpawnBoxMeshHandle(boxMesh);
 
     // Ground plane -- physics (static collider) + a rough dielectric material.
     auto ground = app.physics().createGroundPlane(app.ecs(), 25.0f, 25.0f);

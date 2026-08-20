@@ -2271,6 +2271,232 @@ void testScriptWorldApiRaycast() {
     scripting.shutdown();
 }
 
+// Kronos ("Alpha v1 Polish" -- "world.spawnDynamicBox"): real coverage
+// for both the honest-failure path (no mesh handle registered yet, see
+// ScriptWorldApi::setSpawnBoxMeshHandle()'s own comment) and the real
+// spawn path -- entity creation, the real Physics::createDynamicBox()
+// side effects (a real RigidBody component), and the real
+// security-motivated clamp on script-supplied halfExtent/mass. No GPU
+// needed: the "mesh handle" here is just a real ECS field
+// (Renderable::meshHandle) this test can assert on directly without a
+// live MeshLibrary/Vulkan device, same "structural verification, not
+// pixels" split every other GPU-adjacent test in this file already uses.
+void testScriptWorldApiSpawnDynamicBox() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "spawnDynamicBox test: real Physics initializes headlessly");
+    engine::core::RuntimeAnimationPlayer animationPlayer;
+
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "spawnDynamicBox test: real Scripting initializes headlessly");
+    engine::core::ScriptWorldApi worldApi(ecs, physics, animationPlayer);
+    scripting.setBindingsHook([&](lua_State* L) { worldApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    size_t beforeUnregistered = output.size();
+    engine::core::ScriptId unregisteredId = scripting.loadAndRun(
+        "SpawnDynamicBoxNoMesh",
+        "local id = world.spawnDynamicBox(0, 5, 0, 0.5, 0.5, 0.5, 1.0)\n"
+        "assert(id == nil, \"expected nil before setSpawnBoxMeshHandle() ever ran\")\n");
+    check(unregisteredId != engine::core::kInvalidScript, "SpawnDynamicBoxNoMesh real-compiles with no error");
+    check(noRuntimeErrorSince(beforeUnregistered),
+          "world.spawnDynamicBox() real-returns nil (not a crash/error) with no spawn-box mesh handle registered");
+
+    constexpr uint32_t kFakeMeshHandle = 42;
+    worldApi.setSpawnBoxMeshHandle(kFakeMeshHandle);
+
+    // Kronos: real, same documented timing quirk world.spawnPlayer()'s
+    // own doc comment already states -- createDynamicBox() writes the
+    // real Jolt body immediately, but the ECS Transform only re-syncs
+    // from it on the *next* real physics.step(), so a same-frame
+    // world.getPosition() read would see the stale pre-spawn (0,0,0)
+    // default. One real step (with a loosened tolerance for the one
+    // real tick of gravity that settles in the meantime) matches how
+    // every other Physics-position test in this file already handles
+    // this.
+    size_t before = output.size();
+    engine::core::ScriptId spawnId = scripting.loadAndRun(
+        "SpawnDynamicBox",
+        "local id = world.spawnDynamicBox(1, 5, -2, 0.5, 0.5, 0.5, 2.0, 0.1, 0.2, 0.3)\n"
+        "assert(id ~= nil, \"expected a real entity id once a spawn-box mesh handle is registered\")\n"
+        "return id\n");
+    check(spawnId != engine::core::kInvalidScript, "SpawnDynamicBox real-compiles with no error");
+    check(noRuntimeErrorSince(before), "world.spawnDynamicBox() real-spawns with every real assert() passing");
+
+    physics.step(1.0f / 60.0f, ecs);
+
+    size_t beforePosition = output.size();
+    engine::core::ScriptId positionId = scripting.loadAndRun(
+        "SpawnDynamicBoxPosition",
+        "local id = world.findByName(\"DynamicBox\")\n"
+        "assert(id ~= nil, \"expected the real spawned entity, findable by its real default Physics name\")\n"
+        "local x, y, z = world.getPosition(id)\n"
+        "assert(math.abs(x - 1.0) < 0.01 and math.abs(y - 5.0) < 0.01 and math.abs(z - (-2.0)) < 0.01, "
+        "\"expected the real, requested spawn position (after one real physics.step() sync): got \" .. "
+        "string.format(\"%.4f, %.4f, %.4f\", x, y, z))\n");
+    check(positionId != engine::core::kInvalidScript, "SpawnDynamicBoxPosition real-compiles with no error");
+    check(noRuntimeErrorSince(beforePosition),
+          "world.spawnDynamicBox()'s real position is correct once the real ECS Transform re-syncs from Jolt");
+
+    // Real ECS-side verification the script itself can't reach (no
+    // world.getRenderable()/getRigidBody() binding exists, by design --
+    // see ScriptWorldApi.hpp's own "no partial Instance-API imitation"
+    // header comment) -- find the freshly spawned entity the same way
+    // the raycast test above finds its static box, by scanning for the
+    // one real RigidBody this test itself just created.
+    engine::core::EntityId spawned = engine::core::kNullEntity;
+    for (auto entity : ecs.view<engine::core::RigidBody>()) {
+        if (ecs.tryGetComponent<engine::core::RigidBody>(entity)->motionType ==
+            engine::core::RigidBodyMotionType::Dynamic) {
+            spawned = entity;
+            break;
+        }
+    }
+    check(spawned != engine::core::kNullEntity,
+          "world.spawnDynamicBox() real-creates a real Dynamic RigidBody (Physics::createDynamicBox() actually ran)");
+    if (auto* renderable = ecs.tryGetComponent<engine::core::Renderable>(spawned)) {
+        check(renderable->meshHandle == kFakeMeshHandle,
+              "world.spawnDynamicBox() real-assigns the registered spawn-box meshHandle");
+        check(std::abs(renderable->baseColor.r - 0.1f) < 0.001f && std::abs(renderable->baseColor.g - 0.2f) < 0.001f &&
+                  std::abs(renderable->baseColor.b - 0.3f) < 0.001f,
+              "world.spawnDynamicBox() real-applies the requested r/g/b color");
+    } else {
+        check(false, "world.spawnDynamicBox()'s real entity has a real Renderable component");
+    }
+    if (auto* transform = ecs.tryGetComponent<engine::core::Transform>(spawned)) {
+        // 0.5 half-extent against the real 1x1x1 unit spawn-box mesh ->
+        // scale 1.0 (halfExtent / 0.5), see luaSpawnDynamicBox()'s own
+        // comment on why Transform.scale does this real stretch.
+        check(std::abs(transform->scale.x - 1.0f) < 0.001f && std::abs(transform->scale.y - 1.0f) < 0.001f &&
+                  std::abs(transform->scale.z - 1.0f) < 0.001f,
+              "world.spawnDynamicBox() real-scales Transform to match the real requested half-extent");
+    } else {
+        check(false, "world.spawnDynamicBox()'s real entity has a real Transform component");
+    }
+
+    // Real security clamp coverage: a script-supplied halfExtent/mass
+    // far outside the sane range gets real-clamped before it ever
+    // reaches Jolt, not handed through raw -- see luaSpawnDynamicBox()'s
+    // own kMin/kMaxHalfExtent, kMinMass/kMaxMass.
+    size_t beforeClamp = output.size();
+    engine::core::ScriptId clampId = scripting.loadAndRun(
+        "SpawnDynamicBoxClamp",
+        "local id = world.spawnDynamicBox(0, 0, 0, 999, -5, 0, 999999)\n"
+        "assert(id ~= nil, \"expected a real entity even for out-of-range inputs -- clamp, don't reject\")\n"
+        "return id\n");
+    check(clampId != engine::core::kInvalidScript, "SpawnDynamicBoxClamp real-compiles with no error");
+    check(noRuntimeErrorSince(beforeClamp), "world.spawnDynamicBox() with out-of-range inputs doesn't runtime-error");
+
+    engine::core::EntityId clamped = engine::core::kNullEntity;
+    for (auto entity : ecs.view<engine::core::RigidBody>()) {
+        if (entity != spawned &&
+            ecs.tryGetComponent<engine::core::RigidBody>(entity)->motionType == engine::core::RigidBodyMotionType::Dynamic) {
+            clamped = entity;
+            break;
+        }
+    }
+    check(clamped != engine::core::kNullEntity, "world.spawnDynamicBox() real-spawned a second real Dynamic RigidBody");
+    if (auto* transform = ecs.tryGetComponent<engine::core::Transform>(clamped)) {
+        // halfExtent.x=999 clamps to 5.0 -> scale.x = 5.0/0.5 = 10.0;
+        // halfExtent.y=-5 clamps to the real 0.05 minimum -> scale.y = 0.1.
+        check(std::abs(transform->scale.x - 10.0f) < 0.01f,
+              "world.spawnDynamicBox() real-clamps an oversized halfExtent to the real kMaxHalfExtent");
+        check(std::abs(transform->scale.y - 0.1f) < 0.01f,
+              "world.spawnDynamicBox() real-clamps a negative halfExtent to the real kMinHalfExtent");
+    } else {
+        check(false, "world.spawnDynamicBox()'s clamped entity has a real Transform component");
+    }
+
+    scripting.shutdown();
+}
+
+// Kronos ("Alpha v1 Polish" -- "default showcase scene"): real, end-to-
+// end regression coverage for the actual shipped
+// games/DefaultWorld/Scripts/Main.lua file -- reads it straight off
+// disk (the exact same file runtime::GameLoader::loadGame() runs for a
+// real player who picks Default World from the Game Catalogue) and
+// runs it through a real headless Scripting + ScriptWorldApi, including
+// a real, simulated Interact (scripting.fireInteract(), the same real
+// dispatch a live Interact keypress uses -- see Scripting.hpp's own
+// header comment) against one of the script's own real spawned boxes.
+// Closes a real gap: before this, no test ever actually executed a
+// shipped game's own Main.lua content -- only ad hoc inline Lua
+// snippets were covered.
+void testDefaultWorldMainLuaRunsCleanAndInteractSpawnsBoxes() {
+    std::string gamesDir = engine::core::resolveResourceDir(engine::core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+    std::filesystem::path scriptPath = std::filesystem::path(gamesDir) / "DefaultWorld" / "Scripts" / "Main.lua";
+    std::ifstream in(scriptPath);
+    check(in.good(), "the real, shipped games/DefaultWorld/Scripts/Main.lua exists and opens");
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    std::string scriptSource = buffer.str();
+    check(!scriptSource.empty(), "the real, shipped Main.lua is non-empty");
+
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "DefaultWorld Main.lua test: real Physics initializes headlessly");
+    engine::core::RuntimeAnimationPlayer animationPlayer;
+
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "DefaultWorld Main.lua test: real Scripting initializes headlessly");
+    engine::core::ScriptWorldApi worldApi(ecs, physics, animationPlayer);
+    worldApi.setSpawnBoxMeshHandle(42); // same real, headless-safe fake handle testScriptWorldApiSpawnDynamicBox() uses
+    scripting.setBindingsHook([&](lua_State* L) { worldApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    size_t before = output.size();
+    engine::core::ScriptId id = scripting.loadAndRun("DefaultWorld/Main", scriptSource);
+    check(id != engine::core::kInvalidScript, "the real, shipped Main.lua real-compiles with no error");
+    check(noRuntimeErrorSince(before), "the real, shipped Main.lua real-runs its own top-level starter-box setup with no runtime error");
+
+    size_t dynamicBoxCountAfterLoad = 0;
+    engine::core::EntityId firstBox = engine::core::kNullEntity;
+    for (auto entity : ecs.view<engine::core::RigidBody>()) {
+        if (ecs.tryGetComponent<engine::core::RigidBody>(entity)->motionType == engine::core::RigidBodyMotionType::Dynamic) {
+            ++dynamicBoxCountAfterLoad;
+            if (firstBox == engine::core::kNullEntity) firstBox = entity;
+        }
+    }
+    check(dynamicBoxCountAfterLoad == 4,
+          "the real, shipped Main.lua real-spawns its own real 4 starter boxes on load, no more, no fewer");
+    check(firstBox != engine::core::kNullEntity, "at least one real starter box exists to interact with");
+
+    // Real, simulated Interact -- the exact same fireInteract() a live
+    // player's own Interact keypress dispatches through
+    // (Application.cpp's real input-trigger system).
+    size_t beforeInteract = output.size();
+    scripting.fireInteract(static_cast<uint32_t>(firstBox), static_cast<uint32_t>(firstBox));
+    check(noRuntimeErrorSince(beforeInteract),
+          "the real, shipped Main.lua's events.onInteract handler real-runs (launch + spawn burst) with no runtime error");
+
+    size_t dynamicBoxCountAfterInteract = 0;
+    for (auto entity : ecs.view<engine::core::RigidBody>()) {
+        if (ecs.tryGetComponent<engine::core::RigidBody>(entity)->motionType == engine::core::RigidBodyMotionType::Dynamic) {
+            ++dynamicBoxCountAfterInteract;
+        }
+    }
+    check(dynamicBoxCountAfterInteract == dynamicBoxCountAfterLoad + 3,
+          "one real Interact real-spawns the script's own real 3-box burst via world.spawnDynamicBox()");
+
+    scripting.shutdown();
+}
+
 // Kronos (Alpha Completion Checklist, "Engine Validation Pass" -- "Validate
 // all Lua bindings"): core::ScriptUiApi's `ui` table had zero test
 // coverage. Its real render flush needs a live core::UIRenderer, which
@@ -27542,6 +27768,8 @@ int main() {
     testScriptWorldApiCreateEntityAndHierarchy();
     testScriptWorldApiRemainingBindingsFullCoverage();
     testScriptWorldApiRaycast();
+    testScriptWorldApiSpawnDynamicBox();
+    testDefaultWorldMainLuaRunsCleanAndInteractSpawnsBoxes();
     testScriptUiApiRegistersAndAcceptsRealCalls();
     testScriptUiApiSessionBindingsAreHonestNoOpsWithoutShellController();
     testScriptUiApiSessionBindingsForwardToRealShellController();

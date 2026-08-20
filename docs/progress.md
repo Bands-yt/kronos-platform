@@ -1724,3 +1724,87 @@ Session Browser panel now that the Catalogue has its own live-session
 view — kept both, per the user's own request to *add* the Catalogue
 view, not replace the existing one. Not silently dropped — just not yet
 real.
+
+## 2026-08-18 (later still) — Alpha v1 Polish: Default Showcase Scene + world.spawnDynamicBox
+
+Real work toward "an impressive default showcase scene" and a smoother
+Luau onboarding path for early testers. Verified against the actual
+codebase first rather than assumed: `world.*` already had a mature
+physics surface (`createEntity`, `applyImpulse`, `setVelocity`,
+`raycast`), but `world.createEntity()`'s own header comment already
+documented a real, deliberate gap — no way to spawn a *visible* dynamic
+physics object from script, since that needs live Vulkan mesh-building
+handles `ScriptWorldApi` was intentionally never given.
+
+### `world.spawnDynamicBox()` — closing the gap without the risk
+
+Rather than thread live GPU/MeshLibrary access into the scripting layer
+(a real architectural risk this codebase has consistently avoided —
+see `core::Physics`'s own "GPU-independence boundary"), reused the
+exact same real precedent `core::Application::setOreDropMeshHandle()`
+already establishes for `core/OreNode.cpp`: a shared box mesh handle is
+registered **once**, at real engine startup (`main.cpp`, right next to
+the existing `boxMesh` registration), and `ScriptWorldApi` just holds
+that handle — zero GPU calls happen at spawn time, ever.
+
+- New `world.spawnDynamicBox(x, y, z, halfExtentX, halfExtentY,
+  halfExtentZ, mass, r?, g?, b?)` → id or `nil`. Wraps the already-real,
+  already-tested `Physics::createDynamicBox()`; sets `Renderable`
+  color/meshHandle and scales `Transform` to make the shared unit-box
+  mesh actually match the requested half-extent (more correct than a
+  couple of main.cpp's own older hand-placed props, which reuse the
+  same mesh at a visibly-off size).
+- Real security hardening (this binding is reachable from untrusted
+  third-party gameplay scripts): `halfExtent` clamped to `[0.05, 5.0]`,
+  `mass` to `[0.01, 500]` before ever reaching Jolt — a degenerate or
+  unbounded script-supplied shape never gets to the physics engine raw.
+- New `Application::setScriptSpawnBoxMeshHandle()` /
+  `ScriptWorldApi::setSpawnBoxMeshHandle()`, mirroring
+  `setOreDropMeshHandle()`'s exact shape.
+
+### Default World showcase script rewrite
+
+`games/DefaultWorld/Scripts/Main.lua` was a scripting smoke test
+(`print`/`task.spawn` diagnostics against the bring-up scene). Rewritten
+as a real, playable mechanic: 4 starter boxes spawn on load
+(`world.spawnDynamicBox`), and pressing Interact on any box launches it
+(`world.applyImpulse`, a real upward-and-outward kick) and spawns a
+3-box burst around it — capped at 40 total spawned boxes so a long test
+session stays smooth, not unbounded entity growth. "Handling basic
+input" uses the real, already-existing `events.onInteract` hook (bound
+to the real Interact key) rather than inventing a new raw-input Lua
+table with no backing C++ infrastructure.
+
+### Verification
+
+New, real, permanent test coverage (not just manual spot-checks):
+`testScriptWorldApiSpawnDynamicBox()` (the honest-nil-before-registration
+path, real spawn + position/color/scale assertions after one real
+`physics.step()`, and explicit clamp-behavior coverage for out-of-range
+halfExtent/mass) and `testDefaultWorldMainLuaRunsCleanAndInteractSpawnsBoxes()`
+— reads the actual, shipped `Main.lua` off disk and runs it through a
+real headless `Scripting`+`ScriptWorldApi`, including a real simulated
+`scripting.fireInteract()` (the same real dispatch a live Interact
+keypress uses), asserting the real starter-box count and the real
+post-interact spawn burst. Closes a real, previously-unnoticed gap: no
+test had ever actually executed a shipped game's own `Main.lua` before.
+
+Full 4-target rebuild clean, zero new warnings. **11049/11049 checks
+passing** (11022 baseline + 27 new checks across the two tests above).
+Fresh `engine_runtime` launch verified (old process killed and
+confirmed dead first): clean startup, no crash, stable ~173 fps. The
+actual Default World interact-and-spawn loop was verified via the
+headless `fireInteract()` test above, not a live click-through — this
+environment has no simulated mouse/keyboard input, the same standing
+limitation noted throughout this doc.
+
+### Explicitly not started this pass
+
+`world.spawnDynamicSphere()`/other shapes — only a box was asked for;
+the same shared-mesh-handle pattern would extend cleanly if a sphere
+variant is wanted later. A per-script spawn-rate limiter beyond the
+flat halfExtent/mass clamp — the Lua-side `maxSpawned` cap in
+`Main.lua` covers today's real showcase script, but a malicious script
+could still call `world.spawnDynamicBox()` in a tight loop; a real
+engine-side budget (mirroring `Scripting`'s own memory/CPU budget
+allocator) is real, future hardening, not done here.

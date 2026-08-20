@@ -118,6 +118,25 @@ noted.
 - **`world.applyImpulse(id, x, y, z)`** — engine_runtime only (needs
   `Physics`).
 - **`world.setVelocity(id, x, y, z)`** — engine_runtime only.
+- **`world.spawnDynamicBox(x, y, z, halfExtentX, halfExtentY, halfExtentZ, mass, r?, g?, b?)`**
+  → id, or `nil` — engine_runtime only. Real, wraps
+  `core::Physics::createDynamicBox()`: a genuine dynamic Jolt rigid body
+  plus a visible mesh (a shared, pre-registered box mesh, scaled to the
+  requested half-extent — no live GPU work happens on this call).
+  Returns `nil` if no spawn-box mesh handle has been registered yet
+  (only possible if you're embedding `ScriptWorldApi` somewhere that
+  never calls `Application::setScriptSpawnBoxMeshHandle()` — real
+  `engine_runtime` launches always have one). `halfExtent` components
+  are clamped to `[0.05, 5.0]` and `mass` to `[0.01, 500]` before
+  reaching Jolt — a script-supplied shape is never handed to the physics
+  engine unclamped. `r`/`g`/`b` default to a neutral gray (`0.8`) if
+  omitted. Like every other real Physics position write in this API,
+  the spawned box's position is correct via `world.getPosition()` only
+  after the *next* real physics step.
+  ```lua
+  local id = world.spawnDynamicBox(0, 5, 0, 0.5, 0.5, 0.5, 1.5, 0.9, 0.3, 0.3)
+  if id then world.applyImpulse(id, 0, 3, 0) end
+  ```
 - **`world.playAnimation(path, looping?)`** → handle or `nil` —
   engine_runtime only.
 - **`world.stopAnimation(handle)`** — engine_runtime only.

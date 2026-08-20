@@ -312,6 +312,13 @@ public:
     // split main.cpp's makeRenderable() already establishes.
     void setOreDropMeshHandle(uint32_t handle) { oreDropMeshHandle_ = handle; }
 
+    // Kronos ("Alpha v1 Polish" -- "world.spawnDynamicBox"): the real,
+    // identical pattern setOreDropMeshHandle() above already
+    // establishes -- forwards to ScriptWorldApi::setSpawnBoxMeshHandle(),
+    // see that method's own comment for why this deferred-setter shape
+    // exists instead of ScriptWorldApi building its own GPU mesh.
+    void setScriptSpawnBoxMeshHandle(uint32_t handle) { scriptWorldApi_->setSpawnBoxMeshHandle(handle); }
+
     // Sprint 6 ("World Systems & Environment") -- same "caller owns the
     // heavy/GPU-touching resource, Application just gets a pointer to
     // drive it every tick" split as setOreDropMeshHandle() above.

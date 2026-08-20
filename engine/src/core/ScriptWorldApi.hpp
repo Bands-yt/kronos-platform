@@ -50,7 +50,10 @@ private:
     // created entity is real and positionable/parentable/destroyable
     // immediately, just invisible until something else gives it a mesh
     // (matching Roblox's own Instance.new("Part") needing further
-    // property sets before it's meaningfully visible either).
+    // property sets before it's meaningfully visible either). Still true
+    // for a bare createEntity() -- see luaSpawnDynamicBox() below for
+    // the one real, deliberately narrow exception (a pre-registered
+    // shared mesh handle, not a live GPU build).
     static int luaCreateEntity(lua_State* L);
     // Real parent-child wiring -- core::hierarchy's own API (Alpha
     // Roadmap Phase 2), the same functions ExplorerPanel's drag-and-drop
@@ -87,9 +90,54 @@ private:
     // against.
     static int luaRaycast(lua_State* L);
 
+    // Kronos ("Alpha v1 Polish" -- "spawn dynamic objects from script"):
+    // real, wraps the already-real, already-tested
+    // Physics::createDynamicBox() -- closes the gap luaCreateEntity()'s
+    // own header comment above already names ("no default mesh -- needs
+    // real Vulkan mesh-building handles this class has no access to and
+    // isn't the right place to add just for this"). Deliberately does
+    // NOT build a new GPU mesh per call -- that would mean touching
+    // live Vulkan resources from inside a script call, real new risk
+    // this codebase has consistently avoided (see core::Physics's own
+    // "GPU-independence boundary" and core::Application::
+    // setOreDropMeshHandle()'s identical real precedent: OreNode.cpp
+    // spawns real dynamic debris at runtime using a mesh handle
+    // pre-registered once at startup, never building GPU resources
+    // itself). setSpawnBoxMeshHandle() below is that same real pattern,
+    // reused, not reinvented.
+    //
+    // world.spawnDynamicBox(x,y,z, halfExtentX,halfExtentY,halfExtentZ,
+    // mass, r,g,b) -> id, or nil if no spawn-box mesh handle has been
+    // registered yet (an honest failure, not a crash on an invalid
+    // meshHandle). halfExtent/mass are real-clamped to a sane range
+    // (see the .cpp's own kMin/kMaxHalfExtent, kMinMass/kMaxMass) --
+    // this function is reachable from untrusted third-party gameplay
+    // scripts, so a degenerate (zero/negative/huge) shape request is
+    // silently clamped rather than handed straight to Jolt, the same
+    // "never trust a script's own raw numbers with a live physics
+    // engine" real safety margin already discussed for this API's
+    // security posture.
+    static int luaSpawnDynamicBox(lua_State* L);
+
+public:
+    // Kronos: real, deferred setter -- see luaSpawnDynamicBox()'s own
+    // comment for why this exists instead of building a mesh inline.
+    // Called once from main.cpp, right alongside the real, identical
+    // Application::setOreDropMeshHandle() call, after the shared
+    // "boxMesh" unit-cube handle actually exists (ScriptWorldApi itself
+    // is constructed earlier, before any GPU mesh is built -- see
+    // Application::initialize()'s own real construction order).
+    void setSpawnBoxMeshHandle(uint32_t handle) { spawnBoxMeshHandle_ = handle; }
+
+private:
     ECS& ecs_;
     Physics& physics_;
     RuntimeAnimationPlayer& animationPlayer_;
+    // Kronos: 0xFFFFFFFF ("not yet registered") until
+    // setSpawnBoxMeshHandle() is real-called -- luaSpawnDynamicBox()
+    // checks this explicitly rather than trusting an arbitrary uint32_t
+    // to be a real, live MeshLibrary handle.
+    uint32_t spawnBoxMeshHandle_ = 0xFFFFFFFFu;
 };
 
 } // namespace engine::core
