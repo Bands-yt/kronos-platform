@@ -3513,6 +3513,8 @@ void testLocalProfileSaveLoadRoundTrip() {
     profile.animOverrideJumpLandId = "roll_land_06";
     profile.creatorId = "creator_123456789";
     profile.ratedItemIds = {"wizard_hat_01", "sci_fi_visor"};
+    profile.fullscreenEnabled = true;
+    profile.windowResolutionIndex = 2;
     profile.qualityPresetIndex = 2;
     profile.vsyncEnabled = false;
     profile.fpsCap = 60;
@@ -3568,6 +3570,8 @@ void testLocalProfileSaveLoadRoundTrip() {
           "ratedItemIds round-trips in order");
     check(loaded.hasRatedItem("wizard_hat_01") && !loaded.hasRatedItem("never_rated"),
           "hasRatedItem() real-reflects the real, round-tripped ratedItemIds");
+    check(loaded.fullscreenEnabled, "fullscreenEnabled round-trips");
+    check(loaded.windowResolutionIndex == 2, "windowResolutionIndex round-trips");
     check(loaded.qualityPresetIndex == 2, "qualityPresetIndex round-trips");
     check(!loaded.vsyncEnabled, "vsyncEnabled round-trips");
     check(loaded.fpsCap == 60, "fpsCap round-trips");
@@ -3840,6 +3844,8 @@ void testLocalProfileLoadsPreSettingsFileWithHonestDefaults() {
     }
     engine::core::LocalProfile loaded;
     check(loaded.loadFromFile(path), "a real, pre-settings profile file still loads");
+    check(!loaded.fullscreenEnabled, "missing FULLSCREENENABLED real-defaults to false -- windowed, matching pre-existing creation-time-only behavior");
+    check(loaded.windowResolutionIndex == 0, "missing WINDOWRESOLUTIONINDEX real-defaults to 0 (the first real preset)");
     check(loaded.qualityPresetIndex == 1, "missing QUALITYPRESET real-defaults to 1 (Medium)");
     check(loaded.vsyncEnabled, "missing VSYNCENABLED real-defaults to true, matching the engine's own pre-existing FIFO-always behavior");
     check(loaded.fpsCap == 180, "missing FPSCAP real-defaults to 180, matching core::GameLoop's own pre-existing pacer default");

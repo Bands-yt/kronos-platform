@@ -1808,3 +1808,94 @@ flat halfExtent/mass clamp — the Lua-side `maxSpawned` cap in
 could still call `world.spawnDynamicBox()` in a tight loop; a real
 engine-side budget (mirroring `Scripting`'s own memory/CPU budget
 allocator) is real, future hardening, not done here.
+
+## 2026-08-20 — Harvest Phase: Feature Audit + Settings Fullscreen + Viewport Selection Highlight
+
+A "comprehensive feature audit, avatar system polish, and UX
+improvements" request, verified against the real codebase area-by-area
+before touching anything — most of what was asked for turned out to
+already be real (a now-established pattern this whole doc's history
+shows). Real, grounded findings and the real gaps actually closed:
+
+### Feature audit findings (no code needed for these — already real)
+
+- **Debug REPL error/log color-coding**: already comprehensive
+  (`DebugConsolePanel.cpp`'s `logLevelColor()` — Debug/Info/Warn/Error
+  each a distinct color) — script compile/runtime errors already route
+  through `core::logError()` for real, visible red text, not silent
+  console-only output.
+- **Avatar modular slots**: already real and extensive —
+  `AvatarItemCategory` (Head/Hair/Face/Torso/Legs/Accessory/
+  LayeredClothing/Emote/Shoes/Back/Bundle), a real equip/unequip
+  loadout system, and `Application::refreshLocalPlayerAvatarAppearance()`
+  already keeps both the Launcher's `HomeAvatarPreview` and the live
+  in-game avatar in sync from the same real call site — "changes
+  reflect both in the Launcher preview and live in-game sessions" was
+  already true. One real, honest gap: no distinct "Limbs"/arm clothing
+  slot (sleeves are baked into the Torso shirt shell's own geometry,
+  see `spawnAvatarClothing()`) — flagged, not silently built, since
+  splitting it out is real, separate scope.
+- **Viewport gizmo tooltips**: `iconButton()` already has a real,
+  built-in tooltip parameter — every gizmo/snap-toggle button already
+  shows one.
+- **Explorer selection highlighting**: already real
+  (`ImGuiTreeNodeFlags_Selected` on the selected row).
+- **Inspector multi-select feedback**: already real (a colored banner
+  explaining which fields apply to how many selected entities).
+
+### Real gaps closed
+
+- **Settings: live Fullscreen/Resolution** — this was a real, explicitly
+  stated gap (`core::Window` had creation-time-only sizing). Added real
+  `Window::setFullscreen()`/`isFullscreen()`/`setSize()` (SDL2's own
+  `SDL_SetWindowFullscreen`/`SDL_SetWindowSize`) — the existing resize-
+  triggered `Renderer::recreateSwapchain()` path (already exercised by
+  VSync toggling) handles the Vulkan side automatically, so the
+  "separate, riskier Vulkan work" the old stated-gap comment worried
+  about wasn't actually needed. New `LocalProfile::fullscreenEnabled`/
+  `windowResolutionIndex` (a small, real preset list — 720p/900p/1080p/
+  1440p, same "honest enumerable choice" convention every other real
+  setting here uses), wired into Settings' Graphics section and
+  `applyAllSettingsFromProfile()` so a saved choice re-applies on
+  launch.
+- **Viewport: real selection highlight in 3D space** — a genuine,
+  confirmed-zero gap (nothing in `ViewportPanel.cpp`/`Renderer.cpp`
+  drew any kind of selection outline before this). New
+  `ViewportPanel::drawSelectionHighlight()`: a real, screen-space-
+  projected wireframe box around every selected entity's own world-
+  space mesh AABB (`Mesh::localBoundsMin/Max`, the same real bounds
+  `ScenePicking.hpp`'s own ray-vs-AABB test already uses), correctly
+  rotated/scaled with the entity (not an axis-aligned-in-world
+  approximation), with a real behind-camera guard (skips an edge if
+  either endpoint's clip-space `w <= 0` rather than drawing a garbage
+  wraparound line).
+- **Viewport: 3 unlabeled toolbar controls** — the Grid/Angle/Scale Snap
+  increment combos/drag-float had no label and no tooltip (just "1.00m"
+  next to an icon). Added real hover tooltips explaining what each one
+  does.
+
+### Verification
+
+New tests for the two new `LocalProfile` fields (real round-trip +
+real "missing field defaults honestly" coverage, matching this file's
+own established per-field test convention). Full 4-target rebuild
+clean, zero new warnings. **11053/11053 checks passing**. Fresh launch
+verified (old process confirmed dead first): clean startup, no crash,
+stable fps. The viewport selection highlight and Settings fullscreen
+toggle themselves render into the main swapchain/a live SDL window --
+not verified via a live screenshot (this environment's GPU-capture
+technique only reaches the auxiliary preview scene, and there's no
+simulated mouse/keyboard input) -- verified instead via direct code
+reading against the same real, already-proven `recreateSwapchain()`/
+AABB-projection math, plus a clean compile and stable launch.
+
+### Explicitly not started this pass
+
+A distinct avatar "Limbs" clothing category (see above). A Studio-side
+equivalent Settings fullscreen/resolution UI (Studio has its own
+window/renderer setup separate from `engine_runtime`'s `RuntimeShell`
+Settings panel — this pass only wired the player-facing one, since
+that's what was named). A full post-process outline/glow shader for
+viewport selection — the wireframe-box approach is real and correct
+but simpler than a stencil-based glow outline some editors use; upgrade
+path exists if wanted later.

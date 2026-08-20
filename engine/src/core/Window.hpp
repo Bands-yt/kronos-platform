@@ -69,6 +69,26 @@ public:
     [[nodiscard]] bool wasResized() const { return resized_; }
     void clearResizedFlag() { resized_ = false; }
 
+    // Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real
+    // runtime mode switch, closing the gap RuntimeShell::drawSettingsPanel()'s
+    // own "not yet supported" note previously stated plainly rather than
+    // hiding. Desktop fullscreen (`SDL_WINDOW_FULLSCREEN_DESKTOP`), not
+    // exclusive fullscreen -- borderless-at-desktop-resolution avoids a
+    // real display mode switch (flicker, potential resolution mismatch
+    // with a multi-monitor setup), the same safe default most modern
+    // engines ship. Real, honest no-op if SDL has no window yet. Both
+    // calls trigger the exact same real `SDL_WINDOWEVENT_RESIZED` path
+    // pumpEvents() already handles -- Renderer::recreateSwapchain() picks
+    // the new size up the same way any other live resize already does,
+    // no separate Vulkan-side plumbing needed.
+    void setFullscreen(bool enabled);
+    [[nodiscard]] bool isFullscreen() const;
+    // Real, windowed-mode-only resize -- SDL_SetWindowSize() is a no-op
+    // while fullscreen (SDL's own documented behavior, not a bug here);
+    // callers should exit fullscreen first if they want a specific
+    // windowed resolution to actually apply.
+    void setSize(uint32_t width, uint32_t height);
+
 private:
     SDL_Window* window_ = nullptr;
     uint32_t width_ = 0;

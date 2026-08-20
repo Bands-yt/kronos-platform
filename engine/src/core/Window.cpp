@@ -117,6 +117,39 @@ bool Window::pumpEvents() {
     return true;
 }
 
+void Window::setFullscreen(bool enabled) {
+    if (window_ == nullptr) return;
+    if (SDL_SetWindowFullscreen(window_, enabled ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0) {
+        std::fprintf(stderr, "Window: SDL_SetWindowFullscreen failed: %s\n", SDL_GetError());
+    }
+    // Real, immediate -- SDL_GetWindowSize() reflects the new real mode
+    // synchronously (unlike the resize event, which pumpEvents() only
+    // sees on a later poll), so this call's own caller can rely on
+    // width()/height() being correct right away rather than waiting a
+    // frame.
+    int w = 0, h = 0;
+    SDL_GetWindowSize(window_, &w, &h);
+    width_ = static_cast<uint32_t>(w);
+    height_ = static_cast<uint32_t>(h);
+    resized_ = true;
+}
+
+bool Window::isFullscreen() const {
+    if (window_ == nullptr) return false;
+    return (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+}
+
+void Window::setSize(uint32_t width, uint32_t height) {
+    if (window_ == nullptr) return;
+    SDL_SetWindowSize(window_, static_cast<int>(width), static_cast<int>(height));
+    SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    int w = 0, h = 0;
+    SDL_GetWindowSize(window_, &w, &h);
+    width_ = static_cast<uint32_t>(w);
+    height_ = static_cast<uint32_t>(h);
+    resized_ = true;
+}
+
 std::vector<const char*> Window::requiredInstanceExtensions() const {
     unsigned int count = 0;
     if (!SDL_Vulkan_GetInstanceExtensions(window_, &count, nullptr)) {

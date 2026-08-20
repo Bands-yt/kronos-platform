@@ -144,6 +144,76 @@ void ViewportPanel::drawGizmo(core::ECS& ecs, core::EntityId selected, const std
     }
 }
 
+void ViewportPanel::drawSelectionHighlight(core::ECS& ecs, core::MeshLibrary& meshLibrary,
+                                            const std::vector<core::EntityId>& selectedEntities, ImVec2 imageOrigin,
+                                            ImVec2 imageSize) {
+    if (selectedEntities.empty() || imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
+
+    glm::mat4 viewProj = camera_.projectionMatrix(imageSize.x / imageSize.y) * camera_.viewMatrix();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    // A real, deliberately different color from every gizmo axis color
+    // (red/green/blue) and from ImGuizmo's own yellow hover highlight --
+    // this box means "selected", not "this is the axis you're
+    // dragging".
+    constexpr ImU32 kHighlightColor = IM_COL32(255, 165, 0, 220); // orange
+    constexpr float kLineThickness = 1.5f;
+
+    // Real projection, same inverse-mapping convention
+    // computeMouseRay() already establishes (Vulkan clip-space
+    // GLM_FORCE_DEPTH_ZERO_TO_ONE, screen-Y-down vs. NDC-Y-up) --
+    // returns false (and leaves outScreen untouched) for a point behind
+    // the camera (clip.w <= 0), the one real case naive perspective
+    // division would otherwise wrap around into a garbage on-screen
+    // position.
+    auto projectToScreen = [&](const glm::vec3& worldPos, ImVec2& outScreen) -> bool {
+        glm::vec4 clip = viewProj * glm::vec4(worldPos, 1.0f);
+        if (clip.w <= 0.0001f) return false;
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        outScreen.x = imageOrigin.x + ((ndc.x + 1.0f) * 0.5f) * imageSize.x;
+        outScreen.y = imageOrigin.y + ((1.0f - ndc.y) * 0.5f) * imageSize.y;
+        return true;
+    };
+
+    for (core::EntityId entity : selectedEntities) {
+        auto* transform = ecs.tryGetComponent<core::Transform>(entity);
+        auto* renderable = ecs.tryGetComponent<core::Renderable>(entity);
+        if (transform == nullptr || renderable == nullptr) continue;
+        const core::Mesh* mesh = meshLibrary.get(renderable->meshHandle);
+        if (mesh == nullptr) continue;
+
+        glm::vec3 lo = mesh->localBoundsMin();
+        glm::vec3 hi = mesh->localBoundsMax();
+        glm::mat4 model = transform->matrix();
+
+        // The 8 real corners of the local AABB, each transformed to
+        // world space by this entity's own real model matrix -- a
+        // rotated/scaled entity's highlight box rotates/scales with it,
+        // not an axis-aligned-in-world approximation.
+        glm::vec3 worldCorners[8];
+        int i = 0;
+        for (float x : {lo.x, hi.x}) {
+            for (float y : {lo.y, hi.y}) {
+                for (float z : {lo.z, hi.z}) {
+                    worldCorners[i++] = glm::vec3(model * glm::vec4(x, y, z, 1.0f));
+                }
+            }
+        }
+        // Corner index bit layout matches the loop above: bit2=x, bit1=y, bit0=z.
+        ImVec2 screenCorners[8];
+        bool valid[8];
+        for (int c = 0; c < 8; ++c) valid[c] = projectToScreen(worldCorners[c], screenCorners[c]);
+
+        auto drawEdge = [&](int a, int b) {
+            if (valid[a] && valid[b]) drawList->AddLine(screenCorners[a], screenCorners[b], kHighlightColor, kLineThickness);
+        };
+        // 4 bottom edges (y=lo, corners 0,1,4,5), 4 top edges (y=hi,
+        // corners 2,3,6,7), 4 verticals connecting them.
+        drawEdge(0, 1); drawEdge(1, 5); drawEdge(5, 4); drawEdge(4, 0);
+        drawEdge(2, 3); drawEdge(3, 7); drawEdge(7, 6); drawEdge(6, 2);
+        drawEdge(0, 2); drawEdge(1, 3); drawEdge(4, 6); drawEdge(5, 7);
+    }
+}
+
 void ViewportPanel::computeMouseRay(ImVec2 mousePos, ImVec2 imageOrigin, ImVec2 imageSize, glm::vec3& outOrigin,
                                      glm::vec3& outDirection) const {
     float ndcX = ((mousePos.x - imageOrigin.x) / imageSize.x) * 2.0f - 1.0f;
@@ -559,6 +629,9 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     if (ecs != nullptr && selected != core::kNullEntity) {
         drawGizmo(*ecs, selected, explorer.selectedEntities(), imageOrigin, imageSize);
     }
+    if (ecs != nullptr && meshLibrary != nullptr) {
+        drawSelectionHighlight(*ecs, *meshLibrary, explorer.selectedEntities(), imageOrigin, imageSize);
+    }
 
     // Click-to-select / drag-select-box -- only while free-flying isn't
     // consuming the mouse (right-drag) and there's an ECS+MeshLibrary to
@@ -671,6 +744,9 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         }
         ImGui::EndCombo();
     }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Grid Snap increment (meters) -- how far Translate moves per step while Grid Snap is on.");
+    }
 
     ImGui::SameLine();
     ImGui::Dummy(ImVec2(6.0f, 0.0f));
@@ -694,6 +770,9 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         }
         ImGui::EndCombo();
     }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Angle Snap increment (degrees) -- how far Rotate turns per step while Angle Snap is on.");
+    }
 
     ImGui::SameLine();
     ImGui::Dummy(ImVec2(6.0f, 0.0f));
@@ -704,6 +783,9 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0f);
     ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Scale Snap increment -- how far Scale changes per step while Scale Snap is on. Drag to adjust.");
+    }
     ImGui::EndGroup();
 
     ImVec2 groupMin = ImGui::GetItemRectMin();

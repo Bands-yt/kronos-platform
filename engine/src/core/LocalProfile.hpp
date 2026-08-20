@@ -218,13 +218,19 @@ struct LocalProfile {
     // mode between FIFO (real vsync) and MAILBOX (uncapped) -- see
     // Renderer::setVsyncEnabled()'s own comment on why MAILBOX isn't the
     // default (this session's own past "whistling GPU fan" bug).
-    // Real-honest gap, stated plainly: live resolution/fullscreen
-    // switching is NOT implemented this pass -- core::Window has no
-    // runtime resolution/fullscreen setter at all (creation-time only),
-    // and building real SDL window-mode switching + Vulkan swapchain
-    // invalidation handling is a real, separate, larger, riskier piece of
-    // work than the rest of this settings system; no field for it exists
-    // here so nothing here pretends to control it.
+    // Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real,
+    // closes what used to be a stated gap here -- core::Window now has a
+    // real runtime `setFullscreen()`/`setSize()` (SDL_SetWindowFullscreen/
+    // SDL_SetWindowSize), and the existing resize-triggered
+    // Renderer::recreateSwapchain() path (already exercised by vsync
+    // toggling) handles the swapchain invalidation, so no separate
+    // Vulkan-side work was actually needed. `windowResolutionIndex` is a
+    // real, small, enumerable choice (see kWindowResolutionPresets in
+    // RuntimeShell.cpp), same "small honest list, not free-form input"
+    // convention `colorblindModeIndex`/`clothingFitIndex` already use --
+    // only meaningful while `fullscreenEnabled` is false.
+    bool fullscreenEnabled = false;
+    int windowResolutionIndex = 0;
     int qualityPresetIndex = 1; // 0=Low, 1=Medium (default), 2=High
     bool vsyncEnabled = true;
     int fpsCap = 180; // matches core::GameLoop's own pre-existing 1/180s pacer default

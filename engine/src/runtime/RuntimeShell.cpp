@@ -1829,6 +1829,22 @@ constexpr RemappableAction kRemappableActions[] = {
 
 constexpr const char* kQualityPresetNames[] = {"Low", "Medium", "High"};
 constexpr const char* kColorblindModeNames[] = {"None", "Protanopia", "Deuteranopia", "Tritanopia"};
+
+// Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real, same
+// "small honest list, not free-form input" convention every other real
+// settings choice in this file already uses -- only meaningful while
+// windowed (see LocalProfile::windowResolutionIndex's own comment).
+struct WindowResolutionPreset {
+    const char* label;
+    uint32_t width;
+    uint32_t height;
+};
+constexpr WindowResolutionPreset kWindowResolutionPresets[] = {
+    {"1280 x 720", 1280, 720},
+    {"1600 x 900", 1600, 900},
+    {"1920 x 1080", 1920, 1080},
+    {"2560 x 1440", 2560, 1440},
+};
 } // namespace
 
 void RuntimeShell::applyQualityPreset(int presetIndex) {
@@ -1889,6 +1905,18 @@ void RuntimeShell::applyAllSettingsFromProfile() {
     // comment).
     app_.renderer().setVolumetricFogEnabled(localProfile_.volumetricFogEnabled);
     app_.renderer().setVsyncEnabled(localProfile_.vsyncEnabled);
+    // Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real
+    // -- applies a saved fullscreen/resolution choice on startup, same
+    // as every other real graphics setting here. Fullscreen wins over a
+    // stored windowed resolution (matches setSize()'s own documented
+    // "no-op while fullscreen" behavior -- applying both in the wrong
+    // order would silently drop the resolution choice on the floor).
+    app_.window().setFullscreen(localProfile_.fullscreenEnabled);
+    if (!localProfile_.fullscreenEnabled) {
+        int resIndex = std::clamp(localProfile_.windowResolutionIndex, 0,
+                                   static_cast<int>(IM_ARRAYSIZE(kWindowResolutionPresets)) - 1);
+        app_.window().setSize(kWindowResolutionPresets[resIndex].width, kWindowResolutionPresets[resIndex].height);
+    }
     if (app_.gameLoop() != nullptr) {
         app_.gameLoop()->setTargetRenderDt(localProfile_.fpsCap > 0 ? 1.0f / static_cast<float>(localProfile_.fpsCap)
                                                                      : 0.0f);
@@ -1971,12 +1999,31 @@ void RuntimeShell::drawSettingsPanel() {
         }
         changed = true;
     }
-    // Kronos ("Settings Panel v2" -- real, honest scope note): live
-    // resolution/fullscreen switching is NOT implemented -- see
-    // core::LocalProfile::qualityPresetIndex's own comment for exactly
-    // why (core::Window has no runtime resolution/fullscreen setter at
-    // all today).
-    ImGui::TextDisabled("Resolution/Fullscreen: not yet supported -- core::Window has no runtime mode switch yet.");
+    // Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real
+    // -- core::Window::setFullscreen()/setSize() actually switch the
+    // live window; the existing resize-triggered
+    // Renderer::recreateSwapchain() path (already exercised by vsync
+    // toggling) handles the Vulkan side automatically.
+    if (ImGui::Checkbox("Fullscreen", &localProfile_.fullscreenEnabled)) {
+        app_.window().setFullscreen(localProfile_.fullscreenEnabled);
+        changed = true;
+    }
+    ImGui::BeginDisabled(localProfile_.fullscreenEnabled);
+    static constexpr const char* kResolutionNames[] = {
+        kWindowResolutionPresets[0].label, kWindowResolutionPresets[1].label, kWindowResolutionPresets[2].label,
+        kWindowResolutionPresets[3].label,
+    };
+    if (ImGui::Combo("Resolution", &localProfile_.windowResolutionIndex, kResolutionNames,
+                      IM_ARRAYSIZE(kResolutionNames))) {
+        const WindowResolutionPreset& preset = kWindowResolutionPresets[localProfile_.windowResolutionIndex];
+        app_.window().setSize(preset.width, preset.height);
+        changed = true;
+    }
+    ImGui::EndDisabled();
+    if (localProfile_.fullscreenEnabled) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(windowed only)");
+    }
 
     ImGui::SeparatorText("Audio");
     if (ImGui::SliderFloat("Master Volume", &localProfile_.masterVolume, 0.0f, 1.0f)) {

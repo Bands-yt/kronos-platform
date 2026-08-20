@@ -59,6 +59,8 @@ bool LocalProfile::saveToFile(const std::string& path) const {
     out << "ANIMOVERRIDEJUMPAIR " << animOverrideJumpAirId << "\n";
     out << "ANIMOVERRIDEJUMPLAND " << animOverrideJumpLandId << "\n";
     for (const std::string& itemId : ratedItemIds) out << "RATEDITEM " << itemId << "\n";
+    out << "FULLSCREENENABLED " << (fullscreenEnabled ? 1 : 0) << "\n";
+    out << "WINDOWRESOLUTIONINDEX " << windowResolutionIndex << "\n";
     out << "QUALITYPRESET " << qualityPresetIndex << "\n";
     out << "VSYNCENABLED " << (vsyncEnabled ? 1 : 0) << "\n";
     out << "FPSCAP " << fpsCap << "\n";
@@ -156,6 +158,10 @@ bool LocalProfile::loadFromFile(const std::string& path) {
             loaded.animOverrideJumpLandId = line.substr(21);
         } else if (line.rfind("RATEDITEM ", 0) == 0) {
             loaded.ratedItemIds.push_back(line.substr(10));
+        } else if (line.rfind("FULLSCREENENABLED ", 0) == 0) {
+            loaded.fullscreenEnabled = std::atoi(line.substr(18).c_str()) != 0;
+        } else if (line.rfind("WINDOWRESOLUTIONINDEX ", 0) == 0) {
+            loaded.windowResolutionIndex = std::atoi(line.substr(22).c_str());
         } else if (line.rfind("QUALITYPRESET ", 0) == 0) {
             loaded.qualityPresetIndex = std::atoi(line.substr(14).c_str());
         } else if (line.rfind("VSYNCENABLED ", 0) == 0) {

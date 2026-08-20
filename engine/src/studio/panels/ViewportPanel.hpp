@@ -113,6 +113,18 @@ private:
     // relative offset rather than snapping them all to one point.
     void drawGizmo(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& allSelected,
                     ImVec2 imageOrigin, ImVec2 imageSize);
+    // Kronos ("Studio UI/UX Friendliness" -- "better visual feedback for
+    // selected entities"): real, screen-space projected wireframe box
+    // around every real selected entity's own world-space mesh AABB
+    // (Mesh::localBoundsMin/Max, the same real bounds ScenePicking.hpp's
+    // own ray-vs-AABB test already uses) -- distinct from, and drawn
+    // alongside, the gizmo itself (a gizmo shows *how to move* the
+    // selection; this shows *what's actually selected*, which matters
+    // most for a small or gizmo-occluded entity, or a multi-selection
+    // where only the primary entity gets a gizmo at all).
+    void drawSelectionHighlight(core::ECS& ecs, core::MeshLibrary& meshLibrary,
+                                 const std::vector<core::EntityId>& selectedEntities, ImVec2 imageOrigin,
+                                 ImVec2 imageSize);
     // Ray in world space (origin, normalized direction) through `mousePos`
     // -- real inverse-view-projection unprojection at the mouse's NDC
     // position, not an approximation. Used by both click-to-select and
