@@ -62,6 +62,16 @@ void CreatorAssetBrowserPlugin::drawPropEntries(core::ECS& ecs) {
         if (!matchesSearch(entryName, tags)) continue;
         ImGui::PushID(entryName);
         ImGui::Text("[Prop] %s", entryName);
+        // Kronos ("Studio Asset Drag-and-Drop"): real drag source --
+        // carries the real core::WorldPropKind by value (same raw-copy
+        // convention "ASSET_MATERIAL_PRESET" above already uses).
+        // ViewportPanel is the real drop target -- see that file's own
+        // drop-target block for the real drop-position raycast.
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+            ImGui::SetDragDropPayload("ASSET_WORLD_PROP", &kind, sizeof(core::WorldPropKind));
+            ImGui::Text("Place \"%s\"", entryName);
+            ImGui::EndDragDropSource();
+        }
         ImGui::TextDisabled("%s", tags);
         ImGui::SameLine();
         if (ImGui::SmallButton("Use")) {
@@ -70,6 +80,7 @@ void CreatorAssetBrowserPlugin::drawPropEntries(core::ECS& ecs) {
         }
         ImGui::PopID();
     }
+    ImGui::TextDisabled("Drag a prop onto the Viewport to place it there, or click \"Use\" to spawn it at the origin.");
 }
 
 void CreatorAssetBrowserPlugin::drawMaterialEntries(core::ECS& ecs, core::EntityId selected) {

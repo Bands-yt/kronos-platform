@@ -37,6 +37,17 @@ struct ViewportDebugContext {
     core::Renderer* renderer = nullptr; // for CSM cascade visualization
 };
 
+// Kronos ("Studio Asset Drag-and-Drop"): real mesh handles ViewportPanel
+// needs to spawn a real authoring prop entity (studio::spawnPropAuthoring(),
+// same real function CreatorAssetBrowserPlugin's own "Use" button already
+// calls) when a real prop entry is dragged in from the Asset Browser and
+// dropped -- see setPropSpawnMeshHandles()'s own comment for why these
+// come in via a deferred setter, not a constructor parameter.
+struct WorldPropSpawnMeshHandles {
+    uint32_t boxMesh = 0;
+    uint32_t capsuleMesh = 0;
+};
+
 // docs/ARCHITECTURE.md §4.2's Edit Viewport: "The editor camera is a
 // free-fly, unreplicated entity feeding the same [render] graph; it never
 // enters the ECS as a simulated object." Uses core::Camera directly
@@ -100,6 +111,15 @@ public:
 
     void setGizmoOperation(GizmoOperation op) { gizmoOperation_ = op; }
     [[nodiscard]] GizmoOperation gizmoOperation() const { return gizmoOperation_; }
+
+    // Kronos ("Studio Asset Drag-and-Drop"): real, deferred setter --
+    // same "constructed before GPU is ready, real mesh handles arrive
+    // once it is" shape core::Application::setOreDropMeshHandle()/
+    // setScriptSpawnBoxMeshHandle() already establish. Called once from
+    // StudioApp, right alongside CreatorAssetBrowserPlugin's own
+    // identical real box/capsule mesh registration, so a dropped prop's
+    // visual is never a stale/invalid handle.
+    void setPropSpawnMeshHandles(WorldPropSpawnMeshHandles handles) { propSpawnMeshHandles_ = handles; }
 
 private:
     void updateFreeFly(float deltaTime);
@@ -187,6 +207,15 @@ private:
     VkExtent2D desiredExtent_{0, 0};
     GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
     GizmoSpace gizmoSpace_ = GizmoSpace::World;
+    // Kronos ("Studio Asset Drag-and-Drop"): see setPropSpawnMeshHandles()'s
+    // own comment. propSpawnCount_ is this panel's own real, independent
+    // counter (spawnPropAuthoring()'s own `spawnIndex` -> "Tree 3" naming)
+    // -- deliberately not shared with CreatorAssetBrowserPlugin's own
+    // "Use" button counter, since the two are real, separate spawn
+    // origins; a real name collision is cosmetic, not a correctness bug
+    // (core::ECS entity ids, not names, are the real identity).
+    WorldPropSpawnMeshHandles propSpawnMeshHandles_;
+    int propSpawnCount_ = 0;
     // Kronos ("Developer Velocity Sprint" -- "Grid & Rotation Snapping"):
     // split from one combined toggle into two independent ones -- Grid
     // Snap (translate) and Angle Snap (rotate) are real, separately

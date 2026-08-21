@@ -781,18 +781,20 @@ void RuntimeShell::tick(float dt) {
 }
 
 namespace {
-// Kronos ("UI Theme Cleanup" -- "green accent buttons"): real, shared --
-// previously duplicated as local consts inside drawHomePanel() for its
-// own two primary-action buttons (Game Catalogue/Launch Studio). A real,
-// reusable helper now, so the same primary-action green applies
+// Kronos ("Warm Ivory & Playful Sunset"): real, shared -- previously
+// duplicated as local consts inside drawHomePanel() for its own two
+// primary-action buttons (Game Catalogue/Launch Studio). A real,
+// reusable helper now, so the same primary-action coral applies
 // consistently to other real primary actions elsewhere in engine_runtime
-// (this pass: the Game Catalogue's own "Play"/live-session "Join"
-// buttons, see drawGameCard() below) instead of drifting out of sync
-// with a second, separately-hand-copied color triple.
+// (Game Catalogue's own "Play"/live-session "Join" buttons, see
+// drawGameCard() below) instead of drifting out of sync with a second,
+// separately-hand-copied color triple. Matches core::applyKronosUITheme()'s
+// own kAccent exactly (#DD6B20) -- was green before the theme's own
+// accent color changed; kept in sync here rather than left stale.
 void pushPrimaryActionButtonColors() {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.00f, 0.78f, 0.32f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.14f, 0.86f, 0.44f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.00f, 0.64f, 0.25f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.867f, 0.420f, 0.125f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.918f, 0.494f, 0.204f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.729f, 0.325f, 0.086f, 1.0f));
 }
 void popPrimaryActionButtonColors() { ImGui::PopStyleColor(3); }
 
@@ -2258,19 +2260,42 @@ void RuntimeShell::drawFriendsPanel() {
     std::string removeId;
     for (const auto& friendEntry : localProfile_.friends) {
         ImGui::PushID(friendEntry.friendId.c_str());
-        social::PresenceState presence = social::computeFriendPresence(
+        social::FriendPresence presence = social::computeFriendPresence(
             friendEntry.displayName, lanBrowserRunning_ ? &lanBrowser_ : nullptr,
             app_.networkSession().isActive() ? &app_.networkSession() : nullptr);
         const char* presenceLabel =
-            presence == social::PresenceState::InGame ? "In Game"
-            : presence == social::PresenceState::Online ? "Online"
-                                                          : "Offline";
-        ImVec4 presenceColor = presence == social::PresenceState::InGame ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f)
-                                : presence == social::PresenceState::Online ? ImVec4(0.6f, 0.85f, 1.0f, 1.0f)
-                                                                             : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+            presence.state == social::PresenceState::InGame ? "In Game"
+            : presence.state == social::PresenceState::Online ? "Online"
+                                                                : "Offline";
+        ImVec4 presenceColor = presence.state == social::PresenceState::InGame ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f)
+                                : presence.state == social::PresenceState::Online ? ImVec4(0.6f, 0.85f, 1.0f, 1.0f)
+                                                                                   : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
         ImGui::Text("%s", friendEntry.displayName.empty() ? friendEntry.friendId.c_str() : friendEntry.displayName.c_str());
         ImGui::SameLine();
-        ImGui::TextColored(presenceColor, "[%s]", presenceLabel);
+        // Kronos ("Roblox-Style Presence" -- "status chips"): a real,
+        // rounded status chip (not just bracketed text) -- background
+        // tint from the same real presence color, so "what state is
+        // this friend in" reads at a glance even before the label text
+        // registers. `presence.detail` (a real session/game name, see
+        // FriendPresence's own comment) appends onto the chip label
+        // whenever the real underlying data actually has one.
+        {
+            std::string chipLabel = presenceLabel;
+            if (!presence.detail.empty()) chipLabel += " -- " + presence.detail;
+            ImVec2 textSize = ImGui::CalcTextSize(chipLabel.c_str());
+            ImVec2 chipPos = ImGui::GetCursorScreenPos();
+            ImVec2 chipPadding(8.0f, 3.0f);
+            ImVec2 chipSize(textSize.x + chipPadding.x * 2.0f, textSize.y + chipPadding.y * 2.0f);
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            drawList->AddRectFilled(chipPos, ImVec2(chipPos.x + chipSize.x, chipPos.y + chipSize.y),
+                                     ImGui::ColorConvertFloat4ToU32(ImVec4(presenceColor.x, presenceColor.y,
+                                                                            presenceColor.z, 0.22f)),
+                                     chipSize.y * 0.5f);
+            ImGui::SetCursorScreenPos(ImVec2(chipPos.x + chipPadding.x, chipPos.y + chipPadding.y));
+            ImGui::TextColored(presenceColor, "%s", chipLabel.c_str());
+            ImGui::SetCursorScreenPos(chipPos);
+            ImGui::Dummy(chipSize);
+        }
         ImGui::SameLine();
         if (ImGui::SmallButton("Message")) openConversationFriendId_ = friendEntry.friendId;
         ImGui::SameLine();

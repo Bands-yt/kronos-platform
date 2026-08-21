@@ -42,19 +42,19 @@ bool removeFriend(core::LocalProfile& profile, const std::string& friendId) {
     return true;
 }
 
-PresenceState computeFriendPresence(const std::string& friendDisplayName, const net::LanSessionBrowser* browser,
-                                     const net::NetworkSession* activeSession) {
+FriendPresence computeFriendPresence(const std::string& friendDisplayName, const net::LanSessionBrowser* browser,
+                                      const net::NetworkSession* activeSession) {
     if (activeSession != nullptr) {
         for (const auto& [playerId, name] : activeSession->clientKnownPlayers()) {
-            if (name == friendDisplayName) return PresenceState::InGame;
+            if (name == friendDisplayName) return FriendPresence{PresenceState::InGame, activeSession->sessionName()};
         }
     }
     if (browser != nullptr) {
         for (const auto& session : browser->discoveredSessions()) {
-            if (session.hostDisplayName == friendDisplayName) return PresenceState::Online;
+            if (session.hostDisplayName == friendDisplayName) return FriendPresence{PresenceState::Online, session.gameName};
         }
     }
-    return PresenceState::Offline;
+    return FriendPresence{PresenceState::Offline, std::string()};
 }
 
 void sendMessage(core::LocalProfile& profile, const std::string& friendId, const std::string& text, bool fromMe) {

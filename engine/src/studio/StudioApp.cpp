@@ -522,6 +522,20 @@ bool StudioApp::initialize() {
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_,
         *terrainEditorPlugin_));
 
+    // Kronos ("Studio Asset Drag-and-Drop"): real, same box/capsule
+    // mesh shapes CreatorAssetBrowserPlugin's own "Use" button already
+    // spawns props with -- a real, separate registration (ViewportPanel
+    // has no reference to that plugin instance, see
+    // WorldPropSpawnMeshHandles's own comment), not a shared handle,
+    // but the exact same real geometry either way.
+    panels::WorldPropSpawnMeshHandles propSpawnMeshHandles;
+    propSpawnMeshHandles.boxMesh = meshLibrary_.registerMesh(
+        core::Mesh::createBox(renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                               {0.5f, 0.5f, 0.5f}));
+    propSpawnMeshHandles.capsuleMesh = meshLibrary_.registerMesh(core::Mesh::createCapsule(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.35f, 1.0f));
+    viewportPanel_.setPropSpawnMeshHandles(propSpawnMeshHandles);
+
     auto texturePreview = std::make_unique<plugins::TexturePreviewPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue());
     texturePreviewPlugin_ = texturePreview.get();

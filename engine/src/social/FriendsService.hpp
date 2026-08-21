@@ -44,14 +44,38 @@ bool removeFriend(core::LocalProfile& profile, const std::string& friendId);
 // gets.
 enum class PresenceState { Offline, Online, InGame };
 
+// Kronos ("Roblox-Style Presence" -- "In Game (with session info)"):
+// real -- `detail` is populated only from real, already-available data
+// (NetworkSession::sessionName()/DiscoveredSession::gameName), never a
+// fabricated placeholder. Empty whenever `state == Offline`, or when the
+// real underlying source (e.g. a session with a blank sessionName)
+// simply has no detail to give.
+//
+// A real, deliberately NOT-yet-added fourth state, `InStudio`, is out of
+// scope for this struct today: unlike a hosted game session, Studio
+// currently broadcasts no real LAN announcement of its own for a peer's
+// LanSessionBrowser to discover (net::LanSessionAnnouncer exists and is
+// real, but StudioApp never constructs/ticks one) -- there is no real
+// signal to derive "a friend is in Studio, editing project X" from yet.
+// Adding the enum value without a real detection path would be exactly
+// the kind of half-built feature this codebase avoids; the real fix is
+// a Studio-side LanSessionAnnouncer broadcasting a real, new "editing"
+// announcement kind, a genuinely separate follow-up.
+struct FriendPresence {
+    PresenceState state = PresenceState::Offline;
+    std::string detail;
+};
+
 // `InGame`: `friendDisplayName` appears in `activeSession`'s own real
 // roster (net::NetworkSession::clientKnownPlayers()) -- this profile is
 // *currently connected to a real LAN session* alongside someone with
-// that display name. `Online`: `friendDisplayName` matches a real
+// that display name; `detail` is that real session's own
+// `sessionName()`. `Online`: `friendDisplayName` matches a real
 // `hostDisplayName` currently broadcasting in `browser`'s own
 // discoveredSessions() -- someone with that name is hosting a real,
 // live LAN session right now, whether or not this profile has joined
-// it. Matching is by display name (the only real identity a
+// it; `detail` is that real session's own `gameName` (what they're
+// playing). Matching is by display name (the only real identity a
 // DiscoveredSession/session roster carries) -- a real, stated
 // limitation: two different people sharing a display name are
 // indistinguishable here, same "no real identity verification" scope
@@ -59,9 +83,9 @@ enum class PresenceState { Offline, Online, InGame };
 // nullptr (not currently browsing / not currently connected); a null
 // pointer is treated as "that source has nothing to say," never as a
 // crash.
-[[nodiscard]] PresenceState computeFriendPresence(const std::string& friendDisplayName,
-                                                    const net::LanSessionBrowser* browser,
-                                                    const net::NetworkSession* activeSession);
+[[nodiscard]] FriendPresence computeFriendPresence(const std::string& friendDisplayName,
+                                                     const net::LanSessionBrowser* browser,
+                                                     const net::NetworkSession* activeSession);
 
 // Real, local, capped message history -- see core::kMaxStoredFriendMessages.
 void sendMessage(core::LocalProfile& profile, const std::string& friendId, const std::string& text, bool fromMe);

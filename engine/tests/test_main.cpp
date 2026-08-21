@@ -3951,12 +3951,62 @@ void testFriendsServiceMessagingScopesPerFriend() {
 }
 
 // Kronos ("Social Layer" -- "Presence states: Online, In Game, Offline"):
-// real coverage over social::computeFriendPresence() -- every real
-// source (null/no data, a real LanSessionBrowser with no matching host, a
-// real NetworkSession roster match) produces the real, correct presence.
+// real coverage over social::computeFriendPresence() -- null/no data
+// real-defaults to Offline; a real Online match carries the real
+// session's own gameName as FriendPresence::detail (Kronos "Roblox-Style
+// Presence" -- "In Game (with session info)"), not a fabricated string.
 void testFriendsServicePresenceDefaultsToOfflineWithNoRealData() {
-    check(engine::social::computeFriendPresence("Alice", nullptr, nullptr) == engine::social::PresenceState::Offline,
+    check(engine::social::computeFriendPresence("Alice", nullptr, nullptr).state == engine::social::PresenceState::Offline,
           "with no real browser and no real active session, presence real-defaults to Offline");
+}
+
+// Real, same loopback-UDP technique
+// testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing() already
+// establishes -- a real announcer broadcasts a real session over real
+// 127.0.0.1 UDP, a real browser discovers it, and computeFriendPresence()
+// is checked against that real, live discovery (not injected test data).
+void testFriendsServicePresenceOnlineCarriesRealGameNameDetail() {
+    constexpr uint16_t kAnnouncePort = 45700;
+    constexpr uint16_t kPingPort = 45710;
+    engine::net::LanSessionAnnouncer announcer;
+    check(announcer.start("127.0.0.1", kAnnouncePort, kPingPort), "presence detail test: the real announcer real-starts");
+    engine::net::LanSessionBrowser browser;
+    check(browser.start(kAnnouncePort, kPingPort), "presence detail test: the real browser real-starts");
+
+    engine::net::LanSessionAnnouncement announcement;
+    announcement.protocolVersion = engine::net::kNetworkProtocolVersion;
+    announcement.sessionId = 777777ULL;
+    announcement.sessionName = "Presence Test Session";
+    announcement.hostDisplayName = "Alice";
+    announcement.gamePort = 9998;
+    announcement.currentPlayerCount = 1;
+    announcement.maxPlayerCount = 4;
+    announcement.gameName = "Sky Garden";
+    announcement.gameThumbnailColor = glm::vec4(0.4f, 0.7f, 0.9f, 1.0f);
+    announcement.gameSafetyStatusValue = static_cast<uint8_t>(engine::core::GameSafetyStatus::Safe);
+
+    bool discovered = false;
+    float nowSeconds = 0.0f;
+    for (int i = 0; i < 300 && !discovered; ++i) {
+        announcer.tick(0.05f, announcement);
+        nowSeconds += 0.05f;
+        browser.tick(nowSeconds);
+        discovered = !browser.discoveredSessions().empty();
+        if (!discovered) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(discovered, "presence detail test: the real browser really discovers the real announced session");
+
+    engine::social::FriendPresence presence = engine::social::computeFriendPresence("Alice", &browser, nullptr);
+    check(presence.state == engine::social::PresenceState::Online,
+          "a real, discovered hostDisplayName match real-yields Online");
+    check(presence.detail == "Sky Garden", "Online presence's real detail is the real announced gameName, not fabricated");
+
+    engine::social::FriendPresence strangerPresence = engine::social::computeFriendPresence("Bob", &browser, nullptr);
+    check(strangerPresence.state == engine::social::PresenceState::Offline && strangerPresence.detail.empty(),
+          "a real, non-matching display name real-stays Offline with an empty detail, not a false-positive match");
+
+    announcer.stop();
+    browser.stop();
 }
 
 // Kronos ("Notifications System"): real, pure coverage over
@@ -27827,6 +27877,7 @@ int main() {
     testFriendsServiceSendAcceptDeclineTransitions();
     testFriendsServiceMessagingScopesPerFriend();
     testFriendsServicePresenceDefaultsToOfflineWithNoRealData();
+    testFriendsServicePresenceOnlineCarriesRealGameNameDetail();
     testNotificationServicePushMarkReadAndFilter();
     testPurchaseItemWithCreditsSucceedsAndDeductsBalance();
     testPurchaseItemWithCreditsFailsWhenInsufficientBalance();

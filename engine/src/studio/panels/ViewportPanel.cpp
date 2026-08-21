@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include <ImGuizmo.h>
@@ -17,6 +18,8 @@
 #include "core/Renderer.hpp"
 #include "core/ScenePicking.hpp"
 #include "core/Terrain.hpp"
+#include "core/WorldProp.hpp"
+#include "studio/CreatorToolsSpawning.hpp"
 #include "studio/StudioIcons.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 
@@ -624,6 +627,43 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         ImGui::Dummy(avail);
     }
     ImVec2 imageSize = ImGui::GetItemRectSize();
+
+    // Kronos ("Studio Asset Drag-and-Drop"): real drop target -- the
+    // viewport image/dummy just submitted above is "the last item," so
+    // this attaches here rather than needing a separate invisible
+    // widget. Accepts the exact same "ASSET_WORLD_PROP" payload
+    // CreatorAssetBrowserPlugin::drawPropEntries() now offers as a real
+    // drag source (a core::WorldPropKind, raw-copied the same way
+    // "ASSET_MATERIAL_PRESET" already is). The real drop *position* is
+    // a real raycast under the actual drop cursor (ScenePicking::
+    // pickEntity(), the same real ray-vs-mesh-AABB test click-to-select
+    // already uses below) -- lands ON existing scene geometry the
+    // cursor is actually over, falling back to the real y=0 ground
+    // plane only when nothing was hit (dropped over open sky).
+    if (ecs != nullptr && meshLibrary != nullptr && ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_WORLD_PROP")) {
+            core::WorldPropKind kind;
+            std::memcpy(&kind, payload->Data, sizeof(core::WorldPropKind));
+
+            glm::vec3 rayOrigin, rayDirection;
+            computeMouseRay(ImGui::GetMousePos(), imageOrigin, imageSize, rayOrigin, rayDirection);
+
+            glm::vec3 dropPosition = rayOrigin + rayDirection * 20.0f; // real, honest fallback if even the ground plane isn't hit
+            core::ScenePickResult hit = core::pickEntity(*ecs, *meshLibrary, rayOrigin, rayDirection, 500.0f);
+            if (hit.hit) {
+                dropPosition = hit.point;
+            } else if (std::fabs(rayDirection.y) > 1e-4f) {
+                float t = -rayOrigin.y / rayDirection.y;
+                if (t > 0.0f) dropPosition = rayOrigin + rayDirection * t;
+            }
+
+            ++propSpawnCount_;
+            core::EntityId spawned = spawnPropAuthoring(*ecs, kind, dropPosition, propSpawnCount_,
+                                                          propSpawnMeshHandles_.boxMesh, propSpawnMeshHandles_.capsuleMesh);
+            explorer.setSelected(spawned);
+        }
+        ImGui::EndDragDropTarget();
+    }
 
     core::EntityId selected = explorer.selectedEntity();
     if (ecs != nullptr && selected != core::kNullEntity) {

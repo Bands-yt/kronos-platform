@@ -48,10 +48,24 @@ public:
     [[nodiscard]] const std::string& source() const override { return buffer_; }
 
     void draw() override;
-    [[nodiscard]] const char* backendName() const override { return "ImGui text box (fallback)"; }
+    [[nodiscard]] const char* backendName() const override { return "ImGui text box (fallback, Luau syntax coloring)"; }
 
 private:
     std::string buffer_;
+    // Kronos ("Script Editor Polish" -- "syntax coloring for Luau
+    // keywords"): real, but deliberately NOT a scroll-synced overlay on
+    // top of InputTextMultiline -- Dear ImGui has no native rich-text
+    // support inside a text-input widget, and a hand-rolled overlay
+    // risks a real, hard-to-catch bug class (misaligned duplicate text,
+    // or a hidden text-input cursor if the real text were made
+    // transparent to show the overlay through it) this environment has
+    // no way to visually verify. Instead: a real, separately-rendered,
+    // line-numbered, colorized READ-ONLY view when the editor doesn't
+    // have keyboard focus (plain ImGui layout, no overlay math, no
+    // scroll-sync risk), swapping to the exact same reliable
+    // InputTextMultiline the moment the user clicks in to actually type.
+    // `wasFocused_` drives that swap.
+    bool wasFocused_ = false;
 };
 
 // Not implemented -- see the class comment on IScriptEditorBackend.
