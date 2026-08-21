@@ -93,6 +93,27 @@ jobs:
           cp "$BUILD_DIR/tests/engine_tests" "$PKG_DIR/"
           cp installer/build/kronos_installer "$PKG_DIR/"
           cp "$BUILD_DIR"/shaders/*.spv "$PKG_DIR/shaders/"
+
+          # Kronos: the runtime resolves assets/ and games/ RELATIVE TO THE
+          # EXECUTABLE, falling back to a compile-time absolute path. Without
+          # these directories in the package that fallback points at the CI
+          # machine's own /home/runner/... path, so a real user's install
+          # loses its font atlas (and therefore the entire HUD), its window
+          # icon, every avatar animation, and every playable game. Verified
+          # by running the previously published archive in isolation: 13
+          # "could not load" failures and "continuing without a real HUD".
+          cp -r "$ENGINE_DIR/assets" "$PKG_DIR/"
+          cp -r games "$PKG_DIR/"
+
+          # Fail loudly rather than shipping another archive that starts but
+          # cannot function.
+          for required in assets/textures/ui_font_atlas.png assets/animations/idle.anim games; do
+            if [ ! -e "$PKG_DIR/$required" ]; then
+              echo "::error::$required missing from the package -- refusing to publish a broken archive."
+              exit 1
+            fi
+          done
+
           tar -czf "kronos-${{ github.ref_name }}-linux-x64.tar.gz" "$PKG_DIR"
 
       # Kronos ("Bootstrap Installer" -- "verify the integrity of the
@@ -176,6 +197,17 @@ jobs:
           Copy-Item "$env:BUILD_DIR\tests\Release\engine_tests.exe" "$pkgDir\"
           Copy-Item "installer\build\Release\kronos_installer.exe" "$pkgDir\"
           Copy-Item "$env:BUILD_DIR\shaders\*.spv" "$pkgDir\shaders\"
+
+          # Same real reasoning as the Linux job -- see its own comment.
+          Copy-Item -Recurse "$env:ENGINE_DIR\assets" "$pkgDir\"
+          Copy-Item -Recurse "games" "$pkgDir\"
+
+          foreach ($required in @("assets\textures\ui_font_atlas.png", "assets\animations\idle.anim", "games")) {
+            if (-not (Test-Path "$pkgDir\$required")) {
+              Write-Error "$required is missing from the package -- refusing to publish a broken archive."
+              exit 1
+            }
+          }
 
           # Kronos: the real runtime DLLs these binaries actually import.
           # vcpkg's x64-windows triplet builds SDL2/curl/zlib as DLLs, so

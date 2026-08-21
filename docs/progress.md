@@ -2519,3 +2519,38 @@ Developer Mode toggle. Hiding it outright would make the launcher look
 empty for anyone without a backend configured, which is currently
 everyone. Gating it on a persisted setting is a small follow-up once
 there is a real populated backend to fall back on.
+
+## 2026-08-21 (final) — Release blocker: the published archive was broken
+
+Asked whether we were ready to tag a final release, so the *published*
+v0.2.0-alpha archive was downloaded and run in isolation rather than
+assumed good. It was substantially broken.
+
+The packaging step shipped only binaries and shaders. But the runtime
+resolves `assets/` and `games/` relative to the executable, falling back
+to a **compile-time absolute path** — which on a released build is the CI
+machine's own `/home/runner/work/...`. On a real user's machine that path
+does not exist, so the shipped launcher produced **13 "could not load"
+failures**, including:
+
+- `assets/textures/ui_font_atlas.png` → `UIRenderer::initialize failed --
+  continuing without a real HUD`. **No HUD at all.**
+- every avatar animation (idle/walk/run/jump) → a character that cannot
+  animate
+- the window icon
+- no `games/` at all → nothing playable locally
+
+Combined with the catalogue now being online-only against a backend that
+is not deployed anywhere, a shipped v0.2.0-alpha would have started up
+and then done essentially nothing.
+
+### Fix
+
+Both jobs now package `assets/` (1.8 MB) and `games/` (44 KB), and both
+**hard-fail** if the font atlas, the idle animation, or `games/` are
+missing — refusing to publish beats publishing something that starts but
+cannot function. Same discipline as the Windows DLL check added earlier.
+
+Verified by re-running the same extracted archive with the two
+directories added: **13 load failures → 0**, font atlas loads, HUD
+initializes, Jolt/Luau/terrain all come up clean.
