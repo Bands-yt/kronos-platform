@@ -224,7 +224,10 @@ ScriptEditorPanel::ScriptEditorPanel() {
         backend_ = std::move(monaco); // never reached today -- see MonacoWebViewEditor::initialize()
     } else {
         backend_ = std::make_unique<ImGuiFallbackEditor>();
-        backend_->initialize();
+        bool initialized = backend_->initialize();
+        if (!initialized) {
+            std::fprintf(stderr, "ScriptEditorPanel: ImGuiFallbackEditor::initialize() unexpectedly failed.\n");
+        }
     }
 }
 

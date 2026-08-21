@@ -126,6 +126,17 @@ set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)
 set(JPH_USE_VK OFF CACHE BOOL "" FORCE)
 set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
 set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
+# Jolt's own Build/CMakeLists.txt defaults USE_STATIC_MSVC_RUNTIME_LIBRARY
+# to ON on MSVC, which links Jolt.lib against the static CRT (/MT) --
+# every other target here (engine_core/engine_runtime/studio/engine_tests)
+# uses CMake's own MSVC default, the dynamic CRT (/MD), since nothing in
+# this project overrides CMAKE_MSVC_RUNTIME_LIBRARY. Mixing the two
+# fails at link time with LNK2038 "mismatch detected for 'RuntimeLibrary'"
+# on every real Jolt object file. Forcing this OFF makes Jolt use the
+# same dynamic CRT as everything else it links into (studio.exe,
+# engine_runtime.exe) -- a no-op on non-MSVC platforms, since Jolt's own
+# cmake_dependent_option only applies the static-runtime logic under MSVC.
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     joltphysics
     GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
