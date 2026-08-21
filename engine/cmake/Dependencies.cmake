@@ -111,6 +111,21 @@ set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)
 set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "" FORCE)
 set(TARGET_SAMPLES OFF CACHE BOOL "" FORCE)
 set(TARGET_VIEWER OFF CACHE BOOL "" FORCE)
+# Jolt's own GPU-accelerated Hair simulation (Jolt/Physics/Hair/*, compute
+# shaders under Jolt/Shaders/*.hlsl) is real but unused by this engine --
+# nothing here touches Jolt's hair feature, only its rigid-body/character/
+# vehicle physics. These four default to ON in Jolt's own Build/CMakeLists.txt
+# and, once any GLSL/HLSL shader compiler is discoverable on PATH, unconditionally
+# register a real add_custom_command to compile the Hair shaders via `dxc`
+# (DirectXShaderCompiler) -- which this project has no other reason to
+# depend on, and which Jolt's own Vulkan/glslc-derived dxc path-lookup
+# doesn't gracefully skip when dxc turns out not to exist (see Jolt's own
+# TODO comment in Jolt.cmake immediately above that code path). Disabling
+# these avoids depending on a compiler this engine doesn't otherwise need.
+set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)
+set(JPH_USE_VK OFF CACHE BOOL "" FORCE)
+set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
+set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     joltphysics
     GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git

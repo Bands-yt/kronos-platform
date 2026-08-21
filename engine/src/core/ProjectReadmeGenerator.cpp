@@ -10,11 +10,21 @@
 namespace engine::core {
 
 namespace {
+// gmtime_r is POSIX-only; MSVC's equivalent is gmtime_s, with the
+// arguments reversed (result first, then the time_t to convert).
+void gmtimePortable(const std::time_t* time, std::tm* out) {
+#if defined(_WIN32)
+    gmtime_s(out, time);
+#else
+    gmtime_r(time, out);
+#endif
+}
+
 std::string formatDate(int64_t unixSeconds) {
     if (unixSeconds <= 0) return "(unknown date)";
     std::time_t time = static_cast<std::time_t>(unixSeconds);
     std::tm tmValue{};
-    gmtime_r(&time, &tmValue);
+    gmtimePortable(&time, &tmValue);
     char buffer[16]; // "YYYY-MM-DD\0"
     std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", tmValue.tm_year + 1900, tmValue.tm_mon + 1, tmValue.tm_mday);
     return buffer;
