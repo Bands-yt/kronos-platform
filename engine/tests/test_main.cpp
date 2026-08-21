@@ -17237,6 +17237,260 @@ void testLanSessionBrowserRejectsAnnouncementWithWrongProtocolVersion() {
 }
 #endif // !defined(_WIN32)
 
+// Kronos ("request real server allocations via join tickets"): real,
+// adversarial coverage over ticket enforcement in the join handshake.
+//
+// These run two real NetworkSessions over real loopback ENet -- a real
+// server and a real client completing (or failing) a real handshake.
+// The validator is injected, so no backend is needed to prove the
+// enforcement logic itself; what is being tested is that the server
+// really refuses a client the validator rejects, and really admits one
+// it accepts.
+namespace {
+
+// Drives both sides of a real handshake until it resolves, so a test
+// never depends on a fixed sleep.
+void pumpSessions(engine::net::NetworkSession& server, engine::core::ECS& serverEcs,
+                   engine::net::NetworkSession& client, engine::core::ECS& clientEcs, int iterations = 120) {
+    for (int i = 0; i < iterations; ++i) {
+        server.tick(0.016f, serverEcs, engine::core::kNullEntity);
+        client.tick(0.016f, clientEcs, engine::core::kNullEntity);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+}
+
+} // namespace
+
+void testJoinTicketServerRejectsClientWithNoTicket() {
+    constexpr uint16_t kPort = 17840;
+    engine::core::ECS serverEcs;
+    engine::core::ECS clientEcs;
+    engine::net::NetworkSession server;
+    engine::net::NetworkSession client;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kPort;
+    serverConfig.advertiseOnLan = false;
+    serverConfig.requireJoinTicket = true;
+    int validatorCalls = 0;
+    server.setJoinTicketValidator([&validatorCalls](const std::string& ticket, uint64_t& outUserId) {
+        ++validatorCalls;
+        // Only one exact ticket is ever accepted here.
+        if (ticket != "good-ticket") return false;
+        outUserId = 4242;
+        return true;
+    });
+    server.setOnPlayerJoin([](engine::core::ECS&, engine::net::PlayerId) { return engine::core::kNullEntity; });
+    check(server.initialize(serverConfig), "join-ticket test: real ticket-requiring server really starts");
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kPort;
+    // Deliberately no ticket -- exactly what a client that skipped the
+    // real allocation step and connected straight to the address would
+    // look like.
+    check(client.initialize(clientConfig), "join-ticket test: real ticketless client really starts");
+
+    pumpSessions(server, serverEcs, client, clientEcs);
+
+    check(client.lastJoinFailureReason() == engine::net::JoinFailureReason::InvalidTicket,
+          "a real client presenting NO join ticket is really rejected with InvalidTicket -- connecting straight to "
+          "an allocated server's address does not get you in");
+
+    client.shutdown();
+    server.shutdown();
+}
+
+void testJoinTicketServerRejectsClientWithForgedTicket() {
+    constexpr uint16_t kPort = 17841;
+    engine::core::ECS serverEcs;
+    engine::core::ECS clientEcs;
+    engine::net::NetworkSession server;
+    engine::net::NetworkSession client;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kPort;
+    serverConfig.advertiseOnLan = false;
+    serverConfig.requireJoinTicket = true;
+    server.setJoinTicketValidator([](const std::string& ticket, uint64_t& outUserId) {
+        if (ticket != "good-ticket") return false;
+        outUserId = 4242;
+        return true;
+    });
+    server.setOnPlayerJoin([](engine::core::ECS&, engine::net::PlayerId) { return engine::core::kNullEntity; });
+    check(server.initialize(serverConfig), "forged-ticket test: real server really starts");
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kPort;
+    clientConfig.joinTicket = "totally-made-up-ticket";
+    check(client.initialize(clientConfig), "forged-ticket test: real client really starts");
+
+    pumpSessions(server, serverEcs, client, clientEcs);
+
+    check(client.lastJoinFailureReason() == engine::net::JoinFailureReason::InvalidTicket,
+          "a real client presenting a forged join ticket is really rejected");
+    check(server.verifiedBackendUserId(1) == 0,
+          "a rejected client really leaves no verified backend identity behind on the server");
+
+    client.shutdown();
+    server.shutdown();
+}
+
+void testJoinTicketServerAdmitsClientWithValidTicketAndBindsRealIdentity() {
+    constexpr uint16_t kPort = 17842;
+    engine::core::ECS serverEcs;
+    engine::core::ECS clientEcs;
+    engine::net::NetworkSession server;
+    engine::net::NetworkSession client;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kPort;
+    serverConfig.advertiseOnLan = false;
+    serverConfig.requireJoinTicket = true;
+    std::string seenTicket;
+    server.setJoinTicketValidator([&seenTicket](const std::string& ticket, uint64_t& outUserId) {
+        seenTicket = ticket;
+        if (ticket != "good-ticket") return false;
+        outUserId = 4242;
+        return true;
+    });
+    server.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) { return ecs.createEntity(); });
+    check(server.initialize(serverConfig), "valid-ticket test: real server really starts");
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kPort;
+    clientConfig.joinTicket = "good-ticket";
+    check(client.initialize(clientConfig), "valid-ticket test: real client really starts");
+
+    pumpSessions(server, serverEcs, client, clientEcs);
+
+    check(seenTicket == "good-ticket",
+          "the real ticket the client was given really travels across the real wire to the real server");
+    check(client.lastJoinFailureReason() == engine::net::JoinFailureReason::None,
+          "a real client presenting a real, accepted ticket is really NOT rejected");
+    check(server.verifiedBackendUserId(1) == 4242,
+          "the server really binds the connection to the backend-vouched account id, not to anything the client "
+          "claimed about itself");
+
+    client.shutdown();
+    server.shutdown();
+}
+
+void testJoinTicketRequiringServerWithNoValidatorFailsClosed() {
+    constexpr uint16_t kPort = 17843;
+    engine::core::ECS serverEcs;
+    engine::core::ECS clientEcs;
+    engine::net::NetworkSession server;
+    engine::net::NetworkSession client;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kPort;
+    serverConfig.advertiseOnLan = false;
+    serverConfig.requireJoinTicket = true;
+    // Deliberately NO validator installed -- a real misconfiguration.
+    server.setOnPlayerJoin([](engine::core::ECS&, engine::net::PlayerId) { return engine::core::kNullEntity; });
+    check(server.initialize(serverConfig), "fail-closed test: real misconfigured server really starts");
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kPort;
+    clientConfig.joinTicket = "good-ticket";
+    check(client.initialize(clientConfig), "fail-closed test: real client really starts");
+
+    pumpSessions(server, serverEcs, client, clientEcs);
+
+    check(client.lastJoinFailureReason() == engine::net::JoinFailureReason::InvalidTicket,
+          "a server that REQUIRES tickets but has no validator installed really refuses everyone -- refusing is the "
+          "safe failure, silently admitting everyone is not");
+
+    client.shutdown();
+    server.shutdown();
+}
+
+void testJoinTicketIsNotRequiredForRealLanSessions() {
+    constexpr uint16_t kPort = 17844;
+    engine::core::ECS serverEcs;
+    engine::core::ECS clientEcs;
+    engine::net::NetworkSession server;
+    engine::net::NetworkSession client;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kPort;
+    serverConfig.advertiseOnLan = false;
+    // requireJoinTicket deliberately left false -- a real LAN/offline
+    // host has no backend to issue tickets against.
+    server.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) { return ecs.createEntity(); });
+    check(server.initialize(serverConfig), "LAN-unchanged test: real non-ticket server really starts");
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kPort;
+    check(client.initialize(clientConfig), "LAN-unchanged test: real ticketless client really starts");
+
+    pumpSessions(server, serverEcs, client, clientEcs);
+
+    check(client.lastJoinFailureReason() == engine::net::JoinFailureReason::None,
+          "adding join tickets really did NOT break real LAN play -- a ticketless client still joins a server that "
+          "does not require one");
+
+    client.shutdown();
+    server.shutdown();
+}
+
+// Real regression guard for a real crash: a server whose spawn callback
+// returns kNullEntity used to trip an EnTT assertion inside
+// registerNetworkedEntity() and abort the entire server process, taking
+// down every player already in the session. It must reject only the one
+// join instead.
+void testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing() {
+    constexpr uint16_t kPort = 17845;
+    engine::core::ECS serverEcs;
+    engine::core::ECS clientEcs;
+    engine::net::NetworkSession server;
+    engine::net::NetworkSession client;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kPort;
+    serverConfig.advertiseOnLan = false;
+    // A real spawn failure, expressed the documented way.
+    server.setOnPlayerJoin([](engine::core::ECS&, engine::net::PlayerId) { return engine::core::kNullEntity; });
+    check(server.initialize(serverConfig), "spawn-failure test: real server really starts");
+
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kPort;
+    check(client.initialize(clientConfig), "spawn-failure test: real client really starts");
+
+    pumpSessions(server, serverEcs, client, clientEcs);
+
+    // Reaching this line at all is most of the point: before the fix the
+    // process aborted here.
+    check(client.lastJoinFailureReason() == engine::net::JoinFailureReason::ServerError,
+          "a real server that cannot spawn an avatar really rejects that one join with ServerError instead of "
+          "aborting the whole server process");
+
+    // The server is still alive and still serving.
+    server.tick(0.016f, serverEcs, engine::core::kNullEntity);
+    check(true, "the real server really survives a real failed spawn and keeps ticking");
+
+    client.shutdown();
+    server.shutdown();
+}
+
 void testLanDiscoveryOptOutViaAdvertiseOnLanFalse() {
     constexpr uint16_t kTestPort = 17800;
     engine::core::ECS serverEcs;
@@ -29032,6 +29286,12 @@ int main() {
 #if !defined(_WIN32)
     testLanSessionBrowserRejectsAnnouncementWithWrongProtocolVersion();
 #endif
+    testJoinTicketServerRejectsClientWithNoTicket();
+    testJoinTicketServerRejectsClientWithForgedTicket();
+    testJoinTicketServerAdmitsClientWithValidTicketAndBindsRealIdentity();
+    testJoinTicketRequiringServerWithNoValidatorFailsClosed();
+    testJoinTicketIsNotRequiredForRealLanSessions();
+    testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing();
     testLanDiscoveryOptOutViaAdvertiseOnLanFalse();
     testShellStateTransitionsHomeToSessionBrowserAndBack();
     testShellStateTransitionsHomeThroughGameCatalogueToInGame();

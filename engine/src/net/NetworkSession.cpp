@@ -489,6 +489,10 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
 
         serverReconciliation_.unregisterPlayer(player);
         serverPlayerEntities_.erase(player);
+        // Kronos ("via join tickets"): drop the ticket-proven identity
+        // with the player, so a recycled PlayerId can never inherit a
+        // previous player's verified account.
+        verifiedBackendUserIds_.erase(player);
         serverPlayerBaselines_.erase(player);
         serverPlayerDisplayNames_.erase(player);
         serverPlayerProfileIds_.erase(player);
@@ -1005,6 +1009,36 @@ void NetworkSession::handleJoinRequestServer(ENetTransport::PeerId peer, PlayerI
         clientAgeGroup = core::AgeGroup::Unknown;
     }
 
+    // Kronos ("via join tickets"): read last, same graceful-fallback
+    // shape as the identity fields above -- an absent field means "no
+    // ticket presented", which only matters if this server requires one.
+    std::string presentedTicket = reader.readString();
+    if (reader.hasError()) presentedTicket.clear();
+
+    if (config_.requireJoinTicket) {
+        uint64_t verifiedUserId = 0;
+        // No validator installed on a server that requires tickets is a
+        // real misconfiguration, and it fails CLOSED: refusing everyone
+        // is the safe failure, silently admitting everyone is not.
+        bool accepted = joinTicketValidator_ && joinTicketValidator_(presentedTicket, verifiedUserId);
+        if (!accepted) {
+            ByteWriter rejected;
+            rejected.writeU8(static_cast<uint8_t>(WireMessageType::JoinRejected));
+            rejected.writeU8(static_cast<uint8_t>(JoinFailureReason::InvalidTicket));
+            rejected.writeU32(kNetworkProtocolVersion);
+            networkStats_.recordPacketSent(rejected.size());
+            transport_.send(peer, rejected.bytes().data(), rejected.size(), kReliableChannel, true);
+            transport_.disconnectPeerGracefully(peer);
+            core::logInfo("Network", "rejected player %u: %s", player,
+                           presentedTicket.empty() ? "no join ticket presented"
+                                                    : "join ticket was not accepted by the Kronos backend");
+            return;
+        }
+        // Bind the connection to the account the BACKEND vouched for,
+        // not to anything the client asserted about itself.
+        verifiedBackendUserIds_[player] = verifiedUserId;
+    }
+
     // Real, persistent ban enforcement -- keyed by the real, stable
     // profileId (survives a reconnect, unlike net::PlayerId).
     if (clientProfileId != 0 && accountModerationRegistry_.isBanned(clientProfileId)) {
@@ -1043,6 +1077,25 @@ void NetworkSession::handleJoinRequestServer(ENetTransport::PeerId peer, PlayerI
     }
 
     core::EntityId avatar = onPlayerJoin_(*currentEcs_, player);
+    // Real bug found while adding join-ticket coverage: this used to
+    // hand whatever came back -- including kNullEntity -- straight to
+    // registerNetworkedEntity(), which then tried to add a component to
+    // an invalid entity and tripped an EnTT assertion, taking the whole
+    // SERVER PROCESS down. A spawn failing is a real, ordinary thing
+    // (a bad scene, an exhausted budget); every player already in the
+    // session losing their game over it is not. Reject just this join.
+    if (avatar == core::kNullEntity) {
+        ByteWriter rejected;
+        rejected.writeU8(static_cast<uint8_t>(WireMessageType::JoinRejected));
+        rejected.writeU8(static_cast<uint8_t>(JoinFailureReason::ServerError));
+        rejected.writeU32(kNetworkProtocolVersion);
+        networkStats_.recordPacketSent(rejected.size());
+        transport_.send(peer, rejected.bytes().data(), rejected.size(), kReliableChannel, true);
+        transport_.disconnectPeerGracefully(peer);
+        verifiedBackendUserIds_.erase(player);
+        core::logWarn("Network", "rejected player %u: the server could not spawn an avatar for them", player);
+        return;
+    }
     serverPlayerEntities_[player] = avatar;
     registerNetworkedEntity(*currentEcs_, avatar, player);
 
@@ -1161,6 +1214,14 @@ void NetworkSession::tickClient(float dt, core::ECS& ecs, core::EntityId localPl
         // real identity signals -- see setLocalIdentity()'s own comment.
         writer.writeU64(localProfileId_);
         writer.writeU8(static_cast<uint8_t>(localAgeGroup_));
+        // Kronos ("via join tickets"): the real signed ticket the backend
+        // issued for THIS server. Appended last, and read on the server
+        // behind a hasError() fallback, so a real LAN client that has no
+        // ticket (and an older client that does not send the field at
+        // all) still parses cleanly -- the same append-with-graceful-
+        // fallback shape the profileId/ageGroup fields above already use,
+        // which is why this needs no protocol version bump.
+        writer.writeString(config_.joinTicket);
         networkStats_.recordPacketSent(writer.size());
         transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
     };
@@ -1197,16 +1258,31 @@ void NetworkSession::tickClient(float dt, core::ECS& ecs, core::EntityId localPl
             }
             (void)serverProtocolVersion; // implied equal to kNetworkProtocolVersion -- a mismatch gets JoinRejected instead
 
-            clientNetworkIdToEntity_[avatarNetworkId] = localPlayerEntity;
-            if (auto* existingIdentity = ecs.tryGetComponent<NetworkIdentity>(localPlayerEntity)) {
-                existingIdentity->networkId = avatarNetworkId;
-                existingIdentity->isLocallyControlled = true;
+            // Real bug found while adding join-ticket coverage: a client
+            // that reaches JoinAccepted without a local player entity
+            // (kNullEntity -- a caller that has not spawned one yet, or
+            // whose spawn failed) used to emplace a component onto an
+            // INVALID entity. In a debug build that trips an EnTT
+            // assertion; in a release build, where NDEBUG compiles the
+            // assertion out, it is undefined behaviour on live registry
+            // memory -- strictly worse than crashing, because it is
+            // silent. Guarded here rather than assumed away.
+            if (localPlayerEntity == core::kNullEntity) {
+                core::logWarn("Network",
+                               "JoinAccepted arrived before this client had a local player entity -- skipping local "
+                               "identity setup; the session is still joined.");
             } else {
-                NetworkIdentity newIdentity;
-                newIdentity.networkId = avatarNetworkId;
-                newIdentity.ownerId = localPlayerId_;
-                newIdentity.isLocallyControlled = true;
-                ecs.addComponent<NetworkIdentity>(localPlayerEntity, newIdentity);
+                clientNetworkIdToEntity_[avatarNetworkId] = localPlayerEntity;
+                if (auto* existingIdentity = ecs.tryGetComponent<NetworkIdentity>(localPlayerEntity)) {
+                    existingIdentity->networkId = avatarNetworkId;
+                    existingIdentity->isLocallyControlled = true;
+                } else {
+                    NetworkIdentity newIdentity;
+                    newIdentity.networkId = avatarNetworkId;
+                    newIdentity.ownerId = localPlayerId_;
+                    newIdentity.isLocallyControlled = true;
+                    ecs.addComponent<NetworkIdentity>(localPlayerEntity, newIdentity);
+                }
             }
 
             // Real, one-time existing-roster snapshot -- see

@@ -2437,3 +2437,63 @@ Not verified: the UI click-through itself. There is no simulated input
 here, and this sandbox has no Secret Service daemon, so a signed-in
 session cannot persist across a launch. The API layer and the rendered
 data are proven; the button-clicking is not.
+
+## 2026-08-21 (final) — Join tickets actually enforced
+
+The previous pass wired allocation into the launcher but stored the join
+ticket and never sent it, so the allocation was advisory: a client could
+skip it and connect straight to a server's address. That gap is closed.
+
+### Wire + enforcement
+
+- `NetworkSession::Config` gains `joinTicket` (client) and
+  `requireJoinTicket` (server). The ticket is appended to the JoinRequest
+  behind the same `hasError()` graceful-fallback shape the profileId/
+  ageGroup fields already use, so no protocol version bump is needed and
+  a ticketless LAN client still parses cleanly.
+- `setJoinTicketValidator()` is injected, so `engine_core` keeps zero
+  knowledge of the backend. A dedicated server wires it to the real
+  `core::verifyJoinTicketWithKronos()` (a real POST to
+  `/v1/sessions/verify-ticket`); a LAN host installs nothing and is
+  unaffected.
+- New `JoinFailureReason::InvalidTicket`, surfaced in the Error UI as
+  something actionable ("your join pass expired, press Play again")
+  rather than alarming — an expired 60-second ticket is the common case,
+  not a banned account.
+- **Fails closed**: a server that requires tickets but has no validator
+  installed refuses everyone. Refusing is the safe failure.
+- The server binds the connection to the backend-vouched account id
+  (`verifiedBackendUserId()`), not to anything the client claimed.
+
+### Two real pre-existing bugs found by the new tests
+
+1. **A failed spawn crashed the whole server.**
+   `handleJoinRequestServer()` passed whatever `onPlayerJoin_` returned —
+   including `kNullEntity` — straight to `registerNetworkedEntity()`,
+   which emplaced a component on an invalid entity and aborted the
+   process. Every player already in the session would have lost their
+   game because one player's spawn failed. Now rejects that one join with
+   a new, honest `ServerError` reason.
+2. **Worse: the client did the same thing, and release builds hid it.**
+   A client reaching `JoinAccepted` without a local player entity
+   emplaced onto an invalid entity. In a debug build that asserts; under
+   `NDEBUG` — which is exactly how the engine ships — the assertion is
+   compiled out and it becomes undefined behaviour on live registry
+   memory. Silent corruption is strictly worse than a crash. Found only
+   because the throwaway end-to-end harness was built without `NDEBUG`,
+   which is a good argument for running this suite in a debug
+   configuration too.
+
+### Verification
+
+**11164/11164 engine checks** (+22), including five adversarial ticket
+tests over real loopback ENet: no ticket rejected, forged ticket
+rejected, valid ticket admitted *and* bound to the right account,
+no-validator fails closed, and LAN play explicitly still works without
+tickets. Plus a regression test for the spawn-failure crash.
+
+Then the whole loop was run against the **real running backend**: a real
+allocation produced a real signed ticket, a real ENet handshake carried
+it, a real server verified it via the real `/verify-ticket` endpoint and
+bound the connection to real backend user id 7 — and a forged ticket
+presented to that same server was refused.

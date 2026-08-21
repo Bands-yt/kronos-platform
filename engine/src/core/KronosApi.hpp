@@ -69,6 +69,20 @@ struct ServerAllocation {
     std::string error;
 };
 
+// Kronos ("via join tickets"): SERVER-side ticket verification against a
+// real running Kronos backend. Free function rather than a KronosApi
+// method because the process calling it is a dedicated game server with
+// no user session of its own -- it is vouching for somebody else's
+// ticket, not acting as an account.
+//
+// Returns true only if the backend positively confirms the ticket AND
+// confirms it was issued for `serverKey`. Every other outcome -- an
+// expired ticket, a ticket for a different server, an unreachable
+// backend -- returns false, because a server that cannot verify must
+// not admit the player.
+[[nodiscard]] bool verifyJoinTicketWithKronos(const std::string& baseUrl, const std::string& serverKey,
+                                               const std::string& ticket, uint64_t& outUserId);
+
 class KronosApi {
 public:
     explicit KronosApi(std::string baseUrl);

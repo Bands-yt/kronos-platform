@@ -51,6 +51,60 @@ KronosUser parseUser(const nlohmann::json& node) {
 
 } // namespace
 
+bool verifyJoinTicketWithKronos(const std::string& baseUrl, const std::string& serverKey, const std::string& ticket,
+                                 uint64_t& outUserId) {
+    outUserId = 0;
+    if (ticket.empty()) return false;
+
+    CURL* curl = curl_easy_init();
+    if (curl == nullptr) return false;
+
+    nlohmann::json requestBody{{"join_ticket", ticket}, {"server_key", serverKey}};
+    std::string payload = requestBody.dump();
+    std::string responseBody;
+    std::string url = baseUrl + "/v1/sessions/verify-ticket";
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(payload.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "kronos-gameserver");
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    // A join handshake is interactive: a player is sitting on a loading
+    // screen. Bounded tightly so an unreachable backend fails fast (and
+    // closed) instead of hanging the connection attempt.
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+
+    CURLcode code = curl_easy_perform(curl);
+    long status = 0;
+    if (code == CURLE_OK) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (code != CURLE_OK || status != 200) return false;
+
+    nlohmann::json parsed = nlohmann::json::parse(responseBody, nullptr, false);
+    if (parsed.is_discarded() || parsed.value("valid", false) != true) return false;
+
+    // user_id comes back as a string (the backend stringifies 64-bit ids
+    // so JSON number precision can never silently mangle them).
+    std::string userId = parsed.value("user_id", std::string());
+    if (userId.empty()) return false;
+    try {
+        outUserId = std::stoull(userId);
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
 KronosApi::KronosApi(std::string baseUrl) : baseUrl_(std::move(baseUrl)) {}
 
 void KronosApi::setBaseUrl(std::string baseUrl) {

@@ -81,6 +81,13 @@ const char* joinFailureReasonLabel(net::JoinFailureReason reason) {
         case net::JoinFailureReason::VersionMismatch: return "Version mismatch";
         case net::JoinFailureReason::SessionFull: return "Session full";
         case net::JoinFailureReason::Banned: return "Banned from this session";
+        // Kronos ("via join tickets"): actionable rather than alarming --
+        // the overwhelmingly common cause is simply an expired ticket
+        // (they last 60 seconds), not anything wrong with the account.
+        case net::JoinFailureReason::InvalidTicket:
+            return "Your join pass expired or was not accepted. Press Play again to get a new one.";
+        case net::JoinFailureReason::ServerError:
+            return "That server could not start a character for you. Try again, or pick another server.";
         case net::JoinFailureReason::None: return "Unknown";
     }
     return "Unknown";
@@ -2421,18 +2428,19 @@ void RuntimeShell::pollBackendResults() {
                 lastError_.detail = allocation->error;
                 state_ = ShellState::Error;
             } else {
-                // Kept for the game server to validate once
-                // net::NetworkSession::Config grows a field to carry it.
-                // Today the engine's own handshake has no ticket concept,
-                // so this is a real allocation and a real connection but
-                // NOT yet a server-verified one -- stated plainly rather
-                // than implied to be end-to-end.
                 lastJoinTicket_ = allocation->joinTicket;
 
                 net::NetworkSession::Config config;
                 config.mode = net::NetworkMode::Client;
                 config.serverAddress = allocation->host;
                 config.port = allocation->port;
+                // Kronos ("via join tickets"): the real ticket the
+                // backend just issued for THIS server travels in the join
+                // handshake, where an allocated server validates it
+                // against /v1/sessions/verify-ticket before admitting
+                // anyone. Without this the allocation would be advisory
+                // only -- a client could skip it and connect directly.
+                config.joinTicket = allocation->joinTicket;
 
                 ensureLocalProfileLoaded();
                 app_.networkSession().setLocalDisplayName(localProfile_.displayName);

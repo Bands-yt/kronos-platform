@@ -56,6 +56,18 @@ enum class JoinFailureReason : uint8_t {
     // real, honest, distinct reason -- a banned player's real Error UI
     // should say so, not the misleading "session full".
     Banned = 3,
+    // Kronos ("server allocation via join tickets"): the client either
+    // presented no ticket to a server that requires one, or presented a
+    // ticket the backend refused to vouch for. Distinct from Banned and
+    // SessionFull so the Error UI can tell the player something true --
+    // "your session expired, try Play again" rather than a misleading
+    // "you are banned".
+    InvalidTicket = 4,
+    // Kronos: the server accepted the join but genuinely could not spawn
+    // an avatar for this player (its onPlayerJoin callback returned
+    // kNullEntity). Real, distinct, and honest -- the player did nothing
+    // wrong, so telling them "session full" or "banned" would be a lie.
+    ServerError = 5,
 };
 enum class DisconnectReason : uint8_t {
     None = 0,
@@ -112,6 +124,19 @@ public:
         // of its own to take one from). Blank is valid, same as
         // sessionName.
         std::string hostDisplayName;
+
+        // Kronos ("request a server allocation ... via join tickets"):
+        // CLIENT side -- the real, short-lived signed ticket the Kronos
+        // backend issued for this specific server, presented in the join
+        // handshake. Empty for a real LAN join, which has no backend and
+        // no allocation step.
+        std::string joinTicket;
+
+        // SERVER side -- when true, a client that presents no ticket, or
+        // one the validator refuses, is rejected. Deliberately OFF by
+        // default so a real LAN/offline host keeps working with no
+        // backend at all; a real allocated server turns it on.
+        bool requireJoinTicket = false;
         // Server mode only: whether a real LanSessionAnnouncer actually
         // starts (see initialize()) -- on by default. A caller that wants
         // a real, unlisted/private session (e.g. a Studio test session)
@@ -215,6 +240,29 @@ public:
     void setLocalIdentity(uint64_t profileId, core::AgeGroup ageGroup) {
         localProfileId_ = profileId;
         localAgeGroup_ = ageGroup;
+    }
+
+    // Kronos ("via join tickets"): SERVER side -- the real validator a
+    // hosting process installs to check a presented ticket. Injected
+    // rather than called directly so engine_core keeps no knowledge of
+    // the Kronos backend at all: a dedicated server wires this to a real
+    // POST /v1/sessions/verify-ticket (see core::verifyJoinTicketWithKronos),
+    // and a LAN host simply never installs one.
+    //
+    // Returning false rejects the join. `outUserId` receives the real
+    // backend user id the ticket was issued to, so the server can bind
+    // the connection to a real account rather than trusting whatever the
+    // client claimed about itself.
+    using JoinTicketValidator = std::function<bool(const std::string& ticket, uint64_t& outUserId)>;
+    void setJoinTicketValidator(JoinTicketValidator validator) { joinTicketValidator_ = std::move(validator); }
+
+    // The real backend user id of a joined player, as proven by their
+    // ticket -- 0 when this server does not require tickets, or the
+    // player predates one. Deliberately separate from the client-supplied
+    // profileId, which is only ever a claim.
+    [[nodiscard]] uint64_t verifiedBackendUserId(PlayerId player) const {
+        auto it = verifiedBackendUserIds_.find(player);
+        return it == verifiedBackendUserIds_.end() ? 0ull : it->second;
     }
 
     // Client-only: the real reason the most recent join attempt was
@@ -587,6 +635,9 @@ private:
     // to look a peer id up from). The main onPacketReceived dispatch
     // already has `peer` in scope, so passing it through is free.
     void handleJoinRequestServer(ENetTransport::PeerId peer, PlayerId player, ByteReader& reader);
+
+    JoinTicketValidator joinTicketValidator_;
+    std::unordered_map<PlayerId, uint64_t> verifiedBackendUserIds_;
 
     Config config_;
     ENetTransport transport_;
