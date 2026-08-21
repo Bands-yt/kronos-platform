@@ -1,12 +1,14 @@
+import crypto from 'node:crypto';
 import express from 'express';
 
 import { config } from '../config.js';
 import { query } from '../db.js';
-import { asyncRoute, badRequest, conflict, unauthorized } from '../errors.js';
+import { asyncRoute, badRequest, conflict, forbidden, unauthorized } from '../errors.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/auth.js';
 import { sendPasswordResetEmail, sendVerificationEmail } from '../email/mailer.js';
 import { GoogleTokenError, verifyGoogleIdToken } from './google.js';
+import { claimUsername, findActiveBan, isDisposableEmailDomain } from '../moderation/bans.js';
 import { burnTimingForUnknownUser, hashPassword, validatePasswordStrength, verifyPassword } from './passwords.js';
 import {
   RefreshTokenReuseError,
@@ -50,6 +52,31 @@ async function issueSession(res, user, req) {
 
 // --- signup ----------------------------------------------------------------
 
+// Kronos ("true zero-friction Play as Guest"): creates a real, ephemeral
+// account with NO email and no password. It is a real row so that
+// everything downstream (sessions, join tickets, presence) works
+// unchanged, but it is flagged is_guest and the server refuses it the
+// social graph and publishing -- enforced here, not merely hidden in the
+// launcher, because a client-side restriction is a suggestion.
+authRouter.post(
+  '/guest',
+  rateLimit({ bucket: 'guest', limit: 20, windowSeconds: 3600 }),
+  asyncRoute(async (req, res) => {
+    const ban = await findActiveBan({ hwid: req.body?.hwid, ip: req.ip });
+    if (ban) throw forbidden('This device is not permitted to play.');
+
+    const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+    const inserted = await query(
+      `INSERT INTO users (email, email_lower, display_name, is_guest, email_verified)
+       VALUES (NULL, NULL, $1, TRUE, FALSE)
+       RETURNING id, email, display_name, email_verified`,
+      [`Guest ${suffix}`],
+    );
+    res.status(201);
+    await issueSession(res, inserted.rows[0], req);
+  }),
+);
+
 authRouter.post(
   '/signup',
   rateLimit({ bucket: 'signup', limit: 10, windowSeconds: 3600 }),
@@ -59,6 +86,13 @@ authRouter.post(
     const displayName = (req.body?.display_name || '').toString().trim() || email.split('@')[0];
 
     if (!EMAIL_RE.test(email)) throw badRequest('A valid email address is required.');
+    if (isDisposableEmailDomain(email)) {
+      throw badRequest('Please use a permanent email address -- disposable email providers are not accepted.');
+    }
+    // Multi-layer: an evader who changes only their email is still caught
+    // by their device or address.
+    const ban = await findActiveBan({ email, hwid: req.body?.hwid, ip: req.ip });
+    if (ban) throw forbidden('This account cannot be created.');
     const weak = validatePasswordStrength(password);
     if (weak) throw badRequest(weak);
     if (displayName.length > 64) throw badRequest('Display name must be at most 64 characters.');
@@ -100,6 +134,9 @@ authRouter.post(
     const email = normalizeEmail(req.body?.email);
     const password = req.body?.password;
     if (!email || typeof password !== 'string') throw badRequest('Email and password are required.');
+
+    const ban = await findActiveBan({ email, hwid: req.body?.hwid, ip: req.ip });
+    if (ban) throw unauthorized('Incorrect email or password.');
 
     const { rows } = await query(
       `SELECT id, email, display_name, email_verified, password_hash, disabled_at
@@ -307,5 +344,19 @@ authRouter.get(
     );
     if (rows.length === 0) throw unauthorized('Account no longer exists.');
     res.json({ user: publicUser(rows[0]) });
+  }),
+);
+
+// Claims or changes a username. Also the endpoint an account in the
+// requires_rename state uses to get back to normal after its old handle
+// was recycled during a long appeal.
+authRouter.post(
+  '/username',
+  requireAuth,
+  rateLimit({ bucket: 'username', limit: 10, windowSeconds: 3600 }),
+  asyncRoute(async (req, res) => {
+    const result = await claimUsername(req.user.id, req.body?.username);
+    if (!result.ok) throw badRequest(result.error);
+    res.json({ username: result.username });
   }),
 );

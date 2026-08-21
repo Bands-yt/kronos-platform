@@ -2615,3 +2615,57 @@ and no allocation, so they keep working with no network.
 - The reference mockups contain real Roblox artwork and logos. The
   layout and palette were implemented from them; none of that artwork
   was copied, and no placeholder pretends to be a real game.
+
+## 2026-08-21 (final) — Social graph, guest mode, ban & username lifecycle (backend)
+
+Backend for the Friends system, guest accounts, and the ban/appeal/
+username-recycling lifecycle. **39/39 backend tests** against real
+PostgreSQL and real Redis (18 new).
+
+### Social graph
+`friendships` stores **one row per relationship**, not two, with a unique
+index on the *sorted* pair so (A,B) and (B,A) can never become two
+contradictory rows, plus bidirectional indexes so "everything involving
+me" hits an index from either side. Only the addressee may accept — a
+requester accepting their own request would be a one-click way to friend
+anybody, and there is a test for it. A blocked pair reads as "no such
+user", never "you are blocked".
+
+Search requires 3 characters and escapes LIKE metacharacters, so `%%%`
+matches nobody rather than everybody.
+
+### Presence
+Redis-only with a 40s TTL against a 15s heartbeat: a client that dies
+just stops appearing, no reaper and no stale "online" hours later.
+Direct-join tickets are minted **only** for friends actually in a game
+and only for the server they are actually on — issuing one for an offline
+friend would be an entry pass to nothing. `presence_available` is
+surfaced so the client can say "unavailable" instead of showing everyone
+as offline when Redis is down.
+
+### Guests
+Real rows with no email and no password, so sessions/tickets/presence all
+work unchanged, but flagged `is_guest` and refused the social graph **by
+the server** — a client-side restriction is a suggestion. Guests are also
+excluded from search, so nobody can friend them either.
+
+### Ban & username lifecycle
+Multi-layer identifiers (email/hwid/ip), all hashed. Tested that changing
+only the email does **not** evade a ban while an unrelated device is
+unaffected. 30-day username lock, idempotent recycling via a cron script,
+and the appeal split: inside the window the handle comes back; after it
+was recycled and taken the account returns with its data as
+`requires_rename`, because we cannot take a handle off whoever holds it
+now and a NULL username would look like data loss.
+
+### Flagged, not silently accepted
+- `hwid` fingerprints are personal data under GDPR and defeated by a
+  reinstall or VM — a speed bump, not an identity system.
+- IP bans should carry an `expires_at`; addresses get reassigned.
+- The disposable-email list is small and will go stale; it is friction,
+  deliberately not the only barrier.
+
+### Not done
+The launcher UI for all of this (friends carousel, search modal, guest
+banner) is **not** built — it depends on the Home screen redesign, and
+the guest flow depends on the web auth page that does not exist yet.

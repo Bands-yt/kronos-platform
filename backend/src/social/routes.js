@@ -1,0 +1,278 @@
+import express from 'express';
+
+import { config } from '../config.js';
+import { query } from '../db.js';
+import { asyncRoute, badRequest, conflict, forbidden, notFound } from '../errors.js';
+import { redis } from '../redis.js';
+import { requireAuth } from '../middleware/auth.js';
+import { rateLimit } from '../middleware/rateLimit.js';
+import { issueJoinTicket } from '../auth/tokens.js';
+
+export const socialRouter = express.Router();
+
+// Presence lives only in Redis, with a TTL a little over twice the 15s
+// client heartbeat. A client that dies simply stops appearing -- no reaper,
+// no stale "online" rows that outlive the session by hours.
+const PRESENCE_TTL_SECONDS = 40;
+const presenceKey = (userId) => `presence:${userId}`;
+
+async function readPresence(userIds) {
+  if (userIds.length === 0) return new Map();
+  const raw = await redis.mget(userIds.map((id) => presenceKey(id)));
+  const presence = new Map();
+  userIds.forEach((id, i) => {
+    if (!raw[i]) {
+      presence.set(String(id), { status: 'offline' });
+      return;
+    }
+    try {
+      presence.set(String(id), JSON.parse(raw[i]));
+    } catch {
+      presence.set(String(id), { status: 'offline' });
+    }
+  });
+  return presence;
+}
+
+// Guests are deliberately barred from the social graph. Enforced here on
+// the server, not merely hidden in the launcher UI -- a client-side
+// restriction is a suggestion.
+async function assertNotGuest(userId) {
+  const { rows } = await query(`SELECT is_guest, account_state, username FROM users WHERE id = $1`, [userId]);
+  if (rows.length === 0) throw notFound('Account no longer exists.');
+  if (rows[0].is_guest) {
+    throw forbidden('Guest accounts cannot use friends. Create a free account to add friends and join their games.');
+  }
+  if (rows[0].account_state === 'terminated') throw forbidden('This account is suspended.');
+  return rows[0];
+}
+
+// --- presence heartbeat ----------------------------------------------------
+
+socialRouter.post(
+  '/presence/heartbeat',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const status = ['online_launcher', 'in_game'].includes(req.body?.status) ? req.body.status : 'online_launcher';
+    const payload = {
+      status,
+      current_game_id: req.body?.current_game_id ? String(req.body.current_game_id) : null,
+      current_server_id: req.body?.current_server_id ? String(req.body.current_server_id) : null,
+    };
+    await redis.set(presenceKey(req.user.id), JSON.stringify(payload), 'EX', PRESENCE_TTL_SECONDS);
+    res.json({ status: 'ok', ttl_seconds: PRESENCE_TTL_SECONDS });
+  }),
+);
+
+// --- user search -----------------------------------------------------------
+
+socialRouter.get(
+  '/users/search',
+  requireAuth,
+  rateLimit({ bucket: 'usersearch', limit: 120, windowSeconds: 300 }),
+  asyncRoute(async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+
+    // A one- or two-character query matches most of the userbase and is
+    // not a search, it is a scrape.
+    if (q.length < 3) throw badRequest('Enter at least 3 characters to search.');
+
+    // Escape LIKE metacharacters so a query of "%" cannot match everyone.
+    const pattern = `%${q.replace(/[\\%_]/g, (m) => '\\' + m)}%`;
+
+    const { rows } = await query(
+      `SELECT u.id, u.username, u.display_name,
+              f.status AS friendship_status,
+              f.requester_id AS friendship_requester
+         FROM users u
+         LEFT JOIN friendships f
+                ON (LEAST(f.requester_id, f.addressee_id) = LEAST(u.id, $2::bigint)
+                AND GREATEST(f.requester_id, f.addressee_id) = GREATEST(u.id, $2::bigint))
+        WHERE u.username_lower ILIKE $1 ESCAPE '\\'
+          AND u.is_guest = FALSE
+          AND u.account_state <> 'terminated'
+          AND u.id <> $2::bigint
+        ORDER BY u.username_lower
+        LIMIT $3 OFFSET $4`,
+      [pattern, req.user.id, limit + 1, offset],
+    );
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+
+    res.json({
+      results: page.map((r) => ({
+        id: String(r.id),
+        username: r.username,
+        display_name: r.display_name,
+        // Lets the client render Add / Pending / Friends without a second
+        // round trip per row.
+        relationship: r.friendship_status === 'accepted'
+          ? 'friends'
+          : r.friendship_status === 'pending'
+            ? (String(r.friendship_requester) === String(req.user.id) ? 'request_sent' : 'request_received')
+            : r.friendship_status === 'blocked'
+              ? 'blocked'
+              : 'none',
+      })),
+      next_offset: hasMore ? offset + limit : null,
+    });
+  }),
+);
+
+// --- friend requests -------------------------------------------------------
+
+socialRouter.post(
+  '/friends/request',
+  requireAuth,
+  rateLimit({ bucket: 'friendreq', limit: 60, windowSeconds: 3600 }),
+  asyncRoute(async (req, res) => {
+    await assertNotGuest(req.user.id);
+
+    const targetId = String(req.body?.user_id || '');
+    if (!/^\d+$/.test(targetId)) throw badRequest('user_id is required.');
+    if (targetId === String(req.user.id)) throw badRequest('You cannot add yourself.');
+
+    const target = await query(`SELECT id, is_guest, account_state FROM users WHERE id = $1`, [targetId]);
+    if (target.rows.length === 0) throw notFound('No such user.');
+    if (target.rows[0].is_guest) throw badRequest('That account cannot receive friend requests.');
+    if (target.rows[0].account_state === 'terminated') throw notFound('No such user.');
+
+    const existing = await query(
+      `SELECT id, status, requester_id FROM friendships
+        WHERE LEAST(requester_id, addressee_id) = LEAST($1::bigint, $2::bigint)
+          AND GREATEST(requester_id, addressee_id) = GREATEST($1::bigint, $2::bigint)`,
+      [req.user.id, targetId],
+    );
+    if (existing.rows.length > 0) {
+      const row = existing.rows[0];
+      // A blocked pair must not be re-openable by the blocked party, and
+      // must not reveal that a block is why.
+      if (row.status === 'blocked') throw notFound('No such user.');
+      if (row.status === 'accepted') throw conflict('You are already friends.');
+      if (String(row.requester_id) === String(req.user.id)) throw conflict('A request is already pending.');
+      // They already asked us -- treat this as accepting, which is what
+      // the user obviously means.
+      await query(`UPDATE friendships SET status = 'accepted', updated_at = NOW() WHERE id = $1`, [row.id]);
+      return res.json({ status: 'accepted' });
+    }
+
+    await query(
+      `INSERT INTO friendships (requester_id, addressee_id, status) VALUES ($1, $2, 'pending')`,
+      [req.user.id, targetId],
+    );
+    res.status(201).json({ status: 'pending' });
+  }),
+);
+
+socialRouter.post(
+  '/friends/respond',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    await assertNotGuest(req.user.id);
+    const requesterId = String(req.body?.user_id || '');
+    const accept = req.body?.accept === true;
+    if (!/^\d+$/.test(requesterId)) throw badRequest('user_id is required.');
+
+    // Only the ADDRESSEE may respond -- the requester accepting their own
+    // request would be a one-click way to friend anybody.
+    const { rows } = await query(
+      `SELECT id FROM friendships
+        WHERE requester_id = $1 AND addressee_id = $2 AND status = 'pending'`,
+      [requesterId, req.user.id],
+    );
+    if (rows.length === 0) throw notFound('No pending request from that user.');
+
+    if (accept) {
+      await query(`UPDATE friendships SET status = 'accepted', updated_at = NOW() WHERE id = $1`, [rows[0].id]);
+      return res.json({ status: 'accepted' });
+    }
+    await query(`DELETE FROM friendships WHERE id = $1`, [rows[0].id]);
+    res.json({ status: 'declined' });
+  }),
+);
+
+socialRouter.delete(
+  '/friends/:userId',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const otherId = String(req.params.userId || '');
+    if (!/^\d+$/.test(otherId)) throw badRequest('A numeric user id is required.');
+    const { rowCount } = await query(
+      `DELETE FROM friendships
+        WHERE LEAST(requester_id, addressee_id) = LEAST($1::bigint, $2::bigint)
+          AND GREATEST(requester_id, addressee_id) = GREATEST($1::bigint, $2::bigint)
+          AND status <> 'blocked'`,
+      [req.user.id, otherId],
+    );
+    if (rowCount === 0) throw notFound('You are not friends with that user.');
+    res.status(204).end();
+  }),
+);
+
+// --- friends list ----------------------------------------------------------
+
+socialRouter.get(
+  '/friends/list',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const { rows } = await query(
+      `SELECT f.status, f.requester_id, f.addressee_id,
+              other.id AS other_id, other.username, other.display_name
+         FROM friendships f
+         JOIN users other
+           ON other.id = CASE WHEN f.requester_id = $1::bigint THEN f.addressee_id ELSE f.requester_id END
+        WHERE (f.requester_id = $1::bigint OR f.addressee_id = $1::bigint)
+          AND f.status IN ('pending', 'accepted')
+          AND other.account_state <> 'terminated'
+        ORDER BY other.username_lower`,
+      [req.user.id],
+    );
+
+    const accepted = rows.filter((r) => r.status === 'accepted');
+    const presence = await readPresence(accepted.map((r) => r.other_id)).catch(() => null);
+
+    // Direct-join tickets are minted ONLY for friends actually in a game,
+    // and only for the specific server they are on. Issuing one for an
+    // offline friend would be minting an entry pass to nothing.
+    const friends = accepted.map((r) => {
+      const p = presence ? presence.get(String(r.other_id)) : null;
+      const status = p?.status || 'offline';
+      const entry = {
+        id: String(r.other_id),
+        username: r.username,
+        display_name: r.display_name,
+        status,
+        current_game_id: p?.current_game_id || null,
+        current_server_id: p?.current_server_id || null,
+        join_ticket: null,
+      };
+      if (status === 'in_game' && p?.current_server_id) {
+        entry.join_ticket = issueJoinTicket({
+          userId: req.user.id,
+          gameId: p.current_game_id || '0',
+          serverKey: p.current_server_id,
+        });
+        entry.join_ticket_expires_in = config.joinTicketTtlSeconds;
+      }
+      return entry;
+    });
+
+    res.json({
+      friends,
+      // Surfaced separately so the launcher can show a request badge.
+      incoming_requests: rows
+        .filter((r) => r.status === 'pending' && String(r.addressee_id) === String(req.user.id))
+        .map((r) => ({ id: String(r.other_id), username: r.username, display_name: r.display_name })),
+      outgoing_requests: rows
+        .filter((r) => r.status === 'pending' && String(r.requester_id) === String(req.user.id))
+        .map((r) => ({ id: String(r.other_id), username: r.username, display_name: r.display_name })),
+      // Honest: when Redis is unreachable every friend reads 'offline',
+      // and the client should say "presence unavailable" rather than
+      // confidently showing everyone as offline.
+      presence_available: presence !== null,
+    });
+  }),
+);

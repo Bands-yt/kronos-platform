@@ -58,6 +58,18 @@ GOOGLE_CLIENT_ID=test-client-id.apps.googleusercontent.com npm test
 | POST | `/allocate` | Returns host/port + a signed join ticket |
 | POST | `/verify-ticket` | Game servers validate a client's ticket |
 
+### Social (`/v1`)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/users/search?q=` | 3-char minimum, LIKE metacharacters escaped |
+| POST | `/friends/request` | Rejects self, guests, blocked pairs |
+| POST | `/friends/respond` | Only the addressee may accept |
+| GET | `/friends/list` | Enriched with Redis presence + direct-join tickets |
+| DELETE | `/friends/:userId` | Remove friend |
+| POST | `/presence/heartbeat` | 15s client heartbeat, 40s TTL |
+| POST | `/auth/guest` | Zero-friction guest account, no email |
+| POST | `/auth/username` | Claim/change handle; clears `requires_rename` |
+
 ## Security decisions worth knowing
 
 **Google ID tokens are verified, not decoded.** The C++ client decodes the
@@ -98,3 +110,35 @@ ip:port and the server would have no way to know we sent them.
 - No admin/publishing endpoints yet: `games` and `game_servers` rows are
   inserted directly for now.
 - Rate limiting is per-IP and fails open if Redis is down.
+
+## Account lifecycle
+
+**Bans are multi-layer.** A termination records hashed `email`, `hwid` and
+`ip` identifiers, so changing only the email does not evade it. Values are
+hashed because an email and an IP are both personal data and this table only
+needs to answer "have I seen this before?".
+
+Two honest caveats: hardware fingerprints are personal data under GDPR and
+are defeated by a reinstall or a VM, so `hwid` is a speed bump against
+casual evasion rather than an identity system; and IP bans should usually be
+given an `expires_at`, because addresses get reassigned and a permanent one
+eventually punishes a stranger.
+
+**Disposable email filtering** uses a small embedded list. The real lists run
+to tens of thousands of domains, go stale constantly, and will eventually
+block somebody's legitimate provider — so it is friction, deliberately not
+the only thing standing between a banned user and a new account.
+
+**Usernames are locked for 30 days** after termination, then released to the
+public pool by `npm run recycle-usernames` (idempotent; run it hourly).
+
+**Appeals:**
+- Granted *inside* 30 days → account restored, username retained.
+- Granted *after* the handle was recycled and taken → account restored with
+  its data, flagged `requires_rename`, forcing a free username choice at next
+  login. We cannot take a handle back off whoever now holds it, and silently
+  reinstating with a NULL username would look like data loss.
+
+**Guests** are barred from friends, search visibility and publishing **on the
+server**, not merely in the launcher UI — a client-side restriction is a
+suggestion.
