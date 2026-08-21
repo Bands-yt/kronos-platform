@@ -1,0 +1,19 @@
+{
+  "name": "kronos-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kronos account, catalogue and session-allocation service",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/server.js",
+    "migrate": "node scripts/migrate.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ioredis": "^5.4.2",
+    "jose": "^5.9.6",
+    "pg": "^8.13.1"
+  }
+}

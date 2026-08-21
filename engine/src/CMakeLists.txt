@@ -169,6 +169,7 @@ add_library(engine_core STATIC
     core/CredentialStoreWindows.cpp
 
     core/UpdateCheck.cpp
+    core/KronosApi.cpp
 
     runtime/GameLoop.cpp
 

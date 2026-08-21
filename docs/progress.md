@@ -2270,3 +2270,103 @@ No per-identity API *split* has been applied to the existing `world`/
 deciding which of those calls a Level 0 script should lose is a real
 product decision about what UGC is allowed to do, not a mechanical one.
 That wants to happen alongside the first real UGC surface, not ahead of it.
+
+## 2026-08-21 (later still) — Backend service layer + C++ client
+
+Node/Express + PostgreSQL + Redis service for accounts, the game
+catalogue, and server allocation, plus the C++ wrapper the Launcher and
+Studio use to talk to it.
+
+### Stack choice
+
+Node rather than C++/Crow, deliberately. Authentication is made almost
+entirely of things that are dangerous to hand-roll — password KDFs, JWT
+verification, JWKS fetching and key rotation, TLS, pooling. Node has
+audited implementations of all of them; Crow would have meant
+reimplementing security primitives for nothing but language uniformity.
+The engine stays C++; the service does not need to be.
+
+### The OAuth fix
+
+`core/GoogleAuth.cpp` decodes the Google ID token payload **without
+verifying its signature**, and says so in its own comment. That was
+defensible while the token never left the client. It stops being
+defensible the instant a backend derives an account identity from a
+client-supplied token: a JWT is three base64 segments, so anyone could
+hand-write `sub: "<victim's google id>"` and post it. That is complete
+account takeover against every Google-linked account, with no password
+and no phishing.
+
+`src/auth/google.js` verifies properly: signature against Google's JWKS,
+algorithm pinned to RS256 (so neither `alg: none` nor an HS256-with-the-
+public-key forgery works), issuer, audience pinned to our own client id,
+expiry, and `email_verified` before any account linking. Accounts key on
+the stable `sub`, never the email. Two tests feed it a forged token and
+an `alg: none` token and assert nobody gets logged in.
+
+### Other security properties, each with a test
+
+- **Passwords**: scrypt from Node's stdlib, N=2^15 (~32 MB per hash),
+  self-describing stored format so parameters can be raised later.
+  Chosen over an argon2 native module to avoid a compile step and an
+  extra supply-chain dependency on a security-critical path.
+- **Refresh tokens**: opaque random strings stored as SHA-256 hashes,
+  rotated every use, revocable. Replay of a rotated token is treated as
+  theft and revokes the whole family.
+- **No account enumeration**: login and password-reset return byte-identical
+  responses for known and unknown accounts, and login burns comparable
+  CPU on the unknown path so timing does not leak it either.
+- **Password change revokes every session** — otherwise resetting after a
+  compromise leaves the attacker logged in.
+- **One-shot tokens** for reset and email confirmation, single-use via
+  `UPDATE ... WHERE used_at IS NULL` so concurrent requests cannot both win.
+- **Join tickets**: HMAC-signed, 60 s, bound to one server, signed with a
+  key distinct from the login-token key so game servers can verify
+  without being able to mint sessions.
+- **Player counts are never invented**: they come only from live server
+  heartbeats in Redis with a TTL, and the response carries
+  `player_counts_available` so a client can render "unavailable" instead
+  of a confident wrong zero.
+
+### A real bug the tests caught
+
+Reuse detection did not work. The family-wide revocation ran inside the
+same transaction that then threw `RefreshTokenReuseError` — so the throw
+rolled back the revocation, and the token that replaced the replayed one
+kept working. Exactly the case reuse detection exists to stop. Found by
+the test asserting the *newer* token also stops working; fixed by
+committing the revocation outside the read transaction.
+
+### C++ client
+
+`core/KronosApi.hpp/.cpp` — signup/login/Google/refresh/logout, the
+catalogue feed, and server allocation. Reuses `core::CredentialStore`
+(libsecret/DPAPI) rather than inventing another token store; the refresh
+token goes to the OS keychain and the 15-minute access token stays in
+memory only, since persisting it buys nothing and widens the theft
+window. A 401 transparently refreshes once and retries. `activePlayers`
+is -1 for "unknown", deliberately distinct from a real 0.
+
+### Verification
+
+**21/21 backend tests against real PostgreSQL and real Redis** — no
+mocks, real SQL, real rotation, real TTLs. Then the C++ client was built
+and run against the actually-running service: signup, wrong-password
+rejection, login, catalogue feed (real title/creator/thumbnail), honest
+failure when no server is heartbeating, and — after a real heartbeat —
+a real allocation returning `203.0.113.50:7777` with a signed join
+ticket, with the feed showing the heartbeat's 5 players. All checks
+passed.
+
+The credential-store writes fail in this sandbox (no Secret Service
+daemon, same as previously documented) — and the client correctly
+*surfaces* that rather than silently swallowing it, which is the
+designed behaviour.
+
+### Not done
+
+No TLS termination (run behind a proxy), no email provider wired in (the
+hook is there, default transport logs), no admin/publishing endpoints —
+`games`/`game_servers` rows are inserted directly for now. The launcher
+UI is not yet switched over to this feed; `KronosApi` is built and
+tested but not yet called from `RuntimeShell`.
