@@ -1463,27 +1463,14 @@ GameCardResult drawGameRow(const std::vector<const core::GameCatalogueEntry*>& g
 }
 } // namespace
 
-void RuntimeShell::drawGameCataloguePanel() {
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::Begin("Game Catalogue", nullptr,
-                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
-
-    if (ImGui::Button("Back")) {
-        state_ = computeNextState(state_, ShellEvent::ReturnHome);
-        ImGui::End();
-        return;
-    }
-
+// Kronos ("separate local games from the online feed"): the real
+// disk-discovered games, now in their own tab rather than mixed into the
+// main catalogue. Everything below is the same real scan/sort/row logic
+// as before -- only where it is drawn changed.
+void RuntimeShell::drawLocalGamesTab() {
     if (discoveredGames_.empty()) {
-        // The online feed is still drawn: having no games installed
-        // locally says nothing about what is published to Kronos.
-        drawOnlineCatalogueSection();
-        ImGui::Dummy(ImVec2(0.0f, 10.0f));
         ImGui::TextDisabled(
             "No real games found in games/ -- see docs/QUICKSTART.md for the real games/<Name>/game.gamemanifest layout.");
-        ImGui::End();
         return;
     }
 
@@ -1498,13 +1485,6 @@ void RuntimeShell::drawGameCataloguePanel() {
     // rest of this function even if lanBrowser_'s own list changes on a
     // later tick.
     std::vector<net::DiscoveredSession> liveDiscoveredSessions = lanBrowser_.discoveredSessions();
-
-    // Kronos ("Backend integration"): the real, live online feed comes
-    // first, since it is the one that reflects what is actually
-    // published and actually populated right now.
-    drawOnlineCatalogueSection();
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-    ImGui::SeparatorText("Installed on this machine");
 
     // Featured -- real, algorithm-selected: top real QualityScore
     // entries, not raw player count (per the user's own spec).
@@ -1572,6 +1552,42 @@ void RuntimeShell::drawGameCataloguePanel() {
 
     if (toPlay) selectGame(*toPlay);
     if (toJoin) joinSession(*toJoin);
+}
+
+void RuntimeShell::drawGameCataloguePanel() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("Game Catalogue", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    if (ImGui::Button("Back")) {
+        state_ = computeNextState(state_, ShellEvent::ReturnHome);
+        ImGui::End();
+        return;
+    }
+
+    // The main catalogue is the real Kronos feed and nothing else -- what
+    // a player sees should be what is actually published to the platform,
+    // not whatever happens to be sitting in this machine's games/ folder.
+    // Locally-discovered games are still fully playable, just in their own
+    // clearly-labelled tab so they can never be mistaken for real
+    // published content.
+    if (ImGui::BeginTabBar("##catalogue_tabs")) {
+        if (ImGui::BeginTabItem("Kronos")) {
+            drawOnlineCatalogueSection();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Local / Dev")) {
+            ImGui::TextDisabled(
+                "Games discovered in this machine's games/ folder. These are not published to Kronos and nobody else "
+                "can see them.");
+            ImGui::Dummy(ImVec2(0.0f, 6.0f));
+            drawLocalGamesTab();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
 
     ImGui::End();
 }

@@ -362,6 +362,9 @@ private:
     void backendSignOut();
     void drawBackendAccountSection();
     void drawOnlineCatalogueSection();
+    // The real disk-discovered games, drawn in their own "Local / Dev"
+    // tab so they are never mistaken for published Kronos content.
+    void drawLocalGamesTab();
 
     void startUpdateCheck();
     // Real, non-blocking; called once per real tick() alongside

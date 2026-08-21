@@ -2497,3 +2497,25 @@ allocation produced a real signed ticket, a real ENet handshake carried
 it, a real server verified it via the real `/verify-ticket` endpoint and
 bound the connection to real backend user id 7 — and a forged ticket
 presented to that same server was refused.
+
+## 2026-08-21 (final) — Catalogue split: online feed vs Local/Dev
+
+The main catalogue is now the Kronos feed and nothing else. Locally
+discovered games moved to their own "Local / Dev" tab, with a line saying
+plainly that they are not published and nobody else can see them.
+
+`drawGameCataloguePanel()` is now just the tab bar; the entire local
+scan/sort/Featured/genre/Hidden-Gems body moved verbatim into
+`drawLocalGamesTab()`. No local behaviour changed -- those games are
+still fully playable, and LAN sessions still surface on their cards.
+
+Rationale: what a player sees in the catalogue should be what is
+actually published to the platform, not whatever happens to be sitting
+in this machine's `games/` folder. Keeping them in one list made
+unpublished local content look like real catalogue entries.
+
+Not done: the tab is always visible rather than gated behind a
+Developer Mode toggle. Hiding it outright would make the launcher look
+empty for anyone without a backend configured, which is currently
+everyone. Gating it on a persisted setting is a small follow-up once
+there is a real populated backend to fall back on.
