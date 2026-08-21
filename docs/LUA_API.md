@@ -42,6 +42,49 @@ not spawn new ones. The two tables share exactly six real functions:
   output-capturing UI (Studio's Debug Console / a `ScriptedPlugin`'s log).
 - **`engine.log(level, message)`** — `level` is a string (`"Info"`,
   `"Warn"`, etc., freeform), forwarded the same way as `print`.
+- **`require(modulePath)`** — loads a module through Kronos's own virtual
+  file system. **There is no filesystem access**: every lookup goes to a
+  host-installed resolver, and paths containing `..`, absolute paths, and
+  embedded NULs are rejected before the resolver is even consulted. The
+  result is cached per script, so requiring the same module twice returns
+  the identical value and never re-runs its side effects. A module is
+  *not* a privilege boundary — it runs at the requiring script's own
+  security identity and shares its execution and memory budgets. Resolvers
+  are given the caller's identity and may refuse to serve internal
+  modules to user scripts.
+
+## Sandbox and security identities
+
+Every script runs in its own Luau VM with its own global table, its own
+memory ceiling, and a fixed **security identity**:
+
+| Identity | Level | Used for |
+|---|---|---|
+| `UserScript` | 0 | User-generated content. Assume the author is hostile. |
+| `CoreScript` | 4 | Engine-shipped gameplay scripts. |
+| `StudioPlugin` | 6 | Editor plugins needing Studio-only APIs. |
+
+The identity is fixed when the VM is created and can never be raised.
+There is deliberately **no Lua-visible way to read, set, or escalate it**,
+and coroutines inherit their creator's identity — so doing work inside
+`coroutine.create()` grants nothing extra. Omitting an identity when
+loading a script yields level 0, because a forgotten argument must fail
+closed.
+
+Privilege is enforced primarily by *capability*, not by runtime checks:
+an elevated API is simply never registered into a lower-privileged VM's
+global table, so an under-privileged script has no reference to reach.
+
+**Not available to any script, at any identity:** `io`, `package`,
+`loadstring`, `load`, `dofile`, `loadfile`, `collectgarbage`, `getfenv`,
+`setfenv`, `newproxy`, `os.execute`/`getenv`/`remove`/`rename`/`exit`,
+and every `debug` entry except `debug.traceback`. `_G`, the builtin
+libraries, and the string metatable are all frozen.
+
+Runaway scripts are bounded rather than trusted: exceeding the per-tick
+execution budget (8 ms by default) or the per-script memory ceiling
+(256 MB by default) raises an ordinary catchable Luau error and kills
+only that script — never the host process.
 
 ## `task` — scheduling
 

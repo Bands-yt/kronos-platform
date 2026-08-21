@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "core/ScriptSecurity.hpp"
+
 struct lua_State;
 
 namespace engine::core {
@@ -43,8 +45,34 @@ public:
     // legally call task.wait() from the outermost scope, exactly like a
     // Roblox Script's top level can. Returns kInvalidScript and logs the
     // compile/runtime error on failure.
+    // Kronos ("Luau Sandbox & Security Manager"): the identity-less
+    // overload is kept for every existing call site and runs at
+    // SecurityIdentity::UserScript -- the LEAST privileged level. That
+    // default is deliberate: forgetting to pass an identity must produce
+    // an under-privileged script, never an over-privileged one.
     ScriptId loadAndRun(const std::string& chunkName, const std::string& source);
+    ScriptId loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity);
     void unload(ScriptId id);
+
+    // The real privilege level a loaded script is running at, for
+    // diagnostics and tests. Returns UserScript for an unknown id --
+    // failing closed, same rule as currentSecurityIdentity().
+    [[nodiscard]] SecurityIdentity identityOf(ScriptId id) const;
+
+    // Kronos ("replace require() with a Kronos-managed Virtual File
+    // System asset loader"): installs the real resolver `require(path)`
+    // calls. Kronos owns every lookup -- there is no filesystem fallback
+    // anywhere, so a script cannot reach the host disk even if the
+    // resolver is never installed (in that case require() raises a real,
+    // honest "no module resolver is configured" error rather than
+    // quietly reading a file).
+    //
+    // The resolver is handed the requesting script's real identity so it
+    // can refuse to serve, say, an engine-internal module to a Level 0
+    // user script. Return false and set `outError` to reject a request.
+    using ModuleResolver = std::function<bool(const std::string& modulePath, SecurityIdentity requester,
+                                               std::string& outSource, std::string& outError)>;
+    void setModuleResolver(ModuleResolver resolver) { moduleResolver_ = std::move(resolver); }
 
     // Advances the scheduler by dt: drains anything task.defer()'d last
     // tick, resumes any task.wait() that has elapsed, matching the
@@ -173,7 +201,8 @@ private:
         std::string name;
         lua_State* owner = nullptr; // the VM instance; owns the allocator budget
         void* allocatorState = nullptr; // AllocatorState*, see Scripting.cpp
-        void* budgetState = nullptr;    // ScriptBudget*, see Scripting.cpp
+        void* budgetState = nullptr;    // ScriptThreadContext*, see Scripting.cpp
+        SecurityIdentity identity = SecurityIdentity::UserScript;
         bool alive = false;
     };
 
@@ -252,6 +281,13 @@ private:
     std::vector<EventCallback> onPlayerLeaveCallbacks_;
     std::function<void(lua_State*)> bindingsHook_;
     std::function<void(const std::string&)> outputCallback_;
+    ModuleResolver moduleResolver_;
+
+    // Kronos ("Standard Library Lockdown"): installs the real,
+    // VFS-backed require() into a freshly created VM. Called before
+    // applySandbox() freezes the global table.
+    void registerModuleLoader(lua_State* L);
+    static int luaRequire(lua_State* L);
 
     double clock_ = 0.0;
     double maxExecutionMillisPerTick_ = 8.0;   // ScriptContext.MaxExecutionTimePerFrame default, §6

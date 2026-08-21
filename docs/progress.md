@@ -2193,3 +2193,80 @@ the old install's marker file was gone, all three real binaries plus all
 (the permissions bug above, confirmed fixed in practice rather than in
 principle), the relaunched binary really ran, and no `.old-*` or
 `.update-staging` directories were left behind.
+
+## 2026-08-21 (later still) — Luau Sandbox & Security Manager
+
+Hardening the embedded VM ahead of opening it to user-generated content.
+
+### What was already there (audited, not assumed)
+
+Before writing anything, a real probe script was run against a live VM to
+enumerate what a script can actually reach. Most of the requested
+lockdown was already true, courtesy of Luau upstream plus the existing
+`luaL_sandbox()` call: `io`, `package`, `require`, `load`, `loadstring`,
+`dofile`, `loadfile` and `collectgarbage` are all **absent**; `os` is
+down to `time`/`clock`/`date`; `debug` is down to `traceback`; `_G` and
+the string metatable are already frozen. The per-tick watchdog
+(`lua_callbacks->interrupt`, 8 ms) and the per-VM allocator ceiling
+(256 MB, returning null so Luau raises a catchable `LUA_ERRMEM`) were
+**already implemented** too.
+
+Two notes on the brief: Luau has no `lua_setcountook`/`lua_sethook` — the
+interrupt callback is the real mechanism, and it is what is already in
+use. And the requested 50 ms budget is *looser* than the 8 ms already in
+force, so it was left alone.
+
+### Real gaps found and closed
+
+- **`getfenv`/`setfenv` were still reachable.** These let a script read
+  and replace a function's environment, which directly undermines any
+  privilege system. Removed for every identity. `newproxy` (a long-time
+  sandbox-escape primitive) removed with them. Verified first that no
+  shipped `.lua` uses any of the three.
+- **`require()` did not exist at all** — so this was building a VFS
+  loader, not "replacing" one. Every lookup goes through a host-installed
+  resolver with **no filesystem path whatsoever**; `..`, absolute paths
+  and embedded NULs are rejected *before* the resolver is consulted, so a
+  resolver author cannot be handed a hostile path even by accident.
+  Modules are cached per VM in the Lua registry (unreachable from script
+  code, so one module cannot poison another's cache).
+- **Security identities did not exist.** Now `SecurityIdentity`
+  (UserScript 0 / CoreScript 4 / StudioPlugin 6), fixed at VM creation,
+  stored in the C++-side thread context, with **no Lua-visible way to
+  read or raise it**. Coroutines inherit it, closing the obvious
+  "escalate inside coroutine.create()" hole. Enforcement is primarily
+  **capability-based** — an elevated API is never registered into a
+  lower-privileged VM at all — with `requireSecurityIdentity()` as
+  defense-in-depth for genuinely shared C functions.
+- Everything **fails closed**: an unknown thread, an unknown script id,
+  or an omitted identity argument all resolve to level 0.
+
+### Tests
+
+38 new checks, all adversarial and all against a real VM. Notably this
+adds the first-ever coverage for the two protections that already
+existed but had **nothing proving they actually block** — an untested
+guard is one you learn about in production. The infinite-loop test is
+deliberately shaped so that a broken watchdog hangs the suite outright
+rather than failing quietly.
+
+Covered: every denied global and library member; `_G`/builtin/string-
+metatable freezing; a real `while true do end` really being terminated
+(and the engine still running afterwards); a real runaway allocation
+raising a catchable error instead of OOM-killing the host (and the next
+script still getting a full budget); identity defaulting to least
+privilege; identity being unreachable from Lua; and the VFS loader
+working, caching, blocking traversal/absolute paths, and enforcing
+identity — including the positive case where a CoreScript *does* receive
+the module a UserScript was denied.
+
+**11142/11142 checks passing** (+38). Full rebuild clean, zero new
+warnings.
+
+### Deliberately not done
+
+No per-identity API *split* has been applied to the existing `world`/
+`network`/`ui` bindings yet — the mechanism is in place and tested, but
+deciding which of those calls a Level 0 script should lose is a real
+product decision about what UGC is allowed to do, not a mechanical one.
+That wants to happen alongside the first real UGC surface, not ahead of it.

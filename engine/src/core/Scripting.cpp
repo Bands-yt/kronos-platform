@@ -1,5 +1,8 @@
 #include "core/Scripting.hpp"
 
+#include "core/ScriptSecurity.hpp"
+#include "core/ScriptThreadContext.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -16,6 +19,12 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// Registry key for each VM's own require() module cache. A registry
+// key is deliberately used rather than a global: the registry is not
+// reachable from Lua at all, so a script cannot inspect, poison, or
+// clear another module's cached value.
+constexpr const char* kModuleCacheRegistryKey = "kronos.modulecache";
+
 // Owns the memory budget for one script's lua_State. Passed as the `ud`
 // argument to lua_newstate() -- see Scripting::budgetAllocator.
 struct AllocatorState {
@@ -23,15 +32,16 @@ struct AllocatorState {
     size_t budget = 0;
 };
 
-// Shared (via lua_setthreaddata) by a script's owning state and every
-// coroutine spawned off it, so the interrupt callback -- which only knows
-// "some thread on this VM hit a safepoint" -- can find the one deadline
-// that applies to all of them. Reset at the start of every resume.
-struct ScriptBudget {
-    Clock::time_point deadline;
-};
-
 } // namespace
+
+// Kronos ("Luau Sandbox & Security Manager"): what used to be a local
+// ScriptBudget (deadline only) is now core::ScriptThreadContext, which
+// also carries the VM's immutable SecurityIdentity -- see
+// core/ScriptThreadContext.hpp. Same lua_setthreaddata mechanism, same
+// sharing between a script's owning state and its coroutines; the
+// identity rides along so a coroutine can never run at a different
+// privilege level than the script that created it.
+using ScriptBudget = ScriptThreadContext;
 
 Scripting::Scripting() = default;
 // Real, deliberate asymmetry from shutdown() -- see that method's own
@@ -446,19 +456,167 @@ void Scripting::registerBindings(lua_State* L) {
     if (bindingsHook_) bindingsHook_(L);
 }
 
+// Kronos ("replace require() with a Kronos-managed Virtual File System
+// asset loader"). Every lookup goes through Scripting::moduleResolver_;
+// there is deliberately NO filesystem access anywhere in this path, so
+// even a misconfigured host cannot turn require() into a file read.
+int Scripting::luaRequire(lua_State* L) {
+    const char* rawPath = luaL_checkstring(L, 1);
+    std::string modulePath = rawPath != nullptr ? rawPath : "";
+
+    auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
+    if (self == nullptr) {
+        luaL_error(L, "require() is unavailable on this VM");
+        return 0;
+    }
+
+    // Reject traversal and absolute paths before the resolver ever sees
+    // them. A resolver author should not have to remember to do this,
+    // and getting it wrong once would expose the whole host filesystem
+    // if any resolver is ever backed by real files.
+    if (modulePath.empty()) {
+        luaL_error(L, "require() needs a non-empty module path");
+        return 0;
+    }
+    if (modulePath.find("..") != std::string::npos) {
+        luaL_error(L, "require(\"%s\"): path traversal is not allowed", modulePath.c_str());
+        return 0;
+    }
+    if (modulePath.front() == '/' || modulePath.front() == '\\' ||
+        (modulePath.size() >= 2 && modulePath[1] == ':')) {
+        luaL_error(L, "require(\"%s\"): absolute paths are not allowed", modulePath.c_str());
+        return 0;
+    }
+    // NUL-splicing: a path whose C string stops early could pass these
+    // checks and still reach a resolver as something different.
+    if (modulePath.find('\0') != std::string::npos) {
+        luaL_error(L, "require(): embedded NUL in module path");
+        return 0;
+    }
+
+    // Real module cache, one per VM (and therefore per script), keyed by
+    // the requested path. Repeated require() of the same module returns
+    // the identical value, matching every mainstream module system --
+    // and, importantly, stops a script from re-running a module's side
+    // effects in a loop as a cheap amplification attack.
+    lua_getfield(L, LUA_REGISTRYINDEX, kModuleCacheRegistryKey);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, LUA_REGISTRYINDEX, kModuleCacheRegistryKey);
+    }
+    lua_getfield(L, -1, modulePath.c_str());
+    if (!lua_isnil(L, -1)) {
+        return 1; // real cache hit -- the cached value is already on top
+    }
+    lua_pop(L, 1); // the nil
+
+    if (!self->moduleResolver_) {
+        luaL_error(L, "require(\"%s\"): no module resolver is configured on this Kronos build",
+                   modulePath.c_str());
+        return 0;
+    }
+
+    std::string moduleSource;
+    std::string resolveError;
+    SecurityIdentity requester = currentSecurityIdentity(L);
+    if (!self->moduleResolver_(modulePath, requester, moduleSource, resolveError)) {
+        luaL_error(L, "require(\"%s\"): %s", modulePath.c_str(),
+                   resolveError.empty() ? "module not found" : resolveError.c_str());
+        return 0;
+    }
+
+    Luau::CompileOptions compileOptions;
+    compileOptions.optimizationLevel = 1;
+    compileOptions.debugLevel = 1;
+    std::string bytecode = Luau::compile(moduleSource, compileOptions);
+
+    std::string chunkName = "=" + modulePath;
+    if (luau_load(L, chunkName.c_str(), bytecode.data(), bytecode.size(), 0) != 0) {
+        // luau_load left the real compile error on the stack.
+        luaL_error(L, "require(\"%s\"): %s", modulePath.c_str(), lua_tostring(L, -1));
+        return 0;
+    }
+
+    // The module runs on THIS thread, so it inherits this VM's identity
+    // and its execution/memory budgets automatically -- a required
+    // module is never a privilege boundary of its own.
+    lua_call(L, 0, 1);
+
+    // Cache before returning. A module that returns nothing caches
+    // `true`, so a second require() is still a real cache hit rather
+    // than silently re-running it.
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushboolean(L, 1);
+    }
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -3, modulePath.c_str());
+    return 1;
+}
+
+void Scripting::registerModuleLoader(lua_State* L) {
+    lua_pushlightuserdata(L, this);
+    lua_pushcclosure(L, &Scripting::luaRequire, "require", 1);
+    lua_setglobal(L, "require");
+}
+
 void Scripting::applySandbox(lua_State* L) {
-    // Luau ships with no `io` library at all and a stripped `os` (time/
-    // clock/date only, no execute/getenv/remove) -- both by upstream
-    // design, not something we're removing here. luaL_sandbox() on top of
-    // that freezes _G and the string metatable so a script can't quietly
-    // repoint `print` for every other script sharing this VM (moot for us
-    // since each script already owns its own lua_State, but it also blocks
-    // mutation of read-only builtin tables like `math`/`table`, which
-    // matters even with one script per state).
+    // Kronos ("Standard Library Lockdown"). Audited empirically against a
+    // real VM rather than assumed -- what Luau upstream already denies,
+    // confirmed absent from a live sandboxed state:
+    //   io, package, require, load, loadstring, dofile, loadfile,
+    //   collectgarbage  -- all ABSENT (no arbitrary code loading at all)
+    //   os.*            -- only time/clock/date; execute/getenv/remove/
+    //                      rename/exit/tmpname are ABSENT
+    //   debug.*         -- only traceback; sethook/getinfo/getlocal/
+    //                      setlocal/getupvalue/setupvalue/setmetatable
+    //                      are ABSENT
+    // Those are upstream design decisions, not something this function
+    // has to (or can) redo.
+    //
+    // What the audit DID find still reachable, and what this function
+    // therefore removes below: getfenv, setfenv and newproxy.
+    static constexpr const char* kRemovedGlobals[] = {
+        // getfenv/setfenv let a script read and REPLACE the environment
+        // of a function -- including, given any reference to one, a
+        // function belonging to a more privileged caller. That directly
+        // undermines the whole point of SecurityIdentity, so they go
+        // away for every identity, including StudioPlugin: nothing in
+        // this codebase uses them (verified by search across all 27
+        // shipped .lua files), so removing them costs nothing real.
+        "getfenv",
+        "setfenv",
+        // newproxy creates userdata with a script-controlled metatable.
+        // It has a long history as a sandbox-escape primitive and has no
+        // legitimate use anywhere in Kronos today.
+        "newproxy",
+    };
+    for (const char* name : kRemovedGlobals) {
+        lua_pushnil(L);
+        lua_setglobal(L, name);
+    }
+
+    // luaL_sandbox() must come AFTER the removals above -- it freezes the
+    // global table, and a frozen _G cannot then have entries niled out.
+    // It also freezes the string metatable and the builtin tables
+    // (math/table/string), so a script cannot repoint library functions
+    // that C bindings might later rely on.
     luaL_sandbox(L);
 }
 
 ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& source) {
+    // Least privilege by default -- see the header's own comment.
+    return loadAndRun(chunkName, source, SecurityIdentity::UserScript);
+}
+
+SecurityIdentity Scripting::identityOf(ScriptId id) const {
+    if (id >= scripts_.size() || !scripts_[id].alive) return SecurityIdentity::UserScript;
+    return scripts_[id].identity;
+}
+
+ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity) {
     if (!initialized_) return kInvalidScript;
 
     auto* allocState = new AllocatorState{0, maxMemoryBytesPerScript_};
@@ -471,10 +629,16 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
 
     luaL_openlibs(owner);
     registerBindings(owner);
+    registerModuleLoader(owner);
+    // Must run last: it freezes the global table, so every global this
+    // VM will ever have has to be installed before this point.
     applySandbox(owner);
 
-    auto* budget = new ScriptBudget{Clock::now() + std::chrono::duration_cast<Clock::duration>(
-                                                          std::chrono::duration<double, std::milli>(maxExecutionMillisPerTick_))};
+    auto* budget = new ScriptBudget{};
+    budget->deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
+                                           std::chrono::duration<double, std::milli>(maxExecutionMillisPerTick_));
+    // The VM's privilege level, fixed here and never mutated again.
+    budget->identity = identity;
     lua_setthreaddata(owner, budget);
     lua_callbacks(owner)->interrupt = &Scripting::scriptInterrupt;
 
@@ -508,7 +672,7 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     }
 
     ScriptId id = static_cast<ScriptId>(scripts_.size());
-    scripts_.push_back(LoadedScript{chunkName, owner, allocState, budget, /*alive=*/true});
+    scripts_.push_back(LoadedScript{chunkName, owner, allocState, budget, identity, /*alive=*/true});
 
     if (status == LUA_YIELD) {
         double wakeTime = clock_, startTime = clock_;

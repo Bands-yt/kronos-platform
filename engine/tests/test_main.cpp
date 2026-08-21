@@ -123,6 +123,7 @@
 #include "core/ScenePicking.hpp"
 #include "core/ScriptHotReload.hpp"
 #include "core/ScriptNetworkApi.hpp"
+#include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
 #include "core/ScriptUiApi.hpp"
 #include "core/ScriptWorldApi.hpp"
@@ -19733,6 +19734,229 @@ void testScriptingTotalUsedMemoryBytesReflectsRealAllocations() {
     scripting.shutdown();
 }
 
+// ---------------------------------------------------------------------------
+// Kronos ("Luau Sandbox & Security Manager"): real, adversarial coverage.
+// Every check below runs a real hostile-shaped Luau script against a real
+// VM and asserts the sandbox actually stops it -- none of these assert
+// against a mock or against the sandbox's own bookkeeping.
+//
+// Note on scope: several of these cover protections that already existed
+// (the watchdog and the allocator cap) but had NO test proving they
+// actually block anything. An untested guard is a guard you find out
+// about in production.
+// ---------------------------------------------------------------------------
+
+// Small helper: runs `source` and returns whatever the script printed via
+// the real output callback, so a test can assert on real error text.
+std::string runScriptCapturingOutput(engine::core::Scripting& scripting, const char* name, const std::string& source,
+                                      engine::core::SecurityIdentity identity) {
+    std::string captured;
+    scripting.setOutputCallback([&captured](const std::string& line) { captured += line + "\n"; });
+    (void)scripting.loadAndRun(name, source, identity);
+    scripting.setOutputCallback(nullptr);
+    return captured;
+}
+
+void testScriptSandboxDeniesDangerousStandardLibraries() {
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "sandbox lockdown test: Scripting::initialize() succeeds");
+
+    // Each of these must be genuinely absent from a real sandboxed VM's
+    // global table. `require` is deliberately NOT in this list -- Kronos
+    // replaces it with its own VFS loader (covered separately below).
+    const std::vector<std::string> mustBeAbsent = {"io",       "package",  "loadstring", "load",
+                                                    "dofile",   "loadfile", "getfenv",    "setfenv",
+                                                    "newproxy", "collectgarbage"};
+    for (const std::string& name : mustBeAbsent) {
+        std::string out = runScriptCapturingOutput(
+            scripting, "Lockdown",
+            "if rawget(_G, \"" + name + "\") ~= nil then error(\"REACHABLE\") end",
+            engine::core::SecurityIdentity::UserScript);
+        std::string message = "the real sandbox denies the global \"" + name + "\"";
+        check(out.find("REACHABLE") == std::string::npos, message.c_str());
+    }
+
+    // The dangerous members of the two libraries Luau does keep.
+    const std::vector<std::string> dangerousMembers = {"os.execute",     "os.getenv",       "os.remove",
+                                                        "os.exit",        "debug.sethook",   "debug.getinfo",
+                                                        "debug.setupvalue", "debug.getlocal", "debug.setmetatable"};
+    for (const std::string& member : dangerousMembers) {
+        std::string out = runScriptCapturingOutput(scripting, "Lockdown",
+                                                    "if " + member + " ~= nil then error(\"REACHABLE\") end",
+                                                    engine::core::SecurityIdentity::UserScript);
+        std::string message = "the real sandbox denies " + member + "()";
+        check(out.find("REACHABLE") == std::string::npos, message.c_str());
+    }
+
+    scripting.shutdown();
+}
+
+void testScriptSandboxFreezesGlobalsAndBuiltinMetatables() {
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "sandbox freeze test: Scripting::initialize() succeeds");
+
+    // A real script must not be able to add to _G, replace a builtin, or
+    // reach through the string metatable to poison every string in the VM.
+    std::string out = runScriptCapturingOutput(scripting, "Freeze", R"LUA(
+        assert(not pcall(function() _G.injected = 1 end), "_G was writable")
+        assert(not pcall(function() string.rep = nil end), "string library was writable")
+        assert(not pcall(function() getmetatable("").__index.evil = 1 end), "string metatable was writable")
+    )LUA",
+                                                engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "the real sandbox really freezes _G, the builtin libraries, and the string metatable");
+
+    scripting.shutdown();
+}
+
+void testScriptSandboxWatchdogTerminatesRealInfiniteLoop() {
+    engine::core::Scripting scripting;
+    // A deliberately tiny budget so this test is fast; the mechanism under
+    // test is identical at the 8 ms production default.
+    scripting.setMaxExecutionMillisPerTick(5.0);
+    check(scripting.initialize(), "watchdog test: Scripting::initialize() succeeds");
+
+    // A real, genuinely infinite loop. If the interrupt hook does not
+    // fire, this test hangs the suite forever rather than failing -- which
+    // is itself the strongest possible statement that the guard is real.
+    auto start = std::chrono::steady_clock::now();
+    std::string out = runScriptCapturingOutput(scripting, "InfiniteLoop", "while true do end",
+                                                engine::core::SecurityIdentity::UserScript);
+    auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+
+    check(out.find("execution budget") != std::string::npos,
+          "a real infinite loop is really terminated by the watchdog, with a real budget-exceeded error");
+    check(elapsed < 2000.0, "the real watchdog fires promptly rather than letting the loop run on");
+
+    // The host process is still alive and the VM is still usable
+    // afterwards -- termination must not take the engine down with it.
+    std::string after = runScriptCapturingOutput(scripting, "StillWorks", "local x = 1 + 1",
+                                                  engine::core::SecurityIdentity::UserScript);
+    check(after.empty(), "the real engine keeps running normally after killing a runaway script");
+
+    scripting.shutdown();
+}
+
+void testScriptSandboxMemoryCapRaisesCatchableErrorInsteadOfCrashing() {
+    engine::core::Scripting scripting;
+    // A real, small cap so the runaway allocation below hits it quickly
+    // instead of actually exhausting this machine's memory.
+    scripting.setMaxMemoryBytesPerScript(4u * 1024u * 1024u);
+    check(scripting.initialize(), "memory cap test: Scripting::initialize() succeeds");
+
+    // Real unbounded allocation. The point of the cap is that this
+    // produces a normal, catchable Luau error rather than an OOM abort of
+    // the whole host process -- so simply reaching the next line proves it.
+    std::string out = runScriptCapturingOutput(scripting, "MemoryHog",
+                                                "local t = {}\nlocal i = 0\nwhile true do i = i + 1; t[i] = string.rep(\"x\", 1024) end",
+                                                engine::core::SecurityIdentity::UserScript);
+    check(!out.empty(), "a real runaway allocation really raises a real error rather than crashing the host");
+
+    // Still alive, and a new script on a fresh VM still gets its own full
+    // budget -- one script exhausting memory must not poison the next.
+    std::string after = runScriptCapturingOutput(scripting, "StillWorks",
+                                                  "local t = {} for i = 1, 100 do t[i] = i end",
+                                                  engine::core::SecurityIdentity::UserScript);
+    check(after.empty(), "the real engine survives a real per-script out-of-memory and keeps running scripts");
+
+    scripting.shutdown();
+}
+
+void testScriptSecurityIdentityDefaultsToLeastPrivilegeAndIsUnforgeable() {
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "security identity test: Scripting::initialize() succeeds");
+
+    // Omitting the identity must produce the LEAST privileged script --
+    // a forgotten argument has to fail closed.
+    engine::core::ScriptId defaulted = scripting.loadAndRun("Defaulted", "local x = 1");
+    check(scripting.identityOf(defaulted) == engine::core::SecurityIdentity::UserScript,
+          "loadAndRun() without an identity really defaults to the least-privileged UserScript level");
+
+    engine::core::ScriptId elevated =
+        scripting.loadAndRun("Elevated", "local x = 1", engine::core::SecurityIdentity::StudioPlugin);
+    check(scripting.identityOf(elevated) == engine::core::SecurityIdentity::StudioPlugin,
+          "a real elevated script really records its real StudioPlugin identity");
+
+    // An unknown script id must also read as least-privileged, not as
+    // whatever happens to be in memory.
+    check(scripting.identityOf(999999) == engine::core::SecurityIdentity::UserScript,
+          "an unknown script id really reads as least-privileged rather than failing open");
+
+    // There must be no Lua-visible handle on the identity at all: no
+    // global, and no way to reach the C++ side that holds it.
+    std::string out = runScriptCapturingOutput(scripting, "Escalate", R"LUA(
+        for _, name in ipairs({"SecurityIdentity","securityIdentity","__identity","setidentity","elevate"}) do
+            if rawget(_G, name) ~= nil then error("IDENTITY IS REACHABLE: " .. name) end
+        end
+    )LUA",
+                                                engine::core::SecurityIdentity::UserScript);
+    check(out.find("REACHABLE") == std::string::npos,
+          "a real user script has no Lua-visible handle on its own security identity");
+
+    scripting.shutdown();
+}
+
+void testScriptModuleResolverIsIdentityAwareAndRejectsTraversal() {
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "module resolver test: Scripting::initialize() succeeds");
+
+    // A real resolver that serves one public module and gates one
+    // engine-internal module behind CoreScript privilege.
+    int resolverCalls = 0;
+    scripting.setModuleResolver([&resolverCalls](const std::string& path, engine::core::SecurityIdentity requester,
+                                                  std::string& outSource, std::string& outError) {
+        ++resolverCalls;
+        if (path == "Shared/Math") {
+            outSource = "return { add = function(a, b) return a + b end }";
+            return true;
+        }
+        if (path == "Engine/Internal") {
+            if (engine::core::securityLevel(requester) < engine::core::securityLevel(engine::core::SecurityIdentity::CoreScript)) {
+                outError = "engine-internal module";
+                return false;
+            }
+            outSource = "return { internal = true }";
+            return true;
+        }
+        outError = "no such module";
+        return false;
+    });
+
+    std::string out = runScriptCapturingOutput(scripting, "Modules", R"LUA(
+        local m = require("Shared/Math")
+        assert(m.add(2, 3) == 5, "required module did not really work")
+        assert(require("Shared/Math") == m, "require() did not really cache the module")
+        assert(not pcall(require, "../../../etc/passwd"), "path traversal was NOT blocked")
+        assert(not pcall(require, "/etc/passwd"), "absolute path was NOT blocked")
+        assert(not pcall(require, "Nope"), "a missing module did not really error")
+        assert(not pcall(require, "Engine/Internal"), "a user script reached an engine-internal module")
+    )LUA",
+                                                engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "the real VFS require() works, caches, and really blocks traversal, absolute paths, and "
+                       "over-privileged module access");
+
+    // The same module IS served to a properly privileged script -- the
+    // gate is a real privilege check, not a blanket denial that would
+    // make the identity parameter meaningless.
+    std::string elevated = runScriptCapturingOutput(scripting, "CoreModules", R"LUA(
+        local m = require("Engine/Internal")
+        assert(m.internal == true, "core script did not really receive the internal module")
+    )LUA",
+                                                     engine::core::SecurityIdentity::CoreScript);
+    check(elevated.empty(), "a real CoreScript really does receive the engine-internal module the user script was denied");
+
+    // Traversal/absolute rejection must happen BEFORE the resolver is
+    // consulted, so a resolver author cannot accidentally be handed a
+    // hostile path at all.
+    int callsBefore = resolverCalls;
+    std::string traversal = runScriptCapturingOutput(scripting, "TraversalOnly",
+                                                      "pcall(require, \"../secret\") pcall(require, \"/abs\")",
+                                                      engine::core::SecurityIdentity::UserScript);
+    check(resolverCalls == callsBefore,
+          "a real traversal/absolute path is rejected before the module resolver ever sees it");
+
+    scripting.shutdown();
+}
+
 void testTickScriptHotReloadLoadsNewScript() {
     engine::core::ECS ecs;
     engine::core::Scripting scripting;
@@ -28950,6 +29174,12 @@ int main() {
     testAvatarItemValidateRejectsAbsoluteMeshPath();
     testAvatarItemValidateRejectsAbsoluteTexturePath();
     testScriptingTotalUsedMemoryBytesReflectsRealAllocations();
+    testScriptSandboxDeniesDangerousStandardLibraries();
+    testScriptSandboxFreezesGlobalsAndBuiltinMetatables();
+    testScriptSandboxWatchdogTerminatesRealInfiniteLoop();
+    testScriptSandboxMemoryCapRaisesCatchableErrorInsteadOfCrashing();
+    testScriptSecurityIdentityDefaultsToLeastPrivilegeAndIsUnforgeable();
+    testScriptModuleResolverIsIdentityAwareAndRejectsTraversal();
     testTickScriptHotReloadLoadsNewScript();
     testTickScriptHotReloadSkipsUnchangedScript();
     testTickScriptHotReloadReloadsChangedScript();

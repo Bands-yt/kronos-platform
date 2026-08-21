@@ -158,6 +158,7 @@ add_library(engine_core STATIC
     core/Audio.cpp
     core/Scripting.cpp
     core/ScriptHotReload.cpp
+    core/ScriptSecurity.cpp
     core/MathExpression.cpp
 
     core/OAuthPkce.cpp
