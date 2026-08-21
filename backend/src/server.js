@@ -8,6 +8,7 @@ import { authRouter } from './auth/routes.js';
 import { catalogRouter } from './catalog/routes.js';
 import { sessionRouter } from './sessions/routes.js';
 import { socialRouter } from './social/routes.js';
+import { authPageRouter } from './web/authPage.js';
 
 export function createApp() {
   const app = express();
@@ -41,6 +42,8 @@ export function createApp() {
   app.use('/v1/catalog', catalogRouter);
   app.use('/v1/sessions', sessionRouter);
   app.use('/v1', socialRouter);
+  // The browser sign-in page the launcher hands off to.
+  app.use('/', authPageRouter);
 
   app.use((_req, res) => res.status(404).json({ error: { code: 'not_found', message: 'No such endpoint.' } }));
 

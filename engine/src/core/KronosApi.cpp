@@ -40,12 +40,26 @@ std::string extractError(const std::string& body, long status) {
     return "The Kronos service returned an unexpected error (HTTP " + std::to_string(status) + ").";
 }
 
+// nlohmann's value() THROWS on a present-but-null field rather than
+// returning the default, and a guest account legitimately has a null
+// email -- so a plain value("email", ...) crashes the launcher the moment
+// somebody plays as a guest. Found by the end-to-end browser sign-in
+// harness. Every field is read defensively here for the same reason: a
+// client must never abort because the server sent a null it is entitled
+// to send.
+std::string jsonStringOr(const nlohmann::json& node, const char* key, const std::string& fallback = {}) {
+    auto it = node.find(key);
+    if (it == node.end() || !it->is_string()) return fallback;
+    return it->get<std::string>();
+}
+
 KronosUser parseUser(const nlohmann::json& node) {
     KronosUser user;
-    user.id = node.value("id", std::string());
-    user.email = node.value("email", std::string());
-    user.displayName = node.value("display_name", std::string());
-    user.emailVerified = node.value("email_verified", false);
+    user.id = jsonStringOr(node, "id");
+    user.email = jsonStringOr(node, "email");
+    user.displayName = jsonStringOr(node, "display_name");
+    auto verified = node.find("email_verified");
+    user.emailVerified = verified != node.end() && verified->is_boolean() && verified->get<bool>();
     return user;
 }
 
@@ -269,10 +283,31 @@ KronosAuthResult KronosApi::completeBrowserSignIn(const std::string& refreshToke
         result.error = "The browser did not return a sign-in token.";
         return result;
     }
-    // Persist first, so a session survives even if the exchange below
-    // fails transiently and has to be retried on the next launch.
-    persistRefreshToken(refreshToken);
-    return restoreSession();
+
+    // Exchange the token we were just handed DIRECTLY.
+    //
+    // This deliberately does not persist-then-read-back through
+    // CredentialStore: on any machine where the OS keychain is
+    // unavailable (a headless Linux box, a locked keyring, a container)
+    // the read-back returns nothing and sign-in would fail even though
+    // the token is perfectly good. Found by the end-to-end browser
+    // sign-in harness, which runs in exactly such an environment.
+    //
+    // Persistence is a separate, best-effort concern: failing to save it
+    // costs the user a re-login next launch, which is a far smaller
+    // problem than not being able to sign in at all.
+    result = exchangeRefreshToken(refreshToken);
+    if (result.success) persistRefreshToken(refreshToken);
+    return result;
+}
+
+// Shared by both the browser hand-off above and restoreSession() below,
+// so there is one refresh-exchange implementation rather than two that
+// can drift.
+KronosAuthResult KronosApi::exchangeRefreshToken(const std::string& refreshToken) {
+    nlohmann::json body{{"refresh_token", refreshToken}};
+    HttpResponse response = request("POST", "/v1/auth/refresh", body.dump(), /*withAuth=*/false);
+    return adoptSession(response);
 }
 
 KronosAuthResult KronosApi::restoreSession() {
@@ -350,13 +385,13 @@ CatalogueResult KronosApi::fetchGames(int limit, const std::string& cursor, cons
     result.playerCountsAvailable = parsed.value("player_counts_available", false);
     for (const auto& node : parsed["games"]) {
         CatalogueGame game;
-        game.id = node.value("id", std::string());
-        game.slug = node.value("slug", std::string());
-        game.title = node.value("title", std::string());
-        game.description = node.value("description", std::string());
-        game.thumbnailUrl = node.value("thumbnail_url", std::string());
+        game.id = jsonStringOr(node, "id");
+        game.slug = jsonStringOr(node, "slug");
+        game.title = jsonStringOr(node, "title");
+        game.description = jsonStringOr(node, "description");
+        game.thumbnailUrl = jsonStringOr(node, "thumbnail_url");
         if (node.contains("creator") && node["creator"].is_object()) {
-            game.creatorName = node["creator"].value("display_name", std::string());
+            game.creatorName = jsonStringOr(node["creator"], "display_name");
         }
         // Stays -1 when the backend reported counts as unavailable, so a
         // "0 players" label is only ever drawn when it is really true.
@@ -395,10 +430,13 @@ ServerAllocation KronosApi::allocateServer(const std::string& gameSlug) {
     }
 
     const auto& server = parsed["server"];
-    allocation.host = server.value("host", std::string());
-    allocation.port = static_cast<uint16_t>(server.value("port", 0));
-    allocation.region = server.value("region", std::string());
-    allocation.joinTicket = parsed.value("join_ticket", std::string());
+    allocation.host = jsonStringOr(server, "host");
+    auto portNode = server.find("port");
+    allocation.port = (portNode != server.end() && portNode->is_number_integer())
+                           ? static_cast<uint16_t>(portNode->get<int>())
+                           : 0;
+    allocation.region = jsonStringOr(server, "region");
+    allocation.joinTicket = jsonStringOr(parsed, "join_ticket");
 
     if (allocation.host.empty() || allocation.port == 0) {
         allocation.error = "The Kronos service returned an allocation with no usable address.";

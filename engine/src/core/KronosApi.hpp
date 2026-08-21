@@ -145,6 +145,9 @@ private:
                                                    const std::string& jsonBody);
 
     [[nodiscard]] KronosAuthResult adoptSession(const HttpResponse& response);
+    // One refresh-exchange implementation, shared by the browser hand-off
+    // and the saved-session resume.
+    [[nodiscard]] KronosAuthResult exchangeRefreshToken(const std::string& refreshToken);
     void persistRefreshToken(const std::string& token);
     [[nodiscard]] std::string loadPersistedRefreshToken() const;
     void clearPersistedRefreshToken();

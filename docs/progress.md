@@ -2669,3 +2669,57 @@ now and a NULL username would look like data loss.
 The launcher UI for all of this (friends carousel, search modal, guest
 banner) is **not** built — it depends on the Home screen redesign, and
 the guest flow depends on the web auth page that does not exist yet.
+
+## 2026-08-21 (final) — Web auth page; two real client crashes fixed
+
+The browser sign-in page the launcher hands off to, closing the "Sign In
+opens a URL that 404s" gap. **45/45 backend tests** (6 new).
+
+### The page
+Served at `/auth/start`, Kronos dark palette, Sign In / Create Account
+tabs and a prominent **Play as Guest**. It calls the *same* JSON
+endpoints (`/v1/auth/login`, `/signup`, `/guest`) the client would, so
+there is one authentication implementation rather than a second one
+living in a web page, then hands the refresh token to the launcher's
+loopback listener.
+
+### The security-critical part
+The page hands a **real refresh token** to whatever `redirect_uri` says,
+so an unvalidated value there is an open redirect that mails working
+credentials to an attacker — the classic way these flows break. Only
+loopback is accepted, and the validator is tested against every escape
+route: remote hosts, `http://127.0.0.1@evil.example` (which a naive
+"contains 127.0.0.1" check waves through), lookalike hostnames,
+`javascript:`/`data:`/`file:`, missing or privileged ports. A rejected
+redirect renders a plain error page and **redirects nowhere** — sending
+the user to an untrusted target is the exact failure being guarded
+against. `no-store`, `X-Frame-Options: DENY` and a restrictive CSP are set.
+
+### Two real client crashes found by the end-to-end harness
+1. **Browser sign-in could not work without an OS keychain.**
+   `completeBrowserSignIn()` persisted the token then read it *back*
+   through `CredentialStore` — so on a headless box, a locked keyring or
+   a container the read-back returned nothing and sign-in failed even
+   though the token was perfectly good. Now the token it was handed is
+   exchanged directly, with persistence as a separate best-effort step:
+   failing to save costs a re-login next launch, which is far smaller
+   than being unable to sign in at all.
+2. **Guest sign-in crashed the launcher outright.** A guest has a `null`
+   email, and nlohmann's `value()` *throws* on a present-but-null field
+   rather than returning the default. Every field in every response is
+   now read defensively — a client must never abort because the server
+   sent a null it is entitled to send.
+
+Both were found only because the harness ran the real chain in an
+environment without a keychain, which is exactly the environment the
+first bug needed.
+
+### Verified end to end
+Real backend → the page's own guest endpoint → real loopback listener →
+real callback → real `KronosApi` session (`Guest af263f17`) → that
+session working against the real API. No human clicked anything.
+
+### Still not done
+The backend is not deployed, so `KRONOS_API_URL`/`KRONOS_AUTH_URL` still
+default to localhost. The friends carousel, search modal and guest banner
+are still unbuilt UI. Card thumbnails still need a remote-image path.
