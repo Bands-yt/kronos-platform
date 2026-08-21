@@ -113,6 +113,20 @@ struct LocalProfile {
     // local profile that published it.
     std::string creatorId;
 
+    // Kronos ("Google OAuth Authentication"): real, but deliberately
+    // NON-secret display identity only -- the real OAuth access/refresh
+    // tokens themselves live in core::CredentialStore (a real OS
+    // keychain), never in this plain, line-based text file. `googleSub`
+    // is the real, stable Google account identifier (the JWT `sub`
+    // claim) -- used to know *which* keychain entry to look up; `email`/
+    // `displayName` are shown in the UI so a signed-in player recognizes
+    // their own account without needing a live network round-trip just
+    // to render the Home screen.
+    bool googleSignedIn = false;
+    std::string googleSub;
+    std::string googleEmail;
+    std::string googleDisplayName;
+
     // Kronos ("Avatar Creation System, Marketplace & Economy" -- "Wire
     // Wallet -> Catalogue purchases"): a real, persistent, platform-wide
     // balance -- deliberately NOT core::Wallet's coins/gems (Economy.hpp),

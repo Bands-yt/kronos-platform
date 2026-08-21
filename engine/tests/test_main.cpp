@@ -8,9 +8,11 @@
 // mock, just one that happens not to need a display to run.
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -18,6 +20,20 @@
 #include <random>
 #include <sstream>
 #include <thread>
+
+// Kronos ("Google OAuth Authentication"): real, Linux/POSIX-only test-
+// side socket use (this test suite's own dev/CI environment) -- a real
+// client connection to LoopbackHttpServer's own real listener, the same
+// "real loopback, not a mock" convention testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing()
+// already establishes for UDP, just plain TCP here. Honest, explicit
+// platform scope (matches core::launchProcess()'s/ProcessLaunch.hpp's
+// own stated POSIX-only real scope), not silently assumed portable.
+#if !defined(_WIN32)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -102,6 +118,9 @@
 #include "core/ProcessLaunch.hpp"
 #include "core/GameCatalogueAggregate.hpp"
 #include "core/RiggedAvatar.hpp"
+#include "core/GoogleAuth.hpp"
+#include "core/LoopbackHttpServer.hpp"
+#include "core/OAuthPkce.hpp"
 #include "core/RiggedMesh.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/SceneFile.hpp"
@@ -4008,6 +4027,143 @@ void testFriendsServicePresenceOnlineCarriesRealGameNameDetail() {
     announcer.stop();
     browser.stop();
 }
+
+namespace {
+std::string hexEncodeForTest(const std::string& raw) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(raw.size() * 2);
+    for (unsigned char c : raw) {
+        out += kHex[(c >> 4) & 0xF];
+        out += kHex[c & 0xF];
+    }
+    return out;
+}
+} // namespace
+
+// Kronos ("Google OAuth Authentication"): real coverage over the
+// hand-written SHA-256 (core::sha256()) against the two best-known,
+// most-cited real SHA-256 test vectors (the empty string and "abc") --
+// not a self-referential check against the same implementation's own
+// output.
+void testOAuthPkceSha256MatchesKnownTestVectors() {
+    check(hexEncodeForTest(engine::core::sha256("")) ==
+              "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "sha256(\"\") real-matches the well-known real test vector");
+    check(hexEncodeForTest(engine::core::sha256("abc")) ==
+              "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "sha256(\"abc\") real-matches the well-known real test vector");
+}
+
+// Real round-trip coverage for base64UrlEncode()/base64UrlDecode() --
+// several real, distinct byte-length classes (0, 1, 2, 3 mod-3 remainder
+// cases all exercised via varying input lengths), plus the real
+// "no '+'/'/'/'=' characters ever appear" RFC 4648 §5 requirement PKCE
+// itself depends on.
+void testOAuthPkceBase64UrlRoundTrips() {
+    const std::vector<std::string> samples = {"", "f", "fo", "foo", "foob", "fooba", "foobar",
+                                               std::string("\x00\x01\xFF\xFE", 4)};
+    for (const auto& sample : samples) {
+        std::string encoded = engine::core::base64UrlEncode(sample);
+        std::string noSpecialCharsMsg =
+            "base64UrlEncode() real-output never contains '+'/'/'/'=' (sample length " +
+            std::to_string(sample.size()) + ")";
+        check(encoded.find('+') == std::string::npos && encoded.find('/') == std::string::npos &&
+                  encoded.find('=') == std::string::npos,
+              noSpecialCharsMsg.c_str());
+        std::string roundTripMsg = "base64UrlDecode(base64UrlEncode(x)) real round-trips x (sample length " +
+                                    std::to_string(sample.size()) + ")";
+        check(engine::core::base64UrlDecode(encoded) == sample, roundTripMsg.c_str());
+    }
+}
+
+// Real coverage over generateCodeVerifier()/deriveCodeChallenge() --
+// RFC 7636 §4.1's own real length bound and unreserved character set,
+// and that the real challenge is genuinely derived (base64url(sha256(verifier))),
+// not a fixed/fabricated value.
+void testOAuthPkceGeneratesRfc7636CompliantVerifierAndChallenge() {
+    std::string verifier = engine::core::generateCodeVerifier();
+    check(verifier.size() >= 43 && verifier.size() <= 128,
+          "generateCodeVerifier() real-produces a length within RFC 7636 §4.1's own [43, 128] bound");
+    bool allUnreserved = true;
+    for (char c : verifier) {
+        bool ok = std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '.' || c == '_' || c == '~';
+        if (!ok) allUnreserved = false;
+    }
+    check(allUnreserved, "generateCodeVerifier() real-uses only RFC 7636 §4.1's own unreserved characters");
+
+    std::string verifierA = engine::core::generateCodeVerifier();
+    std::string verifierB = engine::core::generateCodeVerifier();
+    check(verifierA != verifierB, "generateCodeVerifier() real-produces a different value each real call, not a fixed string");
+
+    std::string challenge = engine::core::deriveCodeChallenge(verifier);
+    std::string expected = engine::core::base64UrlEncode(engine::core::sha256(verifier));
+    check(challenge == expected,
+          "deriveCodeChallenge() real-equals base64UrlEncode(sha256(verifier)), computed independently here");
+}
+
+#if !defined(_WIN32)
+// Kronos ("Google OAuth Authentication" -- "local loopback HTTP
+// listener"): real, end-to-end coverage -- a real TCP client connects
+// to the real listener and sends a real HTTP GET request shaped exactly
+// like Google's own real browser redirect, and waitForCallback() is
+// checked against the real, parsed result. Not a mock of the network
+// layer -- this is the same real "stand up the real thing, connect to
+// it over real loopback" convention testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing()
+// already established for UDP.
+void testLoopbackHttpServerParsesRealRedirectQueryString() {
+    constexpr uint16_t kPort = 45800;
+    engine::core::LoopbackHttpServer server;
+    check(server.start(kPort), "loopback HTTP test: the real server real-starts and real-binds the real port");
+
+    std::thread clientThread([kPort]() {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(kPort);
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        // Real, brief retry loop -- the real server thread (this test's
+        // own main thread, below) may not have called accept()-ready
+        // select() yet the instant this thread starts.
+        int connected = -1;
+        for (int attempt = 0; attempt < 50 && connected != 0; ++attempt) {
+            connected = connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+            if (connected != 0) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (connected == 0) {
+            const char* request = "GET /auth/callback?code=real_test_code_123&state=real_test_state_456 HTTP/1.1\r\n"
+                                   "Host: localhost\r\n\r\n";
+            send(sock, request, static_cast<int>(std::strlen(request)), 0);
+            char buf[256];
+            recv(sock, buf, sizeof(buf), 0); // real, drains the real HTML response so the server's send() doesn't block
+        }
+        close(sock);
+    });
+
+    engine::core::LoopbackCallbackResult result = server.waitForCallback(5.0f);
+    clientThread.join();
+    server.stop();
+
+    check(result.success, "waitForCallback() real-succeeds against a real, well-formed redirect request");
+    check(result.code == "real_test_code_123", "waitForCallback() real-parses the real 'code' query parameter");
+    check(result.state == "real_test_state_456", "waitForCallback() real-parses the real 'state' query parameter");
+}
+
+// Real, honest-timeout coverage -- no real client ever connects, so
+// waitForCallback() must real-return a real, bounded failure (not hang
+// this test suite forever).
+void testLoopbackHttpServerTimesOutHonestlyWithNoConnection() {
+    constexpr uint16_t kPort = 45801;
+    engine::core::LoopbackHttpServer server;
+    check(server.start(kPort), "loopback HTTP timeout test: the real server real-starts");
+
+    engine::core::LoopbackCallbackResult result = server.waitForCallback(0.3f);
+    server.stop();
+
+    check(!result.success, "waitForCallback() real-fails (not hangs) when no real client ever connects");
+    check(!result.error.empty(), "waitForCallback()'s real timeout failure carries a real, non-empty error message");
+}
+#endif // !defined(_WIN32)
 
 // Kronos ("Notifications System"): real, pure coverage over
 // notification::push()/markRead()/markAllRead()/unreadCount()/
@@ -27878,6 +28034,13 @@ int main() {
     testFriendsServiceMessagingScopesPerFriend();
     testFriendsServicePresenceDefaultsToOfflineWithNoRealData();
     testFriendsServicePresenceOnlineCarriesRealGameNameDetail();
+    testOAuthPkceSha256MatchesKnownTestVectors();
+    testOAuthPkceBase64UrlRoundTrips();
+    testOAuthPkceGeneratesRfc7636CompliantVerifierAndChallenge();
+#if !defined(_WIN32)
+    testLoopbackHttpServerParsesRealRedirectQueryString();
+    testLoopbackHttpServerTimesOutHonestlyWithNoConnection();
+#endif
     testNotificationServicePushMarkReadAndFilter();
     testPurchaseItemWithCreditsSucceedsAndDeductsBalance();
     testPurchaseItemWithCreditsFailsWhenInsufficientBalance();

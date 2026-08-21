@@ -16,6 +16,7 @@
 #include <backends/imgui_impl_vulkan.h>
 
 #include "core/AvatarSkinTone.hpp"
+#include "core/CredentialStore.hpp"
 #include "core/Components.hpp"
 #include "core/HiddenGemsSelector.hpp"
 #include "core/KronosVersion.hpp"
@@ -227,6 +228,14 @@ bool RuntimeShell::initialize() {
 }
 
 void RuntimeShell::shutdown() {
+    // Kronos ("Google OAuth Authentication"): real, joins a still-in-
+    // flight background sign-in before this object's own members (that
+    // thread's lambda captures `this`) are destroyed. A real, bounded
+    // wait -- googleSignIn() itself has its own real timeout, so this
+    // can't hang forever, just until that real timeout (or a real
+    // completed sign-in) elapses.
+    if (googleSignInThread_.joinable()) googleSignInThread_.join();
+
     lanBrowser_.stop();
     lanBrowserRunning_ = false;
 
@@ -623,6 +632,7 @@ void RuntimeShell::endFrame() {
 
 void RuntimeShell::tick(float dt) {
     tickLanBrowserIfNeeded(dt);
+    pollGoogleSignInResult();
 
     // Kronos ("Animated Hourglass Loading Screen"): real, deferred-by-
     // one-frame game load -- selectGame() sets pendingGameLoad_ and
@@ -923,19 +933,38 @@ void RuntimeShell::drawHomePanel() {
     }
     ImGui::SameLine();
     ImGui::TextDisabled("Playing As");
+
+    // Kronos ("Google OAuth Authentication"): real -- three real
+    // states, never fabricated: signed in (shows the real account
+    // email/name), signing in (a real background thread is genuinely
+    // waiting on the browser right now), or the real sign-in button.
+    // See startGoogleSignIn()'s own comment for why this runs on a
+    // background thread rather than blocking this draw call.
+    if (localProfile_.googleSignedIn) {
+        ImGui::TextDisabled("Signed in as %s", localProfile_.googleDisplayName.empty()
+                                                     ? localProfile_.googleEmail.c_str()
+                                                     : localProfile_.googleDisplayName.c_str());
+    } else if (googleSignInInProgress_.load()) {
+        ImGui::TextDisabled("%s", googleSignInStatusMessage_.c_str());
+    } else {
+        if (ImGui::SmallButton("Sign in with Google")) startGoogleSignIn();
+        if (!googleSignInStatusMessage_.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.8f, 0.25f, 0.2f, 1.0f), "%s", googleSignInStatusMessage_.c_str());
+        }
+    }
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
 
     // Primary action, visually distinct (accent color) from every
     // secondary action below it -- the one real, most common thing a
     // returning player wants to do.
     //
-    // Kronos ("Base Client UI Theme"): real, vibrant green (was blue) --
-    // a real, deliberate, local `PushStyleColor` scoped to just this one
-    // button, not a change to the shared `core::applyKronosUITheme()`
-    // (which Studio also uses) -- every other button on this screen
-    // (Friends/Settings/Sessions/etc.) stays the theme's own neutral
-    // default, so "primary action" still reads as visually distinct
-    // from "secondary action," just with a different real accent color.
+    // Kronos ("Base Client UI Theme" / "Warm Ivory & Playful Sunset"):
+    // real, vibrant coral (pushPrimaryActionButtonColors(), matching
+    // core::applyKronosUITheme()'s own kAccent) -- every other button on
+    // this screen (Friends/Settings/Sessions/etc.) stays the theme's own
+    // neutral default, so "primary action" still reads as visually
+    // distinct from "secondary action."
     ImVec2 primaryButtonSize(kCardWidth, 48.0f);
     pushPrimaryActionButtonColors();
     if (ImGui::Button("Game Catalogue", primaryButtonSize)) openGameCatalogue();
@@ -2150,6 +2179,68 @@ void RuntimeShell::drawToasts() {
         ImGui::End();
         y += 78.0f;
     }
+}
+
+void RuntimeShell::startGoogleSignIn() {
+    if (googleSignInInProgress_.load()) return; // real, honest no-op -- see this method's own header comment
+    if (googleSignInThread_.joinable()) googleSignInThread_.join(); // real, previous background thread's own cleanup
+
+    googleSignInInProgress_.store(true);
+    googleSignInStatusMessage_ = "Opening your browser to sign in...";
+    googleSignInThread_ = std::thread([this]() {
+        core::GoogleAuthConfig config;
+        core::GoogleAuthResult authResult = core::googleSignIn(config);
+        std::lock_guard<std::mutex> lock(googleSignInResultMutex_);
+        googleSignInPendingResult_ = std::move(authResult);
+        googleSignInInProgress_.store(false);
+    });
+}
+
+void RuntimeShell::pollGoogleSignInResult() {
+    std::optional<core::GoogleAuthResult> result;
+    {
+        // Real, brief lock -- just to swap the real result out; nothing
+        // that could block happens while holding it.
+        std::lock_guard<std::mutex> lock(googleSignInResultMutex_);
+        if (googleSignInPendingResult_.has_value()) result = std::move(googleSignInPendingResult_);
+        googleSignInPendingResult_.reset();
+    }
+    if (!result.has_value()) return;
+
+    if (!result->success) {
+        googleSignInStatusMessage_ = "Sign-in failed: " + result->error;
+        return;
+    }
+
+    localProfile_.googleSignedIn = true;
+    localProfile_.googleSub = result->subject;
+    localProfile_.googleEmail = result->email;
+    localProfile_.googleDisplayName = result->displayName;
+
+    // Kronos ("Google OAuth Authentication" -- "cache it securely"):
+    // real, only the real OS-keychain half -- never LocalProfile.
+    // Keyed by the real, stable googleSub (not email, which a real
+    // account could change) so a later refresh always finds the right
+    // real entry even if the display email is stale.
+    bool storedRefreshToken =
+        result->refreshToken.empty() ||
+        core::storeCredential("google_oauth_refresh_token:" + result->subject, result->refreshToken);
+    bool storedAccessToken = core::storeCredential("google_oauth_access_token:" + result->subject, result->accessToken);
+
+    googleSignInStatusMessage_.clear();
+    notify(core::NotificationKind::SystemMessage, "Signed in with Google",
+           "Signed in as " + (result->displayName.empty() ? result->email : result->displayName) + ".");
+    if (!storedRefreshToken || !storedAccessToken) {
+        // Real, honest surfacing -- a failed secure-store isn't silently
+        // swallowed (the user is signed in for *this* session, but a
+        // real refresh next launch may not work) -- see
+        // CredentialStore.hpp's own "real, honest best-effort" scope
+        // note on why this can fail (locked keyring, no Secret Service
+        // daemon running, etc.).
+        std::fprintf(stderr, "RuntimeShell: could not securely store the real Google OAuth token(s) -- you may need "
+                              "to sign in again next launch.\n");
+    }
+    (void)localProfile_.saveToFile(kLocalProfilePath);
 }
 
 void RuntimeShell::openFriends() {

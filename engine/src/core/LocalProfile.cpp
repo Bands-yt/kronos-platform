@@ -43,6 +43,10 @@ bool LocalProfile::saveToFile(const std::string& path) const {
     out << "AGEGROUP " << static_cast<int>(ageGroup) << "\n";
     out << "CREATORVERIFIED " << (creatorVerified ? 1 : 0) << "\n";
     out << "CREATORID " << creatorId << "\n";
+    out << "GOOGLESIGNEDIN " << (googleSignedIn ? 1 : 0) << "\n";
+    out << "GOOGLESUB " << googleSub << "\n";
+    out << "GOOGLEEMAIL " << googleEmail << "\n";
+    out << "GOOGLEDISPLAYNAME " << googleDisplayName << "\n";
     out << "KRONOSCREDITS " << kronosCredits << "\n";
     for (const std::string& itemId : ownedItemIds) out << "OWNEDITEM " << itemId << "\n";
     out << "SKINTONEINDEX " << skinToneIndex << "\n";
@@ -126,6 +130,14 @@ bool LocalProfile::loadFromFile(const std::string& path) {
             loaded.creatorVerified = std::atoi(line.substr(16).c_str()) != 0;
         } else if (line.rfind("CREATORID ", 0) == 0) {
             loaded.creatorId = line.substr(10);
+        } else if (line.rfind("GOOGLESIGNEDIN ", 0) == 0) {
+            loaded.googleSignedIn = std::atoi(line.substr(15).c_str()) != 0;
+        } else if (line.rfind("GOOGLESUB ", 0) == 0) {
+            loaded.googleSub = line.substr(10);
+        } else if (line.rfind("GOOGLEEMAIL ", 0) == 0) {
+            loaded.googleEmail = line.substr(12);
+        } else if (line.rfind("GOOGLEDISPLAYNAME ", 0) == 0) {
+            loaded.googleDisplayName = line.substr(18);
         } else if (line.rfind("KRONOSCREDITS ", 0) == 0) {
             loaded.kronosCredits = std::strtoll(line.substr(14).c_str(), nullptr, 10);
         } else if (line.rfind("OWNEDITEM ", 0) == 0) {

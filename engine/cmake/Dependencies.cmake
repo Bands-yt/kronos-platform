@@ -34,6 +34,27 @@ find_package(SDL2 CONFIG REQUIRED)
 # reasoning as SDL2 above) --------------------------------------------------
 find_package(ZLIB REQUIRED)
 
+# --- libcurl (system) -- Kronos ("Google OAuth Authentication"): the real
+# OAuth token exchange is an HTTPS POST to Google's own token endpoint
+# (oauth2.googleapis.com) -- plain sockets can't do TLS, and hand-rolling
+# TLS is a real, serious security liability this codebase has no reason
+# to take on. libcurl is the same ubiquitous, well-tested system library
+# most native OAuth CLI tools already lean on, same "don't reinvent what
+# the host OS/package manager already provides reliably" reasoning as
+# SDL2/zlib above. ---------------------------------------------------------
+find_package(CURL REQUIRED)
+
+# --- libsecret (system, Linux only) -- Kronos ("Google OAuth
+# Authentication" -- "cache it securely"): the real Secret Service D-Bus
+# API a real Linux desktop's own keyring daemon (gnome-keyring/kwallet's
+# Secret Service shim/etc.) exposes -- see core/CredentialStoreLinux.cpp.
+# Windows needs no extra dependency here (DPAPI is a real, built-in
+# Win32 API, see core/CredentialStoreWindows.cpp). ---------------------------
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBSECRET REQUIRED libsecret-1)
+endif()
+
 # --- EnTT (ECS) ---------------------------------------------------------------
 FetchContent_Declare(
     entt

@@ -1,8 +1,11 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include <glm/glm.hpp>
 #include <imgui.h>
@@ -13,6 +16,7 @@
 #include "analytics/TelemetryQueue.hpp"
 #include "analytics/TelemetrySender.hpp"
 #include "core/GameCatalogueAggregate.hpp"
+#include "core/GoogleAuth.hpp"
 #include "core/LocalGameDirectory.hpp"
 #include "core/LocalProfile.hpp"
 #include "core/RiggedAvatar.hpp"
@@ -322,6 +326,20 @@ private:
     void tickToasts(float dt);
     void drawToasts();
 
+    // Kronos ("Google OAuth Authentication"): real -- starts the real,
+    // blocking core::googleSignIn() flow on a real background thread
+    // (it can take up to two real minutes waiting on the user's
+    // browser; calling it directly here would freeze this whole
+    // render/input thread for that entire time). Real, honest no-op if
+    // a sign-in is already in flight -- no second, competing loopback
+    // listener race. See googleSignInResultMutex_'s own comment for how
+    // the real result crosses back to this thread.
+    void startGoogleSignIn();
+    // Real, non-blocking -- called once per real tick(); picks up a
+    // completed background sign-in's real result (if any) without ever
+    // blocking this thread waiting for the background one.
+    void pollGoogleSignInResult();
+
     core::Application& app_;
     std::function<core::EntityId()> spawnNetworkedPlayerEntity_;
     std::function<core::EntityId(glm::vec4 skinTone, core::HeadShape headShape, core::BodyProportions bodyProportions,
@@ -438,6 +456,21 @@ private:
     // drawFriendsPanel()) is currently showing.
     std::string openConversationFriendId_;
     char friendMessageInputBuffer_[256] = "";
+
+    // Kronos ("Google OAuth Authentication"): real background sign-in
+    // state -- googleSignInThread_ runs the real, blocking
+    // core::googleSignIn() call; googleSignInResultMutex_ guards the
+    // real hand-off of its result back to this (the real UI/render)
+    // thread, since a background std::thread can't safely touch
+    // localProfile_/toasts/etc. directly. googleSignInInProgress_ is a
+    // real std::atomic (read every frame from drawHomePanel() to show a
+    // real "Signing in..." state) so no lock is needed just to check
+    // whether a sign-in is currently running.
+    std::thread googleSignInThread_;
+    std::atomic<bool> googleSignInInProgress_{false};
+    std::mutex googleSignInResultMutex_;
+    std::optional<core::GoogleAuthResult> googleSignInPendingResult_;
+    std::string googleSignInStatusMessage_;
 
     // Kronos ("Notifications System"): same real dual-reachability shape.
     bool showNotificationsOverlay_ = false;

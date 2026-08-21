@@ -160,6 +160,13 @@ add_library(engine_core STATIC
     core/ScriptHotReload.cpp
     core/MathExpression.cpp
 
+    core/OAuthPkce.cpp
+    core/LoopbackHttpServer.cpp
+    core/OpenUrl.cpp
+    core/GoogleAuth.cpp
+    core/CredentialStoreLinux.cpp
+    core/CredentialStoreWindows.cpp
+
     runtime/GameLoop.cpp
 
     platform/LinuxWindow.cpp
@@ -401,14 +408,24 @@ target_link_libraries(engine_core PUBLIC
     nlohmann_json::nlohmann_json
     Threads::Threads
     ZLIB::ZLIB
+    CURL::libcurl
 )
 
 if(WIN32)
-    target_link_libraries(engine_core PUBLIC ws2_32 winmm)
+    # Kronos ("Google OAuth Authentication"): Crypt32 for DPAPI
+    # (core/CredentialStoreWindows.cpp), Shell32 for ShellExecuteA
+    # (core/OpenUrl.cpp) -- both real, built-in Win32 libraries, no
+    # extra download/install needed.
+    target_link_libraries(engine_core PUBLIC ws2_32 winmm Crypt32 Shell32)
 elseif(UNIX)
     # miniaudio dlopen()s the platform audio backend (ALSA/PulseAudio) at
     # runtime rather than being linked against it directly.
     target_link_libraries(engine_core PUBLIC dl m)
+    # Kronos ("Google OAuth Authentication" -- "cache it securely"):
+    # real Secret Service client library (core/CredentialStoreLinux.cpp),
+    # see cmake/Dependencies.cmake's own pkg_check_modules() call.
+    target_link_libraries(engine_core PUBLIC ${LIBSECRET_LIBRARIES})
+    target_include_directories(engine_core PUBLIC ${LIBSECRET_INCLUDE_DIRS})
 endif()
 
 # ---------------------------------------------------------------------------

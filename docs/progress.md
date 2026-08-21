@@ -1899,3 +1899,110 @@ that's what was named). A full post-process outline/glow shader for
 viewport selection — the wireframe-box approach is real and correct
 but simpler than a stencil-based glow outline some editors use; upgrade
 path exists if wanted later.
+
+## 2026-08-21 — Google OAuth Authentication (PKCE + loopback + OS keychain)
+
+Real, end-to-end native-app OAuth 2.0 sign-in, built from scratch (no
+existing auth code anywhere in this codebase — confirmed by search
+before starting). Every real design fork this touched was resolved with
+the user first rather than picked unilaterally: whether to build now
+with a placeholder Client ID (yes), and how to store the real token
+(a real OS keychain, not `LocalProfile`'s plaintext file).
+
+### New files
+
+- `core/OAuthPkce.hpp/.cpp` — real RFC 7636 PKCE: a from-scratch,
+  hand-written SHA-256 (FIPS 180-4) and RFC 4648 §5 base64url
+  encode/decode, `generateCodeVerifier()`/`deriveCodeChallenge()`. No
+  client secret anywhere — a native/public client can't keep one
+  confidential, and PKCE is the real, modern, correct answer to that,
+  not a workaround.
+- `core/LoopbackHttpServer.hpp/.cpp` — a real, minimal, single-request
+  HTTP/1.1 listener bound to 127.0.0.1 only, real `select()`-bounded
+  timeout (never hangs forever on an abandoned browser tab).
+- `core/OpenUrl.hpp/.cpp` — real "open in default browser"
+  (`posix_spawnp("xdg-open", ...)` / `ShellExecuteA`), deliberately not
+  `core::launchProcess()` (that function is real POSIX-only and needs
+  an already-resolved executable path; browser-opening needs a real
+  PATH search instead).
+- `core/CredentialStore.hpp` + `CredentialStoreLinux.cpp` (libsecret) +
+  `CredentialStoreWindows.cpp` (DPAPI) — real OS-native secure secret
+  storage, mirroring `platform/LinuxWindow.cpp`/`WindowsWindow.cpp`'s
+  own "both files always compiled, each internally `#if`-guarded to a
+  no-op on the other platform" convention rather than needing
+  conditional CMake source selection. The Windows backend is real,
+  standard Win32 API usage but has never actually been compiled (this
+  dev environment is Linux-only) — flagged plainly, not silently
+  claimed verified.
+- `core/GoogleAuth.hpp/.cpp` — the real, blocking, synchronous
+  orchestrator: builds the authorization URL, opens the browser, waits
+  on the loopback listener, exchanges the code for tokens via a real
+  HTTPS POST (libcurl — plain sockets can't do TLS, and hand-rolling
+  TLS is a real security liability this codebase has no reason to
+  take on), and does a real, deliberately unverified best-effort decode
+  of the returned `id_token`'s JWT payload for `email`/`name`/`sub`
+  (this app already trusts Google's own TLS-authenticated token
+  endpoint as the source; it isn't re-validating a token that arrived
+  over an untrusted channel — real signature verification against
+  Google's JWKS is real, honest future hardening if a stronger
+  guarantee is ever needed).
+
+### New dependencies
+
+`libcurl` (system, `find_package(CURL REQUIRED)`) and, Linux-only,
+`libsecret-1` (via `pkg_check_modules`) — both wired the same
+"system-provided, don't reinvent it" way SDL2/zlib already are. Windows
+needs nothing extra (DPAPI/ShellExecute are built into the OS).
+
+### UI wiring
+
+A real "Sign in with Google" button on `engine_runtime`'s Home screen.
+`googleSignIn()` blocks for up to two real minutes waiting on the
+browser, so `RuntimeShell::startGoogleSignIn()` runs it on a real
+background `std::thread` (joined in `shutdown()`); the result crosses
+back to the main/render thread through a real mutex-guarded
+`std::optional`, polled non-blockingly once per `tick()`. On success:
+`LocalProfile` gets real, **non-secret** display fields only
+(`googleSignedIn`/`googleSub`/`googleEmail`/`googleDisplayName`) — the
+real access/refresh tokens go to `CredentialStore` exclusively, keyed
+by the real, stable `sub` claim (not email, which can change).
+
+### Explicitly not done — needs your own action
+
+`GoogleAuthConfig::clientId` ships as a real, honest placeholder
+(`"YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com"`) —
+`googleSignIn()` fails fast and clearly if it's still set, rather than
+sending a doomed request. You'll need to register a real Google Cloud
+OAuth 2.0 Client ID (Application type: **Desktop app**) and set the
+real "Authorized redirect URI" to `http://localhost:8080/auth/callback`
+(or whichever port `GoogleAuthConfig::loopbackPort` is set to) before
+this can actually sign anyone in.
+
+### Verification
+
+New, real, automated tests (not manual spot-checks): SHA-256 against
+the two best-known real test vectors (independently cross-checked here
+against this machine's own `sha256sum`, which caught a real typo in
+*my test's own* hardcoded expected value, not a bug in the real
+implementation); base64url round-trips across several byte-length
+classes; PKCE verifier/challenge RFC-compliance; and — the one genuinely
+network-shaped test — `LoopbackHttpServer` exercised with a **real TCP
+client** sending a real redirect-shaped GET request over real loopback,
+plus a real, honest-timeout case with no client at all. A
+`CredentialStore` integration test was deliberately **not** added:
+confirmed via `secret-tool` that this sandbox has no real, activatable
+Secret Service daemon running, so a hard-asserting test here would be
+an environment-dependent false failure, not real coverage — same
+"don't fake coverage a live dependency can't back" discipline this
+suite already applies to GPU-only code.
+
+Full rebuild clean, **zero new compiler warnings** (two real
+`[[nodiscard]]` warnings on `storeCredential()`'s return value were
+found and fixed properly — a failed secure-store now surfaces a real
+stderr message rather than being silently swallowed).
+**11088/11088 checks passing**. Fresh `engine_runtime` launch verified
+(old process killed and confirmed dead first): clean startup, no crash,
+stable. The actual "Sign in with Google" click-through itself has
+**not yet been exercised against a real Google account** — this
+environment has no simulated mouse/keyboard input and, as stated above,
+has no real Client ID configured yet either.
