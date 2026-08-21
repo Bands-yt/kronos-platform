@@ -32,14 +32,9 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <unistd.h>
-#endif
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -1827,7 +1822,10 @@ void testScriptingErrorsRouteToLoggerAtCorrectLevel() {
 // crash report file appeared with real, useful content. fork() (not
 // calling raise()/abort() directly in this test's own process) is
 // essential: crashing this process for real would kill the entire real
-// test suite mid-run, not just this one check.
+// test suite mid-run, not just this one check. POSIX-only (fork/waitpid/
+// WIFSIGNALED), matching core::CrashReporter's own real implementation
+// scope (core/CrashReporter.cpp is #if defined(__linux__)-guarded).
+#if !defined(_WIN32)
 void testCrashReporterWritesRealReportOnRealSignal() {
     // Clean up any stale report from a previous interrupted run so the
     // glob below unambiguously finds only the one this test itself
@@ -1867,6 +1865,7 @@ void testCrashReporterWritesRealReportOnRealSignal() {
         std::remove(reportPath.c_str());
     }
 }
+#endif // !defined(_WIN32)
 
 // Kronos (Alpha Completion Checklist, "Alpha Packaging" -- "engine/studio
 // binary packaging"): real bug found while auditing packaging readiness
@@ -27972,7 +27971,9 @@ int main() {
     testScriptingFireInteractReachesRegisteredHandler();
     testScriptingOnUnloadFiresOnShutdown();
     testScriptingErrorsRouteToLoggerAtCorrectLevel();
+#if !defined(_WIN32)
     testCrashReporterWritesRealReportOnRealSignal();
+#endif
     testResolveResourceDirPrefersRealPackagedLayoutOverFallback();
     testScriptedPluginLoader();
     testPluginTemplateLoadsAndRunsReal();

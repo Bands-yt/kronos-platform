@@ -465,6 +465,15 @@ if(ENGINE_BUILD_RUNTIME)
         $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos.rc>
     )
     target_link_libraries(engine_runtime PRIVATE engine_core imgui::imgui)
+    if(WIN32)
+        # SDL2's own SDL_main.h (pulled in transitively via SDL.h)
+        # #defines main to SDL_main on Windows -- the real WinMain that
+        # calls back into it lives in the separate SDL2main static
+        # library, which nothing here was linking, so the linker had no
+        # real `main` symbol to resolve (LNK2001/LNK1120). SDL2::SDL2main
+        # (provided by the same vcpkg SDL2 package as SDL2::SDL2) supplies it.
+        target_link_libraries(engine_runtime PRIVATE SDL2::SDL2main)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -543,4 +552,9 @@ if(ENGINE_BUILD_STUDIO)
         studio/ParticlePresets.cpp
     )
     target_link_libraries(studio PRIVATE engine_core imgui::imgui imguizmo::imguizmo)
+    if(WIN32)
+        # Same real SDL2main linkage need as engine_runtime above -- see
+        # that target's own comment for why.
+        target_link_libraries(studio PRIVATE SDL2::SDL2main)
+    endif()
 endif()
