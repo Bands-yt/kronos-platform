@@ -1,0 +1,153 @@
+# Kronos production stack.
+#
+#   caddy     -- public edge, terminates TLS with automatic Let's Encrypt
+#   api       -- the Node/Express service (never exposed directly)
+#   postgres  -- durable state, on a named volume
+#   redis     -- volatile state, with persistence so a restart does not
+#                blank every session and presence key at once
+#
+# Bring up with:
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+#
+# Only Caddy publishes ports. Everything else talks over the internal
+# network, so Postgres and Redis are not reachable from the internet even
+# if their own auth were misconfigured -- defence in depth rather than
+# trusting one password.
+
+name: kronos
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      # Caddy provisions and renews certificates automatically for this
+      # domain. It must already resolve to this host, and 80/443 must be
+      # reachable, or the ACME challenge cannot complete.
+      KRONOS_DOMAIN: ${KRONOS_DOMAIN:?set KRONOS_DOMAIN, e.g. api.kronos.example}
+      KRONOS_ACME_EMAIL: ${KRONOS_ACME_EMAIL:?set KRONOS_ACME_EMAIL for Let's Encrypt expiry notices}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys live here. Losing this volume
+      # means re-issuing every certificate, and Let's Encrypt rate limits
+      # that -- so it is a named volume, not a bind mount into /tmp.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [kronos]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      # Composed from the service names below -- the API never needs to
+      # know a host IP.
+      DATABASE_URL: postgres://${POSTGRES_USER:-kronos}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kronos}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      JOIN_TICKET_SECRET: ${JOIN_TICKET_SECRET:?set JOIN_TICKET_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      PUBLIC_BASE_URL: https://${KRONOS_DOMAIN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Deliberately no `ports:` -- the API is reachable only through Caddy.
+    networks: [kronos]
+
+  # Runs migrations once, then exits. Separated from `api` so a rolling
+  # restart of several API replicas cannot have them race each other
+  # applying the same schema.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["node", "scripts/migrate.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-kronos}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kronos}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      JOIN_TICKET_SECRET: ${JOIN_TICKET_SECRET:?set JOIN_TICKET_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [kronos]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kronos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-kronos}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready, not a sleep: the API starts when the database is
+      # genuinely accepting connections, not after an arbitrary delay that
+      # is either too short on a cold start or wasted on a warm one.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kronos} -d ${POSTGRES_DB:-kronos}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [kronos]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly yes: presence and rate-limit keys are volatile by design,
+    # but losing every refresh-rate-limit counter and live presence entry
+    # on a restart is a worse experience than paying for an AOF. everysec
+    # is the usual durability/throughput compromise.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [kronos]
+
+  # Hourly username recycling (the 30-day handle release). Kept as its own
+  # tiny service rather than a host crontab so the schedule ships with the
+  # stack instead of living in somebody's server notes.
+  recycle-usernames:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do node scripts/recycle-usernames.js || true; sleep 3600; done"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-kronos}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kronos}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      JOIN_TICKET_SECRET: ${JOIN_TICKET_SECRET:?set JOIN_TICKET_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [kronos]
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  kronos:
+    driver: bridge

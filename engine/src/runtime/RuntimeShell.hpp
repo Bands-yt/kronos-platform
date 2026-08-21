@@ -362,6 +362,14 @@ private:
     void drawBackendAccountSection();
     void drawOnlineCatalogueSection();
     // Kronos Client shell chrome (see the spec's Brand Panels section).
+    void beginContentCanvas(const char* id);
+    void endContentCanvas();
+    void drawFriendsCarousel();
+    void drawAddFriendsModal();
+    void joinFriendGame(const core::KronosFriend& friendEntry);
+    void startFriendsFetch();
+    void startFriendSearch(const std::string& queryText);
+    void startFriendRequest(const std::string& userId);
     void drawSidebar();
     void drawTopBar();
     void drawBrandPanel();
@@ -574,6 +582,24 @@ private:
     // a connection that was never made.
     enum class BackendReachability { Unknown, Reachable, Unreachable };
     BackendReachability backendReachability_ = BackendReachability::Unknown;
+
+    // --- friends / social ------------------------------------------------
+    std::vector<core::KronosFriend> friends_;
+    std::thread friendsThread_;
+    std::atomic<bool> friendsFetchInProgress_{false};
+    std::mutex friendsMutex_;
+    std::optional<core::FriendsResult> friendsPendingResult_;
+    float friendsRefreshTimer_ = 0.0f;
+
+    bool showAddFriendsModal_ = false;
+    bool showGuestUpgradePrompt_ = false;
+    char friendSearchBuffer_[64] = "";
+    std::vector<core::UserSearchResult> friendSearchResults_;
+    std::string friendSearchStatus_;
+    std::thread friendSearchThread_;
+    std::atomic<bool> friendSearchInProgress_{false};
+    std::mutex friendSearchMutex_;
+    std::optional<core::UserSearchResponse> friendSearchPendingResult_;
 
     // Kronos ("Notifications System"): same real dual-reachability shape.
     bool showNotificationsOverlay_ = false;

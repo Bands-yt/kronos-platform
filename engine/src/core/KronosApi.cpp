@@ -447,4 +447,134 @@ ServerAllocation KronosApi::allocateServer(const std::string& gameSlug) {
     return allocation;
 }
 
+
+namespace {
+KronosFriend parseFriend(const nlohmann::json& node) {
+    KronosFriend entry;
+    entry.id = jsonStringOr(node, "id");
+    entry.username = jsonStringOr(node, "username");
+    entry.displayName = jsonStringOr(node, "display_name");
+    entry.status = jsonStringOr(node, "status", "offline");
+    entry.currentGameId = jsonStringOr(node, "current_game_id");
+    entry.currentServerId = jsonStringOr(node, "current_server_id");
+    entry.joinTicket = jsonStringOr(node, "join_ticket");
+    return entry;
+}
+} // namespace
+
+FriendsResult KronosApi::fetchFriends() {
+    FriendsResult result;
+    HttpResponse response = requestWithRefresh("GET", "/v1/friends/list", {});
+    if (!response.transportOk) {
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    if (parsed.is_discarded()) {
+        result.error = "The Kronos service returned a friends list this build could not parse.";
+        return result;
+    }
+    auto readList = [](const nlohmann::json& node, const char* key, std::vector<KronosFriend>& out) {
+        auto it = node.find(key);
+        if (it == node.end() || !it->is_array()) return;
+        for (const auto& entry : *it) out.push_back(parseFriend(entry));
+    };
+    readList(parsed, "friends", result.friends);
+    readList(parsed, "incoming_requests", result.incomingRequests);
+    readList(parsed, "outgoing_requests", result.outgoingRequests);
+    auto available = parsed.find("presence_available");
+    result.presenceAvailable = available != parsed.end() && available->is_boolean() && available->get<bool>();
+    result.success = true;
+    return result;
+}
+
+UserSearchResponse KronosApi::searchUsers(const std::string& queryText) {
+    UserSearchResponse result;
+    if (queryText.size() < 3) {
+        // Matches the server's own minimum, so a too-short query never
+        // becomes a pointless round trip.
+        result.error = "Enter at least 3 characters to search.";
+        return result;
+    }
+
+    std::string path = "/v1/users/search?q=";
+    CURL* escaper = curl_easy_init();
+    if (escaper != nullptr) {
+        char* escaped = curl_easy_escape(escaper, queryText.c_str(), static_cast<int>(queryText.size()));
+        if (escaped != nullptr) {
+            path += escaped;
+            curl_free(escaped);
+        }
+        curl_easy_cleanup(escaper);
+    }
+
+    HttpResponse response = requestWithRefresh("GET", path, {});
+    if (!response.transportOk) {
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    auto results = parsed.is_discarded() ? parsed.end() : parsed.find("results");
+    if (parsed.is_discarded() || results == parsed.end() || !results->is_array()) {
+        result.error = "The Kronos service returned search results this build could not parse.";
+        return result;
+    }
+    for (const auto& node : *results) {
+        UserSearchResult entry;
+        entry.id = jsonStringOr(node, "id");
+        entry.username = jsonStringOr(node, "username");
+        entry.displayName = jsonStringOr(node, "display_name");
+        entry.relationship = jsonStringOr(node, "relationship", "none");
+        result.results.push_back(std::move(entry));
+    }
+    result.success = true;
+    return result;
+}
+
+bool KronosApi::sendFriendRequest(const std::string& userId, std::string& outError) {
+    nlohmann::json body{{"user_id", userId}};
+    HttpResponse response = requestWithRefresh("POST", "/v1/friends/request", body.dump());
+    if (!response.transportOk) {
+        outError = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return false;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        outError = extractError(response.body, response.status);
+        return false;
+    }
+    return true;
+}
+
+bool KronosApi::respondToFriendRequest(const std::string& userId, bool accept, std::string& outError) {
+    nlohmann::json body{{"user_id", userId}, {"accept", accept}};
+    HttpResponse response = requestWithRefresh("POST", "/v1/friends/respond", body.dump());
+    if (!response.transportOk) {
+        outError = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return false;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        outError = extractError(response.body, response.status);
+        return false;
+    }
+    return true;
+}
+
+void KronosApi::sendPresenceHeartbeat(const std::string& status, const std::string& gameId,
+                                       const std::string& serverId) {
+    nlohmann::json body{{"status", status}};
+    if (!gameId.empty()) body["current_game_id"] = gameId;
+    if (!serverId.empty()) body["current_server_id"] = serverId;
+    // Best effort by design: a dropped heartbeat only means friends see
+    // this user go offline a little early, which is self-correcting.
+    (void)requestWithRefresh("POST", "/v1/presence/heartbeat", body.dump());
+}
+
 } // namespace engine::core

@@ -1013,199 +1013,231 @@ void drawAnimatedHourglass(ImDrawList* drawList, ImVec2 center, float halfWidth,
 }
 } // namespace
 
+// Kronos Client: the Home canvas.
+//
+// This replaces the legacy full-viewport main menu wholesale. That layout
+// ("Alpha Platform", a raw Player text field, a Google button, and a grid
+// of Launch Studio / Avatar Shop / Friends buttons) plus its separate
+// floating "Your Avatar" window predated the shell chrome, and once the
+// chrome existed the two drew straight through each other. Navigation now
+// lives in the sidebar and identity in the top bar, so none of it is
+// re-created here -- it is deleted, not hidden.
+// Every content view opens through these two, so the canvas geometry
+// lives in ONE place instead of each panel re-deriving the inset and
+// drifting. Also forces the charcoal background, so no raw ImGui grey
+// bleeds through anywhere.
+void RuntimeShell::beginContentCanvas(const char* id) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                     viewport->WorkSize.y - kTopBarHeight));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(core::kronos_palette::kCharcoal));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 18.0f));
+    ImGui::Begin(id, nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+}
+
+void RuntimeShell::endContentCanvas() {
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
 void RuntimeShell::drawHomePanel() {
     ensureLocalProfileLoaded();
+    using namespace core::kronos_palette;
 
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::Begin("Kronos", nullptr,
-                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    beginContentCanvas("Home");
 
-    // Kronos ("Home Screen Avatar Preview"): real, live, orbit-able --
-    // placed to the right of the button card so it reads as a real
-    // companion panel, not a random floating window (the spec's own
-    // "Integrate cleanly with existing Home layout"). Only drawn once
-    // the splash has finished (matches every other Home element).
-    if (!showSplash_) {
-        ensureHomeAvatarPreviewLoaded();
-        constexpr float kPreviewWidth = 360.0f;
-        constexpr float kPreviewHeight = 440.0f;
-        float previewX = viewport->WorkPos.x + viewport->WorkSize.x * 0.74f - kPreviewWidth * 0.5f;
-        float previewY = viewport->WorkPos.y + viewport->WorkSize.y * 0.5f - kPreviewHeight * 0.5f;
-        ImGui::SetNextWindowPos(ImVec2(previewX, previewY), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(kPreviewWidth, kPreviewHeight), ImGuiCond_Always);
-        if (ImGui::Begin("##home_avatar_preview", nullptr,
-                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav)) {
-            ImGui::TextDisabled("Your Avatar");
-            ImGui::BeginChild("##home_avatar_preview_viewport", ImVec2(0.0f, kPreviewHeight - 60.0f), true);
-            if (homeAvatarPreview_) homeAvatarPreview_->draw();
-            ImGui::EndChild();
-            ImGui::TextDisabled("Drag to orbit, scroll to zoom");
-        }
-        ImGui::End();
+    // --- guest banner -------------------------------------------------
+    std::optional<core::KronosUser> user = kronosApi_.currentUser();
+    bool isGuest = user.has_value() && user->email.empty() && user->displayName.rfind("Guest", 0) == 0;
+    if (isGuest) {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(kSkyBlue[0] * 0.22f, kSkyBlue[1] * 0.22f, kSkyBlue[2] * 0.28f, 1.0f));
+        ImGui::BeginChild("##guest_banner", ImVec2(0.0f, 46.0f), true);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(paletteColor(kTextBright),
+                            "Playing as Guest -- Sign Up to save progress and add friends!");
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 96.0f);
+        pushPrimaryActionButtonColors();
+        if (ImGui::Button("Sign Up", ImVec2(96.0f, 26.0f))) startBrowserSignIn();
+        popPrimaryActionButtonColors();
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0.0f, 12.0f));
     }
 
-    // Kronos ("Home UI Polish" -- "Clean layout"): a real, centered card
-    // (not the old raw top-left button stack) -- width is fixed so
-    // wrapping/alignment stays predictable across real window sizes,
-    // matching the same "fixed-width centered card" shape
-    // drawErrorPanel() already uses.
-    // Kronos ("Home Screen Avatar Preview"): the card now sits left-of-
-    // center (not dead-center) so the real avatar preview panel above
-    // has real, non-overlapping room on the right -- a real, deliberate
-    // two-column Home layout, not a coincidence of leftover space.
-    constexpr float kCardWidth = 340.0f;
-    float cardX = viewport->WorkPos.x + viewport->WorkSize.x * 0.30f - kCardWidth * 0.5f;
-    ImGui::SetCursorPos(ImVec2(cardX - viewport->WorkPos.x, viewport->WorkSize.y * 0.16f));
-    ImGui::BeginGroup();
-
-    ImGui::SetWindowFontScale(2.2f);
-    // Real, honest default font -- no custom font asset shipped for this
-    // shell yet (see this comment's own long-standing precedent).
-    ImGui::TextUnformatted("KRONOS");
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::TextDisabled("Alpha Platform");
-    ImGui::Dummy(ImVec2(0.0f, 12.0f));
-
-    ImGui::SetNextItemWidth(kCardWidth);
-    if (ImGui::InputText("##playing_as", displayNameBuffer_, sizeof(displayNameBuffer_))) {
-        localProfile_.displayName = displayNameBuffer_;
-        (void)localProfile_.saveToFile(kLocalProfilePath);
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("Playing As");
-
-    // Kronos ("Google OAuth Authentication"): real -- three real
-    // states, never fabricated: signed in (shows the real account
-    // email/name), signing in (a real background thread is genuinely
-    // waiting on the browser right now), or the real sign-in button.
-    // See startGoogleSignIn()'s own comment for why this runs on a
-    // background thread rather than blocking this draw call.
-    if (localProfile_.googleSignedIn) {
-        ImGui::TextDisabled("Signed in as %s", localProfile_.googleDisplayName.empty()
-                                                     ? localProfile_.googleEmail.c_str()
-                                                     : localProfile_.googleDisplayName.c_str());
-    } else if (googleSignInInProgress_.load()) {
-        ImGui::TextDisabled("%s", googleSignInStatusMessage_.c_str());
-    } else {
-        if (ImGui::SmallButton("Sign in with Google")) startGoogleSignIn();
-        if (!googleSignInStatusMessage_.empty()) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.8f, 0.25f, 0.2f, 1.0f), "%s", googleSignInStatusMessage_.c_str());
-        }
-    }
-    // Kronos ("Backend integration"): the real Kronos account section --
-    // sign in/up, current account, sign out. Distinct from the Google
-    // button above: that obtains a Google identity, this is the real
-    // Kronos session the catalogue and server allocation need.
-    drawBackendAccountSection();
-    ImGui::Dummy(ImVec2(0.0f, 8.0f));
-
-    // Kronos ("In-App Auto-Updater" -- "prompt the user"): only ever
-    // drawn once a real newer release has genuinely been found by the
-    // real background check. Deliberately a quiet inline card rather
-    // than a modal: an update is worth offering, never worth blocking
-    // someone who opened Kronos to play.
+    // --- update banner ------------------------------------------------
     if (updateAvailable_ && !updateBannerDismissed_) {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(1.0f, 0.965f, 0.925f, 1.0f));
-        ImGui::BeginChild("##update_banner", ImVec2(kCardWidth, 74.0f), true);
-        ImGui::TextColored(ImVec4(0.729f, 0.325f, 0.086f, 1.0f), "Kronos %s is available", updateAvailableTag_.c_str());
-        ImGui::TextDisabled("You're running %s.", core::kKronosVersion);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, paletteColor(kSlate));
+        ImGui::BeginChild("##update_banner", ImVec2(0.0f, 68.0f), true);
+        ImGui::TextColored(paletteColor(kSkyBlue), "Kronos %s is available", updateAvailableTag_.c_str());
+        ImGui::TextColored(paletteColor(kTextMuted), "You're running %s.", core::kKronosVersion);
         pushPrimaryActionButtonColors();
         if (ImGui::SmallButton("Update now")) {
             if (!startUpdateDownload()) {
-                // startUpdateDownload() already put a real, specific
-                // reason in updateStatusMessage_; keep the banner up so
-                // the user can actually see it.
                 notify(core::NotificationKind::SystemMessage, "Update failed to start", updateStatusMessage_);
             }
         }
         popPrimaryActionButtonColors();
         ImGui::SameLine();
         if (ImGui::SmallButton("Later")) updateBannerDismissed_ = true;
-        if (!updateStatusMessage_.empty()) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", updateStatusMessage_.c_str());
-        }
         ImGui::EndChild();
         ImGui::PopStyleColor();
-        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+        ImGui::Dummy(ImVec2(0.0f, 12.0f));
     }
 
-    // Primary action, visually distinct (accent color) from every
-    // secondary action below it -- the one real, most common thing a
-    // returning player wants to do.
-    //
-    // Kronos ("Base Client UI Theme" / "Warm Ivory & Playful Sunset"):
-    // real, vibrant coral (pushPrimaryActionButtonColors(), matching
-    // core::applyKronosUITheme()'s own kAccent) -- every other button on
-    // this screen (Friends/Settings/Sessions/etc.) stays the theme's own
-    // neutral default, so "primary action" still reads as visually
-    // distinct from "secondary action."
-    ImVec2 primaryButtonSize(kCardWidth, 48.0f);
-    pushPrimaryActionButtonColors();
-    if (ImGui::Button("Game Catalogue", primaryButtonSize)) openGameCatalogue();
-    popPrimaryActionButtonColors();
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    drawFriendsCarousel();
 
-    // Kronos ("Social Layer" / "Notifications System"): real, first
-    // Home-reachable entry points -- see ShellState::Friends/
-    // Notifications' own comments. Badge counts (pending requests/unread)
-    // surface directly on the button label so a returning player notices
-    // without having to open either panel first.
-    std::string friendsLabel = "Friends";
-    if (!localProfile_.pendingRequests.empty()) {
-        friendsLabel += " (" + std::to_string(localProfile_.pendingRequests.size()) + ")";
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+    ImGui::SeparatorText("Jump back in");
+    ImGui::TextColored(paletteColor(kTextMuted),
+                       "Browse published games under Discover, or open your own local projects under Create.");
+
+    if (backendReachability_ == BackendReachability::Unreachable) {
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        ImGui::TextColored(paletteColor(kTextMuted),
+                           "Kronos services are unreachable right now. Local / Dev games under Create still work.");
     }
-    size_t unread = notification::unreadCount(localProfile_);
-    std::string notificationsLabel = unread > 0 ? "Notifications (" + std::to_string(unread) + ")" : "Notifications";
 
-    ImVec2 halfButtonSize((kCardWidth - ImGui::GetStyle().ItemSpacing.x) * 0.5f, 40.0f);
-    // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI"): the
-    // real, first player-facing entry point into the shared
-    // avatar-item Marketplace -- see ShellState::AvatarShop's own header
-    // comment for why this closes a real, previously-stated gap.
-    //
-    // Kronos ("Fix Home Screen Layout"): the real, standalone "Sessions"
-    // button is removed from this grid -- session browsing now lives
-    // entirely inside the Game Catalogue (each real game card's own
-    // "Live Sessions" button, see drawGameCard()'s own comment), not a
-    // second, separate entry point. showSessionBrowser()/
-    // ShellState::SessionBrowser/drawSessionBrowserPanel() themselves
-    // are unchanged and still real (ui.sessionBrowser()'s own real Lua
-    // binding still reaches them, see ScriptUiApi.hpp) -- only this
-    // Home-screen button is gone.
-    if (ImGui::Button("Avatar Shop", halfButtonSize)) openAvatarShop();
-    ImGui::SameLine();
-    if (ImGui::Button(friendsLabel.c_str(), halfButtonSize)) openFriends();
-    if (ImGui::Button(notificationsLabel.c_str(), halfButtonSize)) openNotifications();
-    ImGui::SameLine();
-    if (ImGui::Button("Settings", halfButtonSize)) openSettings();
-    // Kronos ("Game Catalogue Overhaul"): the real replacement for the
-    // old bare "Play" button plus the old disabled Create/Plugins/Assets
-    // placeholders -- Launch Studio genuinely opens the real editor
-    // (core::launchProcess(), a real sibling process, not a stub). The
-    // real, only path to AvatarEditor/Creator Dashboard, both of which
-    // stay real, Studio-only panels by original design (not a gap --
-    // see studio::plugins::AvatarEditor/CreatorDashboardPanel), not
-    // duplicated here.
-    // Kronos ("Base Client UI Theme"): real, same primary-action green
-    // as "Game Catalogue" above -- "Launch" is the other real primary
-    // action this screen offers.
-    pushPrimaryActionButtonColors();
-    if (ImGui::Button("Launch Studio", halfButtonSize)) launchStudio();
-    popPrimaryActionButtonColors();
-
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    ImGui::TextDisabled("Kronos %s", core::kKronosVersion);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("About")) showAboutOverlay_ = true;
-
-    ImGui::EndGroup();
-
-    ImGui::End();
+    endContentCanvas();
 }
+
+// Kronos ("Home Screen Friends Carousel"): the circular Add-Friends action
+// card followed by circular friend badges with live status. Everything
+// here comes from a real /v1/friends/list response -- there is no
+// placeholder friend, so an empty carousel means you genuinely have none.
+// Kronos ("Direct Join"): connects straight into the server a friend is
+// actually on, using the join ticket the backend minted for THIS user and
+// THAT server. Nothing here trusts the client's own idea of where the
+// friend is -- the ticket is what the game server validates.
+void RuntimeShell::joinFriendGame(const core::KronosFriend& friendEntry) {
+    if (friendEntry.joinTicket.empty() || friendEntry.currentServerId.empty()) {
+        friendsStatusMessage_ = "That friend is no longer in a joinable game.";
+        return;
+    }
+
+    // The friends list carries a ticket but not a host/port -- allocation
+    // is what resolves an address. Ask for one against the game the friend
+    // is in, which also re-checks capacity as of right now.
+    if (friendEntry.currentGameId.empty()) {
+        friendsStatusMessage_ = "Kronos did not report which game your friend is in.";
+        return;
+    }
+    startServerAllocation(friendEntry.currentGameId, friendEntry.username.empty() ? friendEntry.displayName
+                                                                                   : friendEntry.username);
+}
+
+void RuntimeShell::drawFriendsCarousel() {
+    using namespace core::kronos_palette;
+    std::optional<core::KronosUser> user = kronosApi_.currentUser();
+
+    size_t friendCount = friends_.size();
+    std::string heading = friendCount > 0 ? "Friends (" + std::to_string(friendCount) + ")" : "Friends";
+    ImGui::SeparatorText(heading.c_str());
+
+    if (!user.has_value()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "Sign in to see who's online.");
+        return;
+    }
+
+    constexpr float kCardSize = 84.0f;
+    constexpr float kBadgeRadius = 30.0f;
+    ImGui::BeginChild("##friends_carousel", ImVec2(0.0f, kCardSize + 34.0f), false,
+                       ImGuiWindowFlags_HorizontalScrollbar);
+
+    // Add Friends action card, always first.
+    {
+        ImGui::BeginGroup();
+        ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImVec2 center(origin.x + kCardSize * 0.5f, origin.y + kBadgeRadius + 4.0f);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddCircleFilled(center, kBadgeRadius, ImGui::GetColorU32(paletteColor(kSlate)), 32);
+        drawList->AddCircle(center, kBadgeRadius, ImGui::GetColorU32(paletteColor(kSkyBlue)), 32, 2.0f);
+        // A plus sign, drawn rather than relying on a glyph the font may
+        // not carry.
+        drawList->AddLine(ImVec2(center.x - 11.0f, center.y), ImVec2(center.x + 11.0f, center.y),
+                           ImGui::GetColorU32(paletteColor(kSkyBlue)), 2.5f);
+        drawList->AddLine(ImVec2(center.x, center.y - 11.0f), ImVec2(center.x, center.y + 11.0f),
+                           ImGui::GetColorU32(paletteColor(kSkyBlue)), 2.5f);
+
+        ImGui::InvisibleButton("##add_friends", ImVec2(kCardSize, kBadgeRadius * 2.0f + 8.0f));
+        if (ImGui::IsItemClicked()) {
+            bool isGuest = user->email.empty() && user->displayName.rfind("Guest", 0) == 0;
+            if (isGuest) {
+                // Guests are refused the social graph by the SERVER too;
+                // this just explains why before the round trip.
+                showGuestUpgradePrompt_ = true;
+            } else {
+                showAddFriendsModal_ = true;
+                friendSearchResults_.clear();
+                friendSearchStatus_.clear();
+            }
+        }
+        ImGui::TextColored(paletteColor(kTextMuted), "Add");
+        ImGui::EndGroup();
+    }
+
+    for (const core::KronosFriend& friendEntry : friends_) {
+        ImGui::SameLine();
+        ImGui::PushID(friendEntry.id.c_str());
+        ImGui::BeginGroup();
+
+        ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImVec2 center(origin.x + kCardSize * 0.5f, origin.y + kBadgeRadius + 4.0f);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddCircleFilled(center, kBadgeRadius, ImGui::GetColorU32(paletteColor(kSlate)), 32);
+        drawAvatarHeadGlyph(drawList, center, kBadgeRadius * 0.66f);
+
+        // Status ring + dot: green = in the launcher, sky blue = in a
+        // game, nothing at all when offline (an offline friend should not
+        // wear a badge that implies presence).
+        const bool inGame = friendEntry.status == "in_game";
+        const bool online = inGame || friendEntry.status == "online_launcher";
+        if (online) {
+            ImVec4 statusColor = inGame ? paletteColor(kSkyBlue) : paletteColor(kGreen);
+            drawList->AddCircle(center, kBadgeRadius, ImGui::GetColorU32(statusColor), 32, 2.5f);
+            ImVec2 dot(center.x + kBadgeRadius * 0.70f, center.y + kBadgeRadius * 0.70f);
+            drawList->AddCircleFilled(dot, 7.0f, ImGui::GetColorU32(statusColor), 16);
+            drawList->AddCircle(dot, 7.0f, ImGui::GetColorU32(paletteColor(kCharcoal)), 16, 2.0f);
+        }
+
+        ImGui::InvisibleButton("##friend", ImVec2(kCardSize, kBadgeRadius * 2.0f + 8.0f));
+        bool hovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemClicked() && inGame && !friendEntry.joinTicket.empty()) {
+            joinFriendGame(friendEntry);
+        }
+        if (hovered) {
+            ImGui::BeginTooltip();
+            ImGui::TextColored(paletteColor(kTextBright), "%s", friendEntry.username.empty()
+                                                                    ? friendEntry.displayName.c_str()
+                                                                    : friendEntry.username.c_str());
+            if (inGame) {
+                ImGui::TextColored(paletteColor(kSkyBlue), "In game");
+                ImGui::TextColored(paletteColor(kTextMuted), "Click to join their server");
+            } else if (online) {
+                ImGui::TextColored(paletteColor(kGreen), "Online");
+            } else {
+                ImGui::TextColored(paletteColor(kTextMuted), "Offline");
+            }
+            ImGui::EndTooltip();
+        }
+
+        std::string label = friendEntry.username.empty() ? friendEntry.displayName : friendEntry.username;
+        if (label.size() > 10) label = label.substr(0, 9) + "...";
+        ImGui::TextColored(online ? paletteColor(kTextBright) : paletteColor(kTextMuted), "%s", label.c_str());
+
+        ImGui::EndGroup();
+        ImGui::PopID();
+    }
+
+    ImGui::EndChild();
+
+    if (!friendsStatusMessage_.empty()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "%s", friendsStatusMessage_.c_str());
+    }
+}
+
 
 void RuntimeShell::drawSplashPanel() {
     // Kronos ("Branding + Release Prep" -- "logo placeholder"): a real,
@@ -1265,8 +1297,12 @@ void RuntimeShell::drawAboutPanel() {
 
 void RuntimeShell::drawSessionBrowserPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    // Inset into the shell chrome's content canvas -- drawing at full
+    // viewport size here is what put this panel underneath the sidebar
+    // and brand panel.
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                     viewport->WorkSize.y - kTopBarHeight));
     ImGui::Begin("Session Browser", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
@@ -1735,8 +1771,12 @@ void RuntimeShell::openAvatarShop() {
 
 void RuntimeShell::drawAvatarShopPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    // Inset into the shell chrome's content canvas -- drawing at full
+    // viewport size here is what put this panel underneath the sidebar
+    // and brand panel.
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                     viewport->WorkSize.y - kTopBarHeight));
     ImGui::Begin("Avatar Shop", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
@@ -2201,8 +2241,12 @@ void RuntimeShell::openSettings() {
 
 void RuntimeShell::drawSettingsPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    // Inset into the shell chrome's content canvas -- drawing at full
+    // viewport size here is what put this panel underneath the sidebar
+    // and brand panel.
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                     viewport->WorkSize.y - kTopBarHeight));
     ImGui::Begin("Settings", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
@@ -3104,8 +3148,12 @@ void RuntimeShell::openFriends() {
 
 void RuntimeShell::drawFriendsPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    // Inset into the shell chrome's content canvas -- drawing at full
+    // viewport size here is what put this panel underneath the sidebar
+    // and brand panel.
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                     viewport->WorkSize.y - kTopBarHeight));
     ImGui::Begin("Friends", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
@@ -3290,8 +3338,12 @@ constexpr const char* kNotificationFilterNames[] = {"All",     "Friend Requests"
 
 void RuntimeShell::drawNotificationsPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    // Inset into the shell chrome's content canvas -- drawing at full
+    // viewport size here is what put this panel underneath the sidebar
+    // and brand panel.
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                     viewport->WorkSize.y - kTopBarHeight));
     ImGui::Begin("Notifications", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 

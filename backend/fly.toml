@@ -1,0 +1,45 @@
+# PaaS alternative to docker-compose.prod.yml, for Fly.io.
+#
+# Fly terminates TLS at its own edge, so there is no Caddy service here --
+# force_https below is the equivalent of the Caddyfile's redirect. Postgres
+# and Redis come from `fly postgres create` / `fly redis create`, which
+# inject DATABASE_URL and REDIS_URL automatically.
+#
+# Secrets are set out of band, never in this file:
+#   fly secrets set JWT_SECRET=... JOIN_TICKET_SECRET=... GOOGLE_CLIENT_ID=...
+#
+# Migrations run as a release command, so they complete before any new
+# instance takes traffic and a failed migration aborts the deploy instead
+# of leaving half the fleet on a schema it does not understand.
+
+app = "kronos-api"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  release_command = "node scripts/migrate.js"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # presence heartbeats and TLS sessions want a warm instance
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

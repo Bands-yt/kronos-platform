@@ -1,0 +1,32 @@
+# Kronos edge. Caddy obtains and renews Let's Encrypt certificates
+# automatically for {$KRONOS_DOMAIN} -- there is no certbot step and no
+# renewal cron to forget.
+
+{
+	email {$KRONOS_ACME_EMAIL}
+}
+
+{$KRONOS_DOMAIN} {
+	encode zstd gzip
+
+	# HSTS: once a browser has seen this over real TLS it will refuse to
+	# talk to Kronos over plaintext again. Deliberately no `preload` --
+	# that is effectively irreversible and should be a conscious choice
+	# once the domain is settled.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		# The API sets its own CSP on the auth page; don't clobber it.
+		-Server
+	}
+
+	# The launcher polls presence every 15s and downloads release archives
+	# through this same host, so the read timeout is generous while the
+	# write timeout stays short enough to shed a stuck client.
+	reverse_proxy api:8080 {
+		health_uri /healthz
+		health_interval 15s
+		health_timeout 5s
+	}
+}

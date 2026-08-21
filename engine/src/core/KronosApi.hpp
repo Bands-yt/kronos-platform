@@ -69,6 +69,44 @@ struct ServerAllocation {
     std::string error;
 };
 
+struct KronosFriend {
+    std::string id;
+    std::string username;
+    std::string displayName;
+    // "offline" | "online_launcher" | "in_game", straight from the server.
+    std::string status;
+    std::string currentGameId;
+    std::string currentServerId;
+    // Present only when the friend is genuinely in a game -- the server
+    // mints one for that specific server and nothing else.
+    std::string joinTicket;
+};
+
+struct FriendsResult {
+    bool success = false;
+    std::vector<KronosFriend> friends;
+    std::vector<KronosFriend> incomingRequests;
+    std::vector<KronosFriend> outgoingRequests;
+    // False when the server could not read presence. The UI must then say
+    // so rather than drawing everybody as offline.
+    bool presenceAvailable = false;
+    std::string error;
+};
+
+struct UserSearchResult {
+    std::string id;
+    std::string username;
+    std::string displayName;
+    // "none" | "request_sent" | "request_received" | "friends" | "blocked"
+    std::string relationship;
+};
+
+struct UserSearchResponse {
+    bool success = false;
+    std::vector<UserSearchResult> results;
+    std::string error;
+};
+
 // Kronos ("via join tickets"): SERVER-side ticket verification against a
 // real running Kronos backend. Free function rather than a KronosApi
 // method because the process calling it is a dedicated game server with
@@ -126,6 +164,15 @@ public:
     [[nodiscard]] CatalogueResult fetchGames(int limit = 24, const std::string& cursor = {},
                                               const std::string& search = {});
     [[nodiscard]] ServerAllocation allocateServer(const std::string& gameSlug);
+
+    // --- social ----------------------------------------------------------
+    [[nodiscard]] FriendsResult fetchFriends();
+    [[nodiscard]] UserSearchResponse searchUsers(const std::string& queryText);
+    [[nodiscard]] bool sendFriendRequest(const std::string& userId, std::string& outError);
+    [[nodiscard]] bool respondToFriendRequest(const std::string& userId, bool accept, std::string& outError);
+    // Real 15s presence heartbeat, per the spec. Best effort: a failed
+    // heartbeat just means friends see this user go offline shortly.
+    void sendPresenceHeartbeat(const std::string& status, const std::string& gameId, const std::string& serverId);
 
 private:
     struct HttpResponse {
