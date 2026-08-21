@@ -26,19 +26,31 @@ void applyKronosUITheme() {
     // green accent -- so pushPrimaryActionButtonColors() (RuntimeShell.cpp)
     // was updated to this same coral rather than left on its old,
     // now-inconsistent green.
-    const ImVec4 kAccent(0.867f, 0.420f, 0.125f, 1.00f);         // #DD6B20
-    const ImVec4 kAccentHovered(0.918f, 0.494f, 0.204f, 1.00f);  // brighter, ~#EA7E34
-    const ImVec4 kAccentActive(0.729f, 0.325f, 0.086f, 1.00f);   // darker, ~#BA5316
-    const ImVec4 kBgWindow(0.980f, 0.980f, 0.973f, 1.00f);       // #FAFAF8 warm ivory
-    const ImVec4 kBgCard(1.00f, 1.00f, 1.00f, 1.00f);            // #FFFFFF -- panels/cards/child windows
-    // A light neutral distinct from both kBgWindow and kBgCard, for
-    // interactive frames (inputs/sliders/combos) sitting *inside* a
-    // white card -- pure white-on-white would read as one flat surface
-    // with no visible field boundary.
-    const ImVec4 kBgFrame(0.953f, 0.949f, 0.937f, 1.00f);
-    const ImVec4 kBorder(0.886f, 0.910f, 0.941f, 1.00f);         // #E2E8F0 soft warm gray
-    const ImVec4 kText(0.176f, 0.216f, 0.282f, 1.00f);           // #2D3748
-    const ImVec4 kTextDisabled(0.60f, 0.62f, 0.65f, 1.00f);
+    // Kronos Client v0.2.0-alpha visual spec: strict dark mode.
+    //   Background        Charcoal Black  #191B1D
+    //   Cards/containers  Slate Grey      #232527
+    //   Accent/active tab Vivid Sky Blue  #4EA8DE
+    //   Primary action    Vibrant Green   #00B259
+    //   Text              #FFFFFF / #CCCCCC
+    //
+    // The accent is deliberately split from the primary-action colour
+    // here: sky blue marks "where you are" (active tab, selection, focus)
+    // and green marks "this does the thing" (Play, Sign In). Using one
+    // colour for both would make a selected tab look like a button.
+    const ImVec4 kAccent(0.306f, 0.659f, 0.871f, 1.00f);         // #4EA8DE
+    const ImVec4 kAccentHovered(0.404f, 0.729f, 0.914f, 1.00f);  // lighter
+    const ImVec4 kAccentActive(0.239f, 0.561f, 0.761f, 1.00f);   // deeper
+    const ImVec4 kBgWindow(0.098f, 0.106f, 0.114f, 1.00f);       // #191B1D
+    const ImVec4 kBgCard(0.137f, 0.145f, 0.153f, 1.00f);         // #232527
+    // Interactive frames (inputs/combos) sitting inside a slate card
+    // need to read as a distinct sunken surface, so they go slightly
+    // darker than the card rather than matching it.
+    const ImVec4 kBgFrame(0.110f, 0.118f, 0.125f, 1.00f);
+    // A low-contrast hairline, not a hard outline -- the spec asks for
+    // "clean borders", and on a dark ground a bright border shouts.
+    const ImVec4 kBorder(0.204f, 0.216f, 0.227f, 1.00f);
+    const ImVec4 kText(1.00f, 1.00f, 1.00f, 1.00f);              // #FFFFFF
+    const ImVec4 kTextDisabled(0.60f, 0.61f, 0.62f, 1.00f);      // dimmed #CCCCCC
 
     colors[ImGuiCol_Text] = kText;
     colors[ImGuiCol_TextDisabled] = kTextDisabled;

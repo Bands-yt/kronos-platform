@@ -351,7 +351,6 @@ private:
     // background thread and hand the result back through a mutex-guarded
     // optional, exactly like the Google sign-in and update check already
     // do. None of them may block the render thread.
-    void startBackendSignIn(const std::string& email, const std::string& password, bool createAccount);
     void startBackendSessionRestore();
     void startCatalogueFetch();
     // Requests a real server allocation for `slug` and, on success,
@@ -362,6 +361,15 @@ private:
     void backendSignOut();
     void drawBackendAccountSection();
     void drawOnlineCatalogueSection();
+    // Kronos Client shell chrome (see the spec's Brand Panels section).
+    void drawSidebar();
+    void drawTopBar();
+    void drawBrandPanel();
+    // Spec: the ONLY sign-in entry point. Opens the system browser and
+    // waits on a real loopback callback -- no credential ever enters this
+    // process.
+    void startBrowserSignIn();
+    [[nodiscard]] std::string backendStatusLine() const;
     // The real disk-discovered games, drawn in their own "Local / Dev"
     // tab so they are never mistaken for published Kronos content.
     void drawLocalGamesTab();
@@ -536,10 +544,6 @@ private:
     std::mutex backendAuthMutex_;
     std::optional<core::KronosAuthResult> backendAuthPendingResult_;
     std::string backendAuthStatusMessage_;
-    char backendEmailBuffer_[128] = "";
-    char backendPasswordBuffer_[128] = "";
-    bool backendShowSignInForm_ = false;
-    bool backendCreateAccountMode_ = false;
 
     std::thread catalogueFetchThread_;
     std::atomic<bool> catalogueFetchInProgress_{false};
@@ -560,6 +564,16 @@ private:
     // Held so it can be handed to the game server once NetworkSession
     // grows a field to carry it -- see startServerAllocation()'s comment.
     std::string lastJoinTicket_;
+
+    // Which half of the catalogue the Discover/Create split is showing.
+    enum class CatalogueTab { Discover, Create };
+    CatalogueTab catalogueTab_ = CatalogueTab::Discover;
+    char searchBuffer_[128] = "";
+    // Real, observed reachability of the backend -- drives the brand
+    // panel's status line and the offline banner, so neither ever claims
+    // a connection that was never made.
+    enum class BackendReachability { Unknown, Reachable, Unreachable };
+    BackendReachability backendReachability_ = BackendReachability::Unknown;
 
     // Kronos ("Notifications System"): same real dual-reachability shape.
     bool showNotificationsOverlay_ = false;

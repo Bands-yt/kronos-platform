@@ -105,6 +105,15 @@ public:
     // password prompt, and whenever a request comes back 401.
     [[nodiscard]] KronosAuthResult restoreSession();
 
+    // Kronos Client spec ("no user or password text fields ever appear in
+    // the launcher"): completes a sign-in that happened entirely in the
+    // system browser. The browser hands back a refresh token over the
+    // loopback callback; this persists it and exchanges it for a real
+    // session through the SAME /v1/auth/refresh endpoint an ordinary
+    // resume uses -- so the browser flow needs no new backend surface,
+    // and the launcher never sees a password at any point.
+    [[nodiscard]] KronosAuthResult completeBrowserSignIn(const std::string& refreshToken);
+
     // Revokes the refresh token server-side and clears local state. Best
     // effort on the network call: local credentials are cleared either
     // way, so "log out" always visibly logs you out.

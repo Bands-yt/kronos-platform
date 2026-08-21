@@ -26,6 +26,9 @@
 #include "core/Logger.hpp"
 #include "core/ResourcePaths.hpp"
 #include "core/UpdateCheck.hpp"
+#include "core/LoopbackHttpServer.hpp"
+#include "core/OAuthPkce.hpp"
+#include "core/OpenUrl.hpp"
 #include "core/UITheme.hpp"
 #include "marketplace/CreditsPurchase.hpp"
 #include "marketplace/RatingSubmission.hpp"
@@ -43,11 +46,46 @@ namespace {
 // developer can point the launcher at a local service without editing
 // and rebuilding -- and so a self-hosted deployment is a config change
 // rather than a fork.
+// Small, self-contained percent-encoder for the two query values the
+// browser sign-in URL carries. Deliberately not pulling libcurl into
+// this translation unit for ten lines of RFC 3986.
+std::string urlEncodeComponent(const std::string& value) {
+    static const char* kHex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(value.size() * 3);
+    for (unsigned char c : value) {
+        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+                          c == '_' || c == '.' || c == '~';
+        if (unreserved) {
+            out += static_cast<char>(c);
+        } else {
+            out += '%';
+            out += kHex[(c >> 4) & 0xF];
+            out += kHex[c & 0xF];
+        }
+    }
+    return out;
+}
+
+// Where the browser sign-in page lives. Overridable so a self-hosted or
+// local deployment is configuration rather than a rebuild.
+std::string resolveKronosAuthUrl() {
+    const char* fromEnv = std::getenv("KRONOS_AUTH_URL");
+    if (fromEnv != nullptr && fromEnv[0] != '\0') return fromEnv;
+    return std::string(std::getenv("KRONOS_API_URL") ? std::getenv("KRONOS_API_URL") : "http://127.0.0.1:8080") + "/auth/start";
+}
+
 std::string resolveKronosBackendUrl() {
     const char* fromEnv = std::getenv("KRONOS_API_URL");
     if (fromEnv != nullptr && fromEnv[0] != '\0') return fromEnv;
     return "http://127.0.0.1:8080";
 }
+
+// Kronos Client shell chrome geometry -- one definition, used by both
+// the chrome itself and every content panel that has to inset around it.
+constexpr float kSidebarWidth = 214.0f;
+constexpr float kTopBarHeight = 64.0f;
+constexpr float kBrandPanelWidth = 300.0f;
 
 constexpr const char* kUpdateRepoOwner = "Bands-yt";
 constexpr const char* kUpdateRepoName = "kronos-platform";
@@ -263,6 +301,9 @@ bool RuntimeShell::initialize() {
     // already signed in without another password prompt. Silent if there
     // is nothing saved.
     startBackendSessionRestore();
+    // Load the public catalogue immediately -- Discover should have real
+    // content on first paint rather than only after signing in.
+    startCatalogueFetch();
 
     return true;
 }
@@ -807,6 +848,20 @@ void RuntimeShell::tick(float dt) {
         if (splashClock_ >= kSplashDurationSeconds) showSplash_ = false;
         drawSplashPanel();
     } else {
+        // Kronos Client shell chrome -- drawn around every browsing state.
+        // Deliberately NOT around Loading/InGame/Error: those are
+        // full-screen moments where a sidebar and a sign-in button would
+        // be noise, not navigation.
+        bool showChrome = state_ == ShellState::Home || state_ == ShellState::GameCatalogue ||
+                          state_ == ShellState::AvatarShop || state_ == ShellState::Settings ||
+                          state_ == ShellState::Friends || state_ == ShellState::Notifications ||
+                          state_ == ShellState::SessionBrowser;
+        if (showChrome) {
+            drawSidebar();
+            drawTopBar();
+            drawBrandPanel();
+        }
+
         switch (state_) {
             case ShellState::Home: drawHomePanel(); break;
             case ShellState::SessionBrowser: drawSessionBrowserPanel(); break;
@@ -850,12 +905,50 @@ namespace {
 // separately-hand-copied color triple. Matches core::applyKronosUITheme()'s
 // own kAccent exactly (#DD6B20) -- was green before the theme's own
 // accent color changed; kept in sync here rather than left stale.
+// Kronos Client spec: primary actions (Play, Sign In) are Vibrant Green
+// #00B259, deliberately distinct from the sky-blue accent that marks
+// selection/active state -- see UITheme.cpp's own note on why one colour
+// for both would make a selected tab look like a button.
+ImVec4 paletteColor(const float (&rgba)[4]) { return ImVec4(rgba[0], rgba[1], rgba[2], rgba[3]); }
+
 void pushPrimaryActionButtonColors() {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.867f, 0.420f, 0.125f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.918f, 0.494f, 0.204f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.729f, 0.325f, 0.086f, 1.0f));
+    using namespace engine::core::kronos_palette;
+    ImGui::PushStyleColor(ImGuiCol_Button, paletteColor(kGreen));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, paletteColor(kGreenHover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, paletteColor(kGreenActive));
 }
 void popPrimaryActionButtonColors() { ImGui::PopStyleColor(3); }
+
+// Kronos: the smooth, fixed-shape Kronos character head, drawn
+// procedurally. Matches the reference silhouette (rounded head, flat
+// rounded jaw, the two side "port" discs) closely enough to read as the
+// same character at profile-icon size, without needing a portrait asset
+// per user -- and, unlike a downloaded image, it is always available
+// offline and costs no GPU texture.
+void drawAvatarHeadGlyph(ImDrawList* drawList, ImVec2 center, float radius) {
+    using namespace engine::core::kronos_palette;
+    const ImU32 skin = ImGui::GetColorU32(ImVec4(0.93f, 0.87f, 0.80f, 1.0f));
+    const ImU32 feature = ImGui::GetColorU32(ImVec4(0.13f, 0.13f, 0.14f, 1.0f));
+    const ImU32 port = ImGui::GetColorU32(ImVec4(0.24f, 0.25f, 0.27f, 1.0f));
+
+    // Head: a rounded rectangle rather than a circle -- the reference
+    // shape is squarer at the jaw than a plain ball.
+    ImVec2 topLeft(center.x - radius * 0.86f, center.y - radius);
+    ImVec2 bottomRight(center.x + radius * 0.86f, center.y + radius * 0.92f);
+    drawList->AddRectFilled(topLeft, bottomRight, skin, radius * 0.52f);
+
+    // Side ports.
+    drawList->AddCircleFilled(ImVec2(topLeft.x + radius * 0.04f, center.y), radius * 0.20f, port, 16);
+    drawList->AddCircleFilled(ImVec2(bottomRight.x - radius * 0.04f, center.y), radius * 0.20f, port, 16);
+
+    // Eyes and mouth, scaled off the radius so they stay proportional at
+    // any icon size.
+    float eyeY = center.y - radius * 0.14f;
+    drawList->AddCircleFilled(ImVec2(center.x - radius * 0.32f, eyeY), radius * 0.13f, feature, 12);
+    drawList->AddCircleFilled(ImVec2(center.x + radius * 0.32f, eyeY), radius * 0.13f, feature, 12);
+    drawList->AddRectFilled(ImVec2(center.x - radius * 0.24f, center.y + radius * 0.30f),
+                             ImVec2(center.x + radius * 0.24f, center.y + radius * 0.40f), feature, radius * 0.05f);
+}
 
 // Kronos ("Animated Hourglass Loading Screen"): a real, procedurally
 // drawn, animated hourglass -- two triangles forming the classic bulb-
@@ -1556,8 +1649,10 @@ void RuntimeShell::drawLocalGamesTab() {
 
 void RuntimeShell::drawGameCataloguePanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    // Inset into the region the shell chrome leaves free.
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                     viewport->WorkSize.y - kTopBarHeight));
     ImGui::Begin("Game Catalogue", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
@@ -1573,15 +1668,25 @@ void RuntimeShell::drawGameCataloguePanel() {
     // Locally-discovered games are still fully playable, just in their own
     // clearly-labelled tab so they can never be mistaken for real
     // published content.
+    // Spec: Discover is public/online, Create is the developer area. The
+    // sidebar drives which one is showing, so selecting "Create" there
+    // and selecting it here are the same single piece of state.
     if (ImGui::BeginTabBar("##catalogue_tabs")) {
-        if (ImGui::BeginTabItem("Kronos")) {
+        ImGuiTabItemFlags discoverFlags =
+            catalogueTab_ == CatalogueTab::Discover ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Discover", nullptr, discoverFlags)) {
+            catalogueTab_ = CatalogueTab::Discover;
             drawOnlineCatalogueSection();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Local / Dev")) {
+        ImGuiTabItemFlags createFlags =
+            catalogueTab_ == CatalogueTab::Create ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Create", nullptr, createFlags)) {
+            catalogueTab_ = CatalogueTab::Create;
             ImGui::TextDisabled(
-                "Games discovered in this machine's games/ folder. These are not published to Kronos and nobody else "
-                "can see them.");
+                "Local projects discovered in this machine's games/ folder. These are not published to Kronos and "
+                "nobody else can see them. Play launches them locally -- no join ticket, no server allocation, so "
+                "they keep working with no network at all.");
             ImGui::Dummy(ImVec2(0.0f, 6.0f));
             drawLocalGamesTab();
             ImGui::EndTabItem();
@@ -2297,20 +2402,275 @@ void RuntimeShell::drawToasts() {
 // Kronos backend integration
 // ---------------------------------------------------------------------------
 
-void RuntimeShell::startBackendSignIn(const std::string& email, const std::string& password, bool createAccount) {
-    if (backendAuthInProgress_.load()) return; // real, honest no-op
+// Kronos Client spec, Authentication Flow: the launcher's ONLY sign-in
+// entry point. It opens the system browser and waits on a real loopback
+// callback, so no username or password ever passes through this process
+// -- which is precisely why the spec forbids credential fields here.
+//
+// The web page is expected to redirect back to
+// http://127.0.0.1:<port>/auth/callback?code=<refresh_token>&state=<state>.
+// Reusing the existing LoopbackHttpServer (built for the Google OAuth
+// flow) means this needs no new client plumbing, and carrying a refresh
+// token means it needs no new BACKEND endpoint either -- the exchange
+// goes through the same /v1/auth/refresh an ordinary resume uses.
+void RuntimeShell::startBrowserSignIn() {
+    if (backendAuthInProgress_.load()) return;
     if (backendAuthThread_.joinable()) backendAuthThread_.join();
 
     backendAuthInProgress_.store(true);
-    backendAuthStatusMessage_ = createAccount ? "Creating your account..." : "Signing in...";
-    backendAuthThread_ = std::thread([this, email, password, createAccount]() {
-        core::KronosAuthResult result =
-            createAccount ? kronosApi_.signUp(email, password, std::string()) : kronosApi_.logIn(email, password);
+    backendAuthStatusMessage_ = "Continue in your browser to finish signing in...";
+
+    backendAuthThread_ = std::thread([this]() {
+        core::KronosAuthResult result;
+
+        constexpr uint16_t kCallbackPort = 8765;
+        core::LoopbackHttpServer loopback;
+        if (!loopback.start(kCallbackPort)) {
+            result.error = "Could not open the local sign-in listener (is port 8765 already in use?).";
+            std::lock_guard<std::mutex> lock(backendAuthMutex_);
+            backendAuthPendingResult_ = std::move(result);
+            backendAuthInProgress_.store(false);
+            return;
+        }
+
+        // Real CSRF state, checked against what comes back -- so this
+        // process only ever accepts a redirect it itself initiated.
+        std::string state = core::generateCodeVerifier().substr(0, 32);
+        std::string redirectUri = "http://127.0.0.1:" + std::to_string(kCallbackPort) + "/auth/callback";
+        std::string authUrl = resolveKronosAuthUrl() + "?redirect_uri=" + urlEncodeComponent(redirectUri) +
+                               "&state=" + urlEncodeComponent(state);
+
+        if (!core::openUrlInDefaultBrowser(authUrl)) {
+            loopback.stop();
+            result.error = "Could not open your web browser to sign in.";
+            std::lock_guard<std::mutex> lock(backendAuthMutex_);
+            backendAuthPendingResult_ = std::move(result);
+            backendAuthInProgress_.store(false);
+            return;
+        }
+
+        // Bounded: a user who closes the tab must not leave this thread
+        // (and the port) pinned forever.
+        core::LoopbackCallbackResult callback = loopback.waitForCallback(180.0f);
+        loopback.stop();
+
+        if (!callback.success) {
+            result.error = callback.error.empty() ? "Sign-in was not completed." : callback.error;
+        } else if (callback.state != state) {
+            // Fail closed: a mismatched state means this redirect was not
+            // the one we started.
+            result.error = "Sign-in could not be verified. Please try again.";
+        } else {
+            result = kronosApi_.completeBrowserSignIn(callback.code);
+        }
+
         std::lock_guard<std::mutex> lock(backendAuthMutex_);
         backendAuthPendingResult_ = std::move(result);
         backendAuthInProgress_.store(false);
     });
 }
+
+std::string RuntimeShell::backendStatusLine() const {
+    switch (backendReachability_) {
+        case BackendReachability::Reachable: return "Connected to Kronos services";
+        case BackendReachability::Unreachable: return "Offline -- Local / Dev games still work";
+        case BackendReachability::Unknown: break;
+    }
+    return "Connecting to Server Status...";
+}
+
+// ---------------------------------------------------------------------------
+// Kronos Client v0.2.0-alpha shell chrome
+//
+// The three fixed regions from the visual spec: a slate sidebar on the
+// left, a top bar above the content, and a brand panel on the right.
+// Drawn as separate borderless ImGui windows rather than one window with
+// manual cursor math -- each region then clips and scrolls independently,
+// which is what makes the content area able to scroll a long game grid
+// without dragging the sidebar with it.
+// ---------------------------------------------------------------------------
+
+void RuntimeShell::drawSidebar() {
+    using namespace core::kronos_palette;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(ImVec2(kSidebarWidth, viewport->WorkSize.y));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kSlate));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 16.0f));
+    ImGui::Begin("##kronos_sidebar", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold);
+    ImGui::SetWindowFontScale(1.25f);
+    ImGui::TextColored(paletteColor(kTextBright), "KRONOS");
+    ImGui::SetWindowFontScale(1.0f);
+    if (core::kronosBoldFont()) ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0.0f, 12.0f));
+
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##sidebar_search", "Search...", searchBuffer_, sizeof(searchBuffer_));
+    ImGui::Dummy(ImVec2(0.0f, 14.0f));
+
+    // Each entry maps to a real ShellState the shell already knows how to
+    // draw -- the sidebar is navigation, not a second state machine.
+    struct NavEntry {
+        const char* label;
+        const char* subtitle;
+        ShellState target;
+    };
+    static const NavEntry kNav[] = {
+        {"Home", nullptr, ShellState::Home},
+        {"Discover", nullptr, ShellState::GameCatalogue},
+        {"Avatar", nullptr, ShellState::AvatarShop},
+        {"Create", "Studio & Local Dev Games", ShellState::Home}, // Create is a mode of the catalogue, see below
+        {"Settings", nullptr, ShellState::Settings},
+    };
+
+    for (const NavEntry& entry : kNav) {
+        bool isCreate = std::strcmp(entry.label, "Create") == 0;
+        bool selected = isCreate ? (state_ == ShellState::GameCatalogue && catalogueTab_ == CatalogueTab::Create)
+                                  : (state_ == entry.target &&
+                                     !(entry.target == ShellState::GameCatalogue && catalogueTab_ == CatalogueTab::Create));
+
+        // Sky blue marks where you are; everything else stays flat slate.
+        ImGui::PushStyleColor(ImGuiCol_Button, selected ? paletteColor(kSkyBlue) : ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                               selected ? paletteColor(kSkyBlue) : ImVec4(1.0f, 1.0f, 1.0f, 0.06f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, paletteColor(kSkyBlue));
+        ImGui::PushStyleColor(ImGuiCol_Text, selected ? ImVec4(0.06f, 0.09f, 0.11f, 1.0f) : paletteColor(kTextMuted));
+
+        float height = entry.subtitle != nullptr ? 42.0f : 34.0f;
+        if (ImGui::Button(entry.label, ImVec2(-1.0f, height))) {
+            if (isCreate) {
+                catalogueTab_ = CatalogueTab::Create;
+                state_ = ShellState::GameCatalogue;
+                openGameCatalogue();
+            } else if (entry.target == ShellState::GameCatalogue) {
+                catalogueTab_ = CatalogueTab::Discover;
+                state_ = ShellState::GameCatalogue;
+                openGameCatalogue();
+            } else {
+                state_ = entry.target;
+            }
+        }
+        ImGui::PopStyleColor(4);
+
+        if (entry.subtitle != nullptr) {
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 12.0f);
+            ImGui::TextColored(paletteColor(kTextMuted), "   %s", entry.subtitle);
+        }
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    }
+
+    // Version, pinned to the bottom.
+    ImGui::SetCursorPosY(viewport->WorkSize.y - 32.0f);
+    ImGui::TextColored(paletteColor(kTextMuted), "Kronos Client v%s", core::kKronosVersion);
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
+void RuntimeShell::drawTopBar() {
+    using namespace core::kronos_palette;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    float contentWidth = viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth;
+
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y));
+    ImGui::SetNextWindowSize(ImVec2(contentWidth, kTopBarHeight));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kCharcoal));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
+    ImGui::Begin("##kronos_topbar", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    ImGui::SetNextItemWidth(contentWidth * 0.42f);
+    ImGui::InputTextWithHint("##topbar_search", "Search...", searchBuffer_, sizeof(searchBuffer_));
+
+    // Right cluster: profile card, notification bell, sign-in button.
+    std::optional<core::KronosUser> user = kronosApi_.currentUser();
+    const char* profileLabel = user.has_value()
+                                    ? (user->displayName.empty() ? user->email.c_str() : user->displayName.c_str())
+                                    : "Player";
+
+    float signInWidth = user.has_value() ? 92.0f : 132.0f;
+    float rightClusterWidth = 150.0f + 34.0f + signInWidth + 24.0f;
+    ImGui::SameLine(contentWidth - rightClusterWidth);
+
+    // Profile card -- the smooth fixed-shape avatar head, drawn
+    // procedurally so it matches the character silhouette without needing
+    // a separate portrait asset per user.
+    ImVec2 headOrigin = ImGui::GetCursorScreenPos();
+    drawAvatarHeadGlyph(ImGui::GetWindowDrawList(), ImVec2(headOrigin.x + 15.0f, headOrigin.y + 16.0f), 13.0f);
+    ImGui::Dummy(ImVec2(34.0f, 32.0f));
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(paletteColor(kTextBright), "%s", profileLabel);
+
+    ImGui::SameLine();
+    if (ImGui::Button(notification::unreadCount(localProfile_) > 0 ? "(*)" : "( )", ImVec2(30.0f, 30.0f))) {
+        state_ = ShellState::Notifications;
+    }
+
+    ImGui::SameLine();
+    if (user.has_value()) {
+        if (ImGui::Button("Sign Out", ImVec2(signInWidth, 30.0f))) backendSignOut();
+    } else {
+        // Spec: the launcher never shows a username or password field.
+        // This button's ONLY job is to hand off to the system browser.
+        pushPrimaryActionButtonColors();
+        if (ImGui::Button(backendAuthInProgress_.load() ? "Waiting..." : "Sign In / Sign Up",
+                           ImVec2(signInWidth, 30.0f))) {
+            if (!backendAuthInProgress_.load()) startBrowserSignIn();
+        }
+        popPrimaryActionButtonColors();
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
+void RuntimeShell::drawBrandPanel() {
+    using namespace core::kronos_palette;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - kBrandPanelWidth, viewport->WorkPos.y));
+    ImGui::SetNextWindowSize(ImVec2(kBrandPanelWidth, viewport->WorkSize.y));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kCharcoal));
+    ImGui::Begin("##kronos_brand", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    ImVec2 center(ImGui::GetWindowPos().x + kBrandPanelWidth * 0.5f,
+                   ImGui::GetWindowPos().y + viewport->WorkSize.y * 0.38f);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    // Concentric sky-blue rings, then the existing procedural hourglass
+    // in the middle -- reusing the real one the loading screen already
+    // draws rather than introducing a separate art asset.
+    ImU32 ringColor = ImGui::GetColorU32(ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], 0.55f));
+    drawList->AddCircle(center, 118.0f, ringColor, 96, 2.5f);
+    drawList->AddCircle(center, 104.0f, ImGui::GetColorU32(ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], 0.25f)), 96,
+                         1.5f);
+    drawAnimatedHourglass(drawList, center, 44.0f, 62.0f, static_cast<float>(ImGui::GetTime()));
+
+    ImGui::SetCursorPosY(viewport->WorkSize.y * 0.38f + 150.0f);
+    auto centeredText = [&](const ImVec4& color, const char* text) {
+        float width = ImGui::CalcTextSize(text).x;
+        ImGui::SetCursorPosX((kBrandPanelWidth - width) * 0.5f);
+        ImGui::TextColored(color, "%s", text);
+    };
+    centeredText(paletteColor(kTextBright), "KRONOS");
+    std::string versionLine = std::string("Kronos Client v") + core::kKronosVersion;
+    centeredText(paletteColor(kTextMuted), versionLine.c_str());
+    // Real status, not decorative text: this reflects whether the last
+    // real backend call actually reached the service.
+    centeredText(paletteColor(kTextMuted), backendStatusLine().c_str());
+
+    ImGui::End();
+    ImGui::PopStyleColor();
+}
+
 
 void RuntimeShell::startBackendSessionRestore() {
     if (backendAuthInProgress_.load()) return;
@@ -2383,10 +2743,8 @@ void RuntimeShell::pollBackendResults() {
         if (authResult.has_value()) {
             if (authResult->success) {
                 backendAuthStatusMessage_.clear();
-                backendShowSignInForm_ = false;
                 // The password must not linger in process memory once it
                 // has served its purpose.
-                std::memset(backendPasswordBuffer_, 0, sizeof(backendPasswordBuffer_));
 
                 std::string who =
                     authResult->user.displayName.empty() ? authResult->user.email : authResult->user.displayName;
@@ -2410,6 +2768,10 @@ void RuntimeShell::pollBackendResults() {
             }
         }
         if (catalogueResult.has_value()) {
+            // Real observed reachability, set only by a call that actually
+            // completed -- never assumed.
+            backendReachability_ =
+                catalogueResult->success ? BackendReachability::Reachable : BackendReachability::Unreachable;
             if (catalogueResult->success) {
                 onlineGames_ = std::move(catalogueResult->games);
                 onlinePlayerCountsAvailable_ = catalogueResult->playerCountsAvailable;
@@ -2486,76 +2848,46 @@ void RuntimeShell::pollBackendResults() {
 }
 
 void RuntimeShell::drawBackendAccountSection() {
+    using namespace core::kronos_palette;
+    // Kronos Client spec, Authentication Flow: "Absolutely no user or
+    // password text fields ever appear in the launcher." The whole
+    // email/password form that used to live here is gone -- the only
+    // entry point is the green Sign In / Sign Up button in the top bar,
+    // which hands off to the system browser. That is not just spec
+    // compliance: a credential that never enters this process cannot be
+    // captured from it.
     std::optional<core::KronosUser> user = kronosApi_.currentUser();
-
     if (user.has_value()) {
         std::string who = user->displayName.empty() ? user->email : user->displayName;
-        ImGui::TextDisabled("Kronos account: %s", who.c_str());
+        ImGui::TextColored(paletteColor(kTextMuted), "Signed in as %s", who.c_str());
         if (!user->emailVerified) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.15f, 1.0f), "(email unconfirmed)");
+            ImGui::TextColored(ImVec4(0.85f, 0.62f, 0.20f, 1.0f), "(email unconfirmed)");
         }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Sign out##kronos")) backendSignOut();
         return;
     }
 
     if (backendAuthInProgress_.load()) {
-        ImGui::TextDisabled("%s", backendAuthStatusMessage_.c_str());
+        ImGui::TextColored(paletteColor(kTextMuted), "%s", backendAuthStatusMessage_.c_str());
         return;
-    }
-
-    if (!backendShowSignInForm_) {
-        if (ImGui::SmallButton("Sign in to Kronos")) {
-            backendShowSignInForm_ = true;
-            backendCreateAccountMode_ = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Create account")) {
-            backendShowSignInForm_ = true;
-            backendCreateAccountMode_ = true;
-        }
-        if (!backendAuthStatusMessage_.empty()) {
-            ImGui::TextColored(ImVec4(0.8f, 0.25f, 0.2f, 1.0f), "%s", backendAuthStatusMessage_.c_str());
-        }
-        return;
-    }
-
-    ImGui::SetNextItemWidth(240.0f);
-    ImGui::InputTextWithHint("##kronos_email", "Email", backendEmailBuffer_, sizeof(backendEmailBuffer_));
-    ImGui::SetNextItemWidth(240.0f);
-    ImGui::InputTextWithHint("##kronos_password", "Password", backendPasswordBuffer_, sizeof(backendPasswordBuffer_),
-                              ImGuiInputTextFlags_Password);
-
-    const char* submitLabel = backendCreateAccountMode_ ? "Create account##submit" : "Sign in##submit";
-    if (ImGui::SmallButton(submitLabel)) {
-        std::string email = backendEmailBuffer_;
-        std::string password = backendPasswordBuffer_;
-        if (email.empty() || password.empty()) {
-            backendAuthStatusMessage_ = "Enter both an email address and a password.";
-        } else {
-            startBackendSignIn(email, password, backendCreateAccountMode_);
-        }
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Cancel##kronos")) {
-        backendShowSignInForm_ = false;
-        backendAuthStatusMessage_.clear();
-        std::memset(backendPasswordBuffer_, 0, sizeof(backendPasswordBuffer_));
     }
     if (!backendAuthStatusMessage_.empty()) {
-        ImGui::TextColored(ImVec4(0.8f, 0.25f, 0.2f, 1.0f), "%s", backendAuthStatusMessage_.c_str());
+        ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.30f, 1.0f), "%s", backendAuthStatusMessage_.c_str());
+    }
+    if (backendReachability_ == BackendReachability::Unreachable) {
+        // Spec: an offline backend must say so, and must not imply that
+        // local development is broken too -- it isn't.
+        ImGui::TextColored(paletteColor(kTextMuted),
+                           "Kronos services are unreachable. Local / Dev games under Create still work.");
     }
 }
 
 void RuntimeShell::drawOnlineCatalogueSection() {
     ImGui::SeparatorText("Kronos Online");
 
-    if (!kronosApi_.isSignedIn()) {
-        ImGui::TextDisabled("Sign in on the Home screen to browse games published to Kronos.");
-        return;
-    }
-
+    // Browsing is public: the catalogue endpoint takes optional auth, so
+    // a signed-out visitor still sees what is published. Only Play needs
+    // an account, and that is enforced at allocation time.
     ImGui::BeginDisabled(catalogueFetchInProgress_.load());
     if (ImGui::SmallButton("Refresh##online")) startCatalogueFetch();
     ImGui::EndDisabled();

@@ -263,6 +263,18 @@ KronosAuthResult KronosApi::logInWithGoogle(const std::string& googleIdToken) {
     return adoptSession(request("POST", "/v1/auth/google", body.dump(), /*withAuth=*/false));
 }
 
+KronosAuthResult KronosApi::completeBrowserSignIn(const std::string& refreshToken) {
+    KronosAuthResult result;
+    if (refreshToken.empty()) {
+        result.error = "The browser did not return a sign-in token.";
+        return result;
+    }
+    // Persist first, so a session survives even if the exchange below
+    // fails transiently and has to be retried on the next launch.
+    persistRefreshToken(refreshToken);
+    return restoreSession();
+}
+
 KronosAuthResult KronosApi::restoreSession() {
     std::string refreshToken = loadPersistedRefreshToken();
     if (refreshToken.empty()) {

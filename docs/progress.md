@@ -2554,3 +2554,64 @@ cannot function. Same discipline as the Windows DLL check added earlier.
 Verified by re-running the same extracted archive with the two
 directories added: **13 load failures → 0**, font atlas loads, HUD
 initializes, Jolt/Luau/terrain all come up clean.
+
+## 2026-08-21 (final) — Kronos Client shell: dark theme, chrome, browser auth
+
+First slice of the Client v0.2.0-alpha visual/architectural spec.
+
+### Theme
+Palette swapped from "Warm Ivory" to the spec's strict dark mode:
+charcoal `#191B1D` background, slate `#232527` cards, sky blue `#4EA8DE`
+accent, vibrant green `#00B259` primary actions, white/`#CCCCCC` text.
+Exported as `core::kronos_palette` so the shell, buttons and cards draw
+from one definition instead of re-typing hex values that drift.
+
+Accent and primary-action colours are deliberately *different*: sky blue
+means "where you are" (active tab, selection), green means "this does
+the thing" (Play, Sign In). One colour for both would make a selected
+tab look like a button.
+
+### Chrome
+`drawSidebar()` / `drawTopBar()` / `drawBrandPanel()` — three borderless
+regions so the content area scrolls a long game grid without dragging
+the sidebar with it. Sidebar: logo, search, Home / Discover / Avatar /
+Create / Settings, version pinned bottom. Top bar: search, procedural
+avatar-head profile card, notification bell, green Sign In / Sign Up.
+Brand panel: concentric sky-blue rings around the **existing**
+procedural hourglass (reused from the loading screen rather than adding
+an art asset), plus version and a **real** status line driven by
+observed backend reachability — it never claims a connection that was
+never made.
+
+### Authentication: no credential fields in the launcher
+The email/password form added earlier is **deleted**. Per spec the only
+entry point is the green header button, which opens the system browser
+and waits on a real loopback callback (`LoopbackHttpServer`, reused from
+the Google OAuth work) with real CSRF state checking that fails closed
+on mismatch. A credential that never enters this process cannot be
+captured from it.
+
+Notably this needed **no new backend endpoint**: the browser hands back
+a refresh token, which is exchanged through the same `/v1/auth/refresh`
+an ordinary resume uses.
+
+### Discover / Create
+Tabs renamed to the spec's terms and driven by the same state the
+sidebar sets, so selecting Create in either place is one piece of state.
+Discover is now browsable **signed out** (the catalogue endpoint takes
+optional auth) and prefetches on launch, so it has real content on first
+paint. Create states plainly that local projects launch with no ticket
+and no allocation, so they keep working with no network.
+
+### Not done — needs things that do not exist yet
+- **The web auth page.** `KRONOS_AUTH_URL` (default
+  `<api>/auth/start`) is not served by anything. The C++ half is
+  complete and correct; clicking Sign In today opens a URL that 404s.
+- **Guest mode** (spec §4) — needs that page plus a guest-token backend
+  endpoint.
+- **Game card thumbnails** — the backend returns a `thumbnail_url` but
+  the launcher has no remote-image download/GPU-upload path, so cards
+  are text-only. That is a real subsystem, not a tweak.
+- The reference mockups contain real Roblox artwork and logos. The
+  layout and palette were implemented from them; none of that artwork
+  was copied, and no placeholder pretends to be a real game.
