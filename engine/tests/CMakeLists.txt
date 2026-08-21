@@ -53,4 +53,16 @@ add_executable(engine_tests
 )
 target_link_libraries(engine_tests PRIVATE engine_core imgui::imgui)
 
+if(WIN32)
+    # SDL2's SDL_main.h (reached transitively through engine_core's own
+    # headers) #defines main to SDL_main on Windows and expects the
+    # SDL2main library to supply the real entry point. engine_runtime and
+    # studio are real GUI apps that do call SDL_Init(SDL_INIT_VIDEO), so
+    # they link SDL2main; this test runner is a real console binary that
+    # never opens a window, so the correct fix here is SDL's own
+    # documented "I provide my own main()" opt-out rather than pulling in
+    # a GUI entry point it has no use for.
+    target_compile_definitions(engine_tests PRIVATE SDL_MAIN_HANDLED)
+endif()
+
 add_test(NAME engine_tests COMMAND engine_tests)
