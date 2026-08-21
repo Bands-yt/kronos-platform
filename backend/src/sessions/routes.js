@@ -30,14 +30,24 @@ sessionRouter.post(
     const server = rows[0];
 
     const ttl = config.serverHeartbeatTtlSeconds;
-    await redis
-      .multi()
-      .set(keys.serverHeartbeat(serverKey), '1', 'EX', ttl)
-      .set(keys.serverPlayers(serverKey), String(players), 'EX', ttl)
-      .exec();
+    try {
+      await redis
+        .multi()
+        .set(keys.serverHeartbeat(serverKey), '1', 'EX', ttl)
+        .set(keys.serverPlayers(serverKey), String(players), 'EX', ttl)
+        .exec();
 
-    // Recompute the game's total from its live servers only.
-    await recomputeGamePlayerCount(server.game_id);
+      // Recompute the game's total from its live servers only.
+      await recomputeGamePlayerCount(server.game_id);
+    } catch (err) {
+      // Redis being unreachable is a real dependency outage, not a bug in
+      // this request. Reporting it as 503 (rather than letting it surface
+      // as a bare 500 "Something went wrong") tells a game server it
+      // should keep retrying, and keeps genuine 500s meaningful as
+      // "something is actually broken in our code".
+      console.error('[sessions] heartbeat could not reach Redis: %s', err.message);
+      throw serviceUnavailable('Heartbeat storage is temporarily unavailable; retry shortly.');
+    }
 
     res.json({ status: 'ok', ttl_seconds: ttl });
   }),

@@ -17,6 +17,7 @@
 #include "analytics/TelemetrySender.hpp"
 #include "core/GameCatalogueAggregate.hpp"
 #include "core/GoogleAuth.hpp"
+#include "core/KronosApi.hpp"
 #include "core/UpdateCheck.hpp"
 #include "core/LocalGameDirectory.hpp"
 #include "core/LocalProfile.hpp"
@@ -345,6 +346,23 @@ private:
     // Releases API"): fires the real, blocking version check onto a real
     // background thread. Honest no-op if a check is already in flight or
     // one already completed this session.
+    // --- Kronos backend integration -------------------------------------
+    // All three of these run the real, blocking KronosApi call on a
+    // background thread and hand the result back through a mutex-guarded
+    // optional, exactly like the Google sign-in and update check already
+    // do. None of them may block the render thread.
+    void startBackendSignIn(const std::string& email, const std::string& password, bool createAccount);
+    void startBackendSessionRestore();
+    void startCatalogueFetch();
+    // Requests a real server allocation for `slug` and, on success,
+    // connects to the host/port the backend returned.
+    void startServerAllocation(const std::string& gameSlug, const std::string& title);
+    // Polled once per tick() alongside the other background pollers.
+    void pollBackendResults();
+    void backendSignOut();
+    void drawBackendAccountSection();
+    void drawOnlineCatalogueSection();
+
     void startUpdateCheck();
     // Real, non-blocking; called once per real tick() alongside
     // pollGoogleSignInResult().
@@ -506,6 +524,39 @@ private:
     // offered again next launch, not silently forgotten forever.
     bool updateBannerDismissed_ = false;
     std::string updateStatusMessage_;
+
+    // --- Kronos backend state -------------------------------------------
+    core::KronosApi kronosApi_;
+
+    std::thread backendAuthThread_;
+    std::atomic<bool> backendAuthInProgress_{false};
+    std::mutex backendAuthMutex_;
+    std::optional<core::KronosAuthResult> backendAuthPendingResult_;
+    std::string backendAuthStatusMessage_;
+    char backendEmailBuffer_[128] = "";
+    char backendPasswordBuffer_[128] = "";
+    bool backendShowSignInForm_ = false;
+    bool backendCreateAccountMode_ = false;
+
+    std::thread catalogueFetchThread_;
+    std::atomic<bool> catalogueFetchInProgress_{false};
+    std::mutex catalogueFetchMutex_;
+    std::optional<core::CatalogueResult> cataloguePendingResult_;
+    // The real, last-fetched online feed. Empty until a real fetch
+    // succeeds -- deliberately never pre-populated with placeholder rows.
+    std::vector<core::CatalogueGame> onlineGames_;
+    bool onlinePlayerCountsAvailable_ = false;
+    std::string catalogueStatusMessage_;
+
+    std::thread allocationThread_;
+    std::atomic<bool> allocationInProgress_{false};
+    std::mutex allocationMutex_;
+    std::optional<core::ServerAllocation> allocationPendingResult_;
+    std::string allocationGameTitle_;
+    // The real join ticket from the most recent successful allocation.
+    // Held so it can be handed to the game server once NetworkSession
+    // grows a field to carry it -- see startServerAllocation()'s comment.
+    std::string lastJoinTicket_;
 
     // Kronos ("Notifications System"): same real dual-reachability shape.
     bool showNotificationsOverlay_ = false;

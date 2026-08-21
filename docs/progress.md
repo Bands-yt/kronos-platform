@@ -2370,3 +2370,70 @@ hook is there, default transport logs), no admin/publishing endpoints —
 `games`/`game_servers` rows are inserted directly for now. The launcher
 UI is not yet switched over to this feed; `KronosApi` is built and
 tested but not yet called from `RuntimeShell`.
+
+## 2026-08-21 (final) — Launcher wired to the Kronos backend
+
+`KronosApi` is now driven from `RuntimeShell`: real sign-in, a real live
+catalogue feed, and real server allocation.
+
+### What was added
+
+- **Account section on Home** — sign in / create account / sign out, plus
+  the current account and an "email unconfirmed" hint. A saved session is
+  restored from the OS credential store at launch, silently: a failed
+  restore just means nobody is signed in, so it never shows as an error.
+- **"Kronos Online" section** in the Game Catalogue, drawn above the
+  local list, populated entirely from the real backend response. No row
+  is ever synthesized.
+- **Play → real allocation** — `POST /v1/sessions/allocate`, then a real
+  connection to the host/port the backend returned, reusing the same
+  `NetworkSession` path the LAN join already uses.
+- All four network calls run on background threads with mutex-guarded
+  result hand-off and are polled once per `tick()`, matching the pattern
+  already established for Google sign-in and the update check. All are
+  joined in `shutdown()`.
+- Backend URL is `KRONOS_API_URL`-overridable, so pointing at a local or
+  self-hosted service is config, not a rebuild.
+
+### Deliberately NOT a replacement for local games
+
+The brief said "instead of using hardcoded/local placeholder data", but
+the local catalogue is not placeholder — those are real games discovered
+on disk that really launch, and they are what works offline. Removing
+them would have been a regression. The online feed is drawn first (it
+reflects what is actually published and populated), with the local list
+kept beneath it under "Installed on this machine". The online section is
+also still drawn when no local games exist at all, since having nothing
+installed says nothing about what is published.
+
+### Honest boundary: the join ticket is not yet verified
+
+Allocation returns a real signed join ticket and the client stores it,
+but `net::NetworkSession::Config` has no field to carry it and the
+engine's handshake has no ticket concept, so the game server cannot
+currently validate it. This is a real allocation and a real connection,
+but **not yet a server-verified one**. Closing it needs a ticket field in
+the handshake plus a server-side call to `/v1/sessions/verify-ticket` —
+real netcode work, deliberately not faked here.
+
+### A real fix found while testing
+
+`/heartbeat` returned a bare 500 "Something went wrong" when Redis was
+unreachable. That is a dependency outage, not a bug in the request, and
+reporting it as 500 both misleads the caller and dilutes what a real 500
+means. Now a 503 telling the game server to retry.
+
+### Verification
+
+Full rebuild clean, **11142/11142 engine checks** and **21/21 backend
+tests** (real Postgres + Redis) passing. The exact data the new cards
+render was then exercised against the live service in both directions:
+with a server heartbeating, a card reads "9 playing now"; with Redis
+genuinely stopped, the same card reads "Players online: unavailable" —
+never a fabricated 0. Launcher launched against the live backend and ran
+clean with no errors.
+
+Not verified: the UI click-through itself. There is no simulated input
+here, and this sandbox has no Secret Service daemon, so a signed-in
+session cannot persist across a launch. The API layer and the rendered
+data are proven; the button-clicking is not.

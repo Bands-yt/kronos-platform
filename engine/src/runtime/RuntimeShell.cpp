@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -37,6 +39,16 @@ namespace {
 // Kronos ("In-App Auto-Updater"): the real repository the real update
 // check queries -- the same one the Bootstrap Installer pulls its own
 // real release archives from (see installer/src/main.cpp).
+// Kronos backend base URL. Overridable via the environment so a real
+// developer can point the launcher at a local service without editing
+// and rebuilding -- and so a self-hosted deployment is a config change
+// rather than a fork.
+std::string resolveKronosBackendUrl() {
+    const char* fromEnv = std::getenv("KRONOS_API_URL");
+    if (fromEnv != nullptr && fromEnv[0] != '\0') return fromEnv;
+    return "http://127.0.0.1:8080";
+}
+
 constexpr const char* kUpdateRepoOwner = "Bands-yt";
 constexpr const char* kUpdateRepoName = "kronos-platform";
 
@@ -92,7 +104,8 @@ RuntimeShell::RuntimeShell(core::Application& app, std::function<core::EntityId(
                                spawnOfflinePlayerEntity)
     : app_(app),
       spawnNetworkedPlayerEntity_(std::move(spawnNetworkedPlayerEntity)),
-      spawnOfflinePlayerEntity_(std::move(spawnOfflinePlayerEntity)) {}
+      spawnOfflinePlayerEntity_(std::move(spawnOfflinePlayerEntity)),
+      kronosApi_(resolveKronosBackendUrl()) {}
 
 RuntimeShell::~RuntimeShell() { shutdown(); }
 
@@ -238,6 +251,12 @@ bool RuntimeShell::initialize() {
     // result surfaces on the Home screen whenever it lands.
     startUpdateCheck();
 
+    // Kronos ("Backend integration"): restore a previously saved Kronos
+    // session from the OS credential store, so a returning player is
+    // already signed in without another password prompt. Silent if there
+    // is nothing saved.
+    startBackendSessionRestore();
+
     return true;
 }
 
@@ -252,6 +271,10 @@ void RuntimeShell::shutdown() {
     // Same real reason as the sign-in thread above: this one's lambda
     // captures `this` too, so it must not outlive these members.
     if (updateCheckThread_.joinable()) updateCheckThread_.join();
+    // Same reason again: each of these lambdas captures `this`.
+    if (backendAuthThread_.joinable()) backendAuthThread_.join();
+    if (catalogueFetchThread_.joinable()) catalogueFetchThread_.join();
+    if (allocationThread_.joinable()) allocationThread_.join();
 
     lanBrowser_.stop();
     lanBrowserRunning_ = false;
@@ -651,6 +674,7 @@ void RuntimeShell::tick(float dt) {
     tickLanBrowserIfNeeded(dt);
     pollGoogleSignInResult();
     pollUpdateCheckResult();
+    pollBackendResults();
 
     // Kronos ("Animated Hourglass Loading Screen"): real, deferred-by-
     // one-frame game load -- selectGame() sets pendingGameLoad_ and
@@ -971,6 +995,11 @@ void RuntimeShell::drawHomePanel() {
             ImGui::TextColored(ImVec4(0.8f, 0.25f, 0.2f, 1.0f), "%s", googleSignInStatusMessage_.c_str());
         }
     }
+    // Kronos ("Backend integration"): the real Kronos account section --
+    // sign in/up, current account, sign out. Distinct from the Google
+    // button above: that obtains a Google identity, this is the real
+    // Kronos session the catalogue and server allocation need.
+    drawBackendAccountSection();
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
 
     // Kronos ("In-App Auto-Updater" -- "prompt the user"): only ever
@@ -1441,6 +1470,10 @@ void RuntimeShell::drawGameCataloguePanel() {
     }
 
     if (discoveredGames_.empty()) {
+        // The online feed is still drawn: having no games installed
+        // locally says nothing about what is published to Kronos.
+        drawOnlineCatalogueSection();
+        ImGui::Dummy(ImVec2(0.0f, 10.0f));
         ImGui::TextDisabled(
             "No real games found in games/ -- see docs/QUICKSTART.md for the real games/<Name>/game.gamemanifest layout.");
         ImGui::End();
@@ -1458,6 +1491,13 @@ void RuntimeShell::drawGameCataloguePanel() {
     // rest of this function even if lanBrowser_'s own list changes on a
     // later tick.
     std::vector<net::DiscoveredSession> liveDiscoveredSessions = lanBrowser_.discoveredSessions();
+
+    // Kronos ("Backend integration"): the real, live online feed comes
+    // first, since it is the one that reflects what is actually
+    // published and actually populated right now.
+    drawOnlineCatalogueSection();
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    ImGui::SeparatorText("Installed on this machine");
 
     // Featured -- real, algorithm-selected: top real QualityScore
     // entries, not raw player count (per the user's own spec).
@@ -2227,6 +2267,320 @@ void RuntimeShell::drawToasts() {
         }
         ImGui::End();
         y += 78.0f;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kronos backend integration
+// ---------------------------------------------------------------------------
+
+void RuntimeShell::startBackendSignIn(const std::string& email, const std::string& password, bool createAccount) {
+    if (backendAuthInProgress_.load()) return; // real, honest no-op
+    if (backendAuthThread_.joinable()) backendAuthThread_.join();
+
+    backendAuthInProgress_.store(true);
+    backendAuthStatusMessage_ = createAccount ? "Creating your account..." : "Signing in...";
+    backendAuthThread_ = std::thread([this, email, password, createAccount]() {
+        core::KronosAuthResult result =
+            createAccount ? kronosApi_.signUp(email, password, std::string()) : kronosApi_.logIn(email, password);
+        std::lock_guard<std::mutex> lock(backendAuthMutex_);
+        backendAuthPendingResult_ = std::move(result);
+        backendAuthInProgress_.store(false);
+    });
+}
+
+void RuntimeShell::startBackendSessionRestore() {
+    if (backendAuthInProgress_.load()) return;
+    if (backendAuthThread_.joinable()) backendAuthThread_.join();
+
+    backendAuthInProgress_.store(true);
+    backendAuthThread_ = std::thread([this]() {
+        core::KronosAuthResult result = kronosApi_.restoreSession();
+        std::lock_guard<std::mutex> lock(backendAuthMutex_);
+        // A failed restore at launch is a real non-event: it just means
+        // nobody is signed in yet. Only a real success is surfaced, so
+        // "No saved Kronos session." never appears as an error to
+        // somebody who simply has not signed in.
+        if (result.success) backendAuthPendingResult_ = std::move(result);
+        backendAuthInProgress_.store(false);
+    });
+}
+
+void RuntimeShell::startCatalogueFetch() {
+    if (catalogueFetchInProgress_.load()) return;
+    if (catalogueFetchThread_.joinable()) catalogueFetchThread_.join();
+
+    catalogueFetchInProgress_.store(true);
+    catalogueStatusMessage_ = "Loading games from Kronos...";
+    catalogueFetchThread_ = std::thread([this]() {
+        core::CatalogueResult result = kronosApi_.fetchGames(24);
+        std::lock_guard<std::mutex> lock(catalogueFetchMutex_);
+        cataloguePendingResult_ = std::move(result);
+        catalogueFetchInProgress_.store(false);
+    });
+}
+
+void RuntimeShell::startServerAllocation(const std::string& gameSlug, const std::string& title) {
+    if (allocationInProgress_.load()) return;
+    if (allocationThread_.joinable()) allocationThread_.join();
+
+    allocationInProgress_.store(true);
+    allocationGameTitle_ = title;
+    allocationThread_ = std::thread([this, gameSlug]() {
+        core::ServerAllocation result = kronosApi_.allocateServer(gameSlug);
+        std::lock_guard<std::mutex> lock(allocationMutex_);
+        allocationPendingResult_ = std::move(result);
+        allocationInProgress_.store(false);
+    });
+}
+
+void RuntimeShell::backendSignOut() {
+    // logOut() makes a real (best-effort) network call, so it goes on a
+    // background thread too rather than stalling this frame.
+    if (backendAuthThread_.joinable()) backendAuthThread_.join();
+    backendAuthThread_ = std::thread([this]() { kronosApi_.logOut(); });
+    onlineGames_.clear();
+    onlinePlayerCountsAvailable_ = false;
+    catalogueStatusMessage_.clear();
+    backendAuthStatusMessage_.clear();
+    notify(core::NotificationKind::SystemMessage, "Signed out", "You have been signed out of Kronos.");
+}
+
+void RuntimeShell::pollBackendResults() {
+    // --- sign-in / sign-up / restore ---
+    {
+        std::optional<core::KronosAuthResult> authResult;
+        {
+            std::lock_guard<std::mutex> lock(backendAuthMutex_);
+            if (backendAuthPendingResult_.has_value()) {
+                authResult = std::move(backendAuthPendingResult_);
+                backendAuthPendingResult_.reset();
+            }
+        }
+        if (authResult.has_value()) {
+            if (authResult->success) {
+                backendAuthStatusMessage_.clear();
+                backendShowSignInForm_ = false;
+                // The password must not linger in process memory once it
+                // has served its purpose.
+                std::memset(backendPasswordBuffer_, 0, sizeof(backendPasswordBuffer_));
+
+                std::string who =
+                    authResult->user.displayName.empty() ? authResult->user.email : authResult->user.displayName;
+                notify(core::NotificationKind::SystemMessage, "Signed in", "Signed in to Kronos as " + who + ".");
+                // Now that a real session exists, pull the real feed.
+                startCatalogueFetch();
+            } else {
+                backendAuthStatusMessage_ = authResult->error;
+            }
+        }
+    }
+
+    // --- catalogue feed ---
+    {
+        std::optional<core::CatalogueResult> catalogueResult;
+        {
+            std::lock_guard<std::mutex> lock(catalogueFetchMutex_);
+            if (cataloguePendingResult_.has_value()) {
+                catalogueResult = std::move(cataloguePendingResult_);
+                cataloguePendingResult_.reset();
+            }
+        }
+        if (catalogueResult.has_value()) {
+            if (catalogueResult->success) {
+                onlineGames_ = std::move(catalogueResult->games);
+                onlinePlayerCountsAvailable_ = catalogueResult->playerCountsAvailable;
+                catalogueStatusMessage_ =
+                    onlineGames_.empty() ? "No games have been published to Kronos yet." : std::string();
+                core::logInfo("Kronos", "online catalogue: %zu game(s), player counts %s", onlineGames_.size(),
+                              onlinePlayerCountsAvailable_ ? "available" : "unavailable");
+            } else {
+                // Deliberately does NOT clear onlineGames_: a transient
+                // network blip should leave the last real feed on screen
+                // rather than blanking it.
+                catalogueStatusMessage_ = catalogueResult->error;
+                core::logWarn("Kronos", "online catalogue fetch failed: %s", catalogueResult->error.c_str());
+            }
+        }
+    }
+
+    // --- server allocation ---
+    {
+        std::optional<core::ServerAllocation> allocation;
+        {
+            std::lock_guard<std::mutex> lock(allocationMutex_);
+            if (allocationPendingResult_.has_value()) {
+                allocation = std::move(allocationPendingResult_);
+                allocationPendingResult_.reset();
+            }
+        }
+        if (allocation.has_value()) {
+            if (!allocation->success) {
+                lastError_ = ShellErrorInfo{};
+                lastError_.kind = ShellErrorKind::NetworkFailure;
+                lastError_.detail = allocation->error;
+                state_ = ShellState::Error;
+            } else {
+                // Kept for the game server to validate once
+                // net::NetworkSession::Config grows a field to carry it.
+                // Today the engine's own handshake has no ticket concept,
+                // so this is a real allocation and a real connection but
+                // NOT yet a server-verified one -- stated plainly rather
+                // than implied to be end-to-end.
+                lastJoinTicket_ = allocation->joinTicket;
+
+                net::NetworkSession::Config config;
+                config.mode = net::NetworkMode::Client;
+                config.serverAddress = allocation->host;
+                config.port = allocation->port;
+
+                ensureLocalProfileLoaded();
+                app_.networkSession().setLocalDisplayName(localProfile_.displayName);
+                app_.networkSession().setLocalIdentity(localProfile_.profileId, effectiveAgeGroup());
+
+                if (!app_.startNetworking(config)) {
+                    lastError_ = ShellErrorInfo{};
+                    lastError_.kind = ShellErrorKind::NetworkFailure;
+                    lastError_.detail = "Kronos allocated " + allocation->host + ":" +
+                                        std::to_string(allocation->port) +
+                                        " but the connection could not be started.";
+                    state_ = ShellState::Error;
+                } else {
+                    lastJoinedHostDisplayName_ = allocationGameTitle_;
+                    if (spawnNetworkedPlayerEntity_) {
+                        core::EntityId entity = spawnNetworkedPlayerEntity_();
+                        app_.setNetworkedLocalPlayerEntity(entity);
+                    }
+                    lanBrowser_.stop();
+                    lanBrowserRunning_ = false;
+                    lastError_ = ShellErrorInfo{};
+                    state_ = computeNextState(state_, ShellEvent::JoinRequested);
+                }
+            }
+        }
+    }
+}
+
+void RuntimeShell::drawBackendAccountSection() {
+    std::optional<core::KronosUser> user = kronosApi_.currentUser();
+
+    if (user.has_value()) {
+        std::string who = user->displayName.empty() ? user->email : user->displayName;
+        ImGui::TextDisabled("Kronos account: %s", who.c_str());
+        if (!user->emailVerified) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.15f, 1.0f), "(email unconfirmed)");
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Sign out##kronos")) backendSignOut();
+        return;
+    }
+
+    if (backendAuthInProgress_.load()) {
+        ImGui::TextDisabled("%s", backendAuthStatusMessage_.c_str());
+        return;
+    }
+
+    if (!backendShowSignInForm_) {
+        if (ImGui::SmallButton("Sign in to Kronos")) {
+            backendShowSignInForm_ = true;
+            backendCreateAccountMode_ = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Create account")) {
+            backendShowSignInForm_ = true;
+            backendCreateAccountMode_ = true;
+        }
+        if (!backendAuthStatusMessage_.empty()) {
+            ImGui::TextColored(ImVec4(0.8f, 0.25f, 0.2f, 1.0f), "%s", backendAuthStatusMessage_.c_str());
+        }
+        return;
+    }
+
+    ImGui::SetNextItemWidth(240.0f);
+    ImGui::InputTextWithHint("##kronos_email", "Email", backendEmailBuffer_, sizeof(backendEmailBuffer_));
+    ImGui::SetNextItemWidth(240.0f);
+    ImGui::InputTextWithHint("##kronos_password", "Password", backendPasswordBuffer_, sizeof(backendPasswordBuffer_),
+                              ImGuiInputTextFlags_Password);
+
+    const char* submitLabel = backendCreateAccountMode_ ? "Create account##submit" : "Sign in##submit";
+    if (ImGui::SmallButton(submitLabel)) {
+        std::string email = backendEmailBuffer_;
+        std::string password = backendPasswordBuffer_;
+        if (email.empty() || password.empty()) {
+            backendAuthStatusMessage_ = "Enter both an email address and a password.";
+        } else {
+            startBackendSignIn(email, password, backendCreateAccountMode_);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Cancel##kronos")) {
+        backendShowSignInForm_ = false;
+        backendAuthStatusMessage_.clear();
+        std::memset(backendPasswordBuffer_, 0, sizeof(backendPasswordBuffer_));
+    }
+    if (!backendAuthStatusMessage_.empty()) {
+        ImGui::TextColored(ImVec4(0.8f, 0.25f, 0.2f, 1.0f), "%s", backendAuthStatusMessage_.c_str());
+    }
+}
+
+void RuntimeShell::drawOnlineCatalogueSection() {
+    ImGui::SeparatorText("Kronos Online");
+
+    if (!kronosApi_.isSignedIn()) {
+        ImGui::TextDisabled("Sign in on the Home screen to browse games published to Kronos.");
+        return;
+    }
+
+    ImGui::BeginDisabled(catalogueFetchInProgress_.load());
+    if (ImGui::SmallButton("Refresh##online")) startCatalogueFetch();
+    ImGui::EndDisabled();
+    if (catalogueFetchInProgress_.load()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Loading...");
+    }
+
+    if (!catalogueStatusMessage_.empty()) {
+        ImGui::TextColored(ImVec4(0.8f, 0.25f, 0.2f, 1.0f), "%s", catalogueStatusMessage_.c_str());
+    }
+    if (onlineGames_.empty()) {
+        if (catalogueStatusMessage_.empty()) ImGui::TextDisabled("No published games yet.");
+        return;
+    }
+
+    // Real, live rows built entirely from the real backend response --
+    // no placeholder entry is ever synthesized here.
+    for (const core::CatalogueGame& game : onlineGames_) {
+        ImGui::PushID(game.id.c_str());
+        ImGui::BeginChild("##online_card", ImVec2(0.0f, 76.0f), true);
+
+        ImGui::TextUnformatted(game.title.c_str());
+        ImGui::TextDisabled("by %s", game.creatorName.c_str());
+
+        // The real distinction the backend goes out of its way to make:
+        // a real count versus genuinely not knowing. Never a fabricated
+        // number, and never a confident 0 when the truth is "unknown".
+        if (game.activePlayers < 0) {
+            ImGui::TextDisabled("Players online: unavailable");
+        } else if (game.activePlayers == 0) {
+            ImGui::TextDisabled("No one playing right now");
+        } else {
+            ImGui::TextDisabled("%d playing now", game.activePlayers);
+        }
+
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        ImGui::BeginDisabled(allocationInProgress_.load());
+        pushPrimaryActionButtonColors();
+        if (ImGui::Button("Play##online", ImVec2(70.0f, 0.0f))) startServerAllocation(game.slug, game.title);
+        popPrimaryActionButtonColors();
+        ImGui::EndDisabled();
+
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+
+    if (allocationInProgress_.load()) {
+        ImGui::TextDisabled("Finding a server for %s...", allocationGameTitle_.c_str());
     }
 }
 
