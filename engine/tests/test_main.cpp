@@ -17139,6 +17139,11 @@ void testLanSessionBrowserDedupesRepeatedAnnouncesBySessionId() {
 // actually be joined (NetworkSession's own real handshake would reject
 // it) -- the browser real-rejects it at the discovery layer too, rather
 // than listing something a real join attempt would just fail against.
+// POSIX-only raw socket use below (matches this file's own stated
+// real/no-mock scope for test-side socket code, see the top-of-file
+// comment on why -- Windows would need winsock2's own socket()/sendto()/
+// closesocket(), not attempted here for a single test).
+#if !defined(_WIN32)
 void testLanSessionBrowserRejectsAnnouncementWithWrongProtocolVersion() {
     constexpr uint16_t kAnnouncePort = 45683;
     constexpr uint16_t kPingPort = 45693;
@@ -17173,6 +17178,7 @@ void testLanSessionBrowserRejectsAnnouncementWithWrongProtocolVersion() {
 
     browser.stop();
 }
+#endif // !defined(_WIN32)
 
 void testLanDiscoveryOptOutViaAdvertiseOnLanFalse() {
     constexpr uint16_t kTestPort = 17800;
@@ -28741,7 +28747,9 @@ int main() {
     testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing();
     testLanSessionBrowserPrunesStaleSessionAfterAnnouncerStops();
     testLanSessionBrowserDedupesRepeatedAnnouncesBySessionId();
+#if !defined(_WIN32)
     testLanSessionBrowserRejectsAnnouncementWithWrongProtocolVersion();
+#endif
     testLanDiscoveryOptOutViaAdvertiseOnLanFalse();
     testShellStateTransitionsHomeToSessionBrowserAndBack();
     testShellStateTransitionsHomeThroughGameCatalogueToInGame();
