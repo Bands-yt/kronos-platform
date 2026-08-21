@@ -75,10 +75,20 @@ jobs:
           cp "$BUILD_DIR"/shaders/*.spv "$PKG_DIR/shaders/"
           tar -czf "kronos-${{ github.ref_name }}-linux-x64.tar.gz" "$PKG_DIR"
 
+      # Kronos ("Bootstrap Installer" -- "verify the integrity of the
+      # files"): a real, published checksum -- without this, "basic
+      # checksum check" on the installer side would have nothing real
+      # to check against (GitHub's own Releases API doesn't publish
+      # asset checksums itself).
+      - name: Generate checksum
+        run: sha256sum "kronos-${{ github.ref_name }}-linux-x64.tar.gz" > "kronos-${{ github.ref_name }}-linux-x64.tar.gz.sha256"
+
       - name: Upload archive to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: kronos-${{ github.ref_name }}-linux-x64.tar.gz
+          files: |
+            kronos-${{ github.ref_name }}-linux-x64.tar.gz
+            kronos-${{ github.ref_name }}-linux-x64.tar.gz.sha256
 
   build-windows:
     name: Windows (x64)
@@ -119,7 +129,19 @@ jobs:
           Copy-Item "$env:BUILD_DIR\shaders\*.spv" "$pkgDir\shaders\"
           Compress-Archive -Path $pkgDir -DestinationPath "kronos-${{ github.ref_name }}-windows-x64.zip"
 
+      # Kronos ("Bootstrap Installer" -- "verify the integrity of the
+      # files"): same real reasoning as the Linux job's own checksum
+      # step -- real, sha256sum-compatible output format (hash, two
+      # spaces, filename) so both platforms' installer code can parse
+      # it identically.
+      - name: Generate checksum
+        run: |
+          $hash = (Get-FileHash "kronos-${{ github.ref_name }}-windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  kronos-${{ github.ref_name }}-windows-x64.zip" | Out-File -Encoding ascii "kronos-${{ github.ref_name }}-windows-x64.zip.sha256"
+
       - name: Upload archive to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: kronos-${{ github.ref_name }}-windows-x64.zip
+          files: |
+            kronos-${{ github.ref_name }}-windows-x64.zip
+            kronos-${{ github.ref_name }}-windows-x64.zip.sha256
