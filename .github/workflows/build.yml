@@ -67,6 +67,18 @@ jobs:
       - name: Build
         run: cmake --build "$BUILD_DIR" --config Release --parallel
 
+      # Kronos ("In-App Auto-Updater"): the real updater helper ships
+      # INSIDE the release archive, next to the binaries it replaces --
+      # RuntimeShell::startUpdateDownload() resolves it relative to the
+      # running executable, and without it the app can only ever report
+      # "the updater helper isn't installed next to Kronos". installer/
+      # is a deliberately separate CMake project (zero engine_core
+      # dependency), so it gets its own configure/build here.
+      - name: Build updater helper
+        run: |
+          cmake -S installer -B installer/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build installer/build --config Release --parallel
+
       # Kronos: packages the real compiled outputs a tester actually
       # needs to run the engine -- the three built binaries plus their
       # real compiled shaders (ENGINE_SHADER_DIR's own runtime fallback
@@ -79,6 +91,7 @@ jobs:
           cp "$BUILD_DIR/src/engine_runtime" "$PKG_DIR/"
           cp "$BUILD_DIR/src/studio" "$PKG_DIR/"
           cp "$BUILD_DIR/tests/engine_tests" "$PKG_DIR/"
+          cp installer/build/kronos_installer "$PKG_DIR/"
           cp "$BUILD_DIR"/shaders/*.spv "$PKG_DIR/shaders/"
           tar -czf "kronos-${{ github.ref_name }}-linux-x64.tar.gz" "$PKG_DIR"
 
@@ -145,6 +158,15 @@ jobs:
       - name: Build
         run: cmake --build "$env:BUILD_DIR" --config Release --parallel
 
+      # Same real reasoning as the Linux job's own updater-helper step.
+      - name: Build updater helper
+        run: |
+          cmake -S installer -B installer/build `
+            -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build installer/build --config Release --parallel
+
       - name: Package (.zip)
         run: |
           $pkgDir = "kronos-windows-x64"
@@ -152,7 +174,37 @@ jobs:
           Copy-Item "$env:BUILD_DIR\src\Release\engine_runtime.exe" "$pkgDir\"
           Copy-Item "$env:BUILD_DIR\src\Release\studio.exe" "$pkgDir\"
           Copy-Item "$env:BUILD_DIR\tests\Release\engine_tests.exe" "$pkgDir\"
+          Copy-Item "installer\build\Release\kronos_installer.exe" "$pkgDir\"
           Copy-Item "$env:BUILD_DIR\shaders\*.spv" "$pkgDir\shaders\"
+
+          # Kronos: the real runtime DLLs these binaries actually import.
+          # vcpkg's x64-windows triplet builds SDL2/curl/zlib as DLLs, so
+          # a package containing only .exe files genuinely cannot start --
+          # engine_runtime.exe imports SDL2.dll and libcurl.dll, studio.exe
+          # imports SDL2.dll and z.dll (verified against the real published
+          # v0.2.0-alpha archive, which shipped none of them and therefore
+          # could not launch at all). Copying the whole vcpkg bin directory
+          # rather than a hand-listed set is deliberate: it also picks up
+          # each library's own transitive DLLs, which a hand-maintained
+          # list would silently miss the next time a dependency changes.
+          $vcpkgBin = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+          if (Test-Path $vcpkgBin) {
+            Copy-Item "$vcpkgBin\*.dll" "$pkgDir\"
+          } else {
+            Write-Error "vcpkg bin directory not found at $vcpkgBin -- the package would ship without its runtime DLLs."
+            exit 1
+          }
+
+          # Fail loudly rather than publishing another archive that cannot
+          # start: every real imported DLL that isn't a Windows system/CRT
+          # library must actually be present in the package.
+          foreach ($required in @("SDL2.dll", "libcurl.dll", "z.dll")) {
+            if (-not (Test-Path "$pkgDir\$required")) {
+              Write-Error "$required is missing from the package -- refusing to publish an archive that cannot launch."
+              exit 1
+            }
+          }
+
           Compress-Archive -Path $pkgDir -DestinationPath "kronos-${{ github.ref_name }}-windows-x64.zip"
 
       # Kronos ("Bootstrap Installer" -- "verify the integrity of the

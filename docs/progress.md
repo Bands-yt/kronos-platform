@@ -2156,15 +2156,40 @@ here). Finally, the whole check was confirmed inside the real running
 launcher, which logged:
 `[INFO][Update] running 0.1.0-alpha; v0.2.0-alpha is available.`
 
-### Not done — the one thing that blocks this shipping
+### Shipping the helper — and a serious packaging bug found doing it
 
-`build.yml` does **not** build `installer/` or include
-`kronos_installer` in the release archives, so in a real installed copy
-`startUpdateDownload()` will hit its honest "the updater helper isn't
-installed next to Kronos" path and tell the user to download manually.
-The check/prompt half works; the apply half needs the helper shipped.
-This was deliberately **not** added to `build.yml` in this pass because
-the Windows job was still being stabilized and dropping a second CMake
-project (with its own SDL2/miniz FetchContent) into it would have
-risked another long failure cycle on a run that was finally close to
-green. It is the next step, not an oversight.
+`build.yml` now builds `installer/` on both platforms and ships
+`kronos_installer` inside the release archives, next to the binaries it
+replaces (`startUpdateDownload()` resolves it relative to the running
+executable).
+
+While adding that, the published Windows archive was inspected properly
+for the first time and turned out to be **completely non-functional**:
+vcpkg's `x64-windows` triplet builds SDL2/curl/zlib as DLLs, and the
+package shipped **zero** DLLs. Verified against the real published
+`v0.2.0-alpha` zip with `objdump -p`: `engine_runtime.exe` imports
+`SDL2.dll` and `libcurl.dll`, `studio.exe` imports `SDL2.dll` and
+`z.dll`, none of which were present. Every one of those binaries would
+have failed to start with a missing-DLL error the moment a real user
+double-clicked it.
+
+The Windows packaging step now copies vcpkg's runtime DLLs into the
+archive and **hard-fails the build** if `SDL2.dll`/`libcurl.dll`/`z.dll`
+aren't in the finished package — refusing to publish an archive that
+cannot launch is better than publishing a quiet brick. The whole vcpkg
+`bin` directory is copied rather than a hand-listed set, so each
+library's own transitive DLLs come along too instead of being silently
+missed the next time a dependency changes.
+
+### End-to-end verification against the real release
+
+The complete update chain was run for real against the live
+`v0.2.0-alpha` GitHub release, into a throwaway install directory:
+waited on a pid, fetched the release over the real API, downloaded the
+real 47 MB tarball, verified it against the real published checksum,
+extracted it, swapped it into place, relaunched, and cleaned up. Result:
+the old install's marker file was gone, all three real binaries plus all
+20 shaders were in place, `engine_runtime` came out **`-rwxr-xr-x`**
+(the permissions bug above, confirmed fixed in practice rather than in
+principle), the relaunched binary really ran, and no `.old-*` or
+`.update-staging` directories were left behind.
