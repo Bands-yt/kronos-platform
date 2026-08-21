@@ -2,8 +2,11 @@
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <spawn.h>
+#include <unistd.h>
 
 extern char** environ;
+#elif defined(_WIN32)
+#include <windows.h>
 #endif
 
 namespace engine::core {
@@ -41,10 +44,85 @@ bool launchProcess(const std::string& executablePath, const std::vector<std::str
     return true;
 }
 
-#else // Windows and anything else without posix_spawn -- a real, stated gap, not silently unsupported.
+#elif defined(_WIN32)
+
+bool launchProcess(const std::string& executablePath, const std::vector<std::string>& args) {
+    // Windows has no argv array in its process-creation API at all -- a
+    // real command line is ONE string the child re-parses itself, so
+    // each argument has to be quoted here or an argument containing a
+    // space would silently arrive as two. Backslashes immediately before
+    // a quote also have to be doubled, per the real rules the C runtime's
+    // own command-line parser uses.
+    auto quoteArgument = [](const std::string& arg) {
+        std::string quoted = "\"";
+        size_t i = 0;
+        while (i < arg.size()) {
+            size_t backslashes = 0;
+            while (i < arg.size() && arg[i] == '\\') {
+                ++backslashes;
+                ++i;
+            }
+            if (i == arg.size()) {
+                // These backslashes immediately precede the closing quote,
+                // so they must be doubled -- otherwise they would escape
+                // that quote and swallow the end of the argument.
+                quoted.append(backslashes * 2, '\\');
+            } else if (arg[i] == '"') {
+                // Double the run, then add one more to escape this quote.
+                quoted.append(backslashes * 2 + 1, '\\');
+                quoted += '"';
+                ++i;
+            } else {
+                // Backslashes not followed by a quote are literal.
+                quoted.append(backslashes, '\\');
+                quoted += arg[i];
+                ++i;
+            }
+        }
+        quoted += '"';
+        return quoted;
+    };
+
+    std::string commandLine = quoteArgument(executablePath);
+    for (const std::string& arg : args) commandLine += " " + quoteArgument(arg);
+
+    // CreateProcessW/A may write into the command-line buffer in place,
+    // so it needs real mutable storage rather than the string's own.
+    std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
+    mutableCommandLine.push_back('\0');
+
+    STARTUPINFOA startupInfo;
+    ZeroMemory(&startupInfo, sizeof(startupInfo));
+    startupInfo.cb = sizeof(startupInfo);
+    PROCESS_INFORMATION processInfo;
+    ZeroMemory(&processInfo, sizeof(processInfo));
+
+    BOOL created = CreateProcessA(executablePath.c_str(), mutableCommandLine.data(), nullptr, nullptr, FALSE,
+                                   DETACHED_PROCESS, nullptr, nullptr, &startupInfo, &processInfo);
+    if (!created) return false;
+
+    // Real fire-and-forget, same contract as the POSIX path above.
+    // Closing these two handles releases this process's own references
+    // to the child without terminating it -- and, unlike POSIX, leaves
+    // no zombie entry behind, since Windows reclaims the process object
+    // once the last handle to it is closed.
+    CloseHandle(processInfo.hProcess);
+    CloseHandle(processInfo.hThread);
+    return true;
+}
+
+#else // Any other platform without posix_spawn -- a real, stated gap, not silently unsupported.
 
 bool launchProcess(const std::string& /*executablePath*/, const std::vector<std::string>& /*args*/) { return false; }
 
 #endif
+
+int64_t currentProcessId() {
+#if defined(_WIN32)
+    return static_cast<int64_t>(GetCurrentProcessId());
+#else
+    return static_cast<int64_t>(::getpid());
+#endif
+}
 
 } // namespace engine::core

@@ -8,6 +8,14 @@ struct ExtractResult {
     bool success = false;
     std::string error;
     int filesExtracted = 0;
+    // The real single top-level directory the archive unpacked into
+    // ("kronos-linux-x64" / "kronos-windows-x64" for the archives
+    // .github/workflows/build.yml actually publishes), reported by the
+    // extractor rather than guessed by callers -- the packaging step's
+    // own PKG_DIR name is free to change, and a caller hardcoding it
+    // would then silently build paths to files that aren't there.
+    // Empty if the archive genuinely had no common top-level directory.
+    std::string topLevelDirectory;
 };
 
 // Kronos ("Bootstrap Installer" -- "Extract the archive to a user-

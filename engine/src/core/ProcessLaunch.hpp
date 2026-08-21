@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -23,5 +24,12 @@ namespace engine::core {
 // honest "did the real OS call succeed" scope as
 // Physics::attachBodyToEntity()'s own return value.
 [[nodiscard]] bool launchProcess(const std::string& executablePath, const std::vector<std::string>& args);
+
+// Kronos ("In-App Auto-Updater"): this process's own real OS process id.
+// The updater helper is handed this so it can wait for this process to
+// genuinely exit before replacing any file underneath it -- see
+// installer/src/UpdateApply.hpp's own comment on why that wait is the
+// whole reason the swap happens in a separate process at all.
+[[nodiscard]] int64_t currentProcessId();
 
 } // namespace engine::core

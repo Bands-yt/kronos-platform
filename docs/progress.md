@@ -2078,3 +2078,93 @@ today's release; it will work once a new tag is pushed through the
 updated `build.yml`. Clicking "Install for Windows/Linux" has not been
 exercised with real input (no simulated mouse/keyboard in this
 environment).
+
+## 2026-08-21 (later still) — In-App Auto-Updater
+
+A real self-updating path for the launcher: check on startup, prompt,
+then hand the actual file replacement to a separate process.
+
+### Why a separate helper process
+
+A running app cannot reliably replace its own executable — on Windows
+the loaded image is locked outright, and on Linux, while the inode
+trick makes overwriting possible, doing it underneath a live process
+still leaves that process running a half-swapped install. So the
+launcher only *checks* and *prompts*; the swap is done by
+`kronos_installer --update`, which waits for the launcher's real pid to
+exit before touching a single file. This is the same split real
+updaters (Chrome, Sparkle) use, and it means the download/verify/
+extract pipeline is **reused, not duplicated** — it is literally the
+Bootstrap Installer's existing code path with a different destination.
+
+### New
+
+- `core/UpdateCheck.hpp/.cpp` — real SemVer parse/compare plus a real
+  GitHub Releases query. Queries the `/releases` list rather than
+  `/releases/latest` on purpose: the "latest" endpoint skips anything
+  flagged prerelease, so one ticked checkbox on a future alpha would
+  silently switch off auto-update for everyone. Takes the highest real
+  semver among non-draft releases instead.
+- `installer/src/UpdateApply.hpp/.cpp` — `waitForProcessExit()` (real
+  `kill(pid,0)` polling / `OpenProcess`+`WaitForSingleObject`),
+  `swapInstallDirectory()` (move-aside + move-in **with real rollback**
+  if the swap fails partway), and `launchDetached()` for the relaunch.
+- `installer/src/main.cpp` — real `--update --install-dir --relaunch
+  --wait-pid` mode reusing the existing progress UI.
+- `RuntimeShell` — background check on startup, a quiet inline Home
+  banner (deliberately not a modal: an update is worth offering, never
+  worth blocking someone who opened Kronos to play), "Later" dismissal
+  that is session-scoped on purpose so a skipped update is offered
+  again next launch rather than forgotten forever.
+
+### Real bugs found and fixed while building this
+
+- **The installer pointed its desktop shortcut at a directory that
+  never existed** — it hardcoded `kronos-alpha`, but the real published
+  archives unpack into `kronos-linux-x64`/`kronos-windows-x64`. Fixed
+  properly by having the extractor *report* the top-level directory it
+  actually created rather than having callers guess it.
+- **The tar extractor discarded file permissions**, so an installed
+  `engine_runtime`/`studio` would have landed non-executable on Linux —
+  the release tarball really does store them `-rwxr-xr-x`. Now honors
+  the archived mode (low 9 bits only; setuid/setgid/sticky are
+  deliberately not restored from a downloaded archive).
+- **`kKronosVersion` was still `0.1.0-alpha` after `v0.2.0-alpha` was
+  tagged.** Cosmetic before this pass; load-bearing now, since it is
+  what the update check compares against — every user of that build
+  would have been offered an "update" to the release they were already
+  running. Bumped, with a note to bump it in the same commit that cuts
+  a tag.
+- **`core::launchProcess()` was POSIX-only** (a documented gap). The
+  updater needs to spawn the helper on Windows too, so the real
+  `CreateProcessA` path is now implemented, including the fiddly
+  backslash/quote command-line escaping Windows requires.
+
+### Verification
+
+`parseVersion`/`compareVersions` have real unit tests including SemVer
+§11.3 prerelease precedence (**11104/11104 checks passing**, +16).
+`checkForUpdate()` was exercised against the **real live GitHub API**
+via a standalone harness: correct in all three cases (older → update
+offered, equal → up to date, newer → no downgrade). The swap/wait logic
+was verified by a real harness against real directories and real
+processes — happy path, first-time install, missing-staging failure
+leaving the install untouched, a dead pid returning immediately, and a
+live pid correctly *not* reported as exited. The Windows command-line
+quoting was unit-tested separately on its own (it cannot be compiled
+here). Finally, the whole check was confirmed inside the real running
+launcher, which logged:
+`[INFO][Update] running 0.1.0-alpha; v0.2.0-alpha is available.`
+
+### Not done — the one thing that blocks this shipping
+
+`build.yml` does **not** build `installer/` or include
+`kronos_installer` in the release archives, so in a real installed copy
+`startUpdateDownload()` will hit its honest "the updater helper isn't
+installed next to Kronos" path and tell the user to download manually.
+The check/prompt half works; the apply half needs the helper shipped.
+This was deliberately **not** added to `build.yml` in this pass because
+the Windows job was still being stabilized and dropping a second CMake
+project (with its own SDL2/miniz FetchContent) into it would have
+risked another long failure cycle on a run that was finally close to
+green. It is the next step, not an oversight.

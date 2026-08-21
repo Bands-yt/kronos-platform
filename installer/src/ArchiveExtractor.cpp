@@ -35,6 +35,35 @@ bool endsWith(const std::string& s, const std::string& suffix) {
     return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+// Real running "do all entries share one top-level directory?" tracker,
+// fed every entry name as it is extracted by either backend. `state`
+// starts empty; it holds the real shared prefix so far, or "\x01" once a
+// real entry has proven there ISN'T a single common root (a sentinel no
+// real archive path can contain).
+void noteTopLevelDirectory(const std::string& entryName, std::string& state) {
+    static const std::string kNoCommonRoot = "\x01";
+    if (state == kNoCommonRoot) return;
+
+    size_t slash = entryName.find_first_of("/\\");
+    // A real entry at the archive root (no separator at all) means there
+    // is genuinely no single wrapping directory.
+    if (slash == std::string::npos || slash == 0) {
+        state = kNoCommonRoot;
+        return;
+    }
+
+    std::string root = entryName.substr(0, slash);
+    if (state.empty()) {
+        state = root;
+    } else if (state != root) {
+        state = kNoCommonRoot;
+    }
+}
+
+std::string finalizeTopLevelDirectory(const std::string& state) {
+    return state == "\x01" ? std::string() : state;
+}
+
 // --- Real .zip extraction (miniz) ------------------------------------------
 ExtractResult extractZip(const std::string& archivePath, const std::string& destinationDir) {
     ExtractResult result;
@@ -46,11 +75,13 @@ ExtractResult extractZip(const std::string& archivePath, const std::string& dest
         return result;
     }
 
+    std::string topLevelState;
     mz_uint fileCount = mz_zip_reader_get_num_files(&zip);
     for (mz_uint i = 0; i < fileCount; ++i) {
         mz_zip_archive_file_stat stat;
         if (!mz_zip_reader_file_stat(&zip, i, &stat)) continue;
 
+        noteTopLevelDirectory(stat.m_filename, topLevelState);
         std::filesystem::path outPath = std::filesystem::path(destinationDir) / stat.m_filename;
         if (mz_zip_reader_is_file_a_directory(&zip, i)) {
             std::error_code ec;
@@ -69,6 +100,7 @@ ExtractResult extractZip(const std::string& archivePath, const std::string& dest
     }
 
     mz_zip_reader_end(&zip);
+    result.topLevelDirectory = finalizeTopLevelDirectory(topLevelState);
     result.success = true;
     return result;
 }
@@ -156,6 +188,7 @@ ExtractResult extractTarFromBuffer(const std::vector<uint8_t>& tarData, const st
     // real "file data" is the long name that applies to the *next* real
     // header, not a real file of its own.
     std::string pendingLongName;
+    std::string topLevelState;
 
     size_t offset = 0;
     while (offset + kBlockSize <= tarData.size()) {
@@ -166,6 +199,12 @@ ExtractResult extractTarFromBuffer(const std::vector<uint8_t>& tarData, const st
         std::memcpy(name, header, 100);
         char typeflag = static_cast<char>(header[156]);
         uint64_t size = parseOctalField(reinterpret_cast<const char*>(header + 124), 12);
+        // Real POSIX tar mode field (8 octal bytes at offset 100). This
+        // must be honored: a real Kronos release tarball stores
+        // engine_runtime/studio as -rwxr-xr-x, and extracting them with
+        // default 0644 would produce a real install whose binaries
+        // simply cannot be executed.
+        uint64_t mode = parseOctalField(reinterpret_cast<const char*>(header + 100), 8);
         // Real POSIX ustar "prefix" field (155 bytes at offset 345) --
         // real long paths split name across prefix+"/"+name; only
         // honored when the real "ustar" magic is present at offset 257.
@@ -188,6 +227,8 @@ ExtractResult extractTarFromBuffer(const std::vector<uint8_t>& tarData, const st
             return result;
         }
 
+        if (typeflag != 'L') noteTopLevelDirectory(fullName, topLevelState);
+
         if (typeflag == 'L') {
             // Real GNU long-name data -- a real, null-terminated string.
             pendingLongName.assign(reinterpret_cast<const char*>(tarData.data() + offset),
@@ -206,6 +247,15 @@ ExtractResult extractTarFromBuffer(const std::vector<uint8_t>& tarData, const st
                 return result;
             }
             outFile.write(reinterpret_cast<const char*>(tarData.data() + offset), static_cast<std::streamsize>(size));
+            outFile.close();
+            // Apply the real archived mode's own permission bits. Only
+            // the low 9 (rwxrwxrwx) are honored -- setuid/setgid/sticky
+            // are deliberately not, since nothing in a real Kronos
+            // release needs them and silently restoring them from a
+            // downloaded archive would be a real privilege-escalation
+            // footgun.
+            std::filesystem::permissions(outPath, static_cast<std::filesystem::perms>(mode & 0777),
+                                          std::filesystem::perm_options::replace, ec);
             ++result.filesExtracted;
         }
         // Real, deliberate: symlinks/hardlinks/device files (typeflags
@@ -215,6 +265,7 @@ ExtractResult extractTarFromBuffer(const std::vector<uint8_t>& tarData, const st
         offset += paddedSize;
     }
 
+    result.topLevelDirectory = finalizeTopLevelDirectory(topLevelState);
     result.success = true;
     return result;
 }

@@ -116,6 +116,7 @@
 #include "core/GoogleAuth.hpp"
 #include "core/LoopbackHttpServer.hpp"
 #include "core/OAuthPkce.hpp"
+#include "core/UpdateCheck.hpp"
 #include "core/RiggedMesh.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/SceneFile.hpp"
@@ -4052,6 +4053,61 @@ void testOAuthPkceSha256MatchesKnownTestVectors() {
     check(hexEncodeForTest(engine::core::sha256("abc")) ==
               "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
           "sha256(\"abc\") real-matches the well-known real test vector");
+}
+
+// Kronos ("In-App Auto-Updater" -- "Version Checking"): real coverage
+// over the pure, offline half of the updater. checkForUpdate() itself
+// makes a real network call to GitHub and is deliberately NOT tested
+// here (a hard-asserting test against a real remote API would be a
+// flaky, environment-dependent false failure -- same discipline this
+// suite already applies to CredentialStore and GPU-only code); the
+// version parse/compare logic it decides on, however, is pure and is
+// exactly where a real off-by-one would silently ship the wrong
+// "you're up to date".
+void testUpdateCheckParsesRealVersionStrings() {
+    using engine::core::parseVersion;
+
+    engine::core::SemanticVersion v = parseVersion("0.2.0-alpha");
+    check(v.valid && v.major == 0 && v.minor == 2 && v.patch == 0 && v.prerelease == "alpha",
+          "parseVersion real-parses this project's own real kKronosVersion shape");
+
+    engine::core::SemanticVersion tagged = parseVersion("v1.4.2");
+    check(tagged.valid && tagged.major == 1 && tagged.minor == 4 && tagged.patch == 2 && tagged.prerelease.empty(),
+          "parseVersion real-accepts the leading 'v' a real GitHub tag carries, and a real final (non-prerelease) "
+          "version");
+
+    engine::core::SemanticVersion shortened = parseVersion("2.1");
+    check(shortened.valid && shortened.major == 2 && shortened.minor == 1 && shortened.patch == 0,
+          "parseVersion real-treats a shortened 'major.minor' as an unambiguous major.minor.0");
+
+    engine::core::SemanticVersion build = parseVersion("1.0.0-beta+exp.sha.5114f85");
+    check(build.valid && build.prerelease == "beta",
+          "parseVersion real-drops SemVer build metadata from the prerelease tag -- it carries no precedence and "
+          "must not affect comparison");
+
+    check(!parseVersion("").valid, "parseVersion real-rejects an empty string rather than silently reading 0.0.0");
+    check(!parseVersion("banana").valid, "parseVersion real-rejects a non-version string");
+    check(!parseVersion("v").valid, "parseVersion real-rejects a bare 'v' with no real digits after it");
+}
+
+void testUpdateCheckComparesRealVersionsIncludingPrereleasePrecedence() {
+    using engine::core::compareVersions;
+    using engine::core::parseVersion;
+    auto cmp = [](const char* a, const char* b) { return compareVersions(parseVersion(a), parseVersion(b)); };
+
+    check(cmp("0.2.0-alpha", "0.1.0-alpha") > 0, "a real newer minor really compares greater");
+    check(cmp("0.1.0-alpha", "0.2.0-alpha") < 0, "a real older minor really compares less");
+    check(cmp("1.0.0", "0.9.9") > 0, "a real major bump really outranks a lower major");
+    check(cmp("0.2.1-alpha", "0.2.0-alpha") > 0, "a real patch bump really compares greater");
+    check(cmp("0.2.0-alpha", "0.2.0-alpha") == 0, "a real identical version really compares equal");
+    check(cmp("v0.2.0-alpha", "0.2.0-alpha") == 0,
+          "the real leading 'v' on a GitHub tag really doesn't affect comparison against the bare local version");
+
+    // SemVer §11.3 -- the real rule that makes shipping a real final
+    // 0.2.0 to someone running 0.2.0-alpha correctly read as an update.
+    check(cmp("0.2.0-alpha", "0.2.0") < 0, "a real prerelease really sorts BEFORE the identical final release");
+    check(cmp("0.2.0", "0.2.0-alpha") > 0, "the real final release really sorts after its own prerelease");
+    check(cmp("0.2.0-beta", "0.2.0-alpha") > 0, "a real later prerelease tag really sorts after an earlier one");
 }
 
 // Real round-trip coverage for base64UrlEncode()/base64UrlDecode() --
@@ -28041,6 +28097,8 @@ int main() {
     testFriendsServiceMessagingScopesPerFriend();
     testFriendsServicePresenceDefaultsToOfflineWithNoRealData();
     testFriendsServicePresenceOnlineCarriesRealGameNameDetail();
+    testUpdateCheckParsesRealVersionStrings();
+    testUpdateCheckComparesRealVersionsIncludingPrereleasePrecedence();
     testOAuthPkceSha256MatchesKnownTestVectors();
     testOAuthPkceBase64UrlRoundTrips();
     testOAuthPkceGeneratesRfc7636CompliantVerifierAndChallenge();

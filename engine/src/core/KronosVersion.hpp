@@ -9,7 +9,16 @@ namespace engine::core {
 // could drift out of sync. Bump this by hand for each real alpha build;
 // there is no build-numbering/CI-stamping system in this codebase to
 // derive it from automatically.
-inline constexpr const char* kKronosVersion = "0.1.0-alpha";
+//
+// Kronos ("In-App Auto-Updater"): this is also the real value the
+// startup update check compares against the latest published GitHub
+// release (core::checkForUpdate()), which makes keeping it in step with
+// the real released tag load-bearing rather than cosmetic -- it was
+// found still reading "0.1.0-alpha" after v0.2.0-alpha had already been
+// tagged, which would have made every user of that build be offered an
+// "update" to the release they were already running. Bump this in the
+// same commit that cuts a real tag.
+inline constexpr const char* kKronosVersion = "0.2.0-alpha";
 
 // Real, honest build-timestamp -- __DATE__/__TIME__ are the compiler's
 // own real values for when this translation unit was actually compiled,

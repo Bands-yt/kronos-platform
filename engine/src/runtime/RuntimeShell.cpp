@@ -21,7 +21,9 @@
 #include "core/HiddenGemsSelector.hpp"
 #include "core/KronosVersion.hpp"
 #include "core/ProcessLaunch.hpp"
+#include "core/Logger.hpp"
 #include "core/ResourcePaths.hpp"
+#include "core/UpdateCheck.hpp"
 #include "core/UITheme.hpp"
 #include "marketplace/CreditsPurchase.hpp"
 #include "marketplace/RatingSubmission.hpp"
@@ -32,6 +34,12 @@
 namespace engine::runtime {
 
 namespace {
+// Kronos ("In-App Auto-Updater"): the real repository the real update
+// check queries -- the same one the Bootstrap Installer pulls its own
+// real release archives from (see installer/src/main.cpp).
+constexpr const char* kUpdateRepoOwner = "Bands-yt";
+constexpr const char* kUpdateRepoName = "kronos-platform";
+
 constexpr const char* kSessionHistoryPath = "session_history.sessions";
 constexpr const char* kLocalProfilePath = "local_profile.profile";
 constexpr const char* kGamePlayLogPath = "game_play_log.playlog";
@@ -224,6 +232,12 @@ bool RuntimeShell::initialize() {
     ensureLocalProfileLoaded();
     applyAllSettingsFromProfile();
 
+    // Kronos ("In-App Auto-Updater" -- "On startup ... query the GitHub
+    // Releases API"): fired once here, on a real background thread, so
+    // the real network round-trip never delays the first frame. Its
+    // result surfaces on the Home screen whenever it lands.
+    startUpdateCheck();
+
     return true;
 }
 
@@ -235,6 +249,9 @@ void RuntimeShell::shutdown() {
     // can't hang forever, just until that real timeout (or a real
     // completed sign-in) elapses.
     if (googleSignInThread_.joinable()) googleSignInThread_.join();
+    // Same real reason as the sign-in thread above: this one's lambda
+    // captures `this` too, so it must not outlive these members.
+    if (updateCheckThread_.joinable()) updateCheckThread_.join();
 
     lanBrowser_.stop();
     lanBrowserRunning_ = false;
@@ -633,6 +650,7 @@ void RuntimeShell::endFrame() {
 void RuntimeShell::tick(float dt) {
     tickLanBrowserIfNeeded(dt);
     pollGoogleSignInResult();
+    pollUpdateCheckResult();
 
     // Kronos ("Animated Hourglass Loading Screen"): real, deferred-by-
     // one-frame game load -- selectGame() sets pendingGameLoad_ and
@@ -954,6 +972,37 @@ void RuntimeShell::drawHomePanel() {
         }
     }
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
+
+    // Kronos ("In-App Auto-Updater" -- "prompt the user"): only ever
+    // drawn once a real newer release has genuinely been found by the
+    // real background check. Deliberately a quiet inline card rather
+    // than a modal: an update is worth offering, never worth blocking
+    // someone who opened Kronos to play.
+    if (updateAvailable_ && !updateBannerDismissed_) {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(1.0f, 0.965f, 0.925f, 1.0f));
+        ImGui::BeginChild("##update_banner", ImVec2(kCardWidth, 74.0f), true);
+        ImGui::TextColored(ImVec4(0.729f, 0.325f, 0.086f, 1.0f), "Kronos %s is available", updateAvailableTag_.c_str());
+        ImGui::TextDisabled("You're running %s.", core::kKronosVersion);
+        pushPrimaryActionButtonColors();
+        if (ImGui::SmallButton("Update now")) {
+            if (!startUpdateDownload()) {
+                // startUpdateDownload() already put a real, specific
+                // reason in updateStatusMessage_; keep the banner up so
+                // the user can actually see it.
+                notify(core::NotificationKind::SystemMessage, "Update failed to start", updateStatusMessage_);
+            }
+        }
+        popPrimaryActionButtonColors();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Later")) updateBannerDismissed_ = true;
+        if (!updateStatusMessage_.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", updateStatusMessage_.c_str());
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    }
 
     // Primary action, visually distinct (accent color) from every
     // secondary action below it -- the one real, most common thing a
@@ -2179,6 +2228,100 @@ void RuntimeShell::drawToasts() {
         ImGui::End();
         y += 78.0f;
     }
+}
+
+void RuntimeShell::startUpdateCheck() {
+    // Real, honest no-op: one check per session is enough, and a second
+    // concurrent one would just race the first to the same answer.
+    if (updateCheckInProgress_.load() || updateAvailable_) return;
+    if (updateCheckThread_.joinable()) updateCheckThread_.join();
+
+    updateCheckInProgress_.store(true);
+    updateCheckThread_ = std::thread([this]() {
+        core::UpdateCheckResult checkResult =
+            core::checkForUpdate(core::kKronosVersion, kUpdateRepoOwner, kUpdateRepoName);
+        std::lock_guard<std::mutex> lock(updateCheckResultMutex_);
+        updateCheckPendingResult_ = std::move(checkResult);
+        updateCheckInProgress_.store(false);
+    });
+}
+
+void RuntimeShell::pollUpdateCheckResult() {
+    std::optional<core::UpdateCheckResult> checkResult;
+    {
+        std::lock_guard<std::mutex> lock(updateCheckResultMutex_);
+        if (!updateCheckPendingResult_.has_value()) return;
+        checkResult = std::move(updateCheckPendingResult_);
+        updateCheckPendingResult_.reset();
+    }
+
+    if (!checkResult->checked) {
+        // Deliberately quiet for the user: a failed update check is a
+        // real non-event for them (they're offline, GitHub is down,
+        // they're rate limited). It goes to the log, never to a toast
+        // that would interrupt someone who just wanted to play.
+        core::logWarn("Update", "update check did not complete -- %s", checkResult->error.c_str());
+        return;
+    }
+    if (!checkResult->updateAvailable) {
+        core::logInfo("Update", "running %s; latest published release is %s -- already up to date.",
+                      core::kKronosVersion, checkResult->latestTag.c_str());
+        return;
+    }
+    core::logInfo("Update", "running %s; %s is available.", core::kKronosVersion, checkResult->latestTag.c_str());
+
+    updateAvailable_ = true;
+    updateAvailableTag_ = checkResult->latestTag;
+    notify(core::NotificationKind::SystemMessage, "Update available",
+           "Kronos " + checkResult->latestTag + " is available. You're on " + std::string(core::kKronosVersion) + ".");
+}
+
+bool RuntimeShell::startUpdateDownload() {
+    // The real updater helper ships alongside the app's own executable,
+    // so it is resolved relative to the real running binary rather than
+    // the process's working directory (which is whatever the user
+    // happened to launch from).
+    std::filesystem::path exeDir(core::executableDirectory());
+#if defined(_WIN32)
+    std::filesystem::path helper = exeDir / "kronos_installer.exe";
+    const char* relaunchExe = "engine_runtime.exe";
+#else
+    std::filesystem::path helper = exeDir / "kronos_installer";
+    const char* relaunchExe = "engine_runtime";
+#endif
+
+    std::error_code ec;
+    if (!std::filesystem::exists(helper, ec)) {
+        updateStatusMessage_ = "The updater helper isn't installed next to Kronos -- download the new version from the "
+                               "releases page instead.";
+        return false;
+    }
+
+    std::vector<std::string> args = {"--update",
+                                     "--install-dir",
+                                     exeDir.string(),
+                                     "--relaunch",
+                                     relaunchExe,
+                                     "--wait-pid",
+                                     std::to_string(core::currentProcessId())};
+    if (!core::launchProcess(helper.string(), args)) {
+        updateStatusMessage_ = "Could not start the updater helper.";
+        return false;
+    }
+
+    // The helper is now waiting on this process's own pid -- it cannot
+    // safely touch a single file until this app is really gone, so the
+    // only correct next step is to close.
+    updateStatusMessage_ = "Kronos will close and reopen once the update is installed.";
+    // Real shutdown through the app's own existing path: Window::pumpEvents()
+    // already returns false on SDL_QUIT, so pushing a real quit event runs
+    // the exact same ordered teardown a user clicking the window's close
+    // button would -- rather than a second, parallel "please exit" flag
+    // that every layer would then have to learn to respect.
+    SDL_Event quitEvent;
+    quitEvent.type = SDL_QUIT;
+    SDL_PushEvent(&quitEvent);
+    return true;
 }
 
 void RuntimeShell::startGoogleSignIn() {

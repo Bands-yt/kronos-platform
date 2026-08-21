@@ -101,6 +101,7 @@ add_executable(kronos_installer
     src/Downloader.cpp
     src/ArchiveExtractor.cpp
     src/PlatformIntegration.cpp
+    src/UpdateApply.cpp
 )
 target_link_libraries(kronos_installer PRIVATE
     installer_imgui

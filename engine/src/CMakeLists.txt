@@ -167,6 +167,8 @@ add_library(engine_core STATIC
     core/CredentialStoreLinux.cpp
     core/CredentialStoreWindows.cpp
 
+    core/UpdateCheck.cpp
+
     runtime/GameLoop.cpp
 
     platform/LinuxWindow.cpp

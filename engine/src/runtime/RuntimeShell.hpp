@@ -17,6 +17,7 @@
 #include "analytics/TelemetrySender.hpp"
 #include "core/GameCatalogueAggregate.hpp"
 #include "core/GoogleAuth.hpp"
+#include "core/UpdateCheck.hpp"
 #include "core/LocalGameDirectory.hpp"
 #include "core/LocalProfile.hpp"
 #include "core/RiggedAvatar.hpp"
@@ -340,6 +341,21 @@ private:
     // blocking this thread waiting for the background one.
     void pollGoogleSignInResult();
 
+    // Kronos ("In-App Auto-Updater" -- "On startup ... query the GitHub
+    // Releases API"): fires the real, blocking version check onto a real
+    // background thread. Honest no-op if a check is already in flight or
+    // one already completed this session.
+    void startUpdateCheck();
+    // Real, non-blocking; called once per real tick() alongside
+    // pollGoogleSignInResult().
+    void pollUpdateCheckResult();
+    // Kronos ("Safe Swapping"): spawns the real, separate updater helper
+    // process and asks the app to close, handing it this process's own
+    // real pid to wait on. Returns false (with a real user-facing reason
+    // in updateStatusMessage_) if the helper genuinely couldn't be found
+    // or started -- the app then keeps running, unchanged.
+    bool startUpdateDownload();
+
     core::Application& app_;
     std::function<core::EntityId()> spawnNetworkedPlayerEntity_;
     std::function<core::EntityId(glm::vec4 skinTone, core::HeadShape headShape, core::BodyProportions bodyProportions,
@@ -471,6 +487,25 @@ private:
     std::mutex googleSignInResultMutex_;
     std::optional<core::GoogleAuthResult> googleSignInPendingResult_;
     std::string googleSignInStatusMessage_;
+
+    // Kronos ("In-App Auto-Updater"): the real startup update check runs
+    // on its own background thread for exactly the same reason sign-in
+    // does -- core::checkForUpdate() makes a real, blocking network call
+    // that must never stall the render thread. Same real hand-off shape:
+    // a mutex-guarded optional polled once per tick().
+    std::thread updateCheckThread_;
+    std::atomic<bool> updateCheckInProgress_{false};
+    std::mutex updateCheckResultMutex_;
+    std::optional<core::UpdateCheckResult> updateCheckPendingResult_;
+    // Set once a real newer release has actually been found, so the real
+    // update banner keeps showing after the check thread is long gone.
+    bool updateAvailable_ = false;
+    std::string updateAvailableTag_;
+    // Real, session-scoped dismissal -- "Later" hides the banner for this
+    // run only, deliberately not persisted: a skipped update should be
+    // offered again next launch, not silently forgotten forever.
+    bool updateBannerDismissed_ = false;
+    std::string updateStatusMessage_;
 
     // Kronos ("Notifications System"): same real dual-reachability shape.
     bool showNotificationsOverlay_ = false;
