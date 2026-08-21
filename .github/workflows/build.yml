@@ -32,12 +32,12 @@ jobs:
 
       # Real build-time deps this project's CMake actually needs on
       # Linux: build-essential (gcc/g++/make) + cmake for the toolchain,
-      # libvulkan-dev for the Vulkan loader/headers, libsdl2-dev + zlib
-      # for the two find_package(... REQUIRED) system deps
-      # engine/cmake/Dependencies.cmake declares (everything else --
-      # EnTT, glm, volk, Jolt, Luau, ENet, Dear ImGui -- is fetched and
-      # built from source by CMake's own FetchContent, no separate
-      # install needed).
+      # libvulkan-dev for the Vulkan loader/headers, libsdl2-dev + zlib +
+      # libcurl + libsecret for the system find_package(... REQUIRED)/
+      # pkg_check_modules(... REQUIRED) deps engine/cmake/Dependencies.cmake
+      # declares (everything else -- EnTT, glm, volk, Jolt, Luau, ENet,
+      # Dear ImGui -- is fetched and built from source by CMake's own
+      # FetchContent, no separate install needed).
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -49,7 +49,9 @@ jobs:
             pkg-config \
             libvulkan-dev \
             libsdl2-dev \
-            zlib1g-dev
+            zlib1g-dev \
+            libcurl4-openssl-dev \
+            libsecret-1-dev
 
       - name: Configure (Release)
         run: |
@@ -98,13 +100,15 @@ jobs:
         uses: actions/checkout@v4
 
       # windows-latest runners ship vcpkg pre-installed
-      # (%VCPKG_INSTALLATION_ROOT%) -- used here only for the two real
-      # system deps CMake's find_package() needs (SDL2, zlib); every
-      # other dependency is FetchContent-built from source by CMake
-      # itself, same as the Linux job.
+      # (%VCPKG_INSTALLATION_ROOT%) -- used here only for the real system
+      # deps CMake's find_package() needs (SDL2, zlib, curl -- CredentialStore
+      # on Windows uses DPAPI, a built-in Win32 API, so no libsecret
+      # equivalent is needed here); every other dependency is
+      # FetchContent-built from source by CMake itself, same as the
+      # Linux job.
       - name: Install Windows dependencies (vcpkg)
         run: |
-          vcpkg install sdl2:x64-windows zlib:x64-windows
+          vcpkg install sdl2:x64-windows zlib:x64-windows curl:x64-windows
 
       - name: Configure (Release)
         run: |
