@@ -33,6 +33,18 @@ struct ObjectPushConstants {
     glm::vec4 baseColor;
     glm::vec4 metallicRoughness; // x: metallic, y: roughness, z: normal map intensity (see Components.hpp's Renderable::normalIntensity), w: unused
     glm::vec4 emissive;          // rgb: emissive color, a: intensity multiplier -- see Components.hpp's Renderable
+    // Kronos ("Bindless Descriptors"): indices into the global texture
+    // array, replacing the per-material descriptor set for this pipeline.
+    //
+    // Packed two-per-uint because push constants are guaranteed only 128
+    // bytes and the block above already uses 112. Sixteen bits each still
+    // addresses 65535 textures, far beyond BindlessTextureTable's real
+    // capacity, so nothing is lost by packing.
+    //   x = albedo | (normal   << 16)
+    //   y = metallic | (roughness << 16)
+    //   z = ao
+    //   w = reserved
+    glm::uvec4 textureIndices{0u, 0u, 0u, 0u};
 };
 
 // Must exactly match the `push_constant` block in shaders/glass.vert and

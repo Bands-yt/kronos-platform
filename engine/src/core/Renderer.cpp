@@ -162,6 +162,14 @@ bool Renderer::initialize(const CreateInfo& info) {
     if (!createSkinningDescriptorResources()) return false; // same requirement -- see FrameSync's skinning fields
     if (!createPostProcessResources()) return false;       // sampler + descriptor set layouts/pool (not per-frame-sized)
     if (!createMaterialResources()) return false;          // also not per-frame-sized -- must exist before createScenePipeline()'s 2-set layout
+    // Needs defaultWhiteTexture_ (createMaterialResources) for its
+    // pre-fill, and must precede createScenePipeline() which consumes the
+    // layout. A failure here is not fatal: bindless simply stays off.
+    if (!createBindlessResources()) {
+        std::fprintf(stderr, "Renderer: bindless setup failed -- continuing with per-material descriptors.\n");
+        destroyBindlessResources();
+        bindlessSupported_ = false;
+    }
     if (!createScenePipeline()) return false;
     if (!createGlassPipeline()) return false;             // needs sceneDescriptorSetLayout_ only -- see its own comment
     if (!createSkinnedScenePipeline()) return false;       // needs sceneDescriptorSetLayout_/materialDescriptorSetLayout_/skinningDescriptorSetLayout_ to already exist
@@ -430,26 +438,34 @@ bool Renderer::createLogicalDevice() {
     VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     features2.pNext = &features13;
 
-    VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
-
     std::vector<const char*> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
-    // Chained ahead of the ray tracing chain so both can be enabled
-    // independently -- a device may support one and not the other.
+    // Descriptor indexing is set on features12, NOT on a separate
+    // VkPhysicalDeviceDescriptorIndexingFeatures.
+    //
+    // The two structs describe the same features, and chaining both is
+    // ambiguous: with features12 also present (the ray tracing path adds
+    // it) the driver honoured features12's defaults -- all false -- and
+    // silently ignored the separate struct. Validation caught it as three
+    // "...UpdateAfterBind was not enabled" errors at layout creation.
+    //
+    // features12 is therefore chained unconditionally now, since bindless
+    // needs it even on a device without ray tracing.
+    bool needFeatures12 = bindlessSupported_ || rayTracingSupported_;
     if (bindlessSupported_) {
-        indexingFeatures.runtimeDescriptorArray = VK_TRUE;
-        indexingFeatures.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-        indexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
-        indexingFeatures.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-        indexingFeatures.descriptorBindingVariableDescriptorCount = VK_TRUE;
-        indexingFeatures.pNext = features13.pNext;
-        features13.pNext = &indexingFeatures;
+        features12.runtimeDescriptorArray = VK_TRUE;
+        features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        features12.descriptorBindingPartiallyBound = VK_TRUE;
+        features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        features12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+        features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    }
+    if (needFeatures12) {
+        features12.pNext = features13.pNext;
+        features13.pNext = &features12;
     }
 
     if (rayTracingSupported_) {
-        features12.pNext = features13.pNext;
-        features13.pNext = &features12;
         features12.bufferDeviceAddress = VK_TRUE;
         asFeatures.pNext = features12.pNext;
         features12.pNext = &asFeatures;
@@ -1147,7 +1163,158 @@ bool Renderer::createSyncObjects() {
 // One render-finished semaphore per swapchain image -- see the member's
 // own comment for why per-frame was wrong. Recreated with the swapchain,
 // since the image count can change on resize.
+
+// Kronos ("Bindless Descriptors"): one global texture array, bound once
+// per frame instead of a per-material descriptor set per draw.
+bool Renderer::createBindlessResources() {
+    if (!bindlessSupported_) return true; // graceful: the per-material path stays in use
+
+    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    if (vkCreateSampler(device_, &samplerInfo, nullptr, &bindlessSampler_) != VK_SUCCESS) {
+        std::fprintf(stderr, "Renderer: failed to create the bindless sampler.\n");
+        return false;
+    }
+
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = kBindlessTextureCapacity;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // PARTIALLY_BOUND: not every slot is populated.
+    // UPDATE_AFTER_BIND: textures are registered while the set is already
+    // bound by in-flight command buffers.
+    VkDescriptorBindingFlags bindingFlags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+                                             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+                                             VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+    flagsInfo.bindingCount = 1;
+    flagsInfo.pBindingFlags = &bindingFlags;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    layoutInfo.pNext = &flagsInfo;
+    if (vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &bindlessSetLayout_) != VK_SUCCESS) {
+        std::fprintf(stderr, "Renderer: failed to create the bindless descriptor set layout.\n");
+        return false;
+    }
+
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kBindlessTextureCapacity};
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.maxSets = 1;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+    if (vkCreateDescriptorPool(device_, &poolInfo, nullptr, &bindlessPool_) != VK_SUCCESS) {
+        std::fprintf(stderr, "Renderer: failed to create the bindless descriptor pool.\n");
+        return false;
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocInfo.descriptorPool = bindlessPool_;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &bindlessSetLayout_;
+    if (vkAllocateDescriptorSets(device_, &allocInfo, &bindlessSet_) != VK_SUCCESS) {
+        std::fprintf(stderr, "Renderer: failed to allocate the bindless descriptor set.\n");
+        return false;
+    }
+
+    // Pre-fill every slot with the default white texture. PARTIALLY_BOUND
+    // permits unwritten slots, but only while nothing samples them --
+    // pre-filling removes that footgun rather than relying on every future
+    // shader index being valid.
+    if (defaultWhiteTexture_.isValid()) {
+        std::vector<VkDescriptorImageInfo> infos(kBindlessTextureCapacity,
+                                                  VkDescriptorImageInfo{bindlessSampler_, defaultWhiteTexture_.view(),
+                                                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = bindlessSet_;
+        write.dstBinding = 0;
+        write.dstArrayElement = 0;
+        write.descriptorCount = kBindlessTextureCapacity;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = infos.data();
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+
+    bindlessInitialised_ = true;
+    return true;
+}
+
+void Renderer::destroyBindlessResources() {
+    if (bindlessPool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device_, bindlessPool_, nullptr);
+        bindlessPool_ = VK_NULL_HANDLE;
+    }
+    if (bindlessSetLayout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device_, bindlessSetLayout_, nullptr);
+        bindlessSetLayout_ = VK_NULL_HANDLE;
+    }
+    if (bindlessSampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device_, bindlessSampler_, nullptr);
+        bindlessSampler_ = VK_NULL_HANDLE;
+    }
+    bindlessSet_ = VK_NULL_HANDLE;
+    bindlessTable_.clear();
+    bindlessInitialised_ = false;
+}
+
+uint32_t Renderer::bindlessSlotFor(uint32_t handle, TextureLibrary& textureLibrary, const Texture& fallback) {
+    if (!bindlessInitialised_) return 0;
+
+    const Texture* texture = handle != Renderable::kInvalidHandle ? textureLibrary.get(handle) : nullptr;
+    const bool usable = texture != nullptr && texture->isValid();
+    // Slot 0 is the pre-filled default; an unusable handle maps there
+    // rather than allocating a slot for nothing.
+    if (!usable) return 0;
+
+    const uint64_t key = static_cast<uint64_t>(handle) + 1ull; // 0 reserved for the default
+    const uint32_t slot = bindlessTable_.acquire(key);
+    if (slot == BindlessTextureTable::kInvalidSlot) {
+        // Exhausted. Degrade to the default rather than indexing out of
+        // range, which would sample whatever descriptor happens to sit there.
+        return 0;
+    }
+
+    // Write the descriptor only for slots the table reports as new.
+    if (!bindlessTable_.pendingWrites().empty()) {
+        std::vector<VkWriteDescriptorSet> writes;
+        std::vector<VkDescriptorImageInfo> infos;
+        writes.reserve(bindlessTable_.pendingWrites().size());
+        infos.reserve(bindlessTable_.pendingWrites().size());
+        for (uint32_t pending : bindlessTable_.pendingWrites()) {
+            if (pending != slot) continue; // only this frame's newly-acquired slot is resolvable here
+            infos.push_back(VkDescriptorImageInfo{bindlessSampler_, texture->view(),
+                                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = bindlessSet_;
+            write.dstBinding = 0;
+            write.dstArrayElement = pending;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &infos.back();
+            writes.push_back(write);
+        }
+        if (!writes.empty()) vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        bindlessTable_.clearPendingWrites();
+    }
+    (void)fallback;
+    return slot;
+}
+
 bool Renderer::createPerImageSemaphores() {
+    destroyBindlessResources();
     destroyPerImageSemaphores();
 
     VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -1710,7 +1877,12 @@ bool Renderer::createScenePipeline() {
     // whose shaders simply never declare a set=1 binding, so Vulkan never
     // requires it to be bound for those draws (only createScenePipeline()'s
     // individually-drawn entities bind set=1, see drawSceneInto()'s loop).
-    std::array<VkDescriptorSetLayout, 2> setLayouts{sceneDescriptorSetLayout_, materialDescriptorSetLayout_};
+    // Set 2 is the global bindless texture array, added only when the
+    // device supports it. Set 1 stays declared so the non-bindless path,
+    // and the other pipelines that share this layout, are unchanged.
+    std::vector<VkDescriptorSetLayout> setLayouts{sceneDescriptorSetLayout_, materialDescriptorSetLayout_};
+    if (bindlessInitialised_ && bindlessSetLayout_ != VK_NULL_HANDLE) setLayouts.push_back(bindlessSetLayout_);
+
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
     layoutInfo.pSetLayouts = setLayouts.data();

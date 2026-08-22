@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/BindlessTextureTable.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -945,6 +947,13 @@ private:
     bool pickPhysicalDevice();
     [[nodiscard]] bool checkRayTracingSupport(VkPhysicalDevice device) const;
     [[nodiscard]] bool checkBindlessSupport(VkPhysicalDevice device) const;
+    [[nodiscard]] bool createBindlessResources();
+    void destroyBindlessResources();
+    // Returns the slot for `handle`, writing the descriptor on first use.
+    // Falls back to slot 0 (the default white texture) when the table is
+    // exhausted, so an overflow degrades visually rather than reading a
+    // stale descriptor.
+    [[nodiscard]] uint32_t bindlessSlotFor(uint32_t handle, TextureLibrary& textureLibrary, const Texture& fallback);
     [[nodiscard]] bool createPerImageSemaphores();
     void destroyPerImageSemaphores();
     bool createLogicalDevice();
@@ -1380,6 +1389,21 @@ private:
     // were installed. Indexing by acquired image index is the fix the
     // validation message itself recommends.
     std::vector<VkSemaphore> renderFinishedPerImage_;
+
+    // Kronos ("Bindless Descriptors"): one global texture array bound
+    // once per frame, replacing the per-material descriptor set on the
+    // main scene pipeline. Only created when bindlessSupported_.
+    static constexpr uint32_t kBindlessTextureCapacity = 2048;
+    VkDescriptorSetLayout bindlessSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorPool bindlessPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet bindlessSet_ = VK_NULL_HANDLE;
+    VkSampler bindlessSampler_ = VK_NULL_HANDLE;
+    BindlessTextureTable bindlessTable_{kBindlessTextureCapacity};
+    // Every slot starts pointing at this, so a shader indexing a slot
+    // that has not been written yet reads white rather than undefined
+    // memory. PARTIALLY_BOUND permits unwritten slots, but only if
+    // nothing samples them -- pre-filling removes that footgun entirely.
+    bool bindlessInitialised_ = false;
     std::vector<VkImageView> swapchainImageViews_;
 
     VkFormat depthFormat_ = VK_FORMAT_D32_SFLOAT;

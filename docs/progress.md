@@ -3148,3 +3148,46 @@ Worth noting because the count alone looked like "no progress": the
 identity of the error had changed completely.
 
 **13873/13873 checks**, rendering unaffected.
+
+## 2026-08-22 — Bindless descriptor set live; shader migration deferred
+
+The global bindless descriptor set is created, populated and bound into
+the scene pipeline layout, and the renderer remains at **0 validation
+errors**.
+
+### A real bug validation caught immediately
+Enabling descriptor indexing on a separate
+`VkPhysicalDeviceDescriptorIndexingFeatures` did **not** work.
+That struct and `VkPhysicalDeviceVulkan12Features` describe the same
+features, and chaining both is ambiguous -- with features12 also present
+(the ray tracing path adds it) the driver honoured features12's defaults,
+all false, and silently ignored the separate struct. It surfaced as three
+"...UpdateAfterBind was not enabled" errors at layout creation.
+
+Fixed by setting the fields on features12 itself and chaining features12
+unconditionally, since bindless needs it even on a device with no ray
+tracing. Without validation layers this would have been a silently
+disabled feature that looked enabled.
+
+### The table
+2048 slots, every one pre-filled with the default white texture.
+`PARTIALLY_BOUND` permits unwritten slots only while nothing samples
+them; pre-filling removes that footgun rather than trusting every future
+shader index. Exhaustion degrades to slot 0 rather than indexing out of
+range.
+
+### Shader migration deliberately NOT done
+`scene.frag` does not use push constants at all -- material data reaches
+it through **flat varyings** from the vertex shader, because two vertex
+shaders with different pipeline layouts feed the same fragment shader.
+Routing texture indices to it therefore means changing both vertex
+shaders and the instanced path's per-instance data, not just the
+fragment shader.
+
+A first attempt at the fragment shader was reverted rather than shipped
+half-done: an incomplete migration breaks rendering, and the 0-VUID
+working renderer is worth more than a partially-migrated one. The C++
+side is complete and inert -- the set exists and is bound, nothing
+samples it yet.
+
+**13873/13873 checks**, 0 VUIDs, rendering unaffected.
