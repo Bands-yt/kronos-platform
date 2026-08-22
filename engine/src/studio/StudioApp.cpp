@@ -43,6 +43,8 @@
 #include "studio/plugins/CreatorAssetBrowserPlugin.hpp"
 #include "studio/plugins/CreatorConsolePlugin.hpp"
 #include "studio/plugins/LightingToolsPlugin.hpp"
+#include "migration/InstanceHydrator.hpp"
+#include "studio/PluginChrome.hpp"
 #include "migration/ProjectImporter.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/TimelineEditorPlugin.hpp"
@@ -547,6 +549,14 @@ bool StudioApp::initialize() {
     propSpawnMeshHandles.capsuleMesh = meshLibrary_.registerMesh(core::Mesh::createCapsule(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.35f, 1.0f));
     viewportPanel_.setPropSpawnMeshHandles(propSpawnMeshHandles);
+
+    // Kronos ("Instance-to-ECS Hydration"): the primitives an imported
+    // Roblox place is built from. Registered once here rather than per
+    // import, so repeated imports share one set of GPU buffers.
+    hydrationMeshes_.box = propSpawnMeshHandles.boxMesh;
+    hydrationMeshes_.capsule = propSpawnMeshHandles.capsuleMesh;
+    hydrationMeshes_.cylinder = meshLibrary_.registerMesh(core::Mesh::createCylinder(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.5f, 0.5f));
 
     auto texturePreview = std::make_unique<plugins::TexturePreviewPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue());
@@ -1837,6 +1847,8 @@ void StudioApp::drawImportDialog() {
                 migration::ProjectImporter::logReport(report, importPathBuffer_);
 
                 importSummary_ = report.summary();
+                importedTree_ = report.tree;
+                importBlocked_ = report.blocked;
                 for (const migration::ImportDiagnostic& diagnostic : report.diagnostics) {
                     const char* tag = diagnostic.severity == migration::ImportSeverity::Blocked  ? "[blocked] "
                                        : diagnostic.severity == migration::ImportSeverity::Warning ? "[warn] "
@@ -1855,6 +1867,28 @@ void StudioApp::drawImportDialog() {
             ImGui::TextWrapped("%s", importSummary_.c_str());
         }
 
+        // Hydration is a separate, deliberate second step. The report is
+        // what tells the author whether this place is safe and portable to
+        // bring in; spawning entities automatically would put the scene in
+        // a state they had not agreed to yet, and an import has no
+        // built-in undo of its own.
+        if (!importedTree_.empty()) {
+            ImGui::Separator();
+            ImGui::BeginDisabled(importBlocked_);
+            if (ImGui::Button("Spawn Into Scene", ImVec2(160.0f, 0.0f))) hydrateImportedTree();
+            ImGui::EndDisabled();
+            if (importBlocked_) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "Blocked by the IP safety scan.");
+            }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(120.0f);
+            ImGui::DragFloat("Stud scale", &importStudScale_, 0.01f, 0.01f, 4.0f, "%.2f");
+            ImGui::SameLine();
+            studio::helpMarker("Roblox measures in studs (1 stud = 0.28 m by its own convention). Kronos scenes are authored "
+                        "at 1 unit = 1 m, so 1.0 keeps an imported place the size it was authored at.");
+        }
+
         if (!importReportLines_.empty()) {
             ImGui::Separator();
             ImGui::BeginChild("##importreport", ImVec2(0.0f, 0.0f), true);
@@ -1868,6 +1902,58 @@ void StudioApp::drawImportDialog() {
         }
     }
     ImGui::End();
+}
+
+
+// Spawns the last imported tree into the live scene as one undoable
+// action. The whole import is a single UndoStack command rather than one
+// per entity: an author who imports a 600-part place and changes their
+// mind wants one Ctrl+Z, not six hundred.
+void StudioApp::hydrateImportedTree() {
+    if (importedTree_.empty() || importBlocked_) return;
+
+    migration::HydrationOptions options;
+    options.studsToUnits = importStudScale_;
+
+    migration::InstanceHydrator hydrator;
+    const migration::HydrationResult result = hydrator.hydrate(importedTree_, ecs_, hydrationMeshes_, options);
+
+    if (result.createdEntities.empty()) {
+        importSummary_ = "Nothing to spawn: no instance in this document has a Kronos equivalent.";
+        notifications_.push(importSummary_, NotificationSeverity::Warning);
+        return;
+    }
+
+    char message[256];
+    std::snprintf(message, sizeof(message), "Spawned %zu entities (%zu parts, %zu lights, %zu scripts, %zu skipped)",
+                  result.createdEntities.size(), result.partCount, result.lightCount, result.scriptCount,
+                  result.skippedCount);
+    importSummary_ = message;
+    notifications_.push(importSummary_, NotificationSeverity::Success);
+    core::logInfo("Import", "%s", message);
+    for (const std::string& note : result.notes) core::logInfo("Import", "%s", note.c_str());
+
+    // Undo destroys in REVERSE creation order so a parent is never
+    // destroyed while its children still reference it. Redo re-runs the
+    // same hydration, which is why the tree is kept rather than the
+    // entity ids -- the ids are invalid the moment undo runs.
+    std::vector<core::EntityId> created = result.createdEntities;
+    std::vector<migration::ImportedInstance> tree = importedTree_;
+    migration::HydrationMeshes meshes = hydrationMeshes_;
+    undoStack_.push(UndoStack::Command{
+        "Import .rbxlx",
+        [this, created]() {
+            for (auto it = created.rbegin(); it != created.rend(); ++it) {
+                if (ecs_.raw().valid(*it)) ecs_.destroyEntity(*it);
+            }
+            // Selection almost certainly pointed at something just
+            // destroyed; clearing it beats leaving a dangling id.
+            explorerPanel_.setSelected(core::kNullEntity);
+        },
+        [this, tree, meshes, options]() {
+            migration::InstanceHydrator redoHydrator;
+            (void)redoHydrator.hydrate(tree, ecs_, meshes, options);
+        }});
 }
 
 } // namespace engine::studio

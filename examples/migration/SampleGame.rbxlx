@@ -3,11 +3,104 @@
     <Properties><string name="Name">Workspace</string></Properties>
     <Item class="Model" referent="RBX1">
       <Properties><string name="Name">Lobby</string></Properties>
-      <Item class="Part" referent="RBX2">
-        <Properties><string name="Name">Floor</string></Properties>
+      <Item class="Part" referent="RBX_Floor">
+        <Properties>
+          <string name="Name">Floor</string>
+          <Vector3 name="size"><X>40</X><Y>1</Y><Z>40</Z></Vector3>
+          <CoordinateFrame name="CFrame">
+            <X>0</X><Y>-0.5</Y><Z>0</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Color3uint8 name="Color3uint8">8421504</Color3uint8>
+          <float name="Reflectance">0</float>
+          <float name="Transparency">0</float>
+        </Properties>
       </Item>
-      <Item class="Part" referent="RBX3">
-        <Properties><string name="Name">SpawnPad</string></Properties>
+      <Item class="Part" referent="RBX_WallNorth">
+        <Properties>
+          <string name="Name">WallNorth</string>
+          <Vector3 name="size"><X>24</X><Y>8</Y><Z>1</Z></Vector3>
+          <CoordinateFrame name="CFrame">
+            <X>0</X><Y>4</Y><Z>-12</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Color3uint8 name="Color3uint8">13611164</Color3uint8>
+          <float name="Reflectance">0</float>
+          <float name="Transparency">0</float>
+        </Properties>
+      </Item>
+      <Item class="Part" referent="RBX_WallSouth">
+        <Properties>
+          <string name="Name">WallSouth</string>
+          <Vector3 name="size"><X>24</X><Y>8</Y><Z>1</Z></Vector3>
+          <CoordinateFrame name="CFrame">
+            <X>0</X><Y>4</Y><Z>12</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Color3uint8 name="Color3uint8">13611164</Color3uint8>
+          <float name="Reflectance">0</float>
+          <float name="Transparency">0</float>
+        </Properties>
+      </Item>
+      <Item class="Part" referent="RBX_WallEast">
+        <Properties>
+          <string name="Name">WallEast</string>
+          <Vector3 name="size"><X>1</X><Y>8</Y><Z>24</Z></Vector3>
+          <CoordinateFrame name="CFrame">
+            <X>12</X><Y>4</Y><Z>0</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Color3uint8 name="Color3uint8">11776947</Color3uint8>
+          <float name="Reflectance">0</float>
+          <float name="Transparency">0</float>
+        </Properties>
+      </Item>
+      <Item class="Part" referent="RBX_Pillar">
+        <Properties>
+          <string name="Name">Pillar</string>
+          <Vector3 name="size"><X>2</X><Y>6</Y><Z>2</Z></Vector3>
+          <CoordinateFrame name="CFrame">
+            <X>-6</X><Y>3</Y><Z>-4</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Color3uint8 name="Color3uint8">6316128</Color3uint8>
+          <float name="Reflectance">0.6</float>
+          <float name="Transparency">0</float>
+        </Properties>
+      </Item>
+      <Item class="Part" referent="RBX_GlassPane">
+        <Properties>
+          <string name="Name">GlassPane</string>
+          <Vector3 name="size"><X>6</X><Y>6</Y><Z>0.4</Z></Vector3>
+          <CoordinateFrame name="CFrame">
+            <X>6</X><Y>3</Y><Z>4</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Color3uint8 name="Color3uint8">7699194</Color3uint8>
+          <float name="Reflectance">0</float>
+          <float name="Transparency">0.55</float>
+        </Properties>
+      </Item>
+      <Item class="PointLight" referent="RBX_Lamp">
+        <Properties>
+          <string name="Name">KeyLight</string>
+          <Color3 name="Color"><R>1</R><G>0.85</G><B>0.6</B></Color3>
+          <float name="Brightness">4</float>
+          <float name="Range">28</float>
+          <bool name="Enabled">true</bool>
+        </Properties>
       </Item>
       <Item class="Script" referent="RBX4">
         <Properties>

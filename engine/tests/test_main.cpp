@@ -221,7 +221,10 @@
 #include "studio/UndoStack.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
+#include "migration/AssetConverter.hpp"
+#include "migration/InstanceHydrator.hpp"
 #include "migration/ProjectImporter.hpp"
+#include "migration/PropertyDecoder.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
@@ -30276,6 +30279,318 @@ void testHouseLayoutDoorGapIsOpenInFrontWall() {
 // survive the path spellings and dependency shapes a real imported
 // project actually contains.
 
+
+// Kronos ("Instance-to-ECS Hydration"): typed decoding of the nested XML
+// Roblox actually writes. Reading only element text drops every position,
+// size, rotation and colour in a place file.
+void testRbxlxPropertyDecoding() {
+    const std::string document = R"XML(<roblox version="4">
+  <Item class="Part" referent="P0">
+    <Properties>
+      <string name="Name">Floor</string>
+      <Vector3 name="size"><X>8</X><Y>1</Y><Z>4</Z></Vector3>
+      <CoordinateFrame name="CFrame">
+        <X>10</X><Y>2.5</Y><Z>-3</Z>
+        <R00>0</R00><R01>0</R01><R02>1</R02>
+        <R10>0</R10><R11>1</R11><R12>0</R12>
+        <R20>-1</R20><R21>0</R21><R22>0</R22>
+      </CoordinateFrame>
+      <Color3uint8 name="Color3uint8">16711680</Color3uint8>
+      <float name="Reflectance">0.5</float>
+      <float name="Transparency">0.25</float>
+      <bool name="Anchored">true</bool>
+      <token name="shape">1</token>
+    </Properties>
+  </Item>
+</roblox>)XML";
+
+    auto parsed = engine::migration::RbxlxParser::parse(document);
+    check(parsed.has_value(), "the property-decoding document parses");
+    const auto tree = engine::migration::InstanceTreeBuilder::build(*parsed);
+    check(tree.size() == 1, "the property-decoding document yields one instance");
+    const auto& props = tree[0].properties;
+
+    const glm::vec3 size = engine::migration::decodeVector3(props, "size");
+    check(nearlyEqual(size.x, 8.0f) && nearlyEqual(size.y, 1.0f) && nearlyEqual(size.z, 4.0f),
+          "a nested <Vector3> really decodes all three components");
+
+    const glm::vec3 position = engine::migration::decodeCFramePosition(props, "CFrame");
+    check(nearlyEqual(position.x, 10.0f) && nearlyEqual(position.y, 2.5f) && nearlyEqual(position.z, -3.0f),
+          "a <CoordinateFrame> position really decodes");
+
+    // The basis above is a -90 degree yaw. Roblox writes ROWS; feeding
+    // that order into glm's column-major mat3 transposes it, which
+    // silently inverts every rotation in the place.
+    const glm::quat rotation = engine::migration::decodeCFrameRotation(props, "CFrame");
+    const glm::vec3 rotatedX = rotation * glm::vec3(1.0f, 0.0f, 0.0f);
+    check(nearlyEqual(rotatedX.x, 0.0f, 1e-3f) && nearlyEqual(rotatedX.z, -1.0f, 1e-3f),
+          "a CFrame basis decodes with Roblox's row convention, not its transpose");
+
+    const glm::vec3 color = engine::migration::decodeColor3(props, "Color3uint8");
+    check(nearlyEqual(color.r, 1.0f, 1e-2f) && nearlyEqual(color.g, 0.0f, 1e-2f) && nearlyEqual(color.b, 0.0f, 1e-2f),
+          "a packed <Color3uint8> decodes to the right RGB");
+
+    check(nearlyEqual(engine::migration::decodeFloat(props, "Reflectance"), 0.5f), "a <float> property decodes");
+    check(engine::migration::decodeBool(props, "Anchored", false), "a <bool> property decodes");
+    check(engine::migration::decodeInt(props, "shape", 99) == 1, "a <token> property decodes as an int");
+    check(engine::migration::propertyType(props, "Color3uint8") == "Color3uint8",
+          "the property's XML type tag is recorded so Color3 and Color3uint8 can be told apart");
+
+    // Missing and malformed properties must fall back, never propagate a
+    // NaN into a transform where it corrupts the whole scene graph.
+    const glm::vec3 fallback(42.0f);
+    check(engine::migration::decodeVector3(props, "NoSuchProperty", fallback) == fallback,
+          "a missing Vector3 returns the fallback");
+    engine::migration::PropertyMap broken;
+    broken["bad.X"] = "nan";
+    broken["bad.Y"] = "1";
+    broken["bad.Z"] = "2";
+    check(engine::migration::decodeVector3(broken, "bad", fallback) == fallback,
+          "a NaN component rejects the whole vector rather than poisoning a transform");
+    broken["partial.X"] = "1";
+    check(engine::migration::decodeVector3(broken, "partial", fallback) == fallback,
+          "a half-written vector returns the fallback rather than a half-decoded position");
+
+    // A non-orthonormal basis is not a rotation and must not become a
+    // garbage quaternion.
+    engine::migration::PropertyMap skewed;
+    for (const char* f : {"R00", "R01", "R02", "R10", "R11", "R12", "R20", "R21", "R22"}) {
+        skewed[std::string("m.") + f] = "3";
+    }
+    const glm::quat identity(1.0f, 0.0f, 0.0f, 0.0f);
+    check(engine::migration::decodeCFrameRotation(skewed, "m", identity) == identity,
+          "a non-orthonormal basis falls back to identity rather than producing a garbage rotation");
+}
+
+// The hydration layer: ImportedInstance tree -> live ECS entities.
+void testInstanceHydration() {
+    const std::string document = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W0">
+    <Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Model" referent="M0">
+      <Properties>
+        <string name="Name">House</string>
+        <CoordinateFrame name="CFrame"><X>100</X><Y>0</Y><Z>0</Z></CoordinateFrame>
+      </Properties>
+      <Item class="Part" referent="P0">
+        <Properties>
+          <string name="Name">Wall</string>
+          <Vector3 name="size"><X>4</X><Y>6</Y><Z>1</Z></Vector3>
+          <CoordinateFrame name="CFrame"><X>110</X><Y>3</Y><Z>0</Z></CoordinateFrame>
+          <float name="Transparency">0</float>
+        </Properties>
+      </Item>
+      <Item class="PointLight" referent="L0">
+        <Properties>
+          <string name="Name">Lamp</string>
+          <Color3 name="Color"><R>1</R><G>0.5</G><B>0.25</B></Color3>
+          <float name="Brightness">3</float>
+          <float name="Range">12</float>
+        </Properties>
+      </Item>
+      <Item class="Script" referent="S0">
+        <Properties>
+          <string name="Name">DoorScript</string>
+          <string name="Source">print("hello")</string>
+        </Properties>
+      </Item>
+      <Item class="Smoke" referent="X0">
+        <Properties><string name="Name">Puff</string></Properties>
+      </Item>
+    </Item>
+  </Item>
+</roblox>)XML";
+
+    auto parsed = engine::migration::RbxlxParser::parse(document);
+    check(parsed.has_value(), "the hydration document parses");
+    const auto tree = engine::migration::InstanceTreeBuilder::build(*parsed);
+
+    engine::core::ECS ecs;
+    engine::migration::HydrationMeshes meshes;
+    meshes.box = 0;
+    meshes.capsule = 1;
+    meshes.cylinder = 2;
+
+    engine::migration::InstanceHydrator hydrator;
+    const auto result = hydrator.hydrate(tree, ecs, meshes);
+
+    check(result.partCount == 1, "hydration creates a renderable entity for a Part");
+    check(result.lightCount == 1, "hydration creates a Light for a PointLight");
+    check(result.scriptCount == 1, "hydration attaches a Script component");
+    check(result.groupCount == 2, "hydration creates group entities for Workspace and Model");
+    check(result.skippedCount == 1, "an unsupported class is reported as skipped, not silently dropped");
+    check(result.createdEntities.size() == 5, "hydration creates exactly the supported entities");
+
+    engine::core::EntityId wall = engine::core::kNullEntity;
+    engine::core::EntityId lamp = engine::core::kNullEntity;
+    for (auto entity : result.createdEntities) {
+        const auto* name = ecs.tryGetComponent<engine::core::Name>(entity);
+        if (name == nullptr) continue;
+        if (name->value == "Wall") wall = entity;
+        if (name->value == "Lamp") lamp = entity;
+    }
+    check(wall != engine::core::kNullEntity, "the imported Part is findable by its authored name");
+
+    const auto* renderable = ecs.tryGetComponent<engine::core::Renderable>(wall);
+    check(renderable != nullptr, "the imported Part really has a Renderable");
+    check(renderable != nullptr && renderable->meshHandle == 0,
+          "the imported Part is bound to a real mesh handle, so it can actually draw");
+    check(renderable != nullptr && renderable->visible, "an opaque imported Part is visible");
+
+    // Roblox Size is a FULL extent and Kronos's box is built from
+    // half-extents -- importing Size directly doubles every part.
+    const auto* transform = ecs.tryGetComponent<engine::core::Transform>(wall);
+    check(transform != nullptr && nearlyEqual(transform->scale.y, 3.0f),
+          "a Part's Size is halved into Kronos's half-extent box scale");
+
+    // The wall's world position is 110; its parent Model sits at 100. A
+    // CFrame is WORLD-absolute but core::Transform is parent-LOCAL, so
+    // the stored local must be the difference -- storing 110 would place
+    // the wall at 210 once the parent composes.
+    check(transform != nullptr && nearlyEqual(transform->position.x, 10.0f),
+          "a world-space CFrame is converted to a parent-local Transform");
+    const glm::mat4 worldMatrix = engine::core::hierarchy::computeWorldMatrix(ecs, wall);
+    check(nearlyEqual(worldMatrix[3][0], 110.0f),
+          "the imported Part's composed WORLD position matches the CFrame the document specified");
+
+    const auto* wallHierarchy = ecs.tryGetComponent<engine::core::Hierarchy>(wall);
+    check(wallHierarchy != nullptr && wallHierarchy->parent != engine::core::kNullEntity,
+          "an imported Part is really parented to its Model");
+
+    const auto* light = ecs.tryGetComponent<engine::core::Light>(lamp);
+    check(light != nullptr && nearlyEqual(light->intensity, 3.0f), "a PointLight's Brightness becomes Light intensity");
+    check(light != nullptr && nearlyEqual(light->radius, 12.0f), "a PointLight's Range becomes Light radius");
+    check(light != nullptr && nearlyEqual(light->color.g, 0.5f, 1e-3f), "a PointLight's Color decodes");
+
+    // Imported scripts must not auto-run: they almost always reference
+    // Roblox APIs Kronos does not have, and running them on import sprays
+    // errors over the report the author is trying to read.
+    bool sawScript = false;
+    for (auto entity : result.createdEntities) {
+        if (const auto* script = ecs.tryGetComponent<engine::core::Script>(entity)) {
+            sawScript = true;
+            check(!script->autoRun, "an imported script does not auto-run by default");
+            check(script->source == "print(\"hello\")", "an imported script really carries its source");
+        }
+    }
+    check(sawScript, "hydration really attached a Script component");
+
+    engine::core::ECS scaledEcs;
+    engine::migration::HydrationOptions scaled;
+    scaled.studsToUnits = 0.5f;
+    const auto scaledResult = hydrator.hydrate(tree, scaledEcs, meshes, scaled);
+    for (auto entity : scaledResult.createdEntities) {
+        const auto* name = scaledEcs.tryGetComponent<engine::core::Name>(entity);
+        if (name == nullptr || name->value != "Wall") continue;
+        const auto* scaledTransform = scaledEcs.tryGetComponent<engine::core::Transform>(entity);
+        check(scaledTransform != nullptr && nearlyEqual(scaledTransform->scale.y, 1.5f),
+              "stud scaling really scales imported part sizes");
+    }
+
+    check(engine::migration::InstanceHydrator::isSupportedClass("Part"), "Part is a supported class");
+    check(!engine::migration::InstanceHydrator::isSupportedClass("Smoke"), "Smoke is honestly reported unsupported");
+}
+
+// The asset converters, which were four "not yet implemented" stubs.
+void testAssetConverters() {
+    engine::migration::AssetConverter converter;
+
+    check(engine::migration::AssetConverter::detectKind("a.obj") == engine::migration::AssetKind::Mesh,
+          "detectKind classifies .obj as a mesh");
+    check(engine::migration::AssetConverter::detectKind("a.png") == engine::migration::AssetKind::Texture,
+          "detectKind classifies .png as a texture");
+    check(engine::migration::AssetConverter::detectKind("a.zzz") == engine::migration::AssetKind::Unknown,
+          "detectKind reports an unknown extension honestly");
+
+    const std::string objPath = "test_import_cube.obj";
+    {
+        std::ofstream out(objPath);
+        out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+        out << "vn 0 0 1\n";
+        out << "f 1//1 2//1 3//1\nf 1//1 3//1 4//1\n";
+    }
+    engine::migration::MeshConversionData meshData;
+    auto meshResult = converter.convertMesh(objPath, meshData);
+    check(meshResult.succeeded, "convertMesh really converts a .obj");
+    check(meshData.vertices.size() >= 4, "convertMesh produces real vertex data");
+    check(meshData.indices.size() == 6, "convertMesh produces real index data for two triangles");
+    check(nearlyEqual(meshData.boundsMax.x, 1.0f) && nearlyEqual(meshData.boundsMin.x, 0.0f),
+          "convertMesh computes real bounds from the geometry");
+    std::remove(objPath.c_str());
+
+    engine::migration::MeshConversionData emptyMesh;
+    auto fbxResult = converter.convertMesh("model.fbx", emptyMesh);
+    check(!fbxResult.succeeded, "convertMesh refuses .fbx rather than half-parsing it");
+    check(fbxResult.message.find("obj") != std::string::npos, "the .fbx refusal explains what IS supported");
+    auto missingResult = converter.convertMesh("does_not_exist.obj", emptyMesh);
+    check(!missingResult.succeeded && missingResult.message.find("not found") != std::string::npos,
+          "convertMesh reports a missing file as missing");
+
+    engine::migration::PropertyMap partProps;
+    partProps["@type.Color3uint8"] = "Color3uint8";
+    partProps["Color3uint8"] = "255";
+    partProps["Reflectance"] = "1";
+    partProps["Transparency"] = "0.5";
+    const auto material = engine::migration::AssetConverter::materialFromProperties(partProps);
+    check(nearlyEqual(material.baseColor.b, 1.0f, 1e-2f), "convertMaterial maps Color to baseColor");
+    check(nearlyEqual(material.baseColor.a, 0.5f), "Roblox Transparency inverts into Kronos alpha");
+    check(material.metallic > 0.0f, "Reflectance drives metallic rather than being dropped");
+    check(material.roughness < 0.3f, "Reflectance drives roughness down");
+
+    const std::string materialPath = "test_import_material.rbxmx";
+    {
+        std::ofstream out(materialPath);
+        out << "<roblox version=\"4\"><Item class=\"Part\"><Properties>";
+        out << "<float name=\"Reflectance\">0.25</float>";
+        out << "<float name=\"Transparency\">0</float>";
+        out << "</Properties></Item></roblox>";
+    }
+    engine::migration::MaterialConversionData fileMaterial;
+    auto materialResult = converter.convertMaterial(materialPath, fileMaterial);
+    check(materialResult.succeeded, "convertMaterial really reads a material document");
+    check(fileMaterial.metallic > 0.0f, "a converted material file carries real PBR values");
+    std::remove(materialPath.c_str());
+
+    const std::string animPath = "test_import_anim.rbxmx";
+    {
+        std::ofstream out(animPath);
+        out << "<roblox version=\"4\"><Item class=\"KeyframeSequence\">";
+        out << "<Properties><string name=\"Name\">Wave</string><bool name=\"Loop\">true</bool></Properties>";
+        out << "<Item class=\"Keyframe\"><Properties><float name=\"Time\">0</float></Properties>";
+        out << "<Item class=\"Pose\"><Properties><string name=\"Name\">RightArm</string>";
+        out << "<CoordinateFrame name=\"CFrame\"><X>0</X><Y>0</Y><Z>0</Z>";
+        out << "<R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12>";
+        out << "<R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame></Properties></Item></Item>";
+        out << "<Item class=\"Keyframe\"><Properties><float name=\"Time\">1.5</float></Properties>";
+        out << "<Item class=\"Pose\"><Properties><string name=\"Name\">RightArm</string>";
+        out << "<CoordinateFrame name=\"CFrame\"><X>2</X><Y>0</Y><Z>0</Z>";
+        out << "<R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12>";
+        out << "<R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame></Properties></Item></Item>";
+        out << "</Item></roblox>";
+    }
+    engine::migration::AnimationConversionData animData;
+    auto animResult = converter.convertAnimation(animPath, animData);
+    check(animResult.succeeded, "convertAnimation really converts a KeyframeSequence");
+    check(animData.looping, "convertAnimation reads the Loop flag");
+    check(nearlyEqual(animData.durationSeconds, 1.5f), "convertAnimation measures the real duration");
+    check(!animData.channels.empty(), "convertAnimation produces real channels");
+    bool sawPositionX = false;
+    for (const auto& channel : animData.channels) {
+        if (channel.channelName != "position.x") continue;
+        sawPositionX = true;
+        check(channel.keys.size() == 2, "a converted channel carries a key per keyframe");
+        check(channel.keys.front().first <= channel.keys.back().first,
+              "converted channel keys are sorted by time, as the samplers require");
+        check(nearlyEqual(channel.keys.back().second, 2.0f), "a converted key carries its real value");
+    }
+    check(sawPositionX, "convertAnimation produces a position channel");
+    std::remove(animPath.c_str());
+
+    engine::migration::AnimationConversionData emptyAnim;
+    auto badAnim = converter.convertAnimation("no_such_anim.rbxmx", emptyAnim);
+    check(!badAnim.succeeded, "convertAnimation reports a missing file rather than an empty animation");
+}
+
 void testRequirePathsAndCycles() {
     engine::core::Scripting scripting;
     check(scripting.initialize(), "require validation: Scripting::initialize() succeeds");
@@ -30728,6 +31043,9 @@ void testMovieModePlugin() {
 }
 
 int main() {
+    testRbxlxPropertyDecoding();
+    testInstanceHydration();
+    testAssetConverters();
     testRequirePathsAndCycles();
     testLuauApiCompatibilityScan();
     testProjectImportPipeline();

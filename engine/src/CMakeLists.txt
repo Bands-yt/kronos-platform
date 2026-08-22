@@ -247,6 +247,8 @@ add_library(engine_core STATIC
     migration/ImportSafetyGuard.cpp
     migration/LuauApiCompatibility.cpp
     migration/ProjectImporter.cpp
+    migration/PropertyDecoder.cpp
+    migration/InstanceHydrator.cpp
 
     safety/TrustSafetyService.cpp
     safety/TextClassifierStub.cpp

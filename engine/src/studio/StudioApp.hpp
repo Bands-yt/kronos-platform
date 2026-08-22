@@ -26,6 +26,7 @@
 #include "studio/OffscreenTarget.hpp"
 #include "studio/PluginManager.hpp"
 #include "core/SceneManager.hpp"
+#include "migration/InstanceHydrator.hpp"
 #include "studio/UndoStack.hpp"
 #include "studio/panels/DebugConsolePanel.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
@@ -324,6 +325,14 @@ private:
     char importPathBuffer_[512] = {};
     std::string importSummary_;
     std::vector<std::string> importReportLines_;
+    // The last parsed tree, kept so "Spawn Into Scene" is a separate,
+    // deliberate step from reading the report -- and so redo can re-run
+    // hydration (entity ids do not survive an undo).
+    std::vector<migration::ImportedInstance> importedTree_;
+    bool importBlocked_ = false;
+    float importStudScale_ = 1.0f;
+    migration::HydrationMeshes hydrationMeshes_;
+    void hydrateImportedTree();
     // Same "raw pointer into what pluginManager_ owns" pattern -- see
     // ShopPlugin.hpp's class comment for why it owns its own sandboxed
     // economy state rather than a live ECS entity's.
