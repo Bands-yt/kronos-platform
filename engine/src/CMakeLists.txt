@@ -131,6 +131,7 @@ add_library(engine_core STATIC
     core/SceneTypes.cpp
     core/Terrain.cpp
     core/TerrainLod.cpp
+    core/AllocationTracker.cpp
     core/Texture.cpp
     core/ProceduralMaterials.cpp
     core/Prefab.cpp

@@ -126,6 +126,7 @@
 #include "core/ScriptNetworkApi.hpp"
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
+#include "core/AllocationTracker.hpp"
 #include "core/TerrainLod.hpp"
 #include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
@@ -17507,6 +17508,197 @@ void testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing() {
 // choice by distance, and a bounded node count -- rather than comparing
 // against hardcoded node lists that would only prove nothing changed.
 
+// Allocation-tracking harness, and what it measures.
+//
+// "Zero-heap render tick" has been claimed in this project's docs without
+// anything checking it. These tests make the claim falsifiable: they wrap
+// real hot-path code and fail if it allocates.
+//
+// Honest scope: the tracker sees global operator new/delete on this
+// process. It does not see malloc called directly from C libraries or a
+// driver's internal pools. A pass means "this engine code did not
+// allocate", which is the useful and defensible claim.
+
+// Allocation elision: since C++14 a compiler may delete an allocation
+// entirely if it can prove nothing observes it, and at -O3 GCC does
+// exactly that to an unused local vector. That would make an allocation
+// test silently measure nothing and "pass". Routing every test allocation
+// through this opaque sink stops the optimizer proving that.
+volatile void* g_allocationSink = nullptr;
+volatile int g_allocationChecksum = 0;
+
+// Allocates a vector the optimizer genuinely cannot elide: the size is
+// only known at runtime, the memory is written, and the contents are
+// folded into a volatile checksum. Storing just the pointer was NOT
+// enough -- GCC at -O3 still removed the allocation, which made the
+// measurement silently read zero and the test "fail" for the wrong
+// reason. Verified by instrumenting the binary directly.
+std::vector<int> makeUnelidableVector(int elementCount) {
+    std::vector<int> data(static_cast<size_t>(elementCount));
+    for (size_t i = 0; i < data.size(); ++i) data[i] = static_cast<int>(i);
+    int checksum = 0;
+    for (int value : data) checksum += value;
+    g_allocationChecksum = checksum;
+    g_allocationSink = data.data();
+    return data;
+}
+
+// Runtime-varying size, so nothing about it is a compile-time constant.
+int unelidableElementCount(int base) { return base + (g_allocationChecksum & 1); }
+
+void testAllocationTrackerCountsRealAllocations() {
+    engine::core::endAllocationTracking();
+    engine::core::resetAllocationStats();
+
+    // Off by default: nothing should be counted.
+    {
+        std::vector<int> untracked = makeUnelidableVector(unelidableElementCount(1024));
+        check(engine::core::allocationStats().allocationCount == 0,
+              "the real tracker really counts nothing while it is disabled");
+    }
+
+    engine::core::beginAllocationTracking();
+    const uint64_t before = engine::core::allocationStats().allocationCount;
+    {
+        // A vector that must allocate.
+        std::vector<int> tracked = makeUnelidableVector(unelidableElementCount(4096));
+        check(engine::core::allocationStats().allocationCount > before,
+              "the real tracker really sees a real std::vector allocation");
+    }
+    const uint64_t afterFree = engine::core::allocationStats().deallocationCount;
+    check(afterFree > 0, "the real tracker really sees the real matching deallocation");
+    engine::core::endAllocationTracking();
+}
+
+void testAllocationScopeMeasuresOnlyItsOwnBlock() {
+    engine::core::endAllocationTracking();
+    engine::core::resetAllocationStats();
+
+    // Allocate outside the scope; the scope must not attribute it.
+    std::vector<int> outside = makeUnelidableVector(unelidableElementCount(256));
+
+    {
+        engine::core::AllocationScope scope;
+        check(scope.allocationsSinceStart() == 0,
+              "a fresh real AllocationScope really starts at zero");
+
+        std::vector<int> inside = makeUnelidableVector(unelidableElementCount(512));
+        check(scope.allocationsSinceStart() >= 1,
+              "the real scope really attributes an allocation made inside it");
+        check(scope.bytesSinceStart() >= 512 * sizeof(int),
+              "the real scope really accounts for the real byte count");
+    }
+
+    // The scope restored the previous (disabled) state.
+    check(!engine::core::isAllocationTrackingEnabled(),
+          "a real scope really restores tracking to how it found it");
+}
+
+void testAllocationScopeProvesTightLoopsDoNotAllocate() {
+    // A loop over pre-sized storage, of the shape a real per-frame update
+    // uses: reserve up front, then only touch existing memory.
+    std::vector<glm::vec3> positions(4096, glm::vec3(0.0f));
+    std::vector<glm::vec3> velocities(4096, glm::vec3(1.0f, 0.0f, 0.0f));
+
+    engine::core::AllocationScope scope;
+    for (size_t i = 0; i < positions.size(); ++i) {
+        positions[i] += velocities[i] * 0.016f;
+    }
+    check(scope.allocationsSinceStart() == 0,
+          "a real pre-sized update loop really performs ZERO heap allocations");
+}
+
+void testAllocationScopeCatchesAnAccidentalAllocationInAHotLoop() {
+    // The failure mode this harness exists to catch: something in a
+    // per-frame loop that quietly allocates. Here it is deliberate, so
+    // the harness itself is proven to detect it -- a tracker that cannot
+    // fail is not evidence of anything.
+    std::vector<glm::vec3> positions(64, glm::vec3(0.0f));
+
+    engine::core::AllocationScope scope;
+    for (size_t i = 0; i < positions.size(); ++i) {
+        // The accidental allocation this harness exists to catch.
+        std::vector<int> temporary = makeUnelidableVector(unelidableElementCount(8));
+        positions[i].x += static_cast<float>(temporary.size()) * 0.0f;
+    }
+    check(scope.allocationsSinceStart() >= positions.size(),
+          "the real harness really DETECTS a real accidental per-iteration allocation");
+}
+
+void testCdlodSelectionAllocationProfileIsBoundedAndReusable() {
+    // CDLOD selection is called every frame. It legitimately allocates
+    // its result vector, so the meaningful question is not "does it
+    // allocate" but "does it allocate a BOUNDED amount that does not grow
+    // frame over frame" -- unbounded growth is what actually causes
+    // stutter.
+    engine::core::CdlodSettings settings;
+    settings.levelCount = 5;
+    settings.baseRangeMeters = 64.0f;
+
+    // Warm up once so any one-time static initialisation is not counted.
+    (void)engine::core::selectCdlodNodes(settings, glm::vec2(0.0f), 512.0f, glm::vec3(0.0f, 10.0f, 0.0f));
+
+    uint64_t firstFrameAllocations = 0;
+    {
+        engine::core::AllocationScope scope;
+        (void)engine::core::selectCdlodNodes(settings, glm::vec2(0.0f), 512.0f, glm::vec3(0.0f, 10.0f, 0.0f));
+        firstFrameAllocations = scope.allocationsSinceStart();
+    }
+
+    uint64_t laterFrameAllocations = 0;
+    {
+        engine::core::AllocationScope scope;
+        for (int frame = 0; frame < 10; ++frame) {
+            const float x = static_cast<float>(frame);
+            (void)engine::core::selectCdlodNodes(settings, glm::vec2(0.0f), 512.0f, glm::vec3(x, 10.0f, x));
+        }
+        laterFrameAllocations = scope.allocationsSinceStart();
+    }
+
+    check(firstFrameAllocations > 0,
+          "CDLOD selection really does allocate its real result vector -- measured, not assumed");
+    // Ten frames must cost about ten times one frame, not more. Growth
+    // beyond that would mean per-frame state is accumulating somewhere.
+    check(laterFrameAllocations <= firstFrameAllocations * 15,
+          "CDLOD selection's real allocation count really stays bounded across frames rather than growing");
+}
+
+void testIkSolversAreZeroHeapOnAPreSizedChain() {
+    // Two-bone IK takes and returns plain values -- it must not touch the
+    // heap at all, which matters because an animation system solves many
+    // chains per frame.
+    const glm::vec3 root(0.0f), mid(0.0f, -1.0f, 0.0f), end(0.0f, -2.0f, 0.0f);
+    const glm::vec3 target(1.0f, -1.0f, 0.0f), pole(1.0f, -1.0f, 1.0f);
+    (void)engine::core::solveTwoBoneIK(root, mid, end, target, pole); // warm up
+
+    engine::core::AllocationScope scope;
+    for (int i = 0; i < 500; ++i) {
+        volatile auto result = engine::core::solveTwoBoneIK(root, mid, end, target, pole);
+        (void)result;
+    }
+    check(scope.allocationsSinceStart() == 0,
+          "real two-bone IK really performs ZERO heap allocations across 500 real solves");
+}
+
+void testPhysicalCameraMathIsZeroHeap() {
+    engine::core::PhysicalCamera camera;
+    camera.focalLengthMm = 50.0f;
+    camera.aperture = 2.0f;
+    (void)engine::core::toRendererDofParams(camera, 1080.0f); // warm up
+
+    engine::core::AllocationScope scope;
+    for (int i = 0; i < 1000; ++i) {
+        camera.focusDistanceMeters = 1.0f + static_cast<float>(i) * 0.01f;
+        volatile float fov = engine::core::verticalFovDegrees(camera);
+        volatile auto dof = engine::core::toRendererDofParams(camera, 1080.0f);
+        (void)fov;
+        (void)dof;
+    }
+    check(scope.allocationsSinceStart() == 0,
+          "real physical-camera maths really performs ZERO heap allocations across 1000 real evaluations");
+}
+
+
 void testCdlodLevelRangesDoubleWithEachLevel() {
     engine::core::CdlodSettings settings;
     settings.levelCount = 5;
@@ -29871,6 +30063,13 @@ int main() {
     testJoinTicketRequiringServerWithNoValidatorFailsClosed();
     testJoinTicketIsNotRequiredForRealLanSessions();
     testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing();
+    testAllocationTrackerCountsRealAllocations();
+    testAllocationScopeMeasuresOnlyItsOwnBlock();
+    testAllocationScopeProvesTightLoopsDoNotAllocate();
+    testAllocationScopeCatchesAnAccidentalAllocationInAHotLoop();
+    testCdlodSelectionAllocationProfileIsBoundedAndReusable();
+    testIkSolversAreZeroHeapOnAPreSizedChain();
+    testPhysicalCameraMathIsZeroHeap();
     testCdlodLevelRangesDoubleWithEachLevel();
     testCdlodMorphFactorIsContinuousAcrossTheWholeRange();
     testCdlodMorphCanBeDisabled();

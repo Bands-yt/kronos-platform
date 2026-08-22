@@ -2930,3 +2930,49 @@ that is silently unsatisfiable rather than merely wrong.
 The denoiser, triplanar splatmapping and foliage instancing are each
 substantial GPU features. Four shallow stubs would be worth less than one
 finished, tested subsystem.
+
+## 2026-08-21 (final) — Allocation tracking: making "zero-heap" checkable
+
+This project's docs have claimed a "zero-heap render tick" with nothing
+measuring it. That claim is now falsifiable.
+
+`core::AllocationTracker` replaces global `operator new`/`delete` (all
+sized, aligned and nothrow forms -- missing one would let allocations
+through uncounted and make a "zero allocations" result meaningless) and
+counts every call. `AllocationScope` is an RAII wrapper that measures a
+block and restores the previous state.
+
+Off by default, so it costs one relaxed atomic load when unused.
+
+### Honest scope
+It sees global `operator new`/`delete` in this process. It does **not**
+see `malloc` called directly from C libraries (the Vulkan loader, ENet,
+miniaudio) or a driver's internal pools. A pass means "this engine code
+did not allocate" -- the useful and defensible claim, not "not one byte
+was allocated anywhere".
+
+### What it measured
+- Pre-sized update loops: **zero** allocations.
+- Two-bone IK: **zero** across 500 solves.
+- Physical-camera maths: **zero** across 1000 evaluations.
+- CDLOD selection: it *does* allocate its result vector -- measured, not
+  assumed -- and the meaningful property is that the count stays bounded
+  across frames rather than growing, which is asserted.
+
+There is also a test that deliberately allocates in a loop and asserts
+the harness **detects** it. A tracker that cannot fail is not evidence.
+
+### A real trap found while building it
+The first version of these tests silently measured nothing: at `-O3` GCC
+**elides** an allocation it can prove nothing observes, so an unused
+local vector never allocated at all. Storing the pointer in a volatile
+was *still* not enough. Confirmed by instrumenting the test binary
+directly -- an explicit `::operator new` counted, the vector did not.
+Fixed by allocating at a runtime-derived size, writing the memory and
+folding it into a volatile checksum.
+
+Worth recording because it is the failure mode of allocation tests
+generally: they pass by measuring nothing, and look identical to a real
+zero-allocation result.
+
+**13403/13403 checks** (+13).
