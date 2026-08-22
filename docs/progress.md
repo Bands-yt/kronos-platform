@@ -3111,3 +3111,40 @@ regression hard to attribute.
 `vkAllocateDescriptorSets` warns that a pool lacks `SAMPLER` and
 `SAMPLED_IMAGE` sizes for layouts that use them. Harmless on this driver,
 but some implementations are entitled to fail the allocation.
+
+## 2026-08-22 — Renderer at zero validation errors
+
+22 errors to 0, verified over ~54 rendered frames with validation layers
+active.
+
+### Depth layout mismatch (10 errors)
+The soft-particle pass sampled `sceneDepth` while that image was still in
+`DEPTH_ATTACHMENT_OPTIMAL` -- it was attached to the very pass drawing
+the particles.
+
+Fixed by splitting the pass: everything that writes depth (sky, opaque,
+glass, instanced, skinned) runs first in `DEPTH_ATTACHMENT_OPTIMAL`, then
+a barrier moves depth to `DEPTH_READ_ONLY_OPTIMAL`, then particles draw
+in their own pass sampling and depth-testing against it. That layout is
+the one that legitimately permits both at once, and is only valid because
+particles already disable depth writes. Depth `storeOp` changed from
+`DONT_CARE` to `STORE` so the contents survive into the second pass, and
+it is transitioned back afterwards so the next frame's clear is valid.
+
+This also moved particles after skinned meshes, which is a correctness
+improvement in its own right: blended effects belong last so solid
+geometry occludes them properly.
+
+### A mistake worth recording
+The first attempt changed the declared layout at **all four**
+`depthInfo` descriptor sites. Only one is the particle sampler; the other
+three are post-process passes (SSR, volumetric fog, cinematic) that
+legitimately use `SHADER_READ_ONLY_OPTIMAL`. The error count stayed at 10
+but the VUID changed from `vkCmdDrawIndexed` to `vkCmdDraw` and the
+reported mismatch inverted -- which is what identified the over-reach.
+Reverted the three, kept the one.
+
+Worth noting because the count alone looked like "no progress": the
+identity of the error had changed completely.
+
+**13873/13873 checks**, rendering unaffected.

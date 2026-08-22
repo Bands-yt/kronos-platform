@@ -3694,7 +3694,7 @@ bool Renderer::ensureParticleDepthDescriptor(FrameSync& frame, VkImageView depth
             return false;
         }
     }
-    VkDescriptorImageInfo depthInfo{depthSampler_, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo depthInfo{depthSampler_, depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     write.dstSet = frame.particleDepthDescriptorSet;
     write.dstBinding = 0;
@@ -4456,7 +4456,9 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     depthAttachment.imageView = depthView;
     depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    // STORE, not DONT_CARE: the soft-particle pass below samples this
+    // depth after the opaque pass ends, so its contents must survive.
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAttachment.clearValue.depthStencil = {1.0f, 0};
 
     VkRenderingInfo renderingInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -4595,7 +4597,6 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
                                  0, nullptr);
     }
     drawInstancedBatches(cmd, frame, ecs, meshLibrary);
-    drawParticles(cmd, frame, particleSystem);
     // Its own pipeline (not scenePipelineLayout_-based), so it rebinds
     // pipeline/set=0 itself the first time it actually has something to
     // draw -- see its own doc comment. A no-op (no rebind at all) when
@@ -4604,6 +4605,63 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     drawSkinnedEntities(cmd, frame, ecs, riggedMeshLibrary, textureLibrary);
 
     vkCmdEndRendering(cmd);
+
+    // Kronos: soft particles run in their own pass, after everything that
+    // writes depth.
+    //
+    // They SAMPLE the depth buffer while also depth-testing against it.
+    // Doing that inside the opaque pass meant the image was in
+    // DEPTH_ATTACHMENT_OPTIMAL while a descriptor declared it shader-
+    // readable -- VUID-vkCmdDrawIndexed-imageLayout-00344, ten times a
+    // frame. DEPTH_READ_ONLY_OPTIMAL is the layout that legitimately
+    // permits both at once, and it is only valid because particles
+    // already disable depth writes.
+    //
+    // This also moves particles after skinned meshes, which is a
+    // correctness improvement in its own right: blended effects belong
+    // last, so solid geometry occludes them properly.
+    if (depthImage != VK_NULL_HANDLE) {
+        transitionImage(cmd, depthImage, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                         VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                         VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+
+        VkRenderingAttachmentInfo particleColor = colorAttachment;
+        // LOAD, not CLEAR: this pass composites onto what was just drawn.
+        particleColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+
+        VkRenderingAttachmentInfo particleDepth = depthAttachment;
+        particleDepth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        particleDepth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        particleDepth.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+
+        VkRenderingInfo particlePass{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        particlePass.renderArea = {{0, 0}, extent};
+        particlePass.layerCount = 1;
+        particlePass.colorAttachmentCount = 1;
+        particlePass.pColorAttachments = &particleColor;
+        particlePass.pDepthAttachment = &particleDepth;
+
+        vkCmdBeginRendering(cmd, &particlePass);
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        drawParticles(cmd, frame, particleSystem);
+        vkCmdEndRendering(cmd);
+
+        // Back to attachment layout so the next frame's clear/write is
+        // valid, and so any later pass sees the layout it expects.
+        transitionImage(cmd, depthImage, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                         VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+    } else {
+        // No depth image handle available (an auxiliary scene path):
+        // keep the previous behaviour rather than skipping particles.
+        vkCmdBeginRendering(cmd, &renderingInfo);
+        drawParticles(cmd, frame, particleSystem);
+        vkCmdEndRendering(cmd);
+    }
 
     // Sprint 16: capture this frame slot's own camera history *before*
     // overwriting it -- see FrameSync::previousViewProj's own comment on
