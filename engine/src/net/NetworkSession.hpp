@@ -15,6 +15,7 @@
 #include "moderation/AppealLog.hpp"
 #include "moderation/DirectMessageLog.hpp"
 #include "moderation/ChatLog.hpp"
+#include "net/ChatProtocol.hpp"
 #include "moderation/EscalationEventLog.hpp"
 #include "moderation/MuteBlockRegistry.hpp"
 #include "moderation/ProfanityFilter.hpp"
@@ -424,6 +425,27 @@ public:
     // server-muted (see reviewQueue()/isServerMuted()). A real, honest
     // no-op outside Client mode.
     void sendChatMessage(const std::string& text);
+    // Same path, on an explicit channel. sendChatMessage() is General.
+    void sendChatMessageOn(ChatChannel channel, const std::string& text);
+
+    // --- channels ----------------------------------------------------------
+    // Server-side room membership. A player with no explicit subscription
+    // is treated as subscribed to General and System, so joining a session
+    // does not require configuring chat before they can hear anything.
+    void subscribeToChannel(PlayerId player, ChatChannel channel);
+    void unsubscribeFromChannel(PlayerId player, ChatChannel channel);
+    [[nodiscard]] bool isSubscribedToChannel(PlayerId player, uint32_t channelId) const;
+    // Server-authored notice on the System channel, which clients may not
+    // originate on.
+    void broadcastSystemMessage(const std::string& text);
+
+    // Packet-level receive hook, carrying the channel and server
+    // timestamp. setOnChatMessageReceived() stays the simple form every
+    // existing caller uses.
+    void setOnChatPacketReceived(std::function<void(const ChatMessagePacket&)> callback) {
+        onChatPacketReceived_ = std::move(callback);
+    }
+    [[nodiscard]] const ChatMessagePacket& lastReceivedChatPacket() const { return lastReceivedChatPacket_; }
 
     // Real, observer-side hook for a received chat broadcast -- Studio's
     // ModerationPanel (or a future real in-game HUD) reads live chat
@@ -681,6 +703,10 @@ private:
     TokenBucketRateLimiter interactionRateLimiter_{5.0f}; // real cap synced from worldSafetySettings_ each check
     std::unordered_set<PlayerId> serverMutedPlayers_;
     std::function<void(PlayerId, const std::string&)> onChatMessageReceived_;
+    std::function<void(const ChatMessagePacket&)> onChatPacketReceived_;
+    ChatMessagePacket lastReceivedChatPacket_;
+    // Server-side channel membership, player -> subscribed channel ids.
+    std::unordered_map<PlayerId, std::unordered_set<uint32_t>> channelSubscriptions_;
 
     // Sprint 13 ("Publishing & Game Packaging") -- see publishWorld()'s
     // own comment.

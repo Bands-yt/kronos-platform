@@ -1,5 +1,7 @@
 #include "core/Application.hpp"
 
+#include "core/ScriptChatApi.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -100,6 +102,11 @@ bool Application::initialize(const CreateInfo& info) {
     // NetworkSession's own methods are documented no-ops outside their
     // relevant mode).
     scriptNetworkApi_ = std::make_unique<ScriptNetworkApi>(networkSession_, scripting_);
+    // Kronos ("Chat System"): the `TextChatService` table -- see
+    // ScriptChatApi.hpp. Constructed alongside the other script APIs
+    // because it installs a NetworkSession receive hook in its
+    // constructor, which must be in place before any session starts.
+    scriptChatApi_ = std::make_unique<ScriptChatApi>(networkSession_, scripting_);
     // Kronos ("Kronos Scripting Environment"): the real `world.spawnPlayer`
     // + `avatar` table -- see ScriptAvatarApi.hpp's own header comment.
     // Holds `*this` (always valid), so no ordering constraint the way
@@ -108,6 +115,7 @@ bool Application::initialize(const CreateInfo& info) {
     scripting_.setBindingsHook([this](lua_State* L) {
         scriptWorldApi_->registerInto(L);
         scriptNetworkApi_->registerInto(L);
+        scriptChatApi_->registerInto(L);
         scriptUiApi_.registerInto(L);
         // Must run after scriptWorldApi_->registerInto(L) above --
         // ScriptAvatarApi::registerInto() appends world.spawnPlayer onto

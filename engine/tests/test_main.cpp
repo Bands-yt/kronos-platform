@@ -221,6 +221,8 @@
 #include "studio/UndoStack.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
+#include "core/ScriptChatApi.hpp"
+#include "net/ChatProtocol.hpp"
 #include "migration/AssetConverter.hpp"
 #include "migration/AssetModeration.hpp"
 #include "migration/InstanceHydrator.hpp"
@@ -30287,6 +30289,336 @@ void testHouseLayoutDoorGapIsOpenInFrontWall() {
 
 // Kronos ("Asset Moderation & Legal Compliance"): the filter that stops a
 // place import from pulling third-party art onto this platform.
+
+// Kronos ("Chat System"): the wire form. Serialised through one struct
+// rather than inline at each of the three call sites, because a field
+// added on one side and missed on another desynchronises the stream and
+// corrupts every message after it.
+
+// The Luau `TextChatService` table. Named after Roblox's own service so a
+// ported chat UI needs its call sites rewritten, not its architecture.
+void testLuauTextChatService() {
+    engine::net::NetworkSession session;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "TextChatService test: Scripting::initialize() succeeds");
+
+    engine::core::ScriptChatApi chatApi(session, scripting);
+    scripting.setBindingsHook([&](lua_State* L) { chatApi.registerInto(L); });
+
+    // The table and both functions really exist in a sandboxed VM.
+    std::string out = runScriptCapturingOutput(scripting, "ChatSurface", R"LUA(
+        assert(type(TextChatService) == "table", "TextChatService is not a table")
+        assert(type(TextChatService.SendAsync) == "function", "SendAsync is missing")
+        assert(type(TextChatService.OnIncomingMessage) == "function", "OnIncomingMessage is missing")
+    )LUA", engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "TextChatService exposes SendAsync and OnIncomingMessage to Luau");
+
+    // Argument validation. Each of these is a mistake a UI author will
+    // actually make, and each must say what is wrong rather than failing
+    // silently or truncating.
+    out = runScriptCapturingOutput(scripting, "ChatValidation", R"LUA(
+        local okEmpty = pcall(TextChatService.SendAsync, "")
+        assert(not okEmpty, "an empty message was accepted")
+
+        local okChannel, channelErr = pcall(TextChatService.SendAsync, "hi", "NoSuchChannel")
+        assert(not okChannel, "an unknown channel was accepted")
+        assert(string.find(channelErr, "General", 1, true) ~= nil,
+               "the channel error does not say which channels are valid: " .. tostring(channelErr))
+
+        local okSystem = pcall(TextChatService.SendAsync, "official notice", "System")
+        assert(not okSystem, "a script was allowed to send on the System channel")
+
+        local okLong, longErr = pcall(TextChatService.SendAsync, string.rep("x", 5000))
+        assert(not okLong, "an oversized message was accepted")
+        assert(string.find(longErr, "limit", 1, true) ~= nil,
+               "the oversize error does not mention the limit: " .. tostring(longErr))
+
+        -- Valid calls must not throw, even offline (there is simply no
+        -- session to deliver to).
+        TextChatService.SendAsync("hello")
+        TextChatService.SendAsync("go left", "Team")
+        TextChatService.SendAsync("psst", "Whisper")
+    )LUA", engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "TextChatService.SendAsync validates its arguments and refuses the System channel");
+
+    // OnIncomingMessage really fires, with the full message table.
+    //
+    // Asserted through captured print() output rather than a _G flag:
+    // luaL_sandbox() freezes _G, and every script gets its own fresh
+    // lua_State anyway, so state cannot cross script boundaries. The
+    // handler has to report from inside its own VM.
+    {
+        std::string captured;
+        scripting.setOutputCallback([&captured](const std::string& line) { captured += line + "\n"; });
+        (void)scripting.loadAndRun("ChatReceive", R"LUA(
+            TextChatService.OnIncomingMessage(function(message)
+                print("got|" .. tostring(message.senderId) .. "|" .. tostring(message.channel) .. "|" ..
+                      tostring(message.body) .. "|" .. tostring(message.timestamp > 0))
+            end)
+        )LUA", engine::core::SecurityIdentity::UserScript);
+
+        engine::net::ChatMessagePacket packet;
+        packet.senderId = 77;
+        packet.channelId = static_cast<uint32_t>(engine::net::ChatChannel::Team);
+        packet.body = "incoming from the server";
+        packet.timestampMillis = 1787400000123ull;
+        chatApi.dispatchIncoming(packet);
+        scripting.setOutputCallback(nullptr);
+
+        check(captured.find("got|77|Team|incoming from the server|true") != std::string::npos,
+              "an incoming chat packet reaches a Luau handler with sender, channel, body and timestamp");
+    }
+
+    // A handler that throws must not stop delivery to other subscribers:
+    // one script's broken chat box should not take chat down for everyone.
+    {
+        std::string captured;
+        scripting.setOutputCallback([&captured](const std::string& line) { captured += line + "\n"; });
+        (void)scripting.loadAndRun("ChatThrower", R"LUA(
+            TextChatService.OnIncomingMessage(function(message)
+                error("this handler is broken")
+            end)
+        )LUA", engine::core::SecurityIdentity::UserScript);
+        (void)scripting.loadAndRun("ChatSecond", R"LUA(
+            TextChatService.OnIncomingMessage(function(message)
+                print("second-handler-fired")
+            end)
+        )LUA", engine::core::SecurityIdentity::UserScript);
+
+        engine::net::ChatMessagePacket packet;
+        packet.senderId = 5;
+        packet.body = "ping";
+        packet.timestampMillis = 1787400000999ull;
+        chatApi.dispatchIncoming(packet);
+        scripting.setOutputCallback(nullptr);
+
+        check(captured.find("second-handler-fired") != std::string::npos,
+              "a throwing chat handler does not stop delivery to other subscribers");
+    }
+}
+
+void testChatMessagePacketSerialization() {
+    engine::net::ChatMessagePacket original;
+    original.senderId = 4242;
+    original.channelId = static_cast<uint32_t>(engine::net::ChatChannel::Team);
+    original.body = "regroup at the north wall";
+    original.timestampMillis = 1787400000123ull;
+
+    engine::net::ByteWriter writer;
+    original.write(writer);
+
+    engine::net::ByteReader reader(writer.bytes().data(), writer.size());
+    engine::net::ChatMessagePacket decoded;
+    check(engine::net::ChatMessagePacket::read(reader, decoded), "a chat packet round-trips through the wire form");
+    check(decoded.senderId == original.senderId, "sender_id survives the round trip");
+    check(decoded.channelId == original.channelId, "channel_id survives the round trip");
+    check(decoded.body == original.body, "message_body survives the round trip");
+    check(decoded.timestampMillis == original.timestampMillis, "timestamp survives the round trip");
+
+    // A 64-bit timestamp must not be silently narrowed -- Unix millis
+    // already exceed 2^32, so a u32 field would wrap and reorder history.
+    engine::net::ChatMessagePacket large;
+    large.timestampMillis = 0xFFFFFFFFFFull;
+    large.body = "x";
+    engine::net::ByteWriter largeWriter;
+    large.write(largeWriter);
+    engine::net::ByteReader largeReader(largeWriter.bytes().data(), largeWriter.size());
+    engine::net::ChatMessagePacket largeDecoded;
+    check(engine::net::ChatMessagePacket::read(largeReader, largeDecoded), "a large timestamp round-trips");
+    check(largeDecoded.timestampMillis == large.timestampMillis,
+          "a timestamp beyond 2^32 is not narrowed, so chat history cannot reorder");
+
+    // Truncated input must be refused, not half-read.
+    engine::net::ByteReader truncated(writer.bytes().data(), 3);
+    engine::net::ChatMessagePacket ignored;
+    ignored.senderId = 999;
+    check(!engine::net::ChatMessagePacket::read(truncated, ignored), "a truncated chat packet is refused");
+    check(ignored.senderId == 999, "a refused packet leaves the caller's struct untouched");
+
+    // An unknown channel id is a protocol violation. Remapping it to
+    // General would deliver a team message to the whole room.
+    engine::net::ChatMessagePacket bogus;
+    bogus.channelId = 9999;
+    bogus.body = "hi";
+    engine::net::ByteWriter bogusWriter;
+    bogus.write(bogusWriter);
+    engine::net::ByteReader bogusReader(bogusWriter.bytes().data(), bogusWriter.size());
+    engine::net::ChatMessagePacket bogusDecoded;
+    check(!engine::net::ChatMessagePacket::read(bogusReader, bogusDecoded),
+          "an unknown channel id is refused rather than remapped to General");
+
+    check(engine::net::clientMaySendOn(engine::net::ChatChannel::General), "clients may send on General");
+    check(engine::net::clientMaySendOn(engine::net::ChatChannel::Team), "clients may send on Team");
+    check(!engine::net::clientMaySendOn(engine::net::ChatChannel::System),
+          "clients may NOT originate on System, so official notices cannot be forged");
+    check(std::string(engine::net::chatChannelName(engine::net::ChatChannel::Team)) == "Team",
+          "channel names are stable strings for the Luau API");
+    check(engine::net::currentUnixMillis() > 1600000000000ull, "the server clock produces real Unix millis");
+}
+
+// Two real clients over real local sockets: a message from one must reach
+// the other through the real server relay.
+void testChatMultiClientLoopback() {
+    constexpr uint16_t kTestPort = 17851;
+    engine::core::ECS serverEcs, clientAEcs, clientBEcs;
+    engine::net::NetworkSession serverSession, clientA, clientB;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    check(serverSession.initialize(serverConfig), "chat loopback: the server starts");
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) -> engine::core::EntityId {
+        engine::core::EntityId entity = ecs.createEntity("Player");
+        ecs.addComponent<engine::core::Transform>(entity);
+        return entity;
+    });
+
+    auto connectClient = [&](engine::net::NetworkSession& session) {
+        engine::net::NetworkSession::Config config;
+        config.mode = engine::net::NetworkMode::Client;
+        config.serverAddress = "127.0.0.1";
+        config.port = kTestPort;
+        return session.initialize(config);
+    };
+    check(connectClient(clientA), "chat loopback: client A connects");
+    check(connectClient(clientB), "chat loopback: client B connects");
+
+    engine::core::EntityId avatarA = clientAEcs.createEntity("A");
+    clientAEcs.addComponent<engine::core::Transform>(avatarA);
+    engine::core::EntityId avatarB = clientBEcs.createEntity("B");
+    clientBEcs.addComponent<engine::core::Transform>(avatarB);
+
+    auto pump = [&](int iterations) {
+        for (int i = 0; i < iterations; ++i) {
+            serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+            clientA.tick(0.05f, clientAEcs, avatarA);
+            clientB.tick(0.05f, clientBEcs, avatarB);
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+    };
+
+    bool bothJoined = false;
+    for (int i = 0; i < 200 && !bothJoined; ++i) {
+        pump(1);
+        bothJoined = clientA.localPlayerId() != engine::net::kInvalidPlayer &&
+                      clientB.localPlayerId() != engine::net::kInvalidPlayer;
+    }
+    check(bothJoined, "chat loopback: both clients complete the handshake");
+
+    std::vector<engine::net::ChatMessagePacket> receivedByA;
+    std::vector<engine::net::ChatMessagePacket> receivedByB;
+    clientA.setOnChatPacketReceived([&](const engine::net::ChatMessagePacket& p) { receivedByA.push_back(p); });
+    clientB.setOnChatPacketReceived([&](const engine::net::ChatMessagePacket& p) { receivedByB.push_back(p); });
+
+    // A sends on General; B must receive it, and so must A (own message
+    // comes back through the same server path, so what is displayed is
+    // what the server actually accepted).
+    clientA.sendChatMessage("hello from A");
+    for (int i = 0; i < 80 && receivedByB.empty(); ++i) pump(1);
+
+    check(!receivedByB.empty(), "a chat message really crosses the wire to the other client");
+    check(!receivedByA.empty(), "the sender receives their own message back through the server");
+    if (!receivedByB.empty()) {
+        const auto& message = receivedByB.front();
+        check(message.body == "hello from A", "the received message body is intact");
+        check(message.senderId == clientA.localPlayerId(),
+              "the server stamps the real sender id, not whatever the client claimed");
+        check(message.channelId == static_cast<uint32_t>(engine::net::ChatChannel::General),
+              "the message arrives on the channel it was sent on");
+        check(message.timestampMillis > 1600000000000ull,
+              "the server stamps a real timestamp on relay");
+    }
+
+    // B replies; A must receive it. Proves the relay is bidirectional and
+    // not just echoing the first sender.
+    const size_t beforeReply = receivedByA.size();
+    clientB.sendChatMessage("hi A, this is B");
+    for (int i = 0; i < 80 && receivedByA.size() == beforeReply; ++i) pump(1);
+    bool sawReply = false;
+    for (const auto& message : receivedByA) {
+        if (message.body == "hi A, this is B") sawReply = true;
+    }
+    check(sawReply, "the relay is bidirectional -- B's reply reaches A");
+
+    // Channel scoping: a Team message must not reach a player who is not
+    // subscribed to Team. This is the property that makes channels worth
+    // having at all.
+    const engine::net::PlayerId playerA = clientA.localPlayerId();
+    const engine::net::PlayerId playerB = clientB.localPlayerId();
+    check(serverSession.isSubscribedToChannel(playerA, static_cast<uint32_t>(engine::net::ChatChannel::General)),
+          "a player with no explicit subscription still hears General");
+    check(!serverSession.isSubscribedToChannel(playerB, static_cast<uint32_t>(engine::net::ChatChannel::Team)),
+          "a player is not in Team until subscribed");
+
+    receivedByA.clear();
+    receivedByB.clear();
+    clientA.sendChatMessageOn(engine::net::ChatChannel::Team, "team only");
+    for (int i = 0; i < 60; ++i) pump(1);
+    bool bSawTeam = false;
+    for (const auto& message : receivedByB) {
+        if (message.body == "team only") bSawTeam = true;
+    }
+    check(!bSawTeam, "a Team message does NOT reach a player who is not subscribed to Team");
+    bool aSawOwnTeam = false;
+    for (const auto& message : receivedByA) {
+        if (message.body == "team only") aSawOwnTeam = true;
+    }
+    check(aSawOwnTeam, "the sender still sees their own Team message");
+
+    // Once B subscribes, the same send reaches them.
+    serverSession.subscribeToChannel(playerB, engine::net::ChatChannel::Team);
+    check(serverSession.isSubscribedToChannel(playerB, static_cast<uint32_t>(engine::net::ChatChannel::Team)),
+          "subscribing really adds the player to the channel");
+    receivedByB.clear();
+    clientA.sendChatMessageOn(engine::net::ChatChannel::Team, "team again");
+    for (int i = 0; i < 80; ++i) pump(1);
+    bool bSawSecondTeam = false;
+    for (const auto& message : receivedByB) {
+        if (message.body == "team again") bSawSecondTeam = true;
+    }
+    check(bSawSecondTeam, "a subscribed player really receives Team messages");
+
+    // A server-authored System notice reaches everyone.
+    receivedByA.clear();
+    receivedByB.clear();
+    serverSession.broadcastSystemMessage("server restarting in 5 minutes");
+    for (int i = 0; i < 80; ++i) pump(1);
+    bool aSawSystem = false, bSawSystem = false;
+    for (const auto& message : receivedByA) {
+        if (message.channelId == static_cast<uint32_t>(engine::net::ChatChannel::System)) aSawSystem = true;
+    }
+    for (const auto& message : receivedByB) {
+        if (message.channelId == static_cast<uint32_t>(engine::net::ChatChannel::System)) bSawSystem = true;
+    }
+    check(aSawSystem && bSawSystem, "a server System notice reaches every connected client");
+
+    // A client attempting to originate on System must be refused. The
+    // client-side guard means nothing is even sent; the server-side guard
+    // in handleChatMessageServer is the authority behind it.
+    receivedByB.clear();
+    clientA.sendChatMessageOn(engine::net::ChatChannel::System, "forged official notice");
+    for (int i = 0; i < 60; ++i) pump(1);
+    bool sawForgery = false;
+    for (const auto& message : receivedByB) {
+        if (message.body == "forged official notice") sawForgery = true;
+    }
+    check(!sawForgery, "a client cannot forge a System-channel message");
+
+    // Oversized bodies are refused rather than truncated on the wire.
+    receivedByB.clear();
+    clientA.sendChatMessage(std::string(engine::net::ChatMessagePacket::kMaxBodyBytes + 50, 'x'));
+    for (int i = 0; i < 60; ++i) pump(1);
+    bool sawOversized = false;
+    for (const auto& message : receivedByB) {
+        if (message.body.size() > engine::net::ChatMessagePacket::kMaxBodyBytes) sawOversized = true;
+    }
+    check(!sawOversized, "an oversized chat body never reaches another client");
+
+    serverSession.shutdown();
+    clientA.shutdown();
+    clientB.shutdown();
+}
+
 void testAssetModerationFilter() {
     engine::migration::AssetModerationFilter filter;
 
@@ -31295,6 +31627,9 @@ void testMovieModePlugin() {
 }
 
 int main() {
+    testLuauTextChatService();
+    testChatMessagePacketSerialization();
+    testChatMultiClientLoopback();
     testAssetModerationFilter();
     testAssetConverterModerationGate();
     testProjectImportModeration();

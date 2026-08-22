@@ -115,6 +115,7 @@ add_library(engine_core STATIC
     core/RuntimeAnimationPlayer.cpp
     core/ScriptWorldApi.cpp
     core/ScriptNetworkApi.cpp
+    core/ScriptChatApi.cpp
     core/ScriptAvatarApi.cpp
     core/ScriptUiApi.cpp
     core/TrailerScriptApi.cpp
@@ -227,6 +228,7 @@ add_library(engine_core STATIC
     net/RemoteEvent.cpp
     net/NetworkIdentity.cpp
     net/Serialization.cpp
+    net/ChatProtocol.cpp
     net/NetworkStats.cpp
     net/RemoteEntityInterpolation.cpp
     net/RateLimiter.cpp

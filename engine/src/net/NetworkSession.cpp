@@ -688,8 +688,23 @@ void NetworkSession::handleTeleportRequestServer(PlayerId player, ByteReader& re
 }
 
 void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader) {
-    std::string text = reader.readString();
-    if (reader.hasError()) {
+    ChatMessagePacket incoming;
+    if (!ChatMessagePacket::read(reader, incoming)) {
+        networkStats_.recordPacketDropped();
+        return;
+    }
+    std::string text = incoming.body;
+
+    // Server authority over the channel: a client may not originate on
+    // System, and the sender id and timestamp it sent are both discarded
+    // and re-derived below. A client that could set its own sender id
+    // could impersonate any other player.
+    if (!clientMaySendOn(static_cast<ChatChannel>(incoming.channelId))) {
+        networkStats_.recordPacketDropped();
+        return;
+    }
+    const uint32_t incomingChannel = incoming.channelId;
+    if (text.empty()) {
         networkStats_.recordPacketDropped();
         return;
     }
@@ -766,16 +781,79 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
     }
 
     const std::string& outgoingText = worldSafetySettings_.profanityFilterEnabled ? profanityResult.censored : text;
+
+    ChatMessagePacket outgoing;
+    outgoing.senderId = player;
+    outgoing.channelId = incomingChannel;
+    outgoing.body = outgoingText;
+    // Stamped here, on the authority, not carried from the client.
+    outgoing.timestampMillis = currentUnixMillis();
+
     ByteWriter writer;
     writer.writeU8(static_cast<uint8_t>(WireMessageType::ChatBroadcast));
-    writer.writeU32(player);
-    writer.writeString(outgoingText);
+    outgoing.write(writer);
     networkStats_.recordPacketSent(writer.size());
+
     for (auto& [peer, recipient] : serverPeerToPlayer_) {
         // Real, per-recipient mute/block filtering (task 1) -- everyone
         // else still gets the message; only the recipient(s) who chose
         // to mute/block this sender don't.
         if (!muteBlockRegistry_.shouldDeliver(recipient, player)) continue;
+        // Channel-scoped fan-out: only subscribers of this channel get it.
+        // The sender is always delivered to, so their own message appears
+        // in their own history through the same path as everyone else's
+        // rather than needing a separate local echo that could drift from
+        // what the server actually accepted (censored text, for instance).
+        if (recipient != player && !isSubscribedToChannel(recipient, outgoing.channelId)) continue;
+        transport_.send(peer, writer.bytes().data(), writer.size(), kReliableChannel, true);
+    }
+}
+
+bool NetworkSession::isSubscribedToChannel(PlayerId player, uint32_t channelId) const {
+    const auto it = channelSubscriptions_.find(player);
+    if (it == channelSubscriptions_.end()) {
+        // Not yet configured: General and System are the defaults every
+        // player is in, so an un-configured player still hears the room
+        // rather than sitting in silence.
+        return channelId == static_cast<uint32_t>(ChatChannel::General) ||
+                channelId == static_cast<uint32_t>(ChatChannel::System);
+    }
+    return it->second.find(channelId) != it->second.end();
+}
+
+void NetworkSession::subscribeToChannel(PlayerId player, ChatChannel channel) {
+    auto& subscriptions = channelSubscriptions_[player];
+    if (subscriptions.empty()) {
+        subscriptions.insert(static_cast<uint32_t>(ChatChannel::General));
+        subscriptions.insert(static_cast<uint32_t>(ChatChannel::System));
+    }
+    subscriptions.insert(static_cast<uint32_t>(channel));
+}
+
+void NetworkSession::unsubscribeFromChannel(PlayerId player, ChatChannel channel) {
+    auto& subscriptions = channelSubscriptions_[player];
+    if (subscriptions.empty()) {
+        subscriptions.insert(static_cast<uint32_t>(ChatChannel::General));
+        subscriptions.insert(static_cast<uint32_t>(ChatChannel::System));
+    }
+    subscriptions.erase(static_cast<uint32_t>(channel));
+}
+
+void NetworkSession::broadcastSystemMessage(const std::string& text) {
+    if (config_.mode != NetworkMode::Server) return;
+    ChatMessagePacket packet;
+    packet.senderId = 0; // 0 is the server itself, never a real PlayerId
+    packet.channelId = static_cast<uint32_t>(ChatChannel::System);
+    packet.body = text.size() > ChatMessagePacket::kMaxBodyBytes ? text.substr(0, ChatMessagePacket::kMaxBodyBytes)
+                                                                  : text;
+    packet.timestampMillis = currentUnixMillis();
+
+    ByteWriter writer;
+    writer.writeU8(static_cast<uint8_t>(WireMessageType::ChatBroadcast));
+    packet.write(writer);
+    networkStats_.recordPacketSent(writer.size());
+    for (auto& [peer, recipient] : serverPeerToPlayer_) {
+        if (!isSubscribedToChannel(recipient, packet.channelId)) continue;
         transport_.send(peer, writer.bytes().data(), writer.size(), kReliableChannel, true);
     }
 }
@@ -1362,13 +1440,18 @@ void NetworkSession::tickClient(float dt, core::ECS& ecs, core::EntityId localPl
         }
 
         if (messageType == WireMessageType::ChatBroadcast) {
-            PlayerId sender = reader.readU32();
-            std::string text = reader.readString();
-            if (reader.hasError()) {
+            ChatMessagePacket packet;
+            if (!ChatMessagePacket::read(reader, packet)) {
                 networkStats_.recordPacketDropped();
                 return;
             }
-            if (onChatMessageReceived_) onChatMessageReceived_(sender, text);
+            lastReceivedChatPacket_ = packet;
+            // Both callbacks fire: the simple one keeps every existing
+            // caller (the HUD chat panel) working unchanged, and the
+            // packet-level one carries the channel and timestamp that the
+            // Luau TextChatService bindings need.
+            if (onChatMessageReceived_) onChatMessageReceived_(packet.senderId, packet.body);
+            if (onChatPacketReceived_) onChatPacketReceived_(packet);
             return;
         }
 
@@ -1498,10 +1581,27 @@ void NetworkSession::requestTeleport(uint32_t padNetworkId) {
 }
 
 void NetworkSession::sendChatMessage(const std::string& text) {
+    sendChatMessageOn(ChatChannel::General, text);
+}
+
+void NetworkSession::sendChatMessageOn(ChatChannel channel, const std::string& text) {
     if (config_.mode != NetworkMode::Client) return;
+    // Refused locally as well as server-side. The server is still the
+    // authority (see handleChatMessageServer), but sending a packet that
+    // is certain to be dropped wastes a round trip and hides the reason
+    // from the player.
+    if (!clientMaySendOn(channel)) return;
+    if (text.empty() || text.size() > ChatMessagePacket::kMaxBodyBytes) return;
+
+    ChatMessagePacket packet;
+    packet.senderId = 0;        // assigned by the server from the connection
+    packet.timestampMillis = 0; // stamped by the server -- never trusted from here
+    packet.channelId = static_cast<uint32_t>(channel);
+    packet.body = text;
+
     ByteWriter writer;
     writer.writeU8(static_cast<uint8_t>(WireMessageType::ChatMessage));
-    writer.writeString(text);
+    packet.write(writer);
     networkStats_.recordPacketSent(writer.size());
     transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
 }

@@ -28,6 +28,7 @@
 #include "net/NetworkSession.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/ScriptAvatarApi.hpp"
+#include "core/ScriptChatApi.hpp"
 #include "core/ScriptNetworkApi.hpp"
 #include "core/ScriptUiApi.hpp"
 #include "core/ScriptWorldApi.hpp"
@@ -699,6 +700,10 @@ private:
     // Same reasoning as scriptWorldApi_ above: ScriptNetworkApi holds
     // references to networkSession_/scripting_ bound at construction.
     std::unique_ptr<ScriptNetworkApi> scriptNetworkApi_;
+    // Same lifetime reasoning as scriptNetworkApi_ above: it holds a
+    // NetworkSession receive hook, so it must outlive every script VM and
+    // be destroyed before the session it points at.
+    std::unique_ptr<ScriptChatApi> scriptChatApi_;
     // Kronos ("Kronos Scripting Environment"): holds an `Application&`
     // (i.e. `*this`) -- always valid regardless of member-construction
     // order, unlike scriptWorldApi_/scriptNetworkApi_ above, but kept as
