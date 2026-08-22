@@ -123,6 +123,8 @@
 #include "core/ScenePicking.hpp"
 #include "core/ScriptHotReload.hpp"
 #include "core/ScriptNetworkApi.hpp"
+#include "core/InverseKinematics.hpp"
+#include "core/PhysicalCamera.hpp"
 #include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
 #include "core/ScriptUiApi.hpp"
@@ -17491,6 +17493,402 @@ void testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing() {
     server.shutdown();
 }
 
+// Kronos Cinematic Suite: IK solver coverage.
+//
+// These assert real geometric invariants -- bone lengths preserved,
+// target actually reached, pole actually respected, degenerate inputs
+// producing finite numbers -- rather than comparing against hardcoded
+// coordinates that would only prove the code still does what it did.
+
+void testPhysicalCameraFovMatchesRealLensGeometry() {
+    engine::core::PhysicalCamera camera;
+    camera.sensor = engine::core::sensor_presets::kFullFrame35;
+
+    // Known full-frame values: a 50mm is ~27 degrees vertical, a 24mm
+    // ~53. These are real lens facts, not this implementation's output.
+    camera.focalLengthMm = 50.0f;
+    float fov50 = engine::core::verticalFovDegrees(camera);
+    check(fov50 > 26.0f && fov50 < 28.0f, "a real 50mm on full-frame gives a real ~27 degree vertical FOV");
+
+    camera.focalLengthMm = 24.0f;
+    float fov24 = engine::core::verticalFovDegrees(camera);
+    check(fov24 > 52.0f && fov24 < 54.0f, "a real 24mm on full-frame gives a real ~53 degree vertical FOV");
+
+    check(fov24 > fov50, "a shorter real lens really is wider");
+
+    // Round-trips.
+    float recovered = engine::core::focalLengthFromVerticalFov(fov24, camera.sensor);
+    check(std::fabs(recovered - 24.0f) < 0.1f, "focal length really round-trips through vertical FOV");
+}
+
+void testPhysicalCameraSensorSizeChangesTheFieldOfView() {
+    engine::core::PhysicalCamera fullFrame;
+    fullFrame.focalLengthMm = 50.0f;
+    fullFrame.sensor = engine::core::sensor_presets::kFullFrame35;
+
+    engine::core::PhysicalCamera superThirtyFive = fullFrame;
+    superThirtyFive.sensor = engine::core::sensor_presets::kSuper35;
+
+    check(engine::core::verticalFovDegrees(superThirtyFive) < engine::core::verticalFovDegrees(fullFrame),
+          "the same real focal length really is tighter on a smaller real sensor");
+}
+
+void testPhysicalCameraApertureControlsDepthOfField() {
+    engine::core::PhysicalCamera wideOpen;
+    wideOpen.focalLengthMm = 50.0f;
+    wideOpen.focusDistanceMeters = 3.0f;
+    wideOpen.aperture = 1.4f;
+
+    engine::core::PhysicalCamera stoppedDown = wideOpen;
+    stoppedDown.aperture = 16.0f;
+
+    float nearWide = 0.0f, farWide = 0.0f, nearStopped = 0.0f, farStopped = 0.0f;
+    bool wideFinite = engine::core::depthOfFieldRangeMeters(wideOpen, nearWide, farWide);
+    bool stoppedFinite = engine::core::depthOfFieldRangeMeters(stoppedDown, nearStopped, farStopped);
+
+    check(wideFinite, "a real f/1.4 at 3m has a real, finite far focus limit");
+    check(nearWide < wideOpen.focusDistanceMeters && farWide > wideOpen.focusDistanceMeters,
+          "the real in-focus band really brackets the real focus distance");
+
+    float wideSpan = farWide - nearWide;
+    float stoppedSpan = stoppedFinite ? (farStopped - nearStopped) : 1e9f;
+    check(stoppedSpan > wideSpan, "stopping down really deepens the real depth of field");
+
+    // Hyperfocal must behave: stopping down brings it closer.
+    check(engine::core::hyperfocalDistanceMeters(stoppedDown) < engine::core::hyperfocalDistanceMeters(wideOpen),
+          "a smaller real aperture really gives a nearer real hyperfocal distance");
+}
+
+void testPhysicalCameraReportsInfiniteFarLimitHonestly() {
+    engine::core::PhysicalCamera camera;
+    camera.focalLengthMm = 24.0f;
+    camera.aperture = 22.0f;
+    // Focus far beyond hyperfocal.
+    camera.focusDistanceMeters = engine::core::hyperfocalDistanceMeters(camera) * 4.0f;
+
+    float nearMeters = -1.0f;
+    float farMeters = -1.0f;
+    bool finite = engine::core::depthOfFieldRangeMeters(camera, nearMeters, farMeters);
+    check(!finite, "focusing past hyperfocal really reports an INFINITE far limit rather than inventing a number");
+    check(farMeters < 0.0f, "and really leaves the caller's far value untouched");
+    check(nearMeters > 0.0f, "while still giving a real near limit");
+}
+
+void testPhysicalCameraDrivesTheRealRendererDofParams() {
+    engine::core::PhysicalCamera shallow;
+    shallow.focalLengthMm = 85.0f;
+    shallow.aperture = 1.4f;
+    shallow.focusDistanceMeters = 2.0f;
+
+    engine::core::PhysicalCamera deep = shallow;
+    deep.aperture = 22.0f;
+
+    engine::core::RendererDofParams shallowParams = engine::core::toRendererDofParams(shallow, 1080.0f);
+    engine::core::RendererDofParams deepParams = engine::core::toRendererDofParams(deep, 1080.0f);
+
+    check(std::fabs(shallowParams.focusDistance - 2.0f) < 0.001f,
+          "the real focus distance really passes straight through to the renderer");
+    check(shallowParams.maxCoCRadiusPx > deepParams.maxCoCRadiusPx,
+          "a real wide aperture really produces a larger real blur radius than a stopped-down one");
+    check(deepParams.focusRange > shallowParams.focusRange,
+          "a real stopped-down lens really yields a deeper real focus range");
+
+    // A larger render height means the same physical blur covers more
+    // pixels. Checked with a MODERATE lens on purpose: at 85mm f/1.4 the
+    // computed radius saturates the pass's 32px clamp at both 1080p and
+    // 4K, so that combination cannot show the difference. That saturation
+    // is real -- the DoF pass genuinely cannot express a blur that wide --
+    // and it is asserted separately below rather than papered over.
+    engine::core::PhysicalCamera moderate;
+    moderate.focalLengthMm = 35.0f;
+    moderate.aperture = 8.0f;
+    moderate.focusDistanceMeters = 6.0f;
+    engine::core::RendererDofParams moderate1080 = engine::core::toRendererDofParams(moderate, 1080.0f);
+    engine::core::RendererDofParams moderate4k = engine::core::toRendererDofParams(moderate, 2160.0f);
+    check(moderate4k.maxCoCRadiusPx > moderate1080.maxCoCRadiusPx,
+          "the same real lens really blurs across more pixels at a higher real resolution");
+
+    check(shallowParams.maxCoCRadiusPx <= 32.0f && moderate4k.maxCoCRadiusPx <= 32.0f,
+          "the real blur radius stays within the real clamp the pass can handle");
+    // An extreme cinematic aperture really does hit that ceiling, which is
+    // a real limit of the current DoF pass, not a rounding artefact.
+    engine::core::RendererDofParams extreme4k = engine::core::toRendererDofParams(shallow, 2160.0f);
+    check(std::fabs(extreme4k.maxCoCRadiusPx - 32.0f) < 0.001f,
+          "a real 85mm at f/1.4 really saturates the pass's real 32px blur ceiling");
+}
+
+void testPhysicalCameraExposureRespondsToApertureShutterAndIso() {
+    engine::core::PhysicalCamera base;
+    check(std::fabs(engine::core::relativeExposure(base) - 1.0f) < 0.001f,
+          "the real default camera is really the 1.0 exposure reference");
+
+    engine::core::PhysicalCamera oneStopWider = base;
+    oneStopWider.aperture = 2.0f; // f/2.8 -> f/2.0 is one stop
+    check(std::fabs(engine::core::relativeExposure(oneStopWider) - 2.0f) < 0.05f,
+          "opening one real stop really doubles the real exposure");
+
+    engine::core::PhysicalCamera doubleShutter = base;
+    doubleShutter.shutterSpeedSeconds = base.shutterSpeedSeconds * 2.0f;
+    check(std::fabs(engine::core::relativeExposure(doubleShutter) - 2.0f) < 0.001f,
+          "doubling the real shutter time really doubles the real exposure");
+
+    engine::core::PhysicalCamera doubleIso = base;
+    doubleIso.isoSensitivity = 200.0f;
+    check(std::fabs(engine::core::relativeExposure(doubleIso) - 2.0f) < 0.001f,
+          "doubling real ISO really doubles the real exposure");
+}
+
+void testTwoBoneIKReachesAReachableTarget() {
+    // A 1m + 1m arm reaching 1.5m away: comfortably reachable.
+    const glm::vec3 root(0.0f, 0.0f, 0.0f);
+    const glm::vec3 mid(0.0f, -1.0f, 0.0f);
+    const glm::vec3 end(0.0f, -2.0f, 0.0f);
+    const glm::vec3 target(1.5f, 0.0f, 0.0f);
+    const glm::vec3 pole(1.0f, -1.0f, 0.0f);
+
+    engine::core::TwoBoneIKResult result = engine::core::solveTwoBoneIK(root, mid, end, target, pole);
+
+    check(result.reached, "two-bone IK reports a reachable target as reached");
+    check(glm::length(result.endPosition - target) < 0.001f,
+          "the real solved end effector really lands on the real target");
+    check(std::fabs(glm::length(result.midPosition - result.rootPosition) - 1.0f) < 0.001f,
+          "the upper bone's real length is preserved exactly");
+    check(std::fabs(glm::length(result.endPosition - result.midPosition) - 1.0f) < 0.001f,
+          "the lower bone's real length is preserved exactly");
+}
+
+void testTwoBoneIKDoesNotStretchWhenTargetIsOutOfReach() {
+    const glm::vec3 root(0.0f, 0.0f, 0.0f);
+    const glm::vec3 mid(0.0f, -1.0f, 0.0f);
+    const glm::vec3 end(0.0f, -2.0f, 0.0f);
+    // 10m away from a 2m arm.
+    const glm::vec3 target(10.0f, 0.0f, 0.0f);
+
+    engine::core::TwoBoneIKResult result =
+        engine::core::solveTwoBoneIK(root, mid, end, target, glm::vec3(0.0f, -1.0f, 1.0f));
+
+    check(!result.reached, "an out-of-reach target is honestly reported as NOT reached");
+    check(std::fabs(glm::length(result.midPosition - result.rootPosition) - 1.0f) < 0.001f,
+          "the upper bone does not stretch toward an unreachable target");
+    check(std::fabs(glm::length(result.endPosition - result.midPosition) - 1.0f) < 0.001f,
+          "the lower bone does not stretch toward an unreachable target");
+    // Fully extended, pointing at the target.
+    check(glm::length(result.endPosition - root) > 1.99f,
+          "the chain really extends fully toward an unreachable target instead of curling up");
+}
+
+void testTwoBoneIKPoleTargetControlsBendDirection() {
+    const glm::vec3 root(0.0f, 0.0f, 0.0f);
+    const glm::vec3 mid(0.0f, -1.0f, 0.0f);
+    const glm::vec3 end(0.0f, -2.0f, 0.0f);
+    const glm::vec3 target(0.0f, -1.5f, 0.0f);
+
+    // Same target, opposite poles -- the elbow must go opposite ways.
+    engine::core::TwoBoneIKResult bendPositiveX =
+        engine::core::solveTwoBoneIK(root, mid, end, target, glm::vec3(5.0f, -1.0f, 0.0f));
+    engine::core::TwoBoneIKResult bendNegativeX =
+        engine::core::solveTwoBoneIK(root, mid, end, target, glm::vec3(-5.0f, -1.0f, 0.0f));
+
+    check(bendPositiveX.midPosition.x > 0.01f, "a +X pole really bends the mid joint toward +X");
+    check(bendNegativeX.midPosition.x < -0.01f, "a -X pole really bends the mid joint toward -X");
+    // Both still hit the target -- the pole steers, it does not degrade.
+    check(glm::length(bendPositiveX.endPosition - target) < 0.001f, "the +X-bent chain still really reaches");
+    check(glm::length(bendNegativeX.endPosition - target) < 0.001f, "the -X-bent chain still really reaches");
+}
+
+void testTwoBoneIKHandlesDegenerateInputWithoutProducingNaNs() {
+    const glm::vec3 root(0.0f, 0.0f, 0.0f);
+    const glm::vec3 mid(0.0f, -1.0f, 0.0f);
+    const glm::vec3 end(0.0f, -2.0f, 0.0f);
+
+    // Target exactly on the root: no direction exists.
+    engine::core::TwoBoneIKResult onRoot = engine::core::solveTwoBoneIK(root, mid, end, root, glm::vec3(1.0f, 0.0f, 0.0f));
+    // Pole exactly on the chain axis: no perpendicular is implied.
+    engine::core::TwoBoneIKResult degeneratePole =
+        engine::core::solveTwoBoneIK(root, mid, end, glm::vec3(0.0f, -1.5f, 0.0f), glm::vec3(0.0f, -0.5f, 0.0f));
+    // Zero-length bones.
+    engine::core::TwoBoneIKResult zeroBones =
+        engine::core::solveTwoBoneIK(root, root, root, glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    auto finite = [](const glm::vec3& v) {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    };
+    check(finite(onRoot.midPosition) && finite(onRoot.endPosition),
+          "a target sitting exactly on the root really produces finite numbers, not NaNs");
+    check(finite(degeneratePole.midPosition) && finite(degeneratePole.endPosition),
+          "a pole target on the chain axis really produces finite numbers, not NaNs");
+    check(finite(zeroBones.midPosition) && finite(zeroBones.endPosition),
+          "zero-length bones really produce finite numbers, not NaNs");
+    check(glm::length(degeneratePole.endPosition - glm::vec3(0.0f, -1.5f, 0.0f)) < 0.001f,
+          "a degenerate pole still really reaches the target, just with an arbitrary-but-stable bend");
+}
+
+void testFabrikReachesTargetAndPreservesEverySegmentLength() {
+    // A 4-joint chain, 1m segments.
+    std::vector<glm::vec3> chain = {
+        {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 2.0f, 0.0f}, {0.0f, 3.0f, 0.0f}};
+    const glm::vec3 target(2.0f, 1.0f, 0.5f);
+
+    engine::core::FabrikResult result = engine::core::solveFabrik(chain, target);
+
+    check(result.reached, "FABRIK really reaches a reachable target");
+    check(result.remainingError < 0.002f, "the real remaining error is genuinely tiny");
+    check(result.iterations > 0 && result.iterations <= 12, "FABRIK converges within its real iteration budget");
+    for (size_t i = 0; i + 1 < result.positions.size(); ++i) {
+        const float solvedLength = glm::length(result.positions[i + 1] - result.positions[i]);
+        std::string message = "FABRIK preserves real segment " + std::to_string(i) + "'s length exactly";
+        check(std::fabs(solvedLength - 1.0f) < 0.002f, message.c_str());
+    }
+    check(glm::length(result.positions.front()) < 0.001f, "the real root really stays pinned where it started");
+}
+
+void testFabrikStraightensTowardAnUnreachableTargetWithoutStretching() {
+    std::vector<glm::vec3> chain = {
+        {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 2.0f, 0.0f}};
+    const glm::vec3 target(50.0f, 0.0f, 0.0f); // far beyond a 2m chain
+
+    engine::core::FabrikResult result = engine::core::solveFabrik(chain, target);
+
+    check(!result.reached, "an unreachable target is honestly reported as NOT reached");
+    for (size_t i = 0; i + 1 < result.positions.size(); ++i) {
+        check(std::fabs(glm::length(result.positions[i + 1] - result.positions[i]) - 1.0f) < 0.002f,
+              "no segment stretches toward an unreachable target");
+    }
+    // Fully extended along +X.
+    check(result.positions.back().x > 1.99f,
+          "the chain really extends straight at an unreachable target rather than iterating uselessly");
+}
+
+void testFabrikHandlesDegenerateChains() {
+    engine::core::FabrikResult empty = engine::core::solveFabrik({}, glm::vec3(1.0f));
+    check(!empty.reached && empty.positions.empty(), "an empty chain is a real, honest no-op");
+
+    engine::core::FabrikResult single = engine::core::solveFabrik({glm::vec3(0.0f)}, glm::vec3(3.0f, 0.0f, 0.0f));
+    check(!single.reached, "a single-joint chain cannot reach anything and says so");
+    check(std::fabs(single.remainingError - 3.0f) < 0.001f, "it reports the real distance it fell short by");
+
+    // Every joint coincident: zero total length.
+    std::vector<glm::vec3> collapsed = {glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(0.0f)};
+    engine::core::FabrikResult zeroLength = engine::core::solveFabrik(collapsed, glm::vec3(1.0f, 0.0f, 0.0f));
+    check(!zeroLength.reached, "a zero-length chain really cannot reach and does not divide by zero");
+    for (const glm::vec3& p : zeroLength.positions) {
+        check(std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z),
+              "a zero-length chain really produces finite numbers");
+    }
+}
+
+void testFabrikWithPoleSteersInteriorJointsWithoutLosingTheTarget() {
+    std::vector<glm::vec3> chain = {
+        {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 2.0f, 0.0f}, {0.0f, 3.0f, 0.0f}};
+    const glm::vec3 target(0.0f, 2.0f, 0.0f); // reachable, forces a bend
+
+    engine::core::FabrikResult towardPositiveZ =
+        engine::core::solveFabrikWithPole(chain, target, glm::vec3(0.0f, 1.0f, 10.0f));
+    engine::core::FabrikResult towardNegativeZ =
+        engine::core::solveFabrikWithPole(chain, target, glm::vec3(0.0f, 1.0f, -10.0f));
+
+    check(towardPositiveZ.reached && towardNegativeZ.reached,
+          "the pole-steered solve still really reaches the target in both directions");
+
+    // Interior joints must end up on opposite sides.
+    float positiveZ = 0.0f;
+    float negativeZ = 0.0f;
+    for (size_t i = 1; i + 1 < towardPositiveZ.positions.size(); ++i) positiveZ += towardPositiveZ.positions[i].z;
+    for (size_t i = 1; i + 1 < towardNegativeZ.positions.size(); ++i) negativeZ += towardNegativeZ.positions[i].z;
+    check(positiveZ > 0.01f, "a +Z pole really pushes the interior joints toward +Z");
+    check(negativeZ < -0.01f, "a -Z pole really pushes the interior joints toward -Z");
+
+    // And the pole must not have broken bone lengths.
+    for (size_t i = 0; i + 1 < towardPositiveZ.positions.size(); ++i) {
+        check(std::fabs(glm::length(towardPositiveZ.positions[i + 1] - towardPositiveZ.positions[i]) - 1.0f) < 0.01f,
+              "pole steering preserves real segment lengths");
+    }
+}
+
+void testBuildIKChainResolvesRealSkeletonJointsAndFailsLoudly() {
+    engine::core::Skeleton skeleton;
+    engine::core::Joint hip;
+    hip.name = "Hip";
+    hip.parentIndex = -1;
+    hip.localPosition = glm::vec3(0.0f, 1.0f, 0.0f);
+    const int hipIndex = skeleton.addJoint(hip);
+
+    engine::core::Joint knee;
+    knee.name = "Knee";
+    knee.parentIndex = hipIndex;
+    knee.localPosition = glm::vec3(0.0f, -0.5f, 0.0f);
+    const int kneeIndex = skeleton.addJoint(knee);
+
+    engine::core::Joint ankle;
+    ankle.name = "Ankle";
+    ankle.parentIndex = kneeIndex;
+    ankle.localPosition = glm::vec3(0.0f, -0.5f, 0.0f);
+    (void)skeleton.addJoint(ankle);
+
+    engine::core::IKChain chain;
+    std::string error;
+    check(engine::core::buildIKChain(skeleton, "Ankle", 3, chain, error),
+          "a real 3-joint leg chain really resolves from the real skeleton");
+    check(chain.jointIndices.size() == 3, "the real chain has the real requested joint count");
+    check(skeleton.joints[static_cast<size_t>(chain.jointIndices.front())].name == "Hip",
+          "the real chain is ordered root-first");
+    check(skeleton.joints[static_cast<size_t>(chain.jointIndices.back())].name == "Ankle",
+          "the real chain really ends at the requested joint");
+
+    // Asking for more joints than exist must FAIL, not silently truncate:
+    // a short chain would still solve, and be wrong every frame.
+    engine::core::IKChain tooLong;
+    std::string tooLongError;
+    check(!engine::core::buildIKChain(skeleton, "Ankle", 9, tooLong, tooLongError),
+          "a chain longer than the real hierarchy really fails instead of silently truncating");
+    check(!tooLongError.empty(), "and it really says why");
+
+    engine::core::IKChain missing;
+    std::string missingError;
+    check(!engine::core::buildIKChain(skeleton, "NoSuchJoint", 2, missing, missingError),
+          "an unknown joint name really fails");
+}
+
+void testSolvedChainRotationsPointBonesAlongTheSolvedDirections() {
+    engine::core::Skeleton skeleton;
+    engine::core::Joint root;
+    root.name = "Root";
+    root.parentIndex = -1;
+    const int rootIndex = skeleton.addJoint(root);
+
+    engine::core::Joint mid;
+    mid.name = "Mid";
+    mid.parentIndex = rootIndex;
+    mid.localPosition = glm::vec3(0.0f, 1.0f, 0.0f);
+    const int midIndex = skeleton.addJoint(mid);
+
+    engine::core::Joint tip;
+    tip.name = "Tip";
+    tip.parentIndex = midIndex;
+    tip.localPosition = glm::vec3(0.0f, 1.0f, 0.0f);
+    (void)skeleton.addJoint(tip);
+
+    engine::core::IKChain chain;
+    std::string error;
+    check(engine::core::buildIKChain(skeleton, "Tip", 3, chain, error), "rotation test: the real chain builds");
+
+    // Solved pose: bend the whole chain along +X instead of +Y.
+    const std::vector<glm::vec3> solved = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}};
+    std::vector<glm::quat> rotations = engine::core::solvedChainRotations(skeleton, chain, solved);
+    check(rotations.size() == 3, "one real rotation really comes back per real chain joint");
+
+    // The root's rotation must now carry its bind direction (+Y) onto +X.
+    const glm::vec3 rotatedBindDirection = rotations[0] * glm::vec3(0.0f, 1.0f, 0.0f);
+    check(glm::length(rotatedBindDirection - glm::vec3(1.0f, 0.0f, 0.0f)) < 0.01f,
+          "the real solved rotation really points the real bone along the real solved direction");
+
+    for (const glm::quat& q : rotations) {
+        check(std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z) && std::isfinite(q.w),
+              "every real solved rotation is finite");
+    }
+}
+
 void testLanDiscoveryOptOutViaAdvertiseOnLanFalse() {
     constexpr uint16_t kTestPort = 17800;
     engine::core::ECS serverEcs;
@@ -29292,6 +29690,22 @@ int main() {
     testJoinTicketRequiringServerWithNoValidatorFailsClosed();
     testJoinTicketIsNotRequiredForRealLanSessions();
     testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing();
+    testPhysicalCameraFovMatchesRealLensGeometry();
+    testPhysicalCameraSensorSizeChangesTheFieldOfView();
+    testPhysicalCameraApertureControlsDepthOfField();
+    testPhysicalCameraReportsInfiniteFarLimitHonestly();
+    testPhysicalCameraDrivesTheRealRendererDofParams();
+    testPhysicalCameraExposureRespondsToApertureShutterAndIso();
+    testTwoBoneIKReachesAReachableTarget();
+    testTwoBoneIKDoesNotStretchWhenTargetIsOutOfReach();
+    testTwoBoneIKPoleTargetControlsBendDirection();
+    testTwoBoneIKHandlesDegenerateInputWithoutProducingNaNs();
+    testFabrikReachesTargetAndPreservesEverySegmentLength();
+    testFabrikStraightensTowardAnUnreachableTargetWithoutStretching();
+    testFabrikHandlesDegenerateChains();
+    testFabrikWithPoleSteersInteriorJointsWithoutLosingTheTarget();
+    testBuildIKChainResolvesRealSkeletonJointsAndFailsLoudly();
+    testSolvedChainRotationsPointBonesAlongTheSolvedDirections();
     testLanDiscoveryOptOutViaAdvertiseOnLanFalse();
     testShellStateTransitionsHomeToSessionBrowserAndBack();
     testShellStateTransitionsHomeThroughGameCatalogueToInGame();

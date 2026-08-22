@@ -2723,3 +2723,62 @@ session working against the real API. No human clicked anything.
 The backend is not deployed, so `KRONOS_API_URL`/`KRONOS_AUTH_URL` still
 default to localhost. The friends carousel, search modal and guest banner
 are still unbuilt UI. Card thumbnails still need a remote-image path.
+
+## 2026-08-21 (final) — Cinematic Suite: IK engine + physical camera
+
+Audited the cinematic spec against the codebase before writing anything.
+Much of it already exists: `CaptureRig` already renders offline frame
+sequences to disk, `RayTracingScene`/`scene_rt.frag` already implement a
+real ray-query pass, `TrailerTimeline`/`TrailerDirector` already drive
+scripted cinematics, `TimelineEditorPlugin` already does keyframes (one
+track), and the full skeletal stack (Skeleton/SkinWeights/RiggedMesh/
+AnimationPlayer) is there.
+
+Two things were genuinely absent, and both are self-contained and
+testable, so this pass built them properly rather than stubbing four
+areas shallowly.
+
+### IK engine (was completely absent -- zero matches repo-wide)
+
+Two-bone analytic solver and FABRIK, both operating on model-space
+positions so they carry no transform bookkeeping. Bone lengths are
+preserved exactly in every path: an unreachable target produces a
+straight chain pointing at it and `reached = false`, never a stretched
+limb. Pole targets steer the bend for both solvers, which is what stops
+an elbow flipping inside-out between frames. `buildIKChain()` **fails
+loudly** if a chain runs off the top of the hierarchy rather than
+silently truncating -- a short chain would still solve, and be subtly
+wrong every frame.
+
+**A real degenerate case found by the tests**: a perfectly straight chain
+whose target lies on its own axis (exactly a fully-extended arm pulled
+back toward the shoulder) collapses every direction vector in FABRIK's
+passes, and it could not decide which way to bend. Fixed by seeding a
+tiny perpendicular nudge that the length-preserving passes then erase --
+it only breaks the tie.
+
+### Physical camera
+
+The renderer already had DoF as focus distance / range / CoC radius --
+the right knobs for a renderer, the wrong ones for a cinematographer.
+`PhysicalCamera` adds focal length (mm), f-stop, sensor size, ISO and
+shutter, converting via the real thin-lens relations. Verified against
+known lens facts rather than its own output: a 50mm on full-frame really
+gives ~27 degrees vertical, a 24mm ~53. Focusing past hyperfocal reports
+an **infinite** far limit rather than inventing a large finite number.
+
+**A real limitation surfaced**: at 85mm f/1.4 the computed blur radius
+saturates the DoF pass's 32px ceiling at both 1080p and 4K. That is a
+genuine limit of the current pass, and it is asserted explicitly rather
+than hidden by picking gentler test values.
+
+### Verification
+**11239/11239 checks** (+75). All assert real geometric and optical
+invariants -- lengths preserved, targets reached, poles respected,
+degenerate inputs finite -- not hardcoded coordinates.
+
+### Not built (and why)
+The multi-track sequencer, blend trees, camera rails, EXR/motion-blur
+export and a GI path tracer are each substantial standalone features;
+Unreal's Sequencer is a team-years product. Four shallow stubs would
+have been worth less than two finished, tested subsystems.

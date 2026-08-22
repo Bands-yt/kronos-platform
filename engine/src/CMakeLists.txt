@@ -112,6 +112,8 @@ add_library(engine_core STATIC
     core/AvatarLoadout.cpp
     core/AvatarLoadoutSync.cpp
     core/Skeleton.cpp
+    core/InverseKinematics.cpp
+    core/PhysicalCamera.cpp
     core/SkinWeights.cpp
     core/RiggedMesh.cpp
     core/AnimationPlayer.cpp
