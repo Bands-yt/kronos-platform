@@ -26,6 +26,7 @@
 #include "core/Logger.hpp"
 #include "core/ResourcePaths.hpp"
 #include "core/UpdateCheck.hpp"
+#include "core/KronosClientConfig.hpp"
 #include "core/LoopbackHttpServer.hpp"
 #include "core/OAuthPkce.hpp"
 #include "core/OpenUrl.hpp"
@@ -67,18 +68,25 @@ std::string urlEncodeComponent(const std::string& value) {
     return out;
 }
 
+const core::KronosClientConfig& kronosClientConfig() {
+    // Resolved once, on first use: config.json > environment > default.
+    static const core::KronosClientConfig config = [] {
+        core::KronosClientConfig loaded = core::loadKronosClientConfig(core::executableDirectory());
+        core::logInfo("Kronos", "backend %s (from %s)", loaded.apiUrl.c_str(), loaded.source.c_str());
+        return loaded;
+    }();
+    return config;
+}
+
 // Where the browser sign-in page lives. Overridable so a self-hosted or
 // local deployment is configuration rather than a rebuild.
 std::string resolveKronosAuthUrl() {
-    const char* fromEnv = std::getenv("KRONOS_AUTH_URL");
-    if (fromEnv != nullptr && fromEnv[0] != '\0') return fromEnv;
-    return std::string(std::getenv("KRONOS_API_URL") ? std::getenv("KRONOS_API_URL") : "http://127.0.0.1:8080") + "/auth/start";
+    return kronosClientConfig().authUrl;
 }
 
+
 std::string resolveKronosBackendUrl() {
-    const char* fromEnv = std::getenv("KRONOS_API_URL");
-    if (fromEnv != nullptr && fromEnv[0] != '\0') return fromEnv;
-    return "http://127.0.0.1:8080";
+    return kronosClientConfig().apiUrl;
 }
 
 // Kronos Client shell chrome geometry -- one definition, used by both
@@ -323,6 +331,9 @@ void RuntimeShell::shutdown() {
     if (backendAuthThread_.joinable()) backendAuthThread_.join();
     if (catalogueFetchThread_.joinable()) catalogueFetchThread_.join();
     if (allocationThread_.joinable()) allocationThread_.join();
+    if (friendsThread_.joinable()) friendsThread_.join();
+    if (friendSearchThread_.joinable()) friendSearchThread_.join();
+    if (presenceThread_.joinable()) presenceThread_.join();
 
     lanBrowser_.stop();
     lanBrowserRunning_ = false;
@@ -537,7 +548,12 @@ void RuntimeShell::leaveSession() {
 }
 
 void RuntimeShell::openGameCatalogue() {
-    if (state_ != ShellState::Home) return;
+    // Deliberately NOT gated on state_: the sidebar sets state_ to
+    // GameCatalogue before calling this, and the old `state_ != Home`
+    // guard then skipped the disk scan entirely -- which is why the
+    // Create tab came up empty. Scanning local projects is also
+    // completely independent of backend connectivity: local games must
+    // list and launch with no network at all.
     // Real, fresh disk read every time the catalogue is actually opened
     // (a deliberate user action, not a hot path) -- not cached across a
     // whole session, so Featured/Hidden-Gems ranking reflects whatever
@@ -690,10 +706,17 @@ void RuntimeShell::finishPendingGameLoad() {
 }
 
 void RuntimeShell::launchStudio() {
+    studioLaunchError_.clear();
     std::string studioPath = core::executableDirectory() + "/studio";
     if (!core::launchProcess(studioPath, {})) {
-        std::fprintf(stderr, "RuntimeShell: failed to launch Studio at \"%s\"\n", studioPath.c_str());
+        // Surfaced in the Create tab, not just stderr: a button that
+        // silently does nothing is worse than one that says why.
+        studioLaunchError_ = "Could not start Kronos Studio (expected it next to this executable at \"" +
+                             studioPath + "\").";
+        std::fprintf(stderr, "RuntimeShell: %s\n", studioLaunchError_.c_str());
+        return;
     }
+    notify(core::NotificationKind::SystemMessage, "Kronos Studio", "Studio is starting.");
 }
 
 void RuntimeShell::tickLanBrowserIfNeeded(float dt) {
@@ -723,6 +746,25 @@ void RuntimeShell::tick(float dt) {
     pollGoogleSignInResult();
     pollUpdateCheckResult();
     pollBackendResults();
+
+    // Debounced search fire + periodic friends/presence refresh. 15s
+    // matches the heartbeat the backend expects, so a friend's status
+    // never lags much more than one beat behind reality.
+    if (friendSearchDebounce_ > 0.0f) {
+        friendSearchDebounce_ -= dt;
+        if (friendSearchDebounce_ <= 0.0f) {
+            friendSearchDebounce_ = 0.0f;
+            startFriendSearch(std::string(friendSearchBuffer_));
+        }
+    }
+    if (kronosApi_.isSignedIn()) {
+        friendsRefreshTimer_ -= dt;
+        if (friendsRefreshTimer_ <= 0.0f) {
+            friendsRefreshTimer_ = 15.0f;
+            startFriendsFetch();
+            presenceHeartbeat();
+        }
+    }
 
     // Kronos ("Animated Hourglass Loading Screen"): real, deferred-by-
     // one-frame game load -- selectGame() sets pendingGameLoad_ and
@@ -1101,6 +1143,10 @@ void RuntimeShell::drawHomePanel() {
     }
 
     endContentCanvas();
+
+    // Modals are drawn outside the canvas so they centre on the whole
+    // viewport rather than inside the content inset.
+    drawAddFriendsModal();
 }
 
 // Kronos ("Home Screen Friends Carousel"): the circular Add-Friends action
@@ -1126,6 +1172,180 @@ void RuntimeShell::joinFriendGame(const core::KronosFriend& friendEntry) {
     }
     startServerAllocation(friendEntry.currentGameId, friendEntry.username.empty() ? friendEntry.displayName
                                                                                    : friendEntry.username);
+}
+
+// Real 15s presence heartbeat. Fire-and-forget on a detached-style
+// worker so a slow network never stalls a frame; a dropped beat only
+// means friends see this user go offline slightly early.
+void RuntimeShell::presenceHeartbeat() {
+    if (presenceThread_.joinable()) presenceThread_.join();
+    bool inGame = state_ == ShellState::InGame;
+    presenceThread_ = std::thread([this, inGame]() {
+        kronosApi_.sendPresenceHeartbeat(inGame ? "in_game" : "online_launcher", std::string(), std::string());
+    });
+}
+
+void RuntimeShell::startFriendsFetch() {
+    if (friendsFetchInProgress_.load() || !kronosApi_.isSignedIn()) return;
+    if (friendsThread_.joinable()) friendsThread_.join();
+    friendsFetchInProgress_.store(true);
+    friendsThread_ = std::thread([this]() {
+        core::FriendsResult result = kronosApi_.fetchFriends();
+        std::lock_guard<std::mutex> lock(friendsMutex_);
+        friendsPendingResult_ = std::move(result);
+        friendsFetchInProgress_.store(false);
+    });
+}
+
+void RuntimeShell::startFriendSearch(const std::string& queryText) {
+    if (friendSearchInProgress_.load()) return;
+    if (friendSearchThread_.joinable()) friendSearchThread_.join();
+    friendSearchInProgress_.store(true);
+    friendSearchStatus_ = "Searching...";
+    friendSearchThread_ = std::thread([this, queryText]() {
+        core::UserSearchResponse result = kronosApi_.searchUsers(queryText);
+        std::lock_guard<std::mutex> lock(friendSearchMutex_);
+        friendSearchPendingResult_ = std::move(result);
+        friendSearchInProgress_.store(false);
+    });
+}
+
+void RuntimeShell::startFriendRequest(const std::string& userId) {
+    if (friendSearchThread_.joinable()) friendSearchThread_.join();
+    friendSearchThread_ = std::thread([this, userId]() {
+        std::string error;
+        bool ok = kronosApi_.sendFriendRequest(userId, error);
+        std::lock_guard<std::mutex> lock(friendSearchMutex_);
+        // Reflected optimistically in the row below; this only reports a
+        // real failure, so a rejected request never looks like it worked.
+        if (!ok) friendSearchStatus_ = error;
+    });
+    // Optimistic local state: the row flips to "Pending" immediately
+    // rather than after a round trip, and is corrected by the next real
+    // search if the server disagreed.
+    for (core::UserSearchResult& entry : friendSearchResults_) {
+        if (entry.id == userId) entry.relationship = "request_sent";
+    }
+}
+
+// Kronos ("Add Friends modal"): username search against
+// /v1/users/search, with real per-row relationship state so a row shows
+// Add / Pending / Friends truthfully rather than always offering "Add".
+void RuntimeShell::drawAddFriendsModal() {
+    using namespace core::kronos_palette;
+
+    if (showGuestUpgradePrompt_) {
+        ImGui::OpenPopup("Create a free account");
+        showGuestUpgradePrompt_ = false;
+    }
+    if (ImGui::BeginPopupModal("Create a free account", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored(paletteColor(kTextBright), "Create a free account to add friends and join their games.");
+        ImGui::TextColored(paletteColor(kTextMuted), "Your local projects stay exactly where they are.");
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        pushPrimaryActionButtonColors();
+        if (ImGui::Button("Sign Up", ImVec2(140.0f, 32.0f))) {
+            ImGui::CloseCurrentPopup();
+            startBrowserSignIn();
+        }
+        popPrimaryActionButtonColors();
+        ImGui::SameLine();
+        if (ImGui::Button("Not now", ImVec2(110.0f, 32.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    if (showAddFriendsModal_) {
+        ImGui::OpenPopup("Add Friends");
+        showAddFriendsModal_ = false;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(460.0f, 460.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("Add Friends", nullptr, ImGuiWindowFlags_NoSavedSettings)) return;
+
+    ImGui::TextColored(paletteColor(kTextMuted), "Search for someone by username.");
+    ImGui::SetNextItemWidth(-1.0f);
+    bool changed = ImGui::InputTextWithHint("##friend_search", "Username", friendSearchBuffer_,
+                                             sizeof(friendSearchBuffer_));
+
+    std::string queryText = friendSearchBuffer_;
+    if (changed) {
+        friendSearchStatus_.clear();
+        if (queryText.size() >= 3) {
+            // Debounced by a timer rather than firing on every keystroke,
+            // which would hammer the endpoint (and its rate limit) with
+            // queries the user never finished typing.
+            friendSearchDebounce_ = 0.35f;
+        } else {
+            friendSearchResults_.clear();
+            friendSearchDebounce_ = 0.0f;
+            if (!queryText.empty()) friendSearchStatus_ = "Enter at least 3 characters.";
+        }
+    }
+
+    if (friendSearchInProgress_.load()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "Searching...");
+    } else if (!friendSearchStatus_.empty()) {
+        ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.30f, 1.0f), "%s", friendSearchStatus_.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::BeginChild("##friend_search_results", ImVec2(0.0f, 300.0f), false);
+    if (friendSearchResults_.empty() && !friendSearchInProgress_.load() && queryText.size() >= 3 &&
+        friendSearchStatus_.empty()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "No players found.");
+    }
+
+    for (const core::UserSearchResult& entry : friendSearchResults_) {
+        ImGui::PushID(entry.id.c_str());
+        ImGui::BeginChild("##row", ImVec2(0.0f, 60.0f), true);
+
+        ImVec2 origin = ImGui::GetCursorScreenPos();
+        drawAvatarHeadGlyph(ImGui::GetWindowDrawList(), ImVec2(origin.x + 22.0f, origin.y + 20.0f), 18.0f);
+        ImGui::Dummy(ImVec2(48.0f, 40.0f));
+        ImGui::SameLine();
+
+        ImGui::BeginGroup();
+        ImGui::TextColored(paletteColor(kTextBright), "%s",
+                            entry.username.empty() ? entry.displayName.c_str() : entry.username.c_str());
+        if (!entry.displayName.empty() && !entry.username.empty() && entry.displayName != entry.username) {
+            ImGui::TextColored(paletteColor(kTextMuted), "%s", entry.displayName.c_str());
+        }
+        ImGui::EndGroup();
+
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 96.0f);
+        if (entry.relationship == "friends") {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(paletteColor(kGreen), "Friends");
+        } else if (entry.relationship == "request_sent") {
+            ImGui::BeginDisabled(true);
+            ImGui::Button("Pending", ImVec2(96.0f, 28.0f));
+            ImGui::EndDisabled();
+        } else if (entry.relationship == "request_received") {
+            pushPrimaryActionButtonColors();
+            if (ImGui::Button("Accept", ImVec2(96.0f, 28.0f))) {
+                std::string error;
+                (void)kronosApi_.respondToFriendRequest(entry.id, true, error);
+                startFriendsFetch();
+            }
+            popPrimaryActionButtonColors();
+        } else {
+            pushPrimaryActionButtonColors();
+            if (ImGui::Button("Add Friend", ImVec2(96.0f, 28.0f))) startFriendRequest(entry.id);
+            popPrimaryActionButtonColors();
+        }
+
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    ImGui::Separator();
+    if (ImGui::Button("Close", ImVec2(110.0f, 30.0f))) {
+        ImGui::CloseCurrentPopup();
+        friendSearchResults_.clear();
+        friendSearchStatus_.clear();
+        std::memset(friendSearchBuffer_, 0, sizeof(friendSearchBuffer_));
+    }
+    ImGui::EndPopup();
 }
 
 void RuntimeShell::drawFriendsCarousel() {
@@ -1684,53 +1904,41 @@ void RuntimeShell::drawLocalGamesTab() {
 }
 
 void RuntimeShell::drawGameCataloguePanel() {
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    // Inset into the region the shell chrome leaves free.
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
-                                     viewport->WorkSize.y - kTopBarHeight));
-    ImGui::Begin("Game Catalogue", nullptr,
-                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    using namespace core::kronos_palette;
+    beginContentCanvas("Catalogue");
 
-    if (ImGui::Button("Back")) {
-        state_ = computeNextState(state_, ShellEvent::ReturnHome);
-        ImGui::End();
-        return;
+    // No Back button and no nested Discover/Create tab bar: the left
+    // sidebar is the only navigation, and duplicating it inside the
+    // canvas was exactly the clutter this removes.
+    if (catalogueTab_ == CatalogueTab::Create) {
+        ImGui::TextColored(paletteColor(kTextBright), "Create");
+        ImGui::TextColored(paletteColor(kTextMuted),
+                            "Your local projects and Kronos Studio. Everything here works with no network.");
+        ImGui::Dummy(ImVec2(0.0f, 12.0f));
+
+        // Prominent, first: opening Studio is the primary action of this
+        // tab, so it is not buried under a project list.
+        pushPrimaryActionButtonColors();
+        if (ImGui::Button("Launch Kronos Studio", ImVec2(240.0f, 42.0f))) launchStudio();
+        popPrimaryActionButtonColors();
+        if (!studioLaunchError_.empty()) {
+            ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.30f, 1.0f), "%s", studioLaunchError_.c_str());
+        }
+
+        ImGui::Dummy(ImVec2(0.0f, 16.0f));
+        ImGui::SeparatorText("Local projects");
+        ImGui::TextColored(paletteColor(kTextMuted),
+                            "Discovered in this machine's games/ folder. Not published to Kronos -- nobody else can "
+                            "see them. Play launches locally, with no join ticket and no server allocation.");
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        drawLocalGamesTab();
+    } else {
+        ImGui::TextColored(paletteColor(kTextBright), "Discover");
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        drawOnlineCatalogueSection();
     }
 
-    // The main catalogue is the real Kronos feed and nothing else -- what
-    // a player sees should be what is actually published to the platform,
-    // not whatever happens to be sitting in this machine's games/ folder.
-    // Locally-discovered games are still fully playable, just in their own
-    // clearly-labelled tab so they can never be mistaken for real
-    // published content.
-    // Spec: Discover is public/online, Create is the developer area. The
-    // sidebar drives which one is showing, so selecting "Create" there
-    // and selecting it here are the same single piece of state.
-    if (ImGui::BeginTabBar("##catalogue_tabs")) {
-        ImGuiTabItemFlags discoverFlags =
-            catalogueTab_ == CatalogueTab::Discover ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        if (ImGui::BeginTabItem("Discover", nullptr, discoverFlags)) {
-            catalogueTab_ = CatalogueTab::Discover;
-            drawOnlineCatalogueSection();
-            ImGui::EndTabItem();
-        }
-        ImGuiTabItemFlags createFlags =
-            catalogueTab_ == CatalogueTab::Create ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        if (ImGui::BeginTabItem("Create", nullptr, createFlags)) {
-            catalogueTab_ = CatalogueTab::Create;
-            ImGui::TextDisabled(
-                "Local projects discovered in this machine's games/ folder. These are not published to Kronos and "
-                "nobody else can see them. Play launches them locally -- no join ticket, no server allocation, so "
-                "they keep working with no network at all.");
-            ImGui::Dummy(ImVec2(0.0f, 6.0f));
-            drawLocalGamesTab();
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
-
-    ImGui::End();
+    endContentCanvas();
 }
 
 namespace {
@@ -1763,7 +1971,7 @@ std::string formatAvatarShopRatingStars(float ratingScore, int32_t ratingCount) 
 } // namespace
 
 void RuntimeShell::openAvatarShop() {
-    if (state_ != ShellState::Home) return;
+    // Not gated on state_: the sidebar routes here from any tab.
     ensureLocalProfileLoaded();
     ensureAvatarCatalogueLoaded();
     state_ = computeNextState(state_, ShellEvent::OpenAvatarShop);
@@ -1779,6 +1987,26 @@ void RuntimeShell::drawAvatarShopPanel() {
                                      viewport->WorkSize.y - kTopBarHeight));
     ImGui::Begin("Avatar Shop", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    // Kronos: the interactive 3D avatar viewport, re-embedded here.
+    //
+    // It used to be a floating window hovering over the middle of the
+    // Home screen, which is why it was removed from Home -- but removing
+    // it entirely lost a real feature. It belongs on the Avatar tab, in a
+    // padded panel beside the item controls, where previewing the
+    // character while changing it is the whole point. Only drawn on this
+    // tab, so it costs nothing to render anywhere else.
+    if (!showAvatarShopOverlay_) {
+        ensureHomeAvatarPreviewLoaded();
+        constexpr float kViewportHeight = 300.0f;
+        ImGui::BeginChild("##avatar_tab_viewport", ImVec2(0.0f, kViewportHeight), true);
+        ImGui::TextDisabled("Your Avatar  --  drag to orbit, scroll to zoom");
+        ImGui::BeginChild("##avatar_tab_viewport_inner", ImVec2(0.0f, kViewportHeight - 46.0f), false);
+        if (homeAvatarPreview_) homeAvatarPreview_->draw();
+        ImGui::EndChild();
+        ImGui::EndChild();
+        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    }
 
     // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
     // live re-equip while InGame): real -- when opened as the InGame HUD
@@ -2234,7 +2462,7 @@ void RuntimeShell::applyAllSettingsFromProfile() {
 }
 
 void RuntimeShell::openSettings() {
-    if (state_ != ShellState::Home) return;
+    // Not gated on state_: the sidebar routes here from any tab.
     ensureLocalProfileLoaded();
     state_ = computeNextState(state_, ShellEvent::OpenSettings);
 }
@@ -2596,6 +2824,10 @@ void RuntimeShell::drawSidebar() {
                 openGameCatalogue();
             } else {
                 state_ = entry.target;
+                // Route through the same real open* helpers the old menu
+                // used, so each destination still loads what it needs.
+                if (entry.target == ShellState::AvatarShop) openAvatarShop();
+                else if (entry.target == ShellState::Settings) openSettings();
             }
         }
         ImGui::PopStyleColor(4);
@@ -2750,6 +2982,9 @@ void RuntimeShell::startCatalogueFetch() {
 void RuntimeShell::startServerAllocation(const std::string& gameSlug, const std::string& title) {
     if (allocationInProgress_.load()) return;
     if (allocationThread_.joinable()) allocationThread_.join();
+    if (friendsThread_.joinable()) friendsThread_.join();
+    if (friendSearchThread_.joinable()) friendSearchThread_.join();
+    if (presenceThread_.joinable()) presenceThread_.join();
 
     allocationInProgress_.store(true);
     allocationGameTitle_ = title;
@@ -2829,6 +3064,49 @@ void RuntimeShell::pollBackendResults() {
                 // rather than blanking it.
                 catalogueStatusMessage_ = catalogueResult->error;
                 core::logWarn("Kronos", "online catalogue fetch failed: %s", catalogueResult->error.c_str());
+            }
+        }
+    }
+
+    // --- friends list ---
+    {
+        std::optional<core::FriendsResult> friendsResult;
+        {
+            std::lock_guard<std::mutex> lock(friendsMutex_);
+            if (friendsPendingResult_.has_value()) {
+                friendsResult = std::move(friendsPendingResult_);
+                friendsPendingResult_.reset();
+            }
+        }
+        if (friendsResult.has_value()) {
+            if (friendsResult->success) {
+                friends_ = std::move(friendsResult->friends);
+                friendsStatusMessage_ = friendsResult->presenceAvailable
+                                             ? std::string()
+                                             : std::string("Presence is unavailable right now.");
+            } else {
+                friendsStatusMessage_ = friendsResult->error;
+            }
+        }
+    }
+
+    // --- user search ---
+    {
+        std::optional<core::UserSearchResponse> searchResult;
+        {
+            std::lock_guard<std::mutex> lock(friendSearchMutex_);
+            if (friendSearchPendingResult_.has_value()) {
+                searchResult = std::move(friendSearchPendingResult_);
+                friendSearchPendingResult_.reset();
+            }
+        }
+        if (searchResult.has_value()) {
+            if (searchResult->success) {
+                friendSearchResults_ = std::move(searchResult->results);
+                friendSearchStatus_.clear();
+            } else {
+                friendSearchResults_.clear();
+                friendSearchStatus_ = searchResult->error;
             }
         }
     }

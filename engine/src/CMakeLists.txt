@@ -170,6 +170,7 @@ add_library(engine_core STATIC
 
     core/UpdateCheck.cpp
     core/KronosApi.cpp
+    core/KronosClientConfig.cpp
 
     runtime/GameLoop.cpp
 

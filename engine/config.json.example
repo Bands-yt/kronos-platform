@@ -1,0 +1,5 @@
+{
+  "_comment": "Copy to config.json next to the Kronos executable. Overrides KRONOS_API_URL / KRONOS_AUTH_URL. Delete it to fall back to the environment, then to http://localhost:8080.",
+  "api_url": "https://api.kronos.example",
+  "auth_url": "https://api.kronos.example/auth/start"
+}

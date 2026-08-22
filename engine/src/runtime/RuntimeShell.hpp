@@ -370,6 +370,7 @@ private:
     void startFriendsFetch();
     void startFriendSearch(const std::string& queryText);
     void startFriendRequest(const std::string& userId);
+    void presenceHeartbeat();
     void drawSidebar();
     void drawTopBar();
     void drawBrandPanel();
@@ -590,13 +591,16 @@ private:
     std::mutex friendsMutex_;
     std::optional<core::FriendsResult> friendsPendingResult_;
     float friendsRefreshTimer_ = 0.0f;
+    float friendSearchDebounce_ = 0.0f;
 
     bool showAddFriendsModal_ = false;
     bool showGuestUpgradePrompt_ = false;
+    std::string studioLaunchError_;
     char friendSearchBuffer_[64] = "";
     std::vector<core::UserSearchResult> friendSearchResults_;
     std::string friendSearchStatus_;
     std::thread friendSearchThread_;
+    std::thread presenceThread_;
     std::atomic<bool> friendSearchInProgress_{false};
     std::mutex friendSearchMutex_;
     std::optional<core::UserSearchResponse> friendSearchPendingResult_;
