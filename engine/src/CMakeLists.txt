@@ -130,6 +130,7 @@ add_library(engine_core STATIC
     core/Interactable.cpp
     core/SceneTypes.cpp
     core/Terrain.cpp
+    core/TerrainLod.cpp
     core/Texture.cpp
     core/ProceduralMaterials.cpp
     core/Prefab.cpp

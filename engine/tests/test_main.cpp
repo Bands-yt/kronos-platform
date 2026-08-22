@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -125,6 +126,7 @@
 #include "core/ScriptNetworkApi.hpp"
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
+#include "core/TerrainLod.hpp"
 #include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
 #include "core/ScriptUiApi.hpp"
@@ -17500,6 +17502,185 @@ void testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing() {
 // producing finite numbers -- rather than comparing against hardcoded
 // coordinates that would only prove the code still does what it did.
 
+// CDLOD selection coverage. These assert the invariants that actually
+// prevent popping -- continuity of the morph factor, correct level
+// choice by distance, and a bounded node count -- rather than comparing
+// against hardcoded node lists that would only prove nothing changed.
+
+void testCdlodLevelRangesDoubleWithEachLevel() {
+    engine::core::CdlodSettings settings;
+    settings.levelCount = 5;
+    settings.baseRangeMeters = 64.0f;
+
+    check(std::fabs(engine::core::cdlodLevelRange(settings, 0) - 64.0f) < 0.01f,
+          "the real finest level really uses the real base range");
+    check(std::fabs(engine::core::cdlodLevelRange(settings, 1) - 128.0f) < 0.01f,
+          "each real level really doubles the previous range");
+    check(std::fabs(engine::core::cdlodLevelRange(settings, 4) - 1024.0f) < 0.01f,
+          "the real coarsest level really reaches the real expected distance");
+    // Out-of-range levels must clamp, not index off the end.
+    check(engine::core::cdlodLevelRange(settings, -5) > 0.0f, "a negative level really clamps to a real range");
+    check(engine::core::cdlodLevelRange(settings, 99) > 0.0f, "an over-large level really clamps to a real range");
+}
+
+void testCdlodMorphFactorIsContinuousAcrossTheWholeRange() {
+    engine::core::CdlodSettings settings;
+    settings.baseRangeMeters = 100.0f;
+    settings.morphRegionFraction = 0.25f;
+
+    // Well inside: no morph. At the edge: fully morphed.
+    check(engine::core::cdlodMorphFactor(settings, 0, 0.0f) == 0.0f,
+          "a node right at the real camera is really not morphed at all");
+    check(engine::core::cdlodMorphFactor(settings, 0, 50.0f) == 0.0f,
+          "a node comfortably inside its real range is really not morphed");
+    check(std::fabs(engine::core::cdlodMorphFactor(settings, 0, 100.0f) - 1.0f) < 0.001f,
+          "a node at its real range edge is really fully morphed to its parent");
+    check(std::fabs(engine::core::cdlodMorphFactor(settings, 0, 500.0f) - 1.0f) < 0.001f,
+          "a node beyond its real range really stays fully morphed, never overshoots");
+
+    // The property that actually prevents popping: no sudden jumps.
+    float previous = engine::core::cdlodMorphFactor(settings, 0, 0.0f);
+    float largestJump = 0.0f;
+    for (int i = 1; i <= 2000; ++i) {
+        const float distance = static_cast<float>(i) * 0.1f; // 0.1m steps out to 200m
+        const float current = engine::core::cdlodMorphFactor(settings, 0, distance);
+        largestJump = std::max(largestJump, std::fabs(current - previous));
+        check(current >= previous - 0.0001f, "the real morph factor really never decreases as distance grows");
+        previous = current;
+    }
+    check(largestJump < 0.02f,
+          "the real morph factor really has no discontinuity -- a jump here is exactly what a visible pop is");
+}
+
+void testCdlodMorphCanBeDisabled() {
+    engine::core::CdlodSettings settings;
+    settings.baseRangeMeters = 100.0f;
+    settings.morphRegionFraction = 0.0f;
+    for (float d : {0.0f, 50.0f, 99.0f, 100.0f, 250.0f}) {
+        check(engine::core::cdlodMorphFactor(settings, 0, d) == 0.0f,
+              "a real zero morph region really disables morphing instead of dividing by zero");
+    }
+}
+
+void testDistanceToNodeIsZeroInsideAndCorrectOutside() {
+    const glm::vec2 center(0.0f, 0.0f);
+    const float half = 10.0f;
+
+    check(engine::core::distanceToNodeXZ(center, half, glm::vec2(0.0f, 0.0f)) == 0.0f,
+          "a real camera at the node centre is really zero distance from it");
+    check(engine::core::distanceToNodeXZ(center, half, glm::vec2(9.0f, 9.0f)) == 0.0f,
+          "a real camera INSIDE the node is really zero distance -- not measured from the centre");
+    check(std::fabs(engine::core::distanceToNodeXZ(center, half, glm::vec2(15.0f, 0.0f)) - 5.0f) < 0.001f,
+          "a real camera beyond one edge really measures from that edge");
+    // Diagonal: 3-4-5 from the corner.
+    check(std::fabs(engine::core::distanceToNodeXZ(center, half, glm::vec2(13.0f, 14.0f)) - 5.0f) < 0.001f,
+          "a real diagonal offset really measures from the real corner");
+}
+
+void testCdlodSelectsFinerGeometryNearTheCameraAndCoarserFarAway() {
+    engine::core::CdlodSettings settings;
+    settings.levelCount = 5;
+    settings.baseRangeMeters = 64.0f;
+
+    const glm::vec2 terrainCenter(0.0f, 0.0f);
+    const float terrainHalf = 512.0f;
+
+    engine::core::CdlodSelection selection =
+        engine::core::selectCdlodNodes(settings, terrainCenter, terrainHalf, glm::vec3(0.0f, 10.0f, 0.0f));
+
+    check(!selection.nodes.empty(), "a real selection really produces real nodes");
+    check(!selection.hitNodeLimit, "a real ordinary camera really does not exhaust the real node budget");
+
+    // Threshold-free: compare the MEAN distance of each level's nodes.
+    // An absolute cutoff would depend on the terrain size (here the
+    // farthest node's nearest edge is only ~362m from a camera at the
+    // centre of a 512m half-extent terrain), which makes such a test
+    // silently unsatisfiable rather than wrong.
+    std::map<int, std::pair<double, int>> distanceByLevel; // level -> (sum, count)
+    for (const engine::core::CdlodNode& node : selection.nodes) {
+        const float distance = engine::core::distanceToNodeXZ(node.centerXZ, node.halfSizeMeters, glm::vec2(0.0f));
+        auto& entry = distanceByLevel[node.level];
+        entry.first += distance;
+        entry.second += 1;
+    }
+    check(distanceByLevel.count(0) == 1, "the real terrain really uses its finest real level right at the camera");
+    check(distanceByLevel.size() >= 2, "the real terrain really uses more than one real detail level");
+
+    double previousMean = -1.0;
+    for (const auto& [level, sums] : distanceByLevel) {
+        const double mean = sums.first / static_cast<double>(sums.second);
+        std::string message = "real level " + std::to_string(level) +
+                              " really sits farther from the camera than every finer level";
+        check(mean >= previousMean, message.c_str());
+        previousMean = mean;
+    }
+}
+
+void testCdlodCoversTheTerrainWithoutOverlap() {
+    engine::core::CdlodSettings settings;
+    settings.levelCount = 4;
+    settings.baseRangeMeters = 32.0f;
+
+    const float terrainHalf = 256.0f;
+    engine::core::CdlodSelection selection =
+        engine::core::selectCdlodNodes(settings, glm::vec2(0.0f), terrainHalf, glm::vec3(50.0f, 0.0f, 50.0f));
+
+    // Total selected area must equal the terrain area exactly: a quadtree
+    // selection that double-counts would z-fight, and one that under-counts
+    // would leave a hole in the ground.
+    double selectedArea = 0.0;
+    for (const engine::core::CdlodNode& node : selection.nodes) {
+        const double side = static_cast<double>(node.halfSizeMeters) * 2.0;
+        selectedArea += side * side;
+    }
+    const double terrainArea = static_cast<double>(terrainHalf) * 2.0 * static_cast<double>(terrainHalf) * 2.0;
+    check(std::fabs(selectedArea - terrainArea) / terrainArea < 0.0001,
+          "the real selected nodes really tile the real terrain exactly -- no holes, no overlap");
+}
+
+void testCdlodEveryNodeCarriesAUsableMorphFactor() {
+    engine::core::CdlodSettings settings;
+    engine::core::CdlodSelection selection =
+        engine::core::selectCdlodNodes(settings, glm::vec2(0.0f), 512.0f, glm::vec3(30.0f, 5.0f, -80.0f));
+
+    for (const engine::core::CdlodNode& node : selection.nodes) {
+        check(node.morphFactor >= 0.0f && node.morphFactor <= 1.0f,
+              "every real selected node really carries a real morph factor in [0,1]");
+        check(node.halfSizeMeters > 0.0f, "every real selected node really has a real non-zero size");
+        check(std::isfinite(node.centerXZ.x) && std::isfinite(node.centerXZ.y),
+              "every real selected node really has a finite real centre");
+    }
+}
+
+void testCdlodHandlesHostileInputWithoutRunningAway() {
+    engine::core::CdlodSettings settings;
+    settings.levelCount = 20;          // deep tree
+    settings.baseRangeMeters = 100000.0f; // everything is "close"
+    settings.maxSelectedNodes = 256;
+
+    // A range this large forces subdivision everywhere -- exactly the
+    // case that would otherwise select millions of nodes and hang.
+    engine::core::CdlodSelection selection =
+        engine::core::selectCdlodNodes(settings, glm::vec2(0.0f), 4096.0f, glm::vec3(0.0f));
+    check(static_cast<int>(selection.nodes.size()) <= 256,
+          "a real pathological setting really cannot exceed the real node budget");
+    check(selection.hitNodeLimit,
+          "and it really REPORTS that it was truncated rather than looking like a simple terrain");
+
+    // Degenerate terrain.
+    engine::core::CdlodSettings normal;
+    check(engine::core::selectCdlodNodes(normal, glm::vec2(0.0f), 0.0f, glm::vec3(0.0f)).nodes.empty(),
+          "a real zero-size terrain really selects nothing rather than looping");
+
+    // Non-finite camera must still render terrain, not silently vanish.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    engine::core::CdlodSelection nanCamera =
+        engine::core::selectCdlodNodes(normal, glm::vec2(0.0f), 256.0f, glm::vec3(nan, nan, nan));
+    check(!nanCamera.nodes.empty(),
+          "a real NaN camera really still selects real terrain instead of silently rendering nothing");
+}
+
+
 void testPhysicalCameraFovMatchesRealLensGeometry() {
     engine::core::PhysicalCamera camera;
     camera.sensor = engine::core::sensor_presets::kFullFrame35;
@@ -29690,6 +29871,14 @@ int main() {
     testJoinTicketRequiringServerWithNoValidatorFailsClosed();
     testJoinTicketIsNotRequiredForRealLanSessions();
     testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing();
+    testCdlodLevelRangesDoubleWithEachLevel();
+    testCdlodMorphFactorIsContinuousAcrossTheWholeRange();
+    testCdlodMorphCanBeDisabled();
+    testDistanceToNodeIsZeroInsideAndCorrectOutside();
+    testCdlodSelectsFinerGeometryNearTheCameraAndCoarserFarAway();
+    testCdlodCoversTheTerrainWithoutOverlap();
+    testCdlodEveryNodeCarriesAUsableMorphFactor();
+    testCdlodHandlesHostileInputWithoutRunningAway();
     testPhysicalCameraFovMatchesRealLensGeometry();
     testPhysicalCameraSensorSizeChangesTheFieldOfView();
     testPhysicalCameraApertureControlsDepthOfField();

@@ -2870,3 +2870,63 @@ row with no name to show is worse than no row. Confirmed directly against
 the database (17 handle-less accounts excluded, 42 listed). A brand-new
 account is therefore invisible in the directory until it picks a handle.
 That is deliberate, not a bug, but it is a real onboarding consequence.
+
+## 2026-08-21 (final) — Git history cleanup, release consolidation, CDLOD
+
+### Git history
+Stripped every `Co-authored-by:` trailer from all 87 commits
+(`filter-branch --msg-filter`), leaving them solely under Faris's
+identity, and force-pushed. Backed up beforehand at
+`backup/pre-trailer-strip`.
+
+One subtlety worth recording: `filter-branch -- --all` also rewrites the
+**remote-tracking** ref, so local `origin/main` stopped reflecting
+GitHub. Verified against the real remote with `git ls-remote` rather than
+trusting the local view, which would otherwise have reported the push as
+already done.
+
+Both standing rules are now in persistent memory: no AI trailers, and
+never auto-cut tags or releases.
+
+### CDLOD terrain LOD
+
+Audited the rendering spec first. Much already exists: hardware
+BLAS/TLAS acceleration structures with per-frame rebuild
+(`RayTracingScene`), ray-queried shadows and RTGI (`scene_rt.frag`),
+`sky.frag`, `volumetric_fog.frag`, `Wind`, GPU-instanced billboards, and
+Studio terrain brushes for Raise/Lower/Smooth/Flatten/Paint/Noise.
+
+Genuinely missing: a denoiser/temporal accumulation (the shader comments
+say so outright), CDLOD, triplanar splatmapping, and foliage instancing.
+
+This pass built **CDLOD selection**, chosen because it is the one piece
+that is pure CPU maths and therefore genuinely testable, and because it
+directly addresses the spec's stated goal of preventing mesh popping.
+Deliberately free of Vulkan, ECS and Terrain dependencies so the
+selection logic can be tested at all.
+
+Popping is solved by **morphing**, not by hiding the transition: every
+node reports a smoothstepped morph factor in [0,1], so geometry is
+already identical to its replacement by the time it is swapped.
+
+Hostile input is bounded rather than trusted: a pathological range that
+would subdivide the whole tree stops at the node budget **and reports
+that it was truncated**, since a truncated selection and a genuinely
+simple terrain look identical otherwise. A NaN camera still renders
+terrain instead of silently selecting nothing.
+
+**13390/13390 checks** (+151). The coverage asserts the invariants that
+actually matter -- morph continuity (a jump *is* a pop), exact tiling
+with no holes or overlap, detail falling off with distance -- rather than
+hardcoded node lists.
+
+One test correction worth noting: an initial assertion used an absolute
+distance cutoff that was unreachable for the terrain size under test
+(the farthest node's nearest edge is only ~362m). Replaced with a
+threshold-free mean-distance-per-level comparison, since a cutoff like
+that is silently unsatisfiable rather than merely wrong.
+
+### Not built
+The denoiser, triplanar splatmapping and foliage instancing are each
+substantial GPU features. Four shallow stubs would be worth less than one
+finished, tested subsystem.
