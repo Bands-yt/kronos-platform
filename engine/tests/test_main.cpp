@@ -126,6 +126,8 @@
 #include "core/ScriptNetworkApi.hpp"
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
+#include "cinematic/CameraRail.hpp"
+#include "cinematic/CurveInterpolation.hpp"
 #include "core/AllocationTracker.hpp"
 #include "core/TerrainLod.hpp"
 #include "core/ScriptSecurity.hpp"
@@ -17546,6 +17548,399 @@ std::vector<int> makeUnelidableVector(int elementCount) {
 // Runtime-varying size, so nothing about it is a compile-time constant.
 int unelidableElementCount(int base) { return base + (g_allocationChecksum & 1); }
 
+// Cinematic Director core: keyframe curves and camera rails.
+//
+// These assert the properties that make a shot look right -- keys are hit
+// exactly, curves are continuous, damping is frame-rate independent,
+// constant-speed travel is actually constant -- rather than comparing
+// against captured numbers.
+
+void testCurveSamplingHitsEveryKeyframeExactly() {
+    std::vector<engine::cinematic::Keyframe> keys;
+    for (int i = 0; i < 5; ++i) {
+        engine::cinematic::Keyframe key;
+        key.timeSeconds = static_cast<float>(i);
+        key.value = static_cast<float>(i * i); // deliberately non-linear
+        key.mode = engine::cinematic::InterpolationMode::Cubic;
+        engine::cinematic::insertKeyframe(keys, key);
+    }
+
+    for (const engine::cinematic::Keyframe& key : keys) {
+        const float sampled = engine::cinematic::sampleCurve(keys, key.timeSeconds);
+        std::string message = "the real curve really passes exactly through its real key at t=" +
+                              std::to_string(key.timeSeconds);
+        check(std::fabs(sampled - key.value) < 0.001f, message.c_str());
+    }
+}
+
+void testCurveClampsRatherThanExtrapolating() {
+    std::vector<engine::cinematic::Keyframe> keys;
+    engine::cinematic::insertKeyframe(keys, {1.0f, 10.0f, engine::cinematic::InterpolationMode::Cubic, {}, {}});
+    engine::cinematic::insertKeyframe(keys, {2.0f, 20.0f, engine::cinematic::InterpolationMode::Cubic, {}, {}});
+
+    check(std::fabs(engine::cinematic::sampleCurve(keys, -100.0f) - 10.0f) < 0.001f,
+          "sampling before the real first key really clamps rather than extrapolating wildly");
+    check(std::fabs(engine::cinematic::sampleCurve(keys, 100.0f) - 20.0f) < 0.001f,
+          "sampling past the real last key really clamps rather than extrapolating wildly");
+}
+
+void testSteppedAndLinearModesBehaveDistinctly() {
+    std::vector<engine::cinematic::Keyframe> stepped;
+    engine::cinematic::insertKeyframe(stepped, {0.0f, 0.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+    engine::cinematic::insertKeyframe(stepped, {1.0f, 100.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+
+    check(engine::cinematic::sampleCurve(stepped, 0.5f) == 0.0f,
+          "a real Stepped key really holds its value until the next key -- no blending");
+    check(std::fabs(engine::cinematic::sampleCurve(stepped, 1.0f) - 100.0f) < 0.001f,
+          "and really jumps exactly at the next real key");
+
+    std::vector<engine::cinematic::Keyframe> linear;
+    engine::cinematic::insertKeyframe(linear, {0.0f, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    engine::cinematic::insertKeyframe(linear, {1.0f, 100.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    check(std::fabs(engine::cinematic::sampleCurve(linear, 0.5f) - 50.0f) < 0.001f,
+          "a real Linear segment really reaches its real midpoint value halfway through");
+}
+
+void testCurveIsContinuousWithNoSuddenJumps() {
+    std::vector<engine::cinematic::Keyframe> keys;
+    const float values[] = {0.0f, 40.0f, -20.0f, 65.0f, 10.0f};
+    for (int i = 0; i < 5; ++i) {
+        engine::cinematic::insertKeyframe(
+            keys, {static_cast<float>(i), values[i], engine::cinematic::InterpolationMode::Cubic, {}, {}});
+    }
+
+    // A discontinuity in an animation curve is a visible snap on screen.
+    float previous = engine::cinematic::sampleCurve(keys, 0.0f);
+    float largestJump = 0.0f;
+    for (int step = 1; step <= 4000; ++step) {
+        const float time = static_cast<float>(step) * 0.001f;
+        const float current = engine::cinematic::sampleCurve(keys, time);
+        largestJump = std::max(largestJump, std::fabs(current - previous));
+        previous = current;
+    }
+    check(largestJump < 1.0f,
+          "the real cubic curve really has no discontinuity -- a jump here is a visible snap in the shot");
+}
+
+void testBezierHandlesShapeEasingWithoutMovingTheKeys() {
+    // Two identical keys, differing only in handles: an ease-out curve
+    // must sit ABOVE a linear one early on, and still hit both keys.
+    engine::cinematic::Keyframe from;
+    from.timeSeconds = 0.0f;
+    from.value = 0.0f;
+    from.mode = engine::cinematic::InterpolationMode::Bezier;
+    from.outHandle = glm::vec2(0.5f, 80.0f); // shoots up fast, then eases
+
+    engine::cinematic::Keyframe to;
+    to.timeSeconds = 1.0f;
+    to.value = 100.0f;
+    to.mode = engine::cinematic::InterpolationMode::Bezier;
+    to.inHandle = glm::vec2(-0.1f, 0.0f);
+
+    std::vector<engine::cinematic::Keyframe> keys;
+    engine::cinematic::insertKeyframe(keys, from);
+    engine::cinematic::insertKeyframe(keys, to);
+
+    check(std::fabs(engine::cinematic::sampleCurve(keys, 0.0f) - 0.0f) < 0.01f,
+          "a real Bezier segment really still starts exactly on its real first key");
+    check(std::fabs(engine::cinematic::sampleCurve(keys, 1.0f) - 100.0f) < 0.01f,
+          "a real Bezier segment really still ends exactly on its real last key");
+
+    const float quarter = engine::cinematic::sampleCurve(keys, 0.25f);
+    check(quarter > 25.0f,
+          "real out-handles really shape the real easing -- a fast-out curve leads a linear one");
+    check(quarter <= 100.0f, "and really never overshoots past the real destination key");
+}
+
+void testInsertKeyframeKeepsTrackSortedAndDeduplicated() {
+    std::vector<engine::cinematic::Keyframe> keys;
+    for (float t : {3.0f, 1.0f, 2.0f, 0.0f}) {
+        engine::cinematic::insertKeyframe(keys, {t, t * 10.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    }
+    check(keys.size() == 4, "every real distinct key really inserted");
+    for (size_t i = 1; i < keys.size(); ++i) {
+        check(keys[i - 1].timeSeconds < keys[i].timeSeconds,
+              "the real track really stays sorted by time regardless of insertion order");
+    }
+
+    // Same time again must REPLACE, not duplicate -- two keys at one time
+    // would make sampling ambiguous.
+    engine::cinematic::insertKeyframe(keys, {2.0f, 999.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    check(keys.size() == 4, "a real key at an existing time really replaces rather than duplicating");
+    check(std::fabs(engine::cinematic::sampleCurve(keys, 2.0f) - 999.0f) < 0.001f,
+          "and the real replacement really takes effect");
+}
+
+// ---------------------------------------------------------------------------
+// Camera rails
+// ---------------------------------------------------------------------------
+
+void testCatmullRomRailPassesThroughEveryControlPoint() {
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::CameraRailSettings settings;
+    settings.splineType = engine::cinematic::RailSplineType::CatmullRom;
+    rail.setSettings(settings);
+
+    const glm::vec3 positions[] = {{0.0f, 0.0f, 0.0f}, {10.0f, 5.0f, 0.0f}, {20.0f, 0.0f, 10.0f}, {30.0f, 8.0f, 0.0f}};
+    for (const glm::vec3& p : positions) {
+        engine::cinematic::RailPoint point;
+        point.position = p;
+        rail.addPoint(point);
+    }
+
+    // A director placing a point expects the camera to go THERE.
+    const size_t segmentCount = rail.pointCount() - 1;
+    for (size_t i = 0; i < rail.pointCount(); ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(segmentCount);
+        const glm::vec3 sampled = rail.samplePosition(t);
+        std::string message = "the real Catmull-Rom rail really passes through control point " + std::to_string(i);
+        check(glm::distance(sampled, positions[i]) < 0.01f, message.c_str());
+    }
+}
+
+void testRailClampsRatherThanWrapping() {
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::RailPoint a;
+    a.position = glm::vec3(0.0f);
+    engine::cinematic::RailPoint b;
+    b.position = glm::vec3(10.0f, 0.0f, 0.0f);
+    rail.addPoint(a);
+    rail.addPoint(b);
+
+    check(glm::distance(rail.samplePosition(-5.0f), a.position) < 0.001f,
+          "a real rail parameter below 0 really clamps to the real start");
+    check(glm::distance(rail.samplePosition(5.0f), b.position) < 0.001f,
+          "a real rail parameter above 1 really clamps to the real end -- it does not wrap and teleport");
+}
+
+void testRailArcLengthEnablesConstantSpeedTravel() {
+    engine::cinematic::CameraRail rail;
+    // A deliberately uneven rail: short hop, then a long run. Travelling
+    // by parameter would race through the long segment.
+    for (const glm::vec3& p : {glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(41.0f, 0.0f, 0.0f)}) {
+        engine::cinematic::RailPoint point;
+        point.position = p;
+        rail.addPoint(point);
+    }
+    engine::cinematic::CameraRailSettings settings;
+    settings.splineType = engine::cinematic::RailSplineType::Linear;
+    rail.setSettings(settings);
+
+    const float length = rail.approximateLength();
+    check(std::fabs(length - 41.0f) < 0.5f, "the real rail's real arc length really matches its real geometry");
+
+    // Equal distance steps must produce equal world-space steps.
+    const float quarterT = rail.parameterAtDistance(length * 0.25f);
+    const float halfT = rail.parameterAtDistance(length * 0.5f);
+    const float threeQuarterT = rail.parameterAtDistance(length * 0.75f);
+
+    const float firstStep = glm::distance(rail.samplePosition(quarterT), rail.samplePosition(halfT));
+    const float secondStep = glm::distance(rail.samplePosition(halfT), rail.samplePosition(threeQuarterT));
+    check(std::fabs(firstStep - secondStep) < 1.0f,
+          "real equal-distance steps really cover equal real ground -- constant speed, not constant parameter");
+
+    // And parameter-based travel really is uneven, which is why this exists.
+    const float paramStepA = glm::distance(rail.samplePosition(0.25f), rail.samplePosition(0.5f));
+    const float paramStepB = glm::distance(rail.samplePosition(0.5f), rail.samplePosition(0.75f));
+    check(std::fabs(paramStepA - paramStepB) > 1.0f,
+          "and real constant-PARAMETER travel really is uneven on this rail, which is the real problem being solved");
+}
+
+void testRailLookAtAimsAtTheTarget() {
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::RailPoint a;
+    a.position = glm::vec3(0.0f, 0.0f, 10.0f);
+    engine::cinematic::RailPoint b;
+    b.position = glm::vec3(0.0f, 0.0f, -10.0f);
+    rail.addPoint(a);
+    rail.addPoint(b);
+
+    engine::cinematic::CameraRailSettings settings;
+    settings.aimMode = engine::cinematic::RailAimMode::LookAtPoint;
+    settings.lookAtTarget = glm::vec3(0.0f, 0.0f, 0.0f);
+    settings.aimDampingSeconds = 0.0f; // snap, so this tests aim not damping
+    rail.setSettings(settings);
+
+    engine::cinematic::RailSample sample = rail.sample(0.0f, 0.016f);
+    // Camera at +10z looking at origin must face -z.
+    check(glm::dot(sample.forward, glm::vec3(0.0f, 0.0f, -1.0f)) > 0.99f,
+          "a real look-at rail really points the real camera at the real target");
+    check(std::fabs(glm::length(sample.forward) - 1.0f) < 0.001f, "the real forward vector is really normalised");
+    check(std::fabs(glm::dot(sample.forward, sample.up)) < 0.001f,
+          "the real up vector is really orthogonal to forward");
+}
+
+void testRailAimDampingIsFrameRateIndependent() {
+    auto buildRail = []() {
+        engine::cinematic::CameraRail rail;
+        engine::cinematic::RailPoint a;
+        a.position = glm::vec3(0.0f, 0.0f, 10.0f);
+        engine::cinematic::RailPoint b;
+        b.position = glm::vec3(0.0f, 0.0f, 10.0f);
+        rail.addPoint(a);
+        rail.addPoint(b);
+        engine::cinematic::CameraRailSettings settings;
+        settings.aimMode = engine::cinematic::RailAimMode::LookAtPoint;
+        settings.lookAtTarget = glm::vec3(0.0f);
+        settings.aimDampingSeconds = 0.5f;
+        rail.setSettings(settings);
+        return rail;
+    };
+
+    // Settle both at one target, then move it, and advance one second --
+    // one at 60fps, one at 30fps.
+    engine::cinematic::CameraRail fast = buildRail();
+    engine::cinematic::CameraRail slow = buildRail();
+    (void)fast.sample(0.0f, 0.0f);
+    (void)slow.sample(0.0f, 0.0f);
+
+    fast.mutableSettings().lookAtTarget = glm::vec3(20.0f, 0.0f, 0.0f);
+    slow.mutableSettings().lookAtTarget = glm::vec3(20.0f, 0.0f, 0.0f);
+
+    engine::cinematic::RailSample fastSample;
+    for (int i = 0; i < 60; ++i) fastSample = fast.sample(0.0f, 1.0f / 60.0f);
+    engine::cinematic::RailSample slowSample;
+    for (int i = 0; i < 30; ++i) slowSample = slow.sample(0.0f, 1.0f / 30.0f);
+
+    // Same elapsed time must give the same aim regardless of step size.
+    // A naive per-frame lerp would fail this badly.
+    check(glm::dot(fastSample.forward, slowSample.forward) > 0.999f,
+          "real aim damping is really frame-rate independent -- 60fps and 30fps really agree after the same real "
+          "elapsed time");
+}
+
+void testRailResetDampingSnapsForACut() {
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::RailPoint a;
+    a.position = glm::vec3(0.0f, 0.0f, 10.0f);
+    rail.addPoint(a);
+    rail.addPoint(a);
+
+    engine::cinematic::CameraRailSettings settings;
+    settings.aimMode = engine::cinematic::RailAimMode::LookAtPoint;
+    settings.lookAtTarget = glm::vec3(0.0f, 0.0f, 0.0f);
+    settings.aimDampingSeconds = 1.0f;
+    rail.setSettings(settings);
+    (void)rail.sample(0.0f, 0.0f);
+
+    // Jump the target, then reset: the camera must be there immediately,
+    // not swing across the shot after a cut.
+    rail.mutableSettings().lookAtTarget = glm::vec3(0.0f, 0.0f, 50.0f);
+    rail.resetDamping();
+    engine::cinematic::RailSample sample = rail.sample(0.0f, 0.016f);
+    check(glm::dot(sample.forward, glm::vec3(0.0f, 0.0f, 1.0f)) > 0.99f,
+          "resetting real damping really snaps the aim instantly -- no visible swing across a real cut");
+}
+
+void testRailInterpolatesLensAndTracksFocus() {
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::RailPoint wide;
+    wide.position = glm::vec3(0.0f, 0.0f, 20.0f);
+    wide.focalLengthMm = 24.0f;
+    wide.aperture = 8.0f;
+    engine::cinematic::RailPoint tight;
+    tight.position = glm::vec3(0.0f, 0.0f, 4.0f);
+    tight.focalLengthMm = 85.0f;
+    tight.aperture = 1.4f;
+    rail.addPoint(wide);
+    rail.addPoint(tight);
+
+    engine::cinematic::CameraRailSettings settings;
+    settings.aimMode = engine::cinematic::RailAimMode::LookAtPoint;
+    settings.lookAtTarget = glm::vec3(0.0f);
+    settings.aimDampingSeconds = 0.0f;
+    settings.autoFocusOnTarget = true;
+    rail.setSettings(settings);
+
+    engine::cinematic::RailSample start = rail.sample(0.0f, 0.0f);
+    engine::cinematic::RailSample middle = rail.sample(0.5f, 0.0f);
+    engine::cinematic::RailSample end = rail.sample(1.0f, 0.0f);
+
+    check(std::fabs(start.camera.focalLengthMm - 24.0f) < 0.01f, "the real rail really starts on its real focal length");
+    check(std::fabs(end.camera.focalLengthMm - 85.0f) < 0.01f, "and really ends on the real destination focal length");
+    check(middle.camera.focalLengthMm > 24.0f && middle.camera.focalLengthMm < 85.0f,
+          "the real zoom really interpolates along the rail rather than snapping");
+    check(middle.camera.aperture < 8.0f && middle.camera.aperture > 1.4f,
+          "the real aperture really interpolates along the rail too");
+
+    // Auto-focus must track the subject distance as the camera closes in.
+    check(std::fabs(start.camera.focusDistanceMeters - 20.0f) < 0.5f,
+          "real auto-focus really focuses at the real subject distance at the start");
+    check(std::fabs(end.camera.focusDistanceMeters - 4.0f) < 0.5f,
+          "and really racks focus to the real subject distance as the camera closes in");
+}
+
+void testRailHandlesDegenerateConfigurations() {
+    engine::cinematic::CameraRail empty;
+    check(glm::length(empty.samplePosition(0.5f)) < 0.001f, "an empty real rail really samples to the origin safely");
+    check(empty.approximateLength() == 0.0f, "an empty real rail really has zero real length");
+
+    engine::cinematic::CameraRail single;
+    engine::cinematic::RailPoint only;
+    only.position = glm::vec3(5.0f, 5.0f, 5.0f);
+    single.addPoint(only);
+    check(glm::distance(single.samplePosition(0.7f), only.position) < 0.001f,
+          "a real single-point rail really holds that real position");
+
+    // Aim direction parallel to world up would collapse the cross product.
+    engine::cinematic::CameraRail vertical;
+    engine::cinematic::RailPoint above;
+    above.position = glm::vec3(0.0f, 10.0f, 0.0f);
+    vertical.addPoint(above);
+    vertical.addPoint(above);
+    engine::cinematic::CameraRailSettings settings;
+    settings.aimMode = engine::cinematic::RailAimMode::LookAtPoint;
+    settings.lookAtTarget = glm::vec3(0.0f, 0.0f, 0.0f); // straight down
+    settings.aimDampingSeconds = 0.0f;
+    vertical.setSettings(settings);
+
+    engine::cinematic::RailSample sample = vertical.sample(0.0f, 0.016f);
+    check(std::isfinite(sample.up.x) && std::isfinite(sample.up.y) && std::isfinite(sample.up.z),
+          "a real straight-down aim really produces a finite real up vector instead of collapsing");
+    check(std::fabs(glm::length(sample.up) - 1.0f) < 0.01f, "and the real up vector is really still normalised");
+}
+
+void testRailSamplingIsZeroHeap() {
+    engine::cinematic::CameraRail rail;
+    for (int i = 0; i < 8; ++i) {
+        engine::cinematic::RailPoint point;
+        point.position = glm::vec3(static_cast<float>(i) * 4.0f, 2.0f, 0.0f);
+        rail.addPoint(point);
+    }
+    engine::cinematic::CameraRailSettings settings;
+    settings.aimMode = engine::cinematic::RailAimMode::FollowPath;
+    rail.setSettings(settings);
+    (void)rail.sample(0.5f, 0.016f); // warm up
+
+    // Rails are evaluated every frame during playback and every frame
+    // while scrubbing, so an allocation here would be a per-frame cost.
+    engine::core::AllocationScope scope;
+    for (int i = 0; i < 240; ++i) {
+        volatile auto sample = rail.sample(static_cast<float>(i) / 240.0f, 1.0f / 60.0f);
+        (void)sample;
+    }
+    check(scope.allocationsSinceStart() == 0,
+          "real camera rail sampling really performs ZERO heap allocations across 240 real frames");
+}
+
+void testCurveSamplingIsZeroHeap() {
+    std::vector<engine::cinematic::Keyframe> keys;
+    for (int i = 0; i < 32; ++i) {
+        engine::cinematic::insertKeyframe(keys, {static_cast<float>(i) * 0.5f, static_cast<float>(i % 7),
+                                                  engine::cinematic::InterpolationMode::Cubic, {}, {}});
+    }
+    (void)engine::cinematic::sampleCurve(keys, 3.0f); // warm up
+
+    engine::core::AllocationScope scope;
+    for (int i = 0; i < 1000; ++i) {
+        volatile float value = engine::cinematic::sampleCurve(keys, static_cast<float>(i) * 0.015f);
+        (void)value;
+    }
+    check(scope.allocationsSinceStart() == 0,
+          "real keyframe sampling really performs ZERO heap allocations across 1000 real evaluations");
+}
+
+
 void testAllocationTrackerCountsRealAllocations() {
     engine::core::endAllocationTracking();
     engine::core::resetAllocationStats();
@@ -30063,6 +30458,22 @@ int main() {
     testJoinTicketRequiringServerWithNoValidatorFailsClosed();
     testJoinTicketIsNotRequiredForRealLanSessions();
     testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing();
+    testCurveSamplingHitsEveryKeyframeExactly();
+    testCurveClampsRatherThanExtrapolating();
+    testSteppedAndLinearModesBehaveDistinctly();
+    testCurveIsContinuousWithNoSuddenJumps();
+    testBezierHandlesShapeEasingWithoutMovingTheKeys();
+    testInsertKeyframeKeepsTrackSortedAndDeduplicated();
+    testCatmullRomRailPassesThroughEveryControlPoint();
+    testRailClampsRatherThanWrapping();
+    testRailArcLengthEnablesConstantSpeedTravel();
+    testRailLookAtAimsAtTheTarget();
+    testRailAimDampingIsFrameRateIndependent();
+    testRailResetDampingSnapsForACut();
+    testRailInterpolatesLensAndTracksFocus();
+    testRailHandlesDegenerateConfigurations();
+    testRailSamplingIsZeroHeap();
+    testCurveSamplingIsZeroHeap();
     testAllocationTrackerCountsRealAllocations();
     testAllocationScopeMeasuresOnlyItsOwnBlock();
     testAllocationScopeProvesTightLoopsDoNotAllocate();
