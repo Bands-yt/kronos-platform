@@ -1,6 +1,8 @@
 #include "core/Application.hpp"
 
 #include "core/ScriptChatApi.hpp"
+#include "net/HttpWorkerPool.hpp"
+#include "safety/GeminiModerationClient.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -107,6 +109,33 @@ bool Application::initialize(const CreateInfo& info) {
     // because it installs a NetworkSession receive hook in its
     // constructor, which must be in place before any session starts.
     scriptChatApi_ = std::make_unique<ScriptChatApi>(networkSession_, scripting_);
+
+    // Kronos ("Gemini Flash-Lite moderation"): remote chat classification,
+    // attached only when GEMINI_API_KEY is actually set. Unset is a
+    // supported configuration -- every developer machine and CI runner is
+    // in it -- and leaves the pre-existing local-filter-only path exactly
+    // as it was.
+    //
+    // Two workers, not one: a single worker serialises every message
+    // behind the slowest one in flight, which under a slow upstream turns
+    // per-message latency into a queue.
+    httpWorkerPool_ = std::make_unique<net::HttpWorkerPool>(2);
+    safety::GeminiConfig geminiConfig = safety::configFromEnvironment();
+    // The fallback verdict is SAFE by construction: NetworkSession only
+    // dispatches to the remote classifier AFTER its own profanity filter,
+    // TrustSafetyService classification and rate limiting have already
+    // passed the message. So "the model could not be reached" means
+    // "local filters approved it", not "nothing checked it".
+    chatModerationClient_ = std::make_unique<safety::GeminiModerationClient>(
+        *httpWorkerPool_, geminiConfig,
+        [](const std::string&) { return safety::ModerationVerdict{}; });
+
+    if (chatModerationClient_->isConfigured()) {
+        networkSession_.setChatModerationClient(chatModerationClient_.get());
+        logInfo("Moderation", "Gemini chat moderation active (model %s)", geminiConfig.model.c_str());
+    } else {
+        logInfo("Moderation", "GEMINI_API_KEY unset -- chat moderation runs on local filters only");
+    }
     // Kronos ("Kronos Scripting Environment"): the real `world.spawnPlayer`
     // + `avatar` table -- see ScriptAvatarApi.hpp's own header comment.
     // Holds `*this` (always valid), so no ordering constraint the way
@@ -2343,6 +2372,12 @@ bool Application::startNetworking(const net::NetworkSession::Config& config) {
 
 void Application::shutdown() {
     if (!initialized_) return;
+
+    // Joined FIRST: worker callbacks capture the moderation client, and
+    // networkSession_ below holds a raw pointer to it. Stopping the pool
+    // here means nothing is in flight while any of that is torn down.
+    if (httpWorkerPool_) httpWorkerPool_->shutdown();
+    networkSession_.setChatModerationClient(nullptr);
 
     networkSession_.shutdown();
     gameLoop_.reset();

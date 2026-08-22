@@ -29,6 +29,7 @@
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/ScriptAvatarApi.hpp"
 #include "core/ScriptChatApi.hpp"
+#include "safety/GeminiModerationClient.hpp"
 #include "core/ScriptNetworkApi.hpp"
 #include "core/ScriptUiApi.hpp"
 #include "core/ScriptWorldApi.hpp"
@@ -704,6 +705,21 @@ private:
     // NetworkSession receive hook, so it must outlive every script VM and
     // be destroyed before the session it points at.
     std::unique_ptr<ScriptChatApi> scriptChatApi_;
+
+    // ORDER MATTERS, and it is the reverse of the intuitive one.
+    //
+    // The pool's worker threads run completion callbacks that capture the
+    // moderation client's `this`. Members are destroyed in reverse
+    // declaration order, so the pool must be declared LAST of the two:
+    // that destroys (and joins) it FIRST, guaranteeing no worker is still
+    // inside a callback when the client it points at goes away.
+    // Declaring them the other way round is a use-after-free that only
+    // shows up when a request happens to be in flight at shutdown.
+    //
+    // Application::shutdown() also joins the pool explicitly, so the
+    // ordering here is the backstop rather than the only defence.
+    std::unique_ptr<safety::GeminiModerationClient> chatModerationClient_;
+    std::unique_ptr<net::HttpWorkerPool> httpWorkerPool_;
     // Kronos ("Kronos Scripting Environment"): holds an `Application&`
     // (i.e. `*this`) -- always valid regardless of member-construction
     // order, unlike scriptWorldApi_/scriptNetworkApi_ above, but kept as

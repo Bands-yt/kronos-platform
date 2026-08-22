@@ -229,6 +229,7 @@ add_library(engine_core STATIC
     net/NetworkIdentity.cpp
     net/Serialization.cpp
     net/ChatProtocol.cpp
+    net/HttpWorkerPool.cpp
     net/NetworkStats.cpp
     net/RemoteEntityInterpolation.cpp
     net/RateLimiter.cpp
@@ -264,6 +265,7 @@ add_library(engine_core STATIC
     safety/BehavioralPatternAnalyzer.cpp
     safety/ImageClassifierStub.cpp
     safety/PolicyEngine.cpp
+    safety/GeminiModerationClient.cpp
 
     anticheat/DeviceFingerprint.cpp
     anticheat/ExploitSignatureDB.cpp

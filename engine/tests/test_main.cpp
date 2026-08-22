@@ -222,6 +222,14 @@
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
 #include "core/ScriptChatApi.hpp"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <nlohmann/json.hpp>
+#include <stb_image.h>
+#include "net/HttpWorkerPool.hpp"
+#include "safety/GeminiModerationClient.hpp"
 #include "net/ChatProtocol.hpp"
 #include "migration/AssetConverter.hpp"
 #include "migration/AssetModeration.hpp"
@@ -30297,6 +30305,589 @@ void testHouseLayoutDoorGapIsOpenInFrontWall() {
 
 // The Luau `TextChatService` table. Named after Roblox's own service so a
 // ported chat UI needs its call sites rewritten, not its architecture.
+
+// A real HTTP server on a real local socket, used to drive the moderation
+// client without calling out to Google. Deliberately a real socket rather
+// than a mocked transport: the thing most likely to be wrong is the
+// actual curl request/response handling, and a mocked transport tests
+// none of it.
+class MockHttpServer {
+public:
+    explicit MockHttpServer(std::string responseBody, int statusCode = 200)
+        : responseBody_(std::move(responseBody)), statusCode_(statusCode) {}
+
+    ~MockHttpServer() { stop(); }
+
+    bool start() {
+        listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (listenFd_ < 0) return false;
+        int reuse = 1;
+        ::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0; // let the OS choose, so parallel tests cannot collide
+        if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) return false;
+        socklen_t length = sizeof(address);
+        if (::getsockname(listenFd_, reinterpret_cast<sockaddr*>(&address), &length) != 0) return false;
+        port_ = ntohs(address.sin_port);
+        if (::listen(listenFd_, 8) != 0) return false;
+
+        running_ = true;
+        thread_ = std::thread([this]() { serve(); });
+        return true;
+    }
+
+    void stop() {
+        running_ = false;
+        if (listenFd_ >= 0) {
+            ::shutdown(listenFd_, SHUT_RDWR);
+            ::close(listenFd_);
+            listenFd_ = -1;
+        }
+        if (thread_.joinable()) thread_.join();
+    }
+
+    [[nodiscard]] std::string baseUrl() const { return "http://127.0.0.1:" + std::to_string(port_); }
+    [[nodiscard]] int requestCount() const { return requestCount_.load(); }
+    [[nodiscard]] std::string lastRequestBody() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastBody_;
+    }
+    [[nodiscard]] std::string lastRequestHeaders() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastHeaders_;
+    }
+    void setDelayMillis(int millis) { delayMillis_ = millis; }
+
+private:
+    void serve() {
+        while (running_) {
+            const int client = ::accept(listenFd_, nullptr, nullptr);
+            if (client < 0) {
+                if (!running_) return;
+                continue;
+            }
+            std::string request;
+            char buffer[4096];
+            // Read until the body is complete, using Content-Length --
+            // a single recv() would truncate a large image payload.
+            size_t contentLength = 0;
+            bool haveHeaders = false;
+            size_t headerEnd = 0;
+            for (;;) {
+                const ssize_t received = ::recv(client, buffer, sizeof(buffer), 0);
+                if (received <= 0) break;
+                request.append(buffer, static_cast<size_t>(received));
+                if (!haveHeaders) {
+                    headerEnd = request.find("\r\n\r\n");
+                    if (headerEnd != std::string::npos) {
+                        haveHeaders = true;
+                        const std::string headers = request.substr(0, headerEnd);
+                        std::string lowered = headers;
+                        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        const size_t at = lowered.find("content-length:");
+                        if (at != std::string::npos) {
+                            contentLength = static_cast<size_t>(std::strtoul(headers.c_str() + at + 15, nullptr, 10));
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            lastHeaders_ = headers;
+                        }
+                    }
+                }
+                if (haveHeaders && request.size() >= headerEnd + 4 + contentLength) break;
+            }
+            if (haveHeaders) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                lastBody_ = request.substr(headerEnd + 4);
+            }
+            ++requestCount_;
+
+            if (delayMillis_ > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delayMillis_));
+
+            std::string response = "HTTP/1.1 " + std::to_string(statusCode_) + " OK\r\n";
+            response += "Content-Type: application/json\r\n";
+            response += "Content-Length: " + std::to_string(responseBody_.size()) + "\r\n";
+            response += "Connection: close\r\n\r\n";
+            response += responseBody_;
+            (void)::send(client, response.data(), response.size(), MSG_NOSIGNAL);
+            ::close(client);
+        }
+    }
+
+    std::string responseBody_;
+    int statusCode_ = 200;
+    int listenFd_ = -1;
+    uint16_t port_ = 0;
+    std::atomic<bool> running_{false};
+    std::atomic<int> requestCount_{0};
+    std::atomic<int> delayMillis_{0};
+    std::thread thread_;
+    mutable std::mutex mutex_;
+    std::string lastBody_;
+    std::string lastHeaders_;
+};
+
+// Wraps a Gemini structured verdict in the envelope the real API returns:
+// the JSON payload arrives as TEXT inside candidates[0].content.parts[0].
+std::string geminiEnvelope(bool isSafe, const char* reasonCode) {
+    nlohmann::json inner;
+    inner["is_safe"] = isSafe;
+    inner["reason_code"] = reasonCode;
+    nlohmann::json root;
+    root["candidates"] = nlohmann::json::array(
+        {{{"content", {{"parts", nlohmann::json::array({{{"text", inner.dump()}}})}}}}});
+    return root.dump();
+}
+
+void testHttpWorkerPool() {
+    MockHttpServer server(R"({"ok":true})");
+    check(server.start(), "the mock HTTP server starts on a real socket");
+
+    engine::net::HttpWorkerPool pool(3);
+    check(pool.workerCount() == 3, "the worker pool really starts the requested number of workers");
+
+    // Many concurrent requests: the point of the pool is that these do not
+    // each cost a thread.
+    std::vector<std::future<engine::net::HttpResponse>> futures;
+    for (int i = 0; i < 12; ++i) {
+        engine::net::HttpRequest request;
+        request.url = server.baseUrl() + "/v1";
+        request.method = "POST";
+        request.body = "{\"i\":" + std::to_string(i) + "}";
+        request.headers = {"Content-Type: application/json"};
+        futures.push_back(pool.submit(std::move(request)));
+    }
+    int okCount = 0;
+    for (auto& future : futures) {
+        const engine::net::HttpResponse response = future.get();
+        if (response.ok()) ++okCount;
+    }
+    check(okCount == 12, "every queued request really completes through the pool");
+    check(pool.completedCount() == 12, "the pool counts completed requests");
+    check(server.requestCount() == 12, "the mock server really received every request");
+
+    // An unreachable host must resolve as a transport failure, not hang
+    // and not throw -- the caller's fallback depends on telling that apart
+    // from an HTTP error status.
+    engine::net::HttpRequest dead;
+    dead.url = "http://127.0.0.1:1/nothing";
+    dead.timeoutMillis = 800;
+    const engine::net::HttpResponse deadResponse = pool.submit(std::move(dead)).get();
+    check(deadResponse.transportFailed, "an unreachable host is reported as a transport failure");
+    check(!deadResponse.ok(), "a transport failure is not ok()");
+    check(deadResponse.status == 0, "a transport failure has no HTTP status");
+
+    // Submitting after shutdown must still resolve, or a caller waiting on
+    // the future would wait forever on a promise nobody will set.
+    pool.shutdown();
+    engine::net::HttpRequest afterShutdown;
+    afterShutdown.url = server.baseUrl();
+    const engine::net::HttpResponse rejected = pool.submit(std::move(afterShutdown)).get();
+    check(rejected.transportFailed, "a request submitted after shutdown resolves as a failure rather than hanging");
+
+    server.stop();
+}
+
+void testGeminiModerationClient() {
+    // --- request shape ------------------------------------------------------
+    const std::string textBody = engine::safety::GeminiModerationClient::buildTextRequestBody("hello there");
+    const nlohmann::json parsedRequest = nlohmann::json::parse(textBody, nullptr, false);
+    check(!parsedRequest.is_discarded(), "the text request body is valid JSON");
+    check(parsedRequest["generationConfig"]["responseMimeType"] == "application/json",
+          "the request asks for structured JSON output");
+    check(parsedRequest["generationConfig"]["responseSchema"]["properties"].contains("is_safe"),
+          "the response schema constrains is_safe");
+    check(parsedRequest["generationConfig"]["responseSchema"]["properties"].contains("reason_code"),
+          "the response schema constrains reason_code");
+    check(parsedRequest["generationConfig"]["temperature"] == 0.0,
+          "moderation runs at temperature 0, so a verdict is not a coin flip");
+
+    // --- verdict parsing ----------------------------------------------------
+    engine::safety::ModerationVerdict verdict;
+    check(engine::safety::GeminiModerationClient::parseVerdict(geminiEnvelope(false, "HARASSMENT"), verdict),
+          "a structured verdict really parses out of the API envelope");
+    check(!verdict.isSafe, "an unsafe verdict is read as unsafe");
+    check(verdict.reasonCode == "HARASSMENT", "the reason code is read from the verdict");
+    check(!verdict.usedFallback, "a parsed remote verdict is not marked as a fallback");
+
+    // Malformed shapes must be refused, not guessed at. Each of these is a
+    // real thing an API can return on a bad day.
+    for (const char* bad : {"", "not json", "{}", R"({"candidates":[]})",
+                             R"({"candidates":[{"content":{"parts":[]}}]})",
+                             R"({"candidates":[{"content":{"parts":[{"text":"not json"}]}}]})"}) {
+        engine::safety::ModerationVerdict ignored;
+        check(!engine::safety::GeminiModerationClient::parseVerdict(bad, ignored),
+              "a malformed moderation response is refused rather than guessed at");
+    }
+
+    // --- base64 -------------------------------------------------------------
+    check(engine::safety::GeminiModerationClient::base64Encode({'M', 'a', 'n'}) == "TWFu",
+          "base64 encodes a 3-byte group");
+    check(engine::safety::GeminiModerationClient::base64Encode({'M', 'a'}) == "TWE=",
+          "base64 pads a 2-byte remainder");
+    check(engine::safety::GeminiModerationClient::base64Encode({'M'}) == "TQ==",
+          "base64 pads a 1-byte remainder");
+    // Standard base64, NOT base64url: a JSON image payload with '-'/'_'
+    // would be rejected as a malformed image.
+    const auto encoded = engine::safety::GeminiModerationClient::base64Encode({0xFB, 0xFF, 0xFE});
+    check(encoded.find('-') == std::string::npos && encoded.find('_') == std::string::npos,
+          "image payloads use standard base64, not the base64url variant");
+
+    // --- fallback when unconfigured ----------------------------------------
+    engine::net::HttpWorkerPool pool(1);
+    auto localClassifier = [](const std::string& text) {
+        engine::safety::ModerationVerdict local;
+        local.isSafe = text.find("badword") == std::string::npos;
+        local.reasonCode = local.isSafe ? "SAFE" : "LOCAL_PROFANITY";
+        return local;
+    };
+
+    engine::safety::GeminiConfig unconfigured;
+    unconfigured.apiKey.clear();
+    engine::safety::GeminiModerationClient offline(pool, unconfigured, localClassifier);
+    check(!offline.isConfigured(), "an unset GEMINI_API_KEY leaves the client unconfigured");
+
+    auto offlineSafe = offline.classifyText("hello").get();
+    check(offlineSafe.isSafe, "with no API key a clean message still passes via local filters");
+    check(offlineSafe.usedFallback, "a local-only verdict is honestly marked as a fallback");
+    auto offlineBad = offline.classifyText("this has badword in it").get();
+    check(!offlineBad.isSafe, "with no API key the LOCAL filter still blocks what it knows");
+    check(offlineBad.reasonCode == "LOCAL_PROFANITY", "the local reason code survives the fallback");
+
+    // --- real round trip against the mock ----------------------------------
+    MockHttpServer flagging(geminiEnvelope(false, "VIOLENCE"));
+    check(flagging.start(), "the flagging mock server starts");
+    engine::safety::GeminiConfig config;
+    config.apiKey = "test-key-not-a-real-secret";
+    config.endpoint = flagging.baseUrl();
+    config.model = "gemini-flash-lite-latest";
+    config.timeoutMillis = 3000;
+    engine::safety::GeminiModerationClient client(pool, config, localClassifier);
+    check(client.isConfigured(), "a configured client reports itself configured");
+
+    auto flagged = client.classifyText("something violent").get();
+    check(!flagged.isSafe, "the client really returns the mock's unsafe verdict");
+    check(flagged.reasonCode == "VIOLENCE", "the client really returns the mock's reason code");
+    check(!flagged.usedFallback, "a real remote verdict is not marked as a fallback");
+    check(flagging.requestCount() == 1, "the client really issued one HTTP request");
+    check(flagging.lastRequestBody().find("something violent") != std::string::npos,
+          "the message text really reached the endpoint");
+    check(flagging.lastRequestBody().find("\"text\":\"\"") == std::string::npos,
+          "the classifier is not sent an EMPTY message body");
+    // The key must travel in a header, never the URL -- query strings end
+    // up in proxy logs and crash reports.
+    std::string headers = flagging.lastRequestHeaders();
+    std::transform(headers.begin(), headers.end(), headers.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    check(headers.find("x-goog-api-key: test-key-not-a-real-secret") != std::string::npos,
+          "the API key is sent as a header");
+    check(flagging.lastRequestHeaders().find("test-key-not-a-real-secret") != std::string::npos &&
+              headers.find("get /") == std::string::npos,
+          "the API key is not placed in the request line/URL");
+    flagging.stop();
+
+    // --- rate limiting falls back, and trips the cooldown -------------------
+    MockHttpServer limited(R"({"error":"rate limited"})", 429);
+    check(limited.start(), "the rate-limited mock server starts");
+    engine::safety::GeminiConfig limitedConfig = config;
+    limitedConfig.endpoint = limited.baseUrl();
+    engine::safety::GeminiModerationClient limitedClient(pool, limitedConfig, localClassifier);
+
+    auto rateLimited = limitedClient.classifyText("this has badword in it").get();
+    check(rateLimited.usedFallback, "a 429 falls back to the local classifier");
+    check(!rateLimited.isSafe, "the local classifier still blocks during a rate-limit fallback");
+    check(limitedClient.consecutiveFailures() == 1, "a rate-limited call counts as a failure");
+
+    for (int i = 0; i < 6; ++i) (void)limitedClient.classifyText("hello").get();
+    check(limitedClient.inCooldown(), "repeated failures put the client into cooldown");
+    const int requestsBeforeCooldown = limited.requestCount();
+    (void)limitedClient.classifyText("hello").get();
+    check(limited.requestCount() == requestsBeforeCooldown,
+          "a client in cooldown stops calling the endpoint entirely rather than hammering it");
+    limited.stop();
+
+    // --- a malformed response must not crash the pipeline -------------------
+    MockHttpServer garbage("<html>gateway error</html>");
+    check(garbage.start(), "the malformed-response mock server starts");
+    engine::safety::GeminiConfig garbageConfig = config;
+    garbageConfig.endpoint = garbage.baseUrl();
+    engine::safety::GeminiModerationClient garbageClient(pool, garbageConfig, localClassifier);
+    auto garbled = garbageClient.classifyText("this has badword in it").get();
+    check(garbled.usedFallback, "an unparseable response falls back rather than crashing");
+    check(!garbled.isSafe, "the local classifier still applies when the response is unparseable");
+    garbage.stop();
+
+    pool.shutdown();
+}
+
+// Textures encoded for the vision endpoint must be a real image container.
+void testTextureInspectionEncoding() {
+    engine::migration::TextureConversionData texture;
+    texture.width = 4;
+    texture.height = 4;
+    texture.rgba.assign(4 * 4 * 4, 0);
+    for (size_t i = 0; i < texture.rgba.size(); i += 4) {
+        texture.rgba[i + 0] = 200;
+        texture.rgba[i + 3] = 255;
+    }
+
+    std::vector<uint8_t> png;
+    check(engine::migration::AssetConverter::encodeRgbaAsPng(texture.rgba, 4, 4, png),
+          "RGBA pixels really encode to PNG");
+    check(png.size() > 8, "the encoded PNG has real content");
+    // A vision API rejects anything that is not a real container, so the
+    // signature and the terminating chunk both matter.
+    const uint8_t signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    bool signatureOk = true;
+    for (int i = 0; i < 8; ++i) {
+        if (png[static_cast<size_t>(i)] != signature[i]) signatureOk = false;
+    }
+    check(signatureOk, "the encoded image carries a real PNG signature");
+    const std::string asText(reinterpret_cast<const char*>(png.data()), png.size());
+    check(asText.find("IHDR") != std::string::npos, "the encoded PNG has an IHDR chunk");
+    check(asText.find("IDAT") != std::string::npos, "the encoded PNG has an IDAT chunk");
+    check(asText.find("IEND") != std::string::npos, "the encoded PNG is terminated with IEND");
+
+    // stb_image must be able to read back what we wrote -- the strongest
+    // available check that the container is genuinely valid.
+    int decodedW = 0, decodedH = 0, channels = 0;
+    stbi_uc* decoded = stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &decodedW, &decodedH,
+                                              &channels, STBI_rgb_alpha);
+    check(decoded != nullptr, "the encoded PNG really decodes again");
+    check(decodedW == 4 && decodedH == 4, "the decoded PNG has the original dimensions");
+    if (decoded != nullptr) {
+        check(decoded[0] == 200, "pixel data survives the PNG round trip");
+        stbi_image_free(decoded);
+    }
+
+    std::string base64;
+    check(engine::migration::AssetConverter::encodeTextureForInspection(texture, base64),
+          "a texture really encodes to a base64 payload");
+    check(!base64.empty(), "the base64 payload is non-empty");
+    check(base64.find('-') == std::string::npos && base64.find('_') == std::string::npos,
+          "the payload is standard base64, which is what an image field requires");
+
+    // Downscaling: a large texture must not be shipped at full size.
+    engine::migration::TextureConversionData large;
+    large.width = 2048;
+    large.height = 1024;
+    large.rgba.assign(static_cast<size_t>(2048) * 1024 * 4, 128);
+    std::string largeBase64;
+    check(engine::migration::AssetConverter::encodeTextureForInspection(large, largeBase64, 128),
+          "a large texture encodes for inspection");
+    std::vector<uint8_t> largePng;
+    check(engine::migration::AssetConverter::encodeRgbaAsPng(large.rgba, 2048, 1024, largePng),
+          "the full-size PNG encodes for comparison");
+    check(largeBase64.size() * 3 / 4 < largePng.size(),
+          "a large texture is really downscaled before inspection rather than sent at full resolution");
+
+    // Malformed input is refused rather than reading past the buffer.
+    engine::migration::TextureConversionData truncated;
+    truncated.width = 64;
+    truncated.height = 64;
+    truncated.rgba.assign(16, 0); // far short of 64*64*4
+    std::string ignoredBase64;
+    check(!engine::migration::AssetConverter::encodeTextureForInspection(truncated, ignoredBase64),
+          "a texture whose pixel buffer is too small is refused, not read past");
+}
+
+// The server-side interceptor: a flagged message must not reach other
+// clients, and the pipeline must not stall or crash doing it.
+void testChatModerationInterceptor() {
+    MockHttpServer flagging(geminiEnvelope(false, "HARASSMENT"));
+    check(flagging.start(), "the chat-moderation mock server starts");
+
+    engine::net::HttpWorkerPool pool(2);
+    engine::safety::GeminiConfig config;
+    config.apiKey = "test-key";
+    config.endpoint = flagging.baseUrl();
+    config.timeoutMillis = 3000;
+    auto localClassifier = [](const std::string&) { return engine::safety::ModerationVerdict{}; };
+    engine::safety::GeminiModerationClient client(pool, config, localClassifier);
+
+    constexpr uint16_t kTestPort = 17861;
+    engine::core::ECS serverEcs, clientAEcs, clientBEcs;
+    engine::net::NetworkSession serverSession, clientA, clientB;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    check(serverSession.initialize(serverConfig), "moderated chat: the server starts");
+    serverSession.setChatModerationClient(&client);
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) -> engine::core::EntityId {
+        engine::core::EntityId entity = ecs.createEntity("Player");
+        ecs.addComponent<engine::core::Transform>(entity);
+        return entity;
+    });
+
+    auto connect = [&](engine::net::NetworkSession& session) {
+        engine::net::NetworkSession::Config config2;
+        config2.mode = engine::net::NetworkMode::Client;
+        config2.serverAddress = "127.0.0.1";
+        config2.port = kTestPort;
+        return session.initialize(config2);
+    };
+    check(connect(clientA), "moderated chat: client A connects");
+    check(connect(clientB), "moderated chat: client B connects");
+
+    engine::core::EntityId avatarA = clientAEcs.createEntity("A");
+    clientAEcs.addComponent<engine::core::Transform>(avatarA);
+    engine::core::EntityId avatarB = clientBEcs.createEntity("B");
+    clientBEcs.addComponent<engine::core::Transform>(avatarB);
+
+    auto pump = [&](int iterations) {
+        for (int i = 0; i < iterations; ++i) {
+            serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+            clientA.tick(0.05f, clientAEcs, avatarA);
+            clientB.tick(0.05f, clientBEcs, avatarB);
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+    };
+
+    bool joined = false;
+    for (int i = 0; i < 200 && !joined; ++i) {
+        pump(1);
+        joined = clientA.localPlayerId() != engine::net::kInvalidPlayer &&
+                  clientB.localPlayerId() != engine::net::kInvalidPlayer;
+    }
+    check(joined, "moderated chat: both clients complete the handshake");
+
+    std::vector<std::string> receivedByB;
+    clientB.setOnChatPacketReceived(
+        [&](const engine::net::ChatMessagePacket& packet) { receivedByB.push_back(packet.body); });
+
+    clientA.sendChatMessage("you are terrible at this game");
+    for (int i = 0; i < 200 && receivedByB.empty(); ++i) pump(1);
+
+    check(!receivedByB.empty(), "a moderated message still reaches the other client (as a replacement)");
+    if (!receivedByB.empty()) {
+        check(receivedByB.front() == engine::net::NetworkSession::kModerationRemovedBody,
+              "a flagged message's body is replaced with the moderation notice");
+        check(receivedByB.front().find("terrible") == std::string::npos,
+              "the flagged original text never reaches another client");
+    }
+    check(serverSession.chatModerationBlockedCount() == 1, "the server counts the blocked message");
+    check(flagging.requestCount() >= 1, "the message really went to the moderation endpoint before broadcast");
+    check(serverSession.pendingChatModerationCount() == 0, "no message is left parked after the verdict lands");
+
+    // Dropping instead of replacing.
+    serverSession.setChatModerationReplacesBody(false);
+    receivedByB.clear();
+    clientA.sendChatMessage("another bad one");
+    for (int i = 0; i < 120; ++i) pump(1);
+    check(receivedByB.empty(), "with replacement disabled, a flagged message is dropped entirely");
+
+    serverSession.shutdown();
+    clientA.shutdown();
+    clientB.shutdown();
+    pool.shutdown();
+    flagging.stop();
+}
+
+// A safe verdict must pass through unchanged, and a dead endpoint must
+// not wedge chat.
+void testChatModerationPassAndTimeout() {
+    engine::net::HttpWorkerPool pool(2);
+    auto localClassifier = [](const std::string&) { return engine::safety::ModerationVerdict{}; };
+
+    MockHttpServer allowing(geminiEnvelope(true, "SAFE"));
+    check(allowing.start(), "the allowing mock server starts");
+    engine::safety::GeminiConfig config;
+    config.apiKey = "test-key";
+    config.endpoint = allowing.baseUrl();
+    config.timeoutMillis = 3000;
+    engine::safety::GeminiModerationClient client(pool, config, localClassifier);
+
+    constexpr uint16_t kTestPort = 17862;
+    engine::core::ECS serverEcs, clientAEcs, clientBEcs;
+    engine::net::NetworkSession serverSession, clientA, clientB;
+
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    check(serverSession.initialize(serverConfig), "pass-through chat: the server starts");
+    serverSession.setChatModerationClient(&client);
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) -> engine::core::EntityId {
+        engine::core::EntityId entity = ecs.createEntity("Player");
+        ecs.addComponent<engine::core::Transform>(entity);
+        return entity;
+    });
+
+    auto connect = [&](engine::net::NetworkSession& session) {
+        engine::net::NetworkSession::Config config2;
+        config2.mode = engine::net::NetworkMode::Client;
+        config2.serverAddress = "127.0.0.1";
+        config2.port = kTestPort;
+        return session.initialize(config2);
+    };
+    check(connect(clientA), "pass-through chat: client A connects");
+    check(connect(clientB), "pass-through chat: client B connects");
+
+    engine::core::EntityId avatarA = clientAEcs.createEntity("A");
+    clientAEcs.addComponent<engine::core::Transform>(avatarA);
+    engine::core::EntityId avatarB = clientBEcs.createEntity("B");
+    clientBEcs.addComponent<engine::core::Transform>(avatarB);
+
+    auto pump = [&](int iterations) {
+        for (int i = 0; i < iterations; ++i) {
+            serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+            clientA.tick(0.05f, clientAEcs, avatarA);
+            clientB.tick(0.05f, clientBEcs, avatarB);
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+    };
+
+    bool joined = false;
+    for (int i = 0; i < 200 && !joined; ++i) {
+        pump(1);
+        joined = clientA.localPlayerId() != engine::net::kInvalidPlayer &&
+                  clientB.localPlayerId() != engine::net::kInvalidPlayer;
+    }
+    check(joined, "pass-through chat: both clients complete the handshake");
+
+    std::vector<std::string> receivedByB;
+    clientB.setOnChatPacketReceived(
+        [&](const engine::net::ChatMessagePacket& packet) { receivedByB.push_back(packet.body); });
+
+    clientA.sendChatMessage("hello everyone");
+    for (int i = 0; i < 200 && receivedByB.empty(); ++i) pump(1);
+    check(!receivedByB.empty(), "a message cleared by moderation really reaches the other client");
+    if (!receivedByB.empty()) {
+        check(receivedByB.front() == "hello everyone", "an approved message arrives unmodified");
+    }
+    check(serverSession.chatModerationBlockedCount() == 0, "an approved message is not counted as blocked");
+    allowing.stop();
+
+    // Endpoint goes away entirely. The message must still be delivered --
+    // the local filters already passed it, and silently swallowing a
+    // player's message because a third-party API died is a worse failure
+    // than letting a locally-clean message through.
+    engine::safety::GeminiConfig deadConfig = config;
+    deadConfig.endpoint = "http://127.0.0.1:1";
+    deadConfig.timeoutMillis = 600;
+    client.setConfig(deadConfig);
+    client.resetFailures();
+
+    receivedByB.clear();
+    clientA.sendChatMessage("endpoint is down now");
+    for (int i = 0; i < 300 && receivedByB.empty(); ++i) pump(1);
+    check(!receivedByB.empty(), "chat keeps working when the moderation endpoint is unreachable");
+    if (!receivedByB.empty()) {
+        check(receivedByB.front() == "endpoint is down now",
+              "a locally-clean message is delivered intact when the remote classifier is unavailable");
+    }
+    check(serverSession.pendingChatModerationCount() == 0, "nothing is left parked after the endpoint failure");
+
+    serverSession.shutdown();
+    clientA.shutdown();
+    clientB.shutdown();
+    pool.shutdown();
+}
+
 void testLuauTextChatService() {
     engine::net::NetworkSession session;
     engine::core::Scripting scripting;
@@ -31627,6 +32218,11 @@ void testMovieModePlugin() {
 }
 
 int main() {
+    testHttpWorkerPool();
+    testGeminiModerationClient();
+    testTextureInspectionEncoding();
+    testChatModerationInterceptor();
+    testChatModerationPassAndTimeout();
     testLuauTextChatService();
     testChatMessagePacketSerialization();
     testChatMultiClientLoopback();

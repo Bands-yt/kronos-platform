@@ -15,7 +15,12 @@
 #include "moderation/AppealLog.hpp"
 #include "moderation/DirectMessageLog.hpp"
 #include "moderation/ChatLog.hpp"
+#include <future>
+
 #include "net/ChatProtocol.hpp"
+// Complete type required: PendingChatModeration holds a
+// std::future<ModerationVerdict>, and std::future needs the full type.
+#include "safety/GeminiModerationClient.hpp"
 #include "moderation/EscalationEventLog.hpp"
 #include "moderation/MuteBlockRegistry.hpp"
 #include "moderation/ProfanityFilter.hpp"
@@ -428,6 +433,22 @@ public:
     // Same path, on an explicit channel. sendChatMessage() is General.
     void sendChatMessageOn(ChatChannel channel, const std::string& text);
 
+    // --- remote chat moderation --------------------------------------------
+    // Attaches a remote classifier consulted BEFORE a message is
+    // broadcast. The broadcast is deferred, never blocked -- see
+    // pumpChatModeration(). Passing nullptr restores local-filters-only.
+    void setChatModerationClient(safety::GeminiModerationClient* client) { chatModerationClient_ = client; }
+    void setChatModerationReplacesBody(bool replace) { chatModerationReplacesBody_ = replace; }
+    [[nodiscard]] uint64_t chatModerationBlockedCount() const { return chatModerationBlocked_; }
+    [[nodiscard]] uint64_t chatModerationAllowedCount() const { return chatModerationAllowed_; }
+    [[nodiscard]] uint64_t chatModerationTimeoutCount() const { return chatModerationTimeouts_; }
+    [[nodiscard]] size_t pendingChatModerationCount() const { return pendingChatModeration_.size(); }
+    // The body a blocked message is replaced with.
+    static constexpr const char* kModerationRemovedBody = "[Message removed by moderation]";
+    // How long a message may wait on a verdict before it is released on
+    // the local filters' judgement alone.
+    static constexpr uint64_t kChatModerationTimeoutMillis = 2500;
+
     // --- channels ----------------------------------------------------------
     // Server-side room membership. A player with no explicit subscription
     // is treated as subscribed to General and System, so joining a session
@@ -642,6 +663,19 @@ private:
     void tickStressTest(float dt);
     void handleTeleportRequestServer(PlayerId player, ByteReader& reader);
     void handleChatMessageServer(PlayerId player, ByteReader& reader);
+    // Serialises and fans out one already-approved packet. Shared by the
+    // immediate path and the deferred moderation path so the two cannot
+    // drift apart.
+    void broadcastChatPacket(const ChatMessagePacket& outgoing);
+    // Completes messages awaiting a remote moderation verdict.
+    void pumpChatModeration();
+
+    struct PendingChatModeration {
+        ChatMessagePacket packet;
+        std::future<safety::ModerationVerdict> verdict;
+        uint64_t submittedAtMillis = 0;
+    };
+    std::vector<PendingChatModeration> pendingChatModeration_;
     void handleReportPlayerServer(PlayerId player, ByteReader& reader);
     void handleSubmitAppealServer(PlayerId player, ByteReader& reader);
     void handleDirectMessageSendServer(PlayerId sender, ByteReader& reader);
@@ -707,6 +741,17 @@ private:
     ChatMessagePacket lastReceivedChatPacket_;
     // Server-side channel membership, player -> subscribed channel ids.
     std::unordered_map<PlayerId, std::unordered_set<uint32_t>> channelSubscriptions_;
+
+    // Remote chat moderation. Null (the default) keeps the pre-existing
+    // synchronous local-filter-only path exactly as it was.
+    safety::GeminiModerationClient* chatModerationClient_ = nullptr;
+    // What a blocked message becomes. Replacing the body is the default
+    // because a message that simply vanishes reads to the sender as a
+    // network fault, and they retype it.
+    bool chatModerationReplacesBody_ = true;
+    uint64_t chatModerationBlocked_ = 0;
+    uint64_t chatModerationAllowed_ = 0;
+    uint64_t chatModerationTimeouts_ = 0;
 
     // Sprint 13 ("Publishing & Game Packaging") -- see publishWorld()'s
     // own comment.

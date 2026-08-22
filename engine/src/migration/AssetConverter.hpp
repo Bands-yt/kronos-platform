@@ -128,6 +128,22 @@ public:
     [[nodiscard]] static MaterialConversionData materialFromProperties(
         const std::unordered_map<std::string, std::string>& properties);
 
+    // --- multimodal inspection ---------------------------------------------
+    // Encodes decoded RGBA8 pixels as a base64 PNG payload for a vision
+    // endpoint. Re-encoded to PNG rather than shipped as raw RGBA because
+    // a vision API needs a real image container, and because a 4K raw
+    // buffer is ~33 MB, which is not a sensible request body.
+    //
+    // `maxDimension` downscales first. Moderation does not need full
+    // resolution, and sending 4K images makes every check slow and
+    // expensive without changing what the classifier sees.
+    [[nodiscard]] static bool encodeTextureForInspection(const TextureConversionData& texture,
+                                                          std::string& outBase64Png, int maxDimension = 512);
+    // The PNG bytes behind the above, exposed so a test can verify the
+    // container is real rather than only that some base64 came back.
+    [[nodiscard]] static bool encodeRgbaAsPng(const std::vector<uint8_t>& rgba, int width, int height,
+                                               std::vector<uint8_t>& outPng);
+
     // Findings accumulated across every convert*() call on this instance,
     // so one import produces one audit rather than a scatter of messages.
     [[nodiscard]] const ModerationReport& moderationReport() const { return moderationReport_; }

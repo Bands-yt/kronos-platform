@@ -8,6 +8,9 @@
 #include <unordered_map>
 
 #include <stb_image.h>
+#include <zlib.h>
+
+#include "safety/GeminiModerationClient.hpp"
 
 #include "core/ObjLoader.hpp"
 #include "migration/PropertyDecoder.hpp"
@@ -443,6 +446,113 @@ ConversionResult AssetConverter::convert(const std::string& sourcePath, const st
         case AssetKind::Unknown: break;
     }
     return unsupported(sourcePath, "Asset", "unrecognised file extension");
+}
+
+
+namespace {
+
+void appendBigEndian32(std::vector<uint8_t>& out, uint32_t value) {
+    out.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
+    out.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+    out.push_back(static_cast<uint8_t>(value & 0xFF));
+}
+
+// PNG chunks are length + type + data + CRC32 over (type + data). zlib
+// already provides the exact CRC32 PNG specifies, so this does not carry
+// its own table.
+void appendPngChunk(std::vector<uint8_t>& out, const char type[4], const std::vector<uint8_t>& data) {
+    appendBigEndian32(out, static_cast<uint32_t>(data.size()));
+    const size_t crcStart = out.size();
+    out.insert(out.end(), type, type + 4);
+    out.insert(out.end(), data.begin(), data.end());
+    const uLong crc = crc32(crc32(0L, Z_NULL, 0), out.data() + crcStart, static_cast<uInt>(out.size() - crcStart));
+    appendBigEndian32(out, static_cast<uint32_t>(crc));
+}
+
+} // namespace
+
+bool AssetConverter::encodeRgbaAsPng(const std::vector<uint8_t>& rgba, int width, int height,
+                                      std::vector<uint8_t>& outPng) {
+    outPng.clear();
+    if (width <= 0 || height <= 0) return false;
+    const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+    if (rgba.size() < expected) return false;
+
+    // Raw scanlines, each prefixed with PNG's per-row filter byte. Filter
+    // 0 (None) is used throughout: filtering exists to help compression,
+    // and this image is about to be classified, not shipped, so the
+    // simplicity is worth more than the bytes.
+    std::vector<uint8_t> raw;
+    raw.reserve(expected + static_cast<size_t>(height));
+    for (int y = 0; y < height; ++y) {
+        raw.push_back(0);
+        const size_t rowStart = static_cast<size_t>(y) * static_cast<size_t>(width) * 4u;
+        raw.insert(raw.end(), rgba.begin() + static_cast<long>(rowStart),
+                    rgba.begin() + static_cast<long>(rowStart + static_cast<size_t>(width) * 4u));
+    }
+
+    uLongf compressedSize = compressBound(static_cast<uLong>(raw.size()));
+    std::vector<uint8_t> compressed(compressedSize);
+    if (compress2(compressed.data(), &compressedSize, raw.data(), static_cast<uLong>(raw.size()),
+                   Z_DEFAULT_COMPRESSION) != Z_OK) {
+        return false;
+    }
+    compressed.resize(compressedSize);
+
+    static const uint8_t kSignature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    outPng.insert(outPng.end(), kSignature, kSignature + 8);
+
+    std::vector<uint8_t> ihdr;
+    appendBigEndian32(ihdr, static_cast<uint32_t>(width));
+    appendBigEndian32(ihdr, static_cast<uint32_t>(height));
+    ihdr.push_back(8); // bit depth
+    ihdr.push_back(6); // colour type 6 = RGBA
+    ihdr.push_back(0); // deflate
+    ihdr.push_back(0); // adaptive filtering
+    ihdr.push_back(0); // no interlace
+    appendPngChunk(outPng, "IHDR", ihdr);
+    appendPngChunk(outPng, "IDAT", compressed);
+    appendPngChunk(outPng, "IEND", {});
+    return true;
+}
+
+bool AssetConverter::encodeTextureForInspection(const TextureConversionData& texture, std::string& outBase64Png,
+                                                 int maxDimension) {
+    outBase64Png.clear();
+    if (texture.width <= 0 || texture.height <= 0) return false;
+    const size_t expected = static_cast<size_t>(texture.width) * static_cast<size_t>(texture.height) * 4u;
+    if (texture.rgba.size() < expected) return false;
+
+    // Nearest neighbour rather than a box filter: this is fed to a
+    // classifier, not a display, and nearest neighbour cannot invent
+    // colours that were not in the source -- which matters when the thing
+    // being detected is branding.
+    int outWidth = texture.width;
+    int outHeight = texture.height;
+    if (maxDimension > 0 && (outWidth > maxDimension || outHeight > maxDimension)) {
+        const double scale = static_cast<double>(maxDimension) / static_cast<double>(std::max(outWidth, outHeight));
+        outWidth = std::max(1, static_cast<int>(outWidth * scale));
+        outHeight = std::max(1, static_cast<int>(outHeight * scale));
+    }
+
+    std::vector<uint8_t> resized(static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 4u);
+    for (int y = 0; y < outHeight; ++y) {
+        const int sourceY = std::min(texture.height - 1, y * texture.height / outHeight);
+        for (int x = 0; x < outWidth; ++x) {
+            const int sourceX = std::min(texture.width - 1, x * texture.width / outWidth);
+            const size_t source = (static_cast<size_t>(sourceY) * static_cast<size_t>(texture.width) +
+                                    static_cast<size_t>(sourceX)) * 4u;
+            const size_t destination = (static_cast<size_t>(y) * static_cast<size_t>(outWidth) +
+                                         static_cast<size_t>(x)) * 4u;
+            for (int c = 0; c < 4; ++c) resized[destination + c] = texture.rgba[source + c];
+        }
+    }
+
+    std::vector<uint8_t> png;
+    if (!encodeRgbaAsPng(resized, outWidth, outHeight, png)) return false;
+    outBase64Png = safety::GeminiModerationClient::base64Encode(png);
+    return !outBase64Png.empty();
 }
 
 } // namespace engine::migration

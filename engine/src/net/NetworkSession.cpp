@@ -1,5 +1,7 @@
 #include "net/NetworkSession.hpp"
 
+#include "safety/GeminiModerationClient.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -457,6 +459,12 @@ void NetworkSession::tick(float dt, core::ECS& ecs, core::EntityId localPlayerEn
 }
 
 void NetworkSession::tickServer(float dt, core::ECS& ecs) {
+    // Completes any chat message parked awaiting a remote moderation
+    // verdict. Polled here rather than on a callback thread so every
+    // broadcast still happens on the network thread, which is the only
+    // thread that may touch the transport.
+    pumpChatModeration();
+
     ENetTransport::Callbacks callbacks;
     callbacks.onPeerConnected = [this](ENetTransport::PeerId peer) {
         // Kronos ("Active Joining UI"): assigning a real PlayerId and
@@ -789,11 +797,31 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
     // Stamped here, on the authority, not carried from the client.
     outgoing.timestampMillis = currentUnixMillis();
 
+    // Kronos ("Gemini moderation"): when a remote classifier is attached,
+    // the broadcast is DEFERRED rather than blocked. Waiting here for an
+    // HTTP round trip would stall the server tick -- and therefore every
+    // player's movement, not just their chat -- for the duration of one
+    // person's message. The message is parked and completed from tick()
+    // once the verdict lands, or once it times out.
+    if (chatModerationClient_ != nullptr && chatModerationClient_->isConfigured()) {
+        PendingChatModeration pending;
+        pending.packet = outgoing;
+        pending.submittedAtMillis = currentUnixMillis();
+        pending.verdict = chatModerationClient_->classifyText(outgoing.body);
+        pendingChatModeration_.push_back(std::move(pending));
+        return;
+    }
+
+    broadcastChatPacket(outgoing);
+}
+
+void NetworkSession::broadcastChatPacket(const ChatMessagePacket& outgoing) {
     ByteWriter writer;
     writer.writeU8(static_cast<uint8_t>(WireMessageType::ChatBroadcast));
     outgoing.write(writer);
     networkStats_.recordPacketSent(writer.size());
 
+    const PlayerId player = outgoing.senderId;
     for (auto& [peer, recipient] : serverPeerToPlayer_) {
         // Real, per-recipient mute/block filtering (task 1) -- everyone
         // else still gets the message; only the recipient(s) who chose
@@ -806,6 +834,64 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
         // what the server actually accepted (censored text, for instance).
         if (recipient != player && !isSubscribedToChannel(recipient, outgoing.channelId)) continue;
         transport_.send(peer, writer.bytes().data(), writer.size(), kReliableChannel, true);
+    }
+}
+
+
+void NetworkSession::pumpChatModeration() {
+    if (pendingChatModeration_.empty()) return;
+    const uint64_t now = currentUnixMillis();
+
+    for (auto it = pendingChatModeration_.begin(); it != pendingChatModeration_.end();) {
+        const bool ready = it->verdict.valid() &&
+                            it->verdict.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+        const bool expired = now - it->submittedAtMillis > kChatModerationTimeoutMillis;
+
+        if (!ready && !expired) {
+            ++it;
+            continue;
+        }
+
+        if (!ready && expired) {
+            // Timed out. The message is released rather than dropped: the
+            // local filters already passed it, and silently swallowing a
+            // player's message because a third-party API was slow is a
+            // worse failure than letting a locally-clean message through.
+            // The future is abandoned deliberately -- it owns its own
+            // state and completing later harms nothing.
+            ChatMessagePacket released = it->packet;
+            it = pendingChatModeration_.erase(it);
+            ++chatModerationTimeouts_;
+            broadcastChatPacket(released);
+            continue;
+        }
+
+        safety::ModerationVerdict verdict = it->verdict.get();
+        ChatMessagePacket packet = it->packet;
+        it = pendingChatModeration_.erase(it);
+
+        if (verdict.isSafe) {
+            if (!verdict.usedFallback) ++chatModerationAllowed_;
+            broadcastChatPacket(packet);
+            continue;
+        }
+
+        ++chatModerationBlocked_;
+        // Recorded against the ORIGINAL text, not the replacement -- a
+        // moderation log that stores "[Message removed by moderation]" is
+        // useless for review or appeal.
+        chatLog_.record(moderation::ChatLogEntry{packet.senderId, packet.body, false, true,
+                                                  static_cast<float>(1.0)});
+        core::logWarn("Moderation", "chat from player %u blocked (%s%s): %s", packet.senderId,
+                       verdict.reasonCode.c_str(), verdict.usedFallback ? ", local fallback" : "",
+                       packet.body.c_str());
+
+        if (chatModerationReplacesBody_) {
+            packet.body = kModerationRemovedBody;
+            broadcastChatPacket(packet);
+        } else {
+            networkStats_.recordPacketDropped();
+        }
     }
 }
 
