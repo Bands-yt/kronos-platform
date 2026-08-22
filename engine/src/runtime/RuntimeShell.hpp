@@ -238,6 +238,7 @@ private:
     // only the first time Home is actually drawn (never for a CLI mode
     // that skips the Home Screen entirely).
     void ensureHomeAvatarPreviewLoaded();
+    [[nodiscard]] bool avatarPreviewVisible() const;
 
     void drawHomePanel();
     void drawSessionBrowserPanel();

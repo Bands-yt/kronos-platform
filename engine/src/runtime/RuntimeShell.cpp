@@ -265,7 +265,12 @@ bool RuntimeShell::initialize() {
     // PreviewScene-owning Studio plugin's own "don't render a closed/
     // invisible preview" convention.
     renderer.setPrePassCallback([this](VkCommandBuffer cmd) {
-        if (state_ == ShellState::Home && !showSplash_ && homeAvatarPreview_) {
+        // The avatar preview moved from Home to the Avatar tab, but this
+        // gate still said Home -- so the offscreen target was never
+        // rendered there and the viewport showed an empty grey box. The
+        // ImGui::Image() binding was fine all along; nothing was drawing
+        // into it.
+        if (avatarPreviewVisible() && homeAvatarPreview_) {
             homeAvatarPreview_->renderPreview(cmd, app_.renderer());
         }
     });
@@ -396,6 +401,14 @@ void RuntimeShell::ensureAvatarCatalogueLoaded() {
     // see Application::tryPlayEmoteForEntity()'s own null check.
     app_.setAnimationDatabase(animationDatabase_);
     avatarCatalogueLoaded_ = true;
+}
+
+// One definition of "is the avatar preview on screen right now", used by
+// both the render pass and the per-frame update so they can never
+// disagree about whether to draw it.
+bool RuntimeShell::avatarPreviewVisible() const {
+    if (showSplash_) return false;
+    return state_ == ShellState::AvatarShop;
 }
 
 void RuntimeShell::ensureHomeAvatarPreviewLoaded() {
@@ -867,7 +880,10 @@ void RuntimeShell::tick(float dt) {
     // actually visible (Home, past the splash) -- an idle preview no one
     // is looking at still costs nothing extra beyond this one real
     // check.
-    if (state_ == ShellState::Home && !showSplash_ && homeAvatarPreview_) homeAvatarPreview_->update(dt);
+    // Same gate as the render pass above, for the same reason -- without
+    // this the preview would render but never animate or accept orbit
+    // input on the Avatar tab.
+    if (avatarPreviewVisible() && homeAvatarPreview_) homeAvatarPreview_->update(dt);
 
     // Kronos ("Home UI Polish" -- "Smooth transitions"): real, general
     // fade-in on every real state change -- see stateTransitionClock_'s
@@ -1997,15 +2013,28 @@ void RuntimeShell::drawAvatarShopPanel() {
     // character while changing it is the whole point. Only drawn on this
     // tab, so it costs nothing to render anywhere else.
     if (!showAvatarShopOverlay_) {
+        // Side-by-side: orbit viewport left, gear/catalogue right, both in
+        // slate cards. Previewing the character while changing it is the
+        // whole point of this tab, so they belong beside each other rather
+        // than stacked with the items pushed off-screen.
         ensureHomeAvatarPreviewLoaded();
-        constexpr float kViewportHeight = 300.0f;
-        ImGui::BeginChild("##avatar_tab_viewport", ImVec2(0.0f, kViewportHeight), true);
-        ImGui::TextDisabled("Your Avatar  --  drag to orbit, scroll to zoom");
-        ImGui::BeginChild("##avatar_tab_viewport_inner", ImVec2(0.0f, kViewportHeight - 46.0f), false);
+        constexpr float kViewportWidth = 360.0f;
+        float columnHeight = ImGui::GetContentRegionAvail().y - 6.0f;
+        if (columnHeight < 240.0f) columnHeight = 240.0f;
+
+        ImGui::BeginChild("##avatar_viewport_card", ImVec2(kViewportWidth, columnHeight), true);
+        ImGui::TextColored(paletteColor(core::kronos_palette::kTextBright), "Your Avatar");
+        ImGui::TextColored(paletteColor(core::kronos_palette::kTextMuted), "Drag to orbit, scroll to zoom");
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
+        // Fills the rest of the card, so it scales with the window rather
+        // than being pinned to one size.
+        ImGui::BeginChild("##avatar_viewport_inner", ImVec2(0.0f, 0.0f), false);
         if (homeAvatarPreview_) homeAvatarPreview_->draw();
         ImGui::EndChild();
         ImGui::EndChild();
-        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+
+        ImGui::SameLine();
+        ImGui::BeginChild("##avatar_items_card", ImVec2(0.0f, columnHeight), true);
     }
 
     // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
@@ -2014,18 +2043,19 @@ void RuntimeShell::drawAvatarShopPanel() {
     // the overlay and resumes movement input instead of real-transitioning
     // ShellState (there is no "Home" to transition to -- a real game is
     // still live underneath).
-    if (ImGui::Button("Back")) {
-        if (showAvatarShopOverlay_) {
+    // "Back" survives ONLY as the in-game overlay's close control. As a
+    // sidebar-routed tab there is nothing to go back to, so the
+    // standalone Back button is gone.
+    if (showAvatarShopOverlay_) {
+        if (ImGui::Button("Close")) {
             showAvatarShopOverlay_ = false;
             avatarShopDetailOpen_ = false;
             app_.setMovementInputSuspended(false);
-        } else {
-            state_ = computeNextState(state_, ShellEvent::ReturnHome);
+            ImGui::End();
+            return;
         }
-        ImGui::End();
-        return;
+        ImGui::SameLine();
     }
-    ImGui::SameLine();
     ImGui::Text("Balance: %lld KronosCredits", static_cast<long long>(localProfile_.kronosCredits));
 
     // Kronos ("Simple Recommendation Engine"): real, rules-based (recent
@@ -2143,6 +2173,8 @@ void RuntimeShell::drawAvatarShopPanel() {
         }
     }
     ImGui::EndChild();
+
+    if (!showAvatarShopOverlay_) ImGui::EndChild(); // right-hand items card
 
     ImGui::End();
 

@@ -1,5 +1,7 @@
 #include "core/LoopbackHttpServer.hpp"
 
+#include <chrono>
+
 #include <cstdio>
 #include <cstring>
 
@@ -120,6 +122,22 @@ void LoopbackHttpServer::stop() {
     listenSocket_ = -1;
 }
 
+
+namespace {
+// A browser that closes the tab mid-response leaves us writing to a dead
+// socket. Without MSG_NOSIGNAL that raises SIGPIPE, whose default action
+// terminates the process -- i.e. closing the sign-in tab at the wrong
+// moment would kill the launcher. Windows has no SIGPIPE, so send() there
+// already just returns an error.
+int sendNoSignal(SocketHandle sock, const char* data, size_t length) {
+#if defined(_WIN32)
+    return send(sock, data, static_cast<int>(length), 0);
+#else
+    return static_cast<int>(send(sock, data, length, MSG_NOSIGNAL));
+#endif
+}
+} // namespace
+
 LoopbackCallbackResult LoopbackHttpServer::waitForCallback(float timeoutSeconds) {
     LoopbackCallbackResult result;
     if (listenSocket_ < 0) {
@@ -128,84 +146,120 @@ LoopbackCallbackResult LoopbackHttpServer::waitForCallback(float timeoutSeconds)
     }
     SocketHandle listenSock = static_cast<SocketHandle>(listenSocket_);
 
-    // Real, bounded wait -- select() on the listening socket, not a
-    // blocking accept() that could hang forever if the browser tab was
-    // simply closed without completing sign-in.
-    fd_set readSet;
-    FD_ZERO(&readSet);
-    FD_SET(listenSock, &readSet);
-    timeval tv;
-    tv.tv_sec = static_cast<long>(timeoutSeconds);
-    tv.tv_usec = static_cast<long>((timeoutSeconds - static_cast<float>(tv.tv_sec)) * 1'000'000.0f);
-    int selectResult = select(static_cast<int>(listenSock) + 1, &readSet, nullptr, nullptr, &tv);
-    if (selectResult <= 0) {
-        result.error = "timed out waiting for the browser to redirect back";
-        return result;
-    }
+    // Real browsers do NOT open exactly one connection and send exactly
+    // one request. They speculatively pre-connect, they request
+    // /favicon.ico, and some open a socket and then send nothing at all.
+    //
+    // The previous version accepted a single connection and did an
+    // unbounded recv() on it, so any one of those behaviours consumed the
+    // attempt -- and a silent pre-connect blocked recv() forever, past
+    // the select() timeout that only ever covered accept(). That is the
+    // "stuck on Waiting..." bug: sign-in completed in the browser and the
+    // launcher never noticed.
+    //
+    // So: keep accepting until a request actually carries the callback,
+    // bound every individual read, and honour one overall deadline across
+    // the whole loop.
+    const auto deadline = std::chrono::steady_clock::now() +
+                           std::chrono::milliseconds(static_cast<long long>(timeoutSeconds * 1000.0f));
 
-    SocketHandle client = accept(listenSock, nullptr, nullptr);
-    if (client == kInvalidSocket) {
-        result.error = "accept() failed on the real loopback connection";
-        return result;
-    }
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            result.error = "timed out waiting for the browser to redirect back";
+            return result;
+        }
+        auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now).count();
 
-    // Real, bounded read of the request line -- a real browser redirect
-    // GET request's own URL (including the real authorization code) is
-    // comfortably under this; a real, honest cap so a malformed/hostile
-    // local connection (anything can connect to a real, bound loopback
-    // port -- this process doesn't authenticate the *caller*, only Google
-    // authenticates the *user*) can't make this read unboundedly.
-    constexpr size_t kMaxRequestBytes = 8192;
-    std::string request;
-    char buffer[1024];
-    while (request.size() < kMaxRequestBytes) {
-        int received = recv(client, buffer, sizeof(buffer), 0);
-        if (received <= 0) break;
-        request.append(buffer, static_cast<size_t>(received));
-        // A real HTTP request line ends at the first real "\r\n" -- once
-        // that's in hand, the real query string is fully available; no
-        // need to keep reading real (irrelevant) headers/body.
-        if (request.find("\r\n") != std::string::npos) break;
-    }
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(listenSock, &readSet);
+        timeval tv;
+        tv.tv_sec = static_cast<long>(remaining / 1'000'000);
+        tv.tv_usec = static_cast<long>(remaining % 1'000'000);
+        int selectResult = select(static_cast<int>(listenSock) + 1, &readSet, nullptr, nullptr, &tv);
+        if (selectResult <= 0) {
+            result.error = "timed out waiting for the browser to redirect back";
+            return result;
+        }
 
-    // Real, minimal parse: "GET /auth/callback?code=...&state=... HTTP/1.1".
-    size_t pathStart = request.find(' ');
-    size_t pathEnd = pathStart != std::string::npos ? request.find(' ', pathStart + 1) : std::string::npos;
-    if (pathStart == std::string::npos || pathEnd == std::string::npos) {
-        result.error = "malformed request line from the real loopback connection";
-    } else {
-        std::string target = request.substr(pathStart + 1, pathEnd - pathStart - 1);
+        SocketHandle client = accept(listenSock, nullptr, nullptr);
+        if (client == kInvalidSocket) continue; // transient; the deadline still applies
+
+        // Bound this individual connection's read. A browser that opens a
+        // socket and never speaks must not hold the whole flow hostage.
+#if defined(_WIN32)
+        DWORD recvTimeoutMs = 3000;
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs),
+                   sizeof(recvTimeoutMs));
+#else
+        timeval recvTimeout;
+        recvTimeout.tv_sec = 3;
+        recvTimeout.tv_usec = 0;
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
+#endif
+
+        constexpr size_t kMaxRequestBytes = 8192;
+        std::string request;
+        char buffer[1024];
+        while (request.size() < kMaxRequestBytes) {
+            int received = recv(client, buffer, sizeof(buffer), 0);
+            if (received <= 0) break; // closed, or the 3s read timeout fired
+            request.append(buffer, static_cast<size_t>(received));
+            if (request.find("\r\n") != std::string::npos) break;
+        }
+
+        std::string target;
+        size_t pathStart = request.find(' ');
+        size_t pathEnd = pathStart != std::string::npos ? request.find(' ', pathStart + 1) : std::string::npos;
+        if (pathStart != std::string::npos && pathEnd != std::string::npos) {
+            target = request.substr(pathStart + 1, pathEnd - pathStart - 1);
+        }
+
         size_t queryStart = target.find('?');
         std::string query = queryStart != std::string::npos ? target.substr(queryStart + 1) : std::string();
 
         std::string errorParam;
+        std::string code;
+        std::string state;
         parseQueryParam(query, "error", errorParam);
-        if (!errorParam.empty()) {
-            result.error = "Google returned an error: " + errorParam;
-        } else {
-            parseQueryParam(query, "code", result.code);
-            parseQueryParam(query, "state", result.state);
-            result.success = !result.code.empty();
-            if (!result.success) result.error = "no real authorization code in the redirect query string";
+        parseQueryParam(query, "code", code);
+        parseQueryParam(query, "state", state);
+
+        // Anything that is not the callback -- a favicon fetch, a silent
+        // pre-connect, a stray probe -- is answered politely and ignored,
+        // and the loop keeps waiting for the real thing.
+        if (code.empty() && errorParam.empty()) {
+            const char* ignored = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            sendNoSignal(client, ignored, std::strlen(ignored));
+            closeSocketHandle(client);
+            continue;
         }
+
+        if (!errorParam.empty()) {
+            result.error = "sign-in was refused: " + errorParam;
+        } else {
+            result.code = code;
+            result.state = state;
+            result.success = true;
+        }
+
+        const char* body = result.success
+                                ? "<html><body style=\"background:#191B1D;color:#fff;font-family:system-ui;"
+                                  "padding:40px\"><h2>Signed in to Kronos.</h2><p>You can close this tab and return "
+                                  "to the app.</p></body></html>"
+                                : "<html><body style=\"background:#191B1D;color:#fff;font-family:system-ui;"
+                                  "padding:40px\"><h2>Kronos sign-in failed.</h2><p>You can close this tab and try "
+                                  "again in the app.</p></body></html>";
+        char header[256];
+        std::snprintf(header, sizeof(header),
+                      "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+                      std::strlen(body));
+        sendNoSignal(client, header, std::strlen(header));
+        sendNoSignal(client, body, std::strlen(body));
+        closeSocketHandle(client);
+        return result;
     }
-
-    // Real, minimal, static HTML response -- no real app logic runs in
-    // the browser tab itself, just a plain, honest confirmation page.
-    const char* body = result.success
-                            ? "<html><body><h2>Signed in to Kronos.</h2><p>You can close this tab and return to "
-                              "the app.</p></body></html>"
-                            : "<html><body><h2>Kronos sign-in failed.</h2><p>You can close this tab and try again "
-                              "in the app.</p></body></html>";
-    char header[256];
-    std::snprintf(header, sizeof(header),
-                  "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-                  std::strlen(body));
-    send(client, header, static_cast<int>(std::strlen(header)), 0);
-    send(client, body, static_cast<int>(std::strlen(body)), 0);
-    closeSocketHandle(client);
-
-    return result;
 }
 
 } // namespace engine::core
