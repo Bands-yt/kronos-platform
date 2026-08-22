@@ -595,6 +595,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/LightingToolsPlugin.cpp
         studio/plugins/CreatorConsolePlugin.cpp
         studio/plugins/TimelineEditorPlugin.cpp
+        studio/plugins/MovieModePlugin.cpp
         studio/plugins/CreatorAssetBrowserPlugin.cpp
         studio/plugins/TrailerPanel.cpp
         studio/plugins/LauncherPlugin.cpp

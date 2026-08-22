@@ -214,12 +214,14 @@ void OffscreenTarget::destroy(VmaAllocator allocator, VkDevice device) {
         depthImage_ = VK_NULL_HANDLE;
     }
     // sampler_ is intentionally NOT destroyed here -- it's persistent
-    // across resizes (see header); StudioApp is responsible for a final
-    // vkDestroySampler at real shutdown if it ever needs one (not built
-    // here since sampler_ has no owning destroy-all-the-way-down path in
-    // this skeleton; a one-sampler leak at process exit is harmless and
-    // freed by the OS, but flagged rather than silently accepted as
-    // correct).
+    // across resizes (see header). destroySampler() below is the final
+    // teardown, called once by StudioApp after the last destroy().
+}
+
+void OffscreenTarget::destroySampler(VkDevice device) {
+    if (sampler_ == VK_NULL_HANDLE) return;
+    vkDestroySampler(device, sampler_, nullptr);
+    sampler_ = VK_NULL_HANDLE;
 }
 
 } // namespace engine::studio

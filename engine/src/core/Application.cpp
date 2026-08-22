@@ -2346,7 +2346,19 @@ void Application::shutdown() {
     // Ordering contract from Renderer::shutdown()'s NOTE: mesh/texture GPU
     // resources are VMA allocations and must be freed before the
     // allocator they came from is destroyed.
+    // The GPU must be idle BEFORE these buffers are freed, not merely
+    // before the device is destroyed: Renderer::shutdown()'s own
+    // vkDeviceWaitIdle runs after this point, so without this the last
+    // frame's command buffer is still referencing the mesh/texture
+    // allocations being released here. StudioApp::shutdown() already
+    // waits in exactly this position; this is the same fix.
+    if (renderer_.device() != VK_NULL_HANDLE) vkDeviceWaitIdle(renderer_.device());
     meshLibrary_.destroyAll(renderer_.allocator());
+    // riggedMeshLibrary_ owns its own vertex/index/skin buffers against
+    // the same allocator and was never being torn down -- its meshes
+    // outlived vmaDestroyAllocator() and were reported as leaked device
+    // memory at vkDestroyDevice.
+    riggedMeshLibrary_.destroyAll(renderer_.allocator());
     textureLibrary_.destroyAll(renderer_.allocator(), renderer_.device());
     uiRenderer_.shutdown();
     renderer_.shutdown();

@@ -43,6 +43,7 @@
 #include "studio/plugins/CreatorAssetBrowserPlugin.hpp"
 #include "studio/plugins/CreatorConsolePlugin.hpp"
 #include "studio/plugins/LightingToolsPlugin.hpp"
+#include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/TimelineEditorPlugin.hpp"
 #include "studio/plugins/MaterialPlugin.hpp"
 #include "studio/plugins/ModelImporterPlugin.hpp"
@@ -514,6 +515,16 @@ bool StudioApp::initialize() {
     // Timeline Editor (Sprint 10 "Creator Tools Phase 2" task category 3) --
     // default-constructible, edits whatever entity is selected.
     pluginManager_.registerPlugin(std::make_unique<plugins::TimelineEditorPlugin>());
+
+    // Kronos ("Studio Movie Mode"): the cinematic authoring surface --
+    // the 6-track sequencer timeline, the Bezier curve editor and the
+    // offline exporter, over the engine::cinematic module. Held by
+    // pointer as well as registered, because ViewportPanel draws its
+    // camera-rail gizmo and needs to read the live rail -- the same shape
+    // physicsPreviewPlugin_ already uses for its collider overlays.
+    auto movieMode = std::make_unique<plugins::MovieModePlugin>();
+    movieModePlugin_ = movieMode.get();
+    pluginManager_.registerPlugin(std::move(movieMode));
 
     // Creator Asset Browser (Sprint 10 task category 4) -- needs
     // terrainEditorPlugin_ (already captured above) for its Terrain
@@ -1635,7 +1646,8 @@ void StudioApp::run() {
         }
         viewportDebugContext.renderer = &renderer_;
         viewportPanel_.draw(deltaTime, viewportTarget_.imguiTextureId(), viewportTarget_.extent(), &ecs_,
-                             &meshLibrary_, explorerPanel_, physicsPreviewPlugin_, viewportDebugContext);
+                             &meshLibrary_, explorerPanel_, physicsPreviewPlugin_, viewportDebugContext,
+                             movieModePlugin_);
         scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
         debugConsolePanel_.draw();
 
@@ -1755,6 +1767,9 @@ void StudioApp::shutdown() {
     // (mesh buffers, the offscreen target's images) must be freed before
     // renderer_.shutdown() destroys the allocator -- see Renderer::shutdown()'s NOTE.
     viewportTarget_.destroy(renderer_.allocator(), renderer_.device());
+    // The persistent sampler outlives every resize, so it is torn down
+    // here rather than in destroy() -- see OffscreenTarget::destroySampler().
+    viewportTarget_.destroySampler(renderer_.device());
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL2_Shutdown();

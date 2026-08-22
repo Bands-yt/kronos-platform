@@ -51,6 +51,7 @@ class AnimationPreviewerPlugin;
 class UploadAnimationPlugin;
 class AvatarEditor;
 class PhysicsPreviewPlugin;
+class MovieModePlugin;
 class ShopPlugin;
 class TerrainEditorPlugin;
 class CreatorToolsPlugin;
@@ -312,6 +313,10 @@ private:
     // castTestRay()) since physics debug visualization is drawn as part of
     // the viewport overlay, not the plugin's own ImGui panel.
     plugins::PhysicsPreviewPlugin* physicsPreviewPlugin_ = nullptr;
+    // Owned by pluginManager_; borrowed here so ViewportPanel can draw the
+    // camera-rail gizmo from the live rail. Same lifetime and same
+    // borrowing shape as physicsPreviewPlugin_ above.
+    plugins::MovieModePlugin* movieModePlugin_ = nullptr;
     // Same "raw pointer into what pluginManager_ owns" pattern -- see
     // ShopPlugin.hpp's class comment for why it owns its own sandboxed
     // economy state rather than a live ECS entity's.

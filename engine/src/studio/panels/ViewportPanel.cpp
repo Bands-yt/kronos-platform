@@ -1,5 +1,7 @@
 #include "studio/panels/ViewportPanel.hpp"
 
+#include "studio/plugins/MovieModePlugin.hpp"
+
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -398,6 +400,124 @@ std::vector<glm::vec3> circlePoints(glm::vec3 center, glm::vec3 axisA, glm::vec3
 }
 } // namespace
 
+// Kronos ("Studio Movie Mode"): the camera-rail gizmo -- the spline
+// itself, its control-point handles, and the look-at vectors that show
+// what the camera is actually aiming at along the move. Drawn here rather
+// than in MovieModePlugin because this panel owns the camera matrices and
+// the viewport image rectangle; the plugin owns the rail. Same split, and
+// the same projection helpers, as drawPhysicsDebugOverlay() below.
+void ViewportPanel::drawCameraRailOverlay(plugins::MovieModePlugin& movieMode, ImVec2 imageOrigin, ImVec2 imageSize) {
+    if (!movieMode.showRailGizmo()) return;
+    if (imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
+
+    cinematic::CameraRail& rail = movieMode.rail();
+    if (rail.pointCount() < 2) return;
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    glm::mat4 viewProj = camera_.projectionMatrix(imageSize.x / imageSize.y) * camera_.viewMatrix();
+
+    auto projectLine = [&](glm::vec3 a, glm::vec3 b, ImU32 color, float thickness) {
+        ImVec2 screenA, screenB;
+        if (!worldToScreen(viewProj, a, imageOrigin, imageSize, screenA)) return;
+        if (!worldToScreen(viewProj, b, imageOrigin, imageSize, screenB)) return;
+        drawList->AddLine(screenA, screenB, color, thickness);
+    };
+
+    // --- the spline ------------------------------------------------------
+    // Sampled through CameraRail::samplePosition() rather than
+    // re-evaluating the spline basis here, so the drawn path is by
+    // construction the path the camera travels -- including the difference
+    // between Catmull-Rom (through the points) and Bezier (shaped by them),
+    // which is exactly what the author needs to see.
+    constexpr ImU32 kRailColor = IM_COL32(80, 170, 225, 235);
+    constexpr int kSamplesPerSegment = 24;
+    const int totalSamples = static_cast<int>(rail.pointCount() - 1) * kSamplesPerSegment;
+    glm::vec3 previous = rail.samplePosition(0.0f);
+    for (int i = 1; i <= totalSamples; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(totalSamples);
+        const glm::vec3 current = rail.samplePosition(t);
+        projectLine(previous, current, kRailColor, 2.0f);
+        previous = current;
+    }
+
+    // --- look-at vectors --------------------------------------------------
+    if (movieMode.showLookAtLines()) {
+        constexpr ImU32 kAimColor = IM_COL32(235, 190, 90, 130);
+        constexpr int kAimSamples = 8;
+        for (int i = 0; i <= kAimSamples; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(kAimSamples);
+            // deltaSeconds of 0: sampling for a gizmo must not advance the
+            // rail's damped aim, which is stateful -- see CameraRail::sample().
+            const cinematic::RailSample sample = rail.sample(t, 0.0f);
+            projectLine(sample.position, sample.position + sample.forward * 2.5f, kAimColor, 1.4f);
+        }
+    }
+
+    // --- control-point handles -------------------------------------------
+    const std::vector<cinematic::RailPoint>& points = rail.points();
+    const int selectedPoint = movieMode.selectedRailPoint();
+    int hoveredPoint = -1;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        ImVec2 screen;
+        if (!worldToScreen(viewProj, points[i].position, imageOrigin, imageSize, screen)) continue;
+
+        const bool isSelected = static_cast<int>(i) == selectedPoint;
+        const float radius = isSelected ? 7.0f : 5.0f;
+        const bool isHovered = std::abs(mouse.x - screen.x) <= radius + 3.0f &&
+                                std::abs(mouse.y - screen.y) <= radius + 3.0f;
+        if (isHovered) hoveredPoint = static_cast<int>(i);
+
+        const ImU32 fill = isSelected ? IM_COL32(255, 220, 120, 255)
+                                       : (isHovered ? IM_COL32(190, 225, 250, 255) : IM_COL32(80, 170, 225, 255));
+        drawList->AddCircleFilled(screen, radius, fill);
+        drawList->AddCircle(screen, radius, IM_COL32(15, 18, 20, 220), 0, 1.6f);
+
+        char label[16];
+        std::snprintf(label, sizeof(label), "%zu", i + 1);
+        drawList->AddText(ImVec2(screen.x + radius + 3.0f, screen.y - 7.0f), IM_COL32(220, 235, 245, 220), label);
+    }
+
+    // --- where the camera actually is at the current playhead -------------
+    {
+        ImVec2 screen;
+        if (worldToScreen(viewProj, rail.samplePosition(movieMode.railParameterAtPlayhead()), imageOrigin, imageSize,
+                           screen)) {
+            drawList->AddCircleFilled(screen, 4.5f, IM_COL32(242, 90, 76, 255));
+            drawList->AddCircle(screen, 7.5f, IM_COL32(242, 90, 76, 170), 0, 1.5f);
+        }
+    }
+
+    // --- handle dragging --------------------------------------------------
+    // Dragging moves the point in the plane facing the camera through its
+    // current position: with only a 2D mouse there is no depth information
+    // to recover, and projecting onto the view plane is the one choice that
+    // makes the handle track the cursor exactly.
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hoveredPoint >= 0) {
+        movieMode.setSelectedRailPoint(hoveredPoint);
+        draggingRailPoint_ = hoveredPoint;
+    }
+    if (draggingRailPoint_ >= 0) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && draggingRailPoint_ < static_cast<int>(points.size())) {
+            const glm::vec3 pointPos = points[static_cast<size_t>(draggingRailPoint_)].position;
+            glm::vec3 rayOrigin, rayDirection;
+            computeMouseRay(mouse, imageOrigin, imageSize, rayOrigin, rayDirection);
+            const glm::vec3 planeNormal = glm::normalize(camera_.position - pointPos);
+            const float denominator = glm::dot(rayDirection, planeNormal);
+            // A ray parallel to the plane has no intersection; skipping is
+            // an honest no-op rather than dividing by ~0 and flinging the
+            // point to infinity.
+            if (std::abs(denominator) > 1e-5f) {
+                const float distance = glm::dot(pointPos - rayOrigin, planeNormal) / denominator;
+                if (distance > 0.0f) movieMode.moveRailPoint(draggingRailPoint_, rayOrigin + rayDirection * distance);
+            }
+        } else {
+            draggingRailPoint_ = -1;
+        }
+    }
+}
+
 void ViewportPanel::drawPhysicsDebugOverlay(core::ECS& ecs, plugins::PhysicsPreviewPlugin& physicsPreview,
                                              ImVec2 imageOrigin, ImVec2 imageSize) {
     if (!physicsPreview.showColliders && !physicsPreview.showContacts && !physicsPreview.showRaycasts) return;
@@ -603,7 +723,8 @@ void ViewportPanel::drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& 
 
 void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent2D sceneTextureExtent,
                           core::ECS* ecs, core::MeshLibrary* meshLibrary, ExplorerPanel& explorer,
-                          plugins::PhysicsPreviewPlugin* physicsPreview, const ViewportDebugContext& debugContext) {
+                          plugins::PhysicsPreviewPlugin* physicsPreview, const ViewportDebugContext& debugContext,
+                          plugins::MovieModePlugin* movieMode) {
     ImGuizmo::BeginFrame(); // once per ImGui frame -- see header comment
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -682,6 +803,9 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
 
     if (ecs != nullptr && physicsPreview != nullptr) {
         drawPhysicsDebugOverlay(*ecs, *physicsPreview, imageOrigin, imageSize);
+    }
+    if (movieMode != nullptr) {
+        drawCameraRailOverlay(*movieMode, imageOrigin, imageSize);
     }
     if (ecs != nullptr && meshLibrary != nullptr) {
         drawSprint8DebugOverlays(*ecs, *meshLibrary, debugContext, imageOrigin, imageSize);

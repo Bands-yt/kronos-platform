@@ -40,6 +40,10 @@ public:
     void ensureSize(VmaAllocator allocator, VkDevice device, VkFormat colorFormat, VkFormat depthFormat,
                      VkExtent2D extent);
     void destroy(VmaAllocator allocator, VkDevice device);
+    // Destroys the persistent sampler. Separate from destroy() because
+    // sampler_ deliberately survives resizes (see its declaration below) --
+    // call this once, at real shutdown, after the last destroy().
+    void destroySampler(VkDevice device);
 
     [[nodiscard]] bool isValid() const { return colorImage_ != VK_NULL_HANDLE; }
     [[nodiscard]] VkImage colorImage() const { return colorImage_; }

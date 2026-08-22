@@ -5496,6 +5496,18 @@ void Renderer::shutdown() {
     // (already destroyed by then) is what actually referenced
     // materialDescriptorSetLayout_ at creation time.
     destroyMaterialResources();
+    // Same ordering reason as destroyMaterialResources() above:
+    // scenePipelineLayout_ referenced bindlessSetLayout_ at creation time
+    // and has already been destroyed by this point.
+    //
+    // Neither of these ran at shutdown before: destroyBindlessResources()
+    // was only reachable from createDeviceResources()' failure path, and
+    // destroyPerImageSemaphores() only from inside its own create
+    // function -- so the bindless sampler/layout/pool/set and every
+    // per-swapchain-image semaphore were still alive when vkDestroyDevice
+    // was called.
+    destroyBindlessResources();
+    destroyPerImageSemaphores();
 
     for (auto& frame : frames_) {
         if (frame.imageAvailable) vkDestroySemaphore(device_, frame.imageAvailable, nullptr);

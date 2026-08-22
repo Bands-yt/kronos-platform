@@ -221,6 +221,7 @@
 #include "studio/UndoStack.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
+#include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
 #include "tntwars/ClassSystem.hpp"
@@ -30263,7 +30264,99 @@ void testHouseLayoutDoorGapIsOpenInFrontWall() {
     check(!gapBlocked, "no front-wall part blocks the door gap at ground level");
 }
 
+
+// Kronos ("Studio Movie Mode"): the plugin's non-ImGui behaviour -- what
+// it seeds, what it exposes to the viewport gizmo, and the export path
+// its modal drives. The ImGui draw loop itself is not exercised here (it
+// needs a live context); everything it *decides* is, which is where the
+// bugs would be.
+void testMovieModePlugin() {
+    engine::studio::plugins::MovieModePlugin plugin;
+
+    // One track per TrackKind -- the six the sequencer models.
+    const auto& tracks = plugin.sequence().tracks();
+    check(tracks.size() == 6, "MovieModePlugin seeds a 6-track sequence, one per TrackKind");
+    bool sawEveryKind = true;
+    for (int kind = 0; kind <= static_cast<int>(engine::cinematic::TrackKind::ScriptTrigger); ++kind) {
+        bool found = false;
+        for (const auto& track : tracks) {
+            if (static_cast<int>(track.kind) == kind) found = true;
+        }
+        if (!found) sawEveryKind = false;
+    }
+    check(sawEveryKind, "MovieModePlugin's seeded tracks cover every TrackKind");
+
+    // Seeded with real, sampleable content rather than empty tracks.
+    check(plugin.sequence().durationSeconds() > 0.0f, "MovieModePlugin's seeded sequence has a real duration");
+    check(nearlyEqual(plugin.sequence().sampleChannel("Prop Transform", "y", 3.0f, -1.0f), 2.0f),
+          "MovieModePlugin's seeded Transform track really samples its keyed value");
+
+    // --- rail exposed to the viewport gizmo ------------------------------
+    check(plugin.rail().pointCount() == 3, "MovieModePlugin seeds a rail with real control points");
+    const glm::vec3 original = plugin.rail().points()[1].position;
+    plugin.moveRailPoint(1, glm::vec3(1.0f, 2.0f, 3.0f));
+    check(plugin.rail().points()[1].position == glm::vec3(1.0f, 2.0f, 3.0f),
+          "MovieModePlugin::moveRailPoint moves the addressed control point");
+    check(plugin.rail().pointCount() == 3, "MovieModePlugin::moveRailPoint preserves the other points");
+    check(plugin.rail().points()[0].position != plugin.rail().points()[1].position,
+          "MovieModePlugin::moveRailPoint leaves neighbouring points alone");
+    plugin.moveRailPoint(1, original);
+
+    // Out-of-range indices are an honest no-op, not a write past the end.
+    // A viewport drag can outlive the point it grabbed.
+    plugin.moveRailPoint(99, glm::vec3(50.0f));
+    plugin.moveRailPoint(-1, glm::vec3(50.0f));
+    check(plugin.rail().pointCount() == 3, "MovieModePlugin::moveRailPoint ignores out-of-range indices");
+    bool noneFlung = true;
+    for (const auto& point : plugin.rail().points()) {
+        if (point.position.x >= 50.0f) noneFlung = false;
+    }
+    check(noneFlung, "MovieModePlugin::moveRailPoint's out-of-range no-op really wrote nothing");
+
+    // --- playhead -> rail parameter ---------------------------------------
+    plugin.sequence().setPlayhead(0.0f);
+    check(nearlyEqual(plugin.railParameterAtPlayhead(), 0.0f),
+          "MovieModePlugin::railParameterAtPlayhead is 0 at the start of the sequence");
+    plugin.sequence().setPlayhead(plugin.sequence().durationSeconds());
+    check(nearlyEqual(plugin.railParameterAtPlayhead(), 1.0f),
+          "MovieModePlugin::railParameterAtPlayhead is 1 at the end of the sequence");
+    // Clamped, not extrapolated: a playhead past the end must not index
+    // off the rail.
+    plugin.sequence().setPlayhead(plugin.sequence().durationSeconds() * 4.0f);
+    check(plugin.railParameterAtPlayhead() <= 1.0f,
+          "MovieModePlugin::railParameterAtPlayhead clamps past the end of the sequence");
+    plugin.sequence().setPlayhead(0.0f);
+
+    // --- the export path the modal's Render button drives ------------------
+    std::string error;
+    check(plugin.buildExport(error), "MovieModePlugin::buildExport accepts the default settings");
+    check(error.empty(), "MovieModePlugin::buildExport reports no error on success");
+    const int expectedFrames =
+        engine::cinematic::exportFrameCount(plugin.exportSettings(), plugin.sequence().durationSeconds());
+    check(static_cast<int>(plugin.lastExportSchedule().size()) == expectedFrames,
+          "MovieModePlugin::buildExport schedules exactly exportFrameCount() frames");
+    check(expectedFrames > 0, "MovieModePlugin's default export really covers the seeded sequence");
+
+    // Motion blur must widen each job's sample list, not the frame count.
+    plugin.exportSettings().motionBlur.enabled = true;
+    plugin.exportSettings().motionBlur.subFrameSamples = 4;
+    check(plugin.buildExport(error), "MovieModePlugin::buildExport accepts motion-blur settings");
+    check(static_cast<int>(plugin.lastExportSchedule().size()) == expectedFrames,
+          "MovieModePlugin's motion blur changes samples per frame, not the frame count");
+    check(!plugin.lastExportSchedule().empty() && plugin.lastExportSchedule().front().sampleTimesSeconds.size() == 4,
+          "MovieModePlugin's motion-blur jobs really carry their sub-frame samples");
+    plugin.exportSettings().motionBlur.enabled = false;
+
+    // Invalid settings are refused up front, and the refusal clears the
+    // stale schedule rather than leaving a previous run's frames behind.
+    plugin.exportSettings().channels.clear();
+    check(!plugin.buildExport(error), "MovieModePlugin::buildExport refuses an export with no channels");
+    check(!error.empty(), "MovieModePlugin::buildExport explains why it refused");
+    check(plugin.lastExportSchedule().empty(), "MovieModePlugin::buildExport clears the schedule when it refuses");
+}
+
 int main() {
+    testMovieModePlugin();
     testAnimationInterpolation();
     testConstantEasing();
     testClipSaveLoadRoundTrip();

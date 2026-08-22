@@ -2090,6 +2090,15 @@ int main(int argc, char** argv) {
 
     app.run();
     terrain.destroy();
+    // The shell must be destroyed BEFORE app.shutdown(): ~RuntimeShell
+    // runs ImGui_ImplVulkan_Shutdown() and destroys its descriptor pool
+    // against app's device, and RuntimeShell::shutdown() states that
+    // ordering as an assumption. As a plain local, `shell` would instead
+    // have been destroyed at the end of main -- after the device was
+    // already gone -- which is why the ImGui backend's pipeline, font
+    // image, samplers and descriptor sets were being reported as leaked
+    // at vkDestroyDevice.
+    shell.reset();
     app.shutdown();
     return 0;
 }

@@ -17,6 +17,7 @@ class Terrain;
 
 namespace engine::studio::plugins {
 class PhysicsPreviewPlugin;
+class MovieModePlugin;
 }
 
 namespace engine::studio::panels {
@@ -99,7 +100,10 @@ public:
     void draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent2D sceneTextureExtent, core::ECS* ecs,
               core::MeshLibrary* meshLibrary, ExplorerPanel& explorer,
               plugins::PhysicsPreviewPlugin* physicsPreview = nullptr,
-              const ViewportDebugContext& debugContext = ViewportDebugContext{});
+              const ViewportDebugContext& debugContext = ViewportDebugContext{},
+              // Draws the camera-rail gizmo when non-null -- see
+              // drawCameraRailOverlay().
+              plugins::MovieModePlugin* movieMode = nullptr);
 
     [[nodiscard]] core::Camera& camera() { return camera_; }
     [[nodiscard]] const core::Camera& camera() const { return camera_; }
@@ -186,6 +190,12 @@ private:
     // showRaycasts flags so a user can enable just the one they need.
     void drawPhysicsDebugOverlay(core::ECS& ecs, plugins::PhysicsPreviewPlugin& physicsPreview, ImVec2 imageOrigin,
                                   ImVec2 imageSize);
+    // Camera-path spline, control-point handles and look-at vectors for
+    // Movie Mode's rail -- see the .cpp for why this lives here rather
+    // than in the plugin.
+    void drawCameraRailOverlay(plugins::MovieModePlugin& movieMode, ImVec2 imageOrigin, ImVec2 imageSize);
+    // Which rail control point a drag is moving; -1 when none is.
+    int draggingRailPoint_ = -1;
 
     // Sprint 8 ("Performance Stats & Debug Tools") task category 2:
     // bounding-box overlay (every Renderable+Transform+MeshSource entity's
