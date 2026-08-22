@@ -101,6 +101,53 @@ struct UserSearchResult {
     std::string relationship;
 };
 
+// One page of the account directory.
+struct DirectoryUser {
+    std::string id;
+    std::string username;
+    std::string displayName;
+    // "offline" | "online_launcher" | "in_studio" | "in_game"
+    std::string status;
+    std::string currentGameId;
+};
+
+struct DirectoryResult {
+    bool success = false;
+    std::vector<DirectoryUser> users;
+    std::string nextCursor;   // empty when this was the last page
+    bool presenceAvailable = false;
+    std::string error;
+};
+
+struct PresenceSummary {
+    bool success = false;
+    bool available = false;
+    int offline = 0;
+    int onlineLauncher = 0;
+    int inStudio = 0;
+    int inGame = 0;
+    int totalOnline = 0;
+    int registeredAccounts = 0;
+    std::string error;
+};
+
+struct PublishRequest {
+    std::string slug;
+    std::string title;
+    std::string description;
+    std::string thumbnailUrl;
+    std::string sceneSha256;
+};
+
+struct PublishResult {
+    bool success = false;
+    // "published" for a new place, "updated" when re-publishing your own.
+    std::string status;
+    std::string gameId;
+    std::string slug;
+    std::string error;
+};
+
 struct UserSearchResponse {
     bool success = false;
     std::vector<UserSearchResult> results;
@@ -173,6 +220,15 @@ public:
     // Real 15s presence heartbeat, per the spec. Best effort: a failed
     // heartbeat just means friends see this user go offline shortly.
     void sendPresenceHeartbeat(const std::string& status, const std::string& gameId, const std::string& serverId);
+
+    // --- directory / discovery -------------------------------------------
+    // `cursor` empty fetches the first page; pass the previous response's
+    // nextCursor to continue. limit is clamped server-side to 200.
+    [[nodiscard]] DirectoryResult fetchUserDirectory(int limit = 50, const std::string& cursor = {});
+    [[nodiscard]] PresenceSummary fetchPresenceSummary();
+
+    // --- publishing --------------------------------------------------------
+    [[nodiscard]] PublishResult publishGame(const PublishRequest& request);
 
 private:
     struct HttpResponse {

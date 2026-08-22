@@ -339,6 +339,7 @@ void RuntimeShell::shutdown() {
     if (friendsThread_.joinable()) friendsThread_.join();
     if (friendSearchThread_.joinable()) friendSearchThread_.join();
     if (presenceThread_.joinable()) presenceThread_.join();
+    if (directoryThread_.joinable()) directoryThread_.join();
 
     lanBrowser_.stop();
     lanBrowserRunning_ = false;
@@ -927,7 +928,10 @@ void RuntimeShell::tick(float dt) {
             case ShellState::GameCatalogue: drawGameCataloguePanel(); break;
             case ShellState::AvatarShop: drawAvatarShopPanel(); break;
             case ShellState::Settings: drawSettingsPanel(); break;
-            case ShellState::Friends: drawFriendsPanel(); break;
+            // Kronos ("Live Dashboard View"): the Friends slot now hosts
+            // the account directory, which is the panel this state is
+            // actually reachable from in the sidebar.
+            case ShellState::Friends: drawDirectoryPanel(); break;
             case ShellState::Notifications: drawNotificationsPanel(); break;
             case ShellState::Error: drawErrorPanel(); break;
             case ShellState::InGame:
@@ -1195,10 +1199,152 @@ void RuntimeShell::joinFriendGame(const core::KronosFriend& friendEntry) {
 // means friends see this user go offline slightly early.
 void RuntimeShell::presenceHeartbeat() {
     if (presenceThread_.joinable()) presenceThread_.join();
+    if (directoryThread_.joinable()) directoryThread_.join();
     bool inGame = state_ == ShellState::InGame;
     presenceThread_ = std::thread([this, inGame]() {
         kronosApi_.sendPresenceHeartbeat(inGame ? "in_game" : "online_launcher", std::string(), std::string());
     });
+}
+
+void RuntimeShell::startDirectoryFetch(bool loadNextPage) {
+    if (directoryFetchInProgress_.load() || !kronosApi_.isSignedIn()) return;
+    if (loadNextPage && directoryNextCursor_.empty()) return;
+    if (directoryThread_.joinable()) directoryThread_.join();
+
+    directoryFetchInProgress_.store(true);
+    directoryAppendingPage_ = loadNextPage;
+    const std::string cursor = loadNextPage ? directoryNextCursor_ : std::string();
+
+    directoryThread_ = std::thread([this, cursor]() {
+        core::DirectoryResult page = kronosApi_.fetchUserDirectory(kCatalogueBatchSize, cursor);
+        core::PresenceSummary summary = kronosApi_.fetchPresenceSummary();
+        std::lock_guard<std::mutex> lock(directoryMutex_);
+        directoryPendingResult_ = std::move(page);
+        directoryPendingSummary_ = summary;
+        directoryFetchInProgress_.store(false);
+    });
+}
+
+// Kronos ("Live Dashboard View"): the account directory, with the spec's
+// four status colours. Every row comes from a real /v1/users response --
+// there is no synthesised account, so an empty directory means the
+// directory really is empty.
+void RuntimeShell::drawDirectoryPanel() {
+    using namespace core::kronos_palette;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                     viewport->WorkSize.y - kTopBarHeight));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kCharcoal));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 18.0f));
+    ImGui::Begin("Directory", nullptr,
+                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    ImGui::TextColored(paletteColor(kTextBright), "Accounts");
+
+    if (!kronosApi_.isSignedIn()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "Sign in to view the Kronos account directory.");
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        return;
+    }
+
+    // --- summary tiles -------------------------------------------------
+    if (directorySummary_.success && directorySummary_.available) {
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
+        auto tile = [&](const char* label, int value, const ImVec4& color) {
+            ImGui::BeginChild(label, ImVec2(150.0f, 58.0f), true);
+            ImGui::TextColored(color, "%d", value);
+            ImGui::TextColored(paletteColor(kTextMuted), "%s", label);
+            ImGui::EndChild();
+            ImGui::SameLine();
+        };
+        tile("Online", directorySummary_.totalOnline, paletteColor(kGreen));
+        tile("In Studio", directorySummary_.inStudio, ImVec4(0.90f, 0.55f, 0.15f, 1.0f));
+        tile("Playing", directorySummary_.inGame, paletteColor(kSkyBlue));
+        tile("Registered", directorySummary_.registeredAccounts, paletteColor(kTextBright));
+        ImGui::NewLine();
+    } else if (directorySummary_.success) {
+        // The backend told us presence is unavailable. Saying so beats
+        // drawing a confident row of zeroes.
+        ImGui::TextColored(paletteColor(kTextMuted), "Live presence is unavailable right now.");
+    }
+
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 90.0f);
+    ImGui::BeginDisabled(directoryFetchInProgress_.load());
+    if (ImGui::SmallButton("Refresh##directory")) {
+        directoryNextCursor_.clear();
+        startDirectoryFetch(/*loadNextPage=*/false);
+    }
+    ImGui::EndDisabled();
+
+    if (!directoryStatusMessage_.empty()) {
+        ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.30f, 1.0f), "%s", directoryStatusMessage_.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::BeginChild("##directory_rows", ImVec2(0.0f, 0.0f), false);
+
+    if (directoryUsers_.empty() && !directoryFetchInProgress_.load()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "No accounts to show yet.");
+    }
+
+    for (const core::DirectoryUser& entry : directoryUsers_) {
+        ImGui::PushID(entry.id.c_str());
+        ImGui::BeginChild("##row", ImVec2(0.0f, 56.0f), true);
+
+        // Spec colours: grey offline, green launcher, orange studio, blue
+        // playing.
+        ImVec4 statusColor = ImVec4(0.45f, 0.46f, 0.48f, 1.0f);
+        const char* statusLabel = "Offline";
+        if (entry.status == "online_launcher") {
+            statusColor = paletteColor(kGreen);
+            statusLabel = "Online";
+        } else if (entry.status == "in_studio") {
+            statusColor = ImVec4(0.90f, 0.55f, 0.15f, 1.0f);
+            statusLabel = "In Studio";
+        } else if (entry.status == "in_game") {
+            statusColor = paletteColor(kSkyBlue);
+            statusLabel = "Playing";
+        }
+
+        ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddCircleFilled(ImVec2(origin.x + 10.0f, origin.y + 16.0f), 6.0f,
+                                   ImGui::GetColorU32(statusColor), 16);
+        drawAvatarHeadGlyph(drawList, ImVec2(origin.x + 42.0f, origin.y + 18.0f), 16.0f);
+        ImGui::Dummy(ImVec2(66.0f, 36.0f));
+        ImGui::SameLine();
+
+        ImGui::BeginGroup();
+        ImGui::TextColored(paletteColor(kTextBright), "%s",
+                            entry.username.empty() ? entry.displayName.c_str() : entry.username.c_str());
+        ImGui::TextColored(statusColor, "%s", statusLabel);
+        ImGui::EndGroup();
+
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+
+    // Same infinite-scroll trigger the Discover grid uses.
+    if (!directoryNextCursor_.empty() && !directoryFetchInProgress_.load()) {
+        const float scrollY = ImGui::GetScrollY();
+        const float scrollMax = ImGui::GetScrollMaxY();
+        if (scrollMax > 0.0f && scrollY >= scrollMax - ImGui::GetWindowHeight()) {
+            startDirectoryFetch(/*loadNextPage=*/true);
+        }
+    }
+    if (directoryFetchInProgress_.load()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "Loading...");
+    } else if (directoryNextCursor_.empty() && !directoryUsers_.empty()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "%zu account(s).", directoryUsers_.size());
+    }
+
+    ImGui::EndChild();
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 void RuntimeShell::startFriendsFetch() {
@@ -2827,6 +2973,7 @@ void RuntimeShell::drawSidebar() {
         {"Home", nullptr, ShellState::Home},
         {"Discover", nullptr, ShellState::GameCatalogue},
         {"Avatar", nullptr, ShellState::AvatarShop},
+        {"Directory", "Accounts & presence", ShellState::Friends},
         {"Create", "Studio & Local Dev Games", ShellState::Home}, // Create is a mode of the catalogue, see below
         {"Settings", nullptr, ShellState::Settings},
     };
@@ -2860,6 +3007,10 @@ void RuntimeShell::drawSidebar() {
                 // used, so each destination still loads what it needs.
                 if (entry.target == ShellState::AvatarShop) openAvatarShop();
                 else if (entry.target == ShellState::Settings) openSettings();
+                else if (entry.target == ShellState::Friends) {
+                    directoryNextCursor_.clear();
+                    startDirectoryFetch(/*loadNextPage=*/false);
+                }
             }
         }
         ImGui::PopStyleColor(4);
@@ -2997,14 +3148,22 @@ void RuntimeShell::startBackendSessionRestore() {
     });
 }
 
-void RuntimeShell::startCatalogueFetch() {
+void RuntimeShell::startCatalogueFetch(bool loadNextPage) {
     if (catalogueFetchInProgress_.load()) return;
+    // Nothing more to load: without this the grid would re-request the
+    // last page every time the user scrolled to the bottom.
+    if (loadNextPage && catalogueNextCursor_.empty()) return;
     if (catalogueFetchThread_.joinable()) catalogueFetchThread_.join();
 
     catalogueFetchInProgress_.store(true);
-    catalogueStatusMessage_ = "Loading games from Kronos...";
-    catalogueFetchThread_ = std::thread([this]() {
-        core::CatalogueResult result = kronosApi_.fetchGames(24);
+    catalogueAppendingPage_ = loadNextPage;
+    catalogueStatusMessage_ = loadNextPage ? "Loading more..." : "Loading games from Kronos...";
+
+    const std::string cursor = loadNextPage ? catalogueNextCursor_ : std::string();
+    catalogueFetchThread_ = std::thread([this, cursor]() {
+        // 200 is the batch size the backend caps at -- one round trip per
+        // screenful of grid rather than per handful of cards.
+        core::CatalogueResult result = kronosApi_.fetchGames(kCatalogueBatchSize, cursor);
         std::lock_guard<std::mutex> lock(catalogueFetchMutex_);
         cataloguePendingResult_ = std::move(result);
         catalogueFetchInProgress_.store(false);
@@ -3017,6 +3176,7 @@ void RuntimeShell::startServerAllocation(const std::string& gameSlug, const std:
     if (friendsThread_.joinable()) friendsThread_.join();
     if (friendSearchThread_.joinable()) friendSearchThread_.join();
     if (presenceThread_.joinable()) presenceThread_.join();
+    if (directoryThread_.joinable()) directoryThread_.join();
 
     allocationInProgress_.store(true);
     allocationGameTitle_ = title;
@@ -3084,7 +3244,17 @@ void RuntimeShell::pollBackendResults() {
             backendReachability_ =
                 catalogueResult->success ? BackendReachability::Reachable : BackendReachability::Unreachable;
             if (catalogueResult->success) {
-                onlineGames_ = std::move(catalogueResult->games);
+                if (catalogueAppendingPage_) {
+                    // Locally cached: previously loaded batches stay in
+                    // memory so scrolling back up never re-fetches.
+                    onlineGames_.insert(onlineGames_.end(),
+                                         std::make_move_iterator(catalogueResult->games.begin()),
+                                         std::make_move_iterator(catalogueResult->games.end()));
+                } else {
+                    onlineGames_ = std::move(catalogueResult->games);
+                }
+                catalogueNextCursor_ = catalogueResult->nextCursor;
+                catalogueAppendingPage_ = false;
                 onlinePlayerCountsAvailable_ = catalogueResult->playerCountsAvailable;
                 catalogueStatusMessage_ =
                     onlineGames_.empty() ? "No games have been published to Kronos yet." : std::string();
@@ -3094,6 +3264,7 @@ void RuntimeShell::pollBackendResults() {
                 // Deliberately does NOT clear onlineGames_: a transient
                 // network blip should leave the last real feed on screen
                 // rather than blanking it.
+                catalogueAppendingPage_ = false;
                 catalogueStatusMessage_ = catalogueResult->error;
                 core::logWarn("Kronos", "online catalogue fetch failed: %s", catalogueResult->error.c_str());
             }
@@ -3140,6 +3311,39 @@ void RuntimeShell::pollBackendResults() {
                 friendSearchResults_.clear();
                 friendSearchStatus_ = searchResult->error;
             }
+        }
+    }
+
+    // --- account directory ---
+    {
+        std::optional<core::DirectoryResult> page;
+        std::optional<core::PresenceSummary> summary;
+        {
+            std::lock_guard<std::mutex> lock(directoryMutex_);
+            if (directoryPendingResult_.has_value()) {
+                page = std::move(directoryPendingResult_);
+                directoryPendingResult_.reset();
+            }
+            if (directoryPendingSummary_.has_value()) {
+                summary = std::move(directoryPendingSummary_);
+                directoryPendingSummary_.reset();
+            }
+        }
+        if (summary.has_value()) directorySummary_ = *summary;
+        if (page.has_value()) {
+            if (page->success) {
+                if (directoryAppendingPage_) {
+                    directoryUsers_.insert(directoryUsers_.end(), std::make_move_iterator(page->users.begin()),
+                                            std::make_move_iterator(page->users.end()));
+                } else {
+                    directoryUsers_ = std::move(page->users);
+                }
+                directoryNextCursor_ = page->nextCursor;
+                directoryStatusMessage_.clear();
+            } else {
+                directoryStatusMessage_ = page->error;
+            }
+            directoryAppendingPage_ = false;
         }
     }
 
@@ -3243,7 +3447,10 @@ void RuntimeShell::drawOnlineCatalogueSection() {
     // a signed-out visitor still sees what is published. Only Play needs
     // an account, and that is enforced at allocation time.
     ImGui::BeginDisabled(catalogueFetchInProgress_.load());
-    if (ImGui::SmallButton("Refresh##online")) startCatalogueFetch();
+    if (ImGui::SmallButton("Refresh##online")) {
+        catalogueNextCursor_.clear();
+        startCatalogueFetch(/*loadNextPage=*/false);
+    }
     ImGui::EndDisabled();
     if (catalogueFetchInProgress_.load()) {
         ImGui::SameLine();
@@ -3287,6 +3494,22 @@ void RuntimeShell::drawOnlineCatalogueSection() {
 
         ImGui::EndChild();
         ImGui::PopID();
+    }
+
+    // Infinite scroll: pull the next batch once the user is within a
+    // screenful of the end, so the next page is usually already there by
+    // the time they reach it.
+    if (!catalogueNextCursor_.empty() && !catalogueFetchInProgress_.load()) {
+        const float scrollY = ImGui::GetScrollY();
+        const float scrollMax = ImGui::GetScrollMaxY();
+        if (scrollMax > 0.0f && scrollY >= scrollMax - ImGui::GetWindowHeight()) {
+            startCatalogueFetch(/*loadNextPage=*/true);
+        }
+    }
+    if (catalogueFetchInProgress_.load() && catalogueAppendingPage_) {
+        ImGui::TextColored(paletteColor(core::kronos_palette::kTextMuted), "Loading more...");
+    } else if (catalogueNextCursor_.empty() && onlineGames_.size() > kCatalogueBatchSize) {
+        ImGui::TextColored(paletteColor(core::kronos_palette::kTextMuted), "That's everything (%zu games).", onlineGames_.size());
     }
 
     if (allocationInProgress_.load()) {

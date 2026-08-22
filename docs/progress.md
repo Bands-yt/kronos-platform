@@ -2827,3 +2827,46 @@ there are real places in it.
 The UI halves -- infinite-scroll grids, the account dashboard panel, and
 Studio's publish button -- are not built. The endpoints they need now
 exist and are tested.
+
+## 2026-08-21 (final) — UI wiring: batch grids, directory panel, Studio publish
+
+Scope frozen; this pass wires the three UI surfaces to endpoints that
+already existed and were already tested.
+
+**Batch grids (200/page).** `startCatalogueFetch(loadNextPage)` now
+carries a keyset cursor and *appends* rather than replacing, so earlier
+batches stay cached in memory and scrolling back up never re-fetches.
+Infinite scroll triggers a screenful early so the next page is usually
+already there. Refresh clears the cursor first, so it reloads rather than
+appending onto a stale list, and a fetch is skipped entirely once the
+cursor is empty -- otherwise reaching the bottom would re-request the
+last page forever.
+
+**Account directory panel.** New sidebar entry with the spec's four
+status colours (grey offline, green launcher, orange studio, blue
+playing), summary tiles, and the same infinite-scroll paging. When the
+backend reports presence unavailable the panel says so rather than
+drawing a confident row of zeroes.
+
+**Studio "Publish to Kronos".** Reuses the same validation the local Test
+Publish runs -- a place that will not package locally must not reach the
+public catalogue either. Studio needs no sign-in UI of its own: it
+restores the refresh token the launcher already stored in the OS
+keychain, so signing in once covers both. The button disables itself
+without a World ID and Title, and backend validation messages are shown
+verbatim since they are already written for a human.
+
+### Verified against the live backend
+Cursor paging returns non-overlapping batches; a 200-item batch is
+accepted; the directory returns real rows with real handles and known
+presence states; the summary counts a real `in_studio` account; publish
+returns `published` then `updated` on re-publish; the published place
+really appears in the Discover catalogue; an invalid slug is refused with
+a real message.
+
+### One real behaviour worth knowing
+The directory lists only accounts that have **claimed a username** -- a
+row with no name to show is worse than no row. Confirmed directly against
+the database (17 handle-less accounts excluded, 42 listed). A brand-new
+account is therefore invisible in the directory until it picks a handle.
+That is deliberate, not a bug, but it is a real onboarding consequence.

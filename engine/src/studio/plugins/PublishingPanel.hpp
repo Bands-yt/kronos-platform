@@ -1,5 +1,13 @@
 #pragma once
 
+#include <atomic>
+#include <mutex>
+#include <optional>
+#include <thread>
+
+#include "core/KronosApi.hpp"
+#include "core/KronosClientConfig.hpp"
+
 #include <string>
 #include <vector>
 
@@ -61,6 +69,10 @@ private:
     void drawTestPublishSection(core::ECS& ecs);
     void drawServerRegistrySection(core::ECS& ecs);
     void drawPublishLogSection();
+    // Kronos ("One-Click Cloud Publishing"): uploads the active place's
+    // metadata to the real backend.
+    void drawCloudPublishSection(core::ECS& ecs);
+    void startCloudPublish(core::ECS& ecs);
 
     [[nodiscard]] publishing::WorldPackage buildPackage(core::ECS& ecs) const;
     void logMessage(const std::string& message);
@@ -102,6 +114,18 @@ private:
     // the next real pre-pass callback, the one place a live Renderer&
     // actually is -- see renderPreview()'s own comment.
     bool captureRequested_ = false;
+
+    // --- cloud publishing --------------------------------------------------
+    // Studio deliberately has no sign-in UI of its own: it reuses the
+    // refresh token the launcher already stored in the OS keychain, so
+    // signing in once covers both applications.
+    core::KronosApi kronosApi_;
+    std::thread cloudPublishThread_;
+    std::atomic<bool> cloudPublishInProgress_{false};
+    std::mutex cloudPublishMutex_;
+    std::optional<core::PublishResult> cloudPublishPendingResult_;
+    std::string cloudPublishStatus_;
+    bool cloudPublishSucceeded_ = false;
     std::string pendingThumbnailPath_;
     // Task 3's "Add auto-capture + manual capture modes": Manual (the
     // default) requires the explicit "Capture Thumbnail" button; Auto

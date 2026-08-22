@@ -1,5 +1,7 @@
 #include "studio/plugins/PublishingPanel.hpp"
 
+#include "core/ResourcePaths.hpp"
+
 #include <cstdio>
 #include <filesystem>
 #include <sstream>
@@ -29,7 +31,11 @@ std::vector<std::string> splitCommaSeparated(const std::string& text) {
 PublishingPanel::PublishingPanel(core::SceneManager& sceneManager, core::Camera& viewportCamera, core::MeshLibrary& meshLibrary,
                                   core::TextureLibrary& textureLibrary, net::NetworkSession& networkSession)
     : sceneManager_(&sceneManager), viewportCamera_(&viewportCamera), meshLibrary_(&meshLibrary),
-      textureLibrary_(&textureLibrary), networkSession_(&networkSession) {
+      textureLibrary_(&textureLibrary), networkSession_(&networkSession),
+      // Same config.json > environment > localhost resolution the
+      // launcher uses, so both point at one backend without Studio
+      // needing its own setting.
+      kronosApi_(core::loadKronosClientConfig(core::executableDirectory()).apiUrl) {
     thumbnailRig_.camera.position = glm::vec3(0.0f, 3.0f, 8.0f);
     thumbnailRig_.camera.yawDegrees = -90.0f;
     thumbnailRig_.camera.pitchDegrees = -15.0f;
@@ -151,6 +157,105 @@ void PublishingPanel::drawValidationSection(core::ECS& ecs) {
     }
 }
 
+
+// Kronos ("One-Click Cloud Publishing"). Deliberately reuses the same
+// validation the local Test Publish already runs: a place that would not
+// package locally must not reach the public catalogue either.
+void PublishingPanel::startCloudPublish(core::ECS& ecs) {
+    if (cloudPublishInProgress_.load()) return;
+
+    publishing::WorldPackage package = buildPackage(ecs);
+    publishing::PublishValidationResult validation =
+        publishing::validateForPublish(package.worldId, package.version, package.metadata, package.scene);
+    if (!validation.valid) {
+        cloudPublishSucceeded_ = false;
+        cloudPublishStatus_ = "Fix " + std::to_string(validation.errors.size()) + " validation error(s) first.";
+        logMessage("Publish to Kronos blocked by validation:");
+        for (const auto& error : validation.errors) logMessage("  - " + error);
+        return;
+    }
+
+    core::PublishRequest request;
+    request.slug = package.worldId;
+    request.title = package.metadata.title;
+    request.description = package.metadata.description;
+
+    if (cloudPublishThread_.joinable()) cloudPublishThread_.join();
+    cloudPublishInProgress_.store(true);
+    cloudPublishSucceeded_ = false;
+    cloudPublishStatus_ = "Publishing to Kronos...";
+
+    cloudPublishThread_ = std::thread([this, request]() {
+        // Restore the launcher's saved session if this Studio process
+        // does not already have one -- signing in once covers both.
+        if (!kronosApi_.isSignedIn()) (void)kronosApi_.restoreSession();
+        core::PublishResult result = kronosApi_.publishGame(request);
+        std::lock_guard<std::mutex> lock(cloudPublishMutex_);
+        cloudPublishPendingResult_ = std::move(result);
+        cloudPublishInProgress_.store(false);
+    });
+}
+
+void PublishingPanel::drawCloudPublishSection(core::ECS& ecs) {
+    // Drain the worker's result on the UI thread.
+    {
+        std::optional<core::PublishResult> result;
+        {
+            std::lock_guard<std::mutex> lock(cloudPublishMutex_);
+            if (cloudPublishPendingResult_.has_value()) {
+                result = std::move(cloudPublishPendingResult_);
+                cloudPublishPendingResult_.reset();
+            }
+        }
+        if (result.has_value()) {
+            cloudPublishSucceeded_ = result->success;
+            if (result->success) {
+                cloudPublishStatus_ = result->status == "updated"
+                                           ? "Updated \"" + result->slug + "\" in the Kronos catalogue."
+                                           : "Published \"" + result->slug + "\" to the Kronos catalogue.";
+                logMessage(cloudPublishStatus_);
+            } else {
+                // The backend's messages are written for a human, so they
+                // are shown verbatim rather than replaced with "failed".
+                cloudPublishStatus_ = result->error;
+                logMessage("Publish to Kronos failed: " + result->error);
+            }
+        }
+    }
+
+    if (!ImGui::CollapsingHeader("Publish to Kronos", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    ImGui::TextDisabled("Uploads this place to the public catalogue at %s", kronosApi_.baseUrl().c_str());
+    ImGui::TextDisabled("Uses the Kronos account you signed into in the launcher.");
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+
+    const bool busy = cloudPublishInProgress_.load();
+    // A place with no id or title cannot be published, and disabling the
+    // button says so before a round trip does.
+    const bool hasIdentity = worldIdBuffer_[0] != '\0' && titleBuffer_[0] != '\0';
+
+    ImGui::BeginDisabled(busy || !hasIdentity);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.698f, 0.349f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.075f, 0.788f, 0.420f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.588f, 0.290f, 1.0f));
+    if (ImGui::Button(busy ? "Publishing..." : "Publish to Kronos", ImVec2(200.0f, 34.0f))) {
+        startCloudPublish(ecs);
+    }
+    ImGui::PopStyleColor(3);
+    ImGui::EndDisabled();
+
+    if (!hasIdentity) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Set a World ID and Title first.");
+    }
+
+    if (!cloudPublishStatus_.empty()) {
+        const ImVec4 color = cloudPublishSucceeded_ ? ImVec4(0.0f, 0.698f, 0.349f, 1.0f)
+                                                     : ImVec4(0.85f, 0.35f, 0.30f, 1.0f);
+        ImGui::TextColored(color, "%s", cloudPublishStatus_.c_str());
+    }
+}
+
 void PublishingPanel::drawTestPublishSection(core::ECS& ecs) {
     if (!ImGui::CollapsingHeader("Test Publish (local packaging)", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
@@ -213,6 +318,7 @@ void PublishingPanel::drawPanel(core::ECS& ecs, core::EntityId, const std::vecto
     drawThumbnailSection();
     drawValidationSection(ecs);
     drawTestPublishSection(ecs);
+    drawCloudPublishSection(ecs);
     drawServerRegistrySection(ecs);
     drawPublishLogSection();
 
@@ -250,6 +356,9 @@ void PublishingPanel::renderPreview(VkCommandBuffer cmd, core::Renderer& rendere
 }
 
 void PublishingPanel::shutdown(core::Renderer& renderer) {
+    // The worker captures `this`; it must not outlive the panel.
+    if (cloudPublishThread_.joinable()) cloudPublishThread_.join();
+
     thumbnailRig_.destroy(renderer, renderer.allocator(), renderer.device());
 }
 

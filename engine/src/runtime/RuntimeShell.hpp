@@ -353,7 +353,7 @@ private:
     // optional, exactly like the Google sign-in and update check already
     // do. None of them may block the render thread.
     void startBackendSessionRestore();
-    void startCatalogueFetch();
+    void startCatalogueFetch(bool loadNextPage = false);
     // Requests a real server allocation for `slug` and, on success,
     // connects to the host/port the backend returned.
     void startServerAllocation(const std::string& gameSlug, const std::string& title);
@@ -366,6 +366,8 @@ private:
     void beginContentCanvas(const char* id);
     void endContentCanvas();
     void drawFriendsCarousel();
+    void drawDirectoryPanel();
+    void startDirectoryFetch(bool loadNextPage = false);
     void drawAddFriendsModal();
     void joinFriendGame(const core::KronosFriend& friendEntry);
     void startFriendsFetch();
@@ -564,6 +566,11 @@ private:
     std::vector<core::CatalogueGame> onlineGames_;
     bool onlinePlayerCountsAvailable_ = false;
     std::string catalogueStatusMessage_;
+    // Keyset cursor for the next batch; empty means the end of the
+    // catalogue has been reached.
+    std::string catalogueNextCursor_;
+    bool catalogueAppendingPage_ = false;
+    static constexpr int kCatalogueBatchSize = 200;
 
     std::thread allocationThread_;
     std::atomic<bool> allocationInProgress_{false};
@@ -602,6 +609,18 @@ private:
     std::string friendSearchStatus_;
     std::thread friendSearchThread_;
     std::thread presenceThread_;
+
+    // --- account directory ------------------------------------------------
+    std::vector<core::DirectoryUser> directoryUsers_;
+    std::string directoryNextCursor_;
+    std::string directoryStatusMessage_;
+    core::PresenceSummary directorySummary_;
+    std::thread directoryThread_;
+    std::atomic<bool> directoryFetchInProgress_{false};
+    std::mutex directoryMutex_;
+    std::optional<core::DirectoryResult> directoryPendingResult_;
+    std::optional<core::PresenceSummary> directoryPendingSummary_;
+    bool directoryAppendingPage_ = false;
     std::atomic<bool> friendSearchInProgress_{false};
     std::mutex friendSearchMutex_;
     std::optional<core::UserSearchResponse> friendSearchPendingResult_;

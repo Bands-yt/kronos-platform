@@ -577,4 +577,109 @@ void KronosApi::sendPresenceHeartbeat(const std::string& status, const std::stri
     (void)requestWithRefresh("POST", "/v1/presence/heartbeat", body.dump());
 }
 
+
+DirectoryResult KronosApi::fetchUserDirectory(int limit, const std::string& cursor) {
+    DirectoryResult result;
+    std::string path = "/v1/users?limit=" + std::to_string(limit);
+    if (!cursor.empty()) path += "&cursor=" + cursor;
+
+    HttpResponse response = requestWithRefresh("GET", path, {});
+    if (!response.transportOk) {
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    auto users = parsed.is_discarded() ? parsed.end() : parsed.find("users");
+    if (parsed.is_discarded() || users == parsed.end() || !users->is_array()) {
+        result.error = "The Kronos service returned a directory this build could not parse.";
+        return result;
+    }
+    for (const auto& node : *users) {
+        DirectoryUser entry;
+        entry.id = jsonStringOr(node, "id");
+        entry.username = jsonStringOr(node, "username");
+        entry.displayName = jsonStringOr(node, "display_name");
+        entry.status = jsonStringOr(node, "status", "offline");
+        entry.currentGameId = jsonStringOr(node, "current_game_id");
+        result.users.push_back(std::move(entry));
+    }
+    result.nextCursor = jsonStringOr(parsed, "next_cursor");
+    auto available = parsed.find("presence_available");
+    result.presenceAvailable = available != parsed.end() && available->is_boolean() && available->get<bool>();
+    result.success = true;
+    return result;
+}
+
+PresenceSummary KronosApi::fetchPresenceSummary() {
+    PresenceSummary summary;
+    HttpResponse response = requestWithRefresh("GET", "/v1/presence/summary", {});
+    if (!response.transportOk) {
+        summary.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return summary;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        summary.error = extractError(response.body, response.status);
+        return summary;
+    }
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    if (parsed.is_discarded()) {
+        summary.error = "The Kronos service returned a summary this build could not parse.";
+        return summary;
+    }
+    auto readInt = [&parsed](const char* key) {
+        auto it = parsed.find(key);
+        return (it != parsed.end() && it->is_number_integer()) ? it->get<int>() : 0;
+    };
+    auto availableIt = parsed.find("available");
+    summary.available = availableIt != parsed.end() && availableIt->is_boolean() && availableIt->get<bool>();
+    summary.offline = readInt("offline");
+    summary.onlineLauncher = readInt("online_launcher");
+    summary.inStudio = readInt("in_studio");
+    summary.inGame = readInt("in_game");
+    summary.totalOnline = readInt("total_online");
+    summary.registeredAccounts = readInt("registered_accounts");
+    summary.success = true;
+    return summary;
+}
+
+PublishResult KronosApi::publishGame(const PublishRequest& request) {
+    PublishResult result;
+
+    nlohmann::json body{{"slug", request.slug}, {"title", request.title}};
+    if (!request.description.empty()) body["description"] = request.description;
+    if (!request.thumbnailUrl.empty()) body["thumbnail_url"] = request.thumbnailUrl;
+    if (!request.sceneSha256.empty()) body["scene_sha256"] = request.sceneSha256;
+
+    HttpResponse response = requestWithRefresh("POST", "/v1/catalog/games/publish", body.dump());
+    if (!response.transportOk) {
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        // The backend's validation messages are already written for a
+        // human, so they are surfaced verbatim rather than replaced with
+        // a generic "publish failed".
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    if (parsed.is_discarded()) {
+        result.error = "The Kronos service returned a response this build could not parse.";
+        return result;
+    }
+    result.status = jsonStringOr(parsed, "status", "published");
+    auto game = parsed.find("game");
+    if (game != parsed.end() && game->is_object()) {
+        result.gameId = jsonStringOr(*game, "id");
+        result.slug = jsonStringOr(*game, "slug");
+    }
+    result.success = true;
+    return result;
+}
+
 } // namespace engine::core
