@@ -113,6 +113,31 @@ test('the account directory paginates and reports live presence', async () => {
   assert.ok(capped.body.users.length <= 200, 'the directory limit is really capped at 200');
 });
 
+test('a brand-new account without a username appears immediately under its display name', async () => {
+  const viewer = await makeUser('dir');
+
+  // Sign up WITHOUT claiming a username -- the state a real new account
+  // is in for the first few minutes.
+  await clearRateLimits();
+  const email = `nohandle_${crypto.randomBytes(8).toString('hex')}@example.com`;
+  const fresh = await api('POST', '/v1/auth/signup', { body: { email, password: 'a reasonable passphrase' } });
+  assert.equal(fresh.status, 201);
+
+  const res = await api('GET', '/v1/users?limit=200', { token: viewer.token });
+  const found = res.body.users.find((u) => u.id === fresh.body.user.id);
+  assert.ok(found, 'a handle-less account really shows up in the directory right away');
+  assert.equal(found.username, null, 'its username is really still null');
+  assert.ok(found.directory_name && found.directory_name.length > 0,
+    'and it really has a renderable name to show');
+  assert.equal(found.has_username, false, 'the client can really tell it still needs a handle');
+
+  // An account WITH a handle still shows the handle, not the display name.
+  const withHandle = res.body.users.find((u) => u.id === viewer.id);
+  assert.ok(withHandle, 'an account with a handle is really still listed');
+  assert.equal(withHandle.directory_name, viewer.username, 'a real handle really wins over the display name');
+  assert.equal(withHandle.has_username, true);
+});
+
 test('the directory excludes guests and requires authentication', async () => {
   const viewer = await makeUser('dir');
   await clearRateLimits();

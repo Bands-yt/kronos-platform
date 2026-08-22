@@ -104,8 +104,13 @@ struct UserSearchResult {
 // One page of the account directory.
 struct DirectoryUser {
     std::string id;
-    std::string username;
+    std::string username;      // empty until a handle is claimed
     std::string displayName;
+    // What to actually render: the handle when there is one, the display
+    // name otherwise. The server computes it so every client does not
+    // re-implement the same fallback slightly differently.
+    std::string directoryName;
+    bool hasUsername = false;
     // "offline" | "online_launcher" | "in_studio" | "in_game"
     std::string status;
     std::string currentGameId;

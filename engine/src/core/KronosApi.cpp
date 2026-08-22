@@ -603,6 +603,14 @@ DirectoryResult KronosApi::fetchUserDirectory(int limit, const std::string& curs
         entry.id = jsonStringOr(node, "id");
         entry.username = jsonStringOr(node, "username");
         entry.displayName = jsonStringOr(node, "display_name");
+        entry.directoryName = jsonStringOr(node, "directory_name");
+        if (entry.directoryName.empty()) {
+            // Older server without the field: fall back locally rather
+            // than rendering a blank row.
+            entry.directoryName = entry.username.empty() ? entry.displayName : entry.username;
+        }
+        auto hasUsername = node.find("has_username");
+        entry.hasUsername = hasUsername != node.end() && hasUsername->is_boolean() && hasUsername->get<bool>();
         entry.status = jsonStringOr(node, "status", "offline");
         entry.currentGameId = jsonStringOr(node, "current_game_id");
         result.users.push_back(std::move(entry));

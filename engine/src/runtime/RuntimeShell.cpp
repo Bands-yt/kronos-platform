@@ -1318,9 +1318,15 @@ void RuntimeShell::drawDirectoryPanel() {
         ImGui::SameLine();
 
         ImGui::BeginGroup();
-        ImGui::TextColored(paletteColor(kTextBright), "%s",
-                            entry.username.empty() ? entry.displayName.c_str() : entry.username.c_str());
+        ImGui::TextColored(paletteColor(kTextBright), "%s", entry.directoryName.c_str());
         ImGui::TextColored(statusColor, "%s", statusLabel);
+        if (!entry.hasUsername) {
+            // Visible, but marked: this account has not picked a handle
+            // yet, which is worth showing rather than silently implying
+            // the display name is one.
+            ImGui::SameLine();
+            ImGui::TextColored(paletteColor(kTextMuted), "  (no handle yet)");
+        }
         ImGui::EndGroup();
 
         ImGui::EndChild();

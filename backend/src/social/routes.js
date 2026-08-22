@@ -140,14 +140,21 @@ socialRouter.get(
     const cursor = Number(req.query.cursor) || 0;
 
     const params = [limit + 1];
-    let where = "u.is_guest = FALSE AND u.account_state <> 'terminated' AND u.username_lower IS NOT NULL";
+    // Brand-new accounts have no username yet. Excluding them made them
+    // invisible in the directory until they claimed a handle, which is a
+    // bad first experience for exactly the people most likely to be
+    // looking for their friends. They are listed under their display
+    // name instead; `username` stays null in the response so a client can
+    // still tell the difference and prompt them to claim one.
+    let where = "u.is_guest = FALSE AND u.account_state <> 'terminated'";
     if (cursor > 0) {
       params.push(cursor);
       where += ` AND u.id > $${params.length}`;
     }
 
     const { rows } = await query(
-      `SELECT u.id, u.username, u.display_name, u.created_at
+      `SELECT u.id, u.username, u.display_name, u.created_at,
+              COALESCE(NULLIF(u.username, ''), u.display_name) AS directory_name
          FROM users u
         WHERE ${where}
         ORDER BY u.id ASC
@@ -166,6 +173,11 @@ socialRouter.get(
           id: String(r.id),
           username: r.username,
           display_name: r.display_name,
+          // What a client should actually render: the handle when there
+          // is one, the display name otherwise. Saves every client
+          // re-implementing the same fallback slightly differently.
+          directory_name: r.directory_name,
+          has_username: r.username !== null && r.username !== '',
           status: p?.status || 'offline',
           current_game_id: p?.current_game_id || null,
         };
