@@ -1095,6 +1095,8 @@ void Renderer::recreateSwapchain() {
     destroySwapchain();
     createSwapchain();
     createDepthResources();
+    // The image count can change on resize, so these must be rebuilt.
+    if (device_ != VK_NULL_HANDLE && !renderFinishedPerImage_.empty()) (void)createPerImageSemaphores();
     framebufferResized_ = false;
 }
 
@@ -1137,7 +1139,34 @@ bool Renderer::createSyncObjects() {
             return false;
         }
     }
+
+    if (!createPerImageSemaphores()) return false;
     return true;
+}
+
+// One render-finished semaphore per swapchain image -- see the member's
+// own comment for why per-frame was wrong. Recreated with the swapchain,
+// since the image count can change on resize.
+bool Renderer::createPerImageSemaphores() {
+    destroyPerImageSemaphores();
+
+    VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    renderFinishedPerImage_.resize(swapchainImages_.size(), VK_NULL_HANDLE);
+    for (VkSemaphore& semaphore : renderFinishedPerImage_) {
+        if (vkCreateSemaphore(device_, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
+            std::fprintf(stderr, "Renderer: failed to create a per-swapchain-image semaphore.\n");
+            return false;
+        }
+    }
+    return true;
+}
+
+void Renderer::destroyPerImageSemaphores() {
+    for (VkSemaphore& semaphore : renderFinishedPerImage_) {
+        if (semaphore != VK_NULL_HANDLE) vkDestroySemaphore(device_, semaphore, nullptr);
+        semaphore = VK_NULL_HANDLE;
+    }
+    renderFinishedPerImage_.clear();
 }
 
 bool Renderer::initSceneDescriptorResourcesFor(FrameSync& frame) {
@@ -5040,8 +5069,14 @@ bool Renderer::renderFrame() {
     submitInfo.pWaitDstStageMask = &waitStage;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
+    // Per-image, not per-frame: see renderFinishedPerImage_'s comment.
+    // Falls back to the per-frame semaphore only if the vector is somehow
+    // unsized, which would mean swapchain creation failed anyway.
+    VkSemaphore renderFinishedSemaphore = imageIndex < renderFinishedPerImage_.size()
+                                               ? renderFinishedPerImage_[imageIndex]
+                                               : frame.renderFinished;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &frame.renderFinished;
+    submitInfo.pSignalSemaphores = &renderFinishedSemaphore;
 
     if (VkResult submitResult = vkQueueSubmit(graphicsQueue_, 1, &submitInfo, frame.inFlight); submitResult != VK_SUCCESS) {
         std::fprintf(stderr, "Renderer: vkQueueSubmit failed (VkResult=%d).\n", static_cast<int>(submitResult));
@@ -5050,7 +5085,7 @@ bool Renderer::renderFrame() {
 
     VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &frame.renderFinished;
+    presentInfo.pWaitSemaphores = &renderFinishedSemaphore;
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &swapchain_;
     presentInfo.pImageIndices = &imageIndex;

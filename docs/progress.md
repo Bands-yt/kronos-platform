@@ -3064,3 +3064,50 @@ rewrite is the part that actually strips draw-call overhead, and it is
 the risky half. Also worth noting: `VK_LAYER_KHRONOS_validation` is not
 installed on this machine, so Vulkan usage errors would not be caught
 here even if present.
+
+## 2026-08-22 — Validation layers found real pre-existing renderer bugs
+
+Validation layers were installed, and immediately reported **22 errors in
+the existing renderer**, before any new work. Two distinct classes.
+
+### Fixed: swapchain semaphore reuse (10 errors, now 0)
+
+`VUID-vkQueueSubmit-pSignalSemaphores-00067`. The render-finished
+semaphore was per **frame-in-flight** but used as the **presentation**
+wait semaphore. The frame fence only proves the submit completed, never
+that the presentation consuming that semaphore did -- so with
+`framesInFlight_` (2) below the swapchain image count (3), the semaphore
+could be reused while a present was still waiting on it.
+
+This is a real synchronisation bug and a classic cause of intermittent
+hangs and corruption that reproduce on some drivers and not others. It
+was invisible without validation layers.
+
+Fixed the way the validation message itself recommends: one
+render-finished semaphore per **swapchain image**, indexed by acquired
+image index, rebuilt with the swapchain since the image count can change
+on resize. Verified: 10 errors to 0, rendering unaffected.
+
+### Diagnosed, not yet fixed: depth sampled in the wrong layout (10 errors)
+
+`VUID-vkCmdDrawIndexed-imageLayout-00344`. The soft-particle pass samples
+`sceneDepth` through a descriptor declaring
+`SHADER_READ_ONLY_OPTIMAL`, but the image is still in
+`DEPTH_ATTACHMENT_OPTIMAL` -- it is attached to the same pass that is
+drawing particles.
+
+Particles already disable depth *writes*, so the correct layout is
+`DEPTH_READ_ONLY_OPTIMAL`, which permits attachment depth-testing and
+shader sampling simultaneously. The main pass genuinely writes depth for
+opaque geometry, so the fix is to split it: opaque with
+`DEPTH_ATTACHMENT_OPTIMAL`, a barrier, then particles with
+`DEPTH_READ_ONLY_OPTIMAL`.
+
+Deliberately not attempted in the same pass as the semaphore fix -- it
+restructures the main render pass, and doing both at once would make a
+regression hard to attribute.
+
+### Also noted
+`vkAllocateDescriptorSets` warns that a pool lacks `SAMPLER` and
+`SAMPLED_IMAGE` sizes for layouts that use them. Harmless on this driver,
+but some implementations are entitled to fail the allocation.

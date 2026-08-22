@@ -945,6 +945,8 @@ private:
     bool pickPhysicalDevice();
     [[nodiscard]] bool checkRayTracingSupport(VkPhysicalDevice device) const;
     [[nodiscard]] bool checkBindlessSupport(VkPhysicalDevice device) const;
+    [[nodiscard]] bool createPerImageSemaphores();
+    void destroyPerImageSemaphores();
     bool createLogicalDevice();
     bool createAllocator();
     bool createSwapchain();
@@ -1366,6 +1368,18 @@ private:
     VkFormat swapchainFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D swapchainExtent_{};
     std::vector<VkImage> swapchainImages_;
+    // Kronos: one render-finished semaphore per SWAPCHAIN IMAGE, not per
+    // frame-in-flight.
+    //
+    // A per-frame semaphore is wrong for presentation: the frame fence
+    // only proves the submit finished, never that the presentation
+    // consuming that semaphore did. With framesInFlight_ (2) below the
+    // swapchain image count (typically 3), the semaphore gets reused
+    // while a present may still be waiting on it -- caught by
+    // VUID-vkQueueSubmit-pSignalSemaphores-00067 once validation layers
+    // were installed. Indexing by acquired image index is the fix the
+    // validation message itself recommends.
+    std::vector<VkSemaphore> renderFinishedPerImage_;
     std::vector<VkImageView> swapchainImageViews_;
 
     VkFormat depthFormat_ = VK_FORMAT_D32_SFLOAT;
