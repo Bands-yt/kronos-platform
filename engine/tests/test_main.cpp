@@ -127,6 +127,7 @@
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
 #include "cinematic/CameraRail.hpp"
+#include "cinematic/Sequencer.hpp"
 #include "cinematic/CurveInterpolation.hpp"
 #include "core/AllocationTracker.hpp"
 #include "core/TerrainLod.hpp"
@@ -17555,6 +17556,213 @@ int unelidableElementCount(int base) { return base + (g_allocationChecksum & 1);
 // constant-speed travel is actually constant -- rather than comparing
 // against captured numbers.
 
+void testTimecodeFormattingMatchesTheFrameRate() {
+    using engine::cinematic::SequenceFrameRate;
+    check(engine::cinematic::formatTimecode(0.0f, SequenceFrameRate::Fps24) == "00:00:00:00",
+          "a real zero time really formats as a real zero timecode");
+    check(engine::cinematic::formatTimecode(1.0f, SequenceFrameRate::Fps24) == "00:00:01:00",
+          "one real second really formats as one real second at 24fps");
+    // 1.5s at 24fps = 36 frames = 1 second + 12 frames.
+    check(engine::cinematic::formatTimecode(1.5f, SequenceFrameRate::Fps24) == "00:00:01:12",
+          "a real half second really formats as the real frame remainder at 24fps");
+    check(engine::cinematic::formatTimecode(1.5f, SequenceFrameRate::Fps60) == "00:00:01:30",
+          "and the same real time really formats differently at a different real frame rate");
+    check(engine::cinematic::formatTimecode(3661.0f, SequenceFrameRate::Fps30) == "01:01:01:00",
+          "real hours and minutes really roll over correctly");
+    // Negative must not produce a stray sign mid-string.
+    check(engine::cinematic::formatTimecode(-5.0f, SequenceFrameRate::Fps24) == "00:00:00:00",
+          "a real negative time really clamps rather than formatting a malformed timecode");
+}
+
+void testFrameSnappingLandsOnWholeFrames() {
+    using engine::cinematic::SequenceFrameRate;
+    const float frame24 = 1.0f / 24.0f;
+    // Scrubbing must land on frames or exported footage will not match
+    // what was previewed.
+    check(std::fabs(engine::cinematic::snapToFrame(frame24 * 3.4f, SequenceFrameRate::Fps24) - frame24 * 3.0f) < 1e-5f,
+          "a real time just past a frame really snaps back to that real frame");
+    check(std::fabs(engine::cinematic::snapToFrame(frame24 * 3.6f, SequenceFrameRate::Fps24) - frame24 * 4.0f) < 1e-5f,
+          "and a real time near the next frame really snaps forward");
+}
+
+void testSequenceTracksAndChannelsRoundTrip() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::SequencerTrack& light =
+        sequence.addTrack("KeyLight", engine::cinematic::TrackKind::LightIntensity);
+    engine::cinematic::insertKeyframe(light.channel("intensity").keys,
+                                      {0.0f, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    engine::cinematic::insertKeyframe(light.channel("intensity").keys,
+                                      {2.0f, 100.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    check(sequence.tracks().size() == 1, "a real track really got added");
+    check(std::fabs(sequence.sampleChannel("KeyLight", "intensity", 1.0f) - 50.0f) < 0.01f,
+          "the real channel really samples through the real sequence");
+
+    // A missing track or channel must return the caller's fallback, not
+    // 0 -- a missing light track should leave the light alone, not black
+    // it out.
+    check(std::fabs(sequence.sampleChannel("NoSuchTrack", "intensity", 1.0f, 42.0f) - 42.0f) < 0.01f,
+          "a real missing track really returns the real fallback rather than zero");
+    check(std::fabs(sequence.sampleChannel("KeyLight", "nosuchchannel", 1.0f, 42.0f) - 42.0f) < 0.01f,
+          "a real missing channel really returns the real fallback rather than zero");
+
+    // Muting reads as absent for the same reason.
+    sequence.mutableTracks()[0].muted = true;
+    check(std::fabs(sequence.sampleChannel("KeyLight", "intensity", 1.0f, 7.0f) - 7.0f) < 0.01f,
+          "a real muted track really reads as absent rather than driving the value to zero");
+}
+
+void testSequenceDurationCoversKeysAndEvents() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::SequencerTrack& transform =
+        sequence.addTrack("Hero", engine::cinematic::TrackKind::Transform);
+    engine::cinematic::insertKeyframe(transform.channel("x").keys,
+                                      {3.0f, 1.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    engine::cinematic::SequencerTrack& triggers =
+        sequence.addTrack("Cues", engine::cinematic::TrackKind::ScriptTrigger);
+    triggers.events.push_back({7.5f, "explode"});
+
+    check(std::fabs(sequence.durationSeconds() - 7.5f) < 0.01f,
+          "the real duration really covers real events, not just real keyframes");
+}
+
+void testTransportStepsWholeFramesAndReportsTimecode() {
+    engine::cinematic::Sequence sequence;
+    sequence.setFrameRate(engine::cinematic::SequenceFrameRate::Fps30);
+
+    sequence.setPlayhead(0.0f);
+    sequence.stepFrames(45);
+    check(sequence.timecode() == "00:00:01:15",
+          "real frame stepping really lands on the real expected timecode");
+
+    sequence.stepFrames(-15);
+    check(sequence.timecode() == "00:00:01:00", "real backward stepping really works too");
+
+    // Stepping below zero must clamp, not go negative.
+    sequence.stepFrames(-1000);
+    check(sequence.playheadSeconds() >= 0.0f, "the real playhead really never goes negative");
+}
+
+void testScriptTriggersFireExactlyOnceWhenCrossed() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::SequencerTrack& triggers =
+        sequence.addTrack("Cues", engine::cinematic::TrackKind::ScriptTrigger);
+    triggers.events.push_back({1.0f, "spawn"});
+    triggers.events.push_back({2.0f, "explode"});
+
+    sequence.setPlayhead(0.0f);
+    sequence.play();
+
+    std::vector<engine::cinematic::TrackEvent> fired;
+    int spawnCount = 0;
+    int explodeCount = 0;
+    // Advance past both triggers in many small steps.
+    for (int i = 0; i < 150; ++i) {
+        sequence.advance(1.0f / 60.0f, fired);
+        for (const auto& event : fired) {
+            if (event.payload == "spawn") ++spawnCount;
+            if (event.payload == "explode") ++explodeCount;
+        }
+    }
+    check(spawnCount == 1, "a real script trigger really fires exactly ONCE when the playhead crosses it");
+    check(explodeCount == 1, "and the real second trigger really fires exactly once too");
+}
+
+void testMutedEventTracksDoNotFire() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::SequencerTrack& triggers =
+        sequence.addTrack("Cues", engine::cinematic::TrackKind::ScriptTrigger);
+    triggers.events.push_back({0.5f, "boom"});
+    sequence.mutableTracks()[0].muted = true;
+
+    sequence.setPlayhead(0.0f);
+    sequence.play();
+    std::vector<engine::cinematic::TrackEvent> fired;
+    int count = 0;
+    for (int i = 0; i < 60; ++i) {
+        sequence.advance(1.0f / 60.0f, fired);
+        count += static_cast<int>(fired.size());
+    }
+    check(count == 0, "a real muted event track really fires nothing");
+}
+
+void testLoopRegionWrapsAndStillFiresEventsNearTheEnd() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::SequencerTrack& triggers =
+        sequence.addTrack("Cues", engine::cinematic::TrackKind::ScriptTrigger);
+    // Deliberately very close to the loop end -- the frame that wraps
+    // must not silently skip it.
+    triggers.events.push_back({0.98f, "nearEnd"});
+
+    sequence.setLoopRegion(0.0f, 1.0f);
+    check(sequence.loopEnabled(), "a real loop region really enables looping");
+    sequence.setPlayhead(0.0f);
+    sequence.play();
+
+    std::vector<engine::cinematic::TrackEvent> fired;
+    int nearEndCount = 0;
+    // Three full loops at 60fps.
+    for (int i = 0; i < 180; ++i) {
+        sequence.advance(1.0f / 60.0f, fired);
+        for (const auto& event : fired) {
+            if (event.payload == "nearEnd") ++nearEndCount;
+        }
+        check(sequence.playheadSeconds() <= 1.0f + 0.001f,
+              "the real playhead really stays inside the real loop region");
+    }
+    check(nearEndCount >= 2,
+          "a real event near the real loop end really fires on EVERY pass -- the wrapping frame does not skip it");
+}
+
+void testPausedSequenceDoesNotAdvance() {
+    engine::cinematic::Sequence sequence;
+    sequence.setPlayhead(0.5f);
+    sequence.pause();
+    std::vector<engine::cinematic::TrackEvent> fired;
+    const float before = sequence.playheadSeconds();
+    for (int i = 0; i < 60; ++i) sequence.advance(1.0f / 60.0f, fired);
+    check(std::fabs(sequence.playheadSeconds() - before) < 1e-6f,
+          "a real paused sequence really does not advance");
+}
+
+void testRemoveTrackIsSafeOnABadIndex() {
+    engine::cinematic::Sequence sequence;
+    (void)sequence.addTrack("A", engine::cinematic::TrackKind::Transform);
+    sequence.removeTrack(99); // must not be UB
+    check(sequence.tracks().size() == 1, "removing a real out-of-range track index is really a safe no-op");
+    sequence.removeTrack(0);
+    check(sequence.tracks().empty(), "removing a real valid index really removes the real track");
+}
+
+void testSequenceAdvanceIsZeroHeapWithAReusedBuffer() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::SequencerTrack& transform =
+        sequence.addTrack("Hero", engine::cinematic::TrackKind::Transform);
+    for (int i = 0; i < 32; ++i) {
+        engine::cinematic::insertKeyframe(transform.channel("x").keys,
+                                          {static_cast<float>(i) * 0.25f, static_cast<float>(i),
+                                           engine::cinematic::InterpolationMode::Cubic, {}, {}});
+    }
+    sequence.setPlayhead(0.0f);
+    sequence.play();
+
+    // The caller owns the output buffer precisely so a per-frame advance
+    // can reuse it instead of allocating every tick.
+    std::vector<engine::cinematic::TrackEvent> fired;
+    fired.reserve(16);
+    sequence.advance(1.0f / 60.0f, fired); // warm up
+
+    engine::core::AllocationScope scope;
+    for (int i = 0; i < 240; ++i) {
+        sequence.advance(1.0f / 60.0f, fired);
+        volatile float value = sequence.sampleChannel("Hero", "x", sequence.playheadSeconds());
+        (void)value;
+    }
+    check(scope.allocationsSinceStart() == 0,
+          "real sequence playback really performs ZERO heap allocations across 240 real frames with a reused buffer");
+}
+
 void testCurveSamplingHitsEveryKeyframeExactly() {
     std::vector<engine::cinematic::Keyframe> keys;
     for (int i = 0; i < 5; ++i) {
@@ -30458,6 +30666,17 @@ int main() {
     testJoinTicketRequiringServerWithNoValidatorFailsClosed();
     testJoinTicketIsNotRequiredForRealLanSessions();
     testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing();
+    testTimecodeFormattingMatchesTheFrameRate();
+    testFrameSnappingLandsOnWholeFrames();
+    testSequenceTracksAndChannelsRoundTrip();
+    testSequenceDurationCoversKeysAndEvents();
+    testTransportStepsWholeFramesAndReportsTimecode();
+    testScriptTriggersFireExactlyOnceWhenCrossed();
+    testMutedEventTracksDoNotFire();
+    testLoopRegionWrapsAndStillFiresEventsNearTheEnd();
+    testPausedSequenceDoesNotAdvance();
+    testRemoveTrackIsSafeOnABadIndex();
+    testSequenceAdvanceIsZeroHeapWithAReusedBuffer();
     testCurveSamplingHitsEveryKeyframeExactly();
     testCurveClampsRatherThanExtrapolating();
     testSteppedAndLinearModesBehaveDistinctly();

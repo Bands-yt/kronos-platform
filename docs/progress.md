@@ -2976,3 +2976,45 @@ generally: they pass by measuring nothing, and look identical to a real
 zero-allocation result.
 
 **13403/13403 checks** (+13).
+
+## 2026-08-22 — Cinematic Director core: curves, camera rails, sequencer
+
+Built the three pieces of the Movie Mode spec that are genuinely
+buildable and testable in isolation, rather than stubbing all eight.
+
+**Curves** — Stepped/Linear/Cubic(Catmull-Rom)/Bezier. Sampling clamps
+rather than extrapolating; a cubic run past its data produces values that
+look like a bug in the shot rather than in the curve. Bezier is solved
+parametrically by bisection so dragging a handle sideways changes easing
+without retiming everything after it. Newton was rejected: the derivative
+can go zero or negative when a handle is dragged past its neighbour.
+
+**Camera rails** — Catmull-Rom (passes exactly through control points),
+Bezier, Linear. Arc-length parameterisation gives constant *speed* rather
+than constant parameter, which otherwise reads as the camera accelerating
+through tight curves. Look-at damping uses a time constant, so 60fps and
+30fps agree after equal elapsed time -- asserted. `resetDamping()` stops
+a cut making the camera swing. Lens interpolates along the rail and
+auto-focus tracks the aim point.
+
+**Sequencer** — six track types, scalar channels sharing one curve
+implementation, discrete events for Audio/ScriptTrigger. Transport with
+frame snapping, HH:MM:SS:FF timecode, and loop regions. Events fire in a
+half-open interval so one landing on a frame boundary cannot double-fire,
+and the wrapping frame of a loop still fires events near the loop end
+rather than skipping them. Muted tracks read as *absent*, so a muted light
+track leaves the light alone instead of driving it to zero.
+
+`advance()` takes the output buffer by reference specifically so playback
+can reuse it -- verified zero-heap across 240 frames.
+
+**13657/13657 checks** (+254). Rail sampling, curve sampling and sequence
+playback are all verified zero-heap with the allocation tracker.
+
+### Not built, and why
+Bindless descriptors and a Vulkan frame graph are multi-week refactors of
+a *working* renderer, with no GPU validation harness here to prove
+rendering was not broken. The 8K/optical-flow exporter and the ImGui
+timeline view sit on top of this model and are the natural next step.
+Jolt is already threaded (`JobSystemThreadPool`, `hwThreads-1` workers),
+so the "eliminate main-thread stalling" item was largely already done.
