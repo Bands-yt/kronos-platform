@@ -91,6 +91,12 @@ struct InstanceData {
     glm::vec4 baseColor;
     glm::vec4 metallicRoughness;
     glm::vec4 emissive;
+    // Packed bindless texture slots, matching ObjectPushConstants::
+    // textureIndices. Instanced draws bind set 0 only -- they never bind a
+    // per-material set at all -- so before bindless they had no way to
+    // texture themselves. Carrying the slots per-instance is what gives
+    // them one.
+    glm::uvec4 textureIndices{0u, 0u, 0u, 0u};
 
     static VkVertexInputBindingDescription bindingDescription();
     static std::vector<VkVertexInputAttributeDescription> attributeDescriptions();

@@ -950,10 +950,14 @@ private:
     [[nodiscard]] bool createBindlessResources();
     void destroyBindlessResources();
     // Returns the slot for `handle`, writing the descriptor on first use.
-    // Falls back to slot 0 (the default white texture) when the table is
-    // exhausted, so an overflow degrades visually rather than reading a
+    // Falls back to `defaultSlot` when the handle is unusable or the table
+    // is exhausted, so an overflow degrades visually rather than reading a
     // stale descriptor.
-    [[nodiscard]] uint32_t bindlessSlotFor(uint32_t handle, TextureLibrary& textureLibrary, const Texture& fallback);
+    [[nodiscard]] uint32_t bindlessSlotFor(uint32_t handle, TextureLibrary& textureLibrary, uint32_t defaultSlot);
+    // Packs a Renderable's five texture slots into ObjectPushConstants::
+    // textureIndices / InstanceData::textureIndices. Returns all-zero when
+    // bindless is inactive, which the non-bindless shader variant ignores.
+    [[nodiscard]] glm::uvec4 packTextureIndices(const Renderable& renderable, TextureLibrary& textureLibrary);
     [[nodiscard]] bool createPerImageSemaphores();
     void destroyPerImageSemaphores();
     bool createLogicalDevice();
@@ -1155,7 +1159,8 @@ private:
     // same vkCmdBeginRendering block (pipelines can be switched mid-pass
     // freely). Does NOT affect drawShadowPass(), which still draws every
     // caster individually regardless of this flag -- see its comment.
-    void drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary);
+    void drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
+                               TextureLibrary& textureLibrary);
 
     // Uploads one ParticleInstanceData per live particle and draws them
     // all in one instanced call against the shared unit quad
@@ -1394,6 +1399,17 @@ private:
     // once per frame, replacing the per-material descriptor set on the
     // main scene pipeline. Only created when bindlessSupported_.
     static constexpr uint32_t kBindlessTextureCapacity = 2048;
+    // Reserved, pre-written slots. Slot 0 is the default white texture
+    // (correct for albedo/metallic/roughness/AO); slot 1 is the default
+    // flat normal, because sampling white as a normal map decodes to
+    // (1,1,1) and visibly breaks the shading of any entity without one.
+    static constexpr uint32_t kBindlessWhiteSlot = 0;
+    static constexpr uint32_t kBindlessFlatNormalSlot = 1;
+    // The table keys these two reserve; real texture handles are offset
+    // past them (see bindlessSlotFor()).
+    static constexpr uint64_t kBindlessWhiteKey = 0;
+    static constexpr uint64_t kBindlessFlatNormalKey = 1;
+    static constexpr uint64_t kBindlessReservedKeyCount = 2;
     VkDescriptorSetLayout bindlessSetLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool bindlessPool_ = VK_NULL_HANDLE;
     VkDescriptorSet bindlessSet_ = VK_NULL_HANDLE;

@@ -54,6 +54,39 @@ foreach(shader_source ${ENGINE_SHADER_SOURCES})
     list(APPEND ENGINE_COMPILED_SHADERS ${shader_output})
 endforeach()
 
+# Kronos ("Bindless Descriptors"): scene.frag is compiled a SECOND time
+# with KRONOS_BINDLESS defined, producing scene_bindless.frag.spv beside
+# the ordinary scene.frag.spv. The renderer picks between them at pipeline
+# creation based on whether the physical device actually reports
+# descriptor indexing, so a device without it keeps running exactly the
+# shader that shipped before rather than failing to create a pipeline.
+set(ENGINE_BINDLESS_FRAG ${ENGINE_SHADER_OUTPUT_DIR}/scene_bindless.frag.spv)
+add_custom_command(
+    OUTPUT ${ENGINE_BINDLESS_FRAG}
+    COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DKRONOS_BINDLESS
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag -o ${ENGINE_BINDLESS_FRAG}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag
+    COMMENT "Compiling shader scene.frag [KRONOS_BINDLESS] -> SPIR-V"
+    VERBATIM
+)
+list(APPEND ENGINE_COMPILED_SHADERS ${ENGINE_BINDLESS_FRAG})
+
+# scene_rt.frag is a full duplicate of scene.frag for ray-query-capable
+# devices (see its header), and createScenePipeline() prefers it whenever
+# the device supports ray tracing -- so without its own bindless variant
+# the main opaque pipeline would silently keep the non-bindless path on
+# exactly the hardware most likely to support bindless.
+set(ENGINE_BINDLESS_RT_FRAG ${ENGINE_SHADER_OUTPUT_DIR}/scene_rt_bindless.frag.spv)
+add_custom_command(
+    OUTPUT ${ENGINE_BINDLESS_RT_FRAG}
+    COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DKRONOS_BINDLESS
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag -o ${ENGINE_BINDLESS_RT_FRAG}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag
+    COMMENT "Compiling shader scene_rt.frag [KRONOS_BINDLESS] -> SPIR-V"
+    VERBATIM
+)
+list(APPEND ENGINE_COMPILED_SHADERS ${ENGINE_BINDLESS_RT_FRAG})
+
 add_custom_target(engine_shaders DEPENDS ${ENGINE_COMPILED_SHADERS})
 
 # ---------------------------------------------------------------------------

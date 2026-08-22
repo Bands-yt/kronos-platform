@@ -1234,6 +1234,13 @@ bool Renderer::createBindlessResources() {
     // permits unwritten slots, but only while nothing samples them --
     // pre-filling removes that footgun rather than relying on every future
     // shader index being valid.
+    //
+    // White is the right default for albedo/metallic/roughness/AO, but the
+    // WRONG one for a normal map: sampling white decodes to a tangent-space
+    // normal of (1,1,1), which visibly wrecks the shading of every entity
+    // that simply has no normal map. Slot 1 is therefore reserved and
+    // written with the flat-normal default instead, mirroring what
+    // getOrCreateMaterialDescriptorSet() already does per-material.
     if (defaultWhiteTexture_.isValid()) {
         std::vector<VkDescriptorImageInfo> infos(kBindlessTextureCapacity,
                                                   VkDescriptorImageInfo{bindlessSampler_, defaultWhiteTexture_.view(),
@@ -1248,7 +1255,28 @@ bool Renderer::createBindlessResources() {
         vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
     }
 
+    // Claim the two reserved keys first, so a fresh table hands them slots
+    // 0 and 1 before any real texture can take them.
+    (void)bindlessTable_.acquire(kBindlessWhiteKey);
+    (void)bindlessTable_.acquire(kBindlessFlatNormalKey);
+    bindlessTable_.clearPendingWrites(); // both are written here, not lazily
+
+    if (defaultFlatNormalTexture_.isValid()) {
+        VkDescriptorImageInfo normalInfo{bindlessSampler_, defaultFlatNormalTexture_.view(),
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = bindlessSet_;
+        write.dstBinding = 0;
+        write.dstArrayElement = kBindlessFlatNormalSlot;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &normalInfo;
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+
     bindlessInitialised_ = true;
+    std::fprintf(stderr, "Renderer: bindless texture array active -- %u slots, set 2 (%s frag variant).\n",
+                 kBindlessTextureCapacity, rayTracingSupported_ ? "scene_rt_bindless" : "scene_bindless");
     return true;
 }
 
@@ -1270,21 +1298,22 @@ void Renderer::destroyBindlessResources() {
     bindlessInitialised_ = false;
 }
 
-uint32_t Renderer::bindlessSlotFor(uint32_t handle, TextureLibrary& textureLibrary, const Texture& fallback) {
-    if (!bindlessInitialised_) return 0;
+uint32_t Renderer::bindlessSlotFor(uint32_t handle, TextureLibrary& textureLibrary, uint32_t defaultSlot) {
+    if (!bindlessInitialised_) return defaultSlot;
 
     const Texture* texture = handle != Renderable::kInvalidHandle ? textureLibrary.get(handle) : nullptr;
     const bool usable = texture != nullptr && texture->isValid();
-    // Slot 0 is the pre-filled default; an unusable handle maps there
-    // rather than allocating a slot for nothing.
-    if (!usable) return 0;
+    // The caller's default slot is already pre-filled; an unusable handle
+    // maps there rather than allocating a slot for nothing.
+    if (!usable) return defaultSlot;
 
-    const uint64_t key = static_cast<uint64_t>(handle) + 1ull; // 0 reserved for the default
+    // Keys 0 and 1 are the reserved defaults (see createBindlessResources()).
+    const uint64_t key = static_cast<uint64_t>(handle) + kBindlessReservedKeyCount;
     const uint32_t slot = bindlessTable_.acquire(key);
     if (slot == BindlessTextureTable::kInvalidSlot) {
         // Exhausted. Degrade to the default rather than indexing out of
         // range, which would sample whatever descriptor happens to sit there.
-        return 0;
+        return defaultSlot;
     }
 
     // Write the descriptor only for slots the table reports as new.
@@ -1309,12 +1338,31 @@ uint32_t Renderer::bindlessSlotFor(uint32_t handle, TextureLibrary& textureLibra
         if (!writes.empty()) vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         bindlessTable_.clearPendingWrites();
     }
-    (void)fallback;
     return slot;
 }
 
+glm::uvec4 Renderer::packTextureIndices(const Renderable& renderable, TextureLibrary& textureLibrary) {
+    if (!bindlessInitialised_) return glm::uvec4(0u);
+
+    const uint32_t albedo    = bindlessSlotFor(renderable.albedoTexture, textureLibrary, kBindlessWhiteSlot);
+    const uint32_t normal    = bindlessSlotFor(renderable.normalTexture, textureLibrary, kBindlessFlatNormalSlot);
+    const uint32_t metallic  = bindlessSlotFor(renderable.metallicTexture, textureLibrary, kBindlessWhiteSlot);
+    const uint32_t roughness = bindlessSlotFor(renderable.roughnessTexture, textureLibrary, kBindlessWhiteSlot);
+    const uint32_t ao        = bindlessSlotFor(renderable.aoTexture, textureLibrary, kBindlessWhiteSlot);
+
+    // Two 16-bit slots per component. kBindlessTextureCapacity is 2048, so
+    // every slot fits in 16 bits with room to spare -- the packing exists
+    // to keep ObjectPushConstants inside the 128-byte guaranteed minimum,
+    // not to save memory. Must match the unpacking in scene.frag.
+    return glm::uvec4(albedo | (normal << 16), metallic | (roughness << 16), ao, 0u);
+}
+
 bool Renderer::createPerImageSemaphores() {
-    destroyBindlessResources();
+    // Deliberately does NOT touch the bindless resources. This runs again
+    // on every swapchain recreation (see recreateSwapchain()), and
+    // scenePipelineLayout_ holds bindlessSetLayout_ for the lifetime of
+    // the pipelines -- destroying it here would leave every scene draw
+    // binding a destroyed descriptor set after the first window resize.
     destroyPerImageSemaphores();
 
     VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -1794,7 +1842,17 @@ bool Renderer::createScenePipeline() {
     // dynamic branch *inside* scene_rt.frag itself (see its
     // computeShadow()), not a pipeline swap -- one pipeline object either
     // way, for the entire lifetime of this Renderer.
-    std::string fragShaderName = rayTracingSupported_ ? "scene_rt.frag.spv" : "scene.frag.spv";
+    // Kronos ("Bindless Descriptors"): the same one-time, capability-driven
+    // choice, now across two axes. bindlessInitialised_ (not merely
+    // bindlessSupported_) is the condition, so a device that supports
+    // bindless but failed to create the descriptor resources still gets a
+    // shader whose set=1 material bindings actually exist.
+    std::string fragShaderName;
+    if (rayTracingSupported_) {
+        fragShaderName = bindlessInitialised_ ? "scene_rt_bindless.frag.spv" : "scene_rt.frag.spv";
+    } else {
+        fragShaderName = bindlessInitialised_ ? "scene_bindless.frag.spv" : "scene.frag.spv";
+    }
     auto fragCode = readBinaryFile(shaderDir + "/" + fragShaderName);
     if (vertCode.empty() || fragCode.empty()) {
         std::fprintf(stderr, "Renderer: failed to read compiled shaders from \"%s\" -- did the build run engine_shaders?\n",
@@ -2080,7 +2138,14 @@ void Renderer::destroyGlassPipeline() {
 bool Renderer::createSkinnedScenePipeline() {
     std::string shaderDir = resolveResourceDir(executableDirectory(), "shaders", ENGINE_SHADER_DIR);
     auto vertCode = readBinaryFile(shaderDir + "/scene_skinned.vert.spv");
-    auto fragCode = readBinaryFile(shaderDir + "/scene.frag.spv"); // shared with every other opaque pipeline
+    // Deliberately NOT the bindless variant, unlike the opaque and
+    // instanced pipelines. skinnedScenePipelineLayout_ already uses set 2
+    // for the per-entity skinning UBO, and the bindless array is declared
+    // at set 2 -- they cannot coexist. Nothing is lost: skinned entities
+    // have no per-entity textured materials by design (see the default
+    // material set bound in drawSkinnedEntities()), so there is nothing
+    // for a bindless lookup to find.
+    auto fragCode = readBinaryFile(shaderDir + "/scene.frag.spv");
     if (vertCode.empty() || fragCode.empty()) {
         std::fprintf(stderr, "Renderer: failed to read compiled shaders from \"%s\" (skinned).\n", shaderDir.c_str());
         return false;
@@ -2236,7 +2301,8 @@ bool Renderer::createInstancedScenePipeline() {
     // VkPipelineLayout object for no benefit.
     std::string shaderDir = resolveResourceDir(executableDirectory(), "shaders", ENGINE_SHADER_DIR);
     auto vertCode = readBinaryFile(shaderDir + "/scene_instanced.vert.spv");
-    auto fragCode = readBinaryFile(shaderDir + "/scene.frag.spv"); // shared with the non-instanced pipeline, see its header comment
+    // Same bindless variant selection as createScenePipeline() -- see there.
+    auto fragCode = readBinaryFile(shaderDir + (bindlessInitialised_ ? "/scene_bindless.frag.spv" : "/scene.frag.spv"));
     if (vertCode.empty() || fragCode.empty()) {
         std::fprintf(stderr, "Renderer: failed to read compiled shaders from \"%s\" (instanced).\n", shaderDir.c_str());
         return false;
@@ -4668,6 +4734,13 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 0, 1,
                              &frame.sceneDescriptorSet, 0, nullptr);
+    // set=2 (the bindless texture array) -- bound ONCE per pass, not per
+    // entity. That is the entire point of the migration: the per-draw
+    // vkCmdBindDescriptorSets for set=1 in the loop below disappears.
+    if (bindlessInitialised_ && bindlessSet_ != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 2, 1, &bindlessSet_, 0,
+                                 nullptr);
+    }
 
     // TODO(frame graph, §4.1): everything below this line is the opaque
     // (Forward+) pass -- see this method's declaration in Renderer.hpp for
@@ -4693,18 +4766,26 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         push.metallicRoughness = glm::vec4(renderable.metallic, renderable.roughness, renderable.normalIntensity,
                                             renderable.useTriplanarProjection ? 1.0f : 0.0f);
         push.emissive = glm::vec4(renderable.emissiveColor, renderable.emissiveIntensity);
+        push.textureIndices = packTextureIndices(renderable, textureLibrary);
         vkCmdPushConstants(cmd, scenePipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                             0, sizeof(push), &push);
 
-        // set=1 (material textures) -- bound per-entity since it varies
-        // per-entity, unlike set=0 (bound once above the loop). A
-        // VK_NULL_HANDLE result (pool exhausted) just skips the rebind,
-        // leaving whatever set=1 was last bound -- see this function's
-        // doc comment on why that degrade is acceptable.
-        VkDescriptorSet materialSet = getOrCreateMaterialDescriptorSet(renderable, textureLibrary);
-        if (materialSet != VK_NULL_HANDLE) {
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 1, 1, &materialSet, 0,
-                                     nullptr);
+        if (!bindlessInitialised_) {
+            // set=1 (material textures) -- bound per-entity since it varies
+            // per-entity, unlike set=0 (bound once above the loop). A
+            // VK_NULL_HANDLE result (pool exhausted) just skips the rebind,
+            // leaving whatever set=1 was last bound -- see this function's
+            // doc comment on why that degrade is acceptable.
+            //
+            // The bindless variant declares no set=1 at all (the whole
+            // point: one descriptor set bound once per pass instead of a
+            // rebind per entity), so this per-draw work is skipped entirely
+            // rather than allocating sets nothing will read.
+            VkDescriptorSet materialSet = getOrCreateMaterialDescriptorSet(renderable, textureLibrary);
+            if (materialSet != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 1, 1, &materialSet,
+                                         0, nullptr);
+            }
         }
 
         VkDeviceSize offset = 0;
@@ -4768,7 +4849,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 1, 1, &defaultMaterialSet,
                                  0, nullptr);
     }
-    drawInstancedBatches(cmd, frame, ecs, meshLibrary);
+    drawInstancedBatches(cmd, frame, ecs, meshLibrary, textureLibrary);
     // Its own pipeline (not scenePipelineLayout_-based), so it rebinds
     // pipeline/set=0 itself the first time it actually has something to
     // draw -- see its own doc comment. A no-op (no rebind at all) when
@@ -4987,7 +5068,8 @@ void Renderer::destroyAuxiliaryScene(AuxiliarySceneHandle handle) {
     // see the handle-stability comment on auxiliaryScenes_'s declaration.
 }
 
-void Renderer::drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary) {
+void Renderer::drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
+                                     TextureLibrary& textureLibrary) {
     // Bucket by meshHandle -- every entity sharing a mesh in one bucket
     // becomes one draw call, regardless of how many entities that is.
     std::unordered_map<uint32_t, std::vector<InstanceData>> buckets;
@@ -5005,6 +5087,7 @@ void Renderer::drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& 
         data.metallicRoughness = glm::vec4(renderable->metallic, renderable->roughness, renderable->normalIntensity,
                                             renderable->useTriplanarProjection ? 1.0f : 0.0f);
         data.emissive = glm::vec4(renderable->emissiveColor, renderable->emissiveIntensity);
+        data.textureIndices = packTextureIndices(*renderable, textureLibrary);
         buckets[renderable->meshHandle].push_back(data);
     }
 
@@ -5013,6 +5096,13 @@ void Renderer::drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, instancedScenePipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 0, 1, &frame.sceneDescriptorSet,
                              0, nullptr);
+    // Bound here too rather than relying on the opaque loop above: this
+    // shares scenePipelineLayout_, but nothing guarantees the opaque loop
+    // ran (it returns early when no entity matches).
+    if (bindlessInitialised_ && bindlessSet_ != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 2, 1, &bindlessSet_, 0,
+                                 nullptr);
+    }
 
     auto* instanceCursor = static_cast<InstanceData*>(frame.instanceMapped);
     uint32_t writtenInstances = 0;

@@ -13,6 +13,9 @@
 // RayTracingScene.hpp's own header comment for the fuller design
 // rationale.
 #extension GL_EXT_ray_query : require
+#ifdef KRONOS_BINDLESS
+#extension GL_EXT_nonuniform_qualifier : require
+#endif
 
 layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in vec3 inWorldNormal;
@@ -91,11 +94,29 @@ layout(set = 0, binding = 3) readonly buffer InstanceMaterials {
     vec4 data[];
 } instanceMaterials;
 
+// Kronos ("Bindless Descriptors"): identical to the block in scene.frag
+// -- see that file for the full rationale. Kept byte-for-byte in step
+// with it, exactly as the rest of this file is.
+#ifdef KRONOS_BINDLESS
+layout(set = 2, binding = 0) uniform sampler2D bindlessTextures[];
+layout(location = 8) in flat uvec4 inTextureIndices;
+#define ALBEDO_TEX    bindlessTextures[nonuniformEXT(inTextureIndices.x & 0xFFFFu)]
+#define NORMAL_TEX    bindlessTextures[nonuniformEXT(inTextureIndices.x >> 16)]
+#define METALLIC_TEX  bindlessTextures[nonuniformEXT(inTextureIndices.y & 0xFFFFu)]
+#define ROUGHNESS_TEX bindlessTextures[nonuniformEXT(inTextureIndices.y >> 16)]
+#define AO_TEX        bindlessTextures[nonuniformEXT(inTextureIndices.z & 0xFFFFu)]
+#else
 layout(set = 1, binding = 0) uniform sampler2D albedoTexture;
 layout(set = 1, binding = 1) uniform sampler2D normalTexture;
 layout(set = 1, binding = 2) uniform sampler2D metallicTexture;
 layout(set = 1, binding = 3) uniform sampler2D roughnessTexture;
 layout(set = 1, binding = 4) uniform sampler2D aoTexture;
+#define ALBEDO_TEX    albedoTexture
+#define NORMAL_TEX    normalTexture
+#define METALLIC_TEX  metallicTexture
+#define ROUGHNESS_TEX roughnessTexture
+#define AO_TEX        aoTexture
+#endif
 
 const float PI = 3.14159265359;
 
@@ -503,15 +524,15 @@ void main() {
     float metallic;
     float roughness;
     if (useTriplanar) {
-        vec3 baseAlbedo = sampleTriplanar(albedoTexture, inWorldPos, triWeights, kTriplanarScale).rgb;
-        vec3 detailAlbedo = sampleTriplanar(albedoTexture, inWorldPos, triWeights, kMicroDetailScale).rgb;
+        vec3 baseAlbedo = sampleTriplanar(ALBEDO_TEX, inWorldPos, triWeights, kTriplanarScale).rgb;
+        vec3 detailAlbedo = sampleTriplanar(ALBEDO_TEX, inWorldPos, triWeights, kMicroDetailScale).rgb;
         albedo = inBaseColor.rgb * mix(baseAlbedo, baseAlbedo * detailAlbedo * 1.6, 0.35) * inVertexColor.rgb;
-        metallic = clamp(inMetallicRoughness.x * sampleTriplanar(metallicTexture, inWorldPos, triWeights, kTriplanarScale).r, 0.0, 1.0);
-        roughness = clamp(inMetallicRoughness.y * sampleTriplanar(roughnessTexture, inWorldPos, triWeights, kTriplanarScale).r, 0.045, 1.0);
+        metallic = clamp(inMetallicRoughness.x * sampleTriplanar(METALLIC_TEX, inWorldPos, triWeights, kTriplanarScale).r, 0.0, 1.0);
+        roughness = clamp(inMetallicRoughness.y * sampleTriplanar(ROUGHNESS_TEX, inWorldPos, triWeights, kTriplanarScale).r, 0.045, 1.0);
     } else {
-        albedo = inBaseColor.rgb * texture(albedoTexture, inUV).rgb * inVertexColor.rgb;
-        metallic = clamp(inMetallicRoughness.x * texture(metallicTexture, inUV).r, 0.0, 1.0);
-        roughness = clamp(inMetallicRoughness.y * texture(roughnessTexture, inUV).r, 0.045, 1.0);
+        albedo = inBaseColor.rgb * texture(ALBEDO_TEX, inUV).rgb * inVertexColor.rgb;
+        metallic = clamp(inMetallicRoughness.x * texture(METALLIC_TEX, inUV).r, 0.0, 1.0);
+        roughness = clamp(inMetallicRoughness.y * texture(ROUGHNESS_TEX, inUV).r, 0.045, 1.0);
     }
 
     vec3 geometricNormal = normalize(inWorldNormal);
@@ -522,10 +543,10 @@ void main() {
 
     vec3 N;
     if (useTriplanar) {
-        N = triplanarWorldNormal(normalTexture, inWorldPos, geometricNormal, triWeights, kTriplanarScale,
+        N = triplanarWorldNormal(NORMAL_TEX, inWorldPos, geometricNormal, triWeights, kTriplanarScale,
                                   inMetallicRoughness.z);
     } else {
-        vec3 sampledNormal = texture(normalTexture, inUV).rgb * 2.0 - 1.0;
+        vec3 sampledNormal = texture(NORMAL_TEX, inUV).rgb * 2.0 - 1.0;
         sampledNormal.xy *= inMetallicRoughness.z;
         sampledNormal = normalize(sampledNormal);
         N = normalize(TBN * sampledNormal);
@@ -570,7 +591,7 @@ void main() {
     vec3 Lo = (diffuse + specular) * radiance * NdotL * shadow;
     Lo += computePointLights(inWorldPos, N, V, albedo, metallic, roughness, F0);
 
-    float ao = useTriplanar ? sampleTriplanar(aoTexture, inWorldPos, triWeights, kTriplanarScale).r : texture(aoTexture, inUV).r;
+    float ao = useTriplanar ? sampleTriplanar(AO_TEX, inWorldPos, triWeights, kTriplanarScale).r : texture(AO_TEX, inUV).r;
     vec3 ambient = computeAmbient(N) * albedo * ao;
 
     // Kronos ("Four RTX Maps" Phase 5c): real caustic-light dapple pattern

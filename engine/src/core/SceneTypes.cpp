@@ -19,7 +19,9 @@ std::vector<VkVertexInputAttributeDescription> InstanceData::attributeDescriptio
     // consecutive locations (one per column, GLSL has no single attribute
     // format wide enough for a whole mat4) -- 4/5/6/7.
     // baseColor/metallicRoughness/emissive follow at 8/9/10.
-    std::vector<VkVertexInputAttributeDescription> attrs(7);
+    // Location 11 is the shared Vertex layout's colour attribute (binding
+    // 0), so textureIndices resumes at 12 rather than 11.
+    std::vector<VkVertexInputAttributeDescription> attrs(8);
     attrs[0] = {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(InstanceData, model) + 0 * sizeof(glm::vec4)};
     attrs[1] = {5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(InstanceData, model) + 1 * sizeof(glm::vec4)};
     attrs[2] = {6, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(InstanceData, model) + 2 * sizeof(glm::vec4)};
@@ -27,6 +29,7 @@ std::vector<VkVertexInputAttributeDescription> InstanceData::attributeDescriptio
     attrs[4] = {8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(InstanceData, baseColor)};
     attrs[5] = {9, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(InstanceData, metallicRoughness)};
     attrs[6] = {10, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(InstanceData, emissive)};
+    attrs[7] = {12, 1, VK_FORMAT_R32G32B32A32_UINT, offsetof(InstanceData, textureIndices)};
     return attrs;
 }
 

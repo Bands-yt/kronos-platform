@@ -22,6 +22,7 @@ layout(location = 2) out vec2 outUV;
 layout(location = 3) out flat vec4 outBaseColor;
 layout(location = 4) out flat vec4 outMetallicRoughness;
 layout(location = 5) out flat vec4 outEmissive;
+layout(location = 8) out flat uvec4 outTextureIndices;
 // World-space tangent + handedness -- appended at 6 rather than
 // renumbering the outputs above (keeps this diff to an addition, not a
 // renumbering, everywhere that already reads locations 0-5).
@@ -62,6 +63,11 @@ layout(push_constant) uniform ObjectPushConstants {
     vec4 baseColor;
     vec4 metallicRoughness; // x: metallic, y: roughness
     vec4 emissive;          // rgb: emissive color, a: intensity
+    // Packed bindless slots, two 16-bit indices per component -- see
+    // core::ObjectPushConstants and scene.frag. Present unconditionally so
+    // the push-constant block keeps matching the C++ struct byte-for-byte
+    // whichever fragment variant is bound.
+    uvec4 textureIndices;
 } object;
 
 void main() {
@@ -80,6 +86,7 @@ void main() {
     outBaseColor = object.baseColor;
     outMetallicRoughness = object.metallicRoughness;
     outEmissive = object.emissive;
+    outTextureIndices = object.textureIndices;
     outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
 }

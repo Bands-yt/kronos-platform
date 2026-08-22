@@ -27,6 +27,9 @@ layout(location = 4) in mat4 inInstanceModel;
 layout(location = 8) in vec4 inInstanceBaseColor;
 layout(location = 9) in vec4 inInstanceMetallicRoughness;
 layout(location = 10) in vec4 inInstanceEmissive;
+// Location 12, not 11: 11 is the shared Vertex layout's colour attribute
+// (binding 0), so per-instance data resumes after it.
+layout(location = 12) in uvec4 inInstanceTextureIndices;
 
 layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) out vec3 outWorldNormal;
@@ -34,6 +37,7 @@ layout(location = 2) out vec2 outUV;
 layout(location = 3) out flat vec4 outBaseColor;
 layout(location = 4) out flat vec4 outMetallicRoughness;
 layout(location = 5) out flat vec4 outEmissive;
+layout(location = 8) out flat uvec4 outTextureIndices;
 // World-space tangent + handedness, at the same location scene.vert uses
 // -- see that file's comment on why this is appended at 6 rather than
 // renumbering the outputs above.
@@ -78,6 +82,7 @@ void main() {
     outBaseColor = inInstanceBaseColor;
     outMetallicRoughness = inInstanceMetallicRoughness;
     outEmissive = inInstanceEmissive;
+    outTextureIndices = inInstanceTextureIndices;
     outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
 }

@@ -1,4 +1,7 @@
 #version 450
+#ifdef KRONOS_BINDLESS
+#extension GL_EXT_nonuniform_qualifier : require
+#endif
 
 layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in vec3 inWorldNormal;
@@ -93,20 +96,54 @@ layout(set = 0, binding = 1) uniform sampler2DArray shadowMapArray;
 // (128,128,255) for normal, which decodes to tangent-space (0,0,1) --
 // "no perturbation") so every sample below is always valid and multiplies
 // (or, for normal, composes through the identity TBN) as a no-op -- no
-// has-texture branch needed. normalTexture now perturbs the shading
+// has-texture branch needed. NORMAL_TEX now perturbs the shading
 // normal via a real per-fragment TBN built from the interpolated
 // world-space tangent (inWorldTangent, generated per-mesh by
 // Mesh::computeTangents()) -- see main()'s normal-mapping block below.
+// Kronos ("Bindless Descriptors"): compiled twice -- once as-is, once
+// with KRONOS_BINDLESS defined (see engine/src/CMakeLists.txt). The
+// renderer picks the bindless variant only on a device that supports
+// descriptor indexing, so a device without it keeps exactly the path
+// that shipped before.
+#ifdef KRONOS_BINDLESS
+layout(set = 2, binding = 0) uniform sampler2D bindlessTextures[];
+
+// Texture indices arrive as a flat varying rather than a push constant:
+// three different vertex shaders with three different pipeline layouts
+// feed this fragment shader, so a push_constant block here would be tied
+// to only one of them.
+//   x = albedo | (normal    << 16)
+//   y = metallic | (roughness << 16)
+//   z = ao
+layout(location = 8) in flat uvec4 inTextureIndices;
+
+// nonuniformEXT is required, not decorative: fragments within one draw
+// can index different slots, and without it the index is treated as
+// subgroup-uniform and samples the wrong texture.
+#define ALBEDO_TEX    bindlessTextures[nonuniformEXT(inTextureIndices.x & 0xFFFFu)]
+#define NORMAL_TEX    bindlessTextures[nonuniformEXT(inTextureIndices.x >> 16)]
+#define METALLIC_TEX  bindlessTextures[nonuniformEXT(inTextureIndices.y & 0xFFFFu)]
+#define ROUGHNESS_TEX bindlessTextures[nonuniformEXT(inTextureIndices.y >> 16)]
+#define AO_TEX        bindlessTextures[nonuniformEXT(inTextureIndices.z & 0xFFFFu)]
+#else
 layout(set = 1, binding = 0) uniform sampler2D albedoTexture;
 layout(set = 1, binding = 1) uniform sampler2D normalTexture;
 layout(set = 1, binding = 2) uniform sampler2D metallicTexture;
 layout(set = 1, binding = 3) uniform sampler2D roughnessTexture;
+#define ALBEDO_TEX    albedoTexture
+#define NORMAL_TEX    normalTexture
+#define METALLIC_TEX  metallicTexture
+#define ROUGHNESS_TEX roughnessTexture
+#endif
 // Baked ambient-occlusion map (Sprint 16) -- multiplies only the ambient
 // term in main() below, same unassigned-is-white-is-no-op fallback
 // convention as the four slots above. Deliberately not applied to the
 // direct (Lo) term: baked AO approximates occluded indirect/sky light in
 // crevices, not a second real-time shadow.
+#ifndef KRONOS_BINDLESS
 layout(set = 1, binding = 4) uniform sampler2D aoTexture;
+#define AO_TEX aoTexture
+#endif
 
 const float PI = 3.14159265359;
 
@@ -456,15 +493,15 @@ void main() {
     float metallic;
     float roughness;
     if (useTriplanar) {
-        vec3 baseAlbedo = sampleTriplanar(albedoTexture, inWorldPos, triWeights, kTriplanarScale).rgb;
-        vec3 detailAlbedo = sampleTriplanar(albedoTexture, inWorldPos, triWeights, kMicroDetailScale).rgb;
+        vec3 baseAlbedo = sampleTriplanar(ALBEDO_TEX, inWorldPos, triWeights, kTriplanarScale).rgb;
+        vec3 detailAlbedo = sampleTriplanar(ALBEDO_TEX, inWorldPos, triWeights, kMicroDetailScale).rgb;
         albedo = inBaseColor.rgb * mix(baseAlbedo, baseAlbedo * detailAlbedo * 1.6, 0.35) * inVertexColor.rgb;
-        metallic = clamp(inMetallicRoughness.x * sampleTriplanar(metallicTexture, inWorldPos, triWeights, kTriplanarScale).r, 0.0, 1.0);
-        roughness = clamp(inMetallicRoughness.y * sampleTriplanar(roughnessTexture, inWorldPos, triWeights, kTriplanarScale).r, 0.045, 1.0);
+        metallic = clamp(inMetallicRoughness.x * sampleTriplanar(METALLIC_TEX, inWorldPos, triWeights, kTriplanarScale).r, 0.0, 1.0);
+        roughness = clamp(inMetallicRoughness.y * sampleTriplanar(ROUGHNESS_TEX, inWorldPos, triWeights, kTriplanarScale).r, 0.045, 1.0);
     } else {
-        albedo = inBaseColor.rgb * texture(albedoTexture, inUV).rgb * inVertexColor.rgb;
-        metallic = clamp(inMetallicRoughness.x * texture(metallicTexture, inUV).r, 0.0, 1.0);
-        roughness = clamp(inMetallicRoughness.y * texture(roughnessTexture, inUV).r, 0.045, 1.0); // avoid a singular GGX at roughness 0
+        albedo = inBaseColor.rgb * texture(ALBEDO_TEX, inUV).rgb * inVertexColor.rgb;
+        metallic = clamp(inMetallicRoughness.x * texture(METALLIC_TEX, inUV).r, 0.0, 1.0);
+        roughness = clamp(inMetallicRoughness.y * texture(ROUGHNESS_TEX, inUV).r, 0.045, 1.0); // avoid a singular GGX at roughness 0
     }
 
     // Real tangent-space normal mapping: build a per-fragment TBN from
@@ -490,7 +527,7 @@ void main() {
     // real tangent-space sample through the per-fragment TBN above.
     vec3 N;
     if (useTriplanar) {
-        N = triplanarWorldNormal(normalTexture, inWorldPos, geometricNormal, triWeights, kTriplanarScale,
+        N = triplanarWorldNormal(NORMAL_TEX, inWorldPos, geometricNormal, triWeights, kTriplanarScale,
                                   inMetallicRoughness.z);
     } else {
         // Normal intensity (inMetallicRoughness.z, see Components.hpp's
@@ -499,7 +536,7 @@ void main() {
         // -- at 0 this collapses to (0,0,sampledNormal.z), which
         // normalizes to (0,0,1) = no perturbation, matching the
         // flat-normal fallback exactly.
-        vec3 sampledNormal = texture(normalTexture, inUV).rgb * 2.0 - 1.0; // [0,1] -> [-1,1]
+        vec3 sampledNormal = texture(NORMAL_TEX, inUV).rgb * 2.0 - 1.0; // [0,1] -> [-1,1]
         sampledNormal.xy *= inMetallicRoughness.z;
         sampledNormal = normalize(sampledNormal);
         N = normalize(TBN * sampledNormal);
@@ -561,7 +598,7 @@ void main() {
     // the shadowed directional term -- see computePointLights()'s comment.
     Lo += computePointLights(inWorldPos, N, V, albedo, metallic, roughness, F0);
 
-    float ao = useTriplanar ? sampleTriplanar(aoTexture, inWorldPos, triWeights, kTriplanarScale).r : texture(aoTexture, inUV).r;
+    float ao = useTriplanar ? sampleTriplanar(AO_TEX, inWorldPos, triWeights, kTriplanarScale).r : texture(AO_TEX, inUV).r;
     vec3 ambient = computeAmbient(N) * albedo * ao;
 
     // Kronos ("Four RTX Maps" Phase 5c): real caustic-light dapple pattern
