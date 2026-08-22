@@ -132,6 +132,7 @@ add_library(engine_core STATIC
     core/Terrain.cpp
     core/TerrainLod.cpp
     core/AllocationTracker.cpp
+    core/BindlessTextureTable.cpp
 
     cinematic/CurveInterpolation.cpp
     cinematic/CameraRail.cpp

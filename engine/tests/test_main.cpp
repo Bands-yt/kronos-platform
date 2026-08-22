@@ -132,6 +132,7 @@
 #include "cinematic/TimelineLayout.hpp"
 #include "cinematic/CurveInterpolation.hpp"
 #include "core/AllocationTracker.hpp"
+#include "core/BindlessTextureTable.hpp"
 #include "core/TerrainLod.hpp"
 #include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
@@ -17565,6 +17566,133 @@ int unelidableElementCount(int base) { return base + (g_allocationChecksum & 1);
 // motion blur trailing instead of centred -- and they are only testable
 // because they were kept out of the draw code.
 
+void testBindlessTableAllocatesStableSlots() {
+    engine::core::BindlessTextureTable table(8);
+    check(table.usedSlots() == 0, "a real fresh table really starts empty");
+
+    const uint32_t first = table.acquire(100);
+    const uint32_t second = table.acquire(200);
+    check(first != engine::core::BindlessTextureTable::kInvalidSlot, "a real acquire really returns a real slot");
+    check(first != second, "two real textures really get distinct real slots");
+
+    // Re-acquiring must return the SAME slot, not a new one -- otherwise
+    // every frame would leak slots for textures already resident.
+    check(table.acquire(100) == first, "re-acquiring a real texture really returns its existing real slot");
+    check(table.usedSlots() == 2, "and really does not allocate a second slot for it");
+    check(table.lookup(200) == second, "lookup really finds a real existing slot");
+    check(table.lookup(999) == engine::core::BindlessTextureTable::kInvalidSlot,
+          "lookup of a real unknown texture really reports invalid rather than allocating");
+}
+
+void testBindlessTableReusesReleasedSlots() {
+    engine::core::BindlessTextureTable table(8);
+    const uint32_t a = table.acquire(1);
+    const uint32_t b = table.acquire(2);
+    (void)b;
+    check(table.usedSlots() == 2, "two real slots really in use");
+
+    table.release(1);
+    check(table.usedSlots() == 1, "releasing really frees the real slot");
+    check(table.lookup(1) == engine::core::BindlessTextureTable::kInvalidSlot,
+          "a real released texture really no longer resolves");
+
+    // The freed slot must be reused rather than the range growing.
+    const uint32_t reused = table.acquire(3);
+    check(reused == a, "a real released slot is really reused rather than growing the used range");
+
+    table.release(999); // unknown id
+    check(table.usedSlots() == 2, "releasing a real unknown texture is really a safe no-op");
+}
+
+void testBindlessTableReportsExhaustionRatherThanWrapping() {
+    engine::core::BindlessTextureTable table(3);
+    check(table.acquire(1) != engine::core::BindlessTextureTable::kInvalidSlot, "slot 1 acquired");
+    check(table.acquire(2) != engine::core::BindlessTextureTable::kInvalidSlot, "slot 2 acquired");
+    check(table.acquire(3) != engine::core::BindlessTextureTable::kInvalidSlot, "slot 3 acquired");
+    check(table.isFull(), "the real table really reports itself full at capacity");
+
+    // Critically: it must NOT wrap. An out-of-range shader index reads
+    // whatever descriptor sits there -- a corrupted frame that looks like
+    // a texture bug rather than an exhaustion bug.
+    check(table.acquire(4) == engine::core::BindlessTextureTable::kInvalidSlot,
+          "a real full table really reports invalid rather than wrapping and corrupting a real frame");
+    check(table.usedSlots() == 3, "and really does not exceed its real capacity");
+
+    // Freeing one makes room again.
+    table.release(2);
+    check(table.acquire(4) != engine::core::BindlessTextureTable::kInvalidSlot,
+          "freeing a real slot really makes room for a real new texture");
+}
+
+void testBindlessTableSlotsStayWithinCapacity() {
+    engine::core::BindlessTextureTable table(64);
+    for (uint64_t id = 0; id < 64; ++id) {
+        const uint32_t slot = table.acquire(id);
+        check(slot < 64, "every real allocated slot really stays within the real array bound");
+    }
+    check(table.isFull(), "the real table really fills exactly at its real capacity");
+}
+
+void testBindlessTableTracksPendingDescriptorWrites() {
+    engine::core::BindlessTextureTable table(8);
+    check(table.pendingWrites().empty(), "a real fresh table really has nothing pending");
+
+    const uint32_t slot = table.acquire(10);
+    check(table.pendingWrites().size() == 1, "a real new acquire really queues exactly one real descriptor write");
+    check(table.pendingWrites()[0] == slot, "and really queues the real slot that was allocated");
+
+    // Re-acquiring an existing texture must NOT queue a redundant write.
+    (void)table.acquire(10);
+    check(table.pendingWrites().size() == 1, "re-acquiring really does not queue a redundant real write");
+
+    table.clearPendingWrites();
+    check(table.pendingWrites().empty(), "draining really clears the real pending list");
+
+    // Releasing must drop a queued write: writing a descriptor for a
+    // just-released texture would point at freed image memory.
+    const uint32_t doomed = table.acquire(20);
+    (void)doomed;
+    check(table.pendingWrites().size() == 1, "a real acquire really queued a real write");
+    table.release(20);
+    check(table.pendingWrites().empty(),
+          "releasing really drops the real queued write rather than writing a descriptor for freed memory");
+}
+
+void testBindlessTableClearResetsEverything() {
+    engine::core::BindlessTextureTable table(8);
+    (void)table.acquire(1);
+    (void)table.acquire(2);
+    table.release(1);
+    table.clear();
+
+    check(table.usedSlots() == 0, "clear really empties the real table");
+    check(table.pendingWrites().empty(), "clear really drops real pending writes");
+    check(table.lookup(2) == engine::core::BindlessTextureTable::kInvalidSlot,
+          "clear really forgets real existing textures");
+    // Fresh allocation must start from zero again, not from a stale
+    // high-water mark.
+    check(table.acquire(5) == 0, "after clear the real table really allocates from slot zero again");
+}
+
+void testBindlessTableAcquireIsZeroHeapOnceWarm() {
+    engine::core::BindlessTextureTable table(256);
+    // Populate, then re-acquire the same ids -- the steady state during
+    // real rendering, where textures are already resident.
+    for (uint64_t id = 0; id < 128; ++id) (void)table.acquire(id);
+    table.clearPendingWrites();
+    (void)table.acquire(0); // warm
+
+    engine::core::AllocationScope scope;
+    for (int frame = 0; frame < 60; ++frame) {
+        for (uint64_t id = 0; id < 128; ++id) {
+            volatile uint32_t slot = table.acquire(id);
+            (void)slot;
+        }
+    }
+    check(scope.allocationsSinceStart() == 0,
+          "re-acquiring real resident textures really performs ZERO heap allocations across 60 real frames");
+}
+
 void testTimelineTimeAndPixelRoundTrip() {
     engine::cinematic::TimelineView view;
     view.scrollSeconds = 2.0f;
@@ -30972,6 +31100,13 @@ int main() {
     testJoinTicketRequiringServerWithNoValidatorFailsClosed();
     testJoinTicketIsNotRequiredForRealLanSessions();
     testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing();
+    testBindlessTableAllocatesStableSlots();
+    testBindlessTableReusesReleasedSlots();
+    testBindlessTableReportsExhaustionRatherThanWrapping();
+    testBindlessTableSlotsStayWithinCapacity();
+    testBindlessTableTracksPendingDescriptorWrites();
+    testBindlessTableClearResetsEverything();
+    testBindlessTableAcquireIsZeroHeapOnceWarm();
     testTimelineTimeAndPixelRoundTrip();
     testTimelineZoomIsClampedAgainstDivisionByZero();
     testTimelineVisibilityCulling();

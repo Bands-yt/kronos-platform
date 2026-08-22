@@ -3018,3 +3018,49 @@ rendering was not broken. The 8K/optical-flow exporter and the ImGui
 timeline view sit on top of this model and are the natural next step.
 Jolt is already threaded (`JobSystemThreadPool`, `hwThreads-1` workers),
 so the "eliminate main-thread stalling" item was largely already done.
+
+## 2026-08-22 — Timeline maths, offline export, bindless foundation
+
+### Timeline + exporter cores
+Both kept out of the draw/GPU code, because that is the only way they are
+testable. Timeline: time/pixel round-tripping, zoom clamped against
+divide-by-zero, nearest-key hit-testing with a usable grab radius and
+stable tie-breaking, gridlines snapped to 1/2/5 x 10^n so labels stay
+readable at any zoom, and drags snapped to frames.
+
+Exporter: frame counts round rather than truncate so float error cannot
+drop the last frame of a shot. Motion blur samples are centred on the
+frame and taken at bin centres -- a real rotary shutter smears
+symmetrically rather than trailing, and edge sampling would double-weight
+the shutter ends. Depth and motion vectors are forced to float EXR
+whatever the colour format says, since 8-bit would quantise away the
+precision a compositor came for. Settings validate up front rather than
+failing 4000 frames into a render.
+
+### Bindless foundation
+`VK_EXT_descriptor_indexing` capability probing and device-feature
+enablement, following `checkRayTracingSupport()`'s existing
+graceful-degradation convention exactly -- a device without it keeps the
+current per-draw path unchanged.
+
+`core::BindlessTextureTable` owns slot allocation: stable slots across
+re-acquire, LIFO reuse to keep the used range compact, and **exhaustion
+reported rather than wrapped** -- an out-of-range shader index reads
+whatever descriptor happens to sit there, producing a corrupted frame
+that looks like a texture bug rather than an exhaustion bug. Releasing a
+texture drops its queued descriptor write, which would otherwise point at
+freed image memory.
+
+Verified on this machine: bindless reported supported, the device creates
+cleanly with the new feature chain, and rendering continues normally
+(Jolt, terrain and the profiler all running).
+
+**13873/13873 checks** (+216).
+
+### Not done, stated plainly
+The descriptor sets and shaders still use the existing per-draw path --
+this pass builds the capability and the allocator, not the rewrite. That
+rewrite is the part that actually strips draw-call overhead, and it is
+the risky half. Also worth noting: `VK_LAYER_KHRONOS_validation` is not
+installed on this machine, so Vulkan usage errors would not be caught
+here even if present.

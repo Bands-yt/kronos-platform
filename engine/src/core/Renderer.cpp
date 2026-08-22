@@ -369,6 +369,31 @@ bool Renderer::checkRayTracingSupport(VkPhysicalDevice device) const {
     return rayQueryFeatures.rayQuery && asFeatures.accelerationStructure && features12.bufferDeviceAddress;
 }
 
+// Kronos ("Bindless Descriptors"): probes VK_EXT_descriptor_indexing.
+//
+// Follows checkRayTracingSupport()'s own convention exactly -- a device
+// that lacks this gets the existing per-draw descriptor path unchanged,
+// because a missing optional capability is a graceful fallback here, not
+// a fatal error.
+//
+// The four features below are the ones a global texture array actually
+// needs: a runtime-sized array in the shader, non-uniform indexing into
+// it (different draws index different slots in one command), partially
+// bound sets (not every slot is populated), and update-after-bind
+// (textures are registered while the set is already in use).
+bool Renderer::checkBindlessSupport(VkPhysicalDevice device) const {
+    VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
+    VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    features2.pNext = &indexingFeatures;
+    vkGetPhysicalDeviceFeatures2(device, &features2);
+
+    return indexingFeatures.runtimeDescriptorArray &&
+           indexingFeatures.shaderSampledImageArrayNonUniformIndexing &&
+           indexingFeatures.descriptorBindingPartiallyBound &&
+           indexingFeatures.descriptorBindingSampledImageUpdateAfterBind;
+}
+
 bool Renderer::createLogicalDevice() {
     std::set<uint32_t> uniqueFamilies = {*queueFamilies_.graphics, *queueFamilies_.present};
     std::vector<VkDeviceQueueCreateInfo> queueInfos;
@@ -389,6 +414,10 @@ bool Renderer::createLogicalDevice() {
     // optional capability is a real, honest fallback, not a fatal error"
     // convention this class already uses for the validation layer.
     rayTracingSupported_ = checkRayTracingSupport(physicalDevice_);
+    bindlessSupported_ = checkBindlessSupport(physicalDevice_);
+    std::fprintf(stdout, "Renderer: bindless descriptors %s, ray tracing %s\n",
+                 bindlessSupported_ ? "supported" : "unavailable (using per-draw descriptors)",
+                 rayTracingSupported_ ? "supported" : "unavailable");
 
     VkPhysicalDeviceVulkan13Features features13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     features13.dynamicRendering = VK_TRUE;
@@ -401,10 +430,28 @@ bool Renderer::createLogicalDevice() {
     VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     features2.pNext = &features13;
 
+    VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
+
     std::vector<const char*> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+
+    // Chained ahead of the ray tracing chain so both can be enabled
+    // independently -- a device may support one and not the other.
+    if (bindlessSupported_) {
+        indexingFeatures.runtimeDescriptorArray = VK_TRUE;
+        indexingFeatures.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        indexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
+        indexingFeatures.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        indexingFeatures.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        indexingFeatures.pNext = features13.pNext;
+        features13.pNext = &indexingFeatures;
+    }
+
     if (rayTracingSupported_) {
+        features12.pNext = features13.pNext;
         features13.pNext = &features12;
         features12.bufferDeviceAddress = VK_TRUE;
+        asFeatures.pNext = features12.pNext;
         features12.pNext = &asFeatures;
         asFeatures.accelerationStructure = VK_TRUE;
         asFeatures.pNext = &rayQueryFeatures;

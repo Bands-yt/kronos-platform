@@ -203,6 +203,11 @@ public:
     // pass keeps running unchanged either way, this only adds a second,
     // optional real shadow technique on top.
     [[nodiscard]] bool isRayTracingSupported() const { return rayTracingSupported_; }
+    // Kronos ("Bindless Descriptors"): true when this device really
+    // supports VK_EXT_descriptor_indexing with the four features a global
+    // texture array needs. False means the existing per-draw descriptor
+    // path is in use -- a graceful fallback, not an error.
+    [[nodiscard]] bool isBindlessSupported() const { return bindlessSupported_; }
     void setRayTracedShadowsEnabled(bool enabled) { rayTracedShadowsEnabled_ = enabled && rayTracingSupported_; }
     [[nodiscard]] bool isRayTracedShadowsEnabled() const { return rayTracedShadowsEnabled_; }
 
@@ -939,6 +944,7 @@ private:
     bool createSurface();
     bool pickPhysicalDevice();
     [[nodiscard]] bool checkRayTracingSupport(VkPhysicalDevice device) const;
+    [[nodiscard]] bool checkBindlessSupport(VkPhysicalDevice device) const;
     bool createLogicalDevice();
     bool createAllocator();
     bool createSwapchain();
@@ -1300,6 +1306,7 @@ private:
     // Sprint 14 ("RTX Upgrade" Phase 2) -- see isRayTracingSupported()/
     // setRayTracedShadowsEnabled()'s own public comment.
     bool rayTracingSupported_ = false;
+    bool bindlessSupported_ = false;
     bool rayTracedShadowsEnabled_ = false;
     RayTracingScene rayTracingScene_;
 
