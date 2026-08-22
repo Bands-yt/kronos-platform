@@ -43,6 +43,7 @@
 #include "studio/plugins/CreatorAssetBrowserPlugin.hpp"
 #include "studio/plugins/CreatorConsolePlugin.hpp"
 #include "studio/plugins/LightingToolsPlugin.hpp"
+#include "migration/ProjectImporter.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/TimelineEditorPlugin.hpp"
 #include "studio/plugins/MaterialPlugin.hpp"
@@ -1070,7 +1071,11 @@ void StudioApp::drawFileMenu() {
     }
 
     ImGui::Separator();
-    ImGui::MenuItem("Import .rbxlx... (not implemented -- see src/migration/)");
+    if (ImGui::MenuItem("Import .rbxlx...")) {
+        importDialogOpen_ = true;
+        importReportLines_.clear();
+        importSummary_.clear();
+    }
 
     if (!fileActionStatus_.empty()) {
         ImGui::Separator();
@@ -1650,6 +1655,7 @@ void StudioApp::run() {
                              movieModePlugin_);
         scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
         debugConsolePanel_.draw();
+        drawImportDialog();
 
         // Sprint 8 ("Performance Stats & Debug Tools"): compose this
         // frame's full metrics -- Renderer's real render-only numbers,
@@ -1786,6 +1792,82 @@ void StudioApp::shutdown() {
     renderer_.shutdown();
     window_.shutdown();
     initialized_ = false;
+}
+
+
+// Kronos ("Luau Project Import & Migration Validation"): the real File >
+// Import .rbxlx... action. Runs the whole migration::ProjectImporter
+// pipeline and shows its report here as well as writing it to the engine
+// log (Debug Console > Engine Log), so a migration warning is visible
+// without the author going looking for it.
+//
+// This deliberately stops at the report. Turning ImportedInstance nodes
+// into real ECS entities needs the Instance-over-ECS translation layer
+// that does not exist yet (see migration/InstanceTreeBuilder.hpp), and
+// there is no undo for an import -- so reporting what WOULD come in, and
+// what would need fixing first, is the honest half to ship.
+void StudioApp::drawImportDialog() {
+    if (!importDialogOpen_) return;
+
+    ImGui::SetNextWindowSize(ImVec2(680.0f, 460.0f), ImGuiCond_Appearing);
+    if (ImGui::Begin("Import .rbxlx", &importDialogOpen_)) {
+        ImGui::TextDisabled("Roblox XML place/model files (.rbxlx / .rbxmx). The binary .rbxl/.rbxm formats are a "
+                             "different container and are not supported.");
+        ImGui::Separator();
+
+        ImGui::SetNextItemWidth(-110.0f);
+        ImGui::InputText("##importpath", importPathBuffer_, sizeof(importPathBuffer_));
+        ImGui::SameLine();
+        const bool hasPath = importPathBuffer_[0] != '\0';
+        ImGui::BeginDisabled(!hasPath);
+        if (ImGui::Button("Import", ImVec2(100.0f, 0.0f))) {
+            importReportLines_.clear();
+            std::ifstream file(importPathBuffer_, std::ios::binary);
+            if (!file) {
+                importSummary_ = std::string("Could not open \"") + importPathBuffer_ + "\".";
+                notifications_.push(importSummary_, NotificationSeverity::Error);
+            } else {
+                const std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                // Constructed per import rather than held as a member: the
+                // scanner is stateless term-matching, and an import is a
+                // rare, explicit user action.
+                const safety::IPInfringementScanner scanner;
+                migration::ProjectImporter importer;
+                const migration::ImportReport report = importer.importDocument(source, scanner);
+                migration::ProjectImporter::logReport(report, importPathBuffer_);
+
+                importSummary_ = report.summary();
+                for (const migration::ImportDiagnostic& diagnostic : report.diagnostics) {
+                    const char* tag = diagnostic.severity == migration::ImportSeverity::Blocked  ? "[blocked] "
+                                       : diagnostic.severity == migration::ImportSeverity::Warning ? "[warn] "
+                                                                                                    : "[info] ";
+                    importReportLines_.push_back(tag + diagnostic.subject + " -- " + diagnostic.message);
+                }
+                notifications_.push(importSummary_, report.blocked      ? NotificationSeverity::Error
+                                                     : report.warningCount() > 0 ? NotificationSeverity::Warning
+                                                                                 : NotificationSeverity::Success);
+            }
+        }
+        ImGui::EndDisabled();
+
+        if (!importSummary_.empty()) {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", importSummary_.c_str());
+        }
+
+        if (!importReportLines_.empty()) {
+            ImGui::Separator();
+            ImGui::BeginChild("##importreport", ImVec2(0.0f, 0.0f), true);
+            for (const std::string& line : importReportLines_) {
+                ImVec4 color(0.80f, 0.82f, 0.85f, 1.0f);
+                if (line.rfind("[blocked] ", 0) == 0) color = ImVec4(0.95f, 0.45f, 0.40f, 1.0f);
+                else if (line.rfind("[warn] ", 0) == 0) color = ImVec4(0.92f, 0.78f, 0.38f, 1.0f);
+                ImGui::TextColored(color, "%s", line.c_str());
+            }
+            ImGui::EndChild();
+        }
+    }
+    ImGui::End();
 }
 
 } // namespace engine::studio

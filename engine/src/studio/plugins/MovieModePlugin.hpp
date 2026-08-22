@@ -61,6 +61,13 @@ public:
     // can mark where the camera actually is in the shot.
     [[nodiscard]] float railParameterAtPlayhead() const;
 
+    // True while a timeline gesture owns the transport -- a playhead
+    // scrub or a loop-handle drag. update() checks this; see there.
+    [[nodiscard]] bool isScrubbing() const { return draggingPlayhead_ || draggingLoopHandle_ != 0; }
+    // Drives that state directly, for tests that cannot run an ImGui
+    // gesture.
+    void setScrubbingForTest(bool scrubbing) { draggingPlayhead_ = scrubbing; }
+
     // Exposed for tests: the schedule the exporter last built.
     [[nodiscard]] const std::vector<cinematic::ExportFrameJob>& lastExportSchedule() const { return lastSchedule_; }
     [[nodiscard]] cinematic::Sequence& sequence() { return sequence_; }

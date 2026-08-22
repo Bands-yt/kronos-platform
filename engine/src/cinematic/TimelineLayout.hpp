@@ -61,6 +61,18 @@ struct TimelineView {
 // on frames.
 [[nodiscard]] float dragTimeForPixel(const TimelineView& view, float pixelX, SequenceFrameRate rate, bool snapToFrames);
 
+// Restores sort order after a drag moved the key at `index` in time, and
+// returns that key's NEW index.
+//
+// Exists instead of erase-then-insertKeyframe() for two reasons, both of
+// which cost a key mid-drag: insertKeyframe() REPLACES any key at the
+// same exact time, so dragging one key across another silently destroys
+// it; and re-finding the moved key afterwards by comparing times is a
+// float equality test that picks the wrong key whenever two share a time.
+// Swapping past neighbours keeps every key and tracks the dragged one by
+// position, so its identity survives the whole gesture.
+[[nodiscard]] int reorderDraggedKeyframe(std::vector<Keyframe>& keys, int index);
+
 // Loop-region handle hit testing. Returns -1 for the start handle, +1 for
 // the end handle, 0 for neither.
 [[nodiscard]] int hitTestLoopHandle(const TimelineView& view, float loopStart, float loopEnd, float pixelX);

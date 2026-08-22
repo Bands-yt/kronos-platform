@@ -221,6 +221,7 @@
 #include "studio/UndoStack.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
+#include "migration/ProjectImporter.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
@@ -30270,6 +30271,377 @@ void testHouseLayoutDoorGapIsOpenInFrontWall() {
 // its modal drives. The ImGui draw loop itself is not exercised here (it
 // needs a live context); everything it *decides* is, which is where the
 // bugs would be.
+
+// Kronos ("Luau Project Import & Migration Validation"): require() must
+// survive the path spellings and dependency shapes a real imported
+// project actually contains.
+
+void testRequirePathsAndCycles() {
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "require validation: Scripting::initialize() succeeds");
+
+    scripting.setModuleResolver([](const std::string& path, engine::core::SecurityIdentity,
+                                    std::string& outSource, std::string& outError) {
+        if (path == "Shared/Math") { outSource = "return { add = function(a, b) return a + b end }"; return true; }
+        if (path == "A") { outSource = "local b = require(\"B\") return { name = \"A\" }"; return true; }
+        if (path == "B") { outSource = "local a = require(\"A\") return { name = \"B\" }"; return true; }
+        if (path == "Self") { outSource = "local s = require(\"Self\") return {}"; return true; }
+        if (path == "Throws") { outSource = "error(\"module blew up\")"; return true; }
+        outError = "no such module";
+        return false;
+    });
+
+    // Root and relative spellings of the SAME module must resolve to the
+    // same cached value, not merely each succeed -- otherwise an imported
+    // project silently runs a module's side effects several times.
+    std::string out = runScriptCapturingOutput(scripting, "Paths", R"LUA(
+        local canonical = require("Shared/Math")
+        assert(canonical.add(2, 3) == 5, "the module did not really work")
+        for _, spelling in ipairs({"./Shared/Math", "Shared//Math", "Shared/./Math", "Shared/Math/"}) do
+            local ok, m = pcall(require, spelling)
+            assert(ok, "spelling " .. spelling .. " failed to resolve: " .. tostring(m))
+            assert(m == canonical, "spelling " .. spelling .. " resolved to a DIFFERENT module instance")
+        end
+    )LUA", engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "require() normalises root/relative path spellings to one cached module");
+
+    // A cycle must be reported as a cycle. Before this it recursed until
+    // Luau's C-stack guard fired and reported "C stack overflow", which
+    // names neither module involved.
+    out = runScriptCapturingOutput(scripting, "Cycle", R"LUA(
+        local ok, err = pcall(require, "A")
+        assert(not ok, "a circular require unexpectedly SUCCEEDED")
+        assert(string.find(err, "circular dependency", 1, true) ~= nil,
+               "a circular require did not report a circular dependency: " .. tostring(err))
+        assert(string.find(err, "A -> B -> A", 1, true) ~= nil,
+               "the cycle error did not name the chain: " .. tostring(err))
+        assert(string.find(err, "C stack overflow", 1, true) == nil,
+               "the cycle still blew the C stack: " .. tostring(err))
+    )LUA", engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "require() reports a circular dependency and names the chain instead of overflowing the stack");
+
+    out = runScriptCapturingOutput(scripting, "SelfCycle", R"LUA(
+        local ok, err = pcall(require, "Self")
+        assert(not ok, "a self-require unexpectedly SUCCEEDED")
+        assert(string.find(err, "circular dependency", 1, true) ~= nil,
+               "a self-require was not reported as circular: " .. tostring(err))
+    )LUA", engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "require() reports the degenerate self-require cycle too");
+
+    // A module that throws must not be left marked in-progress: the retry
+    // has to report the module's own error again, never a false cycle.
+    out = runScriptCapturingOutput(scripting, "Throwing", R"LUA(
+        local ok1, err1 = pcall(require, "Throws")
+        local ok2, err2 = pcall(require, "Throws")
+        assert(not ok1 and not ok2, "a throwing module unexpectedly succeeded")
+        assert(string.find(err2, "circular dependency", 1, true) == nil,
+               "retrying a throwing module was misreported as a cycle: " .. tostring(err2))
+        assert(string.find(err2, "module blew up", 1, true) ~= nil,
+               "the retry lost the module's real error: " .. tostring(err2))
+    )LUA", engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "require() clears its in-progress marker when a module throws, so a retry is not a false cycle");
+
+    // The traversal guard must survive normalisation -- normalising must
+    // not turn a rejected path into an allowed one.
+    out = runScriptCapturingOutput(scripting, "Guards", R"LUA(
+        assert(not pcall(require, "../secrets"), "traversal was NOT blocked")
+        assert(not pcall(require, "./../secrets"), "traversal via ./.. was NOT blocked")
+        assert(not pcall(require, "/etc/passwd"), "absolute path was NOT blocked")
+        assert(not pcall(require, "\\windows\\system32"), "backslash absolute path was NOT blocked")
+    )LUA", engine::core::SecurityIdentity::UserScript);
+    check(out.empty(), "require() path normalisation does not weaken the traversal or absolute-path guards");
+}
+
+// The API compatibility scan is what turns "crashes mid-session on a nil
+// global" into "warned at import time".
+void testLuauApiCompatibilityScan() {
+    engine::migration::LuauApiCompatibility compat;
+    check(compat.registrySize() > 0, "LuauApiCompatibility really registers APIs");
+
+    const std::string script = R"LUA(
+local Players = game:GetService("Players")
+local part = Instance.new("Part")
+part.Parent = workspace
+world.setPosition(part, 1, 2, 3)
+)LUA";
+    const auto findings = compat.scan(script);
+
+    auto found = [&](const char* id) {
+        for (const auto& f : findings) {
+            if (f.identifier == id) return true;
+        }
+        return false;
+    };
+    check(found("game"), "the API scan finds an unmapped `game` reference");
+    check(found("Instance"), "the API scan finds an unmapped `Instance` reference");
+    check(found("workspace"), "the API scan finds an unmapped `workspace` reference");
+    check(found("world"), "the API scan also records the mapped Kronos APIs a script already uses");
+
+    for (const auto& f : findings) {
+        if (f.identifier == "game") {
+            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`game` is classified as unmapped");
+            check(f.line == 2, "the API scan reports the real 1-based line of a finding");
+            check(!f.guidance.empty(), "an unmapped API finding carries real migration guidance");
+        }
+        if (f.identifier == "world") {
+            check(f.status == engine::migration::ApiMappingStatus::Mapped, "`world` is classified as mapped");
+        }
+    }
+
+    // Comments and strings must not produce findings. A substring scanner
+    // reports all three of these and buries the real warnings in noise.
+    const auto quiet = compat.scan(R"LUA(
+-- ported from the old game, see workspace notes
+local label = "Instance.new is not called here"
+--[[ workspace
+     game ]]
+local gamemode = 1
+local ungame = gamemode
+)LUA");
+    check(quiet.empty(), "the API scan ignores comments, strings and identifiers that merely contain an API name");
+
+    // Method-call form.
+    const auto shimmed = compat.scan("local track = humanoid:LoadAnimation(anim)");
+    bool sawShim = false;
+    for (const auto& f : shimmed) {
+        if (f.identifier == ":LoadAnimation") {
+            sawShim = true;
+            check(f.status == engine::migration::ApiMappingStatus::Shimmed,
+                  "a legacy call site with a compat shim is reported as shimmed, not unmapped");
+        }
+    }
+    check(sawShim, "the API scan finds a legacy method call site");
+
+    const auto lines = compat.buildReportLines("Workspace.Main", script);
+    check(!lines.empty(), "buildReportLines produces real report lines");
+    bool allTagged = true;
+    for (const auto& line : lines) {
+        if (line.rfind("[warn] ", 0) != 0 && line.rfind("[info] ", 0) != 0) allTagged = false;
+        if (line.find("Workspace.Main:") == std::string::npos) allTagged = false;
+    }
+    check(allTagged, "every report line is severity-tagged and names the script and line");
+}
+
+// Full-project ingestion: the end-to-end pipeline, plus the benchmark the
+// import pass is supposed to verify.
+void testProjectImportPipeline() {
+    engine::migration::ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+
+    const std::string document = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="RBX0">
+    <Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Model" referent="RBX1">
+      <Properties><string name="Name">Lobby</string></Properties>
+      <Item class="Part" referent="RBX2">
+        <Properties><string name="Name">Floor</string></Properties>
+      </Item>
+      <Item class="Script" referent="RBX3">
+        <Properties>
+          <string name="Name">Main</string>
+          <string name="Source">local p = game:GetService("Players")
+local part = Instance.new("Part")</string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="ReplicatedStorage" referent="RBX4">
+    <Properties><string name="Name">Shared</string></Properties>
+    <Item class="ModuleScript" referent="RBX5">
+      <Properties>
+        <string name="Name">Util</string>
+        <string name="Source">return { clamp = function(v) return v end }</string>
+      </Properties>
+    </Item>
+    <Item class="LocalScript" referent="RBX6">
+      <Properties><string name="Name">Empty</string></Properties>
+    </Item>
+  </Item>
+</roblox>)XML";
+
+    const auto report = importer.importDocument(document, scanner);
+
+    check(report.parsed, "ProjectImporter really parses a .rbxlx document");
+    check(report.stats.instanceCount == 7, "ProjectImporter counts every instance in the hierarchy");
+    check(report.stats.scriptCount == 3, "ProjectImporter counts Script, LocalScript and ModuleScript alike");
+    check(report.stats.moduleScriptCount == 1, "ProjectImporter counts ModuleScripts separately");
+    check(report.stats.maxDepth == 3, "ProjectImporter measures the real hierarchy depth");
+    check(report.stats.totalScriptBytes > 0, "ProjectImporter really ingests script source");
+    check(!report.tree.empty(), "ProjectImporter returns the built instance tree");
+
+    // The unmapped APIs in Main must surface as warnings against the real
+    // instance path, not vanish or throw.
+    bool warnedAboutGame = false;
+    bool warnedAboutEmptySource = false;
+    for (const auto& diagnostic : report.diagnostics) {
+        if (diagnostic.subject.rfind("Workspace.Lobby.Main:", 0) == 0 &&
+            diagnostic.message.find("game") != std::string::npos) {
+            warnedAboutGame = true;
+            check(diagnostic.severity == engine::migration::ImportSeverity::Warning,
+                  "an unmapped API is reported at Warning severity");
+        }
+        if (diagnostic.message.find("no Source property") != std::string::npos) warnedAboutEmptySource = true;
+    }
+    check(warnedAboutGame, "ProjectImporter warns about unmapped APIs against the real instance path");
+    check(warnedAboutEmptySource, "ProjectImporter warns about a script that arrived with no Source");
+    check(report.warningCount() > 0, "ProjectImporter's report really counts its warnings");
+    check(!report.summary().empty(), "ProjectImporter produces a one-line summary");
+
+    // Malformed input is a refusal, not a crash or a silent empty import.
+    const auto broken = importer.importDocument("this is not xml at all", scanner);
+    check(!broken.parsed, "ProjectImporter reports a malformed document as unparsed");
+    check(broken.blocked, "ProjectImporter blocks a document it could not parse");
+    check(broken.stats.instanceCount == 0, "a failed parse ingests nothing");
+    check(broken.summary().find("import failed") != std::string::npos,
+          "a failed parse says so in its summary rather than reporting an empty success");
+
+    // An empty-but-valid document is a real, successful, empty import --
+    // distinct from a parse failure.
+    const auto empty = importer.importDocument("<roblox version=\"4\"></roblox>", scanner);
+    check(empty.parsed, "an empty document still parses");
+    check(!empty.blocked, "an empty document is not blocked");
+    check(empty.stats.instanceCount == 0, "an empty document ingests no instances");
+
+    // --- ingestion benchmark ------------------------------------------------
+    // A synthetic project large enough that an accidental quadratic in the
+    // walk or the scanner would show up as a timeout rather than passing
+    // quietly.
+    constexpr int kModels = 200;
+    std::string big = "<roblox version=\"4\">";
+    for (int i = 0; i < kModels; ++i) {
+        big += "<Item class=\"Model\" referent=\"M" + std::to_string(i) + "\">";
+        big += "<Properties><string name=\"Name\">Model" + std::to_string(i) + "</string></Properties>";
+        big += "<Item class=\"Part\" referent=\"P" + std::to_string(i) + "\">";
+        big += "<Properties><string name=\"Name\">Part" + std::to_string(i) + "</string></Properties></Item>";
+        big += "<Item class=\"Script\" referent=\"S" + std::to_string(i) + "\">";
+        big += "<Properties><string name=\"Name\">S" + std::to_string(i) + "</string>";
+        big += "<string name=\"Source\">local x = game.Workspace\nworld.createEntity()\n</string>";
+        big += "</Properties></Item></Item>";
+    }
+    big += "</roblox>";
+
+    const auto benchmark = importer.importDocument(big, scanner);
+    check(benchmark.parsed, "the import benchmark project parses");
+    check(benchmark.stats.instanceCount == static_cast<size_t>(kModels) * 3,
+          "the import benchmark ingests every instance in the project");
+    check(benchmark.stats.scriptCount == static_cast<size_t>(kModels),
+          "the import benchmark ingests every script in the project");
+    check(benchmark.warningCount() >= static_cast<size_t>(kModels),
+          "the import benchmark surfaces a migration warning for every script that needs one");
+    // Generous on purpose: this is a regression guard against an
+    // accidental quadratic, not a performance target to tune against.
+    check(benchmark.stats.elapsedMilliseconds < 5000.0,
+          "the import benchmark ingests a 600-instance project in well under 5 seconds");
+    std::fprintf(stderr, "  [benchmark] imported %zu instances / %zu scripts in %.2f ms\n",
+                 benchmark.stats.instanceCount, benchmark.stats.scriptCount,
+                 benchmark.stats.elapsedMilliseconds);
+
+    // --- IP safety severity mapping ----------------------------------------
+    // A hard-block term must stop the import; a merely-flagged one must
+    // not. Reporting a fuzzy match as "blocked" would be a false
+    // accusation against the creator's own content.
+    const std::string blockedDoc = R"XML(<roblox version="4">
+  <Item class="Model" referent="B0"><Properties><string name="Name">Roblox Tycoon</string></Properties></Item>
+</roblox>)XML";
+    const auto blockedReport = importer.importDocument(blockedDoc, scanner);
+    check(blockedReport.parsed, "the IP-blocked document still parses");
+    check(blockedReport.blocked, "a hard-block trademark term really blocks the import");
+    check(blockedReport.countOf(engine::migration::ImportSeverity::Blocked) > 0,
+          "a hard-block term is reported at Blocked severity");
+
+    const std::string reviewDoc = R"XML(<roblox version="4">
+  <Item class="Model" referent="R0"><Properties><string name="Name">Adopt Me Clone</string></Properties></Item>
+</roblox>)XML";
+    const auto reviewReport = importer.importDocument(reviewDoc, scanner);
+    check(!reviewReport.blocked, "a review-only IP match does NOT block the import");
+    check(reviewReport.warningCount() > 0, "a review-only IP match is still reported, as a warning");
+
+    // Roblox's own service containers must not be scanned: "ReplicatedStorage"
+    // fuzzy-matches "Roblox", so without the suppression every place file
+    // on the platform would carry a meaningless finding.
+    const std::string servicesDoc = R"XML(<roblox version="4">
+  <Item class="ReplicatedStorage" referent="S0"><Properties><string name="Name">ReplicatedStorage</string></Properties></Item>
+  <Item class="Workspace" referent="S1"><Properties><string name="Name">Workspace</string></Properties></Item>
+</roblox>)XML";
+    const auto servicesReport = importer.importDocument(servicesDoc, scanner);
+    check(!servicesReport.blocked, "an untouched service container does not block an import");
+    check(servicesReport.diagnostics.empty(),
+          "Roblox's own service containers produce no IP findings when still at their default names");
+
+    // A container the creator RENAMED is theirs again, and is scanned.
+    const std::string renamedDoc = R"XML(<roblox version="4">
+  <Item class="ReplicatedStorage" referent="S2"><Properties><string name="Name">Roblox Tycoon</string></Properties></Item>
+</roblox>)XML";
+    const auto renamedReport = importer.importDocument(renamedDoc, scanner);
+    check(renamedReport.blocked, "a service container renamed to a trademark term is still caught");
+}
+
+
+// Kronos ("Studio Movie Mode & Viewport Polish"): the interaction
+// behaviours that make scrubbing and key dragging behave, none of which
+// need an ImGui context to exercise.
+void testMovieModeScrubbingAndKeyDrag() {
+    // --- dragging a key past its neighbours ------------------------------
+    std::vector<engine::cinematic::Keyframe> keys;
+    keys.push_back(engine::cinematic::Keyframe{0.0f, 10.0f});
+    keys.push_back(engine::cinematic::Keyframe{1.0f, 20.0f});
+    keys.push_back(engine::cinematic::Keyframe{2.0f, 30.0f});
+
+    // Drag the middle key past the last one.
+    keys[1].timeSeconds = 3.0f;
+    int index = engine::cinematic::reorderDraggedKeyframe(keys, 1);
+    check(keys.size() == 3, "dragging a key past a neighbour keeps every key");
+    check(index == 2, "reorderDraggedKeyframe returns the dragged key's new index");
+    check(nearlyEqual(keys[static_cast<size_t>(index)].value, 20.0f),
+          "the returned index still addresses the key that was being dragged, not a neighbour");
+    check(keys[0].timeSeconds <= keys[1].timeSeconds && keys[1].timeSeconds <= keys[2].timeSeconds,
+          "the track is still sorted after the drag");
+
+    // Drag it back to the front.
+    keys[static_cast<size_t>(index)].timeSeconds = -1.0f;
+    index = engine::cinematic::reorderDraggedKeyframe(keys, index);
+    check(index == 0, "dragging a key to the front reports index 0");
+    check(nearlyEqual(keys[0].value, 20.0f), "the dragged key kept its identity across both directions");
+    check(keys.size() == 3, "dragging back keeps every key");
+
+    // The case that silently destroyed a key before: dragging one key
+    // exactly onto another's time. insertKeyframe() would REPLACE it.
+    keys[0].timeSeconds = keys[1].timeSeconds;
+    index = engine::cinematic::reorderDraggedKeyframe(keys, 0);
+    check(keys.size() == 3, "dragging a key exactly onto another's time destroys neither");
+    check(index >= 0 && index < 3, "a colliding drag still returns a valid index");
+
+    // A stale index from a key deleted mid-gesture is a no-op, not a
+    // write past the end.
+    const int stale = engine::cinematic::reorderDraggedKeyframe(keys, 99);
+    check(stale == 99, "reorderDraggedKeyframe ignores an out-of-range index");
+    check(keys.size() == 3, "an out-of-range reorder changes nothing");
+
+    // --- scrubbing owns the transport ------------------------------------
+    engine::studio::plugins::MovieModePlugin plugin;
+    engine::core::ECS scrubEcs;
+    plugin.sequence().setPlayhead(0.0f);
+    plugin.sequence().play();
+
+    // Not scrubbing: the transport advances normally.
+    plugin.update(0.5f, scrubEcs, engine::core::kNullEntity, {});
+    check(plugin.sequence().playheadSeconds() > 0.0f, "an un-scrubbed playing sequence really advances");
+
+    // Scrubbing: the transport must NOT advance underneath the gesture.
+    const float held = plugin.sequence().playheadSeconds();
+    plugin.setScrubbingForTest(true);
+    check(plugin.isScrubbing(), "setScrubbingForTest really puts the plugin in the scrubbing state");
+    for (int frame = 0; frame < 10; ++frame) {
+        plugin.update(0.016f, scrubEcs, engine::core::kNullEntity, {});
+    }
+    check(nearlyEqual(plugin.sequence().playheadSeconds(), held),
+          "a held scrub stops the transport advancing underneath it");
+
+    plugin.setScrubbingForTest(false);
+    plugin.update(0.25f, scrubEcs, engine::core::kNullEntity, {});
+    check(plugin.sequence().playheadSeconds() > held, "releasing the scrub resumes the transport");
+}
+
 void testMovieModePlugin() {
     engine::studio::plugins::MovieModePlugin plugin;
 
@@ -30356,6 +30728,10 @@ void testMovieModePlugin() {
 }
 
 int main() {
+    testRequirePathsAndCycles();
+    testLuauApiCompatibilityScan();
+    testProjectImportPipeline();
+    testMovieModeScrubbingAndKeyDrag();
     testMovieModePlugin();
     testAnimationInterpolation();
     testConstantEasing();

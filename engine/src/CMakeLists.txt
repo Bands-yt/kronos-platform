@@ -245,6 +245,8 @@ add_library(engine_core STATIC
     migration/AssetConverter.cpp
     migration/ScriptCompatShimLoader.cpp
     migration/ImportSafetyGuard.cpp
+    migration/LuauApiCompatibility.cpp
+    migration/ProjectImporter.cpp
 
     safety/TrustSafetyService.cpp
     safety/TextClassifierStub.cpp

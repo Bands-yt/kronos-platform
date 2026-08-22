@@ -118,6 +118,15 @@ void MovieModePlugin::seedDefaultSequence() {
 
 void MovieModePlugin::update(float dt, core::ECS&, core::EntityId, const std::vector<core::EntityId>&) {
     if (!sequence_.isPlaying()) return;
+    // Scrubbing takes the transport over for as long as the gesture
+    // lasts. Without this, update() advances the playhead and the drag
+    // then sets it back every frame -- so a held scrub re-fires the same
+    // audio cues and script triggers on every single frame, and the
+    // playhead visibly fights the cursor.
+    if (isScrubbing()) {
+        lastFiredEvents_.clear();
+        return;
+    }
     lastFiredEvents_.clear();
     sequence_.advance(dt, lastFiredEvents_);
 }
@@ -294,6 +303,7 @@ void MovieModePlugin::drawTimeline() {
             sequence_.setPlayhead(dragTimeForPixel(view_, mouseTrackX, sequence_.frameRate(), snapToFrames_));
         } else {
             draggingPlayhead_ = false;
+            rail_.resetDamping();
         }
     }
     if (draggingLoopHandle_ != 0) {
@@ -398,21 +408,12 @@ void MovieModePlugin::drawTimeline() {
                     if (dragKey_ < static_cast<int>(keys.size())) {
                         keys[static_cast<size_t>(dragKey_)].timeSeconds =
                             dragTimeForPixel(view_, mouseTrackX, sequence_.frameRate(), snapToFrames_);
-                        // Re-sort through the same insert path the model
-                        // uses, then re-find the dragged key: moving a key
-                        // past its neighbour changes its index, and holding
-                        // a stale one would silently start dragging a
-                        // different key mid-gesture.
-                        Keyframe moved = keys[static_cast<size_t>(dragKey_)];
-                        keys.erase(keys.begin() + dragKey_);
-                        insertKeyframe(keys, moved);
-                        for (size_t k = 0; k < keys.size(); ++k) {
-                            if (keys[k].timeSeconds == moved.timeSeconds) {
-                                dragKey_ = static_cast<int>(k);
-                                selectedKey_ = dragKey_;
-                                break;
-                            }
-                        }
+                        // Keeps the track sorted while preserving the
+                        // dragged key's identity -- see
+                        // reorderDraggedKeyframe() for why the obvious
+                        // erase-then-reinsert loses a key here.
+                        dragKey_ = reorderDraggedKeyframe(keys, dragKey_);
+                        selectedKey_ = dragKey_;
                     }
                 }
             }
@@ -601,16 +602,8 @@ void MovieModePlugin::drawCurveEditor() {
                 key.value = mouseValue;
                 key.timeSeconds = dragTimeForPixel(curveView, mouse.x - canvasPos.x, sequence_.frameRate(),
                                                     snapToFrames_);
-                Keyframe moved = key;
-                keys.erase(keys.begin() + curveDragKey_);
-                insertKeyframe(keys, moved);
-                for (size_t k = 0; k < keys.size(); ++k) {
-                    if (keys[k].timeSeconds == moved.timeSeconds) {
-                        curveDragKey_ = static_cast<int>(k);
-                        selectedKey_ = curveDragKey_;
-                        break;
-                    }
-                }
+                curveDragKey_ = reorderDraggedKeyframe(keys, curveDragKey_);
+                selectedKey_ = curveDragKey_;
             } else if (curveDragPart_ < 0) {
                 // An in handle must stay on the incoming side of its key,
                 // and an out handle on the outgoing side: letting one cross

@@ -93,4 +93,19 @@ int hitTestLoopHandle(const TimelineView& view, float loopStart, float loopEnd, 
     return startDistance <= endDistance ? -1 : 1;
 }
 
+
+int reorderDraggedKeyframe(std::vector<Keyframe>& keys, int index) {
+    if (index < 0 || index >= static_cast<int>(keys.size())) return index;
+    while (index > 0 && keys[static_cast<size_t>(index) - 1].timeSeconds > keys[static_cast<size_t>(index)].timeSeconds) {
+        std::swap(keys[static_cast<size_t>(index) - 1], keys[static_cast<size_t>(index)]);
+        --index;
+    }
+    while (index + 1 < static_cast<int>(keys.size()) &&
+           keys[static_cast<size_t>(index) + 1].timeSeconds < keys[static_cast<size_t>(index)].timeSeconds) {
+        std::swap(keys[static_cast<size_t>(index) + 1], keys[static_cast<size_t>(index)]);
+        ++index;
+    }
+    return index;
+}
+
 } // namespace engine::cinematic

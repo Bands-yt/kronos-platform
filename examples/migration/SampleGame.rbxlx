@@ -1,0 +1,78 @@
+<roblox version="4">
+  <Item class="Workspace" referent="RBX0">
+    <Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Model" referent="RBX1">
+      <Properties><string name="Name">Lobby</string></Properties>
+      <Item class="Part" referent="RBX2">
+        <Properties><string name="Name">Floor</string></Properties>
+      </Item>
+      <Item class="Part" referent="RBX3">
+        <Properties><string name="Name">SpawnPad</string></Properties>
+      </Item>
+      <Item class="Script" referent="RBX4">
+        <Properties>
+          <string name="Name">LobbyController</string>
+          <string name="Source">-- Legacy Roblox script, kept verbatim as a migration sample.
+local Players = game:GetService("Players")
+local pad = workspace.Lobby.SpawnPad
+
+Players.PlayerAdded:Connect(function(player)
+    local marker = Instance.new("Part")
+    marker.Parent = workspace
+end)
+
+game:GetService("RunService").Heartbeat:Connect(function(dt)
+    -- per-frame work
+end)</string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="ReplicatedStorage" referent="RBX5">
+    <Properties><string name="Name">ReplicatedStorage</string></Properties>
+    <Item class="ModuleScript" referent="RBX6">
+      <Properties>
+        <string name="Name">MathUtil</string>
+        <string name="Source">-- Portable: no Roblox-only API in here, imports cleanly.
+local MathUtil = {}
+
+function MathUtil.clamp(value, low, high)
+    if value &lt; low then return low end
+    if value &gt; high then return high end
+    return value
+end
+
+return MathUtil</string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="RBX7">
+      <Properties>
+        <string name="Name">AnimationHelper</string>
+        <string name="Source">local AnimationHelper = {}
+
+function AnimationHelper.play(humanoid, anim)
+    local track = humanoid:LoadAnimation(anim)
+    track:Play()
+    return track
+end
+
+return AnimationHelper</string>
+      </Properties>
+    </Item>
+  </Item>
+  <Item class="StarterPlayer" referent="RBX8">
+    <Properties><string name="Name">StarterPlayer</string></Properties>
+    <Item class="LocalScript" referent="RBX9">
+      <Properties>
+        <string name="Name">InputHandler</string>
+        <string name="Source">local UserInputService = game:GetService("UserInputService")
+
+UserInputService.InputBegan:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.Space then
+        print("jump")
+    end
+end)</string>
+      </Properties>
+    </Item>
+  </Item>
+</roblox>

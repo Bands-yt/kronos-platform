@@ -317,6 +317,13 @@ private:
     // camera-rail gizmo from the live rail. Same lifetime and same
     // borrowing shape as physicsPreviewPlugin_ above.
     plugins::MovieModePlugin* movieModePlugin_ = nullptr;
+
+    // File > Import .rbxlx... -- see drawImportDialog().
+    void drawImportDialog();
+    bool importDialogOpen_ = false;
+    char importPathBuffer_[512] = {};
+    std::string importSummary_;
+    std::vector<std::string> importReportLines_;
     // Same "raw pointer into what pluginManager_ owns" pattern -- see
     // ShopPlugin.hpp's class comment for why it owns its own sandboxed
     // economy state rather than a live ECS entity's.

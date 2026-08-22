@@ -24,6 +24,50 @@ using Clock = std::chrono::steady_clock;
 // reachable from Lua at all, so a script cannot inspect, poison, or
 // clear another module's cached value.
 constexpr const char* kModuleCacheRegistryKey = "kronos.modulecache";
+// Modules whose top-level chunk is currently running, in require() order.
+// Kept in the registry rather than a C++ member so it is per-VM (and so a
+// coroutine yielding mid-require cannot corrupt another VM's view of it),
+// exactly like the module cache above.
+constexpr const char* kModuleLoadingRegistryKey = "kronos.moduleloading";
+
+// Normalises a module path to the single spelling the cache and the
+// resolver both key on.
+//
+// Real imported Luau projects spell the same module several ways --
+// "Shared/Math", "./Shared/Math", "Shared//Math" -- and without this they
+// each miss the cache and then fail in the resolver as "no such module",
+// which reads to a creator as a broken import rather than a spelling
+// difference. Collapsing them here also means the cycle detection and the
+// cache cannot be fooled into treating one module as two.
+//
+// Deliberately does NOT resolve "..": that stays rejected outright by the
+// traversal check in luaRequire(), and quietly resolving it here would
+// turn a blocked path into an allowed one.
+std::string normaliseModulePath(std::string path) {
+    // Windows-style separators appear in projects authored on Windows.
+    // Done first so the absolute-path check still sees a leading "\".
+    for (char& c : path) {
+        if (c == '\\') c = '/';
+    }
+
+    std::string result;
+    result.reserve(path.size());
+    for (size_t i = 0; i < path.size(); ++i) {
+        // Collapse runs of '/'.
+        if (path[i] == '/' && !result.empty() && result.back() == '/') continue;
+        result.push_back(path[i]);
+    }
+
+    // Strip a leading "./" and any interior "/./".
+    for (size_t pos = result.find("/./"); pos != std::string::npos; pos = result.find("/./")) {
+        result.erase(pos, 2);
+    }
+    while (result.size() >= 2 && result[0] == '.' && result[1] == '/') result.erase(0, 2);
+
+    // A trailing slash names the same module as without one.
+    while (!result.empty() && result.back() == '/') result.pop_back();
+    return result;
+}
 
 // Owns the memory budget for one script's lua_State. Passed as the `ud`
 // argument to lua_newstate() -- see Scripting::budgetAllocator.
@@ -462,7 +506,11 @@ void Scripting::registerBindings(lua_State* L) {
 // even a misconfigured host cannot turn require() into a file read.
 int Scripting::luaRequire(lua_State* L) {
     const char* rawPath = luaL_checkstring(L, 1);
-    std::string modulePath = rawPath != nullptr ? rawPath : "";
+    // The path as written, kept only for diagnostics: every error below
+    // quotes what the author actually typed, not the normalised form they
+    // never wrote.
+    const std::string requestedPath = rawPath != nullptr ? rawPath : "";
+    std::string modulePath = normaliseModulePath(requestedPath);
 
     auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
     if (self == nullptr) {
@@ -479,12 +527,12 @@ int Scripting::luaRequire(lua_State* L) {
         return 0;
     }
     if (modulePath.find("..") != std::string::npos) {
-        luaL_error(L, "require(\"%s\"): path traversal is not allowed", modulePath.c_str());
+        luaL_error(L, "require(\"%s\"): path traversal is not allowed", requestedPath.c_str());
         return 0;
     }
     if (modulePath.front() == '/' || modulePath.front() == '\\' ||
         (modulePath.size() >= 2 && modulePath[1] == ':')) {
-        luaL_error(L, "require(\"%s\"): absolute paths are not allowed", modulePath.c_str());
+        luaL_error(L, "require(\"%s\"): absolute paths are not allowed", requestedPath.c_str());
         return 0;
     }
     // NUL-splicing: a path whose C string stops early could pass these
@@ -506,11 +554,52 @@ int Scripting::luaRequire(lua_State* L) {
         lua_pushvalue(L, -1);
         lua_setfield(L, LUA_REGISTRYINDEX, kModuleCacheRegistryKey);
     }
-    lua_getfield(L, -1, modulePath.c_str());
+    // Absolute, not relative: the in-progress table pushed below sits
+    // above this one, so a relative index at the caching write would
+    // address the wrong slot.
+    const int cacheIndex = lua_gettop(L);
+    lua_getfield(L, cacheIndex, modulePath.c_str());
     if (!lua_isnil(L, -1)) {
         return 1; // real cache hit -- the cached value is already on top
     }
     lua_pop(L, 1); // the nil
+
+    // Cycle detection. A module is only cached AFTER its chunk finishes,
+    // so a cycle (A requires B requires A) can never hit the cache above:
+    // without this it re-enters luaRequire forever and dies with Luau's
+    // "C stack overflow", which names neither module and tells a creator
+    // migrating a project nothing at all.
+    lua_getfield(L, LUA_REGISTRYINDEX, kModuleLoadingRegistryKey);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, LUA_REGISTRYINDEX, kModuleLoadingRegistryKey);
+    }
+    const int loadingIndex = lua_gettop(L);
+
+    // Already in progress -> a real cycle. Report the whole chain, in
+    // require order, so the author can see where to break it.
+    lua_getfield(L, loadingIndex, modulePath.c_str());
+    const bool alreadyLoading = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+    if (alreadyLoading) {
+        std::string chain;
+        const int count = static_cast<int>(lua_objlen(L, loadingIndex));
+        for (int i = 1; i <= count; ++i) {
+            lua_rawgeti(L, loadingIndex, i);
+            const char* entry = lua_tostring(L, -1);
+            if (entry != nullptr) {
+                if (!chain.empty()) chain += " -> ";
+                chain += entry;
+            }
+            lua_pop(L, 1);
+        }
+        if (!chain.empty()) chain += " -> ";
+        chain += modulePath;
+        luaL_error(L, "require(\"%s\"): circular dependency: %s", requestedPath.c_str(), chain.c_str());
+        return 0;
+    }
 
     if (!self->moduleResolver_) {
         luaL_error(L, "require(\"%s\"): no module resolver is configured on this Kronos build",
@@ -539,10 +628,41 @@ int Scripting::luaRequire(lua_State* L) {
         return 0;
     }
 
+    // Mark in-progress for the cycle check above, and record the order so
+    // a cycle can name its chain.
+    lua_pushboolean(L, 1);
+    lua_setfield(L, loadingIndex, modulePath.c_str());
+    lua_pushstring(L, modulePath.c_str());
+    lua_rawseti(L, loadingIndex, static_cast<int>(lua_objlen(L, loadingIndex)) + 1);
+
     // The module runs on THIS thread, so it inherits this VM's identity
     // and its execution/memory budgets automatically -- a required
     // module is never a privilege boundary of its own.
-    lua_call(L, 0, 1);
+    //
+    // lua_pcall rather than lua_call specifically so the in-progress
+    // marker below is cleared even when the module's own chunk throws.
+    // lua_call propagates by longjmp, which would skip that cleanup and
+    // leave the module permanently poisoned: every later require() of it
+    // would be misreported as a circular dependency.
+    const int callStatus = lua_pcall(L, 0, 1, 0);
+
+    // Unmark, whether it succeeded or threw.
+    lua_pushnil(L);
+    lua_setfield(L, loadingIndex, modulePath.c_str());
+    const int loadingCount = static_cast<int>(lua_objlen(L, loadingIndex));
+    if (loadingCount > 0) {
+        lua_pushnil(L);
+        lua_rawseti(L, loadingIndex, loadingCount);
+    }
+
+    if (callStatus != 0) {
+        // Re-raise the module's own error with the module named, so a
+        // failure deep in a required chain says which module failed.
+        const char* message = lua_tostring(L, -1);
+        luaL_error(L, "require(\"%s\"): %s", requestedPath.c_str(),
+                   message != nullptr ? message : "module raised an error");
+        return 0;
+    }
 
     // Cache before returning. A module that returns nothing caches
     // `true`, so a second require() is still a real cache hit rather
@@ -552,7 +672,7 @@ int Scripting::luaRequire(lua_State* L) {
         lua_pushboolean(L, 1);
     }
     lua_pushvalue(L, -1);
-    lua_setfield(L, -3, modulePath.c_str());
+    lua_setfield(L, cacheIndex, modulePath.c_str());
     return 1;
 }
 
