@@ -136,6 +136,8 @@ add_library(engine_core STATIC
     cinematic/CurveInterpolation.cpp
     cinematic/CameraRail.cpp
     cinematic/Sequencer.cpp
+    cinematic/TimelineLayout.cpp
+    cinematic/OfflineExport.cpp
     core/Texture.cpp
     core/ProceduralMaterials.cpp
     core/Prefab.cpp

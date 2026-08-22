@@ -127,7 +127,9 @@
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
 #include "cinematic/CameraRail.hpp"
+#include "cinematic/OfflineExport.hpp"
 #include "cinematic/Sequencer.hpp"
+#include "cinematic/TimelineLayout.hpp"
 #include "cinematic/CurveInterpolation.hpp"
 #include "core/AllocationTracker.hpp"
 #include "core/TerrainLod.hpp"
@@ -17556,6 +17558,310 @@ int unelidableElementCount(int base) { return base + (g_allocationChecksum & 1);
 // constant-speed travel is actually constant -- rather than comparing
 // against captured numbers.
 
+// Timeline interaction maths and offline export scheduling.
+//
+// These are the parts of a timeline and an exporter where bugs actually
+// live -- off-by-one on the last frame, keys unclickable at the edge,
+// motion blur trailing instead of centred -- and they are only testable
+// because they were kept out of the draw code.
+
+void testTimelineTimeAndPixelRoundTrip() {
+    engine::cinematic::TimelineView view;
+    view.scrollSeconds = 2.0f;
+    view.pixelsPerSecond = 120.0f;
+
+    check(std::fabs(engine::cinematic::timeToPixel(view, 2.0f)) < 0.001f,
+          "the real scroll position really maps to pixel zero");
+    check(std::fabs(engine::cinematic::timeToPixel(view, 3.0f) - 120.0f) < 0.001f,
+          "one real second really maps to the real zoom width");
+
+    for (float t : {2.0f, 2.5f, 5.0f, 12.75f}) {
+        const float roundTripped = engine::cinematic::pixelToTime(view, engine::cinematic::timeToPixel(view, t));
+        check(std::fabs(roundTripped - t) < 0.001f, "real time really round-trips through real pixels");
+    }
+}
+
+void testTimelineZoomIsClampedAgainstDivisionByZero() {
+    engine::cinematic::TimelineView view;
+    for (float zoom : {0.0f, -50.0f, 1e12f}) {
+        view.pixelsPerSecond = zoom;
+        const float pixel = engine::cinematic::timeToPixel(view, 5.0f);
+        const float time = engine::cinematic::pixelToTime(view, 100.0f);
+        check(std::isfinite(pixel) && std::isfinite(time),
+              "a real degenerate zoom really still produces finite numbers rather than dividing by zero");
+    }
+    check(engine::cinematic::clampZoom(std::numeric_limits<float>::quiet_NaN()) > 0.0f,
+          "a real NaN zoom really falls back to a usable real default");
+}
+
+void testTimelineVisibilityCulling() {
+    engine::cinematic::TimelineView view;
+    view.scrollSeconds = 10.0f;
+    view.pixelsPerSecond = 100.0f;
+    view.widthPixels = 500.0f; // 5 seconds visible
+
+    check(std::fabs(engine::cinematic::visibleStartSeconds(view) - 10.0f) < 0.001f, "real visible start is correct");
+    check(std::fabs(engine::cinematic::visibleEndSeconds(view) - 15.0f) < 0.001f, "real visible end is correct");
+    check(engine::cinematic::isTimeVisible(view, 12.0f), "a real time inside the view really reports visible");
+    check(!engine::cinematic::isTimeVisible(view, 9.0f), "a real time before the view really reports hidden");
+    check(!engine::cinematic::isTimeVisible(view, 16.0f), "a real time after the view really reports hidden");
+}
+
+void testKeyframeHitTestingPicksTheNearestWithinGrabRadius() {
+    engine::cinematic::TimelineView view;
+    view.scrollSeconds = 0.0f;
+    view.pixelsPerSecond = 100.0f;
+    view.grabRadiusPixels = 6.0f;
+
+    std::vector<engine::cinematic::Keyframe> keys;
+    for (float t : {0.0f, 1.0f, 2.0f}) {
+        engine::cinematic::insertKeyframe(keys, {t, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    }
+
+    // Exactly on the middle key (100px).
+    check(engine::cinematic::hitTestKeyframe(view, keys, 100.0f) == 1,
+          "clicking exactly on a real key really selects it");
+    // Just inside the grab radius.
+    check(engine::cinematic::hitTestKeyframe(view, keys, 104.0f) == 1,
+          "clicking near a real key really still selects it -- a 1px target would be unusable");
+    // Outside the radius: nothing.
+    check(engine::cinematic::hitTestKeyframe(view, keys, 150.0f) == std::numeric_limits<size_t>::max(),
+          "clicking empty timeline really selects nothing");
+    // Between two keys, nearer the second.
+    check(engine::cinematic::hitTestKeyframe(view, keys, 197.0f) == 2,
+          "clicking between two real keys really selects the NEAREST one");
+}
+
+void testTimelineGridIntervalsStayReadableAtEveryZoom() {
+    engine::cinematic::TimelineView view;
+    // At any zoom the interval must be a 1/2/5 x 10^n value -- an
+    // arbitrary interval produces labels like 0.37s that nobody can read.
+    for (float zoom : {2.0f, 25.0f, 100.0f, 900.0f, 5000.0f}) {
+        view.pixelsPerSecond = zoom;
+        const float interval = engine::cinematic::gridIntervalSeconds(view);
+        check(interval > 0.0f, "the real grid interval is really positive");
+
+        const float exponent = std::floor(std::log10(interval));
+        const float mantissa = interval / std::pow(10.0f, exponent);
+        const bool readable = std::fabs(mantissa - 1.0f) < 0.01f || std::fabs(mantissa - 2.0f) < 0.01f ||
+                              std::fabs(mantissa - 5.0f) < 0.01f || std::fabs(mantissa - 10.0f) < 0.01f;
+        check(readable, "the real grid interval really snaps to a readable 1/2/5 step");
+
+        // And the resulting spacing must be in a sane pixel range.
+        const float spacing = interval * zoom;
+        check(spacing > 20.0f && spacing < 400.0f,
+              "the real gridline spacing really stays legible rather than crowding or vanishing");
+    }
+}
+
+void testTimelineDragSnapsToFramesAndClampsAtZero() {
+    engine::cinematic::TimelineView view;
+    view.scrollSeconds = 0.0f;
+    view.pixelsPerSecond = 240.0f; // 10px per frame at 24fps
+
+    const float snapped = engine::cinematic::dragTimeForPixel(view, 27.0f, engine::cinematic::SequenceFrameRate::Fps24, true);
+    check(std::fabs(snapped - (3.0f / 24.0f)) < 1e-4f,
+          "a real drag really snaps to the nearest real frame so authored keys land on frames");
+
+    const float unsnapped = engine::cinematic::dragTimeForPixel(view, 27.0f, engine::cinematic::SequenceFrameRate::Fps24, false);
+    check(std::fabs(unsnapped - 27.0f / 240.0f) < 1e-4f, "and really does not snap when snapping is off");
+
+    check(engine::cinematic::dragTimeForPixel(view, -500.0f, engine::cinematic::SequenceFrameRate::Fps24, true) >= 0.0f,
+          "dragging left of zero really clamps rather than producing a negative real time");
+}
+
+void testLoopHandleHitTesting() {
+    engine::cinematic::TimelineView view;
+    view.scrollSeconds = 0.0f;
+    view.pixelsPerSecond = 100.0f;
+    view.grabRadiusPixels = 6.0f;
+
+    check(engine::cinematic::hitTestLoopHandle(view, 1.0f, 3.0f, 100.0f) == -1,
+          "clicking the real loop START handle really returns the start");
+    check(engine::cinematic::hitTestLoopHandle(view, 1.0f, 3.0f, 300.0f) == 1,
+          "clicking the real loop END handle really returns the end");
+    check(engine::cinematic::hitTestLoopHandle(view, 1.0f, 3.0f, 200.0f) == 0,
+          "clicking between the real handles really grabs neither");
+    check(engine::cinematic::hitTestLoopHandle(view, 0.0f, 0.0f, 0.0f) == 0,
+          "a real disabled loop region really has no grabbable handles");
+}
+
+// ---------------------------------------------------------------------------
+// Offline export
+// ---------------------------------------------------------------------------
+
+void testExportFrameCountMatchesDurationAndFrameRate() {
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    check(engine::cinematic::exportFrameCount(settings, 1.0f) == 24,
+          "one real second at 24fps really produces exactly 24 real frames");
+
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps60;
+    check(engine::cinematic::exportFrameCount(settings, 10.0f) == 600,
+          "ten real seconds at 60fps really produces exactly 600 real frames");
+
+    // Explicit range wins over sequence duration.
+    settings.startSeconds = 2.0f;
+    settings.endSeconds = 3.0f;
+    check(engine::cinematic::exportFrameCount(settings, 100.0f) == 60,
+          "a real explicit export range really overrides the real sequence duration");
+
+    // A zero or inverted span produces nothing rather than a negative count.
+    settings.startSeconds = 5.0f;
+    settings.endSeconds = 5.0f;
+    check(engine::cinematic::exportFrameCount(settings, 100.0f) == 0,
+          "a real zero-length range really exports nothing rather than a negative count");
+}
+
+void testExportScheduleWithoutMotionBlurIsOneSamplePerFrame() {
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    settings.motionBlur.enabled = false;
+
+    std::vector<engine::cinematic::ExportFrameJob> jobs;
+    engine::cinematic::buildExportSchedule(settings, 1.0f, jobs);
+
+    check(jobs.size() == 24, "the real schedule really has one job per real output frame");
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        check(jobs[i].sampleTimesSeconds.size() == 1,
+              "without real motion blur each real frame really renders exactly once");
+        const float expected = static_cast<float>(i) / 24.0f;
+        check(std::fabs(jobs[i].frameStartSeconds - expected) < 1e-4f,
+              "each real frame really starts at its real time on the timeline");
+    }
+}
+
+void testMotionBlurSamplesAreCentredOnTheFrame() {
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    settings.startSeconds = 1.0f;
+    settings.endSeconds = 1.0f + 1.0f / 24.0f; // exactly one frame
+    settings.motionBlur.enabled = true;
+    settings.motionBlur.subFrameSamples = 8;
+    settings.motionBlur.shutterAngleFraction = 0.5f;
+
+    std::vector<engine::cinematic::ExportFrameJob> jobs;
+    engine::cinematic::buildExportSchedule(settings, 10.0f, jobs);
+    check(jobs.size() == 1, "the real one-frame range really produces exactly one real job");
+    check(jobs[0].sampleTimesSeconds.size() == 8,
+          "real motion blur really renders the real requested number of sub-frame samples");
+
+    // The mean sample time must equal the frame time: a shutter centred
+    // on the frame, not trailing behind it.
+    double sum = 0.0;
+    for (float t : jobs[0].sampleTimesSeconds) sum += t;
+    const double mean = sum / static_cast<double>(jobs[0].sampleTimesSeconds.size());
+    check(std::fabs(mean - jobs[0].frameStartSeconds) < 1e-4,
+          "real motion blur samples really centre on the real frame rather than trailing behind it");
+
+    // And they must span the shutter, not sit on top of each other.
+    const float span = jobs[0].sampleTimesSeconds.back() - jobs[0].sampleTimesSeconds.front();
+    const float frameDuration = 1.0f / 24.0f;
+    check(span > 0.0f && span < frameDuration,
+          "real samples really spread across the real shutter without exceeding the real frame");
+
+    // Samples must be strictly increasing.
+    for (size_t i = 1; i < jobs[0].sampleTimesSeconds.size(); ++i) {
+        check(jobs[0].sampleTimesSeconds[i] > jobs[0].sampleTimesSeconds[i - 1],
+              "real sub-frame samples really advance in time");
+    }
+}
+
+void testExportValidationRefusesUnrenderableSettings() {
+    engine::cinematic::ExportSettings settings;
+    std::string error;
+    check(engine::cinematic::validateExportSettings(settings, error), "real default export settings are really valid");
+
+    auto expectRejected = [&](engine::cinematic::ExportSettings bad, const char* what) {
+        std::string message;
+        const bool valid = engine::cinematic::validateExportSettings(bad, message);
+        std::string label = std::string("a real export with ") + what + " is really refused up front";
+        check(!valid && !message.empty(), label.c_str());
+    };
+
+    engine::cinematic::ExportSettings noDirectory = settings;
+    noDirectory.outputDirectory.clear();
+    expectRejected(noDirectory, "no output directory");
+
+    engine::cinematic::ExportSettings tooBig = settings;
+    tooBig.resolution = {16000, 9000};
+    expectRejected(tooBig, "a resolution beyond 8K");
+
+    engine::cinematic::ExportSettings noChannels = settings;
+    noChannels.channels.clear();
+    expectRejected(noChannels, "no channels selected");
+
+    engine::cinematic::ExportSettings badBlur = settings;
+    badBlur.motionBlur.enabled = true;
+    badBlur.motionBlur.subFrameSamples = 0;
+    expectRejected(badBlur, "zero motion blur samples");
+
+    engine::cinematic::ExportSettings badRange = settings;
+    badRange.startSeconds = 5.0f;
+    badRange.endSeconds = 2.0f;
+    expectRejected(badRange, "an end time before its start");
+
+    // 8K exactly must be ACCEPTED -- it is the documented maximum.
+    engine::cinematic::ExportSettings eightK = settings;
+    eightK.resolution = engine::cinematic::resolution_presets::k8K;
+    std::string message;
+    check(engine::cinematic::validateExportSettings(eightK, message),
+          "a real 8K export is really accepted -- it is the real documented maximum");
+}
+
+void testExportFilenamesSortLexicallyInRenderOrder() {
+    engine::cinematic::ExportSettings settings;
+    settings.filePrefix = "shot";
+    settings.colorFormat = engine::cinematic::ExportImageFormat::Png;
+
+    const std::string first = engine::cinematic::exportFrameFilename(settings, 7, engine::cinematic::ExportChannel::Color);
+    const std::string later = engine::cinematic::exportFrameFilename(settings, 1234, engine::cinematic::ExportChannel::Color);
+    check(first == "shot_color_000007.png", "the real colour filename really matches the real expected pattern");
+    check(first < later, "real zero padding really makes a directory listing sort in real render order");
+
+    // Depth and motion vectors must be EXR whatever the colour setting --
+    // 8-bit would quantise away the precision a compositor came for.
+    const std::string depth = engine::cinematic::exportFrameFilename(settings, 7, engine::cinematic::ExportChannel::Depth);
+    const std::string motion = engine::cinematic::exportFrameFilename(settings, 7, engine::cinematic::ExportChannel::MotionVectors);
+    check(depth == "shot_depth_000007.exr", "the real depth channel is really forced to float EXR");
+    check(motion == "shot_motion_000007.exr", "the real motion vector channel is really forced to float EXR");
+}
+
+void testExportSizeEstimateScalesWithResolutionAndChannels() {
+    engine::cinematic::ExportSettings settings;
+    settings.resolution = engine::cinematic::resolution_presets::k1080p;
+    settings.channels = {engine::cinematic::ExportChannel::Color};
+    const uint64_t hd = engine::cinematic::estimatedBytesPerFrame(settings);
+
+    settings.resolution = engine::cinematic::resolution_presets::k8K;
+    const uint64_t eightK = engine::cinematic::estimatedBytesPerFrame(settings);
+    check(eightK > hd * 10,
+          "a real 8K frame really estimates far larger than a real 1080p one -- worth warning about before a render");
+
+    settings.channels = {engine::cinematic::ExportChannel::Color, engine::cinematic::ExportChannel::Depth,
+                         engine::cinematic::ExportChannel::MotionVectors};
+    check(engine::cinematic::estimatedBytesPerFrame(settings) > eightK,
+          "adding real channels really increases the real estimate");
+}
+
+void testExportScheduleBuildingIsBoundedForALongRender() {
+    // A 60-second 60fps render with 32-sample blur: 3600 frames, 115200
+    // sub-frame renders. Building the schedule must stay proportional
+    // rather than doing something quadratic.
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps60;
+    settings.motionBlur.enabled = true;
+    settings.motionBlur.subFrameSamples = 32;
+
+    std::vector<engine::cinematic::ExportFrameJob> jobs;
+    engine::cinematic::buildExportSchedule(settings, 60.0f, jobs);
+    check(jobs.size() == 3600, "a real long render really schedules exactly the real expected frame count");
+
+    size_t totalSamples = 0;
+    for (const auto& job : jobs) totalSamples += job.sampleTimesSeconds.size();
+    check(totalSamples == 3600 * 32, "and really schedules the real expected number of sub-frame renders");
+}
+
 void testTimecodeFormattingMatchesTheFrameRate() {
     using engine::cinematic::SequenceFrameRate;
     check(engine::cinematic::formatTimecode(0.0f, SequenceFrameRate::Fps24) == "00:00:00:00",
@@ -30666,6 +30972,20 @@ int main() {
     testJoinTicketRequiringServerWithNoValidatorFailsClosed();
     testJoinTicketIsNotRequiredForRealLanSessions();
     testJoinRejectsPlayerWhenServerCannotSpawnAvatarInsteadOfCrashing();
+    testTimelineTimeAndPixelRoundTrip();
+    testTimelineZoomIsClampedAgainstDivisionByZero();
+    testTimelineVisibilityCulling();
+    testKeyframeHitTestingPicksTheNearestWithinGrabRadius();
+    testTimelineGridIntervalsStayReadableAtEveryZoom();
+    testTimelineDragSnapsToFramesAndClampsAtZero();
+    testLoopHandleHitTesting();
+    testExportFrameCountMatchesDurationAndFrameRate();
+    testExportScheduleWithoutMotionBlurIsOneSamplePerFrame();
+    testMotionBlurSamplesAreCentredOnTheFrame();
+    testExportValidationRefusesUnrenderableSettings();
+    testExportFilenamesSortLexicallyInRenderOrder();
+    testExportSizeEstimateScalesWithResolutionAndChannels();
+    testExportScheduleBuildingIsBoundedForALongRender();
     testTimecodeFormattingMatchesTheFrameRate();
     testFrameSnappingLandsOnWholeFrames();
     testSequenceTracksAndChannelsRoundTrip();
