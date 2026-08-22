@@ -53,7 +53,11 @@ socialRouter.post(
   '/presence/heartbeat',
   requireAuth,
   asyncRoute(async (req, res) => {
-    const status = ['online_launcher', 'in_game'].includes(req.body?.status) ? req.body.status : 'online_launcher';
+    // 'in_studio' is a real, distinct state: a creator with Studio open
+    // is present and reachable, but is not in a joinable session, so the
+    // UI must not offer a "Join Game" button for them.
+    const ALLOWED_PRESENCE = ['online_launcher', 'in_studio', 'in_game'];
+    const status = ALLOWED_PRESENCE.includes(req.body?.status) ? req.body.status : 'online_launcher';
     const payload = {
       status,
       current_game_id: req.body?.current_game_id ? String(req.body.current_game_id) : null,
@@ -118,6 +122,85 @@ socialRouter.get(
               : 'none',
       })),
       next_offset: hasMore ? offset + limit : null,
+    });
+  }),
+);
+
+// Paginated account directory, distinct from /users/search: search
+// answers "find this person", this answers "show me the directory".
+// Keyset paginated on id so the page boundary stays stable while new
+// accounts are being created underneath it -- OFFSET would silently skip
+// or repeat rows as the table grows.
+socialRouter.get(
+  '/users',
+  requireAuth,
+  rateLimit({ bucket: 'userdir', limit: 120, windowSeconds: 300 }),
+  asyncRoute(async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const cursor = Number(req.query.cursor) || 0;
+
+    const params = [limit + 1];
+    let where = "u.is_guest = FALSE AND u.account_state <> 'terminated' AND u.username_lower IS NOT NULL";
+    if (cursor > 0) {
+      params.push(cursor);
+      where += ` AND u.id > $${params.length}`;
+    }
+
+    const { rows } = await query(
+      `SELECT u.id, u.username, u.display_name, u.created_at
+         FROM users u
+        WHERE ${where}
+        ORDER BY u.id ASC
+        LIMIT $1`,
+      params,
+    );
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const presence = await readPresence(page.map((r) => r.id)).catch(() => null);
+
+    res.json({
+      users: page.map((r) => {
+        const p = presence ? presence.get(String(r.id)) : null;
+        return {
+          id: String(r.id),
+          username: r.username,
+          display_name: r.display_name,
+          status: p?.status || 'offline',
+          current_game_id: p?.current_game_id || null,
+        };
+      }),
+      next_cursor: hasMore ? String(page[page.length - 1].id) : null,
+      presence_available: presence !== null,
+    });
+  }),
+);
+
+// Aggregate presence counts for the dashboard. Counted from live Redis
+// keys only -- a total that includes stale entries is worse than no
+// total, because people act on it.
+socialRouter.get(
+  '/presence/summary',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const { rows } = await query(
+      `SELECT id FROM users WHERE is_guest = FALSE AND account_state <> 'terminated'`,
+    );
+    const presence = await readPresence(rows.map((r) => r.id)).catch(() => null);
+    if (presence === null) {
+      return res.json({ available: false, offline: 0, online_launcher: 0, in_studio: 0, in_game: 0, total_online: 0 });
+    }
+    const counts = { offline: 0, online_launcher: 0, in_studio: 0, in_game: 0 };
+    for (const entry of presence.values()) {
+      const status = entry.status || 'offline';
+      if (counts[status] === undefined) counts.offline += 1;
+      else counts[status] += 1;
+    }
+    res.json({
+      available: true,
+      ...counts,
+      total_online: counts.online_launcher + counts.in_studio + counts.in_game,
+      registered_accounts: rows.length,
     });
   }),
 );

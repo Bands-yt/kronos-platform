@@ -2782,3 +2782,48 @@ The multi-track sequencer, blend trees, camera rails, EXR/motion-blur
 export and a GI path tracer are each substantial standalone features;
 Unreal's Sequencer is a team-years product. Four shallow stubs would
 have been worth less than two finished, tested subsystems.
+
+## 2026-08-21 (final) — Discovery, directory, presence states, publishing
+
+Audited the Studio/discovery spec first. Most of it already existed:
+`/v1/games` was already keyset-paginated, the 15s heartbeat with Redis
+TTL was already built, `core::SceneFile` already serialises scenes
+(scripts included), ImGuizmo transform gizmos, the Explorer tree and the
+Properties grid are all already in Studio, and Studio is a separate
+binary with no network checks so it is already fully offline.
+
+Four real gaps, all closed with tests (**55/55 backend tests**, 10 new):
+
+- **Batch size** — `/v1/games` capped at 100; the spec wants 200. Raised,
+  and over-limit requests clamp rather than being honoured, since an
+  unbounded limit is how one request pulls the whole table.
+- **`/v1/users` account directory** — only `/users/search` existed, which
+  answers "find this person", not "show me the directory". Added,
+  keyset-paginated on id so page boundaries stay stable while accounts
+  are being created underneath, enriched with live presence, guests
+  excluded.
+- **`in_studio` presence** — a real distinct state: a creator with Studio
+  open is present but *not joinable*, so the UI must not offer "Join
+  Game" for them. Unrecognised states fall back to `online_launcher`
+  rather than being stored verbatim, so clients never have to handle
+  arbitrary strings other clients invented.
+- **`/v1/games/publish`** — one-click publish. Re-publishing your own
+  slug updates in place; somebody else's is refused by an ownership check
+  in the WHERE clause rather than by hope. Guests refused server-side.
+  `javascript:` thumbnails rejected, since every catalogue client renders
+  that URL.
+
+Plus `/v1/presence/summary` for the dashboard, counting only live Redis
+keys -- a total including stale entries is worse than no total, because
+people act on it.
+
+### A deliberate storage decision
+The `.kronos` scene body is **not** stored in Postgres. Publishing records
+metadata and a content hash; the blob belongs in object storage. Putting
+multi-megabyte scenes in a JSONB column is very hard to walk back once
+there are real places in it.
+
+### Not built
+The UI halves -- infinite-scroll grids, the account dashboard panel, and
+Studio's publish button -- are not built. The endpoints they need now
+exist and are tested.

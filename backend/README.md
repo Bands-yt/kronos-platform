@@ -48,7 +48,8 @@ GOOGLE_CLIENT_ID=test-client-id.apps.googleusercontent.com npm test
 ### Catalogue (`/v1/catalog`)
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/games` | Keyset-paginated grid: title, creator, thumbnail, live player count |
+| GET | `/games` | Keyset-paginated grid (limit max 200): title, creator, thumbnail, live player count |
+| POST | `/games/publish` | One-click publish from Studio; owner-only re-publish |
 | GET | `/games/:slug` | One game |
 
 ### Sessions (`/v1/sessions`)
@@ -66,7 +67,9 @@ GOOGLE_CLIENT_ID=test-client-id.apps.googleusercontent.com npm test
 | POST | `/friends/respond` | Only the addressee may accept |
 | GET | `/friends/list` | Enriched with Redis presence + direct-join tickets |
 | DELETE | `/friends/:userId` | Remove friend |
-| POST | `/presence/heartbeat` | 15s client heartbeat, 40s TTL |
+| POST | `/presence/heartbeat` | 15s client heartbeat, 40s TTL; offline/launcher/studio/in-game |
+| GET | `/users` | Keyset-paginated account directory (limit max 200) with live presence |
+| GET | `/presence/summary` | Aggregate live counts for the dashboard |
 | POST | `/auth/guest` | Zero-friction guest account, no email |
 | POST | `/auth/username` | Claim/change handle; clears `requires_rename` |
 
