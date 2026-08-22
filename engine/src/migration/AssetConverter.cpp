@@ -54,10 +54,76 @@ ConversionResult AssetConverter::unsupported(const std::string& sourcePath, cons
     return result;
 }
 
+
+namespace {
+// A unit cube standing in for a blocked mesh. Generated rather than loaded
+// so the placeholder itself can never be an infringement, and so a blocked
+// mesh still occupies the right rough volume in the scene instead of
+// leaving a hole the author has to hunt for.
+MeshConversionData unitCubePlaceholderData() {
+    MeshConversionData data;
+    const glm::vec3 corners[8] = {{-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, -0.5f},
+                                   {-0.5f, 0.5f, -0.5f},  {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f},
+                                   {0.5f, 0.5f, 0.5f},    {-0.5f, 0.5f, 0.5f}};
+    static const int faces[6][4] = {{0, 1, 2, 3}, {5, 4, 7, 6}, {4, 0, 3, 7},
+                                     {1, 5, 6, 2}, {3, 2, 6, 7}, {4, 5, 1, 0}};
+    static const glm::vec3 normals[6] = {{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
+    for (int f = 0; f < 6; ++f) {
+        const auto base = static_cast<uint32_t>(data.vertices.size());
+        for (int v = 0; v < 4; ++v) {
+            core::Vertex vertex{};
+            vertex.position = corners[faces[f][v]];
+            vertex.normal = normals[f];
+            vertex.uv = glm::vec2(v == 1 || v == 2 ? 1.0f : 0.0f, v >= 2 ? 1.0f : 0.0f);
+            data.vertices.push_back(vertex);
+        }
+        for (uint32_t index : {0u, 1u, 2u, 0u, 2u, 3u}) data.indices.push_back(base + index);
+    }
+    data.boundsMin = glm::vec3(-0.5f);
+    data.boundsMax = glm::vec3(0.5f);
+    return data;
+}
+} // namespace
+
+MeshConversionData unitCubePlaceholder() { return unitCubePlaceholderData(); }
+
+
+bool AssetConverter::refusedByModeration(const std::string& sourcePath, ConversionResult& outResult) {
+    if (moderation_ == nullptr) return false;
+
+    const ModerationFinding finding = moderation_->evaluateReference(sourcePath, sourcePath);
+    if (finding.code == ModerationReasonCode::Allowed) {
+        ++moderationReport_.allowedCount;
+        return false;
+    }
+
+    moderationReport_.findings.push_back(finding);
+    ++moderationReport_.blockedCount;
+
+    // Succeeded, with a placeholder -- see ConversionResult::usedPlaceholder.
+    outResult = ConversionResult{};
+    outResult.succeeded = true;
+    outResult.usedPlaceholder = true;
+    outResult.moderationCode = finding.code;
+    outResult.outputPath.clear();
+    outResult.message = std::string(moderationReasonCodeName(finding.code)) + ": " + finding.detail;
+    return true;
+}
+
 // --- mesh -------------------------------------------------------------------
 
 ConversionResult AssetConverter::convertMesh(const std::string& sourcePath, MeshConversionData& outData) {
     outData = MeshConversionData{};
+
+    // The gate runs BEFORE the extension check and before any file access,
+    // which is the whole point: a blocked rbxassetid:// reference must
+    // never be resolved, not resolved-then-discarded.
+    ConversionResult moderated;
+    if (refusedByModeration(sourcePath, moderated)) {
+        outData = unitCubePlaceholder();
+        return moderated;
+    }
+
     const std::string ext = lowerExtension(sourcePath);
 
     if (ext != "obj") {
@@ -103,6 +169,16 @@ ConversionResult AssetConverter::convertMesh(const std::string& sourcePath, Mesh
 
 ConversionResult AssetConverter::convertTexture(const std::string& sourcePath, TextureConversionData& outData) {
     outData = TextureConversionData{};
+
+    ConversionResult moderated;
+    if (refusedByModeration(sourcePath, moderated)) {
+        outData.rgba = AssetModerationFilter::generateCheckerboard();
+        outData.width = 64;
+        outData.height = 64;
+        outData.srgb = true;
+        return moderated;
+    }
+
     if (!fileExists(sourcePath)) return unsupported(sourcePath, "Texture", "file not found");
 
     int width = 0;
@@ -169,6 +245,15 @@ MaterialConversionData AssetConverter::materialFromProperties(
 
 ConversionResult AssetConverter::convertMaterial(const std::string& sourcePath, MaterialConversionData& outData) {
     outData = MaterialConversionData{};
+
+    ConversionResult moderated;
+    if (refusedByModeration(sourcePath, moderated)) {
+        // Neutral grey, and every texture slot cleared so no blocked map
+        // survives into the material.
+        outData = MaterialConversionData{};
+        return moderated;
+    }
+
     if (!fileExists(sourcePath)) return unsupported(sourcePath, "Material", "file not found");
 
     // A material file here is an .rbxmx fragment describing a Part or a
@@ -225,6 +310,10 @@ ConversionResult AssetConverter::convertMaterial(const std::string& sourcePath, 
 
 ConversionResult AssetConverter::convertAnimation(const std::string& sourcePath, AnimationConversionData& outData) {
     outData = AnimationConversionData{};
+
+    ConversionResult moderated;
+    if (refusedByModeration(sourcePath, moderated)) return moderated;
+
     if (!fileExists(sourcePath)) return unsupported(sourcePath, "Animation", "file not found");
 
     const std::string source = readWholeFile(sourcePath);
@@ -316,6 +405,9 @@ ConversionResult AssetConverter::convertAnimation(const std::string& sourcePath,
 // --- sound ------------------------------------------------------------------
 
 ConversionResult AssetConverter::convertSound(const std::string& sourcePath, const std::string& /*outputDir*/) {
+    ConversionResult moderated;
+    if (refusedByModeration(sourcePath, moderated)) return moderated;
+
     if (!fileExists(sourcePath)) return unsupported(sourcePath, "Sound", "file not found");
     if (detectKind(sourcePath) != AssetKind::Sound) {
         return unsupported(sourcePath, "Sound", "not a recognised audio format");

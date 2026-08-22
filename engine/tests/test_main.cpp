@@ -222,6 +222,7 @@
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
 #include "migration/AssetConverter.hpp"
+#include "migration/AssetModeration.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "migration/ProjectImporter.hpp"
 #include "migration/PropertyDecoder.hpp"
@@ -30283,6 +30284,257 @@ void testHouseLayoutDoorGapIsOpenInFrontWall() {
 // Kronos ("Instance-to-ECS Hydration"): typed decoding of the nested XML
 // Roblox actually writes. Reading only element text drops every position,
 // size, rotation and colour in a place file.
+
+// Kronos ("Asset Moderation & Legal Compliance"): the filter that stops a
+// place import from pulling third-party art onto this platform.
+void testAssetModerationFilter() {
+    engine::migration::AssetModerationFilter filter;
+
+    // --- proprietary URI detection -----------------------------------------
+    for (const char* uri : {"rbxassetid://1234567", "rbxasset://textures/face.png",
+                             "rbxthumb://type=Asset&id=1&w=150&h=150",
+                             "https://www.roblox.com/asset/?id=9876",
+                             "http://assetdelivery.roblox.com/v1/asset/?id=1",
+                             "https://c2.rbxcdn.com/abcdef", "//rbxcdn.com/x",
+                             "RBXASSETID://55555"}) {
+        check(engine::migration::AssetModerationFilter::isProprietaryUri(uri),
+              (std::string("a proprietary URI is detected: ") + uri).c_str());
+    }
+    // Things that must NOT be blocked -- a filter that eats local assets is
+    // worse than no filter.
+    for (const char* uri : {"assets/textures/stone.png", "./local/mesh.obj", "",
+                             "https://example.com/my-own-texture.png", "C:/art/wood.png"}) {
+        check(!engine::migration::AssetModerationFilter::isProprietaryUri(uri),
+              (std::string("a legitimate reference is NOT blocked: ") + uri).c_str());
+    }
+
+    // --- placeholder selection ---------------------------------------------
+    check(engine::migration::AssetModerationFilter::placeholderForReference("Part.MeshId rbxassetid://1") ==
+              engine::migration::PlaceholderKind::UnitCubeMesh,
+          "a blocked mesh reference is replaced with a cube, not a texture");
+    check(engine::migration::AssetModerationFilter::placeholderForReference("Sound.SoundId rbxassetid://1") ==
+              engine::migration::PlaceholderKind::SilentAudio,
+          "a blocked sound reference is replaced with silent audio");
+    check(engine::migration::AssetModerationFilter::placeholderForReference("Decal.Texture rbxassetid://1") ==
+              engine::migration::PlaceholderKind::CheckerboardTexture,
+          "a blocked texture reference is replaced with a checkerboard");
+
+    // --- trademark metadata, whole-word ------------------------------------
+    std::string term;
+    check(filter.hasTrademarkedMetadata("My Roblox Tycoon", term), "a trademarked term in metadata is caught");
+    check(term == "roblox", "the matched trademark term is reported");
+    check(!filter.hasTrademarkedMetadata("Robert built a robust robot", term),
+          "whole-word matching does not flag unrelated words that merely contain a term");
+
+    // --- protected packages -------------------------------------------------
+    std::string package;
+    check(filter.isProtectedPackage("Korblox Deathspeaker", package), "a protected first-party package is caught");
+    check(filter.isProtectedPackage("classic roblox avatar", package), "a multi-word protected package is caught");
+    check(!filter.isProtectedPackage("My Custom Knight", package), "original content is not flagged as a package");
+
+    // --- hash quarantine ----------------------------------------------------
+    const std::string bytes = "proprietary-binary-content";
+    const std::string digest = engine::migration::AssetModerationFilter::hashContent(bytes);
+    check(digest.size() == 64, "content hashing produces a real SHA-256 hex digest");
+    check(!filter.isQuarantined(digest), "an unknown hash is not quarantined");
+    filter.quarantineHash(digest);
+    check(filter.isQuarantined(digest), "a registered hash really is quarantined");
+    check(filter.quarantineSize() == 1, "the quarantine registry really holds the entry");
+
+    // Hashing CONTENT, not a name: renaming a quarantined file must not
+    // launder it past the filter.
+    const auto renamed = filter.evaluateContent("Workspace.Innocent", "assets/harmless.png", bytes);
+    check(renamed.code == engine::migration::ModerationReasonCode::BlockedQuarantinedHash,
+          "a quarantined asset is caught by content hash even under an innocuous name");
+    const auto different = filter.evaluateContent("Workspace.Other", "assets/other.png", "different content");
+    check(different.code == engine::migration::ModerationReasonCode::Allowed,
+          "unrelated content with the same innocuous name is allowed");
+
+    // --- reason codes are stable strings ------------------------------------
+    check(std::string(engine::migration::moderationReasonCodeName(
+              engine::migration::ModerationReasonCode::BlockedProprietaryCdn)) == "BLOCKED_PROPRIETARY_CDN",
+          "BLOCKED_PROPRIETARY_CDN is spelled exactly as the audit expects");
+    check(std::string(engine::migration::moderationReasonCodeName(
+              engine::migration::ModerationReasonCode::BlockedTrademarkMetadata)) == "BLOCKED_TRADEMARK_METADATA",
+          "BLOCKED_TRADEMARK_METADATA is spelled exactly as the audit expects");
+    check(std::string(engine::migration::moderationReasonCodeName(
+              engine::migration::ModerationReasonCode::BlockedProtectedPackage)) == "BLOCKED_PROTECTED_PACKAGE",
+          "BLOCKED_PROTECTED_PACKAGE is spelled exactly as the audit expects");
+
+    // --- generated checkerboard --------------------------------------------
+    const auto checker = engine::migration::AssetModerationFilter::generateCheckerboard(8, 2);
+    check(checker.size() == 8u * 8u * 4u, "the placeholder checkerboard is a real RGBA8 image");
+    const bool topLeftOpaque = checker[3] == 255;
+    check(topLeftOpaque, "the placeholder checkerboard is opaque");
+    bool hasTwoTones = false;
+    for (size_t i = 0; i + 4 < checker.size(); i += 4) {
+        if (checker[i] != checker[0]) hasTwoTones = true;
+    }
+    check(hasTwoTones, "the placeholder checkerboard really alternates, so it reads as a placeholder");
+}
+
+// The gate at AssetConverter's entry points: blocked references must be
+// swapped for placeholders WITHOUT the file ever being touched.
+void testAssetConverterModerationGate() {
+    engine::migration::AssetModerationFilter filter;
+    engine::migration::AssetConverter converter(&filter);
+
+    // A blocked texture converts successfully, into a checkerboard.
+    engine::migration::TextureConversionData texture;
+    const auto textureResult = converter.convertTexture("rbxassetid://1234567", texture);
+    check(textureResult.succeeded, "a blocked texture still yields usable data rather than failing the import");
+    check(textureResult.usedPlaceholder, "a blocked texture is reported as having used a placeholder");
+    check(textureResult.moderationCode == engine::migration::ModerationReasonCode::BlockedProprietaryCdn,
+          "a blocked texture carries the BLOCKED_PROPRIETARY_CDN reason code");
+    check(texture.width == 64 && texture.height == 64, "the substituted texture is a real generated image");
+    check(texture.rgba.size() == 64u * 64u * 4u, "the substituted texture has real pixel data");
+    check(textureResult.outputPath.empty(),
+          "a blocked texture has no output path -- nothing was fetched or written");
+
+    // A blocked mesh becomes a real unit cube, so the scene keeps its
+    // rough volume instead of leaving a hole.
+    engine::migration::MeshConversionData mesh;
+    const auto meshResult = converter.convertMesh("rbxassetid://999.MeshId", mesh);
+    check(meshResult.succeeded && meshResult.usedPlaceholder, "a blocked mesh is swapped for a placeholder");
+    check(mesh.vertices.size() == 24 && mesh.indices.size() == 36,
+          "the substituted mesh is a real closed cube, not empty geometry");
+    check(nearlyEqual(mesh.boundsMax.x, 0.5f), "the substituted cube has real bounds");
+
+    // The gate runs before ANY file access: this path does not exist, and
+    // a blocked reference must not produce a "file not found" -- that
+    // would prove the filter ran too late.
+    check(meshResult.message.find("not found") == std::string::npos,
+          "moderation runs BEFORE file access, so a blocked reference never reports a missing file");
+
+    // Local assets still convert normally through the same gated converter.
+    const std::string objPath = "test_mod_cube.obj";
+    {
+        std::ofstream out(objPath);
+        out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nvn 0 0 1\nf 1//1 2//1 3//1\n";
+    }
+    engine::migration::MeshConversionData localMesh;
+    const auto localResult = converter.convertMesh(objPath, localMesh);
+    check(localResult.succeeded, "a legitimate local mesh still converts with the filter installed");
+    check(!localResult.usedPlaceholder, "a legitimate local mesh is NOT replaced with a placeholder");
+    std::remove(objPath.c_str());
+
+    // The accumulated audit.
+    const auto& report = converter.moderationReport();
+    check(report.blockedCount == 2, "the converter's moderation report counts every block");
+    check(report.allowedCount >= 1, "the converter's moderation report counts allowed assets too");
+    check(report.countOf(engine::migration::ModerationReasonCode::BlockedProprietaryCdn) == 2,
+          "the report breaks blocks down by reason code");
+    check(report.anyBlocked(), "the report reports that something was blocked");
+    check(!report.complianceNotice().empty(), "a report with blocks emits a compliance notice");
+    check(report.complianceNotice().find("NOT downloaded") != std::string::npos,
+          "the compliance notice states plainly that nothing was fetched");
+    check(report.summary().find("BLOCKED_PROPRIETARY_CDN=2") != std::string::npos,
+          "the audit summary names the reason code and its count");
+
+    // Without a filter installed, conversion is unfiltered -- a blocked
+    // URI is simply an unresolvable path.
+    engine::migration::AssetConverter ungated;
+    engine::migration::TextureConversionData ungatedTexture;
+    const auto ungatedResult = ungated.convertTexture("rbxassetid://1234567", ungatedTexture);
+    check(!ungatedResult.succeeded, "an unfiltered converter does not silently invent a placeholder");
+    check(ungated.moderationReport().blockedCount == 0, "an unfiltered converter reports no moderation findings");
+}
+
+// End to end: a place file carrying proprietary references must produce a
+// full audit and clean, placeholder-backed entities.
+void testProjectImportModeration() {
+    engine::migration::ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+
+    const std::string document = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W0">
+    <Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Part" referent="P0">
+      <Properties>
+        <string name="Name">Billboard</string>
+        <Vector3 name="size"><X>4</X><Y>4</Y><Z>1</Z></Vector3>
+        <CoordinateFrame name="CFrame"><X>0</X><Y>2</Y><Z>0</Z></CoordinateFrame>
+      </Properties>
+      <Item class="Decal" referent="D0">
+        <Properties>
+          <string name="Name">Logo</string>
+          <Content name="Texture">rbxassetid://1234567890</Content>
+        </Properties>
+      </Item>
+    </Item>
+    <Item class="MeshPart" referent="P1">
+      <Properties>
+        <string name="Name">ImportedProp</string>
+        <Content name="MeshId">rbxassetid://55512345</Content>
+        <Content name="TextureID">https://assetdelivery.roblox.com/v1/asset/?id=42</Content>
+      </Properties>
+    </Item>
+    <Item class="Part" referent="P2">
+      <Properties>
+        <string name="Name">Korblox Leg</string>
+        <Vector3 name="size"><X>1</X><Y>2</Y><Z>1</Z></Vector3>
+      </Properties>
+    </Item>
+    <Item class="Part" referent="P3">
+      <Properties>
+        <string name="Name">MyOriginalCrate</string>
+        <Vector3 name="size"><X>2</X><Y>2</Y><Z>2</Z></Vector3>
+      </Properties>
+    </Item>
+  </Item>
+</roblox>)XML";
+
+    const auto report = importer.importDocument(document, scanner);
+    check(report.parsed, "the moderation place file parses");
+
+    const auto& moderation = report.moderation;
+    check(moderation.anyBlocked(), "an import carrying proprietary references really reports blocks");
+    check(moderation.countOf(engine::migration::ModerationReasonCode::BlockedProprietaryCdn) == 3,
+          "every rbxassetid:// and CDN reference in the place is blocked");
+    check(moderation.countOf(engine::migration::ModerationReasonCode::BlockedProtectedPackage) == 1,
+          "a protected first-party package name is blocked from instance metadata");
+
+    // The clean part must be untouched -- the filter has to leave original
+    // content alone or authors will not trust it.
+    bool flaggedOriginal = false;
+    for (const auto& finding : moderation.findings) {
+        if (finding.subject.find("MyOriginalCrate") != std::string::npos) flaggedOriginal = true;
+    }
+    check(!flaggedOriginal, "original content in the same place is not flagged");
+
+    check(!moderation.complianceNotice().empty(), "the import emits a compliance notice");
+
+    // Blocks surface in the ordinary diagnostics too, so they appear in
+    // the Studio console alongside the migration warnings.
+    bool sawCodeInDiagnostics = false;
+    for (const auto& diagnostic : report.diagnostics) {
+        if (diagnostic.message.find("BLOCKED_PROPRIETARY_CDN") != std::string::npos) sawCodeInDiagnostics = true;
+    }
+    check(sawCodeInDiagnostics, "moderation blocks appear in the import diagnostics with their reason code");
+
+    // And the place still hydrates into clean entities.
+    engine::core::ECS ecs;
+    engine::migration::HydrationMeshes meshes;
+    meshes.box = 0;
+    meshes.capsule = 1;
+    meshes.cylinder = 2;
+    engine::migration::InstanceHydrator hydrator;
+    const auto hydrated = hydrator.hydrate(report.tree, ecs, meshes);
+    check(hydrated.partCount == 4, "a place with blocked assets still hydrates its parts");
+    for (auto entity : hydrated.createdEntities) {
+        const auto* renderable = ecs.tryGetComponent<engine::core::Renderable>(entity);
+        if (renderable == nullptr) continue;
+        check(renderable->albedoTexture == engine::core::Renderable::kInvalidHandle,
+              "no imported entity carries a proprietary texture handle");
+    }
+
+    // Hash quarantine reaches the importer too.
+    engine::migration::ProjectImporter quarantining;
+    quarantining.quarantineAssetHash(engine::migration::AssetModerationFilter::hashContent("blocked-bytes"));
+    const auto quarantinedReport = quarantining.importDocument(document, scanner);
+    check(quarantinedReport.parsed, "quarantine registration does not disturb ordinary importing");
+}
+
 void testRbxlxPropertyDecoding() {
     const std::string document = R"XML(<roblox version="4">
   <Item class="Part" referent="P0">
@@ -31043,6 +31295,9 @@ void testMovieModePlugin() {
 }
 
 int main() {
+    testAssetModerationFilter();
+    testAssetConverterModerationGate();
+    testProjectImportModeration();
     testRbxlxPropertyDecoding();
     testInstanceHydration();
     testAssetConverters();

@@ -249,6 +249,7 @@ add_library(engine_core STATIC
     migration/ProjectImporter.cpp
     migration/PropertyDecoder.cpp
     migration/InstanceHydrator.cpp
+    migration/AssetModeration.cpp
 
     safety/TrustSafetyService.cpp
     safety/TextClassifierStub.cpp

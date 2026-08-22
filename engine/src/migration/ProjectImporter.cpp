@@ -3,6 +3,7 @@
 #include <chrono>
 
 #include "core/Logger.hpp"
+#include "migration/PropertyDecoder.hpp"
 #include "migration/RbxlxParser.hpp"
 
 namespace engine::migration {
@@ -117,6 +118,66 @@ void ProjectImporter::walk(const ImportedInstance& node, const std::string& pare
 
     const std::string path = parentPath.empty() ? node.name : parentPath + "." + node.name;
 
+    // --- asset moderation -------------------------------------------------
+    // Every property value is scanned, not a hand-listed set of asset
+    // properties: Roblox has dozens of them (TextureId, MeshId, SoundId,
+    // Graphic, the SurfaceAppearance maps, HumanoidDescription slots) and
+    // a missed one is a proprietary asset that walks straight through the
+    // filter. A value that is not a reference simply comes back Allowed.
+    for (const auto& [key, value] : node.properties) {
+        if (value.empty()) continue;
+        if (key.rfind("@type.", 0) == 0) continue; // bookkeeping, not a value
+
+        // Roblox marks asset references with the property type "Content",
+        // which is what makes "N allowed, M blocked" a truthful count of
+        // asset references rather than of every string in the document.
+        // The URI test is still applied to everything as a backstop, for
+        // documents where the type attribute is missing or unexpected.
+        const bool isAssetReference = propertyType(node.properties, key) == "Content";
+        const bool looksProprietary = AssetModerationFilter::isProprietaryUri(value);
+        if (!isAssetReference && !looksProprietary) continue;
+
+        const ModerationFinding finding = moderation_.evaluateReference(path + "." + key, value);
+        if (finding.code == ModerationReasonCode::Allowed) {
+            ++report.moderation.allowedCount;
+            continue;
+        }
+        report.moderation.findings.push_back(finding);
+        ++report.moderation.blockedCount;
+        report.diagnostics.push_back(
+            {ImportSeverity::Warning, path + "." + key,
+             std::string(moderationReasonCodeName(finding.code)) + " -- " + finding.detail});
+    }
+
+    // The instance's own name, for trademarked terms and first-party
+    // package names that arrive as metadata rather than as a URI.
+    {
+        std::string term;
+        if (moderation_.isProtectedPackage(node.name, term)) {
+            ModerationFinding finding;
+            finding.subject = path;
+            finding.reference = node.name;
+            finding.code = ModerationReasonCode::BlockedProtectedPackage;
+            finding.detail = "instance name references the protected first-party package \"" + term + "\"";
+            report.moderation.findings.push_back(finding);
+            ++report.moderation.blockedCount;
+            report.diagnostics.push_back({ImportSeverity::Warning, path,
+                                           std::string(moderationReasonCodeName(finding.code)) + " -- " +
+                                               finding.detail});
+        } else if (moderation_.hasTrademarkedMetadata(node.name, term)) {
+            ModerationFinding finding;
+            finding.subject = path;
+            finding.reference = node.name;
+            finding.code = ModerationReasonCode::BlockedTrademarkMetadata;
+            finding.detail = "instance name contains the trademarked term \"" + term + "\"";
+            report.moderation.findings.push_back(finding);
+            ++report.moderation.blockedCount;
+            report.diagnostics.push_back({ImportSeverity::Warning, path,
+                                           std::string(moderationReasonCodeName(finding.code)) + " -- " +
+                                               finding.detail});
+        }
+    }
+
     if (isScriptClass(node.className)) {
         ++report.stats.scriptCount;
         if (node.className == "ModuleScript") ++report.stats.moduleScriptCount;
@@ -163,6 +224,16 @@ void ProjectImporter::logReport(const ImportReport& report, const std::string& d
                 break;
         }
     }
+    // --- moderation audit --------------------------------------------------
+    core::logInfo("Import", "%s: %s", documentLabel.c_str(), report.moderation.summary().c_str());
+    for (const ModerationFinding& finding : report.moderation.findings) {
+        core::logWarn("Import", "[%s] %s -> %s (replaced with %s)", moderationReasonCodeName(finding.code),
+                       finding.subject.c_str(), finding.reference.c_str(),
+                       placeholderKindName(finding.placeholder));
+    }
+    const std::string notice = report.moderation.complianceNotice();
+    if (!notice.empty()) core::logWarn("Import", "%s", notice.c_str());
+
     core::logInfo("Import", "%s: ingested in %.2f ms (%zu script bytes)", documentLabel.c_str(),
                   report.stats.elapsedMilliseconds, report.stats.totalScriptBytes);
 }

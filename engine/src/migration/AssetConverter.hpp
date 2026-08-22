@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 
 #include "core/Mesh.hpp"
+#include "migration/AssetModeration.hpp"
 
 namespace engine::migration {
 
@@ -17,6 +18,13 @@ struct ConversionResult {
     bool succeeded = false;
     std::string outputPath;  // local asset path once converted -- empty on failure
     std::string message;     // human-readable status, always set (success note or failure reason)
+    // Set when the moderation filter refused the source and a generated
+    // placeholder was produced instead. succeeded stays TRUE in that case:
+    // the import genuinely yielded usable data, it is simply not the
+    // proprietary data that was asked for, and treating it as a failure
+    // would stop a whole place importing over one blocked decal.
+    bool usedPlaceholder = false;
+    ModerationReasonCode moderationCode = ModerationReasonCode::Allowed;
 };
 
 // CPU-side geometry produced by convertMesh(). Kept separate from the GPU
@@ -82,8 +90,17 @@ struct AnimationConversionData {
 // as its first argument, which is the single choke point where a
 // proprietary-URI/hash gate belongs. Nothing here fetches anything over
 // the network -- a path is read from disk or it is not read at all.
+// The generated stand-in geometry a blocked mesh reference becomes.
+[[nodiscard]] MeshConversionData unitCubePlaceholder();
+
 class AssetConverter {
 public:
+    AssetConverter() = default;
+    // Installs the moderation gate. Without one, conversion runs
+    // unfiltered -- correct for a unit test converting a local .obj, which
+    // is why this is explicit rather than defaulted on.
+    explicit AssetConverter(const AssetModerationFilter* moderation) : moderation_(moderation) {}
+
     [[nodiscard]] static AssetKind detectKind(const std::string& sourcePath);
 
     // Wavefront .obj today, via core::loadObj. Roblox's own binary mesh
@@ -111,9 +128,21 @@ public:
     [[nodiscard]] static MaterialConversionData materialFromProperties(
         const std::unordered_map<std::string, std::string>& properties);
 
+    // Findings accumulated across every convert*() call on this instance,
+    // so one import produces one audit rather than a scatter of messages.
+    [[nodiscard]] const ModerationReport& moderationReport() const { return moderationReport_; }
+    void resetModerationReport() { moderationReport_ = ModerationReport{}; }
+
 private:
     [[nodiscard]] static ConversionResult unsupported(const std::string& sourcePath, const char* kindName,
                                                        const char* reason);
+    // Runs the gate for `sourcePath`. Returns true when conversion must
+    // NOT proceed, having already recorded the finding and filled
+    // `outResult` with the placeholder outcome.
+    [[nodiscard]] bool refusedByModeration(const std::string& sourcePath, ConversionResult& outResult);
+
+    const AssetModerationFilter* moderation_ = nullptr;
+    ModerationReport moderationReport_;
 };
 
 } // namespace engine::migration

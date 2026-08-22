@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "migration/AssetModeration.hpp"
 #include "migration/ImportSafetyGuard.hpp"
 #include "migration/InstanceTreeBuilder.hpp"
 #include "migration/LuauApiCompatibility.hpp"
@@ -37,6 +38,11 @@ struct ImportReport {
     ImportStats stats;
     std::vector<ImportDiagnostic> diagnostics;
     std::vector<ImportedInstance> tree;
+    // Proprietary asset references found during ingestion. Separate from
+    // `diagnostics` because a compliance audit is read on its own terms --
+    // "what did we refuse to fetch, and why" is a different question from
+    // "what will not work after migrating".
+    ModerationReport moderation;
 
     [[nodiscard]] size_t countOf(ImportSeverity severity) const;
     [[nodiscard]] size_t warningCount() const { return countOf(ImportSeverity::Warning); }
@@ -61,6 +67,10 @@ struct ImportReport {
 // (see InstanceTreeBuilder.hpp).
 class ProjectImporter {
 public:
+    // Adds a content hash to the quarantine registry consulted during
+    // ingestion. See AssetModerationFilter::quarantineHash.
+    void quarantineAssetHash(const std::string& sha256Hex) { moderation_.quarantineHash(sha256Hex); }
+
     // `scanner` supplies the IP term list; see ImportSafetyGuard.
     [[nodiscard]] ImportReport importDocument(const std::string& rbxlxSource,
                                                const safety::IPInfringementScanner& scanner) const;
@@ -75,6 +85,7 @@ private:
 
     LuauApiCompatibility apiCompatibility_;
     ScriptCompatShimLoader shimLoader_;
+    AssetModerationFilter moderation_;
 };
 
 } // namespace engine::migration
