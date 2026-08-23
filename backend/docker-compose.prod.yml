@@ -47,6 +47,27 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Kronos ("Automatic Game Publishing"): scripts/seed.js runs to
+    # completion before src/server.js ever starts listening, on every
+    # single boot of this container -- not just the first `docker
+    # compose up`, so a plain `docker restart` after a crash re-syncs
+    # the catalogue too, which a separate one-shot service (see
+    # `migrate` below) would not do. Safe to run every boot specifically
+    # because seed.js upserts on slug (ON CONFLICT ... DO UPDATE) rather
+    # than a raw INSERT -- unlike schema migrations, which stay a
+    # separate service for exactly the race reason explained on
+    # `migrate` below, concurrent upserts of the same row are correct at
+    # the database level, not something that needs serializing across
+    # replicas.
+    #
+    # sh -c, not the Dockerfile's own exec-form CMD (which this
+    # overrides): a plain `docker run` of the image for something like a
+    # quick smoke test should not be forced to also provide the games
+    # mount below just to boot -- seed.js already degrades gracefully
+    # (logs a warning, does not touch the existing catalogue) when
+    # KRONOS_GAMES_DIR does not exist, so this is only ever a real
+    # no-op there, not a hard requirement baked into the image itself.
+    command: ["sh", "-c", "node scripts/seed.js && node src/server.js"]
     environment:
       NODE_ENV: production
       PORT: 8080
@@ -58,11 +79,29 @@ services:
       JOIN_TICKET_SECRET: ${JOIN_TICKET_SECRET:?set JOIN_TICKET_SECRET}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       PUBLIC_BASE_URL: https://${KRONOS_DOMAIN}
+      # Overrides seed.js's own default (../../games relative to the
+      # script, which resolves against a source checkout, not this
+      # image's /app layout) to the real mount point below.
+      KRONOS_GAMES_DIR: /games
+    volumes:
+      # Read-only: this container syncs FROM the games directory into
+      # the database, and has no business writing back to a host path
+      # that is really the engine repo's own checkout.
+      - ../games:/games:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # New: seed.js hard-fails (a real DB error, not a missing-games-dir
+      # warning) if the schema it upserts into does not exist yet. Before
+      # this, `api` never actually waited on `migrate` at all -- it
+      # happened to usually come up after on a fresh `docker compose up`
+      # by ordinary timing, but that was never guaranteed the way this
+      # now is, and seed.js running inside api's own startup makes the
+      # gap load-bearing rather than cosmetic.
+      migrate:
+        condition: service_completed_successfully
     # Deliberately no `ports:` -- the API is reachable only through Caddy.
     networks: [kronos]
 

@@ -12,13 +12,27 @@ namespace engine::core {
 
 namespace {
 
-// Kronos production backend. Plain HTTP, not HTTPS, because there is no
-// domain in front of this IP yet (TLS termination in Caddyfile is keyed
-// off {$KRONOS_DOMAIN} and cannot issue a cert for a bare IP) -- see
-// KronosClientConfig.hpp's header comment. Login and every other request
-// travel unencrypted until that domain is live; this should move to
-// https://<domain> at that point, not stay an IP literal.
-constexpr const char* kDefaultApiUrl = "http://159.65.17.24";
+// Kronos production backend -- the real domain, not the bare IP this
+// used to be. Caddy's automatic HTTPS is live for kronosplatform.com
+// (verified: a real TLS 1.3 handshake, a real Let's Encrypt leaf
+// certificate with CN=kronosplatform.com, and it now 308-redirects
+// plain HTTP to HTTPS on this same host).
+//
+// That redirect is exactly why the bare IP could no longer be the
+// default here. Caddy has no certificate to present for a connection
+// with no matching SNI/Host -- there is only ever one cert, issued for
+// the domain -- so a TLS ClientHello sent to the IP directly (or
+// following the redirect Caddy issues, which points right back at the
+// same IP) gets the handshake aborted with a real
+// "tlsv1 alert internal error", which libcurl reports up as
+// CURLE_SSL_CONNECT_ERROR -- curl_easy_strerror() for that code is the
+// literal string "SSL connect error". Confirmed directly: `curl -v
+// https://159.65.17.24/healthz` reproduces that exact failure;
+// `curl https://kronosplatform.com/healthz` succeeds cleanly. The fix
+// is the hostname, not anything about TLS verification -- CURLOPT_
+// SSL_VERIFYPEER/VERIFYHOST in KronosApi.cpp were never the problem and
+// stay exactly as strict as they already were.
+constexpr const char* kDefaultApiUrl = "https://kronosplatform.com";
 
 std::string fromEnvironment(const char* name) {
     const char* value = std::getenv(name);

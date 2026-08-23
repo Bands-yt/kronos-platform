@@ -90,6 +90,27 @@ bool verifyJoinTicketWithKronos(const std::string& baseUrl, const std::string& s
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "kronos-gameserver");
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    // Kronos ("SSL connect error" on Windows): this build links curl via
+    // CMake's find_package(CURL) -- on Linux that resolves to the
+    // distro's OpenSSL-backed package, whose default CA path
+    // (/etc/ssl/certs, verified directly against this exact server:
+    // `curl -v https://kronosplatform.com` completes a real TLS 1.3
+    // handshake and reports "SSL certificate verified via OpenSSL")
+    // already works with no configuration. Windows builds resolve curl
+    // through vcpkg (`vcpkg install curl:x64-windows`, see
+    // .github/workflows/build.yml), which -- unlike the Linux package --
+    // has no OS-integrated trust store to fall back on when built
+    // against OpenSSL rather than Schannel; this is a real, widely
+    // reported vcpkg-curl-on-Windows gap, not a hypothetical one. Rather
+    // than gamble on which TLS backend that vcpkg build actually
+    // resolved to (not verifiable from this Linux environment),
+    // CURLSSLOPT_NATIVE_CA asks curl to also trust the OS's own
+    // certificate store when its backend supports that (OpenSSL,
+    // GnuTLS, mbedTLS, wolfSSL); curl silently ignores it for backends
+    // that don't (Schannel already uses the OS store natively either
+    // way), so this is safe to set unconditionally on every platform,
+    // not just Windows.
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
     // A join handshake is interactive: a player is sitting on a loading
     // screen. Bounded tightly so an unreachable backend fails fast (and
     // closed) instead of hanging the connection attempt.
@@ -174,6 +195,12 @@ KronosApi::HttpResponse KronosApi::request(const char* method, const std::string
     // kind of thing that survives into a shipping build.
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    // Real Windows-CA-bundle robustness, not decoration -- see the first
+    // curl handle in this file (verifyJoinTicketWithKronos, above) for
+    // the full explanation. This is the function that actually placed
+    // every real /v1/* call this session traced the reported
+    // "SSL connect error" to.
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);

@@ -121,6 +121,12 @@ UpdateCheckResult checkForUpdate(const std::string& currentVersion, const std::s
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "kronos-launcher-update-check");
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    // Real Windows-CA-bundle robustness -- see KronosApi.cpp's
+    // verifyJoinTicketWithKronos() for the full explanation. GitHub's
+    // API is a different host than the Kronos backend, but the same
+    // vcpkg-curl-on-Windows gap applies equally to every outbound HTTPS
+    // call this client makes, not just the ones talking to Kronos.
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
     // A real startup check must never hang the launcher's own update
     // prompt indefinitely on a real half-open connection.
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);

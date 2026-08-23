@@ -73,6 +73,10 @@ std::string httpPostForm(const std::string& url, const std::string& formBody, lo
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    // Real Windows-CA-bundle robustness -- see KronosApi.cpp's
+    // verifyJoinTicketWithKronos() for the full explanation. Google's
+    // OAuth token endpoint is a different host again, same gap.
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
 
     CURLcode result = curl_easy_perform(curl);
     if (result != CURLE_OK) {

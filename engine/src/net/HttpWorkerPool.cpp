@@ -173,6 +173,19 @@ HttpResponse HttpWorkerPool::perform(const HttpRequest& request) {
     // libcurl's default DNS timeout implementation uses alarm/longjmp.
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    // Explicit rather than relying on libcurl's own default-on behaviour
+    // for these two -- this pool is shared infrastructure other callers
+    // will plug new endpoints into later, and "verification is on
+    // because nobody turned it off" is a worse invariant to inherit than
+    // "verification is on because it says so right here".
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    // Real Windows-CA-bundle robustness -- see KronosApi.cpp's
+    // verifyJoinTicketWithKronos() for the full explanation of why this
+    // is needed (a vcpkg-resolved curl+OpenSSL combo on Windows has no
+    // OS-integrated trust store the way Linux distro packages do) and
+    // why it is safe to set unconditionally on every platform.
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
     if (headers != nullptr) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
     if (request.method == "POST") {

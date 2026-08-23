@@ -9,7 +9,10 @@ namespace engine::core {
 // Resolution order, highest priority first:
 //   1. config.json next to the executable
 //   2. KRONOS_API_URL / KRONOS_AUTH_URL environment variables
-//   3. http://159.65.17.24 (the live Kronos production server)
+//   3. https://kronosplatform.com (the live Kronos production server --
+//      the real domain, not the bare IP this used to be; see
+//      KronosClientConfig.cpp's own comment on kDefaultApiUrl for why a
+//      bare IP stopped working the moment the domain's TLS went live)
 //
 // config.json wins over the environment on purpose: it is the file an
 // *installed* build ships with, and a stray environment variable left in
