@@ -12,7 +12,13 @@ namespace engine::core {
 
 namespace {
 
-constexpr const char* kDefaultApiUrl = "http://localhost:8080";
+// Kronos production backend. Plain HTTP, not HTTPS, because there is no
+// domain in front of this IP yet (TLS termination in Caddyfile is keyed
+// off {$KRONOS_DOMAIN} and cannot issue a cert for a bare IP) -- see
+// KronosClientConfig.hpp's header comment. Login and every other request
+// travel unencrypted until that domain is live; this should move to
+// https://<domain> at that point, not stay an IP literal.
+constexpr const char* kDefaultApiUrl = "http://159.65.17.24";
 
 std::string fromEnvironment(const char* name) {
     const char* value = std::getenv(name);

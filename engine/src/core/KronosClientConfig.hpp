@@ -9,7 +9,7 @@ namespace engine::core {
 // Resolution order, highest priority first:
 //   1. config.json next to the executable
 //   2. KRONOS_API_URL / KRONOS_AUTH_URL environment variables
-//   3. http://localhost:8080
+//   3. http://159.65.17.24 (the live Kronos production server)
 //
 // config.json wins over the environment on purpose: it is the file an
 // *installed* build ships with, and a stray environment variable left in
@@ -17,8 +17,15 @@ namespace engine::core {
 // different backend. The environment stays available for development and
 // for CI, where editing a file is the awkward option.
 //
-// The fallback keeps a build with no configuration at all working against
-// a local backend, so offline development needs no setup step.
+// The built-in fallback used to be localhost:8080, which let a build with
+// no configuration at all run against a local backend with no setup step.
+// It now points at production instead, so anyone doing local/offline
+// development MUST set KRONOS_API_URL=http://localhost:8080 (or drop a
+// config.json) -- without that, a locally-built client talks to the live
+// server by default. Set deliberately per explicit instruction; if that
+// trade turns out to be wrong, the fix is a local override, not reverting
+// this default, since the whole point was "the client should point at
+// production out of the box."
 struct KronosClientConfig {
     std::string apiUrl;
     std::string authUrl;
