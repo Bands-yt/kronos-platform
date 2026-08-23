@@ -22,6 +22,12 @@ COPY --chown=node:node package.json ./
 COPY --chown=node:node src ./src
 COPY --chown=node:node db ./db
 COPY --chown=node:node scripts ./scripts
+# The storefront dashboard (server.js's own express.static(publicDir)
+# call expects this directory to exist at runtime) -- previously
+# missing here entirely, which is the real reason a production
+# container serving real traffic still 404'd at '/': the file was
+# genuinely absent from the image, not merely unrouted.
+COPY --chown=node:node public ./public
 
 USER node
 EXPOSE 8080

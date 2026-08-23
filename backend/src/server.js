@@ -57,6 +57,26 @@ export function createApp() {
   // The browser sign-in page the launcher hands off to.
   app.use('/', authPageRouter);
 
+  // SPA catch-all: any GET that fell through everything above (not a
+  // real static file, not /healthz, not a real /v1/* or /auth/* route)
+  // is real browser navigation to a path the dashboard's own client-side
+  // router owns, not the server -- serve the same index.html and let it
+  // resolve the route itself. The storefront's current navigation is
+  // location.hash-based (#admin), which never reaches the server at
+  // all, so nothing hits this today; it exists for direct-linking a
+  // future real path (e.g. a bookmarked /games/<slug>) and so an
+  // unrecognised top-level path shows the app shell instead of a bare
+  // JSON error.
+  //
+  // Scoped to GET (app.get, not app.use) and excludes /v1/*: a POST or
+  // an unmatched API path has no business receiving an HTML response,
+  // and /v1/nope must keep 404ing as JSON -- see test/api.test.js's own
+  // "unknown endpoints 404" case, which this must not break.
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/v1/')) return next();
+    res.sendFile(path.join(publicDir, 'index.html'));
+  });
+
   app.use((_req, res) => res.status(404).json({ error: { code: 'not_found', message: 'No such endpoint.' } }));
 
   // Central error handler. Anything that is not an explicit HttpError is
