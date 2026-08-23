@@ -3277,6 +3277,34 @@ void RuntimeShell::pollBackendResults() {
         }
     }
 
+    // --- kronos:// deep-link resolution ---
+    //
+    // Checked independently of whether THIS poll cycle had a fresh
+    // catalogue result: the pending slug can be set (via a launch URI)
+    // either before or after the catalogue already finished loading, and
+    // this has to resolve correctly either way. A linear scan over
+    // onlineGames_ only runs at all while a slug is actually pending, so
+    // this costs nothing on the overwhelming majority of frames where
+    // pendingDeepLinkGameSlug_ is empty.
+    if (!pendingDeepLinkGameSlug_.empty()) {
+        for (const core::CatalogueGame& game : onlineGames_) {
+            if (game.slug != pendingDeepLinkGameSlug_) continue;
+            // Cleared BEFORE starting the allocation, not after: this is
+            // the real, existing "Play" button path (see
+            // startServerAllocation()'s own header comment and its
+            // ImGui::Button call site) -- calling it twice for the same
+            // deep link would be a real double-allocation bug, not a
+            // hypothetical one, if this ran again on the next poll before
+            // the allocation thread's result had landed.
+            std::string slug = pendingDeepLinkGameSlug_;
+            std::string title = game.title;
+            pendingDeepLinkGameSlug_.clear();
+            core::logInfo("Kronos", "resolving kronos:// launch -- joining \"%s\" (%s)", title.c_str(), slug.c_str());
+            startServerAllocation(slug, title);
+            break;
+        }
+    }
+
     // --- friends list ---
     {
         std::optional<core::FriendsResult> friendsResult;

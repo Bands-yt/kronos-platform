@@ -199,6 +199,18 @@ public:
     // four separate new mechanisms.
     void setTesterSafetyMode(bool enabled) { testerSafetyMode_ = enabled; }
 
+    // Kronos ("kronos:// launch URI"): the real slug from a parsed
+    // kronos://launch?game=<slug> activation (see main.cpp's argv
+    // handling). Not joined immediately -- there is no session yet this
+    // early in startup. pollBackendResults() resolves it the moment
+    // onlineGames_ actually contains a matching entry (whether that's a
+    // second from now, because a saved session restores instantly, or
+    // only after the user signs in through the normal flow), by calling
+    // the exact same startServerAllocation() the "Play" button on that
+    // game's card already calls -- a deep-link launch and a normal click
+    // end up on the identical join path, not a second one.
+    void setPendingDeepLinkGameSlug(std::string slug) { pendingDeepLinkGameSlug_ = std::move(slug); }
+
 private:
     // The real AgeGroup every Minor-Mode-gated decision in this class
     // (Catalogue filtering, session-join blocking, DM/chat restriction
@@ -566,6 +578,10 @@ private:
     std::vector<core::CatalogueGame> onlineGames_;
     bool onlinePlayerCountsAvailable_ = false;
     std::string catalogueStatusMessage_;
+    // Set once by setPendingDeepLinkGameSlug(), cleared the moment
+    // pollBackendResults() finds (and joins) a matching entry in
+    // onlineGames_ above -- see that setter's own doc comment.
+    std::string pendingDeepLinkGameSlug_;
     // Keyset cursor for the next batch; empty means the end of the
     // catalogue has been reached.
     std::string catalogueNextCursor_;

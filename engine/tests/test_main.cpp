@@ -221,6 +221,7 @@
 #include "studio/UndoStack.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
+#include "core/KronosLaunchUri.hpp"
 #include "core/ScriptChatApi.hpp"
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -32217,7 +32218,63 @@ void testMovieModePlugin() {
     check(plugin.lastExportSchedule().empty(), "MovieModePlugin::buildExport clears the schedule when it refuses");
 }
 
+
+// Kronos ("kronos:// launch URI"): pure parsing, exercised against the
+// exact shapes the real registrations produce -- Windows' registry
+// "%1" and Linux's .desktop "%u" both substitute the literal URI as one
+// argv token, so what main.cpp actually receives on --kronos-uri=<this>
+// is exactly what these tests feed the parser directly.
+void testKronosLaunchUriParsing() {
+    std::string slug;
+
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky-garden", slug),
+          "a well-formed launch URI parses");
+    check(slug == "sky-garden", "the real slug is extracted");
+
+    // Case-insensitive scheme: Windows can normalise a registered
+    // scheme's casing, outside this code's control.
+    slug.clear();
+    check(engine::core::parseKronosLaunchUri("KRONOS://launch?game=default-world", slug),
+          "an upper-case scheme still parses");
+    check(slug == "default-world", "the slug is still correctly extracted");
+
+    // A second query param after the one this code cares about.
+    slug.clear();
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky-garden&ref=web", slug),
+          "a launch URI with a trailing extra param still parses");
+    check(slug == "sky-garden", "only the game param's value is extracted, not the rest of the query string");
+
+    // A param before the one this code cares about.
+    slug.clear();
+    check(engine::core::parseKronosLaunchUri("kronos://launch?ref=web&game=sky-garden", slug),
+          "a launch URI with a LEADING extra param still parses");
+    check(slug == "sky-garden", "game= is found regardless of its position in the query string");
+
+    // Percent-encoding: a slug containing a character that needed
+    // encoding in a URL.
+    slug.clear();
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky%20garden", slug),
+          "a percent-encoded slug parses");
+    check(slug == "sky garden", "the percent-encoded value is really decoded");
+
+    // --- honest refusals, not guesses -----------------------------------
+    std::string untouched = "sentinel";
+    check(!engine::core::parseKronosLaunchUri("http://launch?game=x", untouched), "the wrong scheme is refused");
+    check(untouched == "sentinel", "a refused parse leaves the caller's string untouched");
+
+    check(!engine::core::parseKronosLaunchUri("kronos://join?game=x", untouched), "the wrong action is refused");
+    check(!engine::core::parseKronosLaunchUri("kronos://launch", untouched), "a launch URI with no query at all is refused");
+    check(!engine::core::parseKronosLaunchUri("kronos://launch?", untouched), "a launch URI with an empty query is refused");
+    check(!engine::core::parseKronosLaunchUri("kronos://launch?ref=web", untouched),
+          "a query with no game= param at all is refused");
+    check(!engine::core::parseKronosLaunchUri("kronos://launch?game=", untouched),
+          "an empty game= value is refused, not accepted as an empty slug");
+    check(!engine::core::parseKronosLaunchUri("", untouched), "an empty string is refused");
+    check(!engine::core::parseKronosLaunchUri("kronos:/", untouched), "a truncated scheme is refused, not a crash");
+}
+
 int main() {
+    testKronosLaunchUriParsing();
     testHttpWorkerPool();
     testGeminiModerationClient();
     testTextureInspectionEncoding();

@@ -19,6 +19,8 @@
 #include "core/Economy.hpp"
 #include "core/Interactable.hpp"
 #include "core/Inventory.hpp"
+#include "core/KronosLaunchUri.hpp"
+#include "core/Logger.hpp"
 #include "core/Mesh.hpp"
 #include "core/Navigation.hpp"
 #include "core/OreNode.hpp"
@@ -122,6 +124,31 @@ int main(int argc, char** argv) {
     bool tntWarsMode = false;
     std::string tntWarsMapArg; // real, optional positional map-name selector for --tntwars (see below)
     bool testerSafetyMode = false;
+    // Kronos ("kronos:// launch URI"): populated when this process was
+    // started by the OS's own URL-protocol activation -- see
+    // installer/src/PlatformIntegration.cpp for what actually registers
+    // the scheme (Windows: HKCU\Software\Classes\kronos\shell\open\
+    // command, "%1" substituted inline within the --kronos-uri= flag;
+    // Linux: kronos.desktop's Exec= plus its x-scheme-handler/kronos
+    // MimeType, "%u" as its OWN bare argv token -- confirmed by real
+    // testing against a live xdg-open/gio resolver that inline
+    // substitution within a glued flag does NOT happen on Linux, only
+    // Windows' registry %1 does that). Both real forms are accepted
+    // below via the same parse-and-log helper.
+    std::string kronosLaunchGameSlug;
+    auto applyKronosLaunchUri = [&](const std::string& rawUri) {
+        std::string parsedSlug;
+        if (engine::core::parseKronosLaunchUri(rawUri, parsedSlug)) {
+            kronosLaunchGameSlug = parsedSlug;
+            engine::core::logInfo("Kronos", "launch URI parsed -- will join \"%s\" once signed in and the "
+                                             "catalogue is loaded",
+                                   kronosLaunchGameSlug.c_str());
+        } else {
+            std::fprintf(stderr, "engine_runtime: \"%s\" did not parse as a real launch URI -- ignoring it and "
+                                  "starting normally.\n",
+                          rawUri.c_str());
+        }
+    };
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--server") {
@@ -209,6 +236,19 @@ int main(int argc, char** argv) {
             // (--tntwars/--server/etc.) has no Catalogue/Session Browser
             // for this to apply to.
             testerSafetyMode = true;
+        } else if (arg.rfind("--kronos-uri=", 0) == 0) {
+            // The Windows registration shape: %1 substituted inline
+            // within this one flag (see applyKronosLaunchUri's own
+            // declaration comment for why Linux needs the separate bare
+            // form just below instead).
+            applyKronosLaunchUri(arg.substr(std::string("--kronos-uri=").size()));
+        } else if (arg.rfind("kronos://", 0) == 0) {
+            // The Linux registration shape: kronos.desktop's Exec= line
+            // ends in a bare "%u", which the desktop launcher expands to
+            // the clicked URL as its OWN argv token, not glued to any
+            // flag -- confirmed by real testing (see
+            // installer/src/PlatformIntegration.cpp's Exec= comment).
+            applyKronosLaunchUri(arg);
         }
     }
 
@@ -2085,6 +2125,16 @@ int main(int argc, char** argv) {
             // leaves this nullptr, and the bindings stay real, honest
             // no-ops there.
             app.scriptUiApi().setShellController(shell.get());
+
+            // Kronos ("kronos:// launch URI"): handed to the shell, not
+            // resolved here. There is no session yet at this point in
+            // startup -- RuntimeShell resolves this the moment the
+            // online catalogue actually contains a matching game (see
+            // RuntimeShell::pollBackendResults()), which naturally
+            // covers both "already signed in, catalogue loads in a
+            // second" and "not signed in yet, resolves once the user
+            // signs in and the catalogue fetch that follows completes".
+            if (!kronosLaunchGameSlug.empty()) shell->setPendingDeepLinkGameSlug(kronosLaunchGameSlug);
         }
     }
 
