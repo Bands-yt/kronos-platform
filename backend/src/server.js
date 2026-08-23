@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import express from 'express';
 
 import { config } from './config.js';
@@ -9,6 +12,9 @@ import { catalogRouter } from './catalog/routes.js';
 import { sessionRouter } from './sessions/routes.js';
 import { socialRouter } from './social/routes.js';
 import { authPageRouter } from './web/authPage.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.join(__dirname, '..', 'public');
 
 export function createApp() {
   const app = express();
@@ -23,6 +29,12 @@ export function createApp() {
     res.setHeader('Referrer-Policy', 'no-referrer');
     next();
   });
+
+  // The management dashboard. Serves public/index.html at '/' and any
+  // other static asset placed alongside it; falls through (via next())
+  // for every path that isn't a real file, so this never shadows the API
+  // routes or the 404 handler below.
+  app.use(express.static(publicDir, { index: 'index.html', maxAge: '5m' }));
 
   app.get('/healthz', async (_req, res) => {
     const health = { status: 'ok', postgres: false, redis: false };
