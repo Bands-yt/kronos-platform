@@ -648,6 +648,79 @@
   }
 
   /* ====================================================================
+     Launch fallback modal -- centered, unlike the auth drawer's
+     slide-over: this is a quick yes/no moment (retry or download), not a
+     task with fields, and the layout says so.
+     ==================================================================== */
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 5, 7, 0.62);
+    backdrop-filter: blur(3px);
+    z-index: 100;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+
+  .launch-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: min(380px, calc(100vw - 32px));
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 30px 26px 24px;
+    text-align: center;
+    z-index: 101;
+    transform: translate(-50%, -50%) scale(0.94);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+    box-shadow: 0 30px 70px -20px rgba(0,0,0,0.65);
+  }
+  .launch-modal.open { transform: translate(-50%, -50%) scale(1); opacity: 1; pointer-events: auto; }
+
+  .modal-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+  }
+
+  .launch-modal-icon {
+    width: 46px;
+    height: 46px;
+    margin: 0 auto 16px;
+    border-radius: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+  }
+  .launch-modal-icon svg { width: 22px; height: 22px; }
+
+  .launch-modal h2 { margin: 0 0 8px; font-size: 16.5px; font-weight: 650; }
+  .launch-modal p { margin: 0 0 20px; font-size: 12.5px; color: var(--text-muted); line-height: 1.55; }
+
+  .launch-modal-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .launch-modal-actions .btn { width: 100%; justify-content: center; }
+
+  .launch-modal-note {
+    margin: 16px 0 0 !important;
+    font-size: 10.5px !important;
+    color: var(--text-dim) !important;
+  }
+
+  /* ====================================================================
      Toast (used for "Open in Kronos" and sign-in confirmation)
      ==================================================================== */
 
@@ -1226,6 +1299,32 @@
 
 <div class="toast" id="toast"></div>
 
+<!-- ========================================================================
+     Launch fallback modal -- shown when kronos://launch?game=<slug> goes
+     unanswered (see attemptLaunch() for why that's the expected outcome
+     on every machine today, not just a failure case).
+     ======================================================================== -->
+<div class="modal-backdrop" id="launchModalBackdrop"></div>
+<div class="launch-modal" id="launchModal" role="dialog" aria-modal="true" aria-labelledby="launchModalTitle">
+  <button class="drawer-close modal-close" id="btnCloseLaunchModal" type="button" aria-label="Close">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+  <div class="launch-modal-icon">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>
+  </div>
+  <h2 id="launchModalTitle">Looking for Kronos?</h2>
+  <p>Make sure the Kronos client is installed<span id="launchModalGame"></span>, or download it below. If it's already
+    installed, your browser may have blocked the launch request &mdash; try again after allowing it.</p>
+  <div class="launch-modal-actions">
+    <a class="btn primary" id="downloadInstallerLink" href="https://github.com/Bands-yt/kronos-platform/releases/latest" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+      Download the installer
+    </a>
+    <button class="btn ghost" id="btnRetryLaunch" type="button">Try again</button>
+  </div>
+  <p class="launch-modal-note">Windows and Linux builds, direct from GitHub Releases &mdash; <span id="launchModalOsHint"></span></p>
+</div>
+
 <script>
 (() => {
   "use strict";
@@ -1380,7 +1479,9 @@
           <p class="game-creator">by ${creator}</p>
           <p class="game-desc">${desc}</p>
           <div class="game-foot">
-            <button class="btn sm open-in-kronos" type="button" data-title="${escapeHtml(game.title || "this game")}">
+            <button class="btn sm open-in-kronos" type="button"
+                    data-slug="${escapeHtml(game.slug || "")}"
+                    data-title="${escapeHtml(game.title || "this game")}">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
               Open in Kronos
             </button>
@@ -1430,9 +1531,7 @@
     $("#loadMoreRow").hidden = !nextCursor;
 
     $$(".open-in-kronos").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        showToast(`Launch the Kronos client and search for "${btn.dataset.title}" to play.`);
-      });
+      btn.addEventListener("click", () => attemptLaunch(btn.dataset.slug, btn.dataset.title));
     });
   }
 
@@ -1497,6 +1596,99 @@
       currentQuery = value;
       loadGames({ reset: true });
     }, 320);
+  });
+
+  /* =====================================================================
+     Launch flow -- "Open in Kronos"
+     =====================================================================
+     Attempts the custom URI scheme kronos://launch?game=<slug>, exactly
+     the pattern Slack/Zoom/Discord use for "open in the desktop app":
+     there is no synchronous way to ask a browser "is a handler
+     registered for this scheme", because navigating an iframe to an
+     unregistered scheme fails SILENTLY (no exception, no event). The
+     only real signal is indirect -- if a handler exists, the OS's own
+     "Open Kronos?" confirmation steals focus from the page, which fires
+     visibilitychange/blur *before* our timeout does. If the timeout
+     fires first with the page still focused, nothing caught it.
+
+     HONESTY NOTE, not decoration: as of this build, kronos:// is not
+     registered by anything -- not the Windows installer (a plain
+     Desktop .lnk shortcut, see installer/src/PlatformIntegration.cpp),
+     not the Linux .desktop entry (a plain Exec= launcher, no
+     MimeType=x-scheme-handler/kronos), and nothing in main.cpp parses a
+     kronos:// argv either. So on every machine today this attempt will
+     correctly and immediately fall through to the install prompt below
+     -- which is the right behavior, not a bug -- and the moment a future
+     client build DOES register the scheme, this same code starts
+     succeeding with zero frontend changes.
+     ===================================================================== */
+
+  const LAUNCH_TIMEOUT_MS = 1300;
+  let lastLaunchAttempt = null; // { slug, title } -- what "Try again" in the fallback modal retries
+  let launchWatchTimer = null;
+
+  function attemptLaunch(slug, title) {
+    if (!slug) return;
+    lastLaunchAttempt = { slug, title };
+    showToast(`Opening Kronos…`);
+
+    // A hidden iframe rather than window.location.href: setting the
+    // visible tab's own location to an unregistered custom scheme risks
+    // a jarring native "can't find application" interstitial replacing
+    // the page in some browsers. An iframe's failed navigation is
+    // contained and invisible either way.
+    const frame = document.createElement("iframe");
+    frame.style.display = "none";
+    frame.src = `kronos://launch?game=${encodeURIComponent(slug)}`;
+    document.body.appendChild(frame);
+
+    const wasHiddenAtStart = document.hidden;
+    clearTimeout(launchWatchTimer);
+
+    const onVisibilityChange = () => {
+      if (document.hidden && !wasHiddenAtStart) {
+        // The page lost focus before our timeout fired -- almost
+        // certainly the OS's own "Open Kronos?" dialog. Assume success;
+        // there is nothing more definitive to check.
+        cleanup();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    function cleanup() {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearTimeout(launchWatchTimer);
+      if (frame.parentNode) frame.parentNode.removeChild(frame);
+    }
+
+    launchWatchTimer = setTimeout(() => {
+      cleanup();
+      if (!document.hidden) openLaunchModal(title);
+    }, LAUNCH_TIMEOUT_MS);
+  }
+
+  const launchModal = $("#launchModal");
+  const launchModalBackdrop = $("#launchModalBackdrop");
+
+  function openLaunchModal(title) {
+    $("#launchModalGame").textContent = title ? `to play "${title}"` : "";
+    launchModal.classList.add("open");
+    launchModalBackdrop.classList.add("open");
+  }
+
+  function closeLaunchModal() {
+    launchModal.classList.remove("open");
+    launchModalBackdrop.classList.remove("open");
+  }
+
+  $("#btnCloseLaunchModal").addEventListener("click", closeLaunchModal);
+  launchModalBackdrop.addEventListener("click", closeLaunchModal);
+  $("#btnRetryLaunch").addEventListener("click", () => {
+    if (lastLaunchAttempt) attemptLaunch(lastLaunchAttempt.slug, lastLaunchAttempt.title);
+    closeLaunchModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && launchModal.classList.contains("open")) closeLaunchModal();
   });
 
   /* =====================================================================
@@ -1847,6 +2039,15 @@
   routeFromHash();
   loadGames({ reset: true });
   setInterval(pollHealth, 15000); // matches Caddy's own health_interval
+
+  // Cosmetic only -- the download button always points at the same
+  // releases page either way, this just saves a click figuring out
+  // which asset on that page is the right one.
+  {
+    const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+    const hint = /win/i.test(platform) ? "look for the Windows build" : /linux/i.test(platform) ? "look for the Linux build" : "pick your platform on that page";
+    $("#launchModalOsHint").textContent = hint + ".";
+  }
 })();
 </script>
 </body>
