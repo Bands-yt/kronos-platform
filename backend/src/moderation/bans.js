@@ -157,6 +157,21 @@ export async function grantAppeal(appealId) {
   return { userId: String(userId), state: newState, keptUsername: stillHoldsUsername };
 }
 
+// Denies an appeal -- the real, symmetric counterpart to grantAppeal()
+// above. Deliberately does NOT touch banned_identifiers/account_state:
+// a denial changes nothing about the account's own real ban state, only
+// the appeal's own record of having been reviewed and rejected.
+export async function denyAppeal(appealId, resolution = '') {
+  const { rows } = await query(
+    `UPDATE ban_appeals SET status = 'denied', resolved_at = NOW(), resolution = $2
+      WHERE id = $1 AND status = 'open'
+      RETURNING user_id`,
+    [appealId, resolution],
+  );
+  if (rows.length === 0) return null;
+  return { userId: String(rows[0].user_id) };
+}
+
 // Claims a username for a user. Fails if it is taken, or still held under
 // somebody else's termination lock.
 export async function claimUsername(userId, username) {
