@@ -37,10 +37,38 @@ services:
       PUBLIC_BASE_URL: https://${KRONOS_DOMAIN}
       KRONOS_GAMES_DIR: /games
       ENGINE_RUNTIME_PATH: /usr/local/bin/engine_runtime
+      # config.jitServerHost's own default (127.0.0.1) is correct for
+      # nothing except a client running on this same machine -- every
+      # game_servers row it produces gets handed straight back to a real
+      # remote player's own client (KronosApi::allocateServer() takes
+      # `server.host` from the API response verbatim, see that function's
+      # own comment), so a real player's client was trying to ENet-connect
+      # to *their own* loopback address and hanging on "Connecting to
+      # <game>..." forever. Real, public-reachable value required here.
+      JIT_SERVER_HOST: ${KRONOS_DOMAIN}
+      # Real, live-observed constraint on this exact 1 vCPU/1GB host: this
+      # Docker daemon runs with the userland proxy enabled, which forks a
+      # real, separate docker-proxy OS process PER PUBLISHED PORT for a UDP
+      # range (not one iptables rule for the whole range) -- publishing the
+      # full 30000-30999 range below tried to fork 1000 of them and the
+      # container failed to come up at all ("resource temporarily
+      # unavailable"), a real production outage. Narrowed to what this
+      # host can actually afford; matches `ports:` below exactly.
+      JIT_SERVER_PORT_RANGE_START: "30000"
+      JIT_SERVER_PORT_RANGE_END: "30004"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../games:/games:ro
       - ../engine/build/src/engine_runtime:/usr/local/bin/engine_runtime:ro
+    # JIT-spawned engine_runtime processes are real children of this
+    # container's own node process (see sessions/provisioner.js), so their
+    # ENet UDP listeners live inside this container's own network
+    # namespace -- without a real port publish here, JIT_SERVER_HOST above
+    # can point a client at the exact right address and it would still
+    # never reach anything. Kept narrow (5 ports) to match
+    # JIT_SERVER_PORT_RANGE_START/END above -- see that comment for why.
+    ports:
+      - "30000-30004:30000-30004/udp"
     depends_on:
       postgres:
         condition: service_healthy
