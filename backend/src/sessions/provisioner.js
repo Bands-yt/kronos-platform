@@ -145,9 +145,28 @@ async function spawnAndWait(game) {
       '[provisioner] server %s ("%s") did not become healthy within %ds -- killing it',
       serverKey, game.slug, config.jitSpawnTimeoutSeconds,
     );
-    child.kill();
+    killChild(child, serverKey);
     await disableServerRow(serverKey);
     claimedPorts.delete(port);
   }
   return alive;
+}
+
+// child.kill() (SIGTERM) alone is not enough here -- engine_runtime has
+// been observed (live, on this exact host) to sit through SIGTERM
+// indefinitely and never actually exit, which is also the real, original
+// cause of the "device or resource busy" lock on /usr/local/bin/
+// engine_runtime a stuck-around process leaves behind for the next
+// deploy. A dedicated server that failed to come up healthy has nothing
+// worth a graceful shutdown for anyway, so this escalates to SIGKILL
+// itself rather than leaving a real orphan for someone to find later.
+function killChild(child, serverKey) {
+  child.kill('SIGTERM');
+  const killTimer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      console.error('[provisioner] server %s ignored SIGTERM -- sending SIGKILL', serverKey);
+      child.kill('SIGKILL');
+    }
+  }, 5000);
+  child.once('exit', () => clearTimeout(killTimer));
 }

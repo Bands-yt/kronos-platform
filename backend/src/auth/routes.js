@@ -38,9 +38,48 @@ function publicUser(row) {
   };
 }
 
+// The refresh token also rides along as an httpOnly cookie, scoped to
+// /v1/auth so it's never attached to unrelated requests. This is what
+// actually survives a page reload: index.html's own access token is
+// deliberately memory-only (an XSS-exposed value that outlives the tab is
+// a real liability), which used to mean a reload had no way back in at
+// all short of minting a brand new guest account. A cookie JS can't read
+// closes that gap without reopening the exact risk the memory-only
+// access token was avoiding.
+const REFRESH_COOKIE = 'kronos_rt';
+
+function setRefreshCookie(res, refresh) {
+  res.cookie(REFRESH_COOKIE, refresh.token, {
+    httpOnly: true,
+    secure: config.isProduction,
+    sameSite: 'lax',
+    path: '/v1/auth',
+    expires: refresh.expiresAt,
+  });
+}
+
+function clearRefreshCookie(res) {
+  res.clearCookie(REFRESH_COOKIE, { path: '/v1/auth' });
+}
+
+// Manual parse rather than the cookie-parser middleware: this is the one
+// cookie the API ever reads, and req.headers.cookie is a real, honest
+// source for it without adding a dependency for a single name=value pair.
+function readRefreshCookie(req) {
+  const header = req.headers.cookie;
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === REFRESH_COOKIE) return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return null;
+}
+
 async function issueSession(res, user, req) {
   const accessToken = await issueAccessToken(user);
   const refresh = await issueRefreshToken(user.id, { userAgent: req.get('user-agent') || null });
+  setRefreshCookie(res, refresh);
   res.json({
     user: publicUser(user),
     access_token: accessToken,
@@ -273,7 +312,11 @@ authRouter.post(
   '/refresh',
   rateLimit({ bucket: 'refresh', limit: 120, windowSeconds: 900 }),
   asyncRoute(async (req, res) => {
-    const presented = req.body?.refresh_token;
+    // Falls back to the httpOnly cookie so a plain page reload (no body,
+    // nothing for JS to have held onto) can still resume the session --
+    // see setRefreshCookie's own comment. An explicit body value (native
+    // client, no cookie jar) still wins when present.
+    const presented = req.body?.refresh_token || readRefreshCookie(req);
     if (!presented) throw badRequest('refresh_token is required.');
 
     let rotated;
@@ -281,11 +324,15 @@ authRouter.post(
       rotated = await rotateRefreshToken(presented, { userAgent: req.get('user-agent') || null });
     } catch (err) {
       if (err instanceof RefreshTokenReuseError) {
+        clearRefreshCookie(res);
         throw unauthorized('This session has been revoked. Please sign in again.');
       }
       throw err;
     }
-    if (!rotated) throw unauthorized('Invalid or expired refresh token.');
+    if (!rotated) {
+      clearRefreshCookie(res);
+      throw unauthorized('Invalid or expired refresh token.');
+    }
 
     const { rows } = await query(
       `SELECT id, email, display_name, email_verified FROM users WHERE id = $1`,
@@ -293,6 +340,7 @@ authRouter.post(
     );
     if (rows.length === 0) throw unauthorized('Account no longer exists.');
 
+    setRefreshCookie(res, rotated);
     res.json({
       user: publicUser(rows[0]),
       access_token: await issueAccessToken(rows[0]),
@@ -306,7 +354,9 @@ authRouter.post(
 authRouter.post(
   '/logout',
   asyncRoute(async (req, res) => {
-    if (req.body?.refresh_token) await revokeRefreshToken(req.body.refresh_token);
+    const presented = req.body?.refresh_token || readRefreshCookie(req);
+    if (presented) await revokeRefreshToken(presented);
+    clearRefreshCookie(res);
     // Always 204: whether that specific token existed is not something a
     // caller needs (or should be able) to probe.
     res.status(204).end();

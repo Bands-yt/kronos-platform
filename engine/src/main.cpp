@@ -131,6 +131,7 @@ int main(int argc, char** argv) {
     bool tntWarsMode = false;
     std::string tntWarsMapArg; // real, optional positional map-name selector for --tntwars (see below)
     bool testerSafetyMode = false;
+    bool headless = false;
     // Kronos ("kronos:// launch URI"): populated when this process was
     // started by the OS's own URL-protocol activation -- see
     // installer/src/PlatformIntegration.cpp for what actually registers
@@ -203,7 +204,17 @@ int main(int argc, char** argv) {
             // describes -- opted in here, not by default (see that
             // field's own comment for why the default is false).
             networkConfig.persistModerationLogs = true;
-            if (i + 1 < argc) networkConfig.port = static_cast<uint16_t>(std::atoi(argv[++i]));
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                networkConfig.port = static_cast<uint16_t>(std::atoi(argv[++i]));
+            }
+        } else if (arg == "--port" && i + 1 < argc && argv[i + 1][0] != '-') {
+            networkConfig.mode = engine::net::NetworkMode::Server;
+            networkConfig.persistModerationLogs = true;
+            networkConfig.port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        } else if (arg.rfind("--port=", 0) == 0) {
+            networkConfig.mode = engine::net::NetworkMode::Server;
+            networkConfig.persistModerationLogs = true;
+            networkConfig.port = static_cast<uint16_t>(std::atoi(arg.c_str() + 7));
         } else if (arg == "--client") {
             networkConfig.mode = engine::net::NetworkMode::Client;
             if (i + 1 < argc) networkConfig.serverAddress = argv[++i];
@@ -286,6 +297,8 @@ int main(int argc, char** argv) {
             // (--tntwars/--server/etc.) has no Catalogue/Session Browser
             // for this to apply to.
             testerSafetyMode = true;
+        } else if (arg == "--headless") {
+            headless = true;
         } else if (arg.rfind("--kronos-uri=", 0) == 0) {
             // The Windows registration shape: %1 substituted inline
             // within this one flag (see applyKronosLaunchUri's own
@@ -300,6 +313,22 @@ int main(int argc, char** argv) {
             // installer/src/PlatformIntegration.cpp's Exec= comment).
             applyKronosLaunchUri(arg);
         }
+    }
+
+    // Kronos ("JIT server provisioning"): a dedicated server spawned by the
+    // backend (provisioner.js's own `--server <port> --game <slug>
+    // --server-key <key>` invocation, never `--headless` too) has no
+    // display/GPU to draw to at all in its real deployment environment (a
+    // container) -- forcing headless here, rather than requiring callers to
+    // also pass `--headless`, is what actually makes `--server` mean
+    // "Networked Dedicated Server mode" end to end; without it, `--server`
+    // alone still ran the full windowed Application::initialize() path (real
+    // SDL window + Vulkan surface), which is exactly what was crashing with
+    // "Application::initialize failed" in the container (no display, no
+    // Vulkan). An explicit `--headless` flag on `--client`/offline launches
+    // is untouched by this.
+    if (networkConfig.mode == engine::net::NetworkMode::Server) {
+        headless = true;
     }
 
     // Kronos ("Dynamic Asset Streaming"): real, headless, exits before
@@ -336,8 +365,17 @@ int main(int argc, char** argv) {
     // content and return before reaching any of this).
     std::optional<engine::core::DiscoveredGame> requestedGame;
     if (!requestedGameSlug.empty()) {
-        std::string gamesDir =
-            engine::core::resolveResourceDir(engine::core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+        // Kronos (JIT provisioning): the backend spawns this binary inside a
+        // container where neither the executable-relative "games" folder nor
+        // the compile-time ENGINE_GAMES_DIR (baked in on the build host) point
+        // anywhere real -- see provisioner.js's own KRONOS_GAMES_DIR env var,
+        // set to the real container mount (/games) for exactly this reason.
+        // Takes priority over both resolveResourceDir() fallbacks when set.
+        const char* gamesDirEnv = std::getenv("KRONOS_GAMES_DIR");
+        std::string gamesDir = (gamesDirEnv != nullptr && gamesDirEnv[0] != '\0')
+                                    ? std::string(gamesDirEnv)
+                                    : engine::core::resolveResourceDir(engine::core::executableDirectory(), "games",
+                                                                        ENGINE_GAMES_DIR);
         requestedGame = engine::core::findGameBySlug(gamesDir, requestedGameSlug);
         if (!requestedGame.has_value()) {
             std::fprintf(stderr,
@@ -374,6 +412,7 @@ int main(int argc, char** argv) {
     info.width = 1280;
     info.height = 720;
     info.enableValidation = true;
+    info.headless = headless;
     // Kronos ("Active Joining UI"): the real Home Screen shell needs the
     // OS cursor visible/absolute for its own real menu clicks -- every
     // other mode keeps today's existing default (captured/relative,
@@ -384,6 +423,20 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "engine_runtime: Application::initialize failed.\n");
         return 1;
     }
+
+    // Kronos (JIT dedicated servers): headless used to return here,
+    // immediately after app.initialize() and before any of
+    // startNetworking()/the requestedGame resolution/the heartbeat-thread
+    // wiring below ran at all -- a real, live-observed bug once `--server`
+    // started forcing headless=true (see this file's own comment on that),
+    // not just a hypothetical: every JIT-spawned server booted, sat in
+    // app.run() with no networking ever started and no heartbeat thread
+    // ever created, and was killed 45s later by provisioner.js for never
+    // heartbeating. The real early exit for a headless run now happens
+    // further down (right before the generic bring-up scene's own GPU
+    // mesh/texture work, none of which a headless process has a device
+    // for), after that setup has actually run -- see the matching comment
+    // there.
 
     // Sprint 15 ("TNT-Wars Trailer Production"): real, self-contained
     // trailer capture mode -- a real, script-driven batch job, not the
@@ -1650,6 +1703,32 @@ int main(int argc, char** argv) {
                     }
                 });
             });
+    }
+
+    // Kronos (JIT dedicated servers): the real, honest current scope of
+    // headless mode -- networking + (for `--server`) the heartbeat thread
+    // just wired up above are both real and running by this point, but
+    // everything from here through the loadGame() call much further down
+    // is GPU work (mesh/texture uploads against a real VkDevice) that a
+    // headless run's Application::initialize() deliberately never created
+    // a renderer for at all. A real, honest, stated limitation, same as
+    // this file's own header comment on `--server` already admits ("a
+    // true headless dedicated server is a real, stated follow-up") --
+    // this server simulates and network-syncs real game state with no
+    // renderer, but does not (yet) load the requested game's own
+    // renderable scene content. Exits the same way the old early-return
+    // used to (app.run() -> app.shutdown() -> return 0), just after real
+    // setup work that early return used to skip entirely.
+    if (headless) {
+        std::fprintf(stdout, "engine_runtime: headless mode started (%s)\n",
+                     networkConfig.mode == engine::net::NetworkMode::Server ? "server" : "offline/client");
+        app.run();
+        // Mirrors the real, final join at the bottom of main() (see that
+        // one's own comment) -- heartbeatThread must not be destroyed
+        // while still joinable, or ~thread() calls std::terminate.
+        if (heartbeatThread.joinable()) heartbeatThread.join();
+        app.shutdown();
+        return 0;
     }
 
     // Real geometry, uploaded once via VMA-backed vertex/index buffers

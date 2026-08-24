@@ -79,6 +79,7 @@ public:
         uint32_t width = 1280;
         uint32_t height = 720;
         bool enableValidation = true;
+        bool headless = false;
         // Kronos ("Active Joining UI" -- engine_runtime ImGui + input
         // integration): true (the default) preserves every existing call
         // site's behavior byte-for-byte -- initialize() unconditionally
@@ -1019,6 +1020,8 @@ private:
 
     std::unique_ptr<runtime::GameLoop> gameLoop_;
     bool initialized_ = false;
+    bool headless_ = false;
+    bool sdlInitialized_ = false;
 
     // Sprint 15 ("TNT-Wars Trailer Production") -- see setTrailerDirector()'s
     // own comment. trailerDirector_ is a real, non-owning pointer (main.cpp
