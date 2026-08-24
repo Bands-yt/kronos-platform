@@ -859,6 +859,86 @@ PresenceSummary KronosApi::fetchPresenceSummary() {
     return summary;
 }
 
+namespace {
+AvatarConfig parseAvatarConfig(const std::string& body) {
+    AvatarConfig config;
+    nlohmann::json parsed = nlohmann::json::parse(body, nullptr, false);
+    if (parsed.is_discarded()) {
+        config.error = "The Kronos service returned an avatar config this build could not parse.";
+        return config;
+    }
+    auto readInt = [&parsed](const char* key, int fallback) {
+        auto it = parsed.find(key);
+        return (it != parsed.end() && it->is_number_integer()) ? it->get<int>() : fallback;
+    };
+    auto readFloat = [&parsed](const char* key, float fallback) {
+        auto it = parsed.find(key);
+        return (it != parsed.end() && it->is_number()) ? it->get<float>() : fallback;
+    };
+    config.skinToneIndex = readInt("skin_tone_index", -1);
+    config.headShapeIndex = readInt("head_shape_index", 0);
+    config.bodyHeight = readFloat("body_height", 1.0f);
+    config.bodyWidth = readFloat("body_width", 1.0f);
+    config.bodyLimbScale = readFloat("body_limb_scale", 1.0f);
+    config.bodyTorsoLength = readFloat("body_torso_length", 1.0f);
+    config.bodyShoulderWidth = readFloat("body_shoulder_width", 1.0f);
+    config.clothingFitIndex = readInt("clothing_fit_index", 0);
+    auto items = parsed.find("equipped_items");
+    if (items != parsed.end() && items->is_object()) {
+        for (auto it = items->begin(); it != items->end(); ++it) {
+            if (it.value().is_string()) config.equippedItems[it.key()] = it.value().get<std::string>();
+        }
+    }
+    config.success = true;
+    return config;
+}
+} // namespace
+
+AvatarConfig KronosApi::fetchAvatarConfig(const std::string& userId) {
+    std::string path = userId.empty() ? "/v1/avatar/me" : "/v1/avatar/" + userId;
+    HttpResponse response = requestWithRefresh("GET", path, {});
+    if (!response.transportOk) {
+        AvatarConfig config;
+        config.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return config;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        AvatarConfig config;
+        config.error = extractError(response.body, response.status);
+        return config;
+    }
+    return parseAvatarConfig(response.body);
+}
+
+AvatarConfig KronosApi::saveAvatarConfig(const AvatarConfig& config) {
+    nlohmann::json items = nlohmann::json::object();
+    for (const auto& [category, itemId] : config.equippedItems) items[category] = itemId;
+    nlohmann::json body{
+        {"skin_tone_index", config.skinToneIndex},
+        {"head_shape_index", config.headShapeIndex},
+        {"body_height", config.bodyHeight},
+        {"body_width", config.bodyWidth},
+        {"body_limb_scale", config.bodyLimbScale},
+        {"body_torso_length", config.bodyTorsoLength},
+        {"body_shoulder_width", config.bodyShoulderWidth},
+        {"clothing_fit_index", config.clothingFitIndex},
+        {"equipped_items", items},
+    };
+
+    HttpResponse response = requestWithRefresh("PUT", "/v1/avatar/me", body.dump());
+    if (!response.transportOk) {
+        AvatarConfig result;
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        AvatarConfig result;
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+    return parseAvatarConfig(response.body);
+}
+
 PublishResult KronosApi::publishGame(const PublishRequest& request) {
     PublishResult result;
 

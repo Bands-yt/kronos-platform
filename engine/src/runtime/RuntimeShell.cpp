@@ -354,6 +354,8 @@ void RuntimeShell::shutdown() {
     if (friendSearchThread_.joinable()) friendSearchThread_.join();
     if (presenceThread_.joinable()) presenceThread_.join();
     if (directoryThread_.joinable()) directoryThread_.join();
+    if (avatarConfigPushThread_.joinable()) avatarConfigPushThread_.join();
+    if (avatarConfigPullThread_.joinable()) avatarConfigPullThread_.join();
 
     lanBrowser_.stop();
     lanBrowserRunning_ = false;
@@ -1244,6 +1246,43 @@ void RuntimeShell::presenceHeartbeat() {
     presenceThread_ = std::thread([this, inGame, gameId, serverKey]() {
         kronosApi_.sendPresenceHeartbeat(inGame ? "in_game" : "online_launcher", gameId, serverKey);
     });
+}
+
+// GET /v1/avatar/me, applied over local state once it lands (see
+// pollBackendResults()'s own "avatar config pull" block) -- signed-in
+// only; a signed-out player has no backend copy to pull, and keeps
+// whatever local_avatar_loadout.loadout already has.
+void RuntimeShell::pullAvatarConfigFromBackend() {
+    if (!kronosApi_.isSignedIn()) return;
+    if (avatarConfigPullThread_.joinable()) avatarConfigPullThread_.join();
+    avatarConfigPullThread_ = std::thread([this]() {
+        core::AvatarConfig result = kronosApi_.fetchAvatarConfig();
+        std::lock_guard<std::mutex> lock(avatarConfigPullMutex_);
+        avatarConfigPullPendingResult_ = std::move(result);
+    });
+}
+
+// PUT /v1/avatar/me. Fire-and-forget, same reasoning as
+// presenceHeartbeat() above: a dropped save just means the backend's
+// copy is a little stale until the next successful equip/unequip, not
+// a real failure the player needs to see. Real, honest no-op when
+// signed out -- there is no account to save against.
+void RuntimeShell::pushAvatarConfigToBackend() {
+    if (!kronosApi_.isSignedIn()) return;
+    core::AvatarConfig config;
+    config.skinToneIndex = localProfile_.skinToneIndex;
+    config.headShapeIndex = localProfile_.headShapeIndex;
+    config.bodyHeight = localProfile_.bodyHeight;
+    config.bodyWidth = localProfile_.bodyWidth;
+    config.bodyLimbScale = localProfile_.bodyLimbScale;
+    config.bodyTorsoLength = localProfile_.bodyTorsoLength;
+    config.bodyShoulderWidth = localProfile_.bodyShoulderWidth;
+    config.clothingFitIndex = localProfile_.clothingFitIndex;
+    for (const auto& [category, itemId] : avatarLoadout_.equippedItems()) {
+        config.equippedItems[core::avatarItemCategoryName(category)] = itemId;
+    }
+    if (avatarConfigPushThread_.joinable()) avatarConfigPushThread_.join();
+    avatarConfigPushThread_ = std::thread([this, config]() { (void)kronosApi_.saveAvatarConfig(config); });
 }
 
 void RuntimeShell::startDirectoryFetch(bool loadNextPage) {
@@ -2423,6 +2462,7 @@ void RuntimeShell::drawAvatarShopDetailPopup() {
         if (ImGui::Button("Unequip")) {
             avatarLoadout_.unequip(entry->item.category);
             (void)avatarLoadout_.saveToFile(kAvatarLoadoutPath);
+            pushAvatarConfigToBackend();
             app_.refreshLocalPlayerAvatarAppearance(core::resolveSkinToneColor(localProfile_.skinToneIndex),
                                                       avatarLoadout_, avatarCatalogueIndex_);
             // Kronos ("Home Screen Avatar Preview"): keeps the Home
@@ -2437,6 +2477,7 @@ void RuntimeShell::drawAvatarShopDetailPopup() {
         if (ImGui::Button("Equip")) {
             if (avatarLoadout_.equip(entry->item.id, avatarCatalogueIndex_)) {
                 (void)avatarLoadout_.saveToFile(kAvatarLoadoutPath);
+                pushAvatarConfigToBackend();
                 app_.refreshLocalPlayerAvatarAppearance(core::resolveSkinToneColor(localProfile_.skinToneIndex),
                                                           avatarLoadout_, avatarCatalogueIndex_);
                 if (homeAvatarPreview_) homeAvatarPreview_->refresh();
@@ -3290,6 +3331,12 @@ void RuntimeShell::pollBackendResults() {
                 notify(core::NotificationKind::SystemMessage, "Signed in", "Signed in to Kronos as " + who + ".");
                 // Now that a real session exists, pull the real feed.
                 startCatalogueFetch();
+                // Kronos Avatar & Starter Marketplace Foundation: the
+                // backend is authoritative the moment a real session
+                // exists -- pulled here so signing in on a second
+                // machine really shows the same look, not last device's
+                // stale local file.
+                pullAvatarConfigFromBackend();
             } else {
                 backendAuthStatusMessage_ = authResult->error;
                 // A pending kronos:// deep-link launch was waiting on
@@ -3300,6 +3347,52 @@ void RuntimeShell::pollBackendResults() {
                 // will complete it instead.
                 pendingDeepLinkGameSlug_.clear();
             }
+        }
+    }
+
+    // --- avatar config pull (Kronos Avatar & Starter Marketplace Foundation) ---
+    {
+        std::optional<core::AvatarConfig> avatarConfig;
+        {
+            std::lock_guard<std::mutex> lock(avatarConfigPullMutex_);
+            if (avatarConfigPullPendingResult_.has_value()) {
+                avatarConfig = std::move(avatarConfigPullPendingResult_);
+                avatarConfigPullPendingResult_.reset();
+            }
+        }
+        if (avatarConfig.has_value() && avatarConfig->success) {
+            // Real catalogue must be loaded before any equip() call below
+            // can possibly succeed -- equip() validates the item id
+            // against avatarCatalogueIndex_, not just trusts it.
+            ensureAvatarCatalogueLoaded();
+            localProfile_.skinToneIndex = avatarConfig->skinToneIndex;
+            localProfile_.headShapeIndex = avatarConfig->headShapeIndex;
+            localProfile_.bodyHeight = avatarConfig->bodyHeight;
+            localProfile_.bodyWidth = avatarConfig->bodyWidth;
+            localProfile_.bodyLimbScale = avatarConfig->bodyLimbScale;
+            localProfile_.bodyTorsoLength = avatarConfig->bodyTorsoLength;
+            localProfile_.bodyShoulderWidth = avatarConfig->bodyShoulderWidth;
+            localProfile_.clothingFitIndex = avatarConfig->clothingFitIndex;
+            (void)localProfile_.saveToFile(kLocalProfilePath);
+
+            // Real, honest degradation: an equipped item id the backend
+            // remembers but THIS device's own local catalogue.json does
+            // not know about (no backend-authoritative catalogue exists
+            // yet -- see avatar/routes.js's own comment) simply cannot
+            // be equipped here; equip() itself already reports that via
+            // its return value, silently skipped rather than treated as
+            // an error.
+            avatarLoadout_.clear();
+            for (const auto& [categoryName, itemId] : avatarConfig->equippedItems) {
+                (void)avatarLoadout_.equip(itemId, avatarCatalogueIndex_);
+            }
+            (void)avatarLoadout_.saveToFile(kAvatarLoadoutPath);
+
+            if (state_ == ShellState::InGame) {
+                app_.refreshLocalPlayerAvatarAppearance(core::resolveSkinToneColor(localProfile_.skinToneIndex),
+                                                          avatarLoadout_, avatarCatalogueIndex_);
+            }
+            if (homeAvatarPreview_) homeAvatarPreview_->refresh();
         }
     }
 

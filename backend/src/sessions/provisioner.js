@@ -43,11 +43,18 @@ function claimPort() {
   return null;
 }
 
-async function waitForHeartbeat(serverKey, timeoutSeconds) {
+// `child` is checked every poll so a process that exits immediately
+// (crashed, failed to bind its port, missing binary) fails FAST -- real,
+// observed behavior without this: a dead child before this existed still
+// made allocate() (and anything waiting on it, including this file's own
+// test) block for the entire timeout before giving up, even though there
+// was never going to be a heartbeat to wait for.
+async function waitForHeartbeat(serverKey, timeoutSeconds, child) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
     const alive = await redis.get(keys.serverHeartbeat(serverKey));
     if (alive) return true;
+    if (child.exitCode !== null || child.signalCode !== null) return false;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return false;
@@ -132,7 +139,7 @@ async function spawnAndWait(game) {
     console.error('[provisioner] failed to spawn engine_runtime for "%s": %s', game.slug, err.message);
   });
 
-  const alive = await waitForHeartbeat(serverKey, config.jitSpawnTimeoutSeconds);
+  const alive = await waitForHeartbeat(serverKey, config.jitSpawnTimeoutSeconds, child);
   if (!alive && !exited) {
     console.error(
       '[provisioner] server %s ("%s") did not become healthy within %ds -- killing it',

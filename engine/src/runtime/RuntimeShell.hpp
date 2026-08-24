@@ -412,6 +412,14 @@ private:
     void startFriendSearch(const std::string& queryText);
     void startFriendRequest(const std::string& userId);
     void presenceHeartbeat();
+    // Kronos Avatar & Starter Marketplace Foundation: real, own backend
+    // persistence of the appearance state core::AvatarLoadout/
+    // LocalProfile already model richly -- see AvatarConfig's own header
+    // comment (KronosApi.hpp). pull applies the backend's copy over
+    // local state (called once, right after a real sign-in succeeds);
+    // push is fire-and-forget, called after any local equip/unequip.
+    void pullAvatarConfigFromBackend();
+    void pushAvatarConfigToBackend();
     void drawSidebar();
     void drawTopBar();
     void drawBrandPanel();
@@ -672,6 +680,10 @@ private:
     std::string friendSearchStatus_;
     std::thread friendSearchThread_;
     std::thread presenceThread_;
+    std::thread avatarConfigPushThread_;
+    std::thread avatarConfigPullThread_;
+    std::mutex avatarConfigPullMutex_;
+    std::optional<core::AvatarConfig> avatarConfigPullPendingResult_;
 
     // --- account directory ------------------------------------------------
     std::vector<core::DirectoryUser> directoryUsers_;

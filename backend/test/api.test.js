@@ -467,31 +467,43 @@ test('JIT provisioning spins up a real dedicated server when none is alive', asy
   config.engineRuntimePath = enginePath;
   config.gamesDir = gamesDir;
   config.jitServerApiUrl = baseUrl;
+  // Captured from the allocate response itself, not re-queried from the
+  // DB afterward -- game_servers accumulates one row per historical test
+  // run for this same 'default-world' game id (rows are disabled, never
+  // deleted), so a bare `WHERE game_id = $1` with no filter/order/limit
+  // was matching an arbitrary OLD row instead of the one THIS run just
+  // spawned. That real bug left a live engine_runtime process leaked
+  // (and its port held) after every single run -- found by a repeated,
+  // reproducible hang in later test files after this test's spawned
+  // process was never actually killed.
+  let spawnedServerKey = null;
   try {
     const res = await api('POST', '/v1/sessions/allocate', { body: { game_slug: 'default-world' }, token });
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.equal(res.body.server.host, config.jitServerHost);
     assert.ok(res.body.server.port >= config.jitServerPortRangeStart, 'the allocated port came from the JIT range');
     assert.ok(res.body.join_ticket, 'a real join ticket was issued for the freshly-provisioned server');
+    spawnedServerKey = res.body.server.server_key;
+    assert.ok(spawnedServerKey, 'the allocate response really carries the server_key it just provisioned');
 
     const { rows: servers } = await query(
       `SELECT server_key FROM game_servers WHERE game_id = $1 AND enabled = TRUE`,
       [gameId],
     );
     assert.equal(servers.length, 1, 'exactly one real server row was registered by the provisioner');
+    assert.equal(servers[0].server_key, spawnedServerKey, 'it is really the same server the allocate response named');
     const alive = await redis.get(keys.serverHeartbeat(servers[0].server_key));
     assert.ok(alive, 'the spawned process really heartbeated on its own');
   } finally {
     config.engineRuntimePath = originalEngineRuntimePath;
     config.gamesDir = originalGamesDir;
     config.jitServerApiUrl = originalJitApiUrl;
-    // Real cleanup: kill whatever engine_runtime this test spawned so it
-    // doesn't keep running (and heartbeating) after the suite exits.
-    const { rows: toKill } = await query(`SELECT server_key FROM game_servers WHERE game_id = $1`, [gameId]);
+    // Real cleanup: kill exactly the process THIS run spawned so it
+    // doesn't keep running (and holding its port) after the suite exits.
     await query(`UPDATE game_servers SET enabled = FALSE WHERE game_id = $1`, [gameId]);
-    if (toKill.length > 0) {
+    if (spawnedServerKey) {
       await new Promise((resolve) => {
-        exec(`pkill -f "engine_runtime.*--server-key ${toKill[0].server_key}"`, () => resolve());
+        exec(`pkill -f "engine_runtime.*--server-key ${spawnedServerKey}"`, () => resolve());
       });
     }
   }

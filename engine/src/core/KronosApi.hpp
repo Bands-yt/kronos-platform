@@ -4,6 +4,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace engine::core {
@@ -139,6 +140,30 @@ struct PresenceSummary {
     int inGame = 0;
     int totalOnline = 0;
     int registeredAccounts = 0;
+    std::string error;
+};
+
+// Kronos Avatar & Starter Marketplace Foundation: the backend-persisted
+// twin of a player's real, already-rich local appearance state
+// (core::AvatarLoadout + the appearance fields on core::LocalProfile --
+// skin tone, head shape, body proportion sliders, clothing fit, and the
+// per-category equipped catalogue item ids). This struct is a plain
+// wire DTO, not a reuse of AvatarLoadout's own AvatarItemCategory-keyed
+// map, so KronosApi.hpp stays decoupled from that header -- equippedItems
+// keys are the same category NAME strings avatarItemCategoryName()
+// already produces (e.g. "Hair", "Torso"), matching the backend's own
+// ALLOWED_CATEGORIES exactly.
+struct AvatarConfig {
+    bool success = false;
+    int skinToneIndex = -1;
+    int headShapeIndex = 0;
+    float bodyHeight = 1.0f;
+    float bodyWidth = 1.0f;
+    float bodyLimbScale = 1.0f;
+    float bodyTorsoLength = 1.0f;
+    float bodyShoulderWidth = 1.0f;
+    int clothingFitIndex = 0;
+    std::unordered_map<std::string, std::string> equippedItems; // category name -> item id
     std::string error;
 };
 
@@ -309,6 +334,19 @@ public:
     // nextCursor to continue. limit is clamped server-side to 200.
     [[nodiscard]] DirectoryResult fetchUserDirectory(int limit = 50, const std::string& cursor = {});
     [[nodiscard]] PresenceSummary fetchPresenceSummary();
+
+    // --- avatar (backend persistence of appearance) ------------------------
+    // Empty userId means "my own" (GET /v1/avatar/me); a real numeric id
+    // views another real user's real saved config (or the real default,
+    // per avatar/routes.js's own rowToConfig() comment, if they never
+    // saved one).
+    [[nodiscard]] AvatarConfig fetchAvatarConfig(const std::string& userId = {});
+    // PUT /v1/avatar/me -- always the CALLER's own config; there is no
+    // "save someone else's appearance" concept. Returns the real,
+    // server-clamped config that was actually stored (see PUT /v1/
+    // avatar/me's own comment on why the client's own clamp is never
+    // trusted), not just an echo of what was sent.
+    [[nodiscard]] AvatarConfig saveAvatarConfig(const AvatarConfig& config);
 
     // --- publishing --------------------------------------------------------
     [[nodiscard]] PublishResult publishGame(const PublishRequest& request);
