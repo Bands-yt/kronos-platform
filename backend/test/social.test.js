@@ -226,6 +226,87 @@ test('presence expires on its own when heartbeats stop', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Follow (one-way, no consent needed)
+// ---------------------------------------------------------------------------
+
+test('following is one-way, needs no acceptance, and is idempotent', async () => {
+  const alice = await makeUser('alice');
+  const bob = await makeUser('bob');
+
+  const follow = await api('POST', `/v1/follows/${bob.id}`, { token: alice.token });
+  assert.equal(follow.status, 200);
+  assert.equal(follow.body.status, 'following');
+
+  // Following again is a real, honest no-op -- not a 409 -- so a client's
+  // Follow button never needs its own local double-click guard.
+  const followAgain = await api('POST', `/v1/follows/${bob.id}`, { token: alice.token });
+  assert.equal(followAgain.status, 200);
+
+  // Bob never had to accept anything, and does NOT automatically follow
+  // alice back -- this is a one-way edge, not a second friendship.
+  const bobFollowing = await api('GET', `/v1/follows/${bob.id}/following`, { token: bob.token });
+  assert.equal(bobFollowing.status, 200);
+  assert.equal(bobFollowing.body.following.find((u) => u.id === alice.id), undefined,
+    'bob does not automatically follow alice back');
+
+  const aliceFollowing = await api('GET', `/v1/follows/${alice.id}/following`, { token: alice.token });
+  assert.ok(aliceFollowing.body.following.some((u) => u.id === bob.id), 'alice really follows bob');
+
+  const bobFollowers = await api('GET', `/v1/follows/${bob.id}/followers`, { token: bob.token });
+  const aliceRow = bobFollowers.body.followers.find((u) => u.id === alice.id);
+  assert.ok(aliceRow, 'alice appears in bob\'s real followers list');
+  // The viewer here is bob (his own token); bob does not follow alice
+  // back, so this must read false, not just be present/truthy.
+  assert.equal(aliceRow.viewer_is_following, false, 'the viewer flag reflects the VIEWER\'s own edge, not the row\'s');
+
+  const counts = await api('GET', `/v1/follows/${bob.id}/counts`, { token: bob.token });
+  assert.equal(counts.status, 200);
+  assert.equal(counts.body.followers, 1);
+  assert.equal(counts.body.following, 0);
+});
+
+test('self-follow and following a nonexistent/guest account are rejected', async () => {
+  const alice = await makeUser('alice');
+  const guest = await api('POST', '/v1/auth/guest');
+
+  const selfFollow = await api('POST', `/v1/follows/${alice.id}`, { token: alice.token });
+  assert.equal(selfFollow.status, 400);
+
+  const nobody = await api('POST', '/v1/follows/999999999', { token: alice.token });
+  assert.equal(nobody.status, 404);
+
+  const followGuest = await api('POST', `/v1/follows/${guest.body.user.id}`, { token: alice.token });
+  assert.equal(followGuest.status, 400);
+});
+
+test('guests cannot follow anyone, but their own follow endpoints still require auth', async () => {
+  const guest = await api('POST', '/v1/auth/guest');
+  const target = await makeUser('target');
+
+  const attempt = await api('POST', `/v1/follows/${target.id}`, { token: guest.body.access_token });
+  assert.equal(attempt.status, 403);
+  assert.match(attempt.body.error.message, /guest/i);
+
+  const noAuth = await api('POST', `/v1/follows/${target.id}`);
+  assert.equal(noAuth.status, 401);
+});
+
+test('unfollowing is not silently a no-op', async () => {
+  const alice = await makeUser('alice');
+  const bob = await makeUser('bob');
+
+  const notFollowing = await api('DELETE', `/v1/follows/${bob.id}`, { token: alice.token });
+  assert.equal(notFollowing.status, 404, 'unfollowing someone you never followed is a real, reportable mistake');
+
+  await api('POST', `/v1/follows/${bob.id}`, { token: alice.token });
+  const unfollow = await api('DELETE', `/v1/follows/${bob.id}`, { token: alice.token });
+  assert.equal(unfollow.status, 204);
+
+  const following = await api('GET', `/v1/follows/${alice.id}/following`, { token: alice.token });
+  assert.equal(following.body.following.find((u) => u.id === bob.id), undefined, 'bob is really gone from the list');
+});
+
+// ---------------------------------------------------------------------------
 // Ban / disposable email / username lifecycle
 // ---------------------------------------------------------------------------
 

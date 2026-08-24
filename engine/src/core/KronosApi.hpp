@@ -66,6 +66,12 @@ struct ServerAllocation {
     // Presented to the game server on connect; it proves the backend
     // really allocated this player to this server.
     std::string joinTicket;
+    // The real game_servers.server_key this allocation landed on --
+    // needed so this player's OWN presence heartbeat can report exactly
+    // which server they are on, which is what lets a friend's own
+    // /v1/friends/list call mint a direct-join ticket against it. Empty
+    // on failure, same as every other field here.
+    std::string serverKey;
     std::string error;
 };
 
@@ -156,6 +162,35 @@ struct PublishResult {
 struct UserSearchResponse {
     bool success = false;
     std::vector<UserSearchResult> results;
+    std::string error;
+};
+
+// One row of a real /v1/follows/:userId/{followers,following} page.
+struct FollowListUser {
+    std::string id;
+    std::string username;   // empty until a handle is claimed, same convention as DirectoryUser
+    std::string displayName;
+    std::string directoryName;
+    std::string status;        // "offline" | "online_launcher" | "in_studio" | "in_game"
+    std::string currentGameId;
+    // Whether the CALLER (not the row's own user) follows this row --
+    // lets a profile page render Follow/Following per row with no extra
+    // round trip. See social/routes.js's own listFollowEdge() comment.
+    bool viewerIsFollowing = false;
+};
+
+struct FollowListResult {
+    bool success = false;
+    std::vector<FollowListUser> users;
+    std::string nextCursor;
+    bool presenceAvailable = false;
+    std::string error;
+};
+
+struct FollowCounts {
+    bool success = false;
+    int followers = 0;
+    int following = 0;
     std::string error;
 };
 
@@ -251,6 +286,20 @@ public:
     [[nodiscard]] UserSearchResponse searchUsers(const std::string& queryText);
     [[nodiscard]] bool sendFriendRequest(const std::string& userId, std::string& outError);
     [[nodiscard]] bool respondToFriendRequest(const std::string& userId, bool accept, std::string& outError);
+    // DELETE /v1/friends/:userId -- ends an existing friendship. The
+    // backend refuses this as a real, reportable error (not a silent
+    // no-op) when the two accounts were never friends; outError carries
+    // that message back.
+    [[nodiscard]] bool removeFriend(const std::string& userId, std::string& outError);
+
+    // --- follow (one-way, no consent needed) ------------------------------
+    [[nodiscard]] bool followUser(const std::string& userId, std::string& outError);
+    [[nodiscard]] bool unfollowUser(const std::string& userId, std::string& outError);
+    [[nodiscard]] FollowListResult fetchFollowers(const std::string& userId, int limit = 50,
+                                                    const std::string& cursor = {});
+    [[nodiscard]] FollowListResult fetchFollowing(const std::string& userId, int limit = 50,
+                                                    const std::string& cursor = {});
+    [[nodiscard]] FollowCounts fetchFollowCounts(const std::string& userId);
     // Real 15s presence heartbeat, per the spec. Best effort: a failed
     // heartbeat just means friends see this user go offline shortly.
     void sendPresenceHeartbeat(const std::string& status, const std::string& gameId, const std::string& serverId);

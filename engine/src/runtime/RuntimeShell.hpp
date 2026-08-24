@@ -624,10 +624,26 @@ private:
     std::mutex allocationMutex_;
     std::optional<core::ServerAllocation> allocationPendingResult_;
     std::string allocationGameTitle_;
+    // The slug this in-flight/most-recent allocation was requested for
+    // -- kept so a SUCCESSFUL allocation can look its own numeric game
+    // id back up in onlineGames_ (ServerAllocation itself carries no
+    // game id, only host/port/server_key) for onlineSessionGameId_
+    // below.
+    std::string allocationGameSlug_;
     // The real join ticket from the most recent successful allocation.
     // Held so it can be handed to the game server once NetworkSession
     // grows a field to carry it -- see startServerAllocation()'s comment.
     std::string lastJoinTicket_;
+    // Kronos ("Join Friend pathway"): THIS player's own real game id/
+    // server_key while genuinely in an online (backend-allocated)
+    // session -- set the moment allocation succeeds, cleared in
+    // leaveSession(). presenceHeartbeat() reports these so a friend's
+    // own /v1/friends/list call can mint a direct-join ticket against
+    // this exact server (see that route's own comment). Distinct from
+    // currentGameId_ above, which tracks *local* runtime::loadGame()
+    // sessions for the play-log, not online allocation.
+    std::string onlineSessionGameId_;
+    std::string onlineSessionServerKey_;
 
     // Which half of the catalogue the Discover/Create split is showing.
     enum class CatalogueTab { Discover, Create };

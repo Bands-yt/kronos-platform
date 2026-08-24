@@ -560,6 +560,11 @@ void RuntimeShell::leaveSession() {
     app_.setNetworkedLocalPlayerEntity(core::kNullEntity);
     app_.input().setRelativeMouseMode(false);
     showPlayerListOverlay_ = false;
+    // A stale server_key from a session that just ended must never
+    // survive into the next presence heartbeat -- see these members'
+    // own comment on RuntimeShell.hpp.
+    onlineSessionGameId_.clear();
+    onlineSessionServerKey_.clear();
 
     // Kronos ("Game Catalogue Overhaul", Phase 6): real session-end
     // logging -- a real, honest no-op when currentGameId_ is empty (this
@@ -1204,8 +1209,20 @@ void RuntimeShell::joinFriendGame(const core::KronosFriend& friendEntry) {
         friendsStatusMessage_ = "Kronos did not report which game your friend is in.";
         return;
     }
-    startServerAllocation(friendEntry.currentGameId, friendEntry.username.empty() ? friendEntry.displayName
-                                                                                   : friendEntry.username);
+    // friendEntry.currentGameId is the real numeric games.id (this is
+    // what presenceHeartbeat() now reports, matching /v1/sessions/
+    // allocate's own canonical id) -- but startServerAllocation() (and
+    // the backend's /v1/sessions/allocate it calls) takes a SLUG, not a
+    // numeric id. Resolved against the catalogue already in memory
+    // rather than guessing the two are interchangeable.
+    for (const core::CatalogueGame& game : onlineGames_) {
+        if (game.id == friendEntry.currentGameId) {
+            startServerAllocation(game.slug, friendEntry.username.empty() ? friendEntry.displayName
+                                                                           : friendEntry.username);
+            return;
+        }
+    }
+    friendsStatusMessage_ = "That friend's game isn't in your current catalogue yet -- try refreshing.";
 }
 
 // Real 15s presence heartbeat. Fire-and-forget on a detached-style
@@ -1215,8 +1232,17 @@ void RuntimeShell::presenceHeartbeat() {
     if (presenceThread_.joinable()) presenceThread_.join();
     if (directoryThread_.joinable()) directoryThread_.join();
     bool inGame = state_ == ShellState::InGame;
-    presenceThread_ = std::thread([this, inGame]() {
-        kronosApi_.sendPresenceHeartbeat(inGame ? "in_game" : "online_launcher", std::string(), std::string());
+    // Kronos ("Join Friend pathway"): real game id/server_key, read on
+    // this thread (the caller's) before handing off to the background
+    // one -- same "snapshot on the calling thread, pass by value" rule
+    // every other background call here already follows. Empty when this
+    // InGame session isn't a real online allocation (e.g. a purely
+    // local play session) -- presenceHeartbeat() has nothing honest to
+    // report for those, same as being online_launcher.
+    std::string gameId = inGame ? onlineSessionGameId_ : std::string();
+    std::string serverKey = inGame ? onlineSessionServerKey_ : std::string();
+    presenceThread_ = std::thread([this, inGame, gameId, serverKey]() {
+        kronosApi_.sendPresenceHeartbeat(inGame ? "in_game" : "online_launcher", gameId, serverKey);
     });
 }
 
@@ -3221,6 +3247,7 @@ void RuntimeShell::startServerAllocation(const std::string& gameSlug, const std:
 
     allocationInProgress_.store(true);
     allocationGameTitle_ = title;
+    allocationGameSlug_ = gameSlug;
     allocationThread_ = std::thread([this, gameSlug]() {
         core::ServerAllocation result = kronosApi_.allocateServer(gameSlug);
         std::lock_guard<std::mutex> lock(allocationMutex_);
@@ -3477,6 +3504,22 @@ void RuntimeShell::pollBackendResults() {
                     state_ = ShellState::Error;
                 } else {
                     lastJoinedHostDisplayName_ = allocationGameTitle_;
+                    // Kronos ("Join Friend pathway"): real, own game id
+                    // resolved from the catalogue already in memory --
+                    // ServerAllocation itself carries no game id, only
+                    // host/port/server_key (see its own comment). A
+                    // slug not found in onlineGames_ (e.g. this was a
+                    // local/offline join, not a real online allocation)
+                    // leaves this empty, which presenceHeartbeat()
+                    // already treats as "nothing to report".
+                    onlineSessionGameId_.clear();
+                    for (const core::CatalogueGame& game : onlineGames_) {
+                        if (game.slug == allocationGameSlug_) {
+                            onlineSessionGameId_ = game.id;
+                            break;
+                        }
+                    }
+                    onlineSessionServerKey_ = allocation->serverKey;
                     if (spawnNetworkedPlayerEntity_) {
                         core::EntityId entity = spawnNetworkedPlayerEntity_();
                         app_.setNetworkedLocalPlayerEntity(entity);

@@ -132,7 +132,14 @@ sessionRouter.post(
 
     res.json({
       game: { id: String(game.id), slug: game.slug, title: game.title },
-      server: { host: chosen.host, port: chosen.port, region: chosen.region },
+      // server_key travels back to the client so it can report exactly
+      // this in its own presence heartbeat -- without it, a friend
+      // watching this player's presence has no server to mint a
+      // direct-join ticket against (see social/routes.js's own
+      // /friends/list comment). Already implicit in `ticket` itself
+      // (its own `srv` claim); handing it over explicitly avoids the
+      // client needing to decode its own ticket to learn it.
+      server: { host: chosen.host, port: chosen.port, region: chosen.region, server_key: chosen.server_key },
       join_ticket: ticket,
       expires_in: config.joinTicketTtlSeconds,
     });

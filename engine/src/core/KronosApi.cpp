@@ -516,6 +516,7 @@ ServerAllocation KronosApi::allocateServer(const std::string& gameSlug) {
                            ? static_cast<uint16_t>(portNode->get<int>())
                            : 0;
     allocation.region = jsonStringOr(server, "region");
+    allocation.serverKey = jsonStringOr(server, "server_key");
     allocation.joinTicket = jsonStringOr(parsed, "join_ticket");
 
     if (allocation.host.empty() || allocation.port == 0) {
@@ -645,6 +646,130 @@ bool KronosApi::respondToFriendRequest(const std::string& userId, bool accept, s
         return false;
     }
     return true;
+}
+
+bool KronosApi::removeFriend(const std::string& userId, std::string& outError) {
+    HttpResponse response = requestWithRefresh("DELETE", "/v1/friends/" + userId, {});
+    if (!response.transportOk) {
+        outError = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return false;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        outError = extractError(response.body, response.status);
+        return false;
+    }
+    return true;
+}
+
+bool KronosApi::followUser(const std::string& userId, std::string& outError) {
+    HttpResponse response = requestWithRefresh("POST", "/v1/follows/" + userId, "{}");
+    if (!response.transportOk) {
+        outError = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return false;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        outError = extractError(response.body, response.status);
+        return false;
+    }
+    return true;
+}
+
+bool KronosApi::unfollowUser(const std::string& userId, std::string& outError) {
+    HttpResponse response = requestWithRefresh("DELETE", "/v1/follows/" + userId, {});
+    if (!response.transportOk) {
+        outError = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return false;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        outError = extractError(response.body, response.status);
+        return false;
+    }
+    return true;
+}
+
+namespace {
+FollowListResult parseFollowList(const std::string& body, const char* listKey) {
+    FollowListResult result;
+    nlohmann::json parsed = nlohmann::json::parse(body, nullptr, false);
+    auto list = parsed.is_discarded() ? parsed.end() : parsed.find(listKey);
+    if (parsed.is_discarded() || list == parsed.end() || !list->is_array()) {
+        result.error = "The Kronos service returned a follow list this build could not parse.";
+        return result;
+    }
+    for (const auto& node : *list) {
+        FollowListUser entry;
+        entry.id = jsonStringOr(node, "id");
+        entry.username = jsonStringOr(node, "username");
+        entry.displayName = jsonStringOr(node, "display_name");
+        entry.directoryName = jsonStringOr(node, "directory_name");
+        entry.status = jsonStringOr(node, "status", "offline");
+        entry.currentGameId = jsonStringOr(node, "current_game_id");
+        auto viewerFollows = node.find("viewer_is_following");
+        entry.viewerIsFollowing = viewerFollows != node.end() && viewerFollows->is_boolean() && viewerFollows->get<bool>();
+        result.users.push_back(std::move(entry));
+    }
+    result.nextCursor = jsonStringOr(parsed, "next_cursor");
+    auto available = parsed.find("presence_available");
+    result.presenceAvailable = available != parsed.end() && available->is_boolean() && available->get<bool>();
+    result.success = true;
+    return result;
+}
+} // namespace
+
+FollowListResult KronosApi::fetchFollowers(const std::string& userId, int limit, const std::string& cursor) {
+    std::string path = "/v1/follows/" + userId + "/followers?limit=" + std::to_string(limit);
+    if (!cursor.empty()) path += "&cursor=" + cursor;
+    HttpResponse response = requestWithRefresh("GET", path, {});
+    if (!response.transportOk) {
+        FollowListResult result;
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        FollowListResult result;
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+    return parseFollowList(response.body, "followers");
+}
+
+FollowListResult KronosApi::fetchFollowing(const std::string& userId, int limit, const std::string& cursor) {
+    std::string path = "/v1/follows/" + userId + "/following?limit=" + std::to_string(limit);
+    if (!cursor.empty()) path += "&cursor=" + cursor;
+    HttpResponse response = requestWithRefresh("GET", path, {});
+    if (!response.transportOk) {
+        FollowListResult result;
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        FollowListResult result;
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+    return parseFollowList(response.body, "following");
+}
+
+FollowCounts KronosApi::fetchFollowCounts(const std::string& userId) {
+    FollowCounts result;
+    HttpResponse response = requestWithRefresh("GET", "/v1/follows/" + userId + "/counts", {});
+    if (!response.transportOk) {
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    if (parsed.is_discarded()) {
+        result.error = "The Kronos service returned follow counts this build could not parse.";
+        return result;
+    }
+    result.followers = parsed.value("followers", 0);
+    result.following = parsed.value("following", 0);
+    result.success = true;
+    return result;
 }
 
 void KronosApi::sendPresenceHeartbeat(const std::string& status, const std::string& gameId,

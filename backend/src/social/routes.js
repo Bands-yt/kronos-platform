@@ -307,6 +307,159 @@ socialRouter.delete(
   }),
 );
 
+// --- follow (one-way, no consent needed) ------------------------------------
+//
+// Deliberately separate from friendships: following a creator/player
+// needs no acceptance step and carries no "request" state -- see
+// 004_follows.sql's own comment. POST is idempotent (following someone
+// you already follow is just still-following, not an error) so a
+// client's Follow button never needs to track local state to avoid a
+// double-click error; DELETE is NOT silently a no-op, matching
+// DELETE /friends/:userId's own convention -- unfollowing someone you
+// don't follow is a real, reportable mistake, not nothing.
+
+socialRouter.post(
+  '/follows/:userId',
+  requireAuth,
+  rateLimit({ bucket: 'follow', limit: 120, windowSeconds: 3600 }),
+  asyncRoute(async (req, res) => {
+    await assertNotGuest(req.user.id);
+
+    const targetId = String(req.params.userId || '');
+    if (!/^\d+$/.test(targetId)) throw badRequest('A numeric user id is required.');
+    if (targetId === String(req.user.id)) throw badRequest('You cannot follow yourself.');
+
+    const target = await query(`SELECT id, is_guest, account_state FROM users WHERE id = $1`, [targetId]);
+    if (target.rows.length === 0) throw notFound('No such user.');
+    if (target.rows[0].is_guest) throw badRequest('That account cannot be followed.');
+    if (target.rows[0].account_state === 'terminated') throw notFound('No such user.');
+
+    await query(
+      `INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2)
+       ON CONFLICT (follower_id, followee_id) DO NOTHING`,
+      [req.user.id, targetId],
+    );
+    res.json({ status: 'following' });
+  }),
+);
+
+socialRouter.delete(
+  '/follows/:userId',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const targetId = String(req.params.userId || '');
+    if (!/^\d+$/.test(targetId)) throw badRequest('A numeric user id is required.');
+
+    const { rowCount } = await query(
+      `DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`,
+      [req.user.id, targetId],
+    );
+    if (rowCount === 0) throw notFound('You are not following that user.');
+    res.status(204).end();
+  }),
+);
+
+// Shared shape for both list directions below -- only which id column is
+// fixed and which is walked differs.
+async function listFollowEdge({ fixedColumn, walkedColumn, fixedId, limit, cursor, viewerId }) {
+  const params = [fixedId, limit + 1];
+  let where = `f.${fixedColumn} = $1 AND other.account_state <> 'terminated'`;
+  if (cursor > 0) {
+    params.push(cursor);
+    where += ` AND other.id > $${params.length}`;
+  }
+  const { rows } = await query(
+    `SELECT other.id, other.username, other.display_name,
+            COALESCE(NULLIF(other.username, ''), other.display_name) AS directory_name
+       FROM follows f
+       JOIN users other ON other.id = f.${walkedColumn}
+      WHERE ${where}
+      ORDER BY other.id ASC
+      LIMIT $2`,
+    params,
+  );
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const presence = await readPresence(page.map((r) => r.id)).catch(() => null);
+
+  // Only meaningful when a real viewer is asking (not every call site
+  // has one) -- lets a profile page render "Following" vs "Follow"
+  // against each row without an extra round trip per row.
+  let viewerFollows = null;
+  if (viewerId && page.length > 0) {
+    const { rows: edges } = await query(
+      `SELECT followee_id FROM follows WHERE follower_id = $1 AND followee_id = ANY($2::bigint[])`,
+      [viewerId, page.map((r) => r.id)],
+    );
+    viewerFollows = new Set(edges.map((e) => String(e.followee_id)));
+  }
+
+  return {
+    users: page.map((r) => {
+      const p = presence ? presence.get(String(r.id)) : null;
+      return {
+        id: String(r.id),
+        username: r.username,
+        display_name: r.display_name,
+        directory_name: r.directory_name,
+        status: p?.status || 'offline',
+        current_game_id: p?.current_game_id || null,
+        ...(viewerFollows ? { viewer_is_following: viewerFollows.has(String(r.id)) } : {}),
+      };
+    }),
+    next_cursor: hasMore ? String(page[page.length - 1].id) : null,
+    presence_available: presence !== null,
+  };
+}
+
+socialRouter.get(
+  '/follows/:userId/followers',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = String(req.params.userId || '');
+    if (!/^\d+$/.test(userId)) throw badRequest('A numeric user id is required.');
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const cursor = Number(req.query.cursor) || 0;
+    const result = await listFollowEdge({
+      fixedColumn: 'followee_id', walkedColumn: 'follower_id',
+      fixedId: userId, limit, cursor, viewerId: req.user.id,
+    });
+    res.json({ followers: result.users, next_cursor: result.next_cursor, presence_available: result.presence_available });
+  }),
+);
+
+socialRouter.get(
+  '/follows/:userId/following',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = String(req.params.userId || '');
+    if (!/^\d+$/.test(userId)) throw badRequest('A numeric user id is required.');
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const cursor = Number(req.query.cursor) || 0;
+    const result = await listFollowEdge({
+      fixedColumn: 'follower_id', walkedColumn: 'followee_id',
+      fixedId: userId, limit, cursor, viewerId: req.user.id,
+    });
+    res.json({ following: result.users, next_cursor: result.next_cursor, presence_available: result.presence_available });
+  }),
+);
+
+socialRouter.get(
+  '/follows/:userId/counts',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = String(req.params.userId || '');
+    if (!/^\d+$/.test(userId)) throw badRequest('A numeric user id is required.');
+    const { rows } = await query(
+      `SELECT
+         (SELECT COUNT(*) FROM follows WHERE followee_id = $1) AS followers,
+         (SELECT COUNT(*) FROM follows WHERE follower_id = $1) AS following`,
+      [userId],
+    );
+    res.json({ followers: Number(rows[0].followers), following: Number(rows[0].following) });
+  }),
+);
+
 // --- friends list ----------------------------------------------------------
 
 socialRouter.get(
