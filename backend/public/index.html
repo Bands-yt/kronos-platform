@@ -1367,7 +1367,22 @@
      activity log and Bearer token are applied in exactly one place.
      ===================================================================== */
 
-  async function apiFetch(method, path, body) {
+  // Guards the retry-after-refresh branch below against two callers
+  // racing an expired access token into two concurrent refreshes (the
+  // second would present an already-rotated token and get treated as
+  // reuse -- see tokens.js's own rotateRefreshToken() comment): every
+  // caller shares the one in-flight refresh instead of starting its own.
+  let refreshInFlight = null;
+  function refreshSession() {
+    if (!refreshInFlight) {
+      refreshInFlight = apiFetch("POST", "/v1/auth/refresh", {}, true).finally(() => {
+        refreshInFlight = null;
+      });
+    }
+    return refreshInFlight;
+  }
+
+  async function apiFetch(method, path, body, _isRefreshOrRetry) {
     const started = performance.now();
     const headers = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -1395,6 +1410,23 @@
       }
 
       pushLog(method, path, res.status, res.ok);
+
+      // A live session that suddenly 401s is almost always just the
+      // 15-minute access token expiring mid-use, not a real auth failure
+      // -- silently refresh (the httpOnly cookie carries the refresh
+      // token even if this tab's own copy was lost) and replay the
+      // original request exactly once before giving up and signing the
+      // tab out. `_isRefreshOrRetry` stops this from recursing into the
+      // refresh call itself or retrying more than once.
+      if (res.status === 401 && !_isRefreshOrRetry && accessToken) {
+        const refreshed = await refreshSession();
+        if (refreshed.ok && refreshed.data && refreshed.data.access_token) {
+          applySession(refreshed.data.user, refreshed.data);
+          return apiFetch(method, path, body, true);
+        }
+        applySession(null, null);
+      }
+
       return { ok: res.ok, status: res.status, ms, data: parsed };
     } catch (err) {
       clearTimeout(timeout);
@@ -1794,7 +1826,20 @@
     }
   }
 
+  // A page reload wipes accessToken/refreshToken (both real, in-memory
+  // JS variables -- see this block's own header comment), but the
+  // httpOnly refresh-token cookie a prior sign-in/guest session set
+  // survives it. Try to trade that cookie for a fresh access token
+  // before settling into the signed-out state, so reloading mid-session
+  // doesn't look like a real sign-out and push the visitor toward
+  // "Continue as Guest" (which mints a brand new guest account every
+  // time) just to get back in.
   applySession(null, null);
+  refreshSession().then((result) => {
+    if (result.ok && result.data && result.data.access_token) {
+      applySession(result.data.user, result.data);
+    }
+  });
 
   $("#paneLogin").addEventListener("submit", async (event) => {
     event.preventDefault();

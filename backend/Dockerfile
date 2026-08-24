@@ -1,33 +1,47 @@
-# Kronos API image.
-#
-# Multi-stage so the shipped image carries production dependencies only --
-# no dev tooling, no build cache, nothing extra to audit or exploit.
-FROM node:22-alpine AS deps
+FROM ubuntu:24.04 AS base
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    libcurl4 \
+    libsdl2-2.0-0 \
+    libsecret-1-0 && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs
+
+FROM base AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-# npm ci (not install) so the lockfile is authoritative: a production
-# image must build the exact tree that was tested, not whatever resolves
-# today.
 RUN npm ci --omit=dev
 
-FROM node:22-alpine AS runtime
+FROM base AS runtime
 WORKDIR /app
 
-# Run as a non-root user. The node image already ships an unprivileged
-# `node` user; a compromised process should not be root inside the
-# container.
-ENV NODE_ENV=production
+# Unlike the official node:*-alpine image this Dockerfile used to build
+# from, plain ubuntu:24.04 + the Nodesource package ships no unprivileged
+# user at all. engine_runtime is spawned as a real child of this same
+# process (see sessions/provisioner.js's own spawn() call) -- whatever
+# user runs `node src/server.js` is also the user every JIT-spawned
+# dedicated server runs as, so real root here means a compromised API
+# process (or a malicious game server binary) has root inside the
+# container. No explicit --uid/--gid: ubuntu:24.04 is the plain Docker
+# Hub image (no pre-existing uid-1000 account the way some cloud/VM
+# images ship), but letting useradd pick a free system id sidesteps that
+# question entirely.
+RUN useradd --system --shell /usr/sbin/nologin --home-dir /app node
+
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json ./
 COPY --chown=node:node src ./src
 COPY --chown=node:node db ./db
 COPY --chown=node:node scripts ./scripts
-# The storefront dashboard (server.js's own express.static(publicDir)
-# call expects this directory to exist at runtime) -- previously
-# missing here entirely, which is the real reason a production
-# container serving real traffic still 404'd at '/': the file was
-# genuinely absent from the image, not merely unrouted.
 COPY --chown=node:node public ./public
+# CrashReporter.cpp (engine/src/core/CrashReporter.cpp) opens its own
+# crash_report_*.txt relative to cwd, and a spawned engine_runtime's cwd
+# is this same /app (provisioner.js sets no explicit `cwd`) -- `node`
+# needs write access to the bare directory itself, not just the files
+# --chown above already covers.
+RUN chown node:node /app
 
 USER node
 EXPOSE 8080
@@ -37,4 +51,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "src/server.js"]
+CMD ["sh", "-c", "node scripts/seed.js && node src/server.js"]

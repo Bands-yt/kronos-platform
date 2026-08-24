@@ -36,6 +36,15 @@ Application::~Application() {
 }
 
 bool Application::initialize(const CreateInfo& info) {
+    if (info.headless) {
+        if (SDL_Init(SDL_INIT_EVENTS | SDL_INIT_TIMER) != 0) {
+            std::fprintf(stderr, "Application: headless SDL_Init failed: %s\n", SDL_GetError());
+            return false;
+        }
+        sdlInitialized_ = true;
+    }
+
+    if (!info.headless) {
     Window::CreateInfo windowInfo;
     windowInfo.title = info.title;
     windowInfo.width = info.width;
@@ -74,6 +83,7 @@ bool Application::initialize(const CreateInfo& info) {
     renderer_.setOverlayCallback([this](VkCommandBuffer cmd, VkImageView view, VkExtent2D extent) {
         uiRenderer_.draw(cmd, view, extent);
     });
+    }
 
     if (!physics_.initialize()) {
         std::fprintf(stderr, "Application: Physics::initialize failed.\n");
@@ -319,16 +329,20 @@ bool Application::initialize(const CreateInfo& info) {
     // CreateInfo::startWithCapturedMouse's own comment for why this is
     // now the one real place that decides the *initial* value, not the
     // only place this ever gets set.
-    input_.setRelativeMouseMode(info.startWithCapturedMouse);
+    if (!info.headless) input_.setRelativeMouseMode(info.startWithCapturedMouse);
 
     // engine_runtime wants the 3D view filling the whole window -- unlike
     // Studio, which never calls setScene() on its own Renderer (see
     // Renderer.hpp's setScene() doc comment). riggedMeshLibrary_ is the
     // real fix for spawnLocalPlayerAvatar()'s own skinned body actually
     // being drawn on this path -- see setScene()'s own header comment.
-    renderer_.setScene(&ecs_, &camera_, &meshLibrary_, &particleSystem_, &textureLibrary_, &riggedMeshLibrary_);
+    if (!info.headless) {
+        renderer_.setScene(&ecs_, &camera_, &meshLibrary_, &particleSystem_, &textureLibrary_, &riggedMeshLibrary_);
+    }
 
-    runtime::GameLoop::Subsystems subsystems{&window_, &renderer_, &ecs_, &physics_, &audio_, &scripting_, &camera_};
+    runtime::GameLoop::Subsystems subsystems{info.headless ? nullptr : &window_,
+                                             info.headless ? nullptr : &renderer_,
+                                             &ecs_, &physics_, &audio_, &scripting_, &camera_};
     gameLoop_ = std::make_unique<runtime::GameLoop>(subsystems);
 
     // The pre-tick hook (see GameLoop.hpp's doc comment): sample input,
@@ -343,6 +357,7 @@ bool Application::initialize(const CreateInfo& info) {
     // networked-client tick (below) is a separate hook at its own,
     // independent 60Hz cadence.
     gameLoop_->setPreTickHook([this](float dt) {
+        if (headless_) return;
         input_.update();
         // Sprint 14: accumulate this sim tick's real mouse delta for the
         // (slower) network hook to drain -- see networkMouseDeltaAccumulator_'s
@@ -2066,7 +2081,7 @@ bool Application::initialize(const CreateInfo& info) {
     // Studio-only privileges" boundary), so this stdout line is the real
     // "Performance Stats Panel" for the client half of this task; Studio
     // gets the real ImGui panel (see StudioApp.cpp).
-    gameLoop_->setPostRenderHook([this](float dt) {
+    if (!info.headless) gameLoop_->setPostRenderHook([this](float dt) {
         uint32_t loadedChunks = terrain_ != nullptr ? static_cast<uint32_t>(terrain_->loadedChunkCount()) : 0;
         uint32_t totalChunks = terrain_ != nullptr ? static_cast<uint32_t>(terrain_->chunkCount()) : 0;
         ProcessStats processStats = processStatsSampler_.sample();
@@ -2097,6 +2112,7 @@ bool Application::initialize(const CreateInfo& info) {
         }
     });
 
+    headless_ = info.headless;
     initialized_ = true;
     return true;
 }
@@ -2382,31 +2398,37 @@ void Application::shutdown() {
     networkSession_.shutdown();
     gameLoop_.reset();
     input_.shutdown();
-    scripting_.shutdown();
-    audio_.shutdown();
-    physics_.shutdown();
+        if (!headless_) {
+            // Ordering contract from Renderer::shutdown()'s NOTE: mesh/texture GPU
+            // resources are VMA allocations and must be freed before the
+            // allocator they came from is destroyed.
+            // The GPU must be idle BEFORE these buffers are freed, not merely
+            // before the device is destroyed: Renderer::shutdown()'s own
+            // vkDeviceWaitIdle runs after this point, so without this the last
+            // frame's command buffer is still referencing the mesh/texture
+            // allocations being released here. StudioApp::shutdown() already
+            // waits in exactly this position; this is the same fix.
+            if (renderer_.device() != VK_NULL_HANDLE) vkDeviceWaitIdle(renderer_.device());
+            meshLibrary_.destroyAll(renderer_.allocator());
+            // riggedMeshLibrary_ owns its own vertex/index/skin buffers against the
+            // same allocator and was never being torn down -- its meshes
+            // outlived vmaDestroyAllocator() and were reported as leaked device
+            // memory at vkDestroyDevice.
+            riggedMeshLibrary_.destroyAll(renderer_.allocator());
+            textureLibrary_.destroyAll(renderer_.allocator(), renderer_.device());
+            uiRenderer_.shutdown();
+            renderer_.shutdown();
 
-    // Ordering contract from Renderer::shutdown()'s NOTE: mesh/texture GPU
-    // resources are VMA allocations and must be freed before the
-    // allocator they came from is destroyed.
-    // The GPU must be idle BEFORE these buffers are freed, not merely
-    // before the device is destroyed: Renderer::shutdown()'s own
-    // vkDeviceWaitIdle runs after this point, so without this the last
-    // frame's command buffer is still referencing the mesh/texture
-    // allocations being released here. StudioApp::shutdown() already
-    // waits in exactly this position; this is the same fix.
-    if (renderer_.device() != VK_NULL_HANDLE) vkDeviceWaitIdle(renderer_.device());
-    meshLibrary_.destroyAll(renderer_.allocator());
-    // riggedMeshLibrary_ owns its own vertex/index/skin buffers against
-    // the same allocator and was never being torn down -- its meshes
-    // outlived vmaDestroyAllocator() and were reported as leaked device
-    // memory at vkDestroyDevice.
-    riggedMeshLibrary_.destroyAll(renderer_.allocator());
-    textureLibrary_.destroyAll(renderer_.allocator(), renderer_.device());
+            window_.shutdown();
+        }
     uiRenderer_.shutdown();
     renderer_.shutdown();
 
     window_.shutdown();
+    if (sdlInitialized_) {
+        SDL_Quit();
+        sdlInitialized_ = false;
+    }
 
     initialized_ = false;
 }

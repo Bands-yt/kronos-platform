@@ -56,7 +56,14 @@ void GameLoop::renderTick(float dt) {
     }
 
     // renderer.render();
-    if (!subsystems_.renderer->renderFrame()) {
+    // Kronos (JIT dedicated servers): a real headless run has no renderer
+    // at all (Application::initialize()'s own headless wiring passes
+    // nullptr here) -- guarded rather than skipping renderTick() itself
+    // (see run()'s own call site), since main.cpp's server heartbeat is
+    // wired through preRenderHook_ above, and a heartbeat that only ever
+    // fires alongside a real GPU frame never fires at all on a server
+    // that never has one.
+    if (subsystems_.renderer != nullptr && !subsystems_.renderer->renderFrame()) {
         std::fprintf(stderr, "GameLoop: renderFrame() reported an unrecoverable error.\n");
     }
 
@@ -94,7 +101,7 @@ void GameLoop::run(RunConfig config) {
     constexpr int kMaxSimStepsPerFrame = 16;
     constexpr int kMaxNetworkStepsPerFrame = 8;
 
-    while (subsystems_.window->pumpEvents()) {
+    while (subsystems_.window == nullptr || subsystems_.window->pumpEvents()) {
         auto frameStart = Clock::now();
         float frameTime = std::chrono::duration<float>(frameStart - previous).count();
         previous = frameStart;
@@ -146,6 +153,12 @@ void GameLoop::run(RunConfig config) {
         // (zero, one, or several after a stall). `frameTime` here is real
         // wall-clock time, consistent with Renderer::renderFrame()'s own
         // real fps measurement (see that function's own comment).
+        //
+        // Called unconditionally (not gated on subsystems_.renderer, which
+        // is real and null for a headless server) -- renderTick() itself
+        // guards the actual renderFrame() call now, so pre/post-render
+        // hooks (main.cpp's own server heartbeat lives in preRenderHook_)
+        // still fire once per frame with no renderer present at all.
         renderTick(frameTime);
 
         // Real frame pacing (Sprint 14's "stable 180 FPS", not just "180
