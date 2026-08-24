@@ -3,16 +3,23 @@
 // actual SQL, the actual token rotation, and the actual Redis TTL logic
 // all behaved.
 import assert from 'node:assert/strict';
+import { exec } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import test, { after, before } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { createApp } from '../src/server.js';
+import { config } from '../src/config.js';
 import { pool, query } from '../src/db.js';
 import { redis, keys } from '../src/redis.js';
 import { setEmailTransport } from '../src/email/mailer.js';
 import { issueJoinTicket, verifyJoinTicket } from '../src/auth/tokens.js';
 import { hashPassword, verifyPassword, validatePasswordStrength } from '../src/auth/passwords.js';
 import { verifyGoogleIdToken, GoogleTokenError } from '../src/auth/google.js';
+
+const testDir = path.dirname(fileURLToPath(import.meta.url));
 
 let server;
 let baseUrl;
@@ -419,6 +426,75 @@ test('a full server is not allocated to', async () => {
   const res = await api('POST', '/v1/sessions/allocate', { body: { game_slug: slug }, token });
   assert.equal(res.status, 503);
   assert.match(res.body.error.message, /full/i);
+});
+
+test('JIT provisioning spins up a real dedicated server when none is alive', async () => {
+  // Real, not mocked: this actually spawns engine/build/src/engine_runtime
+  // as a child process and waits for its real heartbeat. Skips cleanly
+  // (not a failure) when the binary hasn't been built in this checkout --
+  // the same "not configured is a real, honest no-op" convention
+  // provisioner.js itself follows for a deployment with no engine binary
+  // at all.
+  const enginePath = path.resolve(testDir, '../../engine/build/src/engine_runtime');
+  const gamesDir = path.resolve(testDir, '../../games');
+  if (!fs.existsSync(enginePath)) {
+    console.log(`[test] skipping JIT provisioning test -- no built engine_runtime at ${enginePath}`);
+    return;
+  }
+
+  // engine_runtime resolves --game <slug> by slugifying games/DefaultWorld's
+  // real on-disk manifest NAME ("Default World") the exact same way
+  // seed.js does -- so the DB row this test allocates against must carry
+  // that exact slug for the spawned process to find and load it for real.
+  await clearRateLimits();
+  const email = uniqueEmail();
+  const signup = await api('POST', '/v1/auth/signup', { body: { email, password: 'a reasonable passphrase' } });
+  const { rows: users } = await query('SELECT id FROM users WHERE email_lower = $1', [email.toLowerCase()]);
+  const { rows: gameRows } = await query(
+    `INSERT INTO games (slug, title, creator_id, thumbnail_url, published)
+     VALUES ('default-world', 'Default World', $1, '', TRUE)
+     ON CONFLICT (slug) DO UPDATE SET published = TRUE
+     RETURNING id`,
+    [users[0].id],
+  );
+  const gameId = gameRows[0].id;
+  await query(`UPDATE game_servers SET enabled = FALSE WHERE game_id = $1`, [gameId]);
+  const token = signup.body.access_token;
+
+  const originalEngineRuntimePath = config.engineRuntimePath;
+  const originalGamesDir = config.gamesDir;
+  const originalJitApiUrl = config.jitServerApiUrl;
+  config.engineRuntimePath = enginePath;
+  config.gamesDir = gamesDir;
+  config.jitServerApiUrl = baseUrl;
+  try {
+    const res = await api('POST', '/v1/sessions/allocate', { body: { game_slug: 'default-world' }, token });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.server.host, config.jitServerHost);
+    assert.ok(res.body.server.port >= config.jitServerPortRangeStart, 'the allocated port came from the JIT range');
+    assert.ok(res.body.join_ticket, 'a real join ticket was issued for the freshly-provisioned server');
+
+    const { rows: servers } = await query(
+      `SELECT server_key FROM game_servers WHERE game_id = $1 AND enabled = TRUE`,
+      [gameId],
+    );
+    assert.equal(servers.length, 1, 'exactly one real server row was registered by the provisioner');
+    const alive = await redis.get(keys.serverHeartbeat(servers[0].server_key));
+    assert.ok(alive, 'the spawned process really heartbeated on its own');
+  } finally {
+    config.engineRuntimePath = originalEngineRuntimePath;
+    config.gamesDir = originalGamesDir;
+    config.jitServerApiUrl = originalJitApiUrl;
+    // Real cleanup: kill whatever engine_runtime this test spawned so it
+    // doesn't keep running (and heartbeating) after the suite exits.
+    const { rows: toKill } = await query(`SELECT server_key FROM game_servers WHERE game_id = $1`, [gameId]);
+    await query(`UPDATE game_servers SET enabled = FALSE WHERE game_id = $1`, [gameId]);
+    if (toKill.length > 0) {
+      await new Promise((resolve) => {
+        exec(`pkill -f "engine_runtime.*--server-key ${toKill[0].server_key}"`, () => resolve());
+      });
+    }
+  }
 });
 
 test('join tickets are tamper-evident and expire', () => {

@@ -1,9 +1,31 @@
 #include "core/LocalGameDirectory.hpp"
 
+#include <cctype>
 #include <filesystem>
 #include <system_error>
 
 namespace engine::core {
+
+std::string slugifyGameName(const std::string& name) {
+    std::string result;
+    result.reserve(name.size());
+    bool inDashRun = false;
+    for (unsigned char c : name) {
+        char lower = static_cast<char>(std::tolower(c));
+        bool isAlnum = (lower >= 'a' && lower <= 'z') || (lower >= '0' && lower <= '9');
+        if (isAlnum) {
+            result.push_back(lower);
+            inDashRun = false;
+        } else if (!inDashRun) {
+            result.push_back('-');
+            inDashRun = true;
+        }
+    }
+    size_t start = result.find_first_not_of('-');
+    if (start == std::string::npos) return {};
+    size_t end = result.find_last_not_of('-');
+    return result.substr(start, end - start + 1);
+}
 
 std::vector<DiscoveredGame> scanLocalGameDirectory(const std::string& directoryPath) {
     std::vector<DiscoveredGame> discovered;
@@ -28,6 +50,15 @@ std::vector<DiscoveredGame> scanLocalGameDirectory(const std::string& directoryP
     }
 
     return discovered;
+}
+
+std::optional<DiscoveredGame> findGameBySlug(const std::string& directoryPath, const std::string& slug) {
+    for (DiscoveredGame& game : scanLocalGameDirectory(directoryPath)) {
+        if (game.parseSucceeded && slugifyGameName(game.manifest.name) == slug) {
+            return game;
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace engine::core

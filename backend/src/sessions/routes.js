@@ -6,6 +6,7 @@ import { asyncRoute, badRequest, notFound, serviceUnavailable } from '../errors.
 import { redis, keys } from '../redis.js';
 import { requireAuth } from '../middleware/auth.js';
 import { issueJoinTicket, verifyJoinTicket } from '../auth/tokens.js';
+import { provisionServerForGame } from './provisioner.js';
 
 export const sessionRouter = express.Router();
 
@@ -73,6 +74,20 @@ async function recomputeGamePlayerCount(gameId) {
   return total;
 }
 
+// Shared between the normal allocate path and its retry right after a
+// real on-demand provision -- "registered, and alive right now" is the
+// exact same real question both times.
+async function fetchLiveServers(gameId) {
+  const { rows: servers } = await query(
+    `SELECT server_key, host, port, region, max_players
+       FROM game_servers WHERE game_id = $1 AND enabled = TRUE`,
+    [gameId],
+  );
+  if (servers.length === 0) return [];
+  const liveFlags = await redis.mget(servers.map((s) => keys.serverHeartbeat(s.server_key)));
+  return servers.filter((_, i) => liveFlags[i] !== null);
+}
+
 // --- allocation ------------------------------------------------------------
 
 sessionRouter.post(
@@ -86,16 +101,17 @@ sessionRouter.post(
     if (games.length === 0) throw notFound('No such published game.');
     const game = games[0];
 
-    const { rows: servers } = await query(
-      `SELECT server_key, host, port, region, max_players
-         FROM game_servers WHERE game_id = $1 AND enabled = TRUE`,
-      [game.id],
-    );
-    if (servers.length === 0) throw serviceUnavailable('No servers are registered for this game yet.');
-
-    // Only consider servers that are actually alive right now.
-    const liveFlags = await redis.mget(servers.map((s) => keys.serverHeartbeat(s.server_key)));
-    const live = servers.filter((_, i) => liveFlags[i] !== null);
+    let live = await fetchLiveServers(game.id);
+    if (live.length === 0) {
+      // Roblox-style on-demand hosting: nothing alive right now, so try
+      // to spin one up for real before giving up. A real, honest no-op
+      // (falls straight through to the same 503 below) wherever JIT
+      // provisioning isn't configured for this deployment -- see
+      // provisionServerForGame()'s own comment.
+      if (await provisionServerForGame(game)) {
+        live = await fetchLiveServers(game.id);
+      }
+    }
     if (live.length === 0) throw serviceUnavailable('No servers for this game are online right now.');
 
     const playerValues = await redis.mget(live.map((s) => keys.serverPlayers(s.server_key)));

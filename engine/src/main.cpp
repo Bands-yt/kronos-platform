@@ -8,9 +8,11 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include "core/Application.hpp"
 #include "core/CrashReporter.hpp"
@@ -19,7 +21,10 @@
 #include "core/Economy.hpp"
 #include "core/Interactable.hpp"
 #include "core/Inventory.hpp"
+#include "core/KronosApi.hpp"
+#include "core/KronosClientConfig.hpp"
 #include "core/KronosLaunchUri.hpp"
+#include "core/LocalGameDirectory.hpp"
 #include "core/Logger.hpp"
 #include "core/Mesh.hpp"
 #include "core/Navigation.hpp"
@@ -29,6 +34,7 @@
 #include "core/Terrain.hpp"
 #include "core/UpgradeSystem.hpp"
 #include "core/WorldProp.hpp"
+#include "runtime/GameLoader.hpp"
 #include "runtime/GameLoop.hpp"
 #include "runtime/RuntimeShell.hpp"
 #include "housedemo/HouseDemoScene.hpp"
@@ -143,6 +149,21 @@ int main(int argc, char** argv) {
     // along in the URI). Empty when the URI carried none, which is a
     // real, honest state -- see below.
     std::string kronosLaunchHandoffCode;
+    // Kronos ("JIT server provisioning"): when the backend spins up a
+    // dedicated server on demand, it launches this same binary with
+    // `--server <port> --game <slug> --server-key <key>` -- `<slug>`
+    // says which real game's project/scene to host (see
+    // core::findGameBySlug()'s own comment for why this has to be
+    // re-derived rather than looked up: no slug is persisted on disk),
+    // and `<key>` is the real, backend-minted game_servers.server_key
+    // this process must report against every heartbeat so the backend
+    // can tell this specific spawned process apart from any other.
+    // Both empty is a real, honest state -- every existing `--server`
+    // invocation with neither flag keeps hosting the generic bring-up
+    // scene exactly as before, unregistered (matches every real
+    // invocation prior to this feature).
+    std::string requestedGameSlug;
+    std::string serverKeyArg;
     auto applyKronosLaunchUri = [&](const std::string& rawUri) {
         engine::core::KronosLaunchRequest parsed;
         if (engine::core::parseKronosLaunchUri(rawUri, parsed)) {
@@ -178,6 +199,10 @@ int main(int argc, char** argv) {
             networkConfig.mode = engine::net::NetworkMode::Client;
             if (i + 1 < argc) networkConfig.serverAddress = argv[++i];
             if (i + 1 < argc) networkConfig.port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        } else if (arg == "--game" && i + 1 < argc) {
+            requestedGameSlug = argv[++i];
+        } else if (arg == "--server-key" && i + 1 < argc) {
+            serverKeyArg = argv[++i];
         } else if (arg == "--stress" && i + 1 < argc) {
             // Sprint 11 task 4's "Network Stress Test mode with synthetic
             // players" -- server-only (see NetworkSession::startStressTest()'s
@@ -263,6 +288,27 @@ int main(int argc, char** argv) {
             // flag -- confirmed by real testing (see
             // installer/src/PlatformIntegration.cpp's Exec= comment).
             applyKronosLaunchUri(arg);
+        }
+    }
+
+    // Kronos ("JIT server provisioning"): resolved once, up front, so
+    // both the pre-startNetworking() gameName decision below and the
+    // post-startNetworking() real scene load (right before app.run())
+    // agree on the exact same game -- see requestedGameSlug's own
+    // declaration comment above. Only meaningful for `--server`; a
+    // slug arriving alongside any other mode is real, honest, and
+    // simply unused (those modes already load their own hardcoded
+    // content and return before reaching any of this).
+    std::optional<engine::core::DiscoveredGame> requestedGame;
+    if (!requestedGameSlug.empty()) {
+        std::string gamesDir =
+            engine::core::resolveResourceDir(engine::core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+        requestedGame = engine::core::findGameBySlug(gamesDir, requestedGameSlug);
+        if (!requestedGame.has_value()) {
+            std::fprintf(stderr,
+                          "engine_runtime: no local game found for slug \"%s\" in \"%s\" -- hosting the generic "
+                          "bring-up scene instead.\n",
+                          requestedGameSlug.c_str(), gamesDir.c_str());
         }
     }
 
@@ -1514,6 +1560,11 @@ int main(int argc, char** argv) {
     else if (miningSimMode) networkConfig.gameName = "Mining Simulator";
     else if (houseDemoMode) networkConfig.gameName = "House Demo";
     else if (renderShowcaseMode) networkConfig.gameName = "Render Showcase";
+    // Kronos ("JIT server provisioning"): a real answer now exists for
+    // this case too -- requestedGame was resolved above, before this
+    // point, specifically so this real name (not the slug, not a
+    // fabricated placeholder) is what gets advertised.
+    else if (requestedGame.has_value()) networkConfig.gameName = requestedGame->manifest.name;
     else networkConfig.gameName = "Default World";
 
     if (networkConfig.mode != engine::net::NetworkMode::Offline) {
@@ -1526,6 +1577,44 @@ int main(int argc, char** argv) {
         if (stressTestPlayerCount > 0) {
             app.networkSession().startStressTest(stressTestPlayerCount, 20.0f);
         }
+    }
+
+    // Kronos ("JIT server provisioning"): a real, periodic liveness
+    // report to the backend -- only when this process was actually
+    // spawned by the backend's own provisioner (a real --server-key
+    // came along), so a plain manual `--server` test launch (every
+    // invocation prior to this feature) keeps behaving exactly as
+    // before, unregistered. Uses GameLoop's PreRenderHook, the one hook
+    // slot Application::initialize() itself never claims (see its
+    // sibling PostRenderHook, claimed by the real fps/GPU metrics log
+    // just below) -- safe here specifically because homeScreenMode
+    // (the only other real claimant of PreRenderHook, for the shell's
+    // own tick()) is mutually exclusive with `--server` by construction.
+    std::thread heartbeatThread;
+    if (networkConfig.mode == engine::net::NetworkMode::Server && !serverKeyArg.empty()) {
+        engine::core::KronosClientConfig clientConfig =
+            engine::core::loadKronosClientConfig(engine::core::executableDirectory());
+        engine::core::logInfo("Kronos", "server heartbeat backend: %s (from %s)", clientConfig.apiUrl.c_str(),
+                               clientConfig.source.c_str());
+        // Real margin under config.serverHeartbeatTtlSeconds's own
+        // real, current 30s default (backend/src/config.js) -- a
+        // heartbeat every 10s means two consecutive drops in a row,
+        // not one single slow response, are what it actually takes for
+        // this server to look dead to a fresh allocation request.
+        app.gameLoop()->setPreRenderHook(
+            [&app, &heartbeatThread, baseUrl = clientConfig.apiUrl, serverKey = serverKeyArg,
+             accumulatorSeconds = 0.0f](float dt) mutable {
+                accumulatorSeconds += dt;
+                if (accumulatorSeconds < 10.0f) return;
+                accumulatorSeconds = 0.0f;
+                size_t players = app.networkSession().connectedPeerCount();
+                if (heartbeatThread.joinable()) heartbeatThread.join();
+                heartbeatThread = std::thread([baseUrl, serverKey, players]() {
+                    if (!engine::core::sendServerHeartbeat(baseUrl, serverKey, players)) {
+                        std::fprintf(stderr, "engine_runtime: server heartbeat to \"%s\" failed.\n", baseUrl.c_str());
+                    }
+                });
+            });
     }
 
     // Real geometry, uploaded once via VMA-backed vertex/index buffers
@@ -2155,8 +2244,37 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Kronos ("JIT server provisioning"): a `--server --game <slug>`
+    // launch replaces the generic bring-up scene built above with the
+    // real requested game's own project/scene, reusing the exact same
+    // teardown-and-rebuild runtime::loadGame() the interactive Home
+    // Screen's own "pick a game" flow already relies on (see that
+    // function's own header comment) -- not reinvented here. Safe to
+    // run this late, after the bring-up scene above already built its
+    // own throwaway ground-plane/box/BringUpScript content: this all
+    // happens synchronously, before app.run()'s render loop starts and
+    // before any client could possibly have connected, so that
+    // throwaway content is never actually seen by anyone.
+    if (networkConfig.mode == engine::net::NetworkMode::Server && requestedGame.has_value()) {
+        if (engine::runtime::loadGame(app, *requestedGame)) {
+            std::fprintf(stdout, "engine_runtime: dedicated server now hosting \"%s\" (slug \"%s\").\n",
+                         requestedGame->manifest.name.c_str(), requestedGameSlug.c_str());
+        } else {
+            std::fprintf(stderr,
+                          "engine_runtime: failed to load requested game slug \"%s\" -- hosting the generic "
+                          "bring-up scene instead.\n",
+                          requestedGameSlug.c_str());
+        }
+    }
+
     app.run();
     terrain.destroy();
+    // Real, final join -- mirrors shell.reset() below's own "tear down
+    // anything that might still touch app before app.shutdown() runs"
+    // discipline. heartbeatThread is default-constructed (not joinable)
+    // whenever this process was never given a --server-key, so this is
+    // a real, honest no-op in every other launch mode.
+    if (heartbeatThread.joinable()) heartbeatThread.join();
     // The shell must be destroyed BEFORE app.shutdown(): ~RuntimeShell
     // runs ImGui_ImplVulkan_Shutdown() and destroys its descriptor pool
     // against app's device, and RuntimeShell::shutdown() states that

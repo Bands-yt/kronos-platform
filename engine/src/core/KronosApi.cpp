@@ -140,6 +140,42 @@ bool verifyJoinTicketWithKronos(const std::string& baseUrl, const std::string& s
     return true;
 }
 
+bool sendServerHeartbeat(const std::string& baseUrl, const std::string& serverKey, size_t playerCount) {
+    CURL* curl = curl_easy_init();
+    if (curl == nullptr) return false;
+
+    nlohmann::json requestBody{{"players", playerCount}};
+    std::string payload = requestBody.dump();
+    std::string responseBody;
+    std::string url = baseUrl + "/v1/sessions/servers/" + serverKey + "/heartbeat";
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(payload.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "kronos-gameserver");
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    // See verifyJoinTicketWithKronos's own comment on why this is safe
+    // to set unconditionally on every platform.
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+
+    CURLcode code = curl_easy_perform(curl);
+    long status = 0;
+    if (code == CURLE_OK) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    return code == CURLE_OK && status == 200;
+}
+
 KronosApi::KronosApi(std::string baseUrl) : baseUrl_(std::move(baseUrl)) {}
 
 void KronosApi::setBaseUrl(std::string baseUrl) {

@@ -70,4 +70,40 @@ export const config = {
   serverHeartbeatTtlSeconds: Number(process.env.SERVER_HEARTBEAT_TTL || 30),
 
   publicBaseUrl: process.env.PUBLIC_BASE_URL || 'http://localhost:8080',
+
+  // Roblox-style on-demand ("JIT") game server provisioning: when
+  // /v1/sessions/allocate finds zero alive servers for a published
+  // game, the backend spawns a real `engine_runtime --server` process
+  // itself instead of just 503ing. engineRuntimePath is deliberately
+  // NOT required(...): most deployments of this Node service (including
+  // every existing docker-compose.prod.yml `api` container, which is
+  // Node-only and has no C++ build in it at all) have no engine binary
+  // anywhere on their filesystem, and that is a real, valid, honest
+  // configuration -- provisioning just stays off (see
+  // provisioner.js's own comment), same as every other real-but-
+  // optional integration in this file (googleClientId, etc). Set both
+  // on a host where the built binary and games/ checkout actually live
+  // alongside this service to turn it on.
+  engineRuntimePath: process.env.ENGINE_RUNTIME_PATH || '',
+  gamesDir: process.env.KRONOS_GAMES_DIR || '',
+  // The URL a JIT-spawned server (running on this same host, see
+  // provisioner.js) should use to reach this backend for its own
+  // heartbeat. Deliberately separate from publicBaseUrl: that field is
+  // for user-facing links (e.g. email verification) and may point
+  // through a reverse proxy/external domain that a purely local process
+  // has no real reason to round-trip through. Falls back to
+  // publicBaseUrl when unset, which is still a real, correct answer
+  // (just not the fastest one) for a deployment that hasn't configured
+  // this separately.
+  jitServerApiUrl: process.env.JIT_SERVER_API_URL || '',
+  jitServerHost: process.env.JIT_SERVER_HOST || '127.0.0.1',
+  jitServerPortRangeStart: Number(process.env.JIT_SERVER_PORT_RANGE_START || 30000),
+  jitServerPortRangeEnd: Number(process.env.JIT_SERVER_PORT_RANGE_END || 30999),
+  // How long allocate() waits for a freshly-spawned server's first real
+  // heartbeat before giving up on it. engine_runtime heartbeats every
+  // ~10s once networking + the requested game's real scene have both
+  // loaded (see main.cpp's own heartbeat-hook comment); this leaves
+  // real headroom for a cold Vulkan/physics/scripting startup on top of
+  // that, observed in practice to land well under this.
+  jitSpawnTimeoutSeconds: Number(process.env.JIT_SPAWN_TIMEOUT || 45),
 };

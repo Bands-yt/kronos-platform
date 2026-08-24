@@ -32307,8 +32307,39 @@ void testKronosLaunchUriParsing() {
     check(!engine::core::parseKronosLaunchUri("kronos:/", untouched), "a truncated scheme is refused, not a crash");
 }
 
+void testGameSlugResolution() {
+    // Must match backend/scripts/seed.js's slugify(name) character-for-
+    // character -- see slugifyGameName()'s own header comment for why.
+    check(engine::core::slugifyGameName("Default World") == "default-world", "spaces collapse to a single dash");
+    check(engine::core::slugifyGameName("Sky Garden") == "sky-garden", "a second real game name slugifies correctly");
+    check(engine::core::slugifyGameName("  Leading/Trailing!!  ") == "leading-trailing",
+          "leading/trailing punctuation and whitespace are trimmed, not left as dashes");
+    check(engine::core::slugifyGameName("A---B") == "a-b", "a run of non-alphanumeric characters collapses to ONE dash");
+    check(engine::core::slugifyGameName("ALLCAPS") == "allcaps", "the result is always lowercase");
+    check(engine::core::slugifyGameName("123") == "123", "a purely numeric name is a valid slug");
+    check(engine::core::slugifyGameName("!!!") == "", "a name with no alphanumeric characters at all slugifies to empty");
+
+    // Real, on-disk resolution against this checkout's actual games/
+    // directory -- the same real content the JIT-provisioned dedicated
+    // server itself resolves --game <slug> against (see main.cpp).
+    std::string gamesDir = engine::core::resolveResourceDir(engine::core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+
+    std::optional<engine::core::DiscoveredGame> defaultWorld = engine::core::findGameBySlug(gamesDir, "default-world");
+    check(defaultWorld.has_value(), "the real games/DefaultWorld directory resolves by its real slug");
+    if (defaultWorld.has_value()) {
+        check(defaultWorld->manifest.name == "Default World", "the resolved manifest is really DefaultWorld's own");
+    }
+
+    std::optional<engine::core::DiscoveredGame> skyGarden = engine::core::findGameBySlug(gamesDir, "sky-garden");
+    check(skyGarden.has_value(), "the real games/SkyGarden directory resolves by its real slug");
+
+    check(!engine::core::findGameBySlug(gamesDir, "no-such-game").has_value(),
+          "a slug with no matching on-disk game is a real, honest empty result, not a crash or a wrong match");
+}
+
 int main() {
     testKronosLaunchUriParsing();
+    testGameSlugResolution();
     testHttpWorkerPool();
     testGeminiModerationClient();
     testTextureInspectionEncoding();

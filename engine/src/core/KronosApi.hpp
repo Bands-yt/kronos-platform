@@ -173,6 +173,20 @@ struct UserSearchResponse {
 [[nodiscard]] bool verifyJoinTicketWithKronos(const std::string& baseUrl, const std::string& serverKey,
                                                const std::string& ticket, uint64_t& outUserId);
 
+// Kronos ("JIT server provisioning"): a dedicated `--server` process's
+// own real liveness/player-count report to the backend -- no user
+// session involved, so this is the same "no KronosApi instance, no
+// auth header" free-function shape as verifyJoinTicketWithKronos above,
+// not a KronosApi method. Matches POST /v1/sessions/servers/:serverKey/
+// heartbeat exactly, which the backend deliberately leaves unauthenticated
+// (see backend/src/sessions/routes.js's own heartbeat route comment) --
+// a freshly-spawned server process has no user bearer token to send.
+// Best effort by design, like the client's own presence heartbeat: a
+// dropped heartbeat just means this server's Redis liveness key expires
+// a little early and the backend stops allocating new players to it
+// until the next successful call, which is self-correcting.
+[[nodiscard]] bool sendServerHeartbeat(const std::string& baseUrl, const std::string& serverKey, size_t playerCount);
+
 class KronosApi {
 public:
     explicit KronosApi(std::string baseUrl);
