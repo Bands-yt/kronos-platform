@@ -939,6 +939,34 @@ AvatarConfig KronosApi::saveAvatarConfig(const AvatarConfig& config) {
     return parseAvatarConfig(response.body);
 }
 
+PackageInfo KronosApi::fetchGamePackageInfo(const std::string& slug) {
+    PackageInfo result;
+    HttpResponse response = requestWithRefresh("GET", "/v1/catalog/games/" + slug + "/package", {});
+    if (!response.transportOk) {
+        result.error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return result;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        result.error = extractError(response.body, response.status);
+        return result;
+    }
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    if (parsed.is_discarded()) {
+        result.error = "The Kronos service returned package info this build could not parse.";
+        return result;
+    }
+    result.sha256 = jsonStringOr(parsed, "sha256");
+    auto sizeNode = parsed.find("size_bytes");
+    result.sizeBytes = (sizeNode != parsed.end() && sizeNode->is_number()) ? sizeNode->get<uint64_t>() : 0;
+    result.downloadUrl = jsonStringOr(parsed, "download_url");
+    if (result.sha256.empty() || result.downloadUrl.empty()) {
+        result.error = "The Kronos service reported no usable package for this game.";
+        return result;
+    }
+    result.success = true;
+    return result;
+}
+
 PublishResult KronosApi::publishGame(const PublishRequest& request) {
     PublishResult result;
 

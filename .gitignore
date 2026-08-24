@@ -21,3 +21,8 @@ game_play_log.playlog
 transaction_log.transactions
 telemetry.log
 *_launch.log
+
+# Real, per-machine downloaded/extracted package cache (Dynamic Asset
+# Streaming) -- content-addressed local state, never source.
+games/.package_cache/
+.package_cache/

@@ -40,17 +40,20 @@ struct ArchiveFileEntry {
 // The real, one-click packaging entry point: saves `package` to a
 // temporary real directory (reusing WorldPackage::saveToDirectory()'s
 // already-real scene.txt/metadata.json/package.json serialization
-// unchanged), writes a real `assets_manifest.txt` (one relative path per
-// line) from `referencedAssetPaths`, compresses every real file in that
-// directory into `archivePath`, then removes the temporary directory.
-//
-// Real, stated scope boundary: only the *manifest* (a list of relative
-// paths) is bundled, not the referenced asset files' own binary
-// content -- no asset-copy pipeline exists anywhere in this codebase yet
-// (see PublishValidation.hpp's own collectReferencedAssetPaths()
-// comment), so bundling actual texture/model bytes here would be a
-// separate, larger, real feature, not something to fake with an empty
-// placeholder.
+// unchanged), then for each of `referencedAssetPaths` (relative to
+// `assetRootDirectory` -- the real project directory these paths were
+// validated as relative to, see PublishValidation.hpp's
+// validateAssetPathsAreRelative()) reads the real file's bytes and
+// bundles them, content-addressed by their own SHA-256 (so two
+// different relative paths that happen to reference byte-identical
+// content are only ever stored once). `assets_manifest.txt` records
+// both columns -- `<original relative path>\t<archived content-
+// addressed filename>` -- so extractWorldPackageArchive() below can
+// restore the original project layout on unpack. A referenced path
+// that doesn't actually exist on disk (a broken/stale reference) is
+// still listed, with an empty second column -- a real, honest gap
+// noted in the manifest, not a silent skip or a hard failure of the
+// whole export.
 //
 // `thumbnailSourcePath` (optional, empty = none) is a real, already-
 // captured image file on disk (e.g. from ThumbnailCapture.hpp's
@@ -59,10 +62,34 @@ struct ArchiveFileEntry {
 // caller is responsible for having set `package.metadata.thumbnailPath`
 // to that same fixed name beforehand, so metadata.json inside the
 // archive correctly references it.
-[[nodiscard]] bool writeWorldPackageArchive(const WorldPackage& package,
+[[nodiscard]] bool writeWorldPackageArchive(const WorldPackage& package, const std::string& assetRootDirectory,
                                              const std::vector<std::string>& referencedAssetPaths,
                                              const std::string& archivePath,
                                              const std::string& thumbnailSourcePath = std::string());
+
+// The real, first consumer of readArchive(): unpacks `archivePath` into
+// `outputDirectory` (created if it doesn't exist), restoring
+// scene.txt/metadata.json/package.json[/thumbnail] at the directory's
+// own root, and every bundled asset back at its ORIGINAL relative path
+// (read from assets_manifest.txt's second column) -- creating whatever
+// subdirectories that path needs, even though the archive's own
+// internal storage is flat. Real, honest failure (false, nothing
+// partially written left inconsistent) if the archive itself is
+// unreadable/corrupt; an individual asset with an empty manifest
+// column (never found at export time) is simply not written back,
+// which is the same honest gap the manifest already recorded, not a
+// new failure invented here.
+[[nodiscard]] bool extractWorldPackageArchive(const std::string& archivePath, const std::string& outputDirectory);
+
+// The real SHA-256 (hex-encoded) of the whole archive FILE as written
+// to disk -- what a caller sends the backend as scene_sha256 for
+// integrity verification (see catalog/routes.js's own comment) and
+// what content-addresses the archive's own S3 object key. Deliberately
+// a distinct, separate real hash from the per-asset content-addressing
+// inside the archive above -- one is "does this whole uploaded file
+// match what the creator actually built," the other is "do these two
+// asset references happen to be the same bytes."
+[[nodiscard]] std::string archiveSha256Hex(const std::string& archivePath);
 
 [[nodiscard]] std::string thumbnailFileName();
 

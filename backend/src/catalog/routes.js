@@ -1,10 +1,14 @@
 import express from 'express';
 
+import { config } from '../config.js';
 import { query } from '../db.js';
-import { asyncRoute, badRequest, conflict, forbidden, notFound } from '../errors.js';
+import { asyncRoute, badRequest, conflict, forbidden, notFound, serviceUnavailable } from '../errors.js';
 import { redis, keys } from '../redis.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
+import {
+  s3Configured, packageObjectKey, createPresignedUploadUrl, createPresignedDownloadUrl, headObject, verifyObjectHash,
+} from '../storage/s3.js';
 
 export const catalogRouter = express.Router();
 
@@ -150,6 +154,23 @@ catalogRouter.post(
     if (thumbnailUrl && !/^https?:\/\//i.test(thumbnailUrl)) {
       throw badRequest('thumbnail_url must be an http(s) URL.');
     }
+    // A real, honest object existence check -- but only when object
+    // storage is actually configured (see s3Configured()'s own "not
+    // configured is a real no-op" convention). This route deliberately
+    // does NOT do the full re-hash verifyObjectHash() does -- that real,
+    // stronger verification already ran once at package/confirm time
+    // (see that route below); a hash reaching this route has either
+    // already been through that, or points at nothing, which this HEAD
+    // check alone is enough to catch.
+    let packageObjectKeyForSlug = null;
+    let packageSizeBytes = null;
+    if (sceneHash && s3Configured()) {
+      const key = packageObjectKey(sceneHash);
+      const head = await headObject(key);
+      if (!head.exists) throw badRequest('scene_sha256 does not match any uploaded package -- upload it first.');
+      packageObjectKeyForSlug = key;
+      packageSizeBytes = head.sizeBytes;
+    }
 
     // Guests cannot publish -- enforced server-side, like every other
     // guest restriction.
@@ -169,20 +190,127 @@ catalogRouter.post(
       }
       const updated = await query(
         `UPDATE games
-            SET title = $2, description = $3, thumbnail_url = $4, published = TRUE, updated_at = NOW()
+            SET title = $2, description = $3, thumbnail_url = $4, published = TRUE, updated_at = NOW(),
+                scene_sha256 = COALESCE($6, scene_sha256),
+                package_object_key = COALESCE($7, package_object_key),
+                package_size_bytes = COALESCE($8, package_size_bytes),
+                package_uploaded_at = CASE WHEN $6::text IS NOT NULL THEN NOW() ELSE package_uploaded_at END
           WHERE id = $1 AND creator_id = $5
           RETURNING id, slug`,
-        [existing.rows[0].id, title, description, thumbnailUrl, req.user.id],
+        [existing.rows[0].id, title, description, thumbnailUrl, req.user.id,
+         sceneHash || null, packageObjectKeyForSlug, packageSizeBytes],
       );
       return res.json({ status: 'updated', game: { id: String(updated.rows[0].id), slug: updated.rows[0].slug } });
     }
 
     const inserted = await query(
-      `INSERT INTO games (slug, title, description, creator_id, thumbnail_url, published)
-       VALUES ($1, $2, $3, $4, $5, TRUE)
+      `INSERT INTO games (slug, title, description, creator_id, thumbnail_url, published,
+                           scene_sha256, package_object_key, package_size_bytes, package_uploaded_at)
+       VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, $8, CASE WHEN $6::text IS NOT NULL THEN NOW() ELSE NULL END)
        RETURNING id, slug`,
-      [slug, title, description, req.user.id, thumbnailUrl],
+      [slug, title, description, req.user.id, thumbnailUrl, sceneHash || null, packageObjectKeyForSlug, packageSizeBytes],
     );
     res.status(201).json({ status: 'published', game: { id: String(inserted.rows[0].id), slug: inserted.rows[0].slug } });
+  }),
+);
+
+// --- Dynamic Asset Streaming: package upload/download -----------------------
+//
+// A game's real .kronos archive lives content-addressed in S3
+// (packages/<sha256>.kronos, see storage/s3.js's own comment), never in
+// Postgres. Ownership is checked against the SAME games row /publish
+// already protects -- a slug must exist and be owned by the caller
+// before its package can be uploaded to, matching the real, intended
+// order: publish metadata first (creating the row), then upload/confirm
+// the package against that same slug.
+async function requireOwnedGame(slug, userId) {
+  const { rows } = await query(`SELECT id, creator_id FROM games WHERE slug = $1`, [slug]);
+  if (rows.length === 0) throw notFound('No such game -- publish it first.');
+  if (String(rows[0].creator_id) !== String(userId)) throw forbidden('You do not own this game.');
+  return rows[0];
+}
+
+catalogRouter.post(
+  '/games/:slug/package/upload-url',
+  requireAuth,
+  rateLimit({ bucket: 'packageupload', limit: 30, windowSeconds: 3600 }),
+  asyncRoute(async (req, res) => {
+    if (!s3Configured()) throw serviceUnavailable('Asset storage is not configured on this deployment.');
+    await requireOwnedGame(req.params.slug, req.user.id);
+
+    const sha256 = String(req.body?.sha256 || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw badRequest('sha256 must be a hex SHA-256 digest.');
+    const sizeBytes = Number(req.body?.size_bytes);
+    if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) throw badRequest('size_bytes must be a positive number.');
+    if (sizeBytes > config.packageMaxSizeBytes) {
+      throw badRequest(`Package exceeds the ${config.packageMaxSizeBytes}-byte size limit.`);
+    }
+
+    const key = packageObjectKey(sha256);
+    const uploadUrl = await createPresignedUploadUrl(key);
+    res.json({ upload_url: uploadUrl, object_key: key, expires_in: config.packageUploadTtlSeconds });
+  }),
+);
+
+catalogRouter.post(
+  '/games/:slug/package/confirm',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (!s3Configured()) throw serviceUnavailable('Asset storage is not configured on this deployment.');
+    const game = await requireOwnedGame(req.params.slug, req.user.id);
+
+    const sha256 = String(req.body?.sha256 || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw badRequest('sha256 must be a hex SHA-256 digest.');
+    const key = packageObjectKey(sha256);
+
+    // Real, streamed, server-side re-hash of the actual uploaded bytes
+    // -- never trusts the client's own claim, and never trusts the
+    // content-addressed key alone (a key names what SHOULD be there,
+    // not what really is). See storage/s3.js's own header comment on
+    // why this is a full re-read rather than relying on a presigned-
+    // checksum feature.
+    const head = await headObject(key);
+    if (!head.exists) throw notFound('No package was uploaded for that hash.');
+    if (head.sizeBytes > config.packageMaxSizeBytes) {
+      throw badRequest(`Uploaded package exceeds the ${config.packageMaxSizeBytes}-byte size limit.`);
+    }
+    const verified = await verifyObjectHash(key, sha256);
+    if (!verified.matches) {
+      throw badRequest('The uploaded package\'s real content does not match the declared sha256.');
+    }
+
+    await query(
+      `UPDATE games
+          SET scene_sha256 = $2, package_object_key = $3, package_size_bytes = $4, package_uploaded_at = NOW(),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [game.id, sha256, key, verified.sizeBytes],
+    );
+    res.json({ status: 'confirmed', sha256, size_bytes: verified.sizeBytes });
+  }),
+);
+
+catalogRouter.get(
+  '/games/:slug/package',
+  optionalAuth,
+  asyncRoute(async (req, res) => {
+    const { rows } = await query(
+      `SELECT scene_sha256, package_object_key, package_size_bytes, package_uploaded_at
+         FROM games WHERE slug = $1 AND published = TRUE`,
+      [req.params.slug],
+    );
+    if (rows.length === 0) throw notFound('No such published game.');
+    const g = rows[0];
+    if (!g.package_object_key) throw notFound('This game has no uploaded package yet.');
+    if (!s3Configured()) throw serviceUnavailable('Asset storage is not configured on this deployment.');
+
+    const downloadUrl = await createPresignedDownloadUrl(g.package_object_key);
+    res.json({
+      sha256: g.scene_sha256,
+      size_bytes: g.package_size_bytes,
+      uploaded_at: g.package_uploaded_at,
+      download_url: downloadUrl,
+      expires_in: config.s3PublicBaseUrl ? null : config.packageDownloadTtlSeconds,
+    });
   }),
 );

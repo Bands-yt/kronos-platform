@@ -291,6 +291,7 @@ add_library(engine_core STATIC
     publishing/PublishValidation.cpp
     publishing/WorldPackage.cpp
     publishing/PackageArchive.cpp
+    publishing/AssetStreamingClient.cpp
     publishing/WorldRegistry.cpp
     publishing/ThumbnailCapture.cpp
 

@@ -167,6 +167,20 @@ struct AvatarConfig {
     std::string error;
 };
 
+// Kronos ("Dynamic Asset Streaming"): a published game's real package
+// location, from GET /v1/catalog/games/:slug/package. `downloadUrl` is
+// either a real presigned S3 GET (short-lived, see the backend's own
+// packageDownloadTtlSeconds) or a direct, unsigned CDN URL when the
+// deployment has one configured -- either way, just fetch it, no
+// further auth needed.
+struct PackageInfo {
+    bool success = false;
+    std::string sha256;
+    uint64_t sizeBytes = 0;
+    std::string downloadUrl;
+    std::string error;
+};
+
 struct PublishRequest {
     std::string slug;
     std::string title;
@@ -350,6 +364,11 @@ public:
 
     // --- publishing --------------------------------------------------------
     [[nodiscard]] PublishResult publishGame(const PublishRequest& request);
+    // GET /v1/catalog/games/:slug/package -- public, no auth required
+    // (matches the catalogue's own browsability). Real, honest failure
+    // (success=false) when the game has no uploaded package yet, same
+    // as any other "nothing real to report" case elsewhere in this file.
+    [[nodiscard]] PackageInfo fetchGamePackageInfo(const std::string& slug);
 
 private:
     struct HttpResponse {

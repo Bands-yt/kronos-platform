@@ -106,4 +106,44 @@ export const config = {
   // real headroom for a cold Vulkan/physics/scripting startup on top of
   // that, observed in practice to land well under this.
   jitSpawnTimeoutSeconds: Number(process.env.JIT_SPAWN_TIMEOUT || 45),
+
+  // Dynamic Asset Streaming: S3-compatible object storage for a
+  // published game's real .kronos package archive. Deliberately NOT
+  // required(...), same "not configured is a real, honest no-op"
+  // convention engineRuntimePath already established -- most
+  // deployments of this Node service, and every test run in this
+  // sandbox unless explicitly pointed at a real bucket, have no S3
+  // credentials at all, and that is a real, valid state: the package
+  // upload/download routes just answer 503 rather than crashing.
+  s3Bucket: process.env.S3_BUCKET || '',
+  s3Region: process.env.S3_REGION || 'us-east-1',
+  // Empty means "real AWS S3" (the SDK's own default endpoint
+  // resolution). Non-empty points at any S3-compatible service --
+  // MinIO, Cloudflare R2, Backblaze B2 -- which is also exactly how
+  // this gets tested for real in this sandbox with no real AWS account.
+  s3Endpoint: process.env.S3_ENDPOINT || '',
+  s3AccessKeyId: process.env.S3_ACCESS_KEY_ID || '',
+  s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY || '',
+  // Path-style addressing (https://host/bucket/key) rather than
+  // virtual-hosted-style (https://bucket.host/key) -- real AWS S3
+  // supports both, but most self-hosted S3-compatible services (MinIO
+  // included) only support path-style, and virtual-hosted-style against
+  // one of those just fails DNS resolution.
+  s3ForcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+  // Optional CDN in front of the bucket -- when set, download URLs are
+  // real, direct, unsigned CDN URLs instead of a presigned S3 GET
+  // (a public CDN needs no per-request signature; presigning one would
+  // just be a URL nobody ever needed to expire).
+  s3PublicBaseUrl: (process.env.S3_PUBLIC_BASE_URL || '').replace(/\/+$/, ''),
+
+  // Long enough for a real multi-hundred-MB package to actually finish
+  // uploading over a real creator's real upload bandwidth, short enough
+  // that a leaked presigned URL is not a standing liability.
+  packageUploadTtlSeconds: Number(process.env.PACKAGE_UPLOAD_TTL || 300),
+  packageDownloadTtlSeconds: Number(process.env.PACKAGE_DOWNLOAD_TTL || 3600),
+  // A real sanity bound, not a product decision about how big a Kronos
+  // world is allowed to be -- just cheap insurance against a client
+  // (buggy or malicious) declaring an absurd size and this service
+  // handing out a presigned URL for it.
+  packageMaxSizeBytes: Number(process.env.PACKAGE_MAX_SIZE_BYTES || 500 * 1024 * 1024),
 };

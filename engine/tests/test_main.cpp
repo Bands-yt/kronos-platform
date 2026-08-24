@@ -22192,7 +22192,7 @@ void testWriteWorldPackageArchiveProducesReadableArchive() {
 
     std::vector<std::string> assetPaths{"meshes/rock.obj", "textures/rock_albedo.png"};
     const char* archivePath = "test_write_world_package.kronos";
-    check(engine::publishing::writeWorldPackageArchive(package, assetPaths, archivePath),
+    check(engine::publishing::writeWorldPackageArchive(package, "", assetPaths, archivePath),
           "writeWorldPackageArchive() real-succeeds bundling a real WorldPackage");
 
     // Real, honest cleanup check -- the temp build directory must not
@@ -22234,7 +22234,7 @@ void testWriteWorldPackageArchiveBundlesRealThumbnail() {
     { std::ofstream out(thumbSource, std::ios::binary); out << "P6\n1 1\n255\n" << char(255) << char(0) << char(0); }
 
     const char* archivePath = "test_write_world_package_thumb.kronos";
-    check(engine::publishing::writeWorldPackageArchive(package, {}, archivePath, thumbSource),
+    check(engine::publishing::writeWorldPackageArchive(package, "", {}, archivePath, thumbSource),
           "writeWorldPackageArchive() real-succeeds with a real thumbnail source file");
 
     std::vector<engine::publishing::ArchiveFileEntry> files;
@@ -22244,6 +22244,115 @@ void testWriteWorldPackageArchiveBundlesRealThumbnail() {
     check(foundThumbnail, "the real archive genuinely contains the real bundled thumbnail file");
 
     std::remove(thumbSource);
+    std::remove(archivePath);
+}
+
+// Kronos ("Dynamic Asset Streaming"): real referenced binary bytes, not
+// just a manifest of paths -- writeWorldPackageArchive() now reads real
+// files off disk under a real asset root, bundles them content-
+// addressed, and extractWorldPackageArchive() (the real, first
+// consumer of readArchive() anywhere in this codebase) restores them to
+// their original relative paths.
+void testWriteWorldPackageArchiveBundlesRealAssetBytes() {
+    std::string assetRoot = "test_pkg_asset_root";
+    std::filesystem::remove_all(assetRoot);
+    std::filesystem::create_directories(assetRoot + "/meshes");
+    std::filesystem::create_directories(assetRoot + "/textures");
+    { std::ofstream out(assetRoot + "/meshes/rock.obj", std::ios::binary); out << "v 0 0 0\nv 1 0 0\nv 0 1 0\n"; }
+    { std::ofstream out(assetRoot + "/textures/rock_albedo.png", std::ios::binary);
+      std::vector<uint8_t> fakePngBytes{0x89, 0x50, 0x4E, 0x47, 0x00, 0x01, 0x02, 0x03};
+      out.write(reinterpret_cast<const char*>(fakePngBytes.data()), static_cast<std::streamsize>(fakePngBytes.size())); }
+
+    engine::publishing::WorldPackage package;
+    package.worldId = "test_archive_asset_bytes_pkg";
+    package.version = "1.0.0";
+    package.metadata = makeValidMetadata();
+    package.scene = makeNonEmptyScene();
+
+    std::vector<std::string> assetPaths{"meshes/rock.obj", "textures/rock_albedo.png"};
+    const char* archivePath = "test_write_world_package_assets.kronos";
+    check(engine::publishing::writeWorldPackageArchive(package, assetRoot, assetPaths, archivePath),
+          "writeWorldPackageArchive() real-succeeds bundling real asset bytes off a real asset root");
+
+    std::string outputDir = "test_pkg_extracted";
+    std::filesystem::remove_all(outputDir);
+    check(engine::publishing::extractWorldPackageArchive(archivePath, outputDir),
+          "extractWorldPackageArchive() real-succeeds unpacking the archive");
+
+    check(std::filesystem::exists(outputDir + "/scene.txt"), "extraction real-restores scene.txt at the output root");
+    check(std::filesystem::exists(outputDir + "/meshes/rock.obj"),
+          "extraction real-restores a bundled asset at its ORIGINAL relative subdirectory path, not flat");
+    check(std::filesystem::exists(outputDir + "/textures/rock_albedo.png"),
+          "extraction real-restores the second bundled asset at its own original subdirectory too");
+
+    {
+        std::ifstream in(outputDir + "/meshes/rock.obj", std::ios::binary);
+        std::ostringstream ss; ss << in.rdbuf();
+        std::ifstream original(assetRoot + "/meshes/rock.obj", std::ios::binary);
+        std::ostringstream originalSs; originalSs << original.rdbuf();
+        check(ss.str() == originalSs.str(), "the extracted mesh's real bytes are byte-for-byte identical to the original");
+    }
+
+    std::filesystem::remove_all(assetRoot);
+    std::filesystem::remove_all(outputDir);
+    std::remove(archivePath);
+}
+
+void testWriteWorldPackageArchiveDedupsIdenticalAssetContent() {
+    std::string assetRoot = "test_pkg_dedup_root";
+    std::filesystem::remove_all(assetRoot);
+    std::filesystem::create_directories(assetRoot + "/a");
+    std::filesystem::create_directories(assetRoot + "/b");
+    // Two DIFFERENT relative paths, byte-IDENTICAL content.
+    { std::ofstream out(assetRoot + "/a/shared.png", std::ios::binary); out << "identical bytes here"; }
+    { std::ofstream out(assetRoot + "/b/shared_copy.png", std::ios::binary); out << "identical bytes here"; }
+
+    engine::publishing::WorldPackage package;
+    package.worldId = "test_archive_dedup_pkg";
+    package.version = "1.0.0";
+    package.metadata = makeValidMetadata();
+    package.scene = makeNonEmptyScene();
+
+    const char* archivePath = "test_write_world_package_dedup.kronos";
+    check(engine::publishing::writeWorldPackageArchive(package, assetRoot, {"a/shared.png", "b/shared_copy.png"}, archivePath),
+          "writeWorldPackageArchive() real-succeeds bundling two identical-content assets");
+
+    std::vector<engine::publishing::ArchiveFileEntry> files;
+    check(engine::publishing::readArchive(archivePath, files), "the real dedup archive reads back");
+    size_t assetFileCount = 0;
+    for (const auto& f : files) if (f.relativePath.rfind("asset_", 0) == 0) assetFileCount += 1;
+    check(assetFileCount == 1,
+          "two different relative paths with byte-identical content are really stored ONCE inside the archive, not twice");
+
+    std::string outputDir = "test_pkg_dedup_extracted";
+    std::filesystem::remove_all(outputDir);
+    check(engine::publishing::extractWorldPackageArchive(archivePath, outputDir), "the dedup archive really extracts");
+    check(std::filesystem::exists(outputDir + "/a/shared.png") && std::filesystem::exists(outputDir + "/b/shared_copy.png"),
+          "both original paths are still real-restored on extraction, even though only one copy was ever stored");
+
+    std::filesystem::remove_all(assetRoot);
+    std::filesystem::remove_all(outputDir);
+    std::remove(archivePath);
+}
+
+void testArchiveSha256HexIsRealAndDeterministic() {
+    std::vector<engine::publishing::ArchiveFileEntry> files{{"a.txt", {std::uint8_t('h'), std::uint8_t('i')}}};
+    const char* archivePath = "test_archive_sha256.kronos";
+    check(engine::publishing::writeArchive(archivePath, files), "real setup: a real archive to hash");
+
+    std::string hash1 = engine::publishing::archiveSha256Hex(archivePath);
+    check(hash1.size() == 64, "archiveSha256Hex() real-returns a real 64-hex-character SHA-256 digest");
+    std::string hash2 = engine::publishing::archiveSha256Hex(archivePath);
+    check(hash1 == hash2, "hashing the same real archive twice real-produces the identical digest");
+
+    std::vector<engine::publishing::ArchiveFileEntry> differentFiles{{"a.txt", {std::uint8_t('b'), std::uint8_t('y'), std::uint8_t('e')}}};
+    check(engine::publishing::writeArchive(archivePath, differentFiles), "real setup: overwrite with different real content");
+    std::string hash3 = engine::publishing::archiveSha256Hex(archivePath);
+    check(hash3 != hash1, "different real archive content real-produces a different digest");
+
+    check(engine::publishing::archiveSha256Hex("this_file_really_does_not_exist_54321.kronos").empty(),
+          "hashing a nonexistent file is a real, honest empty result, not a crash");
+
     std::remove(archivePath);
 }
 
@@ -33433,6 +33542,9 @@ int main() {
     testPackageArchiveReadRejectsGarbageFile();
     testWriteWorldPackageArchiveProducesReadableArchive();
     testWriteWorldPackageArchiveBundlesRealThumbnail();
+    testWriteWorldPackageArchiveBundlesRealAssetBytes();
+    testWriteWorldPackageArchiveDedupsIdenticalAssetContent();
+    testArchiveSha256HexIsRealAndDeterministic();
     testWorldPackageLoadFromNonexistentDirectoryFails();
     testWorldPackageLoadFailsIfPackageInfoMissing();
     testWorldPackageRoundTripPreservesMultipleEntities();

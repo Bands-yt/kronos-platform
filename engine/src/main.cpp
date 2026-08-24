@@ -34,6 +34,7 @@
 #include "core/Terrain.hpp"
 #include "core/UpgradeSystem.hpp"
 #include "core/WorldProp.hpp"
+#include "publishing/AssetStreamingClient.hpp"
 #include "runtime/GameLoader.hpp"
 #include "runtime/GameLoop.hpp"
 #include "runtime/RuntimeShell.hpp"
@@ -164,6 +165,14 @@ int main(int argc, char** argv) {
     // invocation prior to this feature).
     std::string requestedGameSlug;
     std::string serverKeyArg;
+    // Kronos ("Dynamic Asset Streaming"): a real, headless utility mode
+    // -- fetches (or confirms already-cached) a published game's real
+    // package and exits, touching no Window/Renderer/ECS/Physics at
+    // all. A real ops/CI script can prefetch a game's content onto a
+    // machine (warming the cache ahead of a real --server launch) with
+    // no GPU/display present at all, unlike every other real mode this
+    // binary has.
+    std::string fetchPackageSlugArg;
     auto applyKronosLaunchUri = [&](const std::string& rawUri) {
         engine::core::KronosLaunchRequest parsed;
         if (engine::core::parseKronosLaunchUri(rawUri, parsed)) {
@@ -203,6 +212,8 @@ int main(int argc, char** argv) {
             requestedGameSlug = argv[++i];
         } else if (arg == "--server-key" && i + 1 < argc) {
             serverKeyArg = argv[++i];
+        } else if (arg == "--fetch-package" && i + 1 < argc) {
+            fetchPackageSlugArg = argv[++i];
         } else if (arg == "--stress" && i + 1 < argc) {
             // Sprint 11 task 4's "Network Stress Test mode with synthetic
             // players" -- server-only (see NetworkSession::startStressTest()'s
@@ -289,6 +300,30 @@ int main(int argc, char** argv) {
             // installer/src/PlatformIntegration.cpp's Exec= comment).
             applyKronosLaunchUri(arg);
         }
+    }
+
+    // Kronos ("Dynamic Asset Streaming"): real, headless, exits before
+    // any Window/Renderer/ECS/Physics is ever touched -- see
+    // fetchPackageSlugArg's own declaration comment.
+    if (!fetchPackageSlugArg.empty()) {
+        engine::core::KronosClientConfig clientConfig =
+            engine::core::loadKronosClientConfig(engine::core::executableDirectory());
+        std::fprintf(stdout, "engine_runtime: backend %s (from %s)\n", clientConfig.apiUrl.c_str(),
+                     clientConfig.source.c_str());
+        engine::core::KronosApi api(clientConfig.apiUrl);
+        std::string cacheRoot =
+            engine::core::resolveResourceDir(engine::core::executableDirectory(), "games", ENGINE_GAMES_DIR) +
+            "/.package_cache";
+        engine::publishing::PackageFetchResult result = engine::publishing::fetchGamePackage(api, fetchPackageSlugArg, cacheRoot);
+        if (!result.success) {
+            std::fprintf(stderr, "engine_runtime: fetch-package \"%s\" FAILED: %s\n", fetchPackageSlugArg.c_str(),
+                         result.error.c_str());
+            return 1;
+        }
+        std::fprintf(stdout, "engine_runtime: fetch-package \"%s\" OK (%s) -- archive: %s, extracted: %s\n",
+                     fetchPackageSlugArg.c_str(), result.wasCached ? "already cached" : "downloaded",
+                     result.archivePath.c_str(), result.extractedDirectory.c_str());
+        return 0;
     }
 
     // Kronos ("JIT server provisioning"): resolved once, up front, so

@@ -1208,7 +1208,15 @@ void StudioApp::exportPackageWorldNow(const std::string& thumbnailPath) {
     // references a second way.
     std::vector<std::string> assetPaths = publishing::collectReferencedAssetPaths(package.metadata, package.scene);
 
-    bool ok = publishing::writeWorldPackageArchive(package, assetPaths, outputPath, thumbnailPath);
+    // Real project root these relative asset paths were validated
+    // against (see PublishValidation.hpp's own validateAssetPathsAreRelative())
+    // -- the same real, already-established std::filesystem::path(
+    // currentProjectPath_).parent_path() idiom this file already uses
+    // elsewhere (see the "Generate README" menu item above).
+    std::string assetRootDirectory =
+        currentProjectPath_.empty() ? std::string() : std::filesystem::path(currentProjectPath_).parent_path().string();
+
+    bool ok = publishing::writeWorldPackageArchive(package, assetRootDirectory, assetPaths, outputPath, thumbnailPath);
     packageStatusMessage_ = ok ? "Exported " + outputPath + " (" + std::to_string(package.scene.entities.size()) +
                                       " entities, " + std::to_string(assetPaths.size()) + " referenced asset(s))"
                                 : "Export FAILED: " + outputPath;

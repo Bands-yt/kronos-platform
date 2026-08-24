@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Kronos account, catalogue and session-allocation service",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/server.js",
     "migrate": "node scripts/migrate.js",
@@ -13,6 +15,8 @@
     "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1116.0",
+    "@aws-sdk/s3-request-presigner": "^3.1116.0",
     "express": "^4.21.2",
     "ioredis": "^5.4.2",
     "jose": "^5.9.6",
