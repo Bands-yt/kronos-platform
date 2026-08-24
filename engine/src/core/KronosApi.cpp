@@ -337,6 +337,23 @@ KronosAuthResult KronosApi::exchangeRefreshToken(const std::string& refreshToken
     return adoptSession(response);
 }
 
+KronosAuthResult KronosApi::exchangeHandoffCode(const std::string& code) {
+    KronosAuthResult result;
+    if (code.empty()) {
+        result.error = "No hand-off code was provided.";
+        return result;
+    }
+    nlohmann::json body{{"code", code}};
+    // /*withAuth=*/false: this call IS the auth bootstrap -- this
+    // process has no session yet, that is the entire reason the code
+    // exists. adoptSession() below persists the resulting refresh token
+    // exactly like every other successful sign-in does, so every launch
+    // after this first one resumes from the OS credential store the
+    // normal way and never needs a fresh code at all.
+    HttpResponse response = request("POST", "/v1/auth/handoff/exchange", body.dump(), /*withAuth=*/false);
+    return adoptSession(response);
+}
+
 KronosAuthResult KronosApi::restoreSession() {
     std::string refreshToken = loadPersistedRefreshToken();
     if (refreshToken.empty()) {

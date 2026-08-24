@@ -159,6 +159,58 @@ authRouter.post(
   }),
 );
 
+// --- launch hand-off ("Open in Kronos") ------------------------------------
+//
+// Bridges an authenticated browser session to a freshly-launched desktop
+// client, which starts with no session of its own -- the website's own
+// access_token lives in JS memory only and is not something a native
+// process can ever read (see backend/public/index.html's own comment).
+//
+// Deliberately NOT the real access_token embedded in the kronos:// URI
+// itself: a custom-scheme URI is handed to the OS's own URL-dispatch
+// machinery, which is a far more exposed channel than an in-memory JS
+// variable -- on both Linux and Windows, any other process running as
+// the same user can read another process's full command line
+// (/proc/<pid>/cmdline, Task Manager), so a long-lived bearer credential
+// riding along in argv would be a real local credential-exposure
+// surface, not a hypothetical one. A short-lived, single-use, opaque
+// code has none of that exposure: even if something logs the URI (shell
+// history, a crash report, the OS's own activation log), the code is
+// worthless within seconds and only once.
+
+authRouter.post(
+  '/handoff',
+  requireAuth,
+  rateLimit({ bucket: 'handoff', limit: 20, windowSeconds: 3600 }),
+  asyncRoute(async (req, res) => {
+    const { token } = await issueOneShotToken('launch_handoff_tokens', req.user.id, config.launchHandoffTtlSeconds);
+    res.json({ code: token, expires_in: config.launchHandoffTtlSeconds });
+  }),
+);
+
+authRouter.post(
+  '/handoff/exchange',
+  rateLimit({ bucket: 'handoff-exchange', limit: 30, windowSeconds: 3600 }),
+  asyncRoute(async (req, res) => {
+    const code = typeof req.body?.code === 'string' ? req.body.code : '';
+    if (!code) throw badRequest('code is required.');
+
+    const userId = await consumeOneShotToken('launch_handoff_tokens', code);
+    // Same generic message either way -- see /login's own comment on why
+    // "this code was valid but the account is disabled" must not be
+    // distinguishable from "this code was never valid at all".
+    if (!userId) throw unauthorized('Invalid or expired handoff code.');
+
+    const { rows } = await query(
+      `SELECT id, email, display_name, email_verified, disabled_at FROM users WHERE id = $1`,
+      [userId],
+    );
+    if (rows.length === 0 || rows[0].disabled_at) throw unauthorized('Invalid or expired handoff code.');
+
+    await issueSession(res, rows[0], req);
+  }),
+);
+
 // --- Google sign-in --------------------------------------------------------
 
 authRouter.post(

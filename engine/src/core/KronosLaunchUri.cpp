@@ -48,9 +48,26 @@ bool iequalsAscii(const std::string& a, const char* b) {
     return i == a.size() && b[i] == '\0';
 }
 
+// Real, minimal query-param lookup: find "<key>=", take up to the next
+// '&' (or end of string), percent-decode. Deliberately does not build a
+// general key/value map -- this URI has exactly two parameters this
+// code cares about, both looked up the same simple way. Returns empty
+// for "not present", which callers here treat as "absent", not "present
+// but blank" -- there is no real difference between the two for either
+// field this parses.
+std::string findQueryParam(const std::string& query, const std::string& key) {
+    const std::string needle = key + "=";
+    const size_t start = query.find(needle);
+    if (start == std::string::npos) return {};
+    const size_t valueStart = start + needle.size();
+    size_t valueEnd = query.find('&', valueStart);
+    if (valueEnd == std::string::npos) valueEnd = query.size();
+    return percentDecode(query.substr(valueStart, valueEnd - valueStart));
+}
+
 } // namespace
 
-bool parseKronosLaunchUri(const std::string& uri, std::string& outSlug) {
+bool parseKronosLaunchUri(const std::string& uri, KronosLaunchRequest& outRequest) {
     // Scheme match is case-insensitive: Windows' own URL-handling can
     // normalise a registered scheme's casing, and requiring an exact
     // lowercase match would make this fragile against something outside
@@ -72,21 +89,13 @@ bool parseKronosLaunchUri(const std::string& uri, std::string& outSlug) {
     if (queryStart == std::string::npos) return false; // "launch" with no query at all -- nothing to launch
 
     const std::string query = rest.substr(queryStart + 1);
-    // Real, minimal query-param scan: find "game=", take up to the next
-    // '&' (or end of string), percent-decode. Deliberately does not
-    // build a general key/value map -- this URI has exactly one
-    // parameter this code cares about.
-    const std::string needle = "game=";
-    const size_t gameStart = query.find(needle);
-    if (gameStart == std::string::npos) return false;
-    const size_t valueStart = gameStart + needle.size();
-    size_t valueEnd = query.find('&', valueStart);
-    if (valueEnd == std::string::npos) valueEnd = query.size();
+    const std::string slug = findQueryParam(query, "game");
+    if (slug.empty()) return false;
 
-    const std::string decoded = percentDecode(query.substr(valueStart, valueEnd - valueStart));
-    if (decoded.empty()) return false;
-
-    outSlug = decoded;
+    outRequest.gameSlug = slug;
+    // Optional: an absent handoff= is not a parse failure, see
+    // KronosLaunchRequest::handoffCode's own doc comment for why.
+    outRequest.handoffCode = findQueryParam(query, "handoff");
     return true;
 }
 

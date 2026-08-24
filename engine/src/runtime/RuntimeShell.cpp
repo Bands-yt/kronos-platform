@@ -313,7 +313,21 @@ bool RuntimeShell::initialize() {
     // session from the OS credential store, so a returning player is
     // already signed in without another password prompt. Silent if there
     // is nothing saved.
-    startBackendSessionRestore();
+    //
+    // Kronos ("kronos:// launch URI" hand-off): EXCEPT when this launch
+    // carried a real hand-off code -- that takes priority over whatever
+    // native session happens to already be persisted (the user just
+    // explicitly authenticated in the browser and clicked a specific
+    // button; silently signing them in as a possibly-different,
+    // possibly-stale account instead would be a real, confusing bug, not
+    // a graceful fallback). A successful exchange persists its own
+    // refresh token exactly like any other sign-in, so it naturally
+    // becomes what future plain launches restore.
+    if (!pendingDeepLinkHandoffCode_.empty()) {
+        startHandoffExchange(std::move(pendingDeepLinkHandoffCode_));
+    } else {
+        startBackendSessionRestore();
+    }
     // Load the public catalogue immediately -- Discover should have real
     // content on first paint rather than only after signing in.
     startCatalogueFetch();
@@ -3154,6 +3168,27 @@ void RuntimeShell::startBackendSessionRestore() {
     });
 }
 
+void RuntimeShell::startHandoffExchange(std::string code) {
+    if (backendAuthInProgress_.load()) return;
+    if (backendAuthThread_.joinable()) backendAuthThread_.join();
+
+    backendAuthInProgress_.store(true);
+    backendAuthStatusMessage_ = "Signing you in from the browser...";
+
+    backendAuthThread_ = std::thread([this, code = std::move(code)]() {
+        core::KronosAuthResult result = kronosApi_.exchangeHandoffCode(code);
+        std::lock_guard<std::mutex> lock(backendAuthMutex_);
+        // Unlike startBackendSessionRestore()'s silent-on-failure
+        // handling, BOTH outcomes are surfaced here -- a code that fails
+        // to exchange (expired, already used, network hiccup) means the
+        // launch this process exists to fulfil cannot complete as
+        // requested, and that is worth telling the person who clicked
+        // the button, not hiding.
+        backendAuthPendingResult_ = std::move(result);
+        backendAuthInProgress_.store(false);
+    });
+}
+
 void RuntimeShell::startCatalogueFetch(bool loadNextPage) {
     if (catalogueFetchInProgress_.load()) return;
     // Nothing more to load: without this the grid would re-request the
@@ -3230,6 +3265,13 @@ void RuntimeShell::pollBackendResults() {
                 startCatalogueFetch();
             } else {
                 backendAuthStatusMessage_ = authResult->error;
+                // A pending kronos:// deep-link launch was waiting on
+                // exactly this attempt succeeding (see
+                // setPendingDeepLinkLaunch()'s own comment). It cannot
+                // resolve now -- abandoning it here is what stops it
+                // sitting forever hoping some later, unrelated sign-in
+                // will complete it instead.
+                pendingDeepLinkGameSlug_.clear();
             }
         }
     }
@@ -3286,7 +3328,17 @@ void RuntimeShell::pollBackendResults() {
     // onlineGames_ only runs at all while a slug is actually pending, so
     // this costs nothing on the overwhelming majority of frames where
     // pendingDeepLinkGameSlug_ is empty.
-    if (!pendingDeepLinkGameSlug_.empty()) {
+    //
+    // Gated on backendAuthInProgress_ -- a real, previously-latent race,
+    // not a hypothetical one: GET /v1/catalog/games needs no auth at
+    // all, so the public catalogue can (and often does) finish loading
+    // before a slower hand-off exchange (an extra real network round
+    // trip beyond what a plain deep link needed) has landed. Resolving
+    // against onlineGames_ the instant it is populated, without waiting
+    // here, would fire startServerAllocation() with no access token yet
+    // -- exactly the "Missing bearer token." this hand-off mechanism
+    // exists to fix, just moved one step later instead of eliminated.
+    if (!pendingDeepLinkGameSlug_.empty() && !backendAuthInProgress_.load()) {
         for (const core::CatalogueGame& game : onlineGames_) {
             if (game.slug != pendingDeepLinkGameSlug_) continue;
             // Cleared BEFORE starting the allocation, not after: this is

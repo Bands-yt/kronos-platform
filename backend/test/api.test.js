@@ -211,6 +211,77 @@ test('password reset for an unknown email is indistinguishable from a known one'
 });
 
 // ---------------------------------------------------------------------------
+// Launch hand-off ("Open in Kronos") -- a real, short-lived, single-use
+// code bridging an authenticated browser session to a freshly-launched
+// desktop client, deliberately NOT the real access_token itself (see
+// auth/routes.js's own comment on why that would be a real local
+// credential-exposure surface, not a hypothetical one).
+// ---------------------------------------------------------------------------
+
+test('a launch hand-off code exchanges for a real, full session', async () => {
+  await clearRateLimits();
+  const email = uniqueEmail();
+  const signup = await api('POST', '/v1/auth/signup', { body: { email, password: 'a reasonable passphrase' } });
+  assert.equal(signup.status, 201);
+
+  const minted = await api('POST', '/v1/auth/handoff', { token: signup.body.access_token });
+  assert.equal(minted.status, 200);
+  assert.ok(minted.body.code, 'a real code is returned');
+  assert.ok(minted.body.expires_in > 0 && minted.body.expires_in <= 120, 'the code is short-lived, not hours');
+
+  const exchanged = await api('POST', '/v1/auth/handoff/exchange', { body: { code: minted.body.code } });
+  assert.equal(exchanged.status, 200);
+  assert.equal(exchanged.body.user.email, email, 'the exchanged session really belongs to the person who minted it');
+  assert.ok(exchanged.body.access_token, 'exchange returns a real, full session -- same shape as login');
+  assert.ok(exchanged.body.refresh_token);
+
+  // The exchanged access token really works against a protected route.
+  const me = await api('GET', '/v1/friends/list', { token: exchanged.body.access_token });
+  assert.notEqual(me.status, 401, 'the exchanged access token is really usable, not a placeholder');
+});
+
+test('a launch hand-off code is single-use', async () => {
+  await clearRateLimits();
+  const email = uniqueEmail();
+  const signup = await api('POST', '/v1/auth/signup', { body: { email, password: 'a reasonable passphrase' } });
+  const minted = await api('POST', '/v1/auth/handoff', { token: signup.body.access_token });
+
+  const first = await api('POST', '/v1/auth/handoff/exchange', { body: { code: minted.body.code } });
+  assert.equal(first.status, 200);
+
+  const replay = await api('POST', '/v1/auth/handoff/exchange', { body: { code: minted.body.code } });
+  assert.equal(replay.status, 401, 'the same code cannot be exchanged twice');
+});
+
+test('a launch hand-off code really expires', async () => {
+  await clearRateLimits();
+  const email = uniqueEmail();
+  const signup = await api('POST', '/v1/auth/signup', { body: { email, password: 'a reasonable passphrase' } });
+  const minted = await api('POST', '/v1/auth/handoff', { token: signup.body.access_token });
+
+  // Real expiry, not a mocked clock: backdate the real row the same way
+  // an actually-expired code would look, then confirm the real WHERE
+  // expires_at > NOW() in consumeOneShotToken() actually rejects it.
+  await query(`UPDATE launch_handoff_tokens SET expires_at = NOW() - INTERVAL '1 second' WHERE user_id = $1`,
+    [signup.body.user.id]);
+
+  const expired = await api('POST', '/v1/auth/handoff/exchange', { body: { code: minted.body.code } });
+  assert.equal(expired.status, 401);
+});
+
+test('a launch hand-off code cannot be minted anonymously, and garbage codes are refused', async () => {
+  await clearRateLimits();
+  const anonymous = await api('POST', '/v1/auth/handoff', {});
+  assert.equal(anonymous.status, 401, 'minting a hand-off code requires a real, already-authenticated session');
+
+  const garbage = await api('POST', '/v1/auth/handoff/exchange', { body: { code: 'not-a-real-code' } });
+  assert.equal(garbage.status, 401);
+
+  const missing = await api('POST', '/v1/auth/handoff/exchange', { body: {} });
+  assert.equal(missing.status, 400, 'a missing code is a bad request, distinct from an invalid one');
+});
+
+// ---------------------------------------------------------------------------
 // Google ID token verification -- the security fix
 // ---------------------------------------------------------------------------
 

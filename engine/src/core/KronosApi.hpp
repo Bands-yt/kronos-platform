@@ -204,6 +204,21 @@ public:
     // and the launcher never sees a password at any point.
     [[nodiscard]] KronosAuthResult completeBrowserSignIn(const std::string& refreshToken);
 
+    // "Open in Kronos": exchanges a real, short-lived, single-use code
+    // minted by an authenticated browser session (POST /v1/auth/handoff)
+    // for a real session of THIS process's own, through
+    // POST /v1/auth/handoff/exchange -- deliberately a different code,
+    // never the browser's real access_token itself. See
+    // core::KronosLaunchRequest::handoffCode's own doc comment for why:
+    // a custom-scheme URI is handed to the OS's own URL-dispatch
+    // machinery, and on both Linux and Windows any other process running
+    // as the same user can read another process's full command line,
+    // which makes a long-lived bearer credential riding along in argv a
+    // real local credential-exposure surface. A one-time code minted
+    // seconds before use and worthless afterward has none of that
+    // exposure.
+    [[nodiscard]] KronosAuthResult exchangeHandoffCode(const std::string& code);
+
     // Revokes the refresh token server-side and clears local state. Best
     // effort on the network call: local credentials are cleared either
     // way, so "log out" always visibly logs you out.

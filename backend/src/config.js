@@ -55,6 +55,16 @@ export const config = {
   passwordResetTtlSeconds: Number(process.env.PASSWORD_RESET_TTL || 60 * 60),
   emailVerificationTtlSeconds: Number(process.env.EMAIL_VERIFICATION_TTL || 24 * 60 * 60),
 
+  // "Open in Kronos": a real, single-use code bridging an authenticated
+  // browser session to a freshly-launched desktop client, which starts
+  // with no session of its own. Deliberately short -- the whole real
+  // round trip (click, OS launches the process, process parses the
+  // deep-link URI, process exchanges the code) is normally seconds --
+  // same "short bridge used almost immediately" reasoning as
+  // joinTicketTtlSeconds above, not the hour/day windows password reset
+  // and email verification get.
+  launchHandoffTtlSeconds: Number(process.env.LAUNCH_HANDOFF_TTL || 60),
+
   // How long a game server's heartbeat stays valid. A server that stops
   // heartbeating disappears from allocation automatically.
   serverHeartbeatTtlSeconds: Number(process.env.SERVER_HEARTBEAT_TTL || 30),

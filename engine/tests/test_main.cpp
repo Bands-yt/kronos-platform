@@ -32225,42 +32225,74 @@ void testMovieModePlugin() {
 // argv token, so what main.cpp actually receives on --kronos-uri=<this>
 // is exactly what these tests feed the parser directly.
 void testKronosLaunchUriParsing() {
-    std::string slug;
+    engine::core::KronosLaunchRequest request;
 
-    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky-garden", slug),
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky-garden", request),
           "a well-formed launch URI parses");
-    check(slug == "sky-garden", "the real slug is extracted");
+    check(request.gameSlug == "sky-garden", "the real slug is extracted");
+    check(request.handoffCode.empty(), "a plain link with no hand-off param leaves the code empty, not garbage");
 
     // Case-insensitive scheme: Windows can normalise a registered
     // scheme's casing, outside this code's control.
-    slug.clear();
-    check(engine::core::parseKronosLaunchUri("KRONOS://launch?game=default-world", slug),
+    request = {};
+    check(engine::core::parseKronosLaunchUri("KRONOS://launch?game=default-world", request),
           "an upper-case scheme still parses");
-    check(slug == "default-world", "the slug is still correctly extracted");
+    check(request.gameSlug == "default-world", "the slug is still correctly extracted");
 
     // A second query param after the one this code cares about.
-    slug.clear();
-    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky-garden&ref=web", slug),
+    request = {};
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky-garden&ref=web", request),
           "a launch URI with a trailing extra param still parses");
-    check(slug == "sky-garden", "only the game param's value is extracted, not the rest of the query string");
+    check(request.gameSlug == "sky-garden", "only the game param's value is extracted, not the rest of the query string");
 
     // A param before the one this code cares about.
-    slug.clear();
-    check(engine::core::parseKronosLaunchUri("kronos://launch?ref=web&game=sky-garden", slug),
+    request = {};
+    check(engine::core::parseKronosLaunchUri("kronos://launch?ref=web&game=sky-garden", request),
           "a launch URI with a LEADING extra param still parses");
-    check(slug == "sky-garden", "game= is found regardless of its position in the query string");
+    check(request.gameSlug == "sky-garden", "game= is found regardless of its position in the query string");
 
     // Percent-encoding: a slug containing a character that needed
     // encoding in a URL.
-    slug.clear();
-    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky%20garden", slug),
+    request = {};
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky%20garden", request),
           "a percent-encoded slug parses");
-    check(slug == "sky garden", "the percent-encoded value is really decoded");
+    check(request.gameSlug == "sky garden", "the percent-encoded value is really decoded");
+
+    // --- the hand-off code ("Open in Kronos" sign-in bridge) ---------------
+    request = {};
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky-garden&handoff=Ab12_-Cd34", request),
+          "a launch URI with a real hand-off code parses");
+    check(request.gameSlug == "sky-garden", "the slug is still correct alongside a hand-off code");
+    check(request.handoffCode == "Ab12_-Cd34", "the hand-off code is really extracted");
+
+    // Order must not matter for either param, same as game= above.
+    request = {};
+    check(engine::core::parseKronosLaunchUri("kronos://launch?handoff=Ab12_-Cd34&game=sky-garden", request),
+          "handoff= before game= still parses correctly");
+    check(request.gameSlug == "sky-garden" && request.handoffCode == "Ab12_-Cd34",
+          "both params are found regardless of position");
+
+    // A percent-encoded hand-off code (base64url in practice never needs
+    // this, but the parser must not special-case one param over the other).
+    request = {};
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=x&handoff=a%2Bb", request),
+          "a percent-encoded hand-off code parses");
+    check(request.handoffCode == "a+b", "the hand-off code is really percent-decoded, same as the slug is");
+
+    // handoff= present but empty is treated as absent, not as a real
+    // empty code -- an empty code could never exchange for anything, so
+    // there is no meaningful difference between "absent" and "blank"
+    // here, same reasoning findQueryParam() already applies to game=.
+    request = {};
+    check(engine::core::parseKronosLaunchUri("kronos://launch?game=sky-garden&handoff=", request),
+          "an empty handoff= does not fail the whole parse -- game= alone is still enough");
+    check(request.handoffCode.empty(), "an empty handoff= value is treated as no code at all");
 
     // --- honest refusals, not guesses -----------------------------------
-    std::string untouched = "sentinel";
+    engine::core::KronosLaunchRequest untouched;
+    untouched.gameSlug = "sentinel";
     check(!engine::core::parseKronosLaunchUri("http://launch?game=x", untouched), "the wrong scheme is refused");
-    check(untouched == "sentinel", "a refused parse leaves the caller's string untouched");
+    check(untouched.gameSlug == "sentinel", "a refused parse leaves the caller's struct untouched");
 
     check(!engine::core::parseKronosLaunchUri("kronos://join?game=x", untouched), "the wrong action is refused");
     check(!engine::core::parseKronosLaunchUri("kronos://launch", untouched), "a launch URI with no query at all is refused");
@@ -32269,6 +32301,8 @@ void testKronosLaunchUriParsing() {
           "a query with no game= param at all is refused");
     check(!engine::core::parseKronosLaunchUri("kronos://launch?game=", untouched),
           "an empty game= value is refused, not accepted as an empty slug");
+    check(!engine::core::parseKronosLaunchUri("kronos://launch?handoff=abc", untouched),
+          "a hand-off code with no game= at all is still refused -- there is nothing to launch");
     check(!engine::core::parseKronosLaunchUri("", untouched), "an empty string is refused");
     check(!engine::core::parseKronosLaunchUri("kronos:/", untouched), "a truncated scheme is refused, not a crash");
 }

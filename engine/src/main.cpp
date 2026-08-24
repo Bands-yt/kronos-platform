@@ -136,13 +136,27 @@ int main(int argc, char** argv) {
     // Windows' registry %1 does that). Both real forms are accepted
     // below via the same parse-and-log helper.
     std::string kronosLaunchGameSlug;
+    // "Open in Kronos" hand-off: a real, short-lived, single-use code
+    // from an authenticated browser session (see
+    // core::KronosLaunchRequest::handoffCode's own doc comment for why
+    // this exists instead of the browser's real access_token riding
+    // along in the URI). Empty when the URI carried none, which is a
+    // real, honest state -- see below.
+    std::string kronosLaunchHandoffCode;
     auto applyKronosLaunchUri = [&](const std::string& rawUri) {
-        std::string parsedSlug;
-        if (engine::core::parseKronosLaunchUri(rawUri, parsedSlug)) {
-            kronosLaunchGameSlug = parsedSlug;
-            engine::core::logInfo("Kronos", "launch URI parsed -- will join \"%s\" once signed in and the "
-                                             "catalogue is loaded",
-                                   kronosLaunchGameSlug.c_str());
+        engine::core::KronosLaunchRequest parsed;
+        if (engine::core::parseKronosLaunchUri(rawUri, parsed)) {
+            kronosLaunchGameSlug = parsed.gameSlug;
+            kronosLaunchHandoffCode = parsed.handoffCode;
+            if (kronosLaunchHandoffCode.empty()) {
+                engine::core::logInfo("Kronos", "launch URI parsed -- will join \"%s\" once signed in and the "
+                                                 "catalogue is loaded",
+                                       kronosLaunchGameSlug.c_str());
+            } else {
+                engine::core::logInfo("Kronos", "launch URI parsed with a hand-off code -- will exchange it for a "
+                                                 "real session, then join \"%s\"",
+                                       kronosLaunchGameSlug.c_str());
+            }
         } else {
             std::fprintf(stderr, "engine_runtime: \"%s\" did not parse as a real launch URI -- ignoring it and "
                                   "starting normally.\n",
@@ -2111,6 +2125,19 @@ int main(int argc, char** argv) {
             return app.characterController().entity();
         });
         shell->setTesterSafetyMode(testerSafetyMode);
+
+        // Kronos ("kronos:// launch URI"): handed to the shell BEFORE
+        // initialize(), not after -- initialize() is what decides
+        // between restoring a persisted native session and (when a real
+        // hand-off code came along with this launch) exchanging that
+        // code instead, and it has to know which before it starts either
+        // one. Handing this over afterward, as an earlier version of
+        // this did, raced a session-restore attempt that was already
+        // running by the time the hand-off code was even known about.
+        if (!kronosLaunchGameSlug.empty()) {
+            shell->setPendingDeepLinkLaunch(kronosLaunchGameSlug, kronosLaunchHandoffCode);
+        }
+
         if (!shell->initialize()) {
             std::fprintf(stderr, "engine_runtime: RuntimeShell::initialize failed -- continuing without the real "
                                   "Home Screen shell.\n");
@@ -2125,16 +2152,6 @@ int main(int argc, char** argv) {
             // leaves this nullptr, and the bindings stay real, honest
             // no-ops there.
             app.scriptUiApi().setShellController(shell.get());
-
-            // Kronos ("kronos:// launch URI"): handed to the shell, not
-            // resolved here. There is no session yet at this point in
-            // startup -- RuntimeShell resolves this the moment the
-            // online catalogue actually contains a matching game (see
-            // RuntimeShell::pollBackendResults()), which naturally
-            // covers both "already signed in, catalogue loads in a
-            // second" and "not signed in yet, resolves once the user
-            // signs in and the catalogue fetch that follows completes".
-            if (!kronosLaunchGameSlug.empty()) shell->setPendingDeepLinkGameSlug(kronosLaunchGameSlug);
         }
     }
 

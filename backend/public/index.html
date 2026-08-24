@@ -1627,10 +1627,44 @@
   let lastLaunchAttempt = null; // { slug, title } -- what "Try again" in the fallback modal retries
   let launchWatchTimer = null;
 
-  function attemptLaunch(slug, title) {
+  async function attemptLaunch(slug, title) {
     if (!slug) return;
     lastLaunchAttempt = { slug, title };
     showToast(`Opening Kronos…`);
+
+    // "Open in Kronos" sign-in hand-off: a freshly-launched desktop
+    // process has no session of its own -- this page's own accessToken
+    // lives in JS memory only (see applySession()'s own comment) and is
+    // not something a native process can ever read. Bridged with a
+    // real, short-lived, single-use code (POST /v1/auth/handoff) minted
+    // HERE, while this page still has a real authenticated fetch to make
+    // it with, and exchanged by the desktop client for a real session of
+    // its own (POST /v1/auth/handoff/exchange).
+    //
+    // Deliberately NOT the real accessToken riding along in the URI
+    // itself: a kronos:// link is handed to the OS's own URL-dispatch
+    // machinery, and on both Linux and Windows any other process running
+    // as the same user can read another process's full command line
+    // (/proc/<pid>/cmdline, Task Manager) -- a long-lived bearer
+    // credential in argv would be a real local credential-exposure
+    // surface, not a hypothetical one. A one-time code worth nothing
+    // seconds later has none of that exposure.
+    //
+    // A signed-out visitor gets the exact same plain link this always
+    // sent: there is no session here to bridge, and the desktop client
+    // falls back to whatever it already has, exactly as before this
+    // existed.
+    let handoffParam = "";
+    if (accessToken) {
+      const minted = await apiFetch("POST", "/v1/auth/handoff", {});
+      if (minted.ok && minted.data && minted.data.code) {
+        handoffParam = `&handoff=${encodeURIComponent(minted.data.code)}`;
+      }
+      // A failed mint (network hiccup, rate limited) is not fatal to the
+      // launch attempt -- it just means the desktop client will fall
+      // back to whatever native session (if any) it already has,
+      // instead of being freshly signed in as this browser's user.
+    }
 
     // A hidden iframe rather than window.location.href: setting the
     // visible tab's own location to an unregistered custom scheme risks
@@ -1639,7 +1673,7 @@
     // contained and invisible either way.
     const frame = document.createElement("iframe");
     frame.style.display = "none";
-    frame.src = `kronos://launch?game=${encodeURIComponent(slug)}`;
+    frame.src = `kronos://launch?game=${encodeURIComponent(slug)}${handoffParam}`;
     document.body.appendChild(frame);
 
     const wasHiddenAtStart = document.hidden;

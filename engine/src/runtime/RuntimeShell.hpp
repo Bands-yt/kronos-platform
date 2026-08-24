@@ -199,17 +199,32 @@ public:
     // four separate new mechanisms.
     void setTesterSafetyMode(bool enabled) { testerSafetyMode_ = enabled; }
 
-    // Kronos ("kronos:// launch URI"): the real slug from a parsed
-    // kronos://launch?game=<slug> activation (see main.cpp's argv
-    // handling). Not joined immediately -- there is no session yet this
-    // early in startup. pollBackendResults() resolves it the moment
-    // onlineGames_ actually contains a matching entry (whether that's a
-    // second from now, because a saved session restores instantly, or
-    // only after the user signs in through the normal flow), by calling
-    // the exact same startServerAllocation() the "Play" button on that
-    // game's card already calls -- a deep-link launch and a normal click
-    // end up on the identical join path, not a second one.
-    void setPendingDeepLinkGameSlug(std::string slug) { pendingDeepLinkGameSlug_ = std::move(slug); }
+    // Kronos ("kronos:// launch URI"): the real slug (and optional
+    // hand-off code) from a parsed kronos://launch?game=<slug>
+    // [&handoff=<code>] activation (see main.cpp's argv handling). MUST
+    // be called before initialize() -- initialize() reads
+    // pendingDeepLinkHandoffCode_ to decide whether to restore a
+    // persisted native session (no code, the pre-hand-off behavior) or
+    // exchange the code for a fresh one instead (see
+    // startHandoffExchange()); calling this after initialize() has
+    // already started one of those would race whichever one it already
+    // committed to.
+    //
+    // The slug is not joined immediately either way -- there is no
+    // session at this point in startup. pollBackendResults() resolves it
+    // once BOTH onlineGames_ contains a matching entry AND no auth
+    // operation (restore or exchange) is still in flight -- waiting on
+    // the second condition is what stops allocation racing ahead of a
+    // hand-off exchange that has not finished yet, since the public
+    // catalogue itself loads with no auth required and so can easily
+    // finish first. Resolves by calling the exact same
+    // startServerAllocation() the "Play" button on that game's card
+    // already calls -- a deep-link launch and a normal click end up on
+    // the identical join path, not a second one.
+    void setPendingDeepLinkLaunch(std::string slug, std::string handoffCode) {
+        pendingDeepLinkGameSlug_ = std::move(slug);
+        pendingDeepLinkHandoffCode_ = std::move(handoffCode);
+    }
 
 private:
     // The real AgeGroup every Minor-Mode-gated decision in this class
@@ -365,6 +380,17 @@ private:
     // optional, exactly like the Google sign-in and update check already
     // do. None of them may block the render thread.
     void startBackendSessionRestore();
+    // "Open in Kronos" hand-off: exchanges a real, short-lived, single-
+    // use code (POST /v1/auth/handoff/exchange) for a real session, on
+    // the SAME backendAuthInProgress_/backendAuthThread_/
+    // backendAuthPendingResult_ machinery startBackendSessionRestore()
+    // uses -- called INSTEAD of that (never alongside it; see
+    // initialize()) when a deep-link launch arrived with a code.
+    // Unlike a silent-on-failure restore, a real failure here IS
+    // surfaced (backendAuthStatusMessage_) -- the user just took an
+    // explicit action expecting to be signed in, so silently doing
+    // nothing would be confusing, not graceful.
+    void startHandoffExchange(std::string code);
     void startCatalogueFetch(bool loadNextPage = false);
     // Requests a real server allocation for `slug` and, on success,
     // connects to the host/port the backend returned.
@@ -578,10 +604,15 @@ private:
     std::vector<core::CatalogueGame> onlineGames_;
     bool onlinePlayerCountsAvailable_ = false;
     std::string catalogueStatusMessage_;
-    // Set once by setPendingDeepLinkGameSlug(), cleared the moment
+    // Set once by setPendingDeepLinkLaunch(), cleared the moment
     // pollBackendResults() finds (and joins) a matching entry in
     // onlineGames_ above -- see that setter's own doc comment.
     std::string pendingDeepLinkGameSlug_;
+    // Consumed once, by initialize() -- see setPendingDeepLinkLaunch()'s
+    // own doc comment for why this has to be known before initialize()
+    // decides between startBackendSessionRestore() and
+    // startHandoffExchange().
+    std::string pendingDeepLinkHandoffCode_;
     // Keyset cursor for the next batch; empty means the end of the
     // catalogue has been reached.
     std::string catalogueNextCursor_;
