@@ -2301,14 +2301,28 @@ void RuntimeShell::openAvatarShop() {
 
 void RuntimeShell::drawAvatarShopPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    // Inset into the shell chrome's content canvas -- drawing at full
-    // viewport size here is what put this panel underneath the sidebar
-    // and brand panel.
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
-                                     viewport->WorkSize.y - kTopBarHeight));
-    ImGui::Begin("Avatar Shop", nullptr,
-                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    // Kronos ("Studio Revamp" -- overlay z-order audit): same real bug and
+    // fix as drawSettingsPanel()/drawFriendsPanel()/drawNotificationsPanel()
+    // -- see drawSettingsPanel()'s own comment. The side-by-side
+    // viewport+catalogue layout below already branches correctly on
+    // showAvatarShopOverlay_; only the window itself never did.
+    if (showAvatarShopOverlay_) {
+        ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(700.0f, viewport->WorkSize.x - 64.0f),
+                                         std::min(600.0f, viewport->WorkSize.y - 64.0f)),
+                                  ImGuiCond_Appearing);
+        ImGui::Begin("Avatar Shop", nullptr, ImGuiWindowFlags_NoCollapse);
+    } else {
+        // Inset into the shell chrome's content canvas -- drawing at full
+        // viewport size here is what put this panel underneath the sidebar
+        // and brand panel.
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                         viewport->WorkSize.y - kTopBarHeight));
+        ImGui::Begin("Avatar Shop", nullptr,
+                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    }
 
     // Kronos: the interactive 3D avatar viewport, re-embedded here.
     //
@@ -4055,14 +4069,31 @@ void RuntimeShell::openFriends() {
 
 void RuntimeShell::drawFriendsPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    // Inset into the shell chrome's content canvas -- drawing at full
-    // viewport size here is what put this panel underneath the sidebar
-    // and brand panel.
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
-                                     viewport->WorkSize.y - kTopBarHeight));
-    ImGui::Begin("Friends", nullptr,
-                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    // Kronos ("Studio Revamp" -- overlay z-order audit): same real bug
+    // drawSettingsPanel() had, and the same fix -- see that function's own
+    // comment. This panel is reached both as a full-canvas Home sidebar
+    // "page" (showFriendsOverlay_ == false) and as a floating overlay
+    // opened from the pause menu on top of live gameplay
+    // (showFriendsOverlay_ == true), and was using the page-only inset +
+    // NoBringToFrontOnFocus flags unconditionally -- which is exactly why
+    // it could never draw above the pause menu window opened just before it.
+    if (showFriendsOverlay_) {
+        ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(700.0f, viewport->WorkSize.x - 64.0f),
+                                         std::min(600.0f, viewport->WorkSize.y - 64.0f)),
+                                  ImGuiCond_Appearing);
+        ImGui::Begin("Friends", nullptr, ImGuiWindowFlags_NoCollapse);
+    } else {
+        // Inset into the shell chrome's content canvas -- drawing at full
+        // viewport size here is what put this panel underneath the sidebar
+        // and brand panel.
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                         viewport->WorkSize.y - kTopBarHeight));
+        ImGui::Begin("Friends", nullptr,
+                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    }
 
     if (ImGui::Button("Back")) {
         if (showFriendsOverlay_) {
@@ -4245,14 +4276,28 @@ constexpr const char* kNotificationFilterNames[] = {"All",     "Friend Requests"
 
 void RuntimeShell::drawNotificationsPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    // Inset into the shell chrome's content canvas -- drawing at full
-    // viewport size here is what put this panel underneath the sidebar
-    // and brand panel.
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
-                                     viewport->WorkSize.y - kTopBarHeight));
-    ImGui::Begin("Notifications", nullptr,
-                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    // Kronos ("Studio Revamp" -- overlay z-order audit): same real bug and
+    // fix as drawSettingsPanel()/drawFriendsPanel() -- see the former's
+    // comment. Page presentation (showNotificationsOverlay_ == false) keeps
+    // the original inset/NoBringToFrontOnFocus; the pause-menu overlay case
+    // now draws as an independently-focusable centered floating window.
+    if (showNotificationsOverlay_) {
+        ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(700.0f, viewport->WorkSize.x - 64.0f),
+                                         std::min(600.0f, viewport->WorkSize.y - 64.0f)),
+                                  ImGuiCond_Appearing);
+        ImGui::Begin("Notifications", nullptr, ImGuiWindowFlags_NoCollapse);
+    } else {
+        // Inset into the shell chrome's content canvas -- drawing at full
+        // viewport size here is what put this panel underneath the sidebar
+        // and brand panel.
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                         viewport->WorkSize.y - kTopBarHeight));
+        ImGui::Begin("Notifications", nullptr,
+                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    }
 
     if (ImGui::Button("Back")) {
         if (showNotificationsOverlay_) {

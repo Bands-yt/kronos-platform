@@ -568,6 +568,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/panels/ExplorerPanel.cpp
         studio/panels/InspectorPanel.cpp
         studio/panels/ScriptEditorPanel.cpp
+        studio/panels/ColorTextEditBackend.cpp
         studio/panels/StatsPanel.cpp
         studio/panels/PerformanceOverlayPanel.cpp
         studio/panels/SceneSearchPanel.cpp
@@ -612,7 +613,12 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/LauncherPlugin.cpp
         studio/ParticlePresets.cpp
     )
-    target_link_libraries(studio PRIVATE engine_core imgui::imgui imguizmo::imguizmo)
+    # Luau.Analysis/Luau.Config: Studio-only (see ColorTextEditBackend.cpp's
+    # LuauLiveAnalyzer) -- engine_runtime never edits scripts, so it has no
+    # reason to also link Luau's type-checker on top of the Luau.VM/
+    # Luau.Compiler it already links for actually running them.
+    target_link_libraries(studio PRIVATE engine_core imgui::imgui imguizmo::imguizmo
+        imguicolortextedit::imguicolortextedit Luau.Analysis Luau.Config)
     if(WIN32)
         # Same real SDL2main linkage need as engine_runtime above -- see
         # that target's own comment for why.

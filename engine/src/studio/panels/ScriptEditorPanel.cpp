@@ -10,6 +10,7 @@
 
 #include "core/Components.hpp"
 #include "studio/Notification.hpp"
+#include "studio/panels/ColorTextEditBackend.hpp"
 
 namespace engine::studio::panels {
 
@@ -219,15 +220,33 @@ bool MonacoWebViewEditor::initialize() {
 }
 
 ScriptEditorPanel::ScriptEditorPanel() {
+    // Kronos ("Studio Revamp" -- "Native Syntax-Highlighting Editor"):
+    // real preference order, tried in this sequence --
+    //  1. Monaco/webview (never succeeds today; MonacoWebViewEditor::
+    //     initialize() always returns false until Ultralight/CEF is
+    //     actually wired in, see that class's own comment).
+    //  2. ColorTextEditBackend -- the new real default: native
+    //     ImGuiColorTextEdit widget + live Luau.Analysis error markers,
+    //     no embedded webview needed at all.
+    //  3. ImGuiFallbackEditor -- kept as the last-resort backend so a
+    //     Studio build never silently ends up with no editor, same
+    //     contract IScriptEditorBackend's own class comment already
+    //     establishes.
     auto monaco = std::make_unique<MonacoWebViewEditor>();
     if (monaco->initialize()) {
         backend_ = std::move(monaco); // never reached today -- see MonacoWebViewEditor::initialize()
-    } else {
-        backend_ = std::make_unique<ImGuiFallbackEditor>();
-        bool initialized = backend_->initialize();
-        if (!initialized) {
-            std::fprintf(stderr, "ScriptEditorPanel: ImGuiFallbackEditor::initialize() unexpectedly failed.\n");
-        }
+        return;
+    }
+
+    auto colorTextEdit = std::make_unique<ColorTextEditBackend>();
+    if (colorTextEdit->initialize()) {
+        backend_ = std::move(colorTextEdit);
+        return;
+    }
+
+    backend_ = std::make_unique<ImGuiFallbackEditor>();
+    if (!backend_->initialize()) {
+        std::fprintf(stderr, "ScriptEditorPanel: ImGuiFallbackEditor::initialize() unexpectedly failed.\n");
     }
 }
 

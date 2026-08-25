@@ -172,6 +172,27 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 
+# --- ImGuiColorTextEdit (Studio Revamp -- "Native Syntax-Highlighting
+#     Editor"): the real library the task named, not a hand-rolled
+#     approximation -- replaces ImGuiFallbackEditor
+#     (studio/panels/ScriptEditorPanel.hpp) as Script Editor's default
+#     backend via the existing IScriptEditorBackend seam (see
+#     studio/panels/ColorTextEditBackend.hpp). Real native line numbers,
+#     syntax highlighting, and error-marker gutter squiggles -- no
+#     embedded webview, no Ultralight/CEF dependency, unlike the Monaco
+#     path that seam was originally built for. Ships no CMakeLists.txt of
+#     its own (two files, TextEditor.h/.cpp) -- same "hand-roll a small
+#     static target" treatment as Dear ImGui gets below, for the same
+#     reason. No tagged releases exist upstream -- pinned to a specific
+#     commit rather than tracking `master`, same reproducible-build
+#     reasoning ImGuizmo's own pin below already gives.
+FetchContent_Declare(
+    imguicolortextedit
+    GIT_REPOSITORY https://github.com/BalazsJako/ImGuiColorTextEdit.git
+    GIT_TAG ca2f9f1462e3b60e56351bc466acda448c5ea50d
+    GIT_SHALLOW FALSE
+)
+
 # --- nlohmann/json (real JSON, for core::AvatarItemManifest/CatalogueDatabase
 #     -- the avatar catalogue system's metadata is explicitly JSON, unlike
 #     every other save/load struct in this codebase (Prefab, AnimationClip,
@@ -207,7 +228,7 @@ FetchContent_Declare(
     GIT_SHALLOW FALSE
 )
 
-FetchContent_MakeAvailable(entt glm volk joltphysics luau enet imgui imguizmo nlohmann_json)
+FetchContent_MakeAvailable(entt glm volk joltphysics luau enet imgui imguizmo imguicolortextedit nlohmann_json)
 
 # enet's own CMakeLists.txt uses directory-scoped include_directories()
 # rather than target_include_directories(), so it never propagates to
@@ -238,6 +259,15 @@ target_link_libraries(imgui PUBLIC SDL2::SDL2 Vulkan::Headers volk)
 # core::Renderer loads Vulkan (see Renderer.hpp's header comment).
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_VULKAN_USE_VOLK)
 add_library(imgui::imgui ALIAS imgui)
+
+# ImGuiColorTextEdit ships no CMakeLists.txt of its own either -- same
+# treatment as ImGui above, a two-file static target.
+add_library(imguicolortextedit STATIC
+    ${imguicolortextedit_SOURCE_DIR}/TextEditor.cpp
+)
+target_include_directories(imguicolortextedit PUBLIC ${imguicolortextedit_SOURCE_DIR})
+target_link_libraries(imguicolortextedit PUBLIC imgui::imgui)
+add_library(imguicolortextedit::imguicolortextedit ALIAS imguicolortextedit)
 
 # ImGuizmo's own CMakeLists.txt (FetchContent_MakeAvailable already ran
 # it, producing the imguizmo::imguizmo target with its `src/` include dir)
