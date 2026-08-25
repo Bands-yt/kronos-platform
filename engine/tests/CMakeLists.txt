@@ -54,6 +54,8 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/CreatorConsole.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticlePresets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/RuntimeShaderCompiler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ShaderGraph.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ShaderGraphCodegen.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine_core imgui::imgui)
 if(TARGET kronos::shaderc)

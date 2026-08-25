@@ -570,6 +570,8 @@ if(ENGINE_BUILD_STUDIO)
         studio/panels/ScriptEditorPanel.cpp
         studio/panels/ColorTextEditBackend.cpp
         studio/RuntimeShaderCompiler.cpp
+        studio/ShaderGraph.cpp
+        studio/ShaderGraphCodegen.cpp
         studio/panels/StatsPanel.cpp
         studio/panels/PerformanceOverlayPanel.cpp
         studio/panels/SceneSearchPanel.cpp
@@ -624,7 +626,7 @@ if(ENGINE_BUILD_STUDIO)
     # TARGET so a build with KRONOS_BUILD_SHADER_COMPILER OFF still
     # configures (ShaderCompiler.cmake's own real, honest opt-out).
     target_link_libraries(studio PRIVATE engine_core imgui::imgui imguizmo::imguizmo
-        imguicolortextedit::imguicolortextedit Luau.Analysis Luau.Config)
+        imguicolortextedit::imguicolortextedit Luau.Analysis Luau.Config imnodes::imnodes)
     if(TARGET kronos::shaderc)
         target_link_libraries(studio PRIVATE kronos::shaderc)
     endif()

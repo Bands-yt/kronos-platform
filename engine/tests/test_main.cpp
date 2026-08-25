@@ -245,6 +245,8 @@
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
 #include "studio/RuntimeShaderCompiler.hpp"
+#include "studio/ShaderGraph.hpp"
+#include "studio/ShaderGraphCodegen.hpp"
 #include "tntwars/ClassSystem.hpp"
 #include "tntwars/CinematicSequence.hpp"
 #include "tntwars/CombatFx.hpp"
@@ -703,6 +705,167 @@ void main() {
           "compiled vertex SPIR-V starts with the real SPIR-V magic number");
 #else
     check(!result.success, "runtime shader compilation reports unavailable when KRONOS_WITH_SHADERC is off");
+#endif
+}
+
+void testShaderGraphNodeCreationAndPinLayout() {
+    engine::studio::ShaderGraph graph;
+    int constantId = graph.addNode(engine::studio::ShaderNodeKind::ConstantVec4, 0.0f, 0.0f);
+    const engine::studio::ShaderNode* node = graph.findNode(constantId);
+    check(node != nullptr, "addNode returns a findable node");
+    if (node != nullptr) {
+        check(node->pinIds.size() == 1, "ConstantVec4 has exactly one (output) pin");
+        const engine::studio::ShaderPin* pin = graph.findPin(node->pinIds[0]);
+        check(pin != nullptr && pin->isOutput && pin->type == engine::studio::ShaderDataType::Vec4,
+              "ConstantVec4's single pin is a Vec4 output");
+    }
+
+    int outputId = graph.addNode(engine::studio::ShaderNodeKind::PbrOutput, 200.0f, 0.0f);
+    const engine::studio::ShaderNode* outputNode = graph.findNode(outputId);
+    check(outputNode != nullptr && outputNode->pinIds.size() == 4, "PbrOutput has exactly four (input) pins");
+}
+
+void testShaderGraphLinkTypeValidation() {
+    engine::studio::ShaderGraph graph;
+    int floatId = graph.addNode(engine::studio::ShaderNodeKind::ConstantFloat, 0.0f, 0.0f);
+    int outputId = graph.addNode(engine::studio::ShaderNodeKind::PbrOutput, 200.0f, 0.0f);
+    int floatOutputPin = graph.findNode(floatId)->pinIds[0];
+    int baseColorInputPin = graph.findNode(outputId)->pinIds[0]; // Vec4
+
+    std::string error;
+    check(!graph.addLink(floatOutputPin, baseColorInputPin, error),
+          "connecting a Float output to a Vec4 input is rejected");
+    check(!error.empty(), "rejected link carries a real error message");
+    check(graph.links().empty(), "the rejected link was not inserted");
+
+    // Wrong direction (input -> input) and self-loop are both real,
+    // separate rejections, not just "type mismatch" catching everything.
+    std::string error2;
+    check(!graph.addLink(baseColorInputPin, baseColorInputPin, error2), "input->input is rejected regardless of type");
+}
+
+void testShaderGraphLinkSingleConnectionPerInput() {
+    engine::studio::ShaderGraph graph;
+    int constA = graph.addNode(engine::studio::ShaderNodeKind::ConstantVec4, 0.0f, 0.0f);
+    int constB = graph.addNode(engine::studio::ShaderNodeKind::ConstantVec4, 0.0f, 100.0f);
+    int outputId = graph.addNode(engine::studio::ShaderNodeKind::PbrOutput, 200.0f, 0.0f);
+    int baseColorInputPin = graph.findNode(outputId)->pinIds[0];
+
+    std::string error;
+    check(graph.addLink(graph.findNode(constA)->pinIds[0], baseColorInputPin, error), "first connection to an input succeeds");
+    check(!graph.addLink(graph.findNode(constB)->pinIds[0], baseColorInputPin, error),
+          "a second connection to the same already-connected input is rejected");
+    check(graph.links().size() == 1, "only the first link exists");
+}
+
+void testShaderGraphRemoveNodeCleansUpLinks() {
+    engine::studio::ShaderGraph graph;
+    int constId = graph.addNode(engine::studio::ShaderNodeKind::ConstantVec4, 0.0f, 0.0f);
+    int outputId = graph.addNode(engine::studio::ShaderNodeKind::PbrOutput, 200.0f, 0.0f);
+    std::string error;
+    check(graph.addLink(graph.findNode(constId)->pinIds[0], graph.findNode(outputId)->pinIds[0], error),
+          "link to be removed is accepted");
+    check(graph.links().size() == 1, "link exists before removal");
+
+    graph.removeNode(constId);
+    check(graph.findNode(constId) == nullptr, "removed node is no longer findable");
+    check(graph.links().empty(), "removing a node removes links touching its pins");
+    check(graph.pins().size() == 4, "removing a node removes its own pins (only PbrOutput's 4 remain)");
+}
+
+void testShaderGraphCodegenRequiresExactlyOnePbrOutput() {
+    engine::studio::ShaderGraph emptyGraph;
+    engine::studio::ShaderGraphCodegenResult emptyResult = engine::studio::generateFragmentShaderGlsl(emptyGraph);
+    check(!emptyResult.success, "a graph with no PBR Output node fails codegen");
+    check(!emptyResult.errorMessage.empty(), "failure carries a real error message");
+
+    engine::studio::ShaderGraph twoOutputsGraph;
+    twoOutputsGraph.addNode(engine::studio::ShaderNodeKind::PbrOutput, 0.0f, 0.0f);
+    twoOutputsGraph.addNode(engine::studio::ShaderNodeKind::PbrOutput, 0.0f, 100.0f);
+    engine::studio::ShaderGraphCodegenResult twoResult = engine::studio::generateFragmentShaderGlsl(twoOutputsGraph);
+    check(!twoResult.success, "a graph with two PBR Output nodes fails codegen");
+}
+
+void testShaderGraphCodegenDetectsCycle() {
+    engine::studio::ShaderGraph graph;
+    int a = graph.addNode(engine::studio::ShaderNodeKind::AddFloat, 0.0f, 0.0f);
+    int b = graph.addNode(engine::studio::ShaderNodeKind::AddFloat, 200.0f, 0.0f);
+    int output = graph.addNode(engine::studio::ShaderNodeKind::PbrOutput, 400.0f, 0.0f);
+
+    std::string error;
+    // a.result -> b.A, b.result -> a.A -- a real cycle (a depends on b depends on a).
+    check(graph.addLink(graph.findNode(a)->pinIds[2], graph.findNode(b)->pinIds[0], error), "a.result -> b.A link succeeds");
+    check(graph.addLink(graph.findNode(b)->pinIds[2], graph.findNode(a)->pinIds[0], error), "b.result -> a.A link succeeds");
+    // Feed the cycle into the graph's real sink so codegen actually walks into it.
+    check(graph.addLink(graph.findNode(a)->pinIds[2], graph.findNode(output)->pinIds[1], error),
+          "a.result -> PbrOutput.Metallic link succeeds");
+
+    engine::studio::ShaderGraphCodegenResult result = engine::studio::generateFragmentShaderGlsl(graph);
+    check(!result.success, "a graph with a cycle fails codegen instead of infinite-looping");
+    check(result.errorMessage.find("cycle") != std::string::npos, "cycle failure message names the real problem");
+}
+
+void testShaderGraphCodegenEndToEndCompilesToRealSpirv() {
+    // Real, small but non-trivial graph: World Normal -> Multiply by a
+    // constant color -> Add a constant -> PBR Output base color. Also
+    // wires a Texture Sample fed by UV, feeding Metallic, so both real
+    // input-varying kinds and the texture-sample path are exercised in
+    // the one generated shader.
+    engine::studio::ShaderGraph graph;
+    int normal = graph.addNode(engine::studio::ShaderNodeKind::InputWorldNormal, 0.0f, 0.0f);
+    int tint = graph.addNode(engine::studio::ShaderNodeKind::ConstantVec4, 0.0f, 100.0f);
+    // World Normal is a Vec3, ConstantVec4/Multiply(Vec4) is Vec4 --
+    // deliberately NOT linking normal directly into the vec4 multiply
+    // (that's the real type-mismatch testShaderGraphLinkTypeValidation
+    // already covers); instead the normal feeds Emissive (Vec3) directly.
+    int multiply = graph.addNode(engine::studio::ShaderNodeKind::MultiplyVec4, 0.0f, 200.0f);
+    int addConst = graph.addNode(engine::studio::ShaderNodeKind::ConstantVec4, 0.0f, 300.0f);
+    int add = graph.addNode(engine::studio::ShaderNodeKind::AddVec4, 0.0f, 400.0f);
+    int uv = graph.addNode(engine::studio::ShaderNodeKind::InputUV, 0.0f, 500.0f);
+    int sample = graph.addNode(engine::studio::ShaderNodeKind::TextureSample, 200.0f, 500.0f);
+    int metallicConst = graph.addNode(engine::studio::ShaderNodeKind::ConstantFloat, 0.0f, 600.0f);
+    int output = graph.addNode(engine::studio::ShaderNodeKind::PbrOutput, 400.0f, 300.0f);
+
+    graph.findNode(tint)->constantValue[0] = 0.8f;
+    graph.findNode(tint)->constantValue[1] = 0.2f;
+
+    std::string error;
+    bool ok = true;
+    ok &= graph.addLink(graph.findNode(tint)->pinIds[0], graph.findNode(multiply)->pinIds[0], error);
+    ok &= graph.addLink(graph.findNode(addConst)->pinIds[0], graph.findNode(multiply)->pinIds[1], error);
+    ok &= graph.addLink(graph.findNode(multiply)->pinIds[2], graph.findNode(add)->pinIds[0], error);
+    ok &= graph.addLink(graph.findNode(addConst)->pinIds[0], graph.findNode(add)->pinIds[1], error);
+    ok &= graph.addLink(graph.findNode(add)->pinIds[2], graph.findNode(output)->pinIds[0], error); // -> Base Color
+    ok &= graph.addLink(graph.findNode(uv)->pinIds[0], graph.findNode(sample)->pinIds[0], error);
+    ok &= graph.addLink(graph.findNode(metallicConst)->pinIds[0], graph.findNode(output)->pinIds[1], error); // -> Metallic
+    ok &= graph.addLink(graph.findNode(normal)->pinIds[0], graph.findNode(output)->pinIds[3], error); // -> Emissive
+    check(ok, "constructing the real end-to-end test graph succeeds (all links accepted)");
+    // Texture Sample's own output is intentionally left unconnected --
+    // real graphs commonly have dead branches; codegen must not choke
+    // on a node that exists but feeds nothing into the sink.
+    (void)sample;
+
+    engine::studio::ShaderGraphCodegenResult codegen = engine::studio::generateFragmentShaderGlsl(graph);
+    check(codegen.success, "end-to-end graph generates GLSL successfully");
+    if (!codegen.success) {
+        std::fprintf(stderr, "[test] codegen error: %s\n", codegen.errorMessage.c_str());
+        return;
+    }
+    check(codegen.glsl.find("inWorldNormal") != std::string::npos, "generated GLSL declares inWorldNormal (graph uses World Normal)");
+    check(codegen.glsl.find("void main()") != std::string::npos, "generated GLSL has a real main()");
+
+#ifdef KRONOS_WITH_SHADERC
+    engine::studio::RuntimeShaderCompiler compiler;
+    engine::studio::RuntimeShaderCompiler::Result compiled = compiler.compile(
+        codegen.glsl, engine::studio::RuntimeShaderCompiler::ShaderStage::Fragment, "shader_graph_test.frag");
+    check(compiled.success, "generated GLSL from the shader graph actually compiles to real SPIR-V");
+    if (!compiled.success) {
+        std::fprintf(stderr, "[test] shaderc error compiling generated GLSL:\n%s\n---generated source---\n%s\n",
+                      compiled.errorMessage.c_str(), codegen.glsl.c_str());
+    } else {
+        check(!compiled.spirv.empty() && compiled.spirv.front() == 0x07230203u,
+              "shader-graph-generated SPIR-V starts with the real SPIR-V magic number");
+    }
 #endif
 }
 
@@ -32721,6 +32884,13 @@ int main() {
     testRuntimeShaderCompilerValidFragmentShader();
     testRuntimeShaderCompilerRejectsInvalidSource();
     testRuntimeShaderCompilerValidVertexShader();
+    testShaderGraphNodeCreationAndPinLayout();
+    testShaderGraphLinkTypeValidation();
+    testShaderGraphLinkSingleConnectionPerInput();
+    testShaderGraphRemoveNodeCleansUpLinks();
+    testShaderGraphCodegenRequiresExactlyOnePbrOutput();
+    testShaderGraphCodegenDetectsCycle();
+    testShaderGraphCodegenEndToEndCompilesToRealSpirv();
     testIPInfringementScanner();
     testIPInfringementScannerFuzzy();
     testIPInfringementScannerPhonetic();

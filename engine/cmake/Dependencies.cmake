@@ -228,6 +228,43 @@ FetchContent_Declare(
     GIT_SHALLOW FALSE
 )
 
+# --- imnodes (Studio Revamp -- "Node-Based Visual Shader Graph" Phase 2):
+#     the real node-graph editor library evaluated against
+#     thedmd/imgui-node-editor -- imnodes is the smaller, real tool for
+#     this job (BeginNode/BeginInputAttribute/BeginOutputAttribute/link
+#     creation, no built-in node "content" beyond what's drawn with
+#     plain ImGui calls between them), same "smallest real tool that
+#     does the job" call this repo already made for ImGuiColorTextEdit
+#     over full Monaco. Same "no CMakeLists.txt of its own worth using"
+#     treatment -- imnodes.h/imnodes.cpp/imnodes_internal.h, hand-rolled
+#     below. Latest tag (v0.5) is from 2022 and stale against current
+#     ImGui; pinned to a specific master commit instead, same
+#     reproducible-build reasoning ImGuizmo/ImGuiColorTextEdit's own
+#     pins above already give.
+# GIT_SUBMODULES "" -- imnodes' own repo registers a vcpkg submodule
+# (used only by its own, unused-here find_package(imgui)-based
+# CMakeLists.txt) that a plain recursive clone would otherwise pull down
+# for nothing.
+FetchContent_Declare(
+    imnodes
+    GIT_REPOSITORY https://github.com/Nelarius/imnodes.git
+    GIT_TAG eb36902c892548ef94f88f51ad7e7c9c7058a71c
+    GIT_SHALLOW FALSE
+    GIT_SUBMODULES ""
+)
+# Populate-only, deliberately not via FetchContent_MakeAvailable --
+# unlike imgui/imguicolortextedit above (which ship no CMakeLists.txt at
+# all, so add_subdirectory-ing them is a real no-op), imnodes ships a
+# real one that does find_package(imgui) against a standalone/vcpkg
+# imgui install this repo doesn't have (its own imgui target is the
+# hand-rolled one below, not a find_package'd one) -- letting
+# FetchContent_MakeAvailable auto-add_subdirectory it fails configure.
+# Hand-rolled the same way imgui/imguicolortextedit already are, below.
+FetchContent_GetProperties(imnodes)
+if(NOT imnodes_POPULATED)
+    FetchContent_Populate(imnodes)
+endif()
+
 FetchContent_MakeAvailable(entt glm volk joltphysics luau enet imgui imguizmo imguicolortextedit nlohmann_json)
 
 # enet's own CMakeLists.txt uses directory-scoped include_directories()
@@ -268,6 +305,16 @@ add_library(imguicolortextedit STATIC
 target_include_directories(imguicolortextedit PUBLIC ${imguicolortextedit_SOURCE_DIR})
 target_link_libraries(imguicolortextedit PUBLIC imgui::imgui)
 add_library(imguicolortextedit::imguicolortextedit ALIAS imguicolortextedit)
+
+# imnodes ships its own CMakeLists.txt but it's built around a different
+# (find_package'd) imgui setup than this repo's own hand-rolled `imgui`
+# target -- same treatment as imguicolortextedit above.
+add_library(imnodes STATIC
+    ${imnodes_SOURCE_DIR}/imnodes.cpp
+)
+target_include_directories(imnodes PUBLIC ${imnodes_SOURCE_DIR})
+target_link_libraries(imnodes PUBLIC imgui::imgui)
+add_library(imnodes::imnodes ALIAS imnodes)
 
 # ImGuizmo's own CMakeLists.txt (FetchContent_MakeAvailable already ran
 # it, producing the imguizmo::imguizmo target with its `src/` include dir)
