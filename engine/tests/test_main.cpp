@@ -223,10 +223,14 @@
 #include "studio/panels/InspectorPanel.hpp"
 #include "core/KronosLaunchUri.hpp"
 #include "core/ScriptChatApi.hpp"
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+// Kronos (Windows CI build failure, Jay's playtest report): this was a
+// second, unguarded copy of the same POSIX-only socket headers the
+// top-of-file `#if !defined(_WIN32)` block already includes -- sys/socket.h
+// doesn't exist on Windows at all (MSVC error C1083), and Windows never
+// needed these here since nothing between this point and MockHttpServer's
+// own now-POSIX-only guard (see that class's comment) uses them directly
+// at file scope. Removed rather than re-guarded a second time; the
+// top-of-file include already covers every POSIX-only symbol this file uses.
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
 #include "net/HttpWorkerPool.hpp"
@@ -30421,6 +30425,15 @@ void testHouseLayoutDoorGapIsOpenInFrontWall() {
 // than a mocked transport: the thing most likely to be wrong is the
 // actual curl request/response handling, and a mocked transport tests
 // none of it.
+//
+// POSIX-only raw socket use (matches this file's own top-of-file "real,
+// Linux/POSIX-only test-side socket use" scope, and the same convention
+// testLanSessionBrowserRejectsAnnouncementWithWrongProtocolVersion() above
+// already established for a single test): Windows would need a real
+// winsock2 port of every ::socket/::bind/::accept call below, not
+// attempted here -- every test that depends on this class is skipped on
+// Windows too, at its own definition and its own call site.
+#if !defined(_WIN32)
 class MockHttpServer {
 public:
     explicit MockHttpServer(std::string responseBody, int statusCode = 200)
@@ -30540,6 +30553,7 @@ private:
     std::string lastBody_;
     std::string lastHeaders_;
 };
+#endif // !defined(_WIN32)
 
 // Wraps a Gemini structured verdict in the envelope the real API returns:
 // the JSON payload arrives as TEXT inside candidates[0].content.parts[0].
@@ -30553,6 +30567,7 @@ std::string geminiEnvelope(bool isSafe, const char* reasonCode) {
     return root.dump();
 }
 
+#if !defined(_WIN32)
 void testHttpWorkerPool() {
     MockHttpServer server(R"({"ok":true})");
     check(server.start(), "the mock HTTP server starts on a real socket");
@@ -30601,7 +30616,9 @@ void testHttpWorkerPool() {
 
     server.stop();
 }
+#endif // !defined(_WIN32)
 
+#if !defined(_WIN32)
 void testGeminiModerationClient() {
     // --- request shape ------------------------------------------------------
     const std::string textBody = engine::safety::GeminiModerationClient::buildTextRequestBody("hello there");
@@ -30733,6 +30750,7 @@ void testGeminiModerationClient() {
 
     pool.shutdown();
 }
+#endif // !defined(_WIN32)
 
 // Textures encoded for the vision endpoint must be a real image container.
 void testTextureInspectionEncoding() {
@@ -30807,6 +30825,7 @@ void testTextureInspectionEncoding() {
 
 // The server-side interceptor: a flagged message must not reach other
 // clients, and the pipeline must not stall or crash doing it.
+#if !defined(_WIN32)
 void testChatModerationInterceptor() {
     MockHttpServer flagging(geminiEnvelope(false, "HARASSMENT"));
     check(flagging.start(), "the chat-moderation mock server starts");
@@ -30897,9 +30916,11 @@ void testChatModerationInterceptor() {
     pool.shutdown();
     flagging.stop();
 }
+#endif // !defined(_WIN32)
 
 // A safe verdict must pass through unchanged, and a dead endpoint must
 // not wedge chat.
+#if !defined(_WIN32)
 void testChatModerationPassAndTimeout() {
     engine::net::HttpWorkerPool pool(2);
     auto localClassifier = [](const std::string&) { return engine::safety::ModerationVerdict{}; };
@@ -30997,6 +31018,7 @@ void testChatModerationPassAndTimeout() {
     clientB.shutdown();
     pool.shutdown();
 }
+#endif // !defined(_WIN32)
 
 void testLuauTextChatService() {
     engine::net::NetworkSession session;
@@ -32449,11 +32471,15 @@ void testGameSlugResolution() {
 int main() {
     testKronosLaunchUriParsing();
     testGameSlugResolution();
+#if !defined(_WIN32)
     testHttpWorkerPool();
     testGeminiModerationClient();
+#endif
     testTextureInspectionEncoding();
+#if !defined(_WIN32)
     testChatModerationInterceptor();
     testChatModerationPassAndTimeout();
+#endif
     testLuauTextChatService();
     testChatMessagePacketSerialization();
     testChatMultiClientLoopback();
