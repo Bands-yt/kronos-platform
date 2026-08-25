@@ -18,7 +18,7 @@ namespace engine::core {
 // tagged, which would have made every user of that build be offered an
 // "update" to the release they were already running. Bump this in the
 // same commit that cuts a real tag.
-inline constexpr const char* kKronosVersion = "0.2.3-alpha";
+inline constexpr const char* kKronosVersion = "0.2.5-alpha";
 
 // Real, honest build-timestamp -- __DATE__/__TIME__ are the compiler's
 // own real values for when this translation unit was actually compiled,

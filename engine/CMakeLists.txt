@@ -14,7 +14,7 @@ project(RobloxStyleEngine
 # About panel, RuntimeShell's Home/Settings screens, the generated
 # project README) reads at runtime -- keep both in sync by hand on each
 # real version bump, same as that header's own comment already states.
-set(KRONOS_VERSION_STRING "0.1.0-alpha")
+set(KRONOS_VERSION_STRING "0.2.5-alpha")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
