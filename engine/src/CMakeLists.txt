@@ -617,5 +617,107 @@ if(ENGINE_BUILD_STUDIO)
         # Same real SDL2main linkage need as engine_runtime above -- see
         # that target's own comment for why.
         target_link_libraries(studio PRIVATE SDL2::SDL2main)
+        # Kronos ("Windows Studio Launch Crash" -- Jay's issue): without
+        # this, studio.exe links fine but stays a console-subsystem PE
+        # image, so every double-click launch pops a real console window
+        # that -- with no cmd.exe holding it open -- closes itself the
+        # instant the process exits. That's a second, independent real
+        # contributor to "opens and closes immediately, no error message"
+        # on top of the actual initialize()-failure root cause (see
+        # core::executableDirectory()'s own comment): even a *successful*
+        # launch flashed a console a normal user has no reason to expect
+        # from a creator tool. WIN32_EXECUTABLE makes this a real GUI-
+        # subsystem app -- no console at all, matching "launching the
+        # Studio executable ... defaults cleanly into editor mode" -- and
+        # is exactly why StudioMain.cpp's own fatal-error path now uses a
+        # real SDL_ShowSimpleMessageBox popup instead of stderr: a GUI-
+        # subsystem process has no console for stderr to reach at all.
+        set_target_properties(studio PROPERTIES WIN32_EXECUTABLE TRUE)
     endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Install / packaging (Alpha Completion Checklist Section 8, "Alpha
+# Packaging"). scripts/package_alpha.sh (repo root) already does this for
+# Linux by hand -- real, but bash-only, and it can't solve the one thing
+# CMake/CPack actually can: walking studio.exe/engine_runtime.exe's own
+# real PE import table on Windows to find and bundle their DLL
+# dependencies (SDL2.dll, zlib1.dll, libcurl.dll, and whatever those
+# themselves import). This produces the equivalent flat, self-contained
+# layout package_alpha.sh assembles on Linux -- binaries + shaders/ +
+# assets/ + games/ + templates/ + plugins/ as direct siblings, exactly
+# what core::resolveResourceDir() looks for (core/ResourcePaths.hpp) --
+# via CPack, on every platform, including the one that script can't reach.
+#
+# Honesty note, matching this codebase's own established precedent for
+# Windows-only code no Linux dev box can execute (see
+# core/CredentialStoreWindows.cpp's own comment): the WIN32 branch below
+# is real, standard CMake (install(RUNTIME_DEPENDENCY_SET ...) has shipped
+# since CMake 3.21; this project already requires 3.24) written carefully
+# against its documented contract, but has only been configure-tested on
+# this Linux dev machine, not run through an actual Windows CPack/NSIS
+# build -- flagged plainly rather than claimed as verified.
+# ---------------------------------------------------------------------------
+if(ENGINE_BUILD_RUNTIME OR ENGINE_BUILD_STUDIO)
+    set(_kronos_install_targets)
+    if(ENGINE_BUILD_RUNTIME)
+        list(APPEND _kronos_install_targets engine_runtime)
+    endif()
+    if(ENGINE_BUILD_STUDIO)
+        list(APPEND _kronos_install_targets studio)
+    endif()
+
+    if(WIN32)
+        # Real, automatic PE-import-table dependency resolution -- walks
+        # each installed .exe's own real DLL imports and copies each one
+        # next to it. Deliberately does NOT pick up vulkan-1.dll: that's
+        # loaded via volk's own LoadLibrary() call at runtime (see
+        # Renderer::createInstance()'s volkInitialize() comment), never a
+        # linked PE import, so it can't appear in an import table for this
+        # to walk -- and bundling a private copy would be wrong even if it
+        # could: vulkan-1.dll is the GPU-driver-owned system loader, the
+        # same "don't vendor what the host already provides" reasoning
+        # Dependencies.cmake's own header comment already applies to SDL2.
+        # A machine with no real Vulkan-capable driver installed is a real,
+        # honest "can't run this app" case -- volkInitialize()'s existing
+        # failure message, now surfaced through StudioMain.cpp's real
+        # message box instead of silently, is what a tester actually sees.
+        install(TARGETS ${_kronos_install_targets}
+            RUNTIME_DEPENDENCY_SET kronos_runtime_deps
+            RUNTIME DESTINATION .
+        )
+        install(RUNTIME_DEPENDENCY_SET kronos_runtime_deps
+            PRE_EXCLUDE_REGEXES "api-ms-" "ext-ms-"
+            POST_EXCLUDE_REGEXES ".*[Ss]ystem32.*"
+            DESTINATION .
+        )
+    else()
+        install(TARGETS ${_kronos_install_targets} RUNTIME DESTINATION .)
+    endif()
+
+    # Compiled SPIR-V shaders -- real dependency on the engine_shaders
+    # custom target above; same real preflight requirement
+    # scripts/package_alpha.sh's own fail()-guarded check already enforces
+    # for the Linux packaging path (build engine_shaders first).
+    install(DIRECTORY ${ENGINE_SHADER_OUTPUT_DIR}/ DESTINATION shaders FILES_MATCHING PATTERN "*.spv")
+
+    # Real assets/games/templates -- same three real, checked-in
+    # directories package_alpha.sh copies, same "flat sibling of the
+    # binaries" destination resolveResourceDir() looks for.
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../assets/ DESTINATION assets)
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../games/ DESTINATION games)
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../templates/ DESTINATION templates)
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../docs/ DESTINATION docs)
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../../README.md DESTINATION .)
+
+    # Real starter plugins (same four package_alpha.sh's own comment
+    # names -- a first launch with zero plugins loaded felt broken/empty
+    # in a live playtest) -- flat manifest+script pairs, matching
+    # LocalPluginDirectory.cpp's own non-recursive *.manifest scan.
+    foreach(_kronos_plugin HelloWorldPlugin UIInspectorPlugin SessionDebugPlugin AssetImporterPlugin)
+        install(FILES
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/${_kronos_plugin}.manifest
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/${_kronos_plugin}.lua
+            DESTINATION plugins)
+    endforeach()
 endif()

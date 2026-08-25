@@ -57,9 +57,15 @@ public:
     // no UnifiedInput at all today, only engine_runtime's character
     // controller does).
     void setRelativeMouseMode(bool enabled);
+    [[nodiscard]] bool isRelativeMouseModeEnabled() const { return relativeMouseModeEnabled_; }
 
-    // Accumulated mouse motion since the last update() call. Only
-    // meaningful while relative mouse mode is enabled.
+    // Accumulated mouse motion since the last update() call. Real, exact
+    // zero whenever relative mouse mode is off (see update()'s own
+    // comment) -- every existing camera-look consumer
+    // (CharacterController::tick(), Application's own networked-camera
+    // hook) already reads this unconditionally, so this is the one real
+    // place "mouse not captured -> camera doesn't spin" has to hold for
+    // it to be true everywhere at once.
     [[nodiscard]] glm::vec2 mouseDelta() const { return mouseDelta_; }
 
     // Kronos ("Active Joining UI" -- engine_runtime ImGui + input
@@ -92,6 +98,7 @@ private:
     SDL_GameController* controller_ = nullptr;
     glm::vec2 mouseDelta_{0.0f};
     glm::vec2 mousePosition_{0.0f};
+    bool relativeMouseModeEnabled_ = false;
     bool initialized_ = false;
 };
 

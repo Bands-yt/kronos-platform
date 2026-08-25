@@ -946,6 +946,15 @@ int main(int argc, char** argv) {
             // sky-crystal clusters and wet-look rock.
             app.renderer().setVolumetricFogEnabled(true);
             app.renderer().setVolumetricFogParams(0.15f, 24, 180.0f);
+            // Kronos ("Cloud Encapsulation / Skybox Clipping" fix): real
+            // height falloff -- see runtime::RuntimeShell::
+            // applyAllSettingsFromProfile()'s own comment for the full
+            // real root cause (setVolumetricFogHeightGradient() existed
+            // but was never called anywhere, so every map -- this one
+            // included -- got zero density falloff with altitude, reading
+            // as a dense dome enclosing the map from a normal camera).
+            // Same real tuned values applied there, for the same reason.
+            app.renderer().setVolumetricFogHeightGradient(1.0f, 0.08f, 0.0f, 40.0f);
             app.renderer().setRTReflectionsEnabled(true);
 
             // Kronos ("Rendering Fidelity" -- full atmospheric-scattering

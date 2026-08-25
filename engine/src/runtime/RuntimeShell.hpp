@@ -844,6 +844,56 @@ private:
 
     bool showPlayerListOverlay_ = false;
 
+    // Kronos ("Esc Pause Menu" fix -- Jay's/live-reported issue: Esc
+    // instantly disconnected instead of opening a menu): real, toggled
+    // exclusively by tick()'s own Escape handling -- gates the whole
+    // in-game HUD/pause panel drawPlayerListOverlay() draws (player list,
+    // graphics settings, notifications, report, Leave Session), which used
+    // to render unconditionally every InGame frame. See that function's
+    // own comment for why hiding it behind a real keyboard toggle (not
+    // requiring the mouse, which relative-mouse-mode camera look can keep
+    // captured) doesn't reintroduce the "no way back to Home" bug the
+    // always-visible version was originally added to fix.
+    bool showPauseMenuOverlay_ = false;
+
+    // Kronos ("Shift Lock" mouse-lock toggle -- live-reported issue: the
+    // cursor was permanently captured/hidden at screen center the whole
+    // time InGame, which made the pause menu -- and every other overlay
+    // -- unusable with a real mouse): real, player-controlled toggle
+    // (Shift, edge-detected via mouseLockKeyWasDown_ same as every other
+    // real key-edge check in this file) -- see tick()'s own handling and
+    // finishPendingGameLoad()'s own comment for the new real default
+    // (unlocked/free cursor) this replaces. Independent of
+    // showPauseMenuOverlay_: the pause menu always forces the actual
+    // cursor free while it's open (see drawPlayerListOverlay()'s own
+    // comment) regardless of this preference, then restores it on close.
+    bool mouseLockEnabled_ = false;
+    bool mouseLockKeyWasDown_ = false;
+
+    // Kronos ("In-Game Player Reporting"): real, player-facing front door
+    // onto the exact same net::NetworkSession::reportPlayer()/
+    // moderation::ReportLog pipeline studio::plugins::ModerationPanel
+    // already exposes to a moderator -- same field shapes/semantics as
+    // that panel's own reportTargetId_/reportCategoryIndex_/
+    // reportDescriptionBuffer_/reportStatus_, mirrored here rather than
+    // shared, since Studio and RuntimeShell are two separate ImGui
+    // contexts (see UITheme's own precedent for why panels aren't shared
+    // across them).
+    int reportTargetId_ = 0;
+    int reportCategoryIndex_ = 0;
+    char reportDescriptionBuffer_[256] = {};
+    std::string reportStatus_;
+
+    // Kronos ("Esc Pause Menu" -- keyboard leave shortcut): real, two-key
+    // confirmation (L arms it, Enter within the same pause-menu session
+    // confirms) so the same keyboard-only reachability the "Leave Session"
+    // button itself provides doesn't require a mouse click either --
+    // deliberately two keys, not a single one, so brushing 'L' while
+    // chatting/typing a report description can't disconnect the player by
+    // accident (see drawPlayerListOverlay()'s own comment for where this
+    // is read/reset).
+    bool leaveShortcutArmed_ = false;
+
     // Kronos ("Player & Chat System" -- chat panel): real, bounded
     // (kMaxChatHistoryLines) history -- same real "don't grow unbounded"
     // reasoning moderation::ChatLog's own ring-buffer already applies,
