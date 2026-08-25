@@ -806,6 +806,19 @@ void StudioApp::drawDockspace() {
             if (ImGui::MenuItem("Performance Overlay", "F3", performanceOverlay_.isOpen())) {
                 performanceOverlay_.toggle();
             }
+            ImGui::Separator();
+            // Kronos ("Studio Revamp" -- "flexible window docking
+            // layouts"): the only way back to a sane layout used to be
+            // deleting imgui.ini and restarting -- undiscoverable, and
+            // loses every other real per-machine ImGui setting stored in
+            // that same file. Real, on-demand re-entry into the exact
+            // same DockBuilder layout the first-ever launch already
+            // builds (see drawDockspace()'s own comment) -- just
+            // triggered by this flag instead of "no docking data exists
+            // yet" alone.
+            if (ImGui::MenuItem("Reset Layout to Default")) {
+                layoutResetRequested_ = true;
+            }
             ImGui::EndMenu();
         }
         pluginManager_.drawMenu();
@@ -835,13 +848,19 @@ void StudioApp::drawDockspace() {
     // ever runs, so a real user's own customized/dragged-around layout
     // from a previous session is never silently clobbered on a later
     // launch -- this only ever fires on a genuinely first-ever run (or
-    // after imgui.ini is deleted).
-    if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr) {
+    // after imgui.ini is deleted) -- or, now, on an explicit real
+    // "Reset Layout to Default" (View menu, see this method's own
+    // rebuild block below) -- layoutResetRequested_ is the only other
+    // thing that can make this branch run.
+    if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr || layoutResetRequested_) {
         // Kronos ("First-Launch Experience"): reuses this exact same
         // detection rather than a second marker-file mechanism -- a
         // genuinely first-ever launch (or imgui.ini deleted) is real
-        // signal either way.
-        welcomePanelOpen_ = true;
+        // signal either way. NOT set on a manual reset -- the Welcome
+        // panel is a first-launch onboarding surface, not something a
+        // user resetting their layout mid-session is asking to see again.
+        if (!layoutResetRequested_) welcomePanelOpen_ = true;
+        layoutResetRequested_ = false;
         ImGui::DockBuilderRemoveNode(dockspaceId);
         ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
         ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);

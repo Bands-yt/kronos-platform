@@ -461,6 +461,11 @@ private:
     // drawDockspace()'s own first-launch detection -- see
     // drawWelcomePanel()'s own comment.
     bool welcomePanelOpen_ = false;
+    // Kronos ("Studio Revamp" -- "flexible window docking layouts"): set
+    // by the View menu's "Reset Layout to Default" item, consumed by
+    // drawDockspace()'s own DockBuilder block on the very next frame --
+    // see that method's own comment.
+    bool layoutResetRequested_ = false;
     // The project-level counterpart to recoveryOfferPath_ above -- see
     // core::ProjectFile::hasRecoveryFile()'s own comment. Kept as a
     // separate field (not reusing recoveryOfferPath_) since a scene
