@@ -7,6 +7,7 @@
 #include <miniaudio.h> // declarations only -- MINIAUDIO_IMPLEMENTATION is defined once, in Audio.cpp's translation unit
 #include <stb_image.h>
 
+#include "core/GltfLoader.hpp"
 #include "core/ObjLoader.hpp"
 
 namespace engine::core {
@@ -23,7 +24,11 @@ std::string lowerExtension(const std::string& path) {
 
 AssetKind detectAssetKind(const std::string& path) {
     std::string ext = lowerExtension(path);
-    if (ext == "obj") return AssetKind::Mesh;
+    // Kronos (Asset Hot-Import Pipeline, Phase 2): real glTF 2.0 support
+    // (core/GltfLoader.hpp) -- .gltf (JSON + external/embedded buffers)
+    // and .glb (self-contained binary) both real-parse to the same
+    // GltfLoadResult shape extractAssetMetadata() below dispatches on.
+    if (ext == "obj" || ext == "gltf" || ext == "glb") return AssetKind::Mesh;
     if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "tga" || ext == "gif") {
         return AssetKind::Texture;
     }
@@ -45,13 +50,29 @@ AssetMetadata extractAssetMetadata(const std::string& path) {
 
     switch (meta.kind) {
         case AssetKind::Mesh: {
-            ObjLoadResult obj = loadObj(path);
-            if (!obj.succeeded) {
-                meta.error = obj.error;
-                return meta;
+            // Real dispatch on the actual extension -- both real
+            // loaders (loadObj()/loadGltf()) report the same
+            // vertices/indices shape, so the metadata extraction below
+            // is identical either way.
+            std::string ext = lowerExtension(path);
+            std::vector<size_t> counts; // [0] = vertex count, [1] = index count -- filled by whichever real loader ran
+            if (ext == "gltf" || ext == "glb") {
+                GltfLoadResult gltf = loadGltf(path);
+                if (!gltf.succeeded) {
+                    meta.error = gltf.error;
+                    return meta;
+                }
+                counts = {gltf.vertices.size(), gltf.indices.size()};
+            } else {
+                ObjLoadResult obj = loadObj(path);
+                if (!obj.succeeded) {
+                    meta.error = obj.error;
+                    return meta;
+                }
+                counts = {obj.vertices.size(), obj.indices.size()};
             }
-            meta.vertexCount = static_cast<uint32_t>(obj.vertices.size());
-            meta.triangleCount = static_cast<uint32_t>(obj.indices.size() / 3);
+            meta.vertexCount = static_cast<uint32_t>(counts[0]);
+            meta.triangleCount = static_cast<uint32_t>(counts[1] / 3);
             meta.succeeded = true;
             break;
         }

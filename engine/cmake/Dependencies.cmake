@@ -241,6 +241,35 @@ FetchContent_Declare(
 #     ImGui; pinned to a specific master commit instead, same
 #     reproducible-build reasoning ImGuizmo/ImGuiColorTextEdit's own
 #     pins above already give.
+# --- tinygltf v3 (Asset Hot-Import Pipeline -- real glTF 2.0
+#     loading): evaluated for exactly this reason -- pure C11, zero
+#     transitive dependencies (its own arena allocator + a
+#     self-contained JSON backend, no STL/exceptions/RTTI, doesn't even
+#     need this repo's own already-vendored nlohmann_json/stb_image
+#     unless TINYGLTF3_ENABLE_STB_IMAGE is explicitly opted into, which
+#     core/GltfLoader.cpp does not -- geometry only, same "mtllib/
+#     material assignment parsed-and-ignored" scope cut ObjLoader.hpp's
+#     own header comment already states for .obj), fuzz-tested against
+#     malicious input. Real tagged release exists (v3.0.1), unlike
+#     ImGuiColorTextEdit/imnodes above.
+#
+# Populate-only, same real reason as imnodes above -- tinygltf's own
+# CMakeLists.txt defines no reusable library target at all (only four
+# gated-behind-TINYGLTF3_BUILD_TESTS test executables plus a raw-file
+# install() rule), so there's nothing useful for FetchContent_MakeAvailable
+# to configure here; the real static target is hand-rolled below, same
+# treatment as imgui/imguicolortextedit/imnodes.
+FetchContent_Declare(
+    tinygltf
+    GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
+    GIT_TAG v3.0.1
+    GIT_SHALLOW TRUE
+)
+FetchContent_GetProperties(tinygltf)
+if(NOT tinygltf_POPULATED)
+    FetchContent_Populate(tinygltf)
+endif()
+
 # GIT_SUBMODULES "" -- imnodes' own repo registers a vcpkg submodule
 # (used only by its own, unused-here find_package(imgui)-based
 # CMakeLists.txt) that a plain recursive clone would otherwise pull down
@@ -315,6 +344,22 @@ add_library(imnodes STATIC
 target_include_directories(imnodes PUBLIC ${imnodes_SOURCE_DIR})
 target_link_libraries(imnodes PUBLIC imgui::imgui)
 add_library(imnodes::imnodes ALIAS imnodes)
+
+# tiny_gltf_v3.c is real, plain C11 -- not C++ -- and CMake compiles a
+# .c file with the C compiler/standard by default regardless of which
+# language the *linking* target is written in, so this Just Works
+# alongside engine_core's own C++20 sources without a special-cased
+# per-file language override.
+add_library(tinygltf STATIC
+    ${tinygltf_SOURCE_DIR}/tiny_gltf_v3.c
+)
+target_include_directories(tinygltf PUBLIC ${tinygltf_SOURCE_DIR})
+set_target_properties(tinygltf PROPERTIES
+    C_STANDARD 11
+    C_STANDARD_REQUIRED ON
+)
+target_compile_definitions(tinygltf PUBLIC TINYGLTF3_ENABLE_FS) # real filesystem I/O -- resolves a .gltf's sibling .bin buffer files
+add_library(tinygltf::tinygltf ALIAS tinygltf)
 
 # ImGuizmo's own CMakeLists.txt (FetchContent_MakeAvailable already ran
 # it, producing the imguizmo::imguizmo target with its `src/` include dir)

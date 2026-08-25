@@ -95,7 +95,8 @@ std::vector<std::string> collectReferencedAssetPaths(const WorldMetadata& metada
     if (!metadata.thumbnailPath.empty()) paths.push_back(metadata.thumbnailPath);
     for (const core::SceneEntityRecord& entity : scene.entities) {
         if (!entity.hasMeshSource) continue;
-        if (entity.meshSource.kind != core::MeshSourceKind::Obj) continue; // Box/Plane/Capsule/Quad are procedural, no real file
+        // Box/Plane/Capsule/Quad are procedural, no real file to validate.
+        if (entity.meshSource.kind != core::MeshSourceKind::Obj && entity.meshSource.kind != core::MeshSourceKind::Gltf) continue;
         if (!entity.meshSource.path.empty()) paths.push_back(entity.meshSource.path);
     }
     return paths;

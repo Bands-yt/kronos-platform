@@ -42,6 +42,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/EditableMesh.hpp"
+#include "core/GltfLoader.hpp"
 #include "core/KMeshFile.hpp"
 #include "core/ObjLoader.hpp"
 #include "core/UvTools.hpp"
@@ -1770,6 +1771,145 @@ void testAssetImportQueueRealMultipleConcurrentImports() {
     check(succeededCount == 3, "every one of the three real jobs real-succeeds");
 
     for (const char* path : {pathA, pathB, pathC}) std::remove(path);
+}
+
+// Real, minimal, valid, self-contained glTF 2.0 JSON -- one triangle
+// (POSITION only, no NORMAL/TEXCOORD_0, so this fixture also exercises
+// loadGltf()'s own flat-normal fallback), embedded base64 buffer (no
+// sibling .bin file needed, so this test has no filesystem dependency
+// beyond the one .gltf file it writes itself). The base64 payload is 3
+// real vec3 float positions (0,0,0)/(1,0,0)/(0,1,0) immediately
+// followed by 3 real uint16 indices (0,1,2) -- the exact same triangle
+// every OBJ-based fixture elsewhere in this file already uses.
+const char* kMinimalGltfJson = R"JSON({
+  "asset": {"version": "2.0"},
+  "scene": 0,
+  "scenes": [{"nodes": [0]}],
+  "nodes": [{"mesh": 0}],
+  "meshes": [{
+    "primitives": [{
+      "attributes": {"POSITION": 0},
+      "indices": 1,
+      "mode": 4
+    }]
+  }],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0]},
+    {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}
+  ],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962},
+    {"buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963}
+  ],
+  "buffers": [
+    {"byteLength": 42, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"}
+  ]
+})JSON";
+
+void testGltfLoaderRealValidTriangle() {
+    const char* path = "test_gltf_triangle.gltf";
+    {
+        std::ofstream out(path);
+        out << kMinimalGltfJson;
+    }
+
+    engine::core::GltfLoadResult result = engine::core::loadGltf(path);
+    check(result.succeeded, "a real, minimal, valid glTF file loads successfully");
+    if (!result.succeeded) std::fprintf(stderr, "[test] loadGltf error: %s\n", result.error.c_str());
+    check(result.vertices.size() == 3, "the real triangle's 3 real vertices are read");
+    check(result.indices.size() == 3, "the real triangle's 3 real indices are read");
+    if (result.vertices.size() == 3) {
+        check(nearlyEqual(result.vertices[0].position.x, 0.0f) && nearlyEqual(result.vertices[0].position.y, 0.0f),
+              "the first real vertex's real position matches the real embedded buffer");
+        check(nearlyEqual(result.vertices[1].position.x, 1.0f), "the second real vertex's real position matches");
+        check(nearlyEqual(result.vertices[2].position.y, 1.0f), "the third real vertex's real position matches");
+        // No NORMAL accessor in this fixture -- loadGltf()'s own real
+        // flat-normal fallback must have computed a real, non-zero,
+        // normalized value, not left the default (0,1,0) untouched by
+        // coincidence.
+        float normalLength = glm::length(result.vertices[0].normal);
+        check(nearlyEqual(normalLength, 1.0f), "the real computed flat-normal fallback produces a real, unit-length normal");
+    }
+    std::remove(path);
+}
+
+void testAssetMetadataExtractionRecognizesGltf() {
+    // Real wiring check: extractAssetMetadata()/detectAssetKind() (not
+    // loadGltf() directly, already covered above) correctly dispatch a
+    // .gltf file to the real glTF path, not silently treating it as
+    // Unknown or misrouting it to loadObj().
+    const char* path = "test_metadata_triangle.gltf";
+    {
+        std::ofstream out(path);
+        out << kMinimalGltfJson;
+    }
+    engine::core::AssetMetadata meta = engine::core::extractAssetMetadata(path);
+    check(meta.succeeded && meta.kind == engine::core::AssetKind::Mesh, "a .gltf file is detected and parsed as a Mesh");
+    check(meta.vertexCount == 3 && meta.triangleCount == 1,
+          "the real .gltf triangle reports 3 vertices, 1 triangle -- same as the equivalent .obj fixture");
+    check(meta.fileSizeBytes > 0, "real on-disk file size is reported for glTF too");
+    std::remove(path);
+}
+
+void testSceneFileMeshSourceKindGltfRoundTrips() {
+    // Real, direct, minimal coverage of the new SceneFile.cpp case
+    // (index 5 -> MeshSourceKind::Gltf) added alongside loadGltf()
+    // itself -- SceneManager::buildMeshFromSource()'s own new Gltf
+    // branch needs a live Vulkan device to exercise for real (see
+    // testSceneFileHierarchyRoundTrip's own comment on why that whole
+    // reconstruction path is untestable headlessly), so this test
+    // covers the one real, headlessly-testable part of the same
+    // change: the serialized MeshSourceKind value itself round-trips.
+    engine::core::SceneFile file;
+    engine::core::SceneEntityRecord withGltf;
+    withGltf.name = "Imported glTF Model";
+    withGltf.hasRenderable = true;
+    withGltf.hasMeshSource = true;
+    withGltf.meshSource.kind = engine::core::MeshSourceKind::Gltf;
+    withGltf.meshSource.path = "assets/models/character.glb";
+    file.entities.push_back(withGltf);
+
+    const char* path = "test_scene_gltf_meshsource.scene";
+    check(file.saveToFile(path), "a scene with a Gltf-kind mesh source saves");
+
+    engine::core::SceneFile loaded;
+    check(loaded.loadFromFile(path), "the scene file loads back");
+    check(loaded.entities.size() == 1, "the one entity round-trips");
+    if (!loaded.entities.empty()) {
+        check(loaded.entities[0].meshSource.kind == engine::core::MeshSourceKind::Gltf,
+              "MeshSourceKind::Gltf round-trips through the real on-disk index encoding, not silently becoming Box");
+        check(loaded.entities[0].meshSource.path == "assets/models/character.glb", "the glTF source path round-trips");
+    }
+    std::remove(path);
+}
+
+void testGltfLoaderRealMalformedFileFailsCleanly() {
+    const char* path = "test_gltf_malformed.gltf";
+    {
+        std::ofstream out(path);
+        out << "{ this is not valid JSON at all";
+    }
+    engine::core::GltfLoadResult result = engine::core::loadGltf(path);
+    check(!result.succeeded, "a real malformed/non-JSON .gltf file real-fails, not a crash");
+    check(!result.error.empty(), "the real failure carries a real, non-empty error message");
+    std::remove(path);
+}
+
+void testGltfLoaderRealNoMeshesFailsCleanly() {
+    const char* path = "test_gltf_no_meshes.gltf";
+    {
+        std::ofstream out(path);
+        out << R"JSON({"asset": {"version": "2.0"}, "meshes": []})JSON";
+    }
+    engine::core::GltfLoadResult result = engine::core::loadGltf(path);
+    check(!result.succeeded, "a real, syntactically-valid glTF file with zero meshes real-fails, not a false success");
+    std::remove(path);
+}
+
+void testGltfLoaderRealMissingFileFailsCleanly() {
+    engine::core::GltfLoadResult result = engine::core::loadGltf("this_gltf_really_does_not_exist.gltf");
+    check(!result.succeeded, "a missing .gltf path real-fails cleanly");
+    check(!result.error.empty(), "the real failure carries a real, non-empty error message");
 }
 
 void testImportSafetyGuard() {
@@ -33021,6 +33161,12 @@ int main() {
     testAssetImportQueueRealMissingFileFailsCleanly();
     testAssetImportQueueDeduplicatesInFlightSubmissions();
     testAssetImportQueueRealMultipleConcurrentImports();
+    testGltfLoaderRealValidTriangle();
+    testAssetMetadataExtractionRecognizesGltf();
+    testSceneFileMeshSourceKindGltfRoundTrips();
+    testGltfLoaderRealMalformedFileFailsCleanly();
+    testGltfLoaderRealNoMeshesFailsCleanly();
+    testGltfLoaderRealMissingFileFailsCleanly();
     testImportSafetyGuard();
     testPluginManifestSaveLoadRoundTrip();
     testScanLocalPluginDirectoryDiscoversRealManifests();

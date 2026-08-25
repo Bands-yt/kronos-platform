@@ -16,6 +16,7 @@ MeshSourceKind meshSourceKindFromIndex(int index) {
         case 2: return MeshSourceKind::Capsule;
         case 3: return MeshSourceKind::Quad;
         case 4: return MeshSourceKind::Obj;
+        case 5: return MeshSourceKind::Gltf;
         default: return MeshSourceKind::Box; // unrecognized on load -- fail soft, matching Prefab::loadFromFile
     }
 }

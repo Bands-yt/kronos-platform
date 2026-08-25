@@ -121,6 +121,7 @@ add_library(engine_core STATIC
     core/TrailerScriptApi.cpp
     core/ScenePicking.cpp
     core/ObjLoader.cpp
+    core/GltfLoader.cpp
     core/AssetMetadata.cpp
     core/AssetCache.cpp
     core/AssetRegistry.cpp
@@ -466,6 +467,7 @@ target_link_libraries(engine_core PUBLIC
     enet
     miniaudio::miniaudio
     stb::image
+    tinygltf::tinygltf
     nlohmann_json::nlohmann_json
     Threads::Threads
     ZLIB::ZLIB

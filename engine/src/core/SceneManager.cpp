@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <unordered_map>
 
+#include "core/GltfLoader.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/ObjLoader.hpp"
 
@@ -31,6 +32,20 @@ Mesh buildMeshFromSource(const MeshSource& source, VmaAllocator allocator, VkDev
             }
             Mesh mesh;
             if (!mesh.uploadFromHost(allocator, device, cmdPool, queue, obj.vertices, obj.indices)) {
+                std::fprintf(stderr, "SceneManager: GPU upload failed re-importing \"%s\"\n", source.path.c_str());
+                return Mesh{};
+            }
+            return mesh;
+        }
+        case MeshSourceKind::Gltf: {
+            GltfLoadResult gltf = loadGltf(source.path);
+            if (!gltf.succeeded) {
+                std::fprintf(stderr, "SceneManager: failed to re-import \"%s\": %s\n", source.path.c_str(),
+                             gltf.error.c_str());
+                return Mesh{};
+            }
+            Mesh mesh;
+            if (!mesh.uploadFromHost(allocator, device, cmdPool, queue, gltf.vertices, gltf.indices)) {
                 std::fprintf(stderr, "SceneManager: GPU upload failed re-importing \"%s\"\n", source.path.c_str());
                 return Mesh{};
             }
