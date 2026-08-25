@@ -66,6 +66,18 @@ if(WIN32)
     # documented "I provide my own main()" opt-out rather than pulling in
     # a GUI entry point it has no use for.
     target_compile_definitions(engine_tests PRIVATE SDL_MAIN_HANDLED)
+
+    # Kronos ("Windows Release CI" -- real build failure): test_main.cpp
+    # is one, deliberately single-file assertion suite (14000+ real
+    # checks, see this file's own header comment on why no test framework
+    # split it up) -- real, live-confirmed MSVC error C1128 ("number of
+    # sections exceeded object file format limit") compiling it, the
+    # standard COFF object-format ceiling a single translation unit this
+    # large runs into on MSVC specifically (GCC/Clang have no equivalent
+    # limit, which is why this was never hit building on Linux). /bigobj
+    # is MSVC's own documented, real fix -- widens the section-count field
+    # in the .obj it emits for this one target, not a workaround.
+    target_compile_options(engine_tests PRIVATE /bigobj)
 endif()
 
 add_test(NAME engine_tests COMMAND engine_tests)
