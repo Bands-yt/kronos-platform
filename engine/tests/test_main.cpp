@@ -56,6 +56,7 @@
 #include "core/AnimationManifest.hpp"
 #include "core/AnimationPlayer.hpp"
 #include "core/AssetCache.hpp"
+#include "core/AssetImportQueue.hpp"
 #include "core/AssetMetadata.hpp"
 #include "core/AssetRegistry.hpp"
 #include "core/Audio.hpp"
@@ -1679,6 +1680,96 @@ void testAssetRegistryImportSaveLoadRoundTrip() {
     std::remove(objPath);
     std::remove(pngPath);
     std::remove(registryPath);
+}
+
+// Real, bounded poll loop -- every real test below waits for actual
+// background worker threads, so a fixed sleep would be either flaky
+// (too short under load) or needlessly slow (too long); this polls
+// until either enough results have arrived or a real wall-clock
+// timeout elapses, the standard shape for testing real async work
+// without a fake clock.
+std::vector<engine::core::AssetImportQueue::Result> pollUntil(engine::core::AssetImportQueue& queue, size_t expectedCount,
+                                                                 int timeoutMillis = 5000) {
+    std::vector<engine::core::AssetImportQueue::Result> collected;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMillis);
+    while (collected.size() < expectedCount && std::chrono::steady_clock::now() < deadline) {
+        std::vector<engine::core::AssetImportQueue::Result> batch = queue.poll();
+        collected.insert(collected.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
+        if (collected.size() < expectedCount) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return collected;
+}
+
+void testAssetImportQueueRealBackgroundImport() {
+    const char* objPath = "test_import_queue_mesh.obj";
+    {
+        std::ofstream out(objPath);
+        out << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    }
+
+    engine::core::AssetImportQueue queue(2);
+    queue.submit(objPath);
+    std::vector<engine::core::AssetImportQueue::Result> results = pollUntil(queue, 1);
+
+    check(results.size() == 1, "a real submitted job produces exactly one real result");
+    if (!results.empty()) {
+        check(results[0].path == objPath, "the real result's path matches what was submitted");
+        check(results[0].metadata.succeeded, "the real background probe succeeds for a real, valid .obj file");
+        check(results[0].metadata.kind == engine::core::AssetKind::Mesh, "the real background probe reports the real AssetKind");
+        check(results[0].metadata.vertexCount == 3 && results[0].metadata.triangleCount == 1,
+              "the real background probe's mesh metadata matches the real file contents");
+    }
+    check(queue.pendingCount() == 0, "no jobs remain pending/in-flight after the one submitted job completed");
+
+    std::remove(objPath);
+}
+
+void testAssetImportQueueRealMissingFileFailsCleanly() {
+    engine::core::AssetImportQueue queue(1);
+    queue.submit("this_file_really_does_not_exist_anywhere.obj");
+    std::vector<engine::core::AssetImportQueue::Result> results = pollUntil(queue, 1);
+
+    check(results.size() == 1, "a job for a missing file still produces a real result, not silence");
+    if (!results.empty()) {
+        check(!results[0].metadata.succeeded, "the real result reports real failure for a missing file");
+        check(!results[0].metadata.error.empty(), "the real failure carries a real, non-empty error message");
+    }
+}
+
+void testAssetImportQueueDeduplicatesInFlightSubmissions() {
+    // Zero real workers -- nothing can complete between the two submit()
+    // calls below, so this is deterministic, not a timing-dependent
+    // race: the second submit() must see the first path still in
+    // inFlight_ and reject it.
+    engine::core::AssetImportQueue queue(0);
+    queue.submit("same_path.obj");
+    queue.submit("same_path.obj");
+    check(queue.pendingCount() == 1, "submitting the same in-flight path twice real-dedupes to one, not two");
+}
+
+void testAssetImportQueueRealMultipleConcurrentImports() {
+    const char* pathA = "test_import_queue_a.obj";
+    const char* pathB = "test_import_queue_b.obj";
+    const char* pathC = "test_import_queue_c.obj";
+    for (const char* path : {pathA, pathB, pathC}) {
+        std::ofstream out(path);
+        out << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    }
+
+    engine::core::AssetImportQueue queue(2);
+    queue.submit(pathA);
+    queue.submit(pathB);
+    queue.submit(pathC);
+    std::vector<engine::core::AssetImportQueue::Result> results = pollUntil(queue, 3);
+
+    check(results.size() == 3, "three real submitted jobs across a 2-worker pool all real-complete");
+    int succeededCount = 0;
+    for (const auto& result : results) {
+        if (result.metadata.succeeded) ++succeededCount;
+    }
+    check(succeededCount == 3, "every one of the three real jobs real-succeeds");
+
+    for (const char* path : {pathA, pathB, pathC}) std::remove(path);
 }
 
 void testImportSafetyGuard() {
@@ -32926,6 +33017,10 @@ int main() {
     testAssetMetadataExtraction();
     testAssetCache();
     testAssetRegistryImportSaveLoadRoundTrip();
+    testAssetImportQueueRealBackgroundImport();
+    testAssetImportQueueRealMissingFileFailsCleanly();
+    testAssetImportQueueDeduplicatesInFlightSubmissions();
+    testAssetImportQueueRealMultipleConcurrentImports();
     testImportSafetyGuard();
     testPluginManifestSaveLoadRoundTrip();
     testScanLocalPluginDirectoryDiscoversRealManifests();

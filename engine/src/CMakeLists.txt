@@ -124,6 +124,7 @@ add_library(engine_core STATIC
     core/AssetMetadata.cpp
     core/AssetCache.cpp
     core/AssetRegistry.cpp
+    core/AssetImportQueue.cpp
     core/LocalProfile.cpp
     core/ParticleSystem.cpp
     core/SceneFile.cpp
