@@ -41,6 +41,7 @@ option(ENGINE_BUILD_TESTS   "Build unit tests" ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(cmake/Dependencies.cmake)
+include(cmake/ShaderCompiler.cmake)
 
 add_subdirectory(src)
 

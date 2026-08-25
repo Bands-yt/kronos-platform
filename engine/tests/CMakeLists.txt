@@ -53,8 +53,12 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/housedemo/HouseLayout.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/CreatorConsole.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticlePresets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/RuntimeShaderCompiler.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine_core imgui::imgui)
+if(TARGET kronos::shaderc)
+    target_link_libraries(engine_tests PRIVATE kronos::shaderc)
+endif()
 
 if(WIN32)
     # SDL2's SDL_main.h (reached transitively through engine_core's own

@@ -244,6 +244,7 @@
 #include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
+#include "studio/RuntimeShaderCompiler.hpp"
 #include "tntwars/ClassSystem.hpp"
 #include "tntwars/CinematicSequence.hpp"
 #include "tntwars/CombatFx.hpp"
@@ -632,6 +633,77 @@ void testAnimationClipPropertyTrackSaveLoadRoundTrip() {
         }
     }
     std::remove(path);
+}
+
+void testRuntimeShaderCompilerValidFragmentShader() {
+    engine::studio::RuntimeShaderCompiler compiler;
+    // Real GLSL, same #version/layout convention this engine's own
+    // shaders/*.frag files use -- not a toy snippet.
+    const std::string source = R"GLSL(
+#version 450
+layout(location = 0) in vec3 inNormal;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec3 n = normalize(inNormal);
+    outColor = vec4(n * 0.5 + 0.5, 1.0);
+}
+)GLSL";
+    engine::studio::RuntimeShaderCompiler::Result result =
+        compiler.compile(source, engine::studio::RuntimeShaderCompiler::ShaderStage::Fragment, "test_valid.frag");
+
+#ifdef KRONOS_WITH_SHADERC
+    check(result.success, "valid fragment shader compiles successfully");
+    check(result.errorMessage.empty(), "successful compile has no error message");
+    check(result.spirv.size() >= 5, "compiled SPIR-V has a real, non-trivial word count");
+    if (!result.spirv.empty()) {
+        check(result.spirv.front() == 0x07230203u, "compiled SPIR-V starts with the real SPIR-V magic number");
+    }
+#else
+    check(!result.success, "runtime shader compilation reports unavailable when KRONOS_WITH_SHADERC is off");
+    check(!result.errorMessage.empty(), "unavailable-build result carries a real, honest error message");
+#endif
+}
+
+void testRuntimeShaderCompilerRejectsInvalidSource() {
+    engine::studio::RuntimeShaderCompiler compiler;
+    const std::string source = R"GLSL(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = thisIdentifierDoesNotExist;
+}
+)GLSL";
+    engine::studio::RuntimeShaderCompiler::Result result =
+        compiler.compile(source, engine::studio::RuntimeShaderCompiler::ShaderStage::Fragment, "test_invalid.frag");
+
+    check(!result.success, "shader referencing an undeclared identifier fails to compile");
+    check(!result.errorMessage.empty(), "failed compile carries a real, non-empty error message");
+#ifdef KRONOS_WITH_SHADERC
+    check(result.errorMessage.find("thisIdentifierDoesNotExist") != std::string::npos,
+          "real shaderc error message names the actual undeclared identifier, not a generic failure string");
+#endif
+}
+
+void testRuntimeShaderCompilerValidVertexShader() {
+    engine::studio::RuntimeShaderCompiler compiler;
+    const std::string source = R"GLSL(
+#version 450
+layout(location = 0) in vec3 inPosition;
+layout(push_constant) uniform PushConstants { mat4 mvp; } pc;
+void main() {
+    gl_Position = pc.mvp * vec4(inPosition, 1.0);
+}
+)GLSL";
+    engine::studio::RuntimeShaderCompiler::Result result =
+        compiler.compile(source, engine::studio::RuntimeShaderCompiler::ShaderStage::Vertex, "test_valid.vert");
+
+#ifdef KRONOS_WITH_SHADERC
+    check(result.success, "valid vertex shader compiles successfully");
+    check(!result.spirv.empty() && result.spirv.front() == 0x07230203u,
+          "compiled vertex SPIR-V starts with the real SPIR-V magic number");
+#else
+    check(!result.success, "runtime shader compilation reports unavailable when KRONOS_WITH_SHADERC is off");
+#endif
 }
 
 void testIPInfringementScanner() {
@@ -32646,6 +32718,9 @@ int main() {
     testPropertyTrackTypeMismatchRejected();
     testPropertyTrackConstantEasing();
     testAnimationClipPropertyTrackSaveLoadRoundTrip();
+    testRuntimeShaderCompilerValidFragmentShader();
+    testRuntimeShaderCompilerRejectsInvalidSource();
+    testRuntimeShaderCompilerValidVertexShader();
     testIPInfringementScanner();
     testIPInfringementScannerFuzzy();
     testIPInfringementScannerPhonetic();

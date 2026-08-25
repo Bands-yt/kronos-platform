@@ -569,6 +569,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/panels/InspectorPanel.cpp
         studio/panels/ScriptEditorPanel.cpp
         studio/panels/ColorTextEditBackend.cpp
+        studio/RuntimeShaderCompiler.cpp
         studio/panels/StatsPanel.cpp
         studio/panels/PerformanceOverlayPanel.cpp
         studio/panels/SceneSearchPanel.cpp
@@ -617,8 +618,16 @@ if(ENGINE_BUILD_STUDIO)
     # LuauLiveAnalyzer) -- engine_runtime never edits scripts, so it has no
     # reason to also link Luau's type-checker on top of the Luau.VM/
     # Luau.Compiler it already links for actually running them.
+    # kronos::shaderc: same real "Studio-only, authoring-time" reasoning --
+    # engine_runtime never compiles a shader while running, only Studio
+    # (RuntimeShaderCompiler.hpp, Shader Graph Phase 1) does. Guarded by
+    # TARGET so a build with KRONOS_BUILD_SHADER_COMPILER OFF still
+    # configures (ShaderCompiler.cmake's own real, honest opt-out).
     target_link_libraries(studio PRIVATE engine_core imgui::imgui imguizmo::imguizmo
         imguicolortextedit::imguicolortextedit Luau.Analysis Luau.Config)
+    if(TARGET kronos::shaderc)
+        target_link_libraries(studio PRIVATE kronos::shaderc)
+    endif()
     if(WIN32)
         # Same real SDL2main linkage need as engine_runtime above -- see
         # that target's own comment for why.
