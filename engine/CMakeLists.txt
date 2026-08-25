@@ -64,3 +64,49 @@ message(STATUS "  Build runtime   : ${ENGINE_BUILD_RUNTIME}")
 message(STATUS "  Build studio    : ${ENGINE_BUILD_STUDIO}")
 message(STATUS "  Build tests     : ${ENGINE_BUILD_TESTS}")
 message(STATUS "")
+
+# ---------------------------------------------------------------------------
+# CPack: a real installer/zip built from src/CMakeLists.txt's own
+# install() rules (see that file's own comment for what those actually
+# bundle and why). This section is genuinely new -- there was no CPack
+# config anywhere in this tree before this pass, which is the concrete
+# gap underneath "kronos-windows-x64 has no real, repeatable packaging
+# story" (scripts/package_alpha.sh, the one packaging script that did
+# exist, is real but Linux/bash-only, see its own header comment).
+# ---------------------------------------------------------------------------
+set(CPACK_PACKAGE_NAME "KronosStudio")
+set(CPACK_PACKAGE_VENDOR "Kronos")
+set(CPACK_PACKAGE_VERSION "${KRONOS_VERSION_STRING}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Kronos Studio")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE")
+# Real, flat, relocatable install layout (src/CMakeLists.txt's own
+# install(DESTINATION .) for the binaries) -- matches
+# core::resolveResourceDir()'s own expectations; a versioned subfolder
+# inside the package would break it, so this is deliberately off.
+set(CPACK_PACKAGE_RELOCATABLE ON)
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+
+if(WIN32)
+    # NSIS for a real installer (Start Menu shortcuts, uninstaller); ZIP
+    # alongside it as the no-install-required option Jay's own "just run
+    # the exe" workflow needs.
+    set(CPACK_GENERATOR "NSIS;ZIP")
+    set(CPACK_NSIS_DISPLAY_NAME "Kronos Studio")
+    set(CPACK_NSIS_PACKAGE_NAME "Kronos Studio ${KRONOS_VERSION_STRING}")
+    set(CPACK_NSIS_MODIFY_PATH OFF)
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    if(ENGINE_BUILD_STUDIO)
+        set(CPACK_NSIS_INSTALLED_ICON_NAME "studio.exe")
+        set(CPACK_PACKAGE_EXECUTABLES "studio;Kronos Studio")
+    endif()
+    if(ENGINE_BUILD_RUNTIME)
+        list(APPEND CPACK_PACKAGE_EXECUTABLES "engine_runtime;Kronos")
+    endif()
+elseif(APPLE)
+    set(CPACK_GENERATOR "TGZ")
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
+
+include(CPack)

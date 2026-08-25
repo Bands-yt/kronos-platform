@@ -146,7 +146,8 @@ bool StudioApp::initialize() {
     windowInfo.iconPath =
         core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/icons/kronos_icon.png";
     if (!window_.initialize(windowInfo)) {
-        std::fprintf(stderr, "StudioApp: Window::initialize failed.\n");
+        lastInitError_ = "Window::initialize failed (SDL/video init). Is a display/GPU driver available?";
+        std::fprintf(stderr, "StudioApp: %s\n", lastInitError_.c_str());
         return false;
     }
 
@@ -155,12 +156,27 @@ bool StudioApp::initialize() {
     rendererInfo.appName = "Studio";
     rendererInfo.enableValidation = true;
     if (!renderer_.initialize(rendererInfo)) {
-        std::fprintf(stderr, "StudioApp: Renderer::initialize failed.\n");
+        // Real, deliberately specific over generic: this is the one
+        // initialize() failure a packaged install is actually likely to
+        // hit (missing Vulkan runtime, or -- the real root cause behind
+        // Jay's crash-loop -- shader/asset directories that don't exist
+        // next to this executable, see core::executableDirectory()'s own
+        // comment). Naming the two resolved paths directly in the message
+        // gives a tester something actionable instead of just "it broke".
+        lastInitError_ =
+            "Renderer::initialize failed. Checked shader dir: \"" +
+            core::resolveResourceDir(core::executableDirectory(), "shaders", ENGINE_SHADER_DIR) +
+            "\", asset dir: \"" +
+            core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) +
+            "\". Possible causes: no Vulkan-capable GPU/driver installed, or this install is missing its "
+            "shaders/assets folders.";
+        std::fprintf(stderr, "StudioApp: %s\n", lastInitError_.c_str());
         return false;
     }
 
     if (!initImGuiVulkanBackend()) {
-        std::fprintf(stderr, "StudioApp: ImGui Vulkan backend init failed.\n");
+        lastInitError_ = "ImGui Vulkan backend init failed.";
+        std::fprintf(stderr, "StudioApp: %s\n", lastInitError_.c_str());
         return false;
     }
 

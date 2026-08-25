@@ -94,6 +94,7 @@ bool UnifiedInput::sampleBinding(const InputBinding& binding, float& outAxisValu
 
 void UnifiedInput::setRelativeMouseMode(bool enabled) {
     SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE);
+    relativeMouseModeEnabled_ = enabled;
     if (enabled) {
         // Discard whatever accumulated before capture started -- SDL
         // reports the *first* post-enable delta relative to wherever the
@@ -107,7 +108,18 @@ void UnifiedInput::setRelativeMouseMode(bool enabled) {
 void UnifiedInput::update() {
     int dx = 0, dy = 0;
     SDL_GetRelativeMouseState(&dx, &dy); // resets SDL's internal accumulator each call
-    mouseDelta_ = {static_cast<float>(dx), static_cast<float>(dy)};
+    // Kronos ("Shift Lock" mouse-lock toggle -- live-reported issue: the
+    // cursor stayed captured/hidden at screen center even with an ImGui
+    // overlay open, making its buttons unreachable by mouse): real,
+    // honest zero here whenever relative mouse mode is off. SDL_GetRelativeMouseState()
+    // keeps reporting real deltas even in normal (non-captured) mouse
+    // mode, as the cursor moves around the window -- every existing
+    // camera-look consumer (CharacterController::tick(), Application's
+    // own networked-camera hook) reads mouseDelta() unconditionally, so
+    // zeroing it here, in the one real place it's computed, is what
+    // makes "cursor free -> camera doesn't spin" true everywhere at once
+    // instead of threading a lock flag through every consumer.
+    mouseDelta_ = relativeMouseModeEnabled_ ? glm::vec2(static_cast<float>(dx), static_cast<float>(dy)) : glm::vec2(0.0f);
 
     int x = 0, y = 0;
     SDL_GetMouseState(&x, &y);

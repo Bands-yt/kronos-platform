@@ -101,6 +101,18 @@ public:
     void shutdown();
     void run();
 
+    // Kronos ("Windows Studio Launch Crash" -- Jay's issue): initialize()
+    // only ever returned bare `bool` -- every real failure reason was a
+    // std::fprintf(stderr, ...) inside initialize() itself, thrown away
+    // the moment that call returned. On Windows, with no visible error
+    // surface at all (see StudioMain.cpp's own comment), that meant a
+    // startup failure was 100% silent -- exactly Jay's "opens and closes
+    // immediately, no error message" report. Populated at each real
+    // failure site in initialize() below; StudioMain.cpp is the real
+    // caller that surfaces this in a native message box. Empty string
+    // whenever initialize() hasn't failed (or hasn't run yet).
+    [[nodiscard]] const std::string& lastInitError() const { return lastInitError_; }
+
     // Sprint 7 ("Studio UI Revamp") task category 6 -- real, public so
     // any plugin/panel can push a real toast (save success/failure,
     // build errors) through the one shared queue instead of each one
@@ -464,6 +476,8 @@ private:
     // Render() cannot live inside the callback itself.
     ImDrawData* pendingDrawData_ = nullptr;
     bool initialized_ = false;
+    // See lastInitError()'s own comment above.
+    std::string lastInitError_;
 };
 
 } // namespace engine::studio

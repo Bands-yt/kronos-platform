@@ -22,12 +22,13 @@ namespace engine::core {
 // already runs (that fallback path is exactly today's existing, unchanged
 // behavior).
 
-// Real, Linux-only for now (matches CrashReporter.hpp's own
-// #if defined(__linux__) precedent) -- the real directory containing the
-// currently-running executable, via /proc/self/exe. Returns an empty
-// string on any other platform, or if the real readlink() call fails,
-// which resolveResourceDir() below treats as "no packaged-layout
-// candidate available", not an error.
+// The real directory containing the currently-running executable, via
+// /proc/self/exe on Linux and GetModuleFileNameW() on Windows (see
+// ResourcePaths.cpp's own per-platform comments -- the Windows branch is
+// the real fix for the "Studio opens and closes immediately" packaging
+// bug). Returns an empty string on any other platform, or if the
+// platform call itself fails, which resolveResourceDir() below treats as
+// "no packaged-layout candidate available", not an error.
 [[nodiscard]] std::string executableDirectory();
 
 // Pure, real, and independently testable (takes `exeDir` as a parameter

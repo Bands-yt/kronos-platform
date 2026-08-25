@@ -470,7 +470,16 @@ void RuntimeShell::showSessionBrowser() {
 
 void RuntimeShell::showPlayerList() {
     if (state_ != ShellState::InGame) return;
-    showPlayerListOverlay_ = !showPlayerListOverlay_;
+    // Kronos ("Esc Pause Menu" redesign): the player list moved from its
+    // own standalone window into a real tab inside the pause menu (see
+    // drawPlayerListOverlay()'s own comment) -- this real, scripted
+    // ui.showPlayerList() entry point (ScriptUiApi.cpp) now opens that
+    // menu with the Players tab pre-selected instead. showPlayerListOverlay_
+    // is reused here as the real one-shot "select this tab" signal
+    // drawPlayerListOverlay() consumes and clears the next time it draws.
+    showPauseMenuOverlay_ = true;
+    showPlayerListOverlay_ = true;
+    app_.setMovementInputSuspended(true);
 }
 
 void RuntimeShell::joinSession(const net::DiscoveredSession& session) {
@@ -562,6 +571,7 @@ void RuntimeShell::leaveSession() {
     app_.setNetworkedLocalPlayerEntity(core::kNullEntity);
     app_.input().setRelativeMouseMode(false);
     showPlayerListOverlay_ = false;
+    showPauseMenuOverlay_ = false;
     // A stale server_key from a session that just ended must never
     // survive into the next presence heartbeat -- see these members'
     // own comment on RuntimeShell.hpp.
@@ -736,7 +746,17 @@ void RuntimeShell::finishPendingGameLoad() {
     gamePlayLog_.recordSessionStart(currentGameId_, nowUnixSeconds());
     (void)gamePlayLog_.saveToFile(kGamePlayLogPath);
 
-    app_.input().setRelativeMouseMode(true);
+    // Kronos ("Shift Lock" mouse-lock toggle -- live-reported issue: the
+    // cursor used to be captured/hidden the instant gameplay started,
+    // with no way to see or use it short of leaving): real, honest
+    // default now -- mouse free (not captured), matching what the player
+    // sees immediately; Shift (see tick()'s own toggle handling) is the
+    // one, real way to opt into the old always-captured look-around
+    // behavior. mouseLockEnabled_ itself is left untouched here (not
+    // forced false) so a player's own Shift-lock preference from earlier
+    // in this same session -- e.g. leaving one game and starting another
+    // -- persists across that transition rather than silently resetting.
+    app_.input().setRelativeMouseMode(mouseLockEnabled_);
     state_ = computeNextState(state_, ShellEvent::GameLoadFinished);
 }
 
@@ -827,7 +847,10 @@ void RuntimeShell::tick(float dt) {
         net::NetworkSession& session = app_.networkSession();
         if (session.localPlayerId() != net::kInvalidPlayer) {
             state_ = computeNextState(state_, ShellEvent::JoinSucceeded);
-            app_.input().setRelativeMouseMode(true);
+            // Kronos ("Shift Lock" mouse-lock toggle): same real default
+            // as finishPendingGameLoad()'s own local-Play entry point --
+            // see that call's own comment.
+            app_.input().setRelativeMouseMode(mouseLockEnabled_);
             // Kronos ("Social and Messaging Roadmap" telemetry ask --
             // "session joins"): real, local telemetry on a real,
             // confirmed join (not just an attempt).
@@ -864,28 +887,66 @@ void RuntimeShell::tick(float dt) {
         state_ = ShellState::Error;
     }
 
-    // Kronos ("Active Joining UI" -- real bug fix): Escape always leaves
-    // InGame back to Home, matching every other game's own convention
-    // (the real gap a live playtest surfaced -- once reached via the Home
-    // Screen's "Play"/"Join", not a CLI flag, InGame previously had no
-    // way back out at all: no keyboard shortcut, and the mouse itself is
-    // captured/hidden by relative mouse mode, so the always-visible HUD's
-    // own buttons below were unreachable too). leaveSession() itself
-    // already no-ops safely on an inactive (offline) NetworkSession -- see
-    // NetworkSession::shutdown()'s own mode/sessionActuallyStarted_ guard
-    // -- so this one call is correct for both online and offline play.
+    // Kronos ("Esc Pause Menu" fix -- live-reported issue: Escape
+    // instantly disconnected the player instead of opening a menu, with
+    // no confirmation and no way to back out of an accidental press).
+    // Escape now toggles the real pause-menu overlay (player list,
+    // graphics settings, notifications, report, and an explicit "Leave
+    // Session" button -- see drawPlayerListOverlay()'s own comment for
+    // that panel) instead of leaving directly. The real reachability
+    // guarantee the previous "Active Joining UI" fix cared about --
+    // there must always be a way back to Home even while relative mouse
+    // mode has the cursor captured/hidden, so the panel's own mouse-driven
+    // buttons are unreachable -- still holds: this is a keyboard toggle,
+    // not a mouse click, so it works identically whether or not the
+    // cursor is currently captured. Movement input is suspended exactly
+    // while the menu is open, same convention every other overlay here
+    // (Settings/Friends/Notifications/Chat) already follows, so the
+    // player's character doesn't keep walking while they're menuing.
     // Kronos ("Player & Chat System" -- chat panel): Escape closes an
     // open chat box first, same real "Escape backs out one real layer at
     // a time" convention every other real menu in this shell already
     // follows (SessionBrowser/GameCatalogue/Error's own ReturnHome) --
     // without this real guard, pressing Escape to cancel a half-typed
-    // chat message would instead leave the whole game, a real, jarring
-    // bug this check exists specifically to prevent.
+    // chat message would instead pop the pause menu open underneath it,
+    // a real, jarring bug this check exists specifically to prevent.
     bool escapeDown = state_ == ShellState::InGame && !showChatPanel_ && app_.input().isActionDown("ToggleMenu");
     if (escapeDown && !escapeKeyWasDown_) {
-        leaveSession();
+        showPauseMenuOverlay_ = !showPauseMenuOverlay_;
+        app_.setMovementInputSuspended(showPauseMenuOverlay_);
+        // Kronos ("Shift Lock" mouse-lock toggle -- live-reported issue:
+        // "my cursor is stuck in the middle of the screen" -- the pause
+        // menu drew real, clickable buttons while relative mouse mode
+        // kept the real OS cursor captured/hidden/recentered, so none of
+        // them were actually reachable): the menu always forces the real
+        // cursor free while it's open, regardless of the player's own
+        // mouseLockEnabled_ preference, then restores exactly that
+        // preference on close -- a player who had Shift-locked look-
+        // around on before opening the menu gets it back after closing,
+        // one who didn't stays free.
+        app_.input().setRelativeMouseMode(showPauseMenuOverlay_ ? false : mouseLockEnabled_);
     }
     escapeKeyWasDown_ = escapeDown;
+
+    // Kronos ("Shift Lock" mouse-lock toggle): real, player-controlled --
+    // Shift both drives the existing real "Run" action
+    // (CharacterController::configureInput(), continuous -- "is it down
+    // right now", real walk/run speed) and, on its own press-edge here,
+    // toggles this real preference (discrete -- "was it just pressed") --
+    // the two read the same physical key without conflicting, the same
+    // way a single key drives both "hold to run" and "tap to toggle" in
+    // many real games. Gated off while the pause menu/chat panel is open
+    // (or any real ImGui text field wants keyboard input) so it can't
+    // fire while the player is typing a chat message or a report
+    // description.
+    ImGuiIO& shiftLockIo = ImGui::GetIO();
+    bool mouseLockKeyDown = state_ == ShellState::InGame && !showPauseMenuOverlay_ && !showChatPanel_ &&
+                             !shiftLockIo.WantTextInput && app_.input().isActionDown("Run");
+    if (mouseLockKeyDown && !mouseLockKeyWasDown_) {
+        mouseLockEnabled_ = !mouseLockEnabled_;
+        app_.input().setRelativeMouseMode(mouseLockEnabled_);
+    }
+    mouseLockKeyWasDown_ = mouseLockKeyDown;
 
     tickToasts(dt);
     // Kronos ("Load Testing and Telemetry" / "Simple Recommendation
@@ -959,6 +1020,20 @@ void RuntimeShell::tick(float dt) {
                 tickTrailerCaptureMode(dt);
                 tickEmoteActivation();
                 if (!trailerHudHidden_) {
+                    // Kronos ("Shift Lock" mouse-lock toggle): real,
+                    // minimal crosshair -- the one, real visual cue that
+                    // the cursor is currently captured (mouse movement
+                    // drives camera look) versus free (normal pointer,
+                    // see mouseLockEnabled_'s own comment). Screen-space,
+                    // drawn via the foreground draw list so it always
+                    // sits above the 3D scene and every real ImGui panel.
+                    if (mouseLockEnabled_) {
+                        ImVec2 center(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f);
+                        ImDrawList* fg = ImGui::GetForegroundDrawList();
+                        ImU32 crosshairColor = IM_COL32(255, 255, 255, 200);
+                        fg->AddLine(ImVec2(center.x - 6.0f, center.y), ImVec2(center.x + 6.0f, center.y), crosshairColor, 1.5f);
+                        fg->AddLine(ImVec2(center.x, center.y - 6.0f), ImVec2(center.x, center.y + 6.0f), crosshairColor, 1.5f);
+                    }
                     drawPlayerListOverlay();
                     tickChatActivation();
                     drawChatPanel();
@@ -2685,6 +2760,58 @@ void RuntimeShell::applyAllSettingsFromProfile() {
     // bundles by default (see LocalProfile::volumetricFogEnabled's own
     // comment).
     app_.renderer().setVolumetricFogEnabled(localProfile_.volumetricFogEnabled);
+    // Kronos ("Washed-Out Lighting" fix): real root cause of the
+    // live-reported "blinding white ambient fog" complaint -- neither
+    // applyQualityPreset() above (Medium/High both call
+    // setVolumetricFogEnabled(true)) nor the explicit profile override
+    // just above it ever called setVolumetricFogParams(), so a fresh
+    // LocalProfile (qualityPresetIndex defaults to 1/Medium,
+    // volumetricFogEnabled defaults to true -- see that field's own
+    // comment) left the pass running with core::Renderer's raw,
+    // never-tuned class defaults (scatteringIntensity 1.0, 20 steps,
+    // 120 units -- see Renderer.hpp's own volumetricFogScatteringIntensity_
+    // field). shaders/volumetric_fog.frag's own stepRadiance term sums
+    // that scatteringIntensity against the *directional sun's* own
+    // intensity (up to 4.0, see TimeOfDay.cpp's kMaxIntensity) over every
+    // screen pixel -- background sky rays included, not just real
+    // geometry -- which is exactly why the previous pass at TimeOfDay.cpp's
+    // own ambient/fogDensity values (scene.frag's separate, much weaker
+    // per-fragment fog) had no visible effect: this raymarch pass was the
+    // actual dominant haze, and nothing in this file ever tuned it for a
+    // real outdoor gameplay camera. Real, already-proven-good values --
+    // the exact same tuning main.cpp's own --tntwars mode already ships
+    // with (see its setVolumetricFogParams() call) -- applied here
+    // unconditionally so every combination of preset/override that can
+    // leave volumetric fog enabled gets real, sane params instead of
+    // sometimes falling through to the untuned class defaults.
+    app_.renderer().setVolumetricFogParams(0.15f, 24, 180.0f);
+    // Kronos ("Cloud Encapsulation / Skybox Clipping" fix -- live-reported
+    // issue: the fog reads as a dense dome that completely encloses the
+    // map, hiding the sun/skybox from a normal standing camera and only
+    // clearing up when looking up from under real geometry): real root
+    // cause -- core::Renderer::setVolumetricFogHeightGradient() has
+    // existed since the "Real-Time Rendering Evolved" trailer work (see
+    // its own header comment) but was never actually called by anything,
+    // anywhere in this codebase (confirmed by a full-repo grep) -- so
+    // every real caller silently kept its documented 1/1 no-op default:
+    // *zero* density falloff with altitude. shaders/volumetric_fog.frag's
+    // raymarch treats an open-sky ray exactly like a ray toward nearby
+    // ground -- full density for the entire real march distance -- which
+    // is exactly why the sun/sky only "poke through" when a real, much
+    // shorter occluder (a roof, a platform from underneath) cuts the
+    // march short instead: that's not a real depth-buffer or skybox bug,
+    // it's this pass integrating uniform fog through open sky as if it
+    // were solid haze all the way up. Real fix: a real height gradient --
+    // full ground-level density unchanged (groundDensityMultiplier 1.0,
+    // groundHeightY 0.0, matching real outdoor haze at foot level) that
+    // falls off to a real, thin upper-atmosphere density
+    // (aloftDensityMultiplier 0.08) within falloffHeight (40 real world
+    // units -- comfortably above normal jumping/building height in these
+    // maps, well short of the pass's own 180-unit maxDistance above), so
+    // an upward-facing ray spends the vast majority of its real march
+    // length in that thin aloft layer instead of accumulating a full
+    // dome's worth of extinction/in-scattering.
+    app_.renderer().setVolumetricFogHeightGradient(1.0f, 0.08f, 0.0f, 40.0f);
     app_.renderer().setVsyncEnabled(localProfile_.vsyncEnabled);
     // Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real
     // -- applies a saved fullscreen/resolution choice on startup, same
@@ -4230,27 +4357,54 @@ void RuntimeShell::drawPlayerListOverlay() {
     net::NetworkSession& session = app_.networkSession();
     bool online = session.isActive();
 
-    // Always-visible, minimal HUD -- a real "leave" action must always be
-    // reachable while InGame, not hidden behind a toggle. Drawn for
-    // offline play too now (previously an early-return here left offline
-    // play with no HUD -- and therefore no discoverable way back to Home
-    // -- at all; see tick()'s own Escape handling for the actual fix,
-    // this text is what makes it discoverable without reading docs).
-    ImGui::SetNextWindowPos(ImVec2(16.0f, 16.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.65f);
-    if (ImGui::Begin("##InGameHud", nullptr,
-                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav |
-                          ImGuiWindowFlags_NoFocusOnAppearing)) {
-        ImGui::Text("%s", online ? (session.isServer() ? "Hosting" : "Connected") : "Offline");
-        if (online) {
-            if (ImGui::Button("Leave Session")) leaveSession();
-            ImGui::SameLine();
-            if (ImGui::Button(showPlayerListOverlay_ ? "Hide Players" : "Show Players")) {
-                showPlayerListOverlay_ = !showPlayerListOverlay_;
-            }
-        } else {
-            if (ImGui::Button("Back to Home")) leaveSession();
-        }
+    // Kronos ("Esc Pause Menu" fix -- live-reported issue: Escape used to
+    // instantly disconnect the player): this whole panel used to render
+    // unconditionally every InGame frame specifically so a "leave" action
+    // was always reachable even while relative mouse mode kept the cursor
+    // captured/hidden (see the real bug that prior fix solved). It's now
+    // gated behind showPauseMenuOverlay_, toggled exclusively by tick()'s
+    // own Escape handling -- that reachability guarantee still holds
+    // because the toggle itself is keyboard-only, never requiring the
+    // (possibly-captured) mouse to open the menu in the first place.
+    if (!showPauseMenuOverlay_) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Kronos ("Esc Pause Menu" redesign): a real, distinctly-Kronos-
+    // branded pause menu -- drawn from core::kronos_palette (the exact
+    // same palette Home/Discover/Create already draw from, see
+    // UITheme.hpp) and the real Kronos bold font, not a reskin of any
+    // other platform's own pause-menu chrome. Functionally tabbed
+    // (Players/Report) plus a real keyboard-shortcut row, replacing the
+    // old flat always-on-top button strip.
+    using namespace engine::core::kronos_palette;
+    // Kronos ("Esc Pause Menu" -- live-reported issue: with the cursor
+    // now genuinely free while this is open (see the Escape-toggle
+    // block's own comment), a top-left-corner window sits far from
+    // wherever a player's eye/cursor actually lands on open -- centered
+    // is the real, standard placement for this kind of modal pause menu.
+    ImVec2 pauseMenuCenter(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    ImGui::SetNextWindowPos(pauseMenuCenter, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f), ImGuiCond_Appearing);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kCharcoal));
+    ImGui::PushStyleColor(ImGuiCol_Border, paletteColor(kSkyBlue));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+    if (ImGui::Begin("##KronosPauseMenu", nullptr, ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoCollapse)) {
+        ImFont* bold = core::kronosBoldFont();
+        if (bold) ImGui::PushFont(bold);
+        ImGui::TextColored(paletteColor(kTextBright), "MENU");
+        if (bold) ImGui::PopFont();
+        ImGui::SameLine();
+        ImGui::TextColored(paletteColor(kTextMuted), "-- %s",
+                            online ? (session.isServer() ? "Hosting" : "Connected") : "Offline");
+        ImGui::Separator();
+
+        // Quick-access row -- the exact same real overlays the old
+        // always-visible HUD opened, unchanged in behavior, just no
+        // longer drawn every frame (see this function's own header
+        // comment on why hiding it behind Esc is still always reachable).
+        if (ImGui::Button(online ? "Leave Session" : "Back to Home")) leaveSession();
         ImGui::SameLine();
         // Kronos ("Critical Fix -- Chat Activation"): real, shown offline
         // too now -- see tickChatActivation()'s own comment for why the
@@ -4273,11 +4427,10 @@ void RuntimeShell::drawPlayerListOverlay() {
             showAvatarShopOverlay_ = true;
             app_.setMovementInputSuspended(true);
         }
-        ImGui::SameLine();
         // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
         // Layer" -- "reachable from Home and in-game pause menu"): real,
         // same overlay pattern as the "Shop" button just above.
-        if (ImGui::Button("Settings")) {
+        if (ImGui::Button("Graphics Settings")) {
             ensureLocalProfileLoaded();
             showSettingsOverlay_ = true;
             app_.setMovementInputSuspended(true);
@@ -4296,52 +4449,138 @@ void RuntimeShell::drawPlayerListOverlay() {
             showNotificationsOverlay_ = true;
             app_.setMovementInputSuspended(true);
         }
-        ImGui::TextDisabled("Press Esc to leave");
-    }
-    ImGui::End();
 
-    if (!online || !showPlayerListOverlay_) return;
+        ImGui::Spacing();
+        if (ImGui::BeginTabBar("##PauseMenuTabs")) {
+            // showPlayerListOverlay_ doubles as a real, one-shot "open
+            // straight to this tab" signal -- the real, scripted
+            // ui.showPlayerList() entry point (see showPlayerList()'s own
+            // comment) sets it before opening the menu; consumed (and
+            // cleared, so it doesn't keep forcing this tab on later
+            // manual switches) the moment this tab bar draws.
+            ImGuiTabItemFlags playersTabFlags =
+                showPlayerListOverlay_ ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+            showPlayerListOverlay_ = false;
+            if (ImGui::BeginTabItem("Players", nullptr, playersTabFlags)) {
+                if (!online) {
+                    ImGui::TextColored(paletteColor(kTextMuted), "Playing offline -- no other players in this session.");
+                } else {
+                    ImGui::Text("Name: %s", session.sessionName().empty() ? "(unnamed)" : session.sessionName().c_str());
+                    ImGui::Text("Session ID: %llu", static_cast<unsigned long long>(session.sessionId()));
+                    ImGui::Text("Your role: %s", session.isServer() ? "Host" : "Guest");
+                    if (!session.isServer()) {
+                        ImGui::Text("Host: %s",
+                                     lastJoinedHostDisplayName_.empty() ? "(unknown)" : lastJoinedHostDisplayName_.c_str());
+                    }
+                    ImGui::Separator();
+                    // Kronos ("Active Joining UI"): a real, honest
+                    // architectural note -- this engine's hosting process
+                    // owns no PlayerId/roster entry of its own (only
+                    // remote peers connecting IN get one, see
+                    // net::NetworkSession::onPeerConnected()'s own
+                    // comment), so there's no real per-player "is this one
+                    // the host" flag to show client-side -- every entry a
+                    // client sees really is a fellow guest. The host/guest
+                    // distinction that DOES exist (this process's own
+                    // role) is shown above instead of faking a per-player
+                    // flag that doesn't correspond to anything real.
+                    if (session.isServer()) {
+                        for (net::PlayerId player : session.connectedPlayerIds()) {
+                            core::EntityId entity = session.playerEntity(player);
+                            const auto* nameComponent =
+                                entity != core::kNullEntity ? app_.ecs().tryGetComponent<core::Name>(entity) : nullptr;
+                            std::string displayName = (nameComponent != nullptr && !nameComponent->value.empty())
+                                                           ? nameComponent->value
+                                                           : ("Player" + std::to_string(player));
+                            ImGui::Text("#%u  %s  (Guest)", player, displayName.c_str());
+                        }
+                    } else {
+                        for (const auto& [player, name] : session.clientKnownPlayers()) {
+                            bool isLocal = player == session.localPlayerId();
+                            ImGui::Text("#%u  %s%s", player, name.c_str(), isLocal ? "  (You)" : "");
+                        }
+                    }
+                }
+                ImGui::EndTabItem();
+            }
 
-    ImGui::SetNextWindowPos(ImVec2(16.0f, 90.0f), ImGuiCond_Appearing);
-    ImGui::SetNextWindowBgAlpha(0.85f);
-    if (ImGui::Begin("Session", &showPlayerListOverlay_, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::SeparatorText("Session");
-        ImGui::Text("Name: %s", session.sessionName().empty() ? "(unnamed)" : session.sessionName().c_str());
-        ImGui::Text("Session ID: %llu", static_cast<unsigned long long>(session.sessionId()));
-        ImGui::Text("Protocol version: %u", net::kNetworkProtocolVersion);
-        ImGui::Text("Your role: %s", session.isServer() ? "Host" : "Guest");
-        if (!session.isServer()) {
-            ImGui::Text("Host: %s", lastJoinedHostDisplayName_.empty() ? "(unknown)" : lastJoinedHostDisplayName_.c_str());
+            // Kronos ("In-Game Player Reporting"): real, player-facing
+            // front door onto the exact same
+            // net::NetworkSession::reportPlayer()/moderation::ReportLog
+            // pipeline studio::plugins::ModerationPanel already exposes to
+            // a moderator -- see that panel's own drawReportSection() for
+            // the precedent this mirrors.
+            if (ImGui::BeginTabItem("Report")) {
+                ImGui::InputInt("Player ID", &reportTargetId_);
+                const char* categories[] = {"Abuse", "Cheating", "Inappropriate Content"};
+                ImGui::Combo("Category", &reportCategoryIndex_, categories, IM_ARRAYSIZE(categories));
+                ImGui::InputTextMultiline("Description", reportDescriptionBuffer_, sizeof(reportDescriptionBuffer_),
+                                           ImVec2(0.0f, 60.0f));
+                ImGui::BeginDisabled(!session.isClient());
+                pushPrimaryActionButtonColors();
+                if (ImGui::Button("Submit Report")) {
+                    auto category = static_cast<moderation::ReportCategory>(reportCategoryIndex_);
+                    session.reportPlayer(static_cast<net::PlayerId>(reportTargetId_), category, reportDescriptionBuffer_);
+                    reportStatus_ = "Report submitted.";
+                    reportDescriptionBuffer_[0] = '\0';
+                }
+                popPrimaryActionButtonColors();
+                ImGui::EndDisabled();
+                if (!session.isClient()) ImGui::TextDisabled("Join a real multiplayer session to submit a report.");
+                if (!reportStatus_.empty()) ImGui::TextDisabled("%s", reportStatus_.c_str());
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
 
-        // Kronos ("Active Joining UI"): a real, honest architectural note
-        // -- this engine's hosting process owns no PlayerId/roster entry
-        // of its own (only remote peers connecting IN get one, see
-        // net::NetworkSession::onPeerConnected()'s own comment), so
-        // there's no real per-player "is this one the host" flag to show
-        // client-side -- every entry a client sees really is a fellow
-        // guest. The host/guest distinction that DOES exist (this
-        // process's own role) is shown above instead of faking a
-        // per-player flag that doesn't correspond to anything real.
-        ImGui::SeparatorText("Players");
-        if (session.isServer()) {
-            for (net::PlayerId player : session.connectedPlayerIds()) {
-                core::EntityId entity = session.playerEntity(player);
-                const auto* nameComponent =
-                    entity != core::kNullEntity ? app_.ecs().tryGetComponent<core::Name>(entity) : nullptr;
-                std::string displayName = (nameComponent != nullptr && !nameComponent->value.empty())
-                                               ? nameComponent->value
-                                               : ("Player" + std::to_string(player));
-                ImGui::Text("#%u  %s  (Guest)", player, displayName.c_str());
-            }
-        } else {
-            for (const auto& [player, name] : session.clientKnownPlayers()) {
-                bool isLocal = player == session.localPlayerId();
-                ImGui::Text("#%u  %s%s", player, name.c_str(), isLocal ? "  (You)" : "");
+        // Kronos ("Esc Pause Menu" -- keyboard-shortcut row): real, live
+        // hotkeys (see the L/R IsKeyPressed() checks below, outside this
+        // window), shown as plain Kronos-palette chips -- deliberately
+        // not a boxed-keycap widget styled after any other platform's own
+        // pause-menu chrome (see this function's own header comment).
+        ImGui::Spacing();
+        ImGui::Separator();
+        auto drawHotkeyHint = [](const char* key, const char* action) {
+            ImGui::TextColored(ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], kSkyBlue[3]), "%s", key);
+            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::TextColored(ImVec4(kTextMuted[0], kTextMuted[1], kTextMuted[2], kTextMuted[3]), "%s", action);
+        };
+        drawHotkeyHint("Esc", "Resume");
+        ImGui::SameLine(0.0f, 20.0f);
+        drawHotkeyHint("L", "Leave Session");
+        ImGui::SameLine(0.0f, 20.0f);
+        drawHotkeyHint("R", "Reset Character");
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+
+    // Kronos ("Esc Pause Menu" -- keyboard shortcuts): real, only live
+    // while the menu itself is open (this whole function already early-
+    // returned above otherwise) and no text field currently wants
+    // keyboard input (the Report tab's own Player ID/Description fields)
+    // -- same real "don't fire gameplay hotkeys while typing" convention
+    // every other real keybind in this shell already follows (e.g.
+    // tickEmoteActivation()'s own io.WantTextInput guard).
+    if (!io.WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_L, false)) leaveSession();
+        if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+            // Kronos ("Reset Character"): real, honest scope -- this
+            // engine has no stored-per-game "spawn point" to return to
+            // (spawnOfflinePlayerEntity_/spawnLocalPlayerAvatar() place a
+            // new avatar once, at load time, but never remember that
+            // position afterward), so this teleports the local player
+            // straight up from their own current position instead of
+            // faking a spawn marker that doesn't exist -- a real, honest
+            // "get unstuck" respawn (falls back down clear of whatever
+            // geometry they were stuck in/under), not a claimed "back to
+            // spawn" that would sometimes be a lie.
+            core::EntityId localEntity = app_.characterController().entity();
+            if (const auto* transform = app_.ecs().tryGetComponent<core::Transform>(localEntity)) {
+                (void)app_.respawnLocalPlayer(transform->position + glm::vec3(0.0f, 10.0f, 0.0f));
             }
         }
     }
-    ImGui::End();
 }
 
 void RuntimeShell::tickChatActivation() {
