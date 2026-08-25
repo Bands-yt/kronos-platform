@@ -31,6 +31,10 @@ private:
     void drawDirectionalLightSection(core::SceneLighting& lighting);
     void drawAmbientFogSection(core::SceneLighting& lighting);
     void drawSkyboxSection(core::SceneLighting& lighting);
+    // Kronos ("Studio Revamp" -- "Professional Lighting Inspector"): real
+    // info about the actual cascaded shadow map this scene renders with
+    // -- see the .cpp for why this is read-only rather than sliders.
+    void drawCascadedShadowMapSection();
     // Sprint 14 ("RTX Upgrade" Phase 2 / "Performance Mode"): the real
     // Studio-side counterpart to engine_runtime's F6/F7 keybinds -- both
     // real, live toggles on the same renderer_ this panel already edits.

@@ -167,6 +167,22 @@ public:
     // (ViewportPanel.cpp) can size its own per-cascade color array
     // against the real value instead of a second, could-drift constant.
     static constexpr uint32_t kCascadeCount = 3;
+    // Kronos ("Studio Revamp" -- "Professional Lighting Inspector"): same
+    // "move it up next to kCascadeCount" treatment, for the same reason --
+    // LightingToolsPlugin's real CSM info section reads these directly
+    // instead of hand-duplicating the values. Both stay compile-time
+    // constants, not runtime-adjustable sliders: kShadowMapResolution
+    // sizes a real VkImage array (FrameSync's own shadow resources,
+    // created once at startup), and kShadowMaxDistance is baked into
+    // computeCascades()'s split-distance math -- changing either for
+    // real needs the image/pipeline recreated, not just a new uniform
+    // value, so the inspector shows them as real read-only facts about
+    // the current build rather than fabricating adjustability that isn't
+    // there.
+    static constexpr uint32_t kShadowMapResolution = 2048;
+    // CSM covers [camera.nearPlane, kShadowMaxDistance] -- not the camera's
+    // full 500-unit farPlane, see computeCascades()'s doc comment.
+    static constexpr float kShadowMaxDistance = 80.0f;
 
     // Sprint 8 ("Performance Stats & Debug Tools") task category 2's CSM
     // cascade debug overlay: real per-cascade split depths (view-space
@@ -1619,11 +1635,7 @@ private:
     Texture defaultWhiteTexture_;      // albedo/metallic/roughness fallback -- multiplies as a no-op
     Texture defaultFlatNormalTexture_; // normal-map fallback (not yet sampled for shading -- see Components.hpp's note)
 
-    static constexpr uint32_t kShadowMapResolution = 2048;
     static constexpr VkFormat kShadowFormat = VK_FORMAT_D32_SFLOAT;
-    // CSM covers [camera.nearPlane, kShadowMaxDistance] -- not the camera's
-    // full 500-unit farPlane, see computeCascades()'s doc comment.
-    static constexpr float kShadowMaxDistance = 80.0f;
     // Extends each cascade's light-space near plane back toward the light
     // beyond its tight frustum-corner bound, so a tall caster sitting just
     // outside the visible sub-frustum (but between it and the light) still

@@ -109,8 +109,33 @@ void LightingToolsPlugin::drawSkyboxSection(core::SceneLighting& lighting) {
     }
 }
 
+void LightingToolsPlugin::drawCascadedShadowMapSection() {
+    if (!ImGui::CollapsingHeader("Cascaded Shadow Maps")) return;
+
+    // Kronos ("Studio Revamp" -- "Professional Lighting Inspector"): real
+    // facts about the CSM this scene actually shadows with -- see
+    // core::Renderer::kShadowMapResolution/kShadowMaxDistance's own
+    // comment for why these are read-only text instead of sliders (they
+    // size a real VkImage array and computeCascades()'s split-distance
+    // math; changing them for real needs a resource rebuild, not a
+    // uniform). The bias formula is scene.frag's real, current
+    // computeShadow() constants, not an approximation -- if that formula
+    // ever changes, this text is the one place that needs updating with it.
+    ImGui::Text("%u cascades, %u x %u shadow map each", core::Renderer::kCascadeCount,
+                core::Renderer::kShadowMapResolution, core::Renderer::kShadowMapResolution);
+    ImGui::Text("Covers camera near plane to %.0f units", core::Renderer::kShadowMaxDistance);
+    ImGui::TextWrapped(
+        "3x3 PCF, slope-scaled bias (max(0.0025 x (1 - N.L), 0.0006), scaled per cascade by its own depth "
+        "range) -- see shaders/scene.frag's computeShadow().");
+    ImGui::SameLine();
+    helpMarker(
+        "Compile-time constants, not live-editable here: the shadow map is a fixed-size VkImage array sized "
+        "once at startup, and the cascade split distances are baked into computeCascades()'s math. Toggle the "
+        "cascade color debug overlay from the Viewport panel's own Debug Overlays row.");
+}
+
 void LightingToolsPlugin::drawRenderingModeSection() {
-    if (!ImGui::CollapsingHeader("Rendering Mode (Sprint 14)", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    if (!ImGui::CollapsingHeader("Post-Processing", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     if (!renderer_->isRayTracingSupported()) {
         ImGui::TextDisabled("Ray-traced shadows: unsupported by this device/driver (VK_KHR_ray_query missing).");
@@ -135,7 +160,7 @@ void LightingToolsPlugin::drawRenderingModeSection() {
         "shadows off. Same real F7 toggle engine_runtime exposes.");
 
     bool cinematicEnabled = renderer_->isCinematicModeEnabled();
-    if (ImGui::Checkbox("Cinematic Mode (Sprint 16)", &cinematicEnabled)) {
+    if (ImGui::Checkbox("Cinematic Mode", &cinematicEnabled)) {
         renderer_->setCinematicMode(cinematicEnabled);
     }
     ImGui::SameLine();
@@ -183,6 +208,7 @@ void LightingToolsPlugin::drawPanel(core::ECS&, core::EntityId, const std::vecto
     drawAmbientFogSection(lighting);
     drawSkyboxSection(lighting);
     renderer_->setLighting(lighting);
+    drawCascadedShadowMapSection();
     drawRenderingModeSection();
 
     drawPluginFooter("Edits apply live to the Viewport -- no live physics/time-of-day tick runs in Studio.");
