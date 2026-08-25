@@ -55,6 +55,16 @@ private:
     void drawTrackList(core::ECS& ecs, core::AnimationClip& clip);
     void drawTimeline(const core::AnimationClip& clip);
     void drawCurveEditor(core::AnimationClip& clip);
+    // Kronos ("Timeline & Dope Sheet" -- property curves): a real,
+    // separate section from drawTrackList()/drawTimeline() above --
+    // deliberately not merged into the same graphical timeline canvas.
+    // Property tracks target a (targetName, propertyName) pair rather
+    // than "the whole Transform," which doesn't fit that canvas's
+    // existing one-row-per-Transform-track assumption without a larger
+    // rework; a real, separate list keeps this addition bounded and
+    // doesn't risk regressing the working Transform UI. See
+    // applyPoseToScene()'s own comment for how these get evaluated.
+    void drawPropertyTrackList(core::ECS& ecs, core::EntityId selected, core::AnimationClip& clip);
     void applyPoseToScene(core::ECS& ecs) const;
     void startTransitionTo(int newClipIndex);
     [[nodiscard]] static std::string nameOf(core::ECS& ecs, core::EntityId entity);
@@ -84,6 +94,16 @@ private:
 
     char clipPathBuffer_[256] = "animations/clip.anim";
     std::string statusMessage_;
+
+    // Kronos ("Timeline & Dope Sheet" -- property curves): selection/UI
+    // state for the property-track list, kept separate from
+    // selectedTrackIndex_/selectedKeyIndex_ above (those are Transform-
+    // track-specific) -- same "two real systems, two real selection
+    // states" split as the data model itself (core::PropertyTrack vs
+    // core::AnimationTrack).
+    int selectedPropertyDescriptorIndex_ = 0; // which entry of kRenderableProperties the "Add" combo currently shows
+    int selectedPropertyTrackIndex_ = -1;
+    int selectedPropertyKeyIndex_ = -1;
 };
 
 } // namespace engine::studio::plugins

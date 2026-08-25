@@ -25,6 +25,78 @@ const core::AnimationTrack* findTrack(const core::AnimationClip& clip, const std
     }
     return nullptr;
 }
+
+const core::PropertyTrack* findPropertyTrack(const core::AnimationClip& clip, const std::string& targetName,
+                                              const std::string& propertyName) {
+    for (const auto& track : clip.propertyTracks) {
+        if (track.targetName() == targetName && track.propertyName() == propertyName) return &track;
+    }
+    return nullptr;
+}
+
+// Kronos ("Timeline & Dope Sheet" -- property curves): the real registry
+// PropertyTrack's own class comment refers to as "a future AnimatorPlugin
+// UI pass" -- resolves a propertyName to a real read/write location on
+// core::Renderable. Deliberately a small, hand-picked list of this
+// engine's own real material fields (Components.hpp), not every field on
+// Renderable (meshHandle/materialHandle/visible/etc. aren't meaningfully
+// "animatable" the way a color or scalar is) -- and Renderable only for
+// now, matching the explicit "entities first" scope this pass was given;
+// a Camera registry is a real, separate future addition, same shape as
+// this one. Plain function pointers (no captures needed), so each entry
+// is a real, direct read/write, not an indirection through std::function.
+struct PropertyDescriptor {
+    const char* name;
+    core::PropertyValue (*get)(const core::Renderable&);
+    void (*set)(core::Renderable&, const core::PropertyValue&);
+};
+
+constexpr PropertyDescriptor kRenderableProperties[] = {
+    {"baseColor", [](const core::Renderable& r) -> core::PropertyValue { return r.baseColor; },
+     [](core::Renderable& r, const core::PropertyValue& v) {
+         if (const glm::vec4* p = std::get_if<glm::vec4>(&v)) r.baseColor = *p;
+     }},
+    {"emissiveColor", [](const core::Renderable& r) -> core::PropertyValue { return r.emissiveColor; },
+     [](core::Renderable& r, const core::PropertyValue& v) {
+         if (const glm::vec3* p = std::get_if<glm::vec3>(&v)) r.emissiveColor = *p;
+     }},
+    {"emissiveIntensity", [](const core::Renderable& r) -> core::PropertyValue { return r.emissiveIntensity; },
+     [](core::Renderable& r, const core::PropertyValue& v) {
+         if (const float* p = std::get_if<float>(&v)) r.emissiveIntensity = *p;
+     }},
+    {"metallic", [](const core::Renderable& r) -> core::PropertyValue { return r.metallic; },
+     [](core::Renderable& r, const core::PropertyValue& v) {
+         if (const float* p = std::get_if<float>(&v)) r.metallic = *p;
+     }},
+    {"roughness", [](const core::Renderable& r) -> core::PropertyValue { return r.roughness; },
+     [](core::Renderable& r, const core::PropertyValue& v) {
+         if (const float* p = std::get_if<float>(&v)) r.roughness = *p;
+     }},
+    {"transmission", [](const core::Renderable& r) -> core::PropertyValue { return r.transmission; },
+     [](core::Renderable& r, const core::PropertyValue& v) {
+         if (const float* p = std::get_if<float>(&v)) r.transmission = *p;
+     }},
+};
+constexpr int kRenderablePropertyCount = static_cast<int>(sizeof(kRenderableProperties) / sizeof(PropertyDescriptor));
+
+// Real, generic lerp across a PropertyValue's active alternative -- same
+// "type-dispatch on the variant, hold at `a` if the two sides somehow
+// disagree" shape as PropertyTrack::evaluate() itself (Animation.cpp),
+// needed again here for crossfade blending between two clips' property
+// tracks, the same real blend applyPoseToScene() already does for
+// Transform tracks via glm::mix/glm::slerp.
+core::PropertyValue mixPropertyValue(const core::PropertyValue& a, const core::PropertyValue& b, float t) {
+    if (std::holds_alternative<float>(a) && std::holds_alternative<float>(b)) {
+        return glm::mix(std::get<float>(a), std::get<float>(b), t);
+    }
+    if (std::holds_alternative<glm::vec3>(a) && std::holds_alternative<glm::vec3>(b)) {
+        return glm::mix(std::get<glm::vec3>(a), std::get<glm::vec3>(b), t);
+    }
+    if (std::holds_alternative<glm::vec4>(a) && std::holds_alternative<glm::vec4>(b)) {
+        return glm::mix(std::get<glm::vec4>(a), std::get<glm::vec4>(b), t);
+    }
+    return a;
+}
 } // namespace
 
 std::string AnimatorPlugin::nameOf(core::ECS& ecs, core::EntityId entity) {
@@ -109,6 +181,36 @@ void AnimatorPlugin::applyPoseToScene(core::ECS& ecs) const {
         transform->position = pose.position;
         transform->rotation = pose.rotation;
         transform->scale = pose.scale;
+    }
+
+    // Same real per-frame evaluate-and-write as the Transform loop above,
+    // just against a Renderable field via kRenderableProperties instead
+    // of Transform directly -- see this method's own header comment.
+    for (const auto& track : active.propertyTracks) {
+        if (track.keyframes().empty()) continue;
+        core::EntityId target = findEntityByName(ecs, track.targetName());
+        if (target == core::kNullEntity) continue;
+        auto* renderable = ecs.tryGetComponent<core::Renderable>(target);
+        if (renderable == nullptr) continue;
+
+        const PropertyDescriptor* descriptor = nullptr;
+        for (const auto& candidate : kRenderableProperties) {
+            if (track.propertyName() == candidate.name) {
+                descriptor = &candidate;
+                break;
+            }
+        }
+        if (descriptor == nullptr) continue; // unknown property name -- real, honest skip, not a crash
+
+        core::PropertyValue value = track.evaluate(playhead_);
+        if (previous != nullptr) {
+            const core::PropertyTrack* previousTrack = findPropertyTrack(*previous, track.targetName(), track.propertyName());
+            if (previousTrack != nullptr && !previousTrack->keyframes().empty()) {
+                core::PropertyValue previousValue = previousTrack->evaluate(previousPlayhead_);
+                value = mixPropertyValue(previousValue, value, blend);
+            }
+        }
+        descriptor->set(*renderable, value);
     }
 }
 
@@ -239,6 +341,7 @@ void AnimatorPlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
     drawTrackList(ecs, clip);
     drawTimeline(clip);
     drawCurveEditor(clip);
+    drawPropertyTrackList(ecs, selected, clip);
 
     ImGui::End();
 }
@@ -345,6 +448,112 @@ void AnimatorPlugin::drawTrackList(core::ECS& /*ecs*/, core::AnimationClip& clip
             int easingIndex = static_cast<int>(kf.easing);
             if (ImGui::Combo("Easing", &easingIndex, kEasingNames, IM_ARRAYSIZE(kEasingNames))) {
                 kf.easing = static_cast<core::EasingMode>(easingIndex);
+            }
+        }
+    }
+}
+
+void AnimatorPlugin::drawPropertyTrackList(core::ECS& ecs, core::EntityId selected, core::AnimationClip& clip) {
+    ImGui::Separator();
+    ImGui::TextUnformatted("Property Tracks");
+    ImGui::TextDisabled("Keys a single Renderable property (color/metallic/roughness/emissive/transmission) instead of the whole Transform.");
+
+    const char* propertyNames[kRenderablePropertyCount];
+    for (int i = 0; i < kRenderablePropertyCount; ++i) propertyNames[i] = kRenderableProperties[i].name;
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::Combo("Property", &selectedPropertyDescriptorIndex_, propertyNames, kRenderablePropertyCount);
+
+    const PropertyDescriptor& chosen = kRenderableProperties[selectedPropertyDescriptorIndex_];
+    auto* renderable = ecs.tryGetComponent<core::Renderable>(selected);
+
+    ImGui::BeginDisabled(selected == core::kNullEntity || renderable == nullptr);
+    ImGui::SameLine();
+    if (ImGui::Button("Add Property Track For Selection")) {
+        clip.propertyTrackFor(nameOf(ecs, selected), chosen.name);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Set Key At Playhead##property")) {
+        core::PropertyKeyframe pk;
+        pk.time = snapEnabled_ && snapIncrementSeconds_ > 0.0f
+                      ? std::round(playhead_ / snapIncrementSeconds_) * snapIncrementSeconds_
+                      : playhead_;
+        pk.value = chosen.get(*renderable);
+        pk.easing = core::EasingMode::Linear;
+        if (!clip.propertyTrackFor(nameOf(ecs, selected), chosen.name).addKeyframe(pk)) {
+            // Real, honest failure surface -- see PropertyTrack::addKeyframe()'s
+            // own comment on why a type mismatch is refused rather than
+            // silently accepted. Shouldn't happen through this UI path
+            // (the same descriptor's get() always returns the same
+            // alternative), but a track loaded from a hand-edited/older
+            // .anim file could genuinely hold a different one.
+            statusMessage_ = "Set Key failed: this track already holds a different value type.";
+        }
+    }
+    ImGui::EndDisabled();
+    if (selected == core::kNullEntity) {
+        ImGui::TextDisabled("Select an entity in Explorer to add a property track or set a key.");
+    } else if (renderable == nullptr) {
+        ImGui::TextDisabled("Selected entity has no Renderable component -- nothing to key here.");
+    }
+
+    for (size_t ti = 0; ti < clip.propertyTracks.size(); ++ti) {
+        core::PropertyTrack& track = clip.propertyTracks[ti];
+        ImGui::PushID(static_cast<int>(ti) + 100000); // offset clear of drawTrackList()'s own PushID(ti) range
+
+        bool open = ImGui::TreeNodeEx("proptrack", ImGuiTreeNodeFlags_DefaultOpen, "%s.%s (%zu keys)",
+                                       track.targetName().c_str(), track.propertyName().c_str(), track.keyframes().size());
+        ImGui::SameLine();
+        bool removed = ImGui::SmallButton("Remove Track");
+
+        if (open) {
+            for (size_t ki = 0; ki < track.keyframes().size(); ++ki) {
+                const core::PropertyKeyframe& pk = track.keyframes()[ki];
+                ImGui::PushID(static_cast<int>(ki));
+
+                bool isSelectedKey =
+                    (selectedPropertyTrackIndex_ == static_cast<int>(ti) && selectedPropertyKeyIndex_ == static_cast<int>(ki));
+                char label[32];
+                std::snprintf(label, sizeof(label), "t=%.2f", pk.time);
+                if (ImGui::Selectable(label, isSelectedKey, 0, ImVec2(80.0f, 0.0f))) {
+                    selectedPropertyTrackIndex_ = static_cast<int>(ti);
+                    selectedPropertyKeyIndex_ = static_cast<int>(ki);
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", core::easingModeName(pk.easing));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Delete")) {
+                    track.removeKeyframeAt(ki);
+                    if (selectedPropertyTrackIndex_ == static_cast<int>(ti) && selectedPropertyKeyIndex_ == static_cast<int>(ki)) {
+                        selectedPropertyKeyIndex_ = -1;
+                    }
+                    ImGui::PopID();
+                    break; // keyframes_ mutated -- stop this track's loop, redraws clean next frame
+                }
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+
+        if (removed) {
+            clip.removePropertyTrack(track.targetName(), track.propertyName());
+            selectedPropertyTrackIndex_ = -1;
+            selectedPropertyKeyIndex_ = -1;
+            break; // propertyTracks vector mutated -- stop iterating this frame
+        }
+    }
+
+    if (selectedPropertyTrackIndex_ >= 0 && selectedPropertyTrackIndex_ < static_cast<int>(clip.propertyTracks.size())) {
+        core::PropertyTrack& track = clip.propertyTracks[static_cast<size_t>(selectedPropertyTrackIndex_)];
+        if (selectedPropertyKeyIndex_ >= 0 && selectedPropertyKeyIndex_ < static_cast<int>(track.keyframes().size())) {
+            core::PropertyKeyframe& pk = track.keyframeAt(static_cast<size_t>(selectedPropertyKeyIndex_));
+            ImGui::Separator();
+            ImGui::Text("Selected Property Keyframe -- %s.%s @ t=%.2fs", track.targetName().c_str(),
+                        track.propertyName().c_str(), pk.time);
+            static const char* kEasingNames[] = {"Linear", "Ease In", "Ease Out", "Ease In Out", "Constant"};
+            int easingIndex = static_cast<int>(pk.easing);
+            if (ImGui::Combo("Easing##property", &easingIndex, kEasingNames, IM_ARRAYSIZE(kEasingNames))) {
+                pk.easing = static_cast<core::EasingMode>(easingIndex);
             }
         }
     }
