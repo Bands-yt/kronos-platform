@@ -608,6 +608,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/SafeContentPreviewPanel.cpp
         studio/plugins/PublishingPanel.cpp
         studio/plugins/LightingToolsPlugin.cpp
+        studio/plugins/ShaderGraphPlugin.cpp
         studio/plugins/CreatorConsolePlugin.cpp
         studio/plugins/TimelineEditorPlugin.cpp
         studio/plugins/MovieModePlugin.cpp

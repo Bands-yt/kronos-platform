@@ -43,6 +43,7 @@
 #include "studio/plugins/CreatorAssetBrowserPlugin.hpp"
 #include "studio/plugins/CreatorConsolePlugin.hpp"
 #include "studio/plugins/LightingToolsPlugin.hpp"
+#include "studio/plugins/ShaderGraphPlugin.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "studio/PluginChrome.hpp"
 #include "migration/ProjectImporter.hpp"
@@ -525,6 +526,12 @@ bool StudioApp::initialize() {
     // Lighting Tools (Sprint 9 "Creator Tools Phase 1" task category 3) --
     // default-constructible beyond the real Renderer& it edits live.
     pluginManager_.registerPlugin(std::make_unique<plugins::LightingToolsPlugin>(renderer_));
+
+    // Shader Graph (Studio Revamp, Phase 3) -- default-constructible;
+    // owns its own imnodes editor context and RuntimeShaderCompiler,
+    // not wired to core::Renderer yet (see ShaderGraphPlugin.hpp's own
+    // class comment).
+    pluginManager_.registerPlugin(std::make_unique<plugins::ShaderGraphPlugin>());
 
     // Creator Console (Sprint 9 task category 5) -- needs terrainEditorPlugin_
     // (already captured above) to know whether a terrain exists for its
