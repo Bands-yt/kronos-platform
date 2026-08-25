@@ -24,14 +24,17 @@ struct LuauLiveAnalyzer;
 // README.md for why that path is shelved).
 //
 // Honesty note on scope: Luau.Analysis here checks the buffer in
-// isolation (Mode::Nonstrict, no `--!strict` requirement) and does NOT
-// yet declare this engine's own script API globals (`game`, `workspace`,
-// `script`, ...) to the type checker -- see ColorTextEditBackend.cpp's
-// own comment on LuauLiveAnalyzer for why, and what a real .d.lua
-// definition file would add. Real syntax/parse errors and real type
-// mismatches on annotated locals already surface correctly; deep
-// semantic checks against the engine's own API surface is a real,
-// separate follow-up, not implemented here.
+// isolation (Mode::Nonstrict, no `--!strict` requirement). This engine's
+// own script API globals (`world`, `avatar`, `network`, `ui`,
+// `TextChatService`, `events`, `task`, `engine`) ARE declared to the type
+// checker -- see assets/luau/kronos_globals.d.lua and
+// LuauLiveAnalyzer::loadKronosGlobalDefinitions() in
+// ColorTextEditBackend.cpp -- a real, honest transcription of what this
+// engine's C++ side actually registers, not Roblox's `game`/`workspace`/
+// `script` (those don't exist in this codebase). Real syntax/parse
+// errors, real type mismatches on annotated locals, and now real
+// unknown-global/wrong-argument-type errors against the engine's own API
+// all surface correctly.
 class ColorTextEditBackend final : public IScriptEditorBackend {
 public:
     ColorTextEditBackend();

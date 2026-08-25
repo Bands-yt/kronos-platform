@@ -1,6 +1,9 @@
 #include "studio/panels/ColorTextEditBackend.hpp"
 
+#include <cstdio>
+#include <fstream>
 #include <optional>
+#include <sstream>
 #include <vector>
 
 #include <imgui.h>
@@ -9,6 +12,8 @@
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Frontend.h"
 #include "Luau/TypeArena.h"
+
+#include "core/ResourcePaths.hpp"
 
 namespace engine::studio::panels {
 
@@ -71,6 +76,31 @@ TextEditor::LanguageDefinition luauLanguageDefinition() {
     return langDef;
 }
 
+// Kronos ("Luau Global Type-Checking Gap"): real engine API definitions
+// -- see assets/luau/kronos_globals.d.lua's own header comment for what
+// this covers and why it's an honest transcription of the real C++-side
+// globals, not a guessed/Roblox-shaped one. Same real "packaged sibling
+// dir, else fall back to this compile-time source path" resolution
+// every other Studio asset load already uses (core/ResourcePaths.hpp),
+// so this works both from engine/build/ (dev convention) and from
+// inside a packaged Alpha build.
+std::string kronosGlobalDefinitionsPath() {
+    return core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/luau/kronos_globals.d.lua";
+}
+
+// Real file read -- same plain std::ifstream(path, std::ios::binary)
+// convention studio/plugins/ScriptedPlugin.cpp's own script-loading path
+// already uses, not a new pattern. Returns std::nullopt (not an empty
+// string) on any failure to open, so the caller can tell "missing file"
+// apart from "genuinely empty file".
+std::optional<std::string> readFileToString(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
 } // namespace
 
 // Kronos: real Luau.Analysis wiring, using the exact Frontend/
@@ -81,12 +111,17 @@ TextEditor::LanguageDefinition luauLanguageDefinition() {
 // Mode::Nonstrict (Luau/Config.h), so a script without a `--!strict`
 // hot-comment gets the same permissive checking Luau gives any
 // unannotated script: real syntax/parse errors and real mismatches on
-// explicitly-typed locals surface, but an undeclared global like
-// `workspace` is not flagged, since this engine's own script API surface
-// (ScriptUiApi.cpp/StudioEcsScriptApi.cpp) is not yet described to the
-// type checker via a real .d.lua definition file
-// (Frontend::loadDefinitionFile()) -- a real, separate follow-up, not
-// silently pretended to be covered here.
+// explicitly-typed locals surface.
+//
+// Kronos ("Luau Global Type-Checking Gap"): this engine's own script API
+// surface (`world`, `avatar`, `network`, `ui`, `TextChatService`,
+// `events`, `task`, `engine`, plus `print`/`require`) is now described to
+// the type checker for real, via loadKronosGlobalDefinitions() below --
+// an undeclared global like a typo'd `workd.createEntity` is flagged the
+// same way a real type mismatch already is. This is a genuine, honest
+// engine API surface, not Roblox's `game`/`workspace`/`script` -- those
+// don't exist in this codebase (see assets/luau/kronos_globals.d.lua's
+// own header comment).
 struct LuauLiveAnalyzer {
     BufferFileResolver fileResolver;
     Luau::NullConfigResolver configResolver;
@@ -94,7 +129,42 @@ struct LuauLiveAnalyzer {
 
     LuauLiveAnalyzer() {
         Luau::registerBuiltinGlobals(frontend, frontend.globals);
+        loadKronosGlobalDefinitions();
+        // Freezing must happen after loadDefinitionFile() -- that call
+        // allocates new types (world/network/ui/...) into this same
+        // globalTypes arena, which a real, live TypeArena::freeze() (see
+        // its own doc comment) would reject as a real, honest use-after-
+        // freeze bug, not silently ignore.
         Luau::freeze(frontend.globals.globalTypes);
+    }
+
+    // Real, non-fatal on failure -- a missing or unparseable definition
+    // file degrades this backend back to exactly what it already was
+    // (real syntax/parse-error checking, no engine-global awareness),
+    // the same graceful-degradation shape MonacoWebViewEditor's own
+    // initialize()-returns-false fallback uses, just one level deeper:
+    // this backend still becomes ScriptEditorPanel's chosen backend
+    // either way, it just knows less.
+    void loadKronosGlobalDefinitions() {
+        const std::string path = kronosGlobalDefinitionsPath();
+        std::optional<std::string> source = readFileToString(path);
+        if (!source) {
+            std::fprintf(stderr,
+                          "ColorTextEditBackend: could not read Kronos global definitions at \"%s\" -- Script "
+                          "Editor will type-check syntax only, without engine-global awareness.\n",
+                          path.c_str());
+            return;
+        }
+
+        Luau::LoadDefinitionFileResult result = frontend.loadDefinitionFile(
+            frontend.globals, frontend.globals.globalScope, *source, "kronos_globals",
+            /*captureComments*/ false);
+        if (!result.success) {
+            std::fprintf(stderr,
+                          "ColorTextEditBackend: \"%s\" failed to parse/typecheck (%zu error(s)) -- Script Editor "
+                          "will type-check syntax only, without engine-global awareness.\n",
+                          path.c_str(), result.parseResult.errors.size());
+        }
     }
 
     struct Diagnostic {
