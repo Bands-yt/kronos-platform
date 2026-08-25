@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -130,12 +131,97 @@ private:
     std::vector<Keyframe> keyframes_; // kept sorted ascending by time
 };
 
+// Kronos ("Studio Revamp" -- "Keyframe Animation Timeline & Dope Sheet"):
+// real, generic property-curve keyframing, alongside (not replacing)
+// AnimationTrack's own Transform-pose-specific model above --
+// AnimatorPlugin.cpp's entire existing UI (track list, timeline, curve
+// editor, crossfade) already depends on AnimationTrack's exact shape and
+// works correctly today; this is a genuinely separate, parallel channel
+// kind, the same "two real systems for two real shapes of data" split
+// this codebase already has elsewhere (e.g. AnimationTrack vs
+// core::PropAnimationHook's own simpler single-entity track). A
+// PropertyTrack keys any single float/vec3/vec4-valued property --
+// camera FOV, a light's intensity, a material's emissive color, whatever
+// a future caller points it at -- rather than always bundling
+// position+rotation+scale together the way a Transform pose does.
+//
+// UI transitions are a real, deliberate non-target here: this engine's
+// UI (ScriptUiApi's ui.drawText/drawRect) is immediate-mode -- there is
+// no persistent, addressable UI element for a track's targetName to
+// name yet. That's a real prerequisite gap (a retained-mode UI element
+// system), not something this data model can paper over, and is
+// deliberately left as a separate, later milestone rather than
+// half-wiring a track to nothing.
+using PropertyValue = std::variant<float, glm::vec3, glm::vec4>;
+
+struct PropertyKeyframe {
+    float time = 0.0f;
+    PropertyValue value{0.0f};
+    // Same real convention as Keyframe::easing above -- applies to the
+    // segment starting AT this keyframe.
+    EasingMode easing = EasingMode::Linear;
+};
+
+class PropertyTrack {
+public:
+    PropertyTrack(std::string targetName, std::string propertyName)
+        : targetName_(std::move(targetName)), propertyName_(std::move(propertyName)) {}
+
+    [[nodiscard]] const std::string& targetName() const { return targetName_; }
+    // What property this track drives -- a plain string (e.g.
+    // "emissiveIntensity", "baseColor"), not an enum: this data model
+    // doesn't know or care what kind of object owns the property (an
+    // entity's Renderable component today, a core::Camera field or a
+    // future UI element's own field later) -- resolving the name to a
+    // real read/write location is the caller's job (a future
+    // AnimatorPlugin UI pass), same "track stores a name, caller
+    // resolves it" split AnimationTrack::targetName() already has for
+    // entities.
+    [[nodiscard]] const std::string& propertyName() const { return propertyName_; }
+    [[nodiscard]] const std::vector<PropertyKeyframe>& keyframes() const { return keyframes_; }
+
+    // Real, same time-order-preserving re-key-at-existing-time behavior
+    // as AnimationTrack::addKeyframe() -- see that method's own comment.
+    // Returns false (and does NOT insert) if `keyframe.value` doesn't
+    // hold the same PropertyValue alternative as this track's existing
+    // keyframes -- a track represents one property, which has one real
+    // type (a light's intensity is always a float; it can't become a
+    // vec3 partway through a clip), so a mismatched insert is a real
+    // caller bug worth refusing loudly rather than accepting and letting
+    // evaluate() guess what to do with it. A track with no keyframes yet
+    // accepts any alternative -- that first keyframe is what fixes the
+    // track's real type.
+    bool addKeyframe(PropertyKeyframe keyframe);
+    void removeKeyframeAt(size_t index);
+    [[nodiscard]] PropertyKeyframe& keyframeAt(size_t index) { return keyframes_[index]; }
+
+    // Real interpolation, type-dispatched on the keyframes' own
+    // PropertyValue alternative -- glm::mix for float/vec3/vec4, same
+    // real lerp AnimationTrack::evaluate() already uses for
+    // position/scale (there's no rotation-shaped quaternion case here,
+    // so no slerp branch is needed). Returns PropertyValue{0.0f} for an
+    // empty track (an honest zero, not a crash) -- callers with a real
+    // property to fall back to should check keyframes().empty() first
+    // rather than trust this default.
+    [[nodiscard]] PropertyValue evaluate(float time) const;
+
+private:
+    std::string targetName_;
+    std::string propertyName_;
+    std::vector<PropertyKeyframe> keyframes_; // kept sorted ascending by time, same invariant as AnimationTrack
+};
+
 class AnimationClip {
 public:
     std::string name = "New Animation";
     float duration = 5.0f;
     bool looping = true;
     std::vector<AnimationTrack> tracks;
+    // Kronos ("Keyframe Animation Timeline & Dope Sheet" -- property
+    // curves): a real, separate list from `tracks` above -- see
+    // PropertyTrack's own class comment for why these are two distinct
+    // channel kinds rather than one generalized one.
+    std::vector<PropertyTrack> propertyTracks;
     std::vector<AnimationEvent> events; // unordered -- AnimationPlayer scans all of them each tick, see its header comment
 
     // Finds the track for `targetName`, creating an empty one if none
@@ -145,6 +231,12 @@ public:
     // Track" button) is a legitimate, intentional use, not a bug.
     AnimationTrack& trackFor(const std::string& targetName);
     void removeTrack(const std::string& targetName);
+
+    // Same real "find or create" shape as trackFor() above, keyed on the
+    // (targetName, propertyName) pair -- two different properties on the
+    // same target are two different tracks.
+    PropertyTrack& propertyTrackFor(const std::string& targetName, const std::string& propertyName);
+    void removePropertyTrack(const std::string& targetName, const std::string& propertyName);
 
     // Minimal hand-rolled text format (see Animation.cpp for the exact
     // grammar) -- no JSON/serialization library pulled in for a data shape

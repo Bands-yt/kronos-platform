@@ -170,6 +170,62 @@ AnimatedPose AnimationTrack::evaluateCubic(float time) const {
     return pose;
 }
 
+bool PropertyTrack::addKeyframe(PropertyKeyframe keyframe) {
+    if (!keyframes_.empty() && keyframes_.front().value.index() != keyframe.value.index()) {
+        return false; // real type mismatch -- see this method's own header comment
+    }
+    for (auto& existing : keyframes_) {
+        if (std::abs(existing.time - keyframe.time) < kKeyframeMergeEpsilon) {
+            existing = std::move(keyframe);
+            return true;
+        }
+    }
+    auto it = std::lower_bound(keyframes_.begin(), keyframes_.end(), keyframe.time,
+                                [](const PropertyKeyframe& k, float t) { return k.time < t; });
+    keyframes_.insert(it, std::move(keyframe));
+    return true;
+}
+
+void PropertyTrack::removeKeyframeAt(size_t index) {
+    if (index < keyframes_.size()) {
+        keyframes_.erase(keyframes_.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+}
+
+PropertyValue PropertyTrack::evaluate(float time) const {
+    if (keyframes_.empty()) return PropertyValue{0.0f};
+    if (keyframes_.size() == 1 || time <= keyframes_.front().time) return keyframes_.front().value;
+    if (time >= keyframes_.back().time) return keyframes_.back().value;
+
+    size_t hi = 0;
+    while (hi < keyframes_.size() && keyframes_[hi].time <= time) ++hi;
+    const PropertyKeyframe& a = keyframes_[hi - 1];
+    const PropertyKeyframe& b = keyframes_[hi];
+
+    if (a.easing == EasingMode::Constant) return a.value;
+
+    float span = b.time - a.time;
+    float t = span > 0.0f ? (time - a.time) / span : 0.0f;
+    t = applyEasing(a.easing, t);
+
+    // addKeyframe() enforces that every keyframe on this track holds the
+    // same PropertyValue alternative, so exactly one of these three real
+    // branches ever actually runs for a track built through that method.
+    if (std::holds_alternative<float>(a.value) && std::holds_alternative<float>(b.value)) {
+        return glm::mix(std::get<float>(a.value), std::get<float>(b.value), t);
+    }
+    if (std::holds_alternative<glm::vec3>(a.value) && std::holds_alternative<glm::vec3>(b.value)) {
+        return glm::mix(std::get<glm::vec3>(a.value), std::get<glm::vec3>(b.value), t);
+    }
+    if (std::holds_alternative<glm::vec4>(a.value) && std::holds_alternative<glm::vec4>(b.value)) {
+        return glm::mix(std::get<glm::vec4>(a.value), std::get<glm::vec4>(b.value), t);
+    }
+    // Real, honest fallback for a track built by hand rather than
+    // through addKeyframe() (bypassing its type-consistency check) --
+    // hold at `a`'s value rather than crash on a std::get mismatch.
+    return a.value;
+}
+
 AnimationTrack& AnimationClip::trackFor(const std::string& targetName) {
     for (auto& track : tracks) {
         if (track.targetName() == targetName) return track;
@@ -182,6 +238,22 @@ void AnimationClip::removeTrack(const std::string& targetName) {
     tracks.erase(std::remove_if(tracks.begin(), tracks.end(),
                                  [&](const AnimationTrack& t) { return t.targetName() == targetName; }),
                  tracks.end());
+}
+
+PropertyTrack& AnimationClip::propertyTrackFor(const std::string& targetName, const std::string& propertyName) {
+    for (auto& track : propertyTracks) {
+        if (track.targetName() == targetName && track.propertyName() == propertyName) return track;
+    }
+    propertyTracks.emplace_back(targetName, propertyName);
+    return propertyTracks.back();
+}
+
+void AnimationClip::removePropertyTrack(const std::string& targetName, const std::string& propertyName) {
+    propertyTracks.erase(std::remove_if(propertyTracks.begin(), propertyTracks.end(),
+                                         [&](const PropertyTrack& t) {
+                                             return t.targetName() == targetName && t.propertyName() == propertyName;
+                                         }),
+                          propertyTracks.end());
 }
 
 bool AnimationClip::saveToFile(const std::string& path) const {
@@ -200,6 +272,24 @@ bool AnimationClip::saveToFile(const std::string& path) const {
                 << k.scale.x << ' ' << k.scale.y << ' ' << k.scale.z << ' ' << easingToIndex(k.easing) << "\n";
         }
     }
+    for (const auto& track : propertyTracks) {
+        out << "PROPTRACK " << track.targetName() << ' ' << track.propertyName() << "\n";
+        for (const auto& k : track.keyframes()) {
+            out << "PROPKEY " << k.time << ' ' << k.value.index();
+            // Real, honest per-kind field count -- float writes 1 real
+            // component, vec3 writes 3, vec4 writes 4, so loadFromFile()
+            // knows exactly how many tokens to read back for a given
+            // `kind` index without a separate length field.
+            if (const float* f = std::get_if<float>(&k.value)) {
+                out << ' ' << *f;
+            } else if (const glm::vec3* v3 = std::get_if<glm::vec3>(&k.value)) {
+                out << ' ' << v3->x << ' ' << v3->y << ' ' << v3->z;
+            } else if (const glm::vec4* v4 = std::get_if<glm::vec4>(&k.value)) {
+                out << ' ' << v4->x << ' ' << v4->y << ' ' << v4->z << ' ' << v4->w;
+            }
+            out << ' ' << easingToIndex(k.easing) << "\n";
+        }
+    }
     for (const auto& event : events) {
         out << "EVENT " << event.time << ' ' << event.name << "\n";
     }
@@ -216,6 +306,7 @@ bool AnimationClip::loadFromFile(const std::string& path) {
 
     AnimationClip loaded;
     AnimationTrack* currentTrack = nullptr;
+    PropertyTrack* currentPropertyTrack = nullptr;
     std::string line;
     while (std::getline(in, line)) {
         if (line.rfind("NAME ", 0) == 0) {
@@ -237,6 +328,49 @@ bool AnimationClip::loadFromFile(const std::string& path) {
                 k.easing = easingFromIndex(easingIndex);
                 currentTrack->addKeyframe(k);
             }
+        } else if (line.rfind("PROPTRACK ", 0) == 0) {
+            // "<targetName> <propertyName>" -- neither field allows
+            // embedded whitespace (same convention Joint::name/
+            // AnimationTrack::targetName already require, see
+            // AnimationEvent's own header comment), so a plain `iss >>`
+            // pair, not a full-line split, is correct here.
+            std::istringstream iss(line.substr(10));
+            std::string targetName, propertyName;
+            iss >> targetName >> propertyName;
+            if (!iss.fail()) {
+                loaded.propertyTracks.emplace_back(targetName, propertyName);
+                currentPropertyTrack = &loaded.propertyTracks.back(); // same "refreshed here" note as currentTrack above
+            } else {
+                currentPropertyTrack = nullptr;
+            }
+        } else if (line.rfind("PROPKEY ", 0) == 0 && currentPropertyTrack != nullptr) {
+            std::istringstream iss(line.substr(8));
+            float time = 0.0f;
+            int kind = 0;
+            iss >> time >> kind;
+            PropertyKeyframe k;
+            k.time = time;
+            if (kind == 0) {
+                float value = 0.0f;
+                iss >> value;
+                k.value = value;
+            } else if (kind == 1) {
+                glm::vec3 value{0.0f};
+                iss >> value.x >> value.y >> value.z;
+                k.value = value;
+            } else if (kind == 2) {
+                glm::vec4 value{0.0f};
+                iss >> value.x >> value.y >> value.z >> value.w;
+                k.value = value;
+            } else {
+                continue; // unrecognized kind -- forward-compatible skip, same instinct as the trailing comment below
+            }
+            int easingIndex = 0;
+            iss >> easingIndex;
+            if (!iss.fail()) {
+                k.easing = easingFromIndex(easingIndex);
+                currentPropertyTrack->addKeyframe(k);
+            }
         } else if (line.rfind("EVENT ", 0) == 0) {
             std::istringstream iss(line.substr(6));
             AnimationEvent event;
@@ -256,6 +390,9 @@ bool AnimationClip::loadFromFile(const std::string& path) {
 std::vector<float> collectKeyframeTimes(const AnimationClip& clip) {
     std::vector<float> times;
     for (const auto& track : clip.tracks) {
+        for (const auto& keyframe : track.keyframes()) times.push_back(keyframe.time);
+    }
+    for (const auto& track : clip.propertyTracks) {
         for (const auto& keyframe : track.keyframes()) times.push_back(keyframe.time);
     }
     std::sort(times.begin(), times.end());

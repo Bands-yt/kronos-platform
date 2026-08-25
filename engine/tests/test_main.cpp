@@ -490,6 +490,150 @@ void testClipSaveLoadRoundTrip() {
     std::remove(path);
 }
 
+void testPropertyTrackFloatInterpolation() {
+    engine::core::PropertyTrack track("Sun", "intensity");
+
+    engine::core::PropertyKeyframe k0;
+    k0.time = 0.0f;
+    k0.value = 1.0f;
+    check(track.addKeyframe(k0), "first float keyframe accepted");
+
+    engine::core::PropertyKeyframe k1;
+    k1.time = 2.0f;
+    k1.value = 5.0f;
+    check(track.addKeyframe(k1), "second float keyframe (same alternative) accepted");
+
+    engine::core::PropertyValue mid = track.evaluate(1.0f);
+    check(std::holds_alternative<float>(mid) && nearlyEqual(std::get<float>(mid), 3.0f),
+          "float property track linear interpolation midpoint == 3.0");
+
+    engine::core::PropertyValue before = track.evaluate(-1.0f);
+    check(nearlyEqual(std::get<float>(before), 1.0f), "evaluate before range clamps to first keyframe");
+
+    engine::core::PropertyValue after = track.evaluate(10.0f);
+    check(nearlyEqual(std::get<float>(after), 5.0f), "evaluate after range clamps to last keyframe");
+}
+
+void testPropertyTrackVec3AndVec4Interpolation() {
+    engine::core::PropertyTrack posTrack("Camera", "position");
+    engine::core::PropertyKeyframe p0;
+    p0.time = 0.0f;
+    p0.value = glm::vec3(0.0f, 0.0f, 0.0f);
+    posTrack.addKeyframe(p0);
+    engine::core::PropertyKeyframe p1;
+    p1.time = 2.0f;
+    p1.value = glm::vec3(10.0f, 20.0f, 30.0f);
+    posTrack.addKeyframe(p1);
+    engine::core::PropertyValue posMid = posTrack.evaluate(1.0f);
+    check(std::holds_alternative<glm::vec3>(posMid), "vec3 property track evaluate returns a vec3 alternative");
+    glm::vec3 posMidValue = std::get<glm::vec3>(posMid);
+    check(nearlyEqual(posMidValue.x, 5.0f) && nearlyEqual(posMidValue.y, 10.0f) && nearlyEqual(posMidValue.z, 15.0f),
+          "vec3 property track linear interpolation midpoint");
+
+    engine::core::PropertyTrack colorTrack("Light", "baseColor");
+    engine::core::PropertyKeyframe c0;
+    c0.time = 0.0f;
+    c0.value = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+    colorTrack.addKeyframe(c0);
+    engine::core::PropertyKeyframe c1;
+    c1.time = 1.0f;
+    c1.value = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+    colorTrack.addKeyframe(c1);
+    engine::core::PropertyValue colorMid = colorTrack.evaluate(0.5f);
+    check(std::holds_alternative<glm::vec4>(colorMid), "vec4 property track evaluate returns a vec4 alternative");
+    glm::vec4 colorMidValue = std::get<glm::vec4>(colorMid);
+    check(nearlyEqual(colorMidValue.x, 0.5f) && nearlyEqual(colorMidValue.y, 0.5f) &&
+              nearlyEqual(colorMidValue.z, 0.0f) && nearlyEqual(colorMidValue.w, 0.5f),
+          "vec4 property track linear interpolation midpoint");
+}
+
+void testPropertyTrackTypeMismatchRejected() {
+    engine::core::PropertyTrack track("Sun", "intensity");
+    engine::core::PropertyKeyframe floatKey;
+    floatKey.time = 0.0f;
+    floatKey.value = 1.0f;
+    check(track.addKeyframe(floatKey), "first keyframe on an empty track is always accepted");
+
+    engine::core::PropertyKeyframe vecKey;
+    vecKey.time = 1.0f;
+    vecKey.value = glm::vec3(1.0f, 2.0f, 3.0f);
+    check(!track.addKeyframe(vecKey), "a vec3 keyframe is rejected on a track whose first keyframe was a float");
+    check(track.keyframes().size() == 1, "the rejected keyframe was not inserted");
+}
+
+void testPropertyTrackConstantEasing() {
+    engine::core::PropertyTrack track("Prop", "opacity");
+    engine::core::PropertyKeyframe a;
+    a.time = 0.0f;
+    a.value = 1.0f;
+    a.easing = engine::core::EasingMode::Constant;
+    track.addKeyframe(a);
+    engine::core::PropertyKeyframe b;
+    b.time = 1.0f;
+    b.value = 0.0f;
+    track.addKeyframe(b);
+
+    engine::core::PropertyValue mid = track.evaluate(0.5f);
+    check(nearlyEqual(std::get<float>(mid), 1.0f),
+          "Constant easing holds the starting keyframe's value across the whole segment");
+}
+
+void testAnimationClipPropertyTrackSaveLoadRoundTrip() {
+    engine::core::AnimationClip clip;
+    clip.name = "PropClip";
+
+    // One regular Transform track and one property track in the same
+    // clip -- exercises that PROPTRACK/PROPKEY lines don't interfere
+    // with the existing TRACK/KEY parsing.
+    engine::core::Keyframe transformKey;
+    transformKey.time = 0.0f;
+    transformKey.position = {1.0f, 2.0f, 3.0f};
+    clip.trackFor("Hips").addKeyframe(transformKey);
+
+    engine::core::PropertyKeyframe floatKey;
+    floatKey.time = 0.5f;
+    floatKey.value = 0.75f;
+    floatKey.easing = engine::core::EasingMode::EaseIn;
+    clip.propertyTrackFor("Sun", "intensity").addKeyframe(floatKey);
+
+    engine::core::PropertyKeyframe vecKey;
+    vecKey.time = 1.5f;
+    vecKey.value = glm::vec4(0.2f, 0.4f, 0.6f, 0.8f);
+    clip.propertyTrackFor("Light", "baseColor").addKeyframe(vecKey);
+
+    const char* path = "test_clip_propertytrack_roundtrip.anim";
+    check(clip.saveToFile(path), "AnimationClip::saveToFile succeeds with property tracks present");
+
+    engine::core::AnimationClip loaded;
+    check(loaded.loadFromFile(path), "AnimationClip::loadFromFile succeeds with property tracks present");
+    check(loaded.tracks.size() == 1, "loaded clip still has its one Transform track");
+    check(loaded.propertyTracks.size() == 2, "loaded clip has both property tracks");
+
+    for (const auto& track : loaded.propertyTracks) {
+        if (track.targetName() == "Sun" && track.propertyName() == "intensity") {
+            check(track.keyframes().size() == 1, "loaded Sun.intensity track has one keyframe");
+            if (!track.keyframes().empty()) {
+                const auto& k = track.keyframes()[0];
+                check(std::holds_alternative<float>(k.value) && nearlyEqual(std::get<float>(k.value), 0.75f),
+                      "loaded float property keyframe value round-trips");
+                check(k.easing == engine::core::EasingMode::EaseIn, "loaded float property keyframe easing round-trips");
+            }
+        } else if (track.targetName() == "Light" && track.propertyName() == "baseColor") {
+            check(track.keyframes().size() == 1, "loaded Light.baseColor track has one keyframe");
+            if (!track.keyframes().empty()) {
+                const auto& k = track.keyframes()[0];
+                check(std::holds_alternative<glm::vec4>(k.value), "loaded vec4 property keyframe holds a vec4");
+                glm::vec4 v = std::get<glm::vec4>(k.value);
+                check(nearlyEqual(v.x, 0.2f) && nearlyEqual(v.y, 0.4f) && nearlyEqual(v.z, 0.6f) && nearlyEqual(v.w, 0.8f),
+                      "loaded vec4 property keyframe value round-trips");
+            }
+        } else {
+            check(false, "unexpected property track loaded");
+        }
+    }
+    std::remove(path);
+}
+
 void testIPInfringementScanner() {
     engine::safety::IPInfringementScanner scanner;
 
@@ -32497,6 +32641,11 @@ int main() {
     testAnimationInterpolation();
     testConstantEasing();
     testClipSaveLoadRoundTrip();
+    testPropertyTrackFloatInterpolation();
+    testPropertyTrackVec3AndVec4Interpolation();
+    testPropertyTrackTypeMismatchRejected();
+    testPropertyTrackConstantEasing();
+    testAnimationClipPropertyTrackSaveLoadRoundTrip();
     testIPInfringementScanner();
     testIPInfringementScannerFuzzy();
     testIPInfringementScannerPhonetic();
