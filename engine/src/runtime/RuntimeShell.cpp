@@ -2861,14 +2861,39 @@ void RuntimeShell::openSettings() {
 
 void RuntimeShell::drawSettingsPanel() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    // Inset into the shell chrome's content canvas -- drawing at full
-    // viewport size here is what put this panel underneath the sidebar
-    // and brand panel.
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
-                                     viewport->WorkSize.y - kTopBarHeight));
-    ImGui::Begin("Settings", nullptr,
-                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    // Kronos ("Graphics Settings Z-Order" fix -- live-reported issue:
+    // opening Settings from the in-game pause menu drew it *behind* that
+    // menu): this same function serves two real, different presentations
+    // -- a full-canvas "page" reached from Home's own sidebar
+    // (showSettingsOverlay_ == false, state_ == ShellState::Settings),
+    // where NoBringToFrontOnFocus/NoMove/the sidebar+brand-panel inset
+    // are all real and correct (it's meant to sit in the shell chrome's
+    // content canvas, never fighting z-order with sibling "pages"), and
+    // a real floating overlay opened on top of live gameplay
+    // (showSettingsOverlay_ == true, from the pause menu's own "Graphics
+    // Settings" button) that was still using those exact same
+    // page-oriented flags/positioning -- NoBringToFrontOnFocus is
+    // precisely why ImGui could never raise it above the pause menu
+    // window drawn immediately before it. The overlay case now draws as
+    // a real, independently-focusable, centered floating window instead,
+    // matching drawPlayerListOverlay()'s own pause-menu presentation.
+    if (showSettingsOverlay_) {
+        ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(700.0f, viewport->WorkSize.x - 64.0f),
+                                         std::min(600.0f, viewport->WorkSize.y - 64.0f)),
+                                  ImGuiCond_Appearing);
+        ImGui::Begin("Settings", nullptr, ImGuiWindowFlags_NoCollapse);
+    } else {
+        // Inset into the shell chrome's content canvas -- drawing at full
+        // viewport size here is what put this panel underneath the sidebar
+        // and brand panel.
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+                                         viewport->WorkSize.y - kTopBarHeight));
+        ImGui::Begin("Settings", nullptr,
+                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    }
 
     if (ImGui::Button("Back")) {
         if (showSettingsOverlay_) {
