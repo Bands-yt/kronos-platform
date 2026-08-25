@@ -4036,6 +4036,28 @@ void Renderer::drawSSRPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent2D ext
     // Renderer.hpp. Nothing below records so much as a barrier when SSR
     // is off.
     if (!ssrEnabled_) return;
+
+    // Kronos ("Reflection Fix" -- live-reported "flickering double
+    // reflections on the player and baseplate"): real root cause --
+    // scene_rt.frag's own RT reflection block already gives every opaque
+    // pixel a real reflection contribution when it's active this frame,
+    // smoothly blending from a full ray-traced reflection on mirror-
+    // smooth surfaces down to a cheap analytic sky reflection on rough
+    // ones (see its own reflectionParams.x/.y/.z comment) -- there is no
+    // gap left for this pass to fill the way this class's own
+    // setSSREnabled() comment (and main.cpp's showcase setup) describe.
+    // Running this pass on top anyway re-reflects an already-reflected
+    // pixel a second time; since this pass's screen-space raymarch hit
+    // point is inherently unstable frame-to-frame (no G-buffer to sample
+    // a stable per-pixel normal from, see this file's own header
+    // comment) while the RT contribution underneath it is stable, the
+    // two combined is exactly what reads as flickering double
+    // reflections, not two independent bugs. RT reflections strictly
+    // supersede this pass's own coarser fallback whenever they're
+    // actually active -- checked per-frame (not via ssrEnabled_ itself)
+    // so a scene with RT reflections requested but no valid TLAS yet
+    // still gets real SSR as the honest fallback it's meant to be.
+    if (rtReflectionsEnabled_ && rayTracingScene_.hasValidTlas()) return;
     if (frame.ssrImage == VK_NULL_HANDLE || frame.ssrInputDescriptorSet == VK_NULL_HANDLE) {
         // ensureSSRTargets() failed this frame (already logged there) --
         // skip rather than recording a draw against a null target;

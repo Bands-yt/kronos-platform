@@ -321,18 +321,36 @@ public:
     // why this is the honest, standard technique under that constraint),
     // and sampling the *already-rendered* scene color (frame.hdrImage)
     // at whatever screen point the ray hits. This is the real fallback
-    // RayTracingScene::traceReflection() (scene_rt.frag) has never had:
-    // that RT path only ever exists on ray-tracing-capable hardware and
-    // even there only fires for genuinely glossy (low-roughness) pixels
-    // (see setReflectionRoughnessCutoff()) -- every rougher surface, and
-    // every non-RT device, currently gets nothing but a flat analytic sky
-    // color. SSR fills exactly that gap: available on any device (no
-    // ray-query extension needed at all), so it's the one reflection
-    // technique this renderer can offer uniformly. A real, honest
-    // limitation up front: like every SSR technique, it can only reflect
-    // what's actually on screen -- off-screen/occluded geometry falls
-    // back to the same analytic sky color scene_rt.frag's own
-    // proceduralSkyReflection() already provides (see shaders/ssr.frag's
+    // RayTracingScene::traceReflection() (scene_rt.frag) has never had on
+    // hardware where RT reflections aren't available at all -- either no
+    // ray-query support, or the feature simply toggled off
+    // (isRTReflectionsEnabled() false) -- where scene_rt.frag's whole
+    // reflection block never runs and a reflective surface otherwise gets
+    // nothing.
+    //
+    // Kronos ("Reflection Fix" -- live-reported flickering double
+    // reflections): real, deliberate -- drawSSRPass() itself skips
+    // recording this pass whenever RT reflections are actually
+    // contributing this frame (isRTReflectionsEnabled() && a valid TLAS),
+    // regardless of this flag. Once RT reflections are live, every opaque
+    // pixel already gets a real reflection contribution from
+    // scene_rt.frag's own roughness-weighted blend (a full ray trace on
+    // mirror-smooth surfaces, fading to a cheap analytic sky color on
+    // rough ones -- see setReflectionRoughnessCutoff()) -- there's no gap
+    // left for this pass to fill, and this renderer has no G-buffer for
+    // this pass to selectively apply itself only to the rough surfaces RT
+    // weights down. Running it anyway re-reflects an already-reflected
+    // pixel a second time with its own independent, screen-space-raymarch-
+    // unstable result -- which is exactly what read as "flickering double
+    // reflections" on the reflective surfaces RT reflections were already
+    // handling correctly (a player, a baseplate). This flag stays a
+    // simple, honest "would this pass run if nothing else did" toggle;
+    // the actual "who wins this frame" decision lives in drawSSRPass()
+    // itself, not duplicated at every call site that sets both flags. A
+    // real, honest limitation up front: like every SSR technique, it can
+    // only reflect what's actually on screen -- off-screen/occluded
+    // geometry falls back to the same analytic sky color scene_rt.frag's
+    // own proceduralSkyReflection() already provides (see shaders/ssr.frag's
     // own alpha-output convention for how a caller blends between the
     // two). Off by default -- same "every existing scene renders
     // unchanged" real no-op convention as every other opt-in flag here.
