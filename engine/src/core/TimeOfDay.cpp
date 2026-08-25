@@ -56,15 +56,27 @@ SceneLighting computeLightingForTimeOfDay(float hours) {
     constexpr float kMaxIntensity = 4.0f;
     lighting.intensity = glm::mix(kMinIntensity, kMaxIntensity, dayFactor);
 
-    lighting.ambient = glm::mix(glm::vec3(0.03f, 0.04f, 0.08f), glm::vec3(0.12f, 0.15f, 0.22f), dayFactor);
-    lighting.ambientGround = glm::mix(glm::vec3(0.02f, 0.02f, 0.03f), glm::vec3(0.09f, 0.08f, 0.07f), dayFactor);
+    // Kronos (live-reported: default scene reads overexposed/washed out):
+    // peak daytime ambient was bright enough on its own, stacked on top
+    // of the real directional sun term above (kMaxIntensity), to blow out
+    // surfaces well before shadow contrast could read. Real, moderate cut
+    // (roughly -30%) to daytime ambient specifically -- night values
+    // (the mix's other endpoint) are untouched, so the dawn/dusk/night
+    // portion of the cycle keeps its existing character.
+    lighting.ambient = glm::mix(glm::vec3(0.03f, 0.04f, 0.08f), glm::vec3(0.08f, 0.10f, 0.15f), dayFactor);
+    lighting.ambientGround = glm::mix(glm::vec3(0.02f, 0.02f, 0.03f), glm::vec3(0.06f, 0.05f, 0.045f), dayFactor);
 
-    // Real, if modest, fog -- thicker and cooler at night (real
-    // atmospheric convention), thinner during the day; see
-    // shaders/scene.frag's applyFog() for the exact exponential-squared
-    // formula these density values feed.
+    // Real fog -- thicker and cooler at night (real atmospheric
+    // convention), thinner during the day; see shaders/scene.frag's
+    // applyFog() for the exact exponential-squared formula these density
+    // values feed. Daytime density raised from 0.004 (real, live-reported
+    // as too thin to read as fog at all, which was itself part of the
+    // washed-out complaint above -- no atmospheric falloff cue means nothing
+    // softens the brighter ambient/sun either) to a real, still-modest
+    // 0.010; night raised by the same proportion to keep the existing
+    // day/night contrast rather than compressing it.
     lighting.fogColor = glm::mix(glm::vec3(0.05f, 0.06f, 0.10f), glm::vec3(0.65f, 0.70f, 0.78f), dayFactor);
-    lighting.fogDensity = glm::mix(0.012f, 0.004f, dayFactor);
+    lighting.fogDensity = glm::mix(0.016f, 0.010f, dayFactor);
 
     lighting.skyZenithColor = glm::mix(glm::vec3(0.02f, 0.03f, 0.08f), glm::vec3(0.25f, 0.45f, 0.85f), dayFactor);
     glm::vec3 dawnDuskHorizon(0.95f, 0.55f, 0.35f);
