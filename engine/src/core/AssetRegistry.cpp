@@ -8,7 +8,12 @@ namespace engine::core {
 
 AssetMetadata AssetRegistry::importAsset(const std::string& path) {
     AssetMetadata metadata = extractAssetMetadata(path);
-    if (!metadata.succeeded) return metadata;
+    adoptMetadata(path, metadata);
+    return metadata;
+}
+
+void AssetRegistry::adoptMetadata(const std::string& path, const AssetMetadata& metadata) {
+    if (!metadata.succeeded) return;
 
     AssetRegistryEntry entry;
     entry.path = path;
@@ -29,7 +34,6 @@ AssetMetadata AssetRegistry::importAsset(const std::string& path) {
     } else {
         entries_.push_back(entry);
     }
-    return metadata;
 }
 
 void AssetRegistry::removeAsset(const std::string& path) {

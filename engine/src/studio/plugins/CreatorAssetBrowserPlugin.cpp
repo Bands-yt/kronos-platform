@@ -46,6 +46,24 @@ CreatorAssetBrowserPlugin::CreatorAssetBrowserPlugin(VmaAllocator allocator, VkD
     capsuleMesh_ = meshLibrary_->registerMesh(core::Mesh::createCapsule(allocator, device, cmdPool, queue, 0.35f, 1.0f));
 }
 
+void CreatorAssetBrowserPlugin::update(float /*dt*/, core::ECS& /*ecs*/, core::EntityId /*selected*/,
+                                        const std::vector<core::EntityId>& /*selectedEntities*/) {
+    // Real, non-blocking poll -- called every frame regardless of
+    // whether this panel is even open (see IStudioPlugin::update()'s own
+    // doc comment), so a drag-and-drop import started while the Asset
+    // Browser is closed still completes and lands in assetRegistry_.
+    for (const core::AssetImportQueue::Result& result : importQueue_.poll()) {
+        assetRegistry_.adoptMetadata(result.path, result.metadata);
+        importStatusMessage_ = result.metadata.succeeded ? (std::string("Imported \"") + result.path + "\"")
+                                                           : (std::string("Import failed: ") + result.metadata.error);
+    }
+}
+
+void CreatorAssetBrowserPlugin::submitDroppedFile(const std::string& path) {
+    importQueue_.submit(path);
+    importStatusMessage_ = std::string("Importing \"") + path + "\" in the background...";
+}
+
 bool CreatorAssetBrowserPlugin::matchesSearch(const char* nameText, const char* tags) const {
     if (searchBuffer_[0] == '\0') return true;
     std::string needle = toLower(searchBuffer_);
@@ -178,21 +196,27 @@ void CreatorAssetBrowserPlugin::drawTerrainEntries() {
 
 void CreatorAssetBrowserPlugin::drawImportedAssetsSection() {
     ImGui::TextUnformatted("Imported Assets");
-    ImGui::TextDisabled("Creator-imported files (.obj/.png/.wav/...) -- distinct from the built-in presets above.");
+    ImGui::TextDisabled(
+        "Creator-imported files (.obj/.gltf/.glb/.fbx/.png/.wav/...) -- distinct from the built-in presets above. "
+        "Drag a file onto the Studio window to import it too.");
 
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
     ImGui::InputTextWithHint("##import_path", "path/to/asset.obj", importPathBuffer_, sizeof(importPathBuffer_));
     ImGui::SameLine();
     if (ImGui::Button("Import") && importPathBuffer_[0] != '\0') {
-        core::AssetMetadata result = assetRegistry_.importAsset(importPathBuffer_);
-        importStatusMessage_ = result.succeeded
-            ? (std::string("Imported \"") + importPathBuffer_ + "\"")
-            : (std::string("Import failed: ") + result.error);
+        importQueue_.submit(importPathBuffer_);
+        importStatusMessage_ = std::string("Importing \"") + importPathBuffer_ + "\" in the background...";
     }
     ImGui::SameLine();
     helpMarker("Re-importing an already-registered path real-replaces its entry (re-reads real metadata) rather than "
-               "creating a duplicate -- use this after editing a file on disk.");
-    if (!importStatusMessage_.empty()) ImGui::TextDisabled("%s", importStatusMessage_.c_str());
+               "creating a duplicate -- use this after editing a file on disk. Runs in the background -- Studio "
+               "keeps rendering while a large file imports.");
+    size_t pending = importQueue_.pendingCount();
+    if (pending > 0) {
+        ImGui::TextDisabled("%zu asset%s importing...", pending, pending == 1 ? "" : "s");
+    } else if (!importStatusMessage_.empty()) {
+        ImGui::TextDisabled("%s", importStatusMessage_.c_str());
+    }
 
     for (const core::AssetRegistryEntry& entry : assetRegistry_.entries()) {
         const char* kindLabel = "Asset";

@@ -1684,6 +1684,44 @@ void testAssetRegistryImportSaveLoadRoundTrip() {
     std::remove(registryPath);
 }
 
+void testAssetRegistryAdoptMetadata() {
+    // Real, direct coverage of the refactor that made importAsset()
+    // delegate to adoptMetadata() -- the real method
+    // core::AssetImportQueue's background-completion consumer
+    // (CreatorAssetBrowserPlugin::update()) calls instead of re-running
+    // extractAssetMetadata() a second time synchronously.
+    engine::core::AssetRegistry registry;
+
+    engine::core::AssetMetadata failed;
+    failed.succeeded = false;
+    failed.error = "simulated real failure";
+    registry.adoptMetadata("never_added.obj", failed);
+    check(registry.size() == 0, "adoptMetadata() with succeeded=false is a real, honest no-op, not a bogus entry");
+
+    engine::core::AssetMetadata succeeded;
+    succeeded.succeeded = true;
+    succeeded.kind = engine::core::AssetKind::Mesh;
+    succeeded.fileSizeBytes = 1024;
+    succeeded.vertexCount = 8;
+    succeeded.triangleCount = 12;
+    registry.adoptMetadata("already_probed.obj", succeeded);
+    check(registry.size() == 1, "adoptMetadata() with succeeded=true adds a real entry");
+    check(registry.contains("already_probed.obj"), "the adopted entry is real-registered under its real path");
+    if (registry.size() == 1) {
+        const auto& entry = registry.entries()[0];
+        check(entry.vertexCount == 8 && entry.triangleCount == 12,
+              "adoptMetadata() carries over the real, already-computed metadata fields verbatim, not re-probing");
+    }
+
+    // Real re-adopt -- replaces, doesn't duplicate, same convention
+    // importAsset() itself already has.
+    engine::core::AssetMetadata updated = succeeded;
+    updated.vertexCount = 24;
+    registry.adoptMetadata("already_probed.obj", updated);
+    check(registry.size() == 1, "re-adopting an already-registered path replaces, not duplicates");
+    check(registry.entries()[0].vertexCount == 24, "the replaced entry carries the real, newer metadata");
+}
+
 // Real, bounded poll loop -- every real test below waits for actual
 // background worker threads, so a fixed sleep would be either flaky
 // (too short under load) or needlessly slow (too long); this polls
@@ -33396,6 +33434,7 @@ int main() {
     testFbxLoaderRealValidCube();
     testFbxLoaderRealMalformedFileFailsCleanly();
     testFbxLoaderRealMissingFileFailsCleanly();
+    testAssetRegistryAdoptMetadata();
     testGltfLoaderRealMalformedFileFailsCleanly();
     testGltfLoaderRealNoMeshesFailsCleanly();
     testGltfLoaderRealMissingFileFailsCleanly();

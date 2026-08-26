@@ -55,6 +55,7 @@ class PhysicsPreviewPlugin;
 class MovieModePlugin;
 class ShopPlugin;
 class TerrainEditorPlugin;
+class CreatorAssetBrowserPlugin;
 class CreatorToolsPlugin;
 class MaterialPlugin;
 class ParticleEditorPlugin;
@@ -124,6 +125,11 @@ private:
     void drawDockspace();
     void endFrame();
     [[nodiscard]] bool initImGuiVulkanBackend();
+    // Kronos ("Asset Hot-Import Pipeline" -- real OS drag-and-drop):
+    // routes one real SDL_DROPFILE path to creatorAssetBrowserPlugin_'s
+    // own submitDroppedFile() -- see window_.setRawEventCallback()'s own
+    // call site in initialize() for where this is actually invoked.
+    void handleFileDrop(const std::string& path);
 
     void buildBringUpScene();
     // Kronos ("Studio QoL Sprint" -- "VS Code-Style Command Palette"):
@@ -355,6 +361,12 @@ private:
     // owning a second, competing core::Terrain. See
     // CreatorToolsPlugin.hpp's class comment.
     plugins::TerrainEditorPlugin* terrainEditorPlugin_ = nullptr;
+    // Kronos ("Asset Hot-Import Pipeline" -- real OS drag-and-drop): same
+    // "raw pointer into what pluginManager_ owns" pattern -- handleFileDrop()
+    // (below) needs to reach this specific plugin's own
+    // submitDroppedFile(), the real SDL_DROPFILE handling site (see
+    // window_.setRawEventCallback()'s own call site in initialize()).
+    plugins::CreatorAssetBrowserPlugin* creatorAssetBrowserPlugin_ = nullptr;
     // Same "raw pointer into what pluginManager_ owns" pattern --
     // PublishingPanel's own studio::ThumbnailCameraRig (Sprint 13) needs
     // the same explicit per-frame renderPreview()/shutdown() calls every

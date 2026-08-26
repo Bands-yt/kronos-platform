@@ -183,8 +183,30 @@ bool StudioApp::initialize() {
 
     // Forward every raw SDL event to ImGui (see Window.hpp's
     // setRawEventCallback doc comment for why this is a callback hook
-    // rather than a second event-pump loop).
-    window_.setRawEventCallback([](const SDL_Event& event) { ImGui_ImplSDL2_ProcessEvent(&event); });
+    // rather than a second event-pump loop). Kronos ("Asset Hot-Import
+    // Pipeline" -- real OS drag-and-drop): also real-handles
+    // SDL_DROPFILE here, the one other raw SDL event type Studio itself
+    // (not ImGui) needs -- creatorAssetBrowserPlugin_ isn't registered
+    // yet at this point in initialize() (see that member's own
+    // declaration comment), so handleFileDrop() below real-guards
+    // against that rather than this lambda needing to know the
+    // registration order.
+    window_.setRawEventCallback([this](const SDL_Event& event) {
+        ImGui_ImplSDL2_ProcessEvent(&event);
+        if (event.type == SDL_DROPFILE) {
+            // SDL owns this allocation (SDL_malloc'd) -- real, required
+            // free on our side per SDL's own documented SDL_DROPFILE
+            // contract, done here (not inside handleFileDrop(), which
+            // takes a real std::string it doesn't own) so the "who owns
+            // this pointer" boundary stays exactly at the SDL_Event
+            // itself.
+            char* droppedPath = event.drop.file;
+            if (droppedPath != nullptr) {
+                handleFileDrop(droppedPath);
+                SDL_free(droppedPath);
+            }
+        }
+    });
 
     // Composite ImGui's draw data into the exact same frame the runtime
     // renders, via the overlay hook described in Renderer.hpp -- this is
@@ -555,9 +577,11 @@ bool StudioApp::initialize() {
     // Creator Asset Browser (Sprint 10 task category 4) -- needs
     // terrainEditorPlugin_ (already captured above) for its Terrain
     // preset entries, same reasoning as CreatorConsolePlugin above.
-    pluginManager_.registerPlugin(std::make_unique<plugins::CreatorAssetBrowserPlugin>(
+    auto creatorAssetBrowser = std::make_unique<plugins::CreatorAssetBrowserPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_,
-        *terrainEditorPlugin_));
+        *terrainEditorPlugin_);
+    creatorAssetBrowserPlugin_ = creatorAssetBrowser.get();
+    pluginManager_.registerPlugin(std::move(creatorAssetBrowser));
 
     // Kronos ("Studio Asset Drag-and-Drop"): real, same box/capsule
     // mesh shapes CreatorAssetBrowserPlugin's own "Use" button already
@@ -630,6 +654,16 @@ bool StudioApp::initialize() {
 
     initialized_ = true;
     return true;
+}
+
+void StudioApp::handleFileDrop(const std::string& path) {
+    if (creatorAssetBrowserPlugin_ == nullptr) return; // real, honest guard -- see that member's own declaration comment
+    creatorAssetBrowserPlugin_->submitDroppedFile(path);
+    // Real, discoverable feedback -- a creator who drags a file in
+    // deserves to see where it landed, not silently wonder whether
+    // anything happened. Same real notify() mechanism every other
+    // real Studio action already surfaces through.
+    notifications_.push("Importing \"" + path + "\" (see Asset Browser)", NotificationSeverity::Info);
 }
 
 void StudioApp::buildBringUpScene() {

@@ -52,6 +52,16 @@ public:
     // publishing::PublishValidationResult already established.
     AssetMetadata importAsset(const std::string& path);
 
+    // Kronos (Asset Hot-Import Pipeline): the real background-import
+    // counterpart to importAsset() -- adopts an AssetMetadata a caller
+    // already computed (e.g. core::AssetImportQueue's own background
+    // worker already ran extractAssetMetadata() off the main thread)
+    // rather than re-running that real, potentially slow probe a second
+    // time synchronously. Same real insert-or-replace behavior as
+    // importAsset(); a real, honest no-op if `metadata.succeeded` is
+    // false (nothing to register from a failed import).
+    void adoptMetadata(const std::string& path, const AssetMetadata& metadata);
+
     // A real, honest no-op if `path` isn't currently registered.
     void removeAsset(const std::string& path);
 
