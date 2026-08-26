@@ -197,25 +197,60 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
         return 1.0;
     }
 
+    // Receiver-plane depth bias -- see shaders/scene.frag's own
+    // sampleCascadeShadow() for the full explanation (same "self-
+    // contained twin" convention this file already follows for its
+    // cloud-shadow functions). Fixes peter-panning without swinging
+    // back into acne by sizing the bias to each fragment's own real
+    // surface slope (derived from real screen-space derivatives)
+    // instead of a flat NdotL guess sized for the worst case.
+    //
+    // Differentiates worldPos (quad-coherent regardless of which
+    // cascade a neighboring lane picked) and pushes that through
+    // lightViewProj as a direction (w=0), not the already-projected
+    // uv/depth directly -- see scene.frag's own comment for why the
+    // latter produces a garbage gradient at cascade-blend seams, and
+    // why this orthographic-projection direction transform is exact,
+    // not an approximation.
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
+
+    vec3 dWorldPos_dx = dFdx(worldPos);
+    vec3 dWorldPos_dy = dFdy(worldPos);
+    mat4 M = scene.lightViewProj[cascade];
+    vec3 dProjected_dx = (M * vec4(dWorldPos_dx, 0.0)).xyz;
+    vec3 dProjected_dy = (M * vec4(dWorldPos_dy, 0.0)).xyz;
+    vec3 duvz_dx = vec3(dProjected_dx.xy * 0.5, dProjected_dx.z);
+    vec3 duvz_dy = vec3(dProjected_dy.xy * 0.5, dProjected_dy.z);
+    float det = duvz_dx.x * duvz_dy.y - duvz_dy.x * duvz_dx.y;
+    vec2 depthGradient = vec2(0.0);
+    if (abs(det) > 1e-9) {
+        depthGradient = vec2(duvz_dy.y * duvz_dx.z - duvz_dx.y * duvz_dy.z,
+                              duvz_dx.x * duvz_dy.z - duvz_dy.x * duvz_dx.z) / det;
+        const float kMaxReceiverSlope = 2.0;
+        depthGradient = clamp(depthGradient, -kMaxReceiverSlope, kMaxReceiverSlope);
+    }
+
     float NdotL = max(dot(N, L), 0.0);
-    float bias = max(0.0025 * (1.0 - NdotL), 0.0006) * scene.cascadeBiasScale[cascade];
+    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008) * scene.cascadeBiasScale[cascade];
 
     // Sprint 14 ("Performance Mode"): a real, direct per-fragment cost
     // cut -- one center tap instead of the real 3x3 (9-tap) PCF loop,
     // trading soft shadow edges for real fragment-shader throughput. Both
-    // real branches sample the exact same shadowMapArray/bias -- only the
-    // real tap count differs.
+    // real branches sample the exact same shadowMapArray -- only the
+    // real tap count (and bias per-tap treatment) differs.
     if (scene.renderFlags.y > 0.5) {
+        float bias = max(minBias, dot(abs(depthGradient), texelSize));
         float sampledDepth = texture(shadowMapArray, vec3(uv, float(cascade))).r;
         return (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
     }
 
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
     float shadow = 0.0;
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
-            float sampledDepth = texture(shadowMapArray, vec3(uv + vec2(x, y) * texelSize, float(cascade))).r;
-            shadow += (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
+            vec2 offset = vec2(x, y) * texelSize;
+            float expectedDepth = currentDepth + dot(depthGradient, offset);
+            float sampledDepth = texture(shadowMapArray, vec3(uv + offset, float(cascade))).r;
+            shadow += (expectedDepth - minBias > sampledDepth) ? 0.0 : 1.0;
         }
     }
     return shadow / 9.0;

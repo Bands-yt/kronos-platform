@@ -847,13 +847,21 @@ bool Renderer::createShadowPipeline() {
     rasterizer.lineWidth = 1.0f;
     // Depth bias: pushes shadow-caster depth slightly away from the light
     // so a surface doesn't self-shadow from floating-point/precision
-    // error alone -- the pipeline-level complement to computeShadow()'s
-    // slope-scaled shader-side bias in scene.frag (belt and suspenders;
-    // either alone is usually enough, both together is more robust across
-    // different surface angles).
+    // error alone. Kept small and deliberately NOT the primary defense
+    // against grazing-angle self-shadowing -- that used to be split
+    // between this constant/slope factor AND a full NdotL slope-scaled
+    // bias in scene.frag's computeShadow(), and the two stacked (this
+    // pass pushes the *stored* shadow-map depth away from the light,
+    // then the shader-side bias pushed the *comparison* depth again),
+    // which is exactly the kind of over-biasing that shows up as
+    // shadows visibly detached from their casters ("peter-panning").
+    // scene.frag's sampleCascadeShadow() now derives its bias from the
+    // real receiver-plane depth gradient per fragment (see its own
+    // comment), so this only needs to cover residual float/rasterizer
+    // precision error, not compensate for slope on its own.
     rasterizer.depthBiasEnable = VK_TRUE;
-    rasterizer.depthBiasConstantFactor = 1.25f;
-    rasterizer.depthBiasSlopeFactor = 1.75f;
+    rasterizer.depthBiasConstantFactor = 0.5f;
+    rasterizer.depthBiasSlopeFactor = 0.75f;
 
     VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -992,7 +1000,15 @@ Renderer::CascadeData Renderer::computeCascades(const Camera& camera, float aspe
         // texel every frame, which reads as shadow edges shimmering even
         // though nothing in the scene moved -- snapping makes the
         // cascade's world-space footprint jump in whole-texel steps
-        // instead, which is imperceptible.
+        // instead, which is imperceptible. This also matters for
+        // scene.frag's receiver-plane bias: that bias is derived from
+        // real screen-space depth derivatives, so a sub-texel-jittering
+        // projection would make the derivative itself noisy frame to
+        // frame, not just the shadow edge. texelSizeX/Y stay effectively
+        // constant frame to frame here (they only depend on this
+        // cascade's fixed FOV/aspect/split-distance shape, not camera
+        // position), so the floor() snap below is a stable grid, not a
+        // moving target.
         float texelSizeX = (maxBounds.x - minBounds.x) / static_cast<float>(kShadowMapResolution);
         if (texelSizeX > 0.0f) {
             minBounds.x = std::floor(minBounds.x / texelSizeX) * texelSizeX;
