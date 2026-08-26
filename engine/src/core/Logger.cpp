@@ -32,6 +32,12 @@ LogLevel Logger::minLevel() const {
     return minLevel_;
 }
 
+bool Logger::enableFileLogging(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    fileSink_.open(path, std::ios::app);
+    return fileSink_.is_open();
+}
+
 void Logger::log(LogLevel level, std::string category, std::string message) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (level < minLevel_) return;
@@ -39,13 +45,19 @@ void Logger::log(LogLevel level, std::string category, std::string message) {
     float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - startTime_).count();
     LogEntry entry{level, std::move(category), std::move(message), elapsed};
 
-    // Warn/Error real-route to stderr (matches this engine's own
-    // established convention -- every existing error fprintf() already
-    // targets stderr); Debug/Info go to stdout. Real, fixed, readable
-    // format: [elapsed][LEVEL][category] message.
+    // Warn/Error to stderr, Debug/Info to stdout -- matches this
+    // engine's existing fprintf() convention.
+    char line[1024];
+    std::snprintf(line, sizeof(line), "[%8.3fs][%-5s][%s] %s", entry.timestampSeconds, logLevelName(entry.level),
+                  entry.category.c_str(), entry.message.c_str());
     std::FILE* stream = (entry.level >= LogLevel::Warn) ? stderr : stdout;
-    std::fprintf(stream, "[%8.3fs][%-5s][%s] %s\n", entry.timestampSeconds, logLevelName(entry.level),
-                 entry.category.c_str(), entry.message.c_str());
+    std::fprintf(stream, "%s\n", line);
+
+    // Flushed immediately -- a fatal error can kill the process moments later.
+    if (fileSink_.is_open()) {
+        fileSink_ << line << "\n";
+        fileSink_.flush();
+    }
 
     ring_.push_back(std::move(entry));
     while (ring_.size() > kMaxRingEntries) ring_.pop_front();

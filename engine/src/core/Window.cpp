@@ -3,9 +3,57 @@
 #include <SDL2/SDL_vulkan.h>
 #include <stb_image.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 
+#include "core/Logger.hpp"
+
 namespace engine::core {
+
+// Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+// report): SDL_GetError() is real and always included verbatim in the
+// result, but its raw text ("No available video device", a wrapped
+// Win32 error, ...) means little to someone who isn't already familiar
+// with SDL internals -- Jay's own report was exactly this: a real
+// failure with a real cause, but a message that gave no next step. This
+// inspects the raw text for the real, documented SDL failure shapes
+// worth calling out by name and appends one concrete, actionable next
+// step; anything unrecognized still gets a real, honest generic
+// fallback covering this bug class's actual known causes (out-of-date
+// driver, missing Vulkan runtime, no display attached) -- never silence,
+// never a guess dressed up as a diagnosis.
+std::string classifySdlFailure(const std::string& context, const std::string& rawSdlError) {
+    std::string lower = rawSdlError;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    std::string hint;
+    if (lower.find("no available video device") != std::string::npos ||
+        lower.find("no video device") != std::string::npos ||
+        lower.find("not found a working video") != std::string::npos ||
+        lower.find("no video mode") != std::string::npos) {
+        hint =
+            "No display/video device could be found. If you're connecting over Remote Desktop (RDP) or a "
+            "headless/virtual session, Windows may not expose a real display to Kronos -- try a local session, "
+            "or a remote tool with GPU passthrough (e.g. Parsec, or RDP with RemoteFX/GPU redirection enabled) "
+            "instead.";
+    } else if (lower.find("vulkan") != std::string::npos || lower.find("icd") != std::string::npos) {
+        hint =
+            "This looks like a missing or broken Vulkan runtime/driver (ICD). Install or update your GPU driver "
+            "(it bundles the Vulkan runtime), or install the standalone Vulkan Runtime from vulkan.lunarg.com.";
+    } else if (lower.find("driver") != std::string::npos) {
+        hint = "This looks like a graphics driver problem. Update your GPU driver to the latest version from "
+               "your GPU vendor (NVIDIA/AMD/Intel) and try again.";
+    } else {
+        hint =
+            "Common causes: an out-of-date or missing graphics driver, no Vulkan-capable GPU, or running in an "
+            "environment with no real display attached (a remote/headless session, or a sandboxed/virtual "
+            "machine without GPU passthrough).";
+    }
+
+    return context + " failed: " + rawSdlError + ". " + hint;
+}
 
 namespace {
 // Kronos ("UI/UX Revamp" -- "App Icon"): real, honest best-effort --
@@ -51,8 +99,19 @@ Window::~Window() {
 }
 
 bool Window::initialize(const CreateInfo& info) {
+    lastError_.clear(); // real, honest reset -- a retried initialize() after a fixed environment shouldn't report a stale error
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
-        std::fprintf(stderr, "Window: SDL_Init failed: %s\n", SDL_GetError());
+        // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+        // report): real, specific diagnosis (see classifySdlFailure()'s
+        // own comment) instead of the raw SDL error alone -- logError()
+        // both mirrors to stderr (same real visibility this always had)
+        // and, once a caller has opted into Logger::enableFileLogging()
+        // (see main.cpp/StudioMain.cpp's own call sites), persists it to
+        // a real on-disk log file that survives the process dying
+        // moments later.
+        lastError_ = classifySdlFailure("SDL video/event subsystem initialization", SDL_GetError());
+        logError("Window", "%s", lastError_.c_str());
         return false;
     }
 
@@ -69,7 +128,8 @@ bool Window::initialize(const CreateInfo& info) {
     );
 
     if (!window_) {
-        std::fprintf(stderr, "Window: SDL_CreateWindow failed: %s\n", SDL_GetError());
+        lastError_ = classifySdlFailure("Window creation", SDL_GetError());
+        logError("Window", "%s", lastError_.c_str());
         SDL_Quit();
         return false;
     }
