@@ -6,6 +6,7 @@
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
+#include "core/AssetImportQueue.hpp"
 #include "core/AssetRegistry.hpp"
 #include "core/Mesh.hpp"
 #include "core/WorldProp.hpp"
@@ -35,7 +36,20 @@ public:
     [[nodiscard]] const char* name() const override { return "Asset Browser"; }
     [[nodiscard]] const char* category() const override { return "Assets"; }
 
+    void update(float dt, core::ECS& ecs, core::EntityId selected,
+                const std::vector<core::EntityId>& selectedEntities) override;
     void drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) override;
+
+    // Kronos ("Asset Hot-Import Pipeline" -- real OS drag-and-drop):
+    // real, non-blocking -- queues `path` on importQueue_ the exact same
+    // way the panel's own "Import" button does, so a file dragged from
+    // the OS file manager onto the Studio window and one typed into the
+    // Import box behave identically. Called from StudioApp's own
+    // SDL_DROPFILE handling (see Window::setRawEventCallback's own doc
+    // comment) -- deliberately not this class discovering SDL events
+    // itself, same "one real event pump, not a second competing one"
+    // reasoning that callback mechanism already exists for.
+    void submitDroppedFile(const std::string& path);
 
 private:
     void drawPropEntries(core::ECS& ecs);
@@ -67,6 +81,15 @@ private:
     core::AssetRegistry assetRegistry_;
     char importPathBuffer_[256] = "";
     std::string importStatusMessage_;
+
+    // Kronos ("Asset Hot-Import Pipeline"): real background worker pool
+    // -- both the "Import" button and submitDroppedFile() below queue
+    // through this instead of calling assetRegistry_.importAsset()
+    // synchronously, so a large/slow file (a big glTF mesh, a large
+    // texture) never freezes the Studio render loop. update() polls it
+    // every frame and adopts each real completed result into
+    // assetRegistry_ via AssetRegistry::adoptMetadata().
+    core::AssetImportQueue importQueue_;
 };
 
 } // namespace engine::studio::plugins
