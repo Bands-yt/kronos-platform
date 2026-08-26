@@ -340,6 +340,28 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
         depthGradient = clamp(depthGradient, -kMaxReceiverSlope, kMaxReceiverSlope);
     }
 
+    // Kronos ("Shadow Bias Diagnostics" -- hardware still peter-panning
+    // after two bias-magnitude rewrites): live-tunable scale, applied to
+    // *all* bias below (this term and minBias), not just the receiver-
+    // plane one -- see Renderer::setReceiverPlaneBiasScale()'s own
+    // comment. At 0 this is a true zero-bias fragment shader: every
+    // shadow comparison runs with no bias at all. If the detachment
+    // gap in a screenshot survives that, depth bias is not the cause --
+    // whatever's producing it lives in the cascade/matrix/uv lookup
+    // path instead, and no further bias-magnitude tuning here can fix
+    // it. That's the actual diagnostic value of this control: it's a
+    // yes/no answer on whether this whole function is even the right
+    // place to keep looking, not just a strength dial.
+    depthGradient *= scene.cascadeBiasScale.w;
+
+    // Absolute per-tap ceiling on the receiver-plane term's own
+    // contribution, independent of the slope clamp above: at the
+    // default scale (1.0) this is already close to inert (kMaxReceiverSlope
+    // combined with one-texel offsets tops out just under this value on
+    // its own), so it only actually engages once the live scale above
+    // is pushed past roughly 1.5x.
+    const float kMaxReceiverPlaneBiasContribution = 0.0025;
+
     // Small constant+NdotL floor -- a backstop for the degenerate case
     // above (depthGradient == 0, e.g. a flat receiver directly under an
     // overhead light) and residual D32_SFLOAT quantization error, not
@@ -359,13 +381,14 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     // the same as the receiver-plane term's own, unavoidable, correct
     // depthRange-proportional behavior.
     float NdotL = max(dot(N, L), 0.0);
-    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008);
+    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008) * scene.cascadeBiasScale.w;
 
     // Sprint 14 ("Performance Mode"): a real, direct per-fragment cost
     // cut -- one center tap instead of the real 3x3 (9-tap) PCF loop,
     // trading soft shadow edges for real fragment-shader throughput.
     if (scene.renderFlags.y > 0.5) {
-        float bias = max(minBias, dot(abs(depthGradient), texelSize));
+        float receiverBias = min(dot(abs(depthGradient), texelSize), kMaxReceiverPlaneBiasContribution);
+        float bias = max(minBias, receiverBias);
         float sampledDepth = texture(shadowMapArray, vec3(uv, float(cascade))).r;
         return (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
     }
@@ -380,7 +403,9 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
             // PCF and receiver-plane bias combine correctly instead of
             // needing a flat bias sized for the whole kernel's worst
             // case.
-            float expectedDepth = currentDepth + dot(depthGradient, offset);
+            float receiverBias = clamp(dot(depthGradient, offset),
+                                        -kMaxReceiverPlaneBiasContribution, kMaxReceiverPlaneBiasContribution);
+            float expectedDepth = currentDepth + receiverBias;
             float sampledDepth = texture(shadowMapArray, vec3(uv + offset, float(cascade))).r;
             shadow += (expectedDepth - minBias > sampledDepth) ? 0.0 : 1.0;
         }
