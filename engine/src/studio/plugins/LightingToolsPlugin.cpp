@@ -134,6 +134,23 @@ void LightingToolsPlugin::drawCascadedShadowMapSection() {
         "Compile-time constants, not live-editable here: the shadow map is a fixed-size VkImage array sized "
         "once at startup, and the cascade split distances are baked into computeCascades()'s math. Toggle the "
         "cascade color debug overlay from the Viewport panel's own Debug Overlays row.");
+
+    // Kronos ("Shadow Bias Diagnostics"): live-tunable, unlike everything
+    // above -- see Renderer::setReceiverPlaneBiasScale()'s own comment.
+    // This is a diagnostic, not a confirmed fix: two prior bias-magnitude
+    // rewrites both still peter-panned on real hardware.
+    float receiverPlaneBiasScale = renderer_->receiverPlaneBiasScale();
+    if (ImGui::SliderFloat("Shadow Bias Scale (Diagnostic)", &receiverPlaneBiasScale, 0.0f, 4.0f, "%.2f")) {
+        renderer_->setReceiverPlaneBiasScale(receiverPlaneBiasScale);
+    }
+    ImGui::SameLine();
+    helpMarker(
+        "Multiplies ALL shadow depth bias (receiver-plane term + the flat N.L floor) by this amount. Set to 0 "
+        "first: that's a true zero-bias shader. If shadows still show a detached gap at 0, depth bias is not "
+        "the cause -- the bug is in the cascade/matrix/uv lookup instead, not fixable by raising this. If 0 "
+        "removes the detachment (heavy acne is expected there), raise this incrementally to find the lowest "
+        "value that stays attached. 1 is the shader's own as-authored strength. Live -- takes effect next "
+        "frame, no rebuild.");
 }
 
 void LightingToolsPlugin::drawRenderingModeSection() {

@@ -231,14 +231,20 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
         depthGradient = clamp(depthGradient, -kMaxReceiverSlope, kMaxReceiverSlope);
     }
 
-    // Deliberately *not* multiplied by scene.cascadeBiasScale -- see
-    // scene.frag's sampleCascadeShadow() (this function's mirror) for
-    // why: this floor guards a normalized-depth precision limit that's
-    // uniform across cascades, and multiplying it by cascadeBiasScale
-    // made its world-space consequence scale with depthRange^2 instead
-    // of the correct, linear depthRange.
+    // Live-tunable scale (applied to *all* bias below, not just this
+    // term) + absolute contribution ceiling -- see scene.frag's
+    // sampleCascadeShadow() (this function's mirror) and
+    // Renderer::setReceiverPlaneBiasScale()'s own comment for why 0 is a
+    // true zero-bias diagnostic, not just a strength dial.
+    depthGradient *= scene.cascadeBiasScale.w;
+    const float kMaxReceiverPlaneBiasContribution = 0.0025;
+
+    // Not multiplied by the per-cascade cascadeBiasScale.xyz -- see
+    // scene.frag's sampleCascadeShadow() for why (depthRange^2 blowup).
+    // Still multiplied by the single global .w scale above, same as
+    // depthGradient, so it participates in the zero-bias diagnostic too.
     float NdotL = max(dot(N, L), 0.0);
-    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008);
+    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008) * scene.cascadeBiasScale.w;
 
     // Sprint 14 ("Performance Mode"): a real, direct per-fragment cost
     // cut -- one center tap instead of the real 3x3 (9-tap) PCF loop,
@@ -246,7 +252,8 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     // real branches sample the exact same shadowMapArray -- only the
     // real tap count (and bias per-tap treatment) differs.
     if (scene.renderFlags.y > 0.5) {
-        float bias = max(minBias, dot(abs(depthGradient), texelSize));
+        float receiverBias = min(dot(abs(depthGradient), texelSize), kMaxReceiverPlaneBiasContribution);
+        float bias = max(minBias, receiverBias);
         float sampledDepth = texture(shadowMapArray, vec3(uv, float(cascade))).r;
         return (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
     }
@@ -255,7 +262,9 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
             vec2 offset = vec2(x, y) * texelSize;
-            float expectedDepth = currentDepth + dot(depthGradient, offset);
+            float receiverBias = clamp(dot(depthGradient, offset),
+                                        -kMaxReceiverPlaneBiasContribution, kMaxReceiverPlaneBiasContribution);
+            float expectedDepth = currentDepth + receiverBias;
             float sampledDepth = texture(shadowMapArray, vec3(uv + offset, float(cascade))).r;
             shadow += (expectedDepth - minBias > sampledDepth) ? 0.0 : 1.0;
         }

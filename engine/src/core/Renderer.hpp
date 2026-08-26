@@ -184,6 +184,30 @@ public:
     // full 500-unit farPlane, see computeCascades()'s doc comment.
     static constexpr float kShadowMaxDistance = 80.0f;
 
+    // Kronos ("Shadow Bias Diagnostics"): a real, live-tunable multiplier
+    // on *all* of scene.frag/scene_rt.frag's shadow depth bias -- both
+    // the receiver-plane term and the minBias floor (see
+    // sampleCascadeShadow()'s own comment) -- 0 is a true zero-bias
+    // shader (every shadow comparison runs unbiased), 1 is the shader's
+    // own as-authored magnitude, >1 scales both up further.
+    //
+    // This exists because two prior derivative-bias rewrites both still
+    // peter-panned on real hardware, with no GPU available in this
+    // environment to verify against either one. A hardware screenshot
+    // from the second rewrite showed a hard-edged, roughly uniform-size
+    // detachment gap on ordinary flat-topped boxes at both near and far
+    // cascades -- which is not what a bias *magnitude* error produces
+    // (bias erodes a shadow's own edges, worst at grazing angles, and
+    // does so more at far cascades if anything); it's the signature of
+    // a lookup/coordinate error elsewhere (cascade selection, the
+    // texel-snapped ortho bounds, a uv/matrix mismatch between
+    // shadow.vert and the sampling shaders). This dial exists to settle
+    // that question on real hardware before any more bias-magnitude
+    // guessing: at scale 0, if the detachment gap survives, depth bias
+    // is exonerated and the bug is not in this function at all.
+    void setReceiverPlaneBiasScale(float scale) { receiverPlaneBiasScale_ = std::clamp(scale, 0.0f, 4.0f); }
+    [[nodiscard]] float receiverPlaneBiasScale() const { return receiverPlaneBiasScale_; }
+
     // Sprint 8 ("Performance Stats & Debug Tools") task category 2's CSM
     // cascade debug overlay: real per-cascade split depths (view-space
     // far distance of each cascade), the exact same values scene.frag's
@@ -1401,6 +1425,10 @@ private:
     // see setRTGIEnabled()/setRTGIIntensity()'s own comments.
     bool rtGIEnabled_ = false;
     float rtGIIntensity_ = 1.0f;
+
+    // Kronos ("Shadow Bias / Peter-Panning Fix" v3) -- see
+    // setReceiverPlaneBiasScale()'s own public comment.
+    float receiverPlaneBiasScale_ = 1.0f;
 
     // Sprint 14 ("Performance Mode") -- see setPerformanceMode()'s own
     // public comment and .cpp implementation comment.

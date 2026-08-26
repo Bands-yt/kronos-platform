@@ -13,11 +13,21 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal; // unused, kept only so the vertex input layout matches scene.vert's
 layout(location = 2) in vec2 inUV;     // unused, same reason
 
+// Partial declaration, positional like every other shader's own partial
+// SceneUBO (see e.g. shaders/volumetric_fog.frag's identical-pattern
+// comment) -- this file only ever reads lightViewProj[] (before any of
+// the fields below it), so the trailing fields exist solely to keep
+// std140 offsets aligned with the real struct in case a later change
+// here starts reading one of them; they were previously missing
+// invViewProj and cascadeBiasScale, which happened to be harmless only
+// because nothing past lightViewProj[] was ever read.
 layout(set = 0, binding = 0) uniform SceneUBO {
     mat4 view;
     mat4 proj;
     mat4 lightViewProj[3];
+    mat4 invViewProj;
     vec4 cascadeSplitsView;
+    vec4 cascadeBiasScale;
     vec4 lightDirectionWS;
     vec4 lightColorIntensity;
     vec4 viewPositionWS;

@@ -4585,9 +4585,12 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         ubo.lightViewProj[cascade] = cascades.lightViewProj[cascade];
     }
     ubo.cascadeSplitsView = glm::vec4(cascades.splitDepths[0], cascades.splitDepths[1], cascades.splitDepths[2], 0.0f);
+    // .w rides the live receiver-plane-bias-scale dial (previously unused
+    // padding) -- see Renderer::setReceiverPlaneBiasScale()'s own comment.
     ubo.cascadeBiasScale = glm::vec4(cascades.depthRanges[0] / kReferenceShadowDepthRange,
                                       cascades.depthRanges[1] / kReferenceShadowDepthRange,
-                                      cascades.depthRanges[2] / kReferenceShadowDepthRange, 0.0f);
+                                      cascades.depthRanges[2] / kReferenceShadowDepthRange,
+                                      receiverPlaneBiasScale_);
     // Kronos ("Rendering Fidelity Foundation" Phase 1.1): real weather
     // composed on top of whatever setLighting() last provided -- see
     // applyWeather()'s own comment for why Clear weather is an exact,
