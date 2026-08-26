@@ -125,8 +125,9 @@ void LightingToolsPlugin::drawCascadedShadowMapSection() {
                 core::Renderer::kShadowMapResolution, core::Renderer::kShadowMapResolution);
     ImGui::Text("Covers camera near plane to %.0f units", core::Renderer::kShadowMaxDistance);
     ImGui::TextWrapped(
-        "3x3 PCF, slope-scaled bias (max(0.0025 x (1 - N.L), 0.0006), scaled per cascade by its own depth "
-        "range) -- see shaders/scene.frag's computeShadow().");
+        "3x3 PCF, receiver-plane depth bias (derived per-fragment from real screen-space depth derivatives, "
+        "with a small N.L + per-cascade-scaled floor as a backstop) -- see shaders/scene.frag's "
+        "sampleCascadeShadow().");
     ImGui::SameLine();
     helpMarker(
         "Compile-time constants, not live-editable here: the shadow map is a fixed-size VkImage array sized "

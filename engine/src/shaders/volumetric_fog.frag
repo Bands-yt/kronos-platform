@@ -80,7 +80,24 @@ int selectCascade(float viewDepth) {
 // always-runs shadow sampling does).
 // See sampleFogShadow()'s own comment -- the real base bias, before the
 // per-cascade scale that was previously missing entirely.
-const float kFogShadowBaseBias = 0.0015;
+//
+// Kronos ("Shadow Bias / Peter-Panning Fix"): bumped from 0.0015 --
+// Renderer.cpp's shadow-pass pipeline depth bias (depthBiasConstantFactor/
+// SlopeFactor) was cut roughly in half-to-a-third (it was double-stacking
+// with scene.frag's own shader-side bias, which is what actually caused
+// the peter-panning this pass fixed) to stop over-biasing *surface*
+// shading. But this constant is the *only* defense sampleFogShadow() has
+// -- a raymarch sample has no normal and no coherent screen-space
+// derivative to build a receiver-plane term from the way scene.frag now
+// does, so it can't pick up any of that fix's actual precision. It was
+// implicitly relying on some of that now-reduced pipeline bias as shared
+// margin, on exactly the grazing-angle-avatar-geometry case its own
+// header comment already documents a real prior bug for. Raised to
+// compensate for that lost margin rather than risk reopening it --
+// unverified on real hardware in this pass (no GPU available); if a
+// fog-shadow acne artifact reappears on avatar edges, this is the first
+// constant to look at.
+const float kFogShadowBaseBias = 0.0035;
 
 float sampleFogShadow(vec3 worldPos, float viewDepth) {
     int cascade = selectCascade(viewDepth);

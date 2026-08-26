@@ -267,40 +267,93 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
         return 1.0;
     }
 
-    // Slope-scaled bias: grazing-angle surfaces need more bias than
-    // surfaces facing the light head-on, or they self-shadow ("shadow
-    // acne") even with the pipeline's constant depth bias
-    // (createShadowPipeline's depthBiasConstantFactor/SlopeFactor) alone.
-    // Scaled by this cascade's own bias-scale factor (see
-    // Renderer::kReferenceShadowDepthRange's comment) -- without this,
-    // the same fixed bias constant is wrong for every cascade except the
-    // one it happens to match, showing up as acne or peter-paning that
-    // differs by which cascade is currently active (i.e. by distance from
-    // the camera, which reads as "looks wrong from some angles"). This
-    // stays correct under a moving/dynamic light too (task category 3's
-    // "confirm shadow-bias remains correct under dynamic lighting"):
-    // NdotL and every scene.* field here are recomputed fresh every
-    // frame from whatever the light direction currently is
-    // (Renderer::drawSceneIntoImpl() rebuilds the whole UBO, cascades
-    // included, once per frame, never caching across frames) -- a moving
-    // sun was never a special case this bias math needed to know about.
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
+
+    // Receiver-plane depth bias (Isidoro, "Shadow Mapping: GPU-based
+    // Tips and Techniques"): derive the receiver surface's *actual*
+    // rate of change of light-space depth per shadow-map texel from
+    // this fragment's own screen-space derivatives, instead of guessing
+    // it from NdotL alone. Correct at any surface angle, and
+    // automatically correct per-cascade (it falls straight out of this
+    // cascade's own lightViewProj, no manually tuned per-cascade
+    // constant to get wrong). This is what actually fixes peter-panning
+    // without swinging back into acne: the old flat NdotL bias had to
+    // be sized for the *worst* slope a cascade could ever show, so it
+    // over-biased everything else; this sizes the bias to each
+    // fragment's own real slope instead.
+    //
+    // Deliberately differentiate `worldPos` (not `uv`/`currentDepth`
+    // directly) and push that through lightViewProj as a *direction*
+    // (w=0): `cascade` is picked per-fragment by selectCascade(), so at
+    // a cascade-blend seam neighboring lanes in the same 2x2 quad can be
+    // evaluating this function with *different* cascade indices --
+    // dFdx/dFdy on the already-projected uv/depth would then difference
+    // two different cascades' projections and produce a garbage
+    // gradient no clamp can safely catch. worldPos itself has the same
+    // real value in every lane regardless of which cascade that lane
+    // picked, so its derivative stays quad-coherent; and because this
+    // projection is orthographic (w is always exactly 1, no perspective
+    // divide), transforming that derivative through M is exact, not an
+    // approximation -- M is linear, so d(M*p)/dx == M*(dp/dx).
+    vec3 dWorldPos_dx = dFdx(worldPos);
+    vec3 dWorldPos_dy = dFdy(worldPos);
+    mat4 M = scene.lightViewProj[cascade];
+    vec3 dProjected_dx = (M * vec4(dWorldPos_dx, 0.0)).xyz;
+    vec3 dProjected_dy = (M * vec4(dWorldPos_dy, 0.0)).xyz;
+    vec3 duvz_dx = vec3(dProjected_dx.xy * 0.5, dProjected_dx.z);
+    vec3 duvz_dy = vec3(dProjected_dy.xy * 0.5, dProjected_dy.z);
+    float det = duvz_dx.x * duvz_dy.y - duvz_dy.x * duvz_dx.y;
+    vec2 depthGradient = vec2(0.0);
+    // Degenerate case (silhouette edges, near-parallel derivatives):
+    // fall back to no receiver-plane term rather than a divide-by-near-
+    // zero blowup -- the constant floor below still covers these.
+    if (abs(det) > 1e-9) {
+        depthGradient = vec2(duvz_dy.y * duvz_dx.z - duvz_dx.y * duvz_dy.z,
+                              duvz_dx.x * duvz_dy.z - duvz_dy.x * duvz_dx.z) / det;
+        // An almost-edge-on receiver can still produce a huge (correct,
+        // but useless) slope; capping it keeps this bias from ever
+        // exceeding what a 3x3 PCF kernel could possibly need to cover.
+        // Now that the derivative above is quad-coherent (not garbage
+        // at cascade seams), this only needs to cover genuinely steep
+        // real receivers, not a divergence failure mode -- kept tight.
+        const float kMaxReceiverSlope = 2.0;
+        depthGradient = clamp(depthGradient, -kMaxReceiverSlope, kMaxReceiverSlope);
+    }
+
+    // Small constant+slope-scaled floor -- a backstop for the
+    // degenerate case above and residual float precision error, not
+    // the primary defense the way this used to be (that's the receiver-
+    // plane term now). Still NdotL- and per-cascade-scaled (see
+    // Renderer::kReferenceShadowDepthRange's comment), just an order of
+    // magnitude smaller: this stays correct under a moving/dynamic
+    // light too, since NdotL and every scene.* field here are
+    // recomputed fresh every frame from whatever the light direction
+    // currently is.
     float NdotL = max(dot(N, L), 0.0);
-    float bias = max(0.0025 * (1.0 - NdotL), 0.0006) * scene.cascadeBiasScale[cascade];
+    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008) * scene.cascadeBiasScale[cascade];
 
     // Sprint 14 ("Performance Mode"): a real, direct per-fragment cost
     // cut -- one center tap instead of the real 3x3 (9-tap) PCF loop,
     // trading soft shadow edges for real fragment-shader throughput.
     if (scene.renderFlags.y > 0.5) {
+        float bias = max(minBias, dot(abs(depthGradient), texelSize));
         float sampledDepth = texture(shadowMapArray, vec3(uv, float(cascade))).r;
         return (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
     }
 
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
     float shadow = 0.0;
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
-            float sampledDepth = texture(shadowMapArray, vec3(uv + vec2(x, y) * texelSize, float(cascade))).r;
-            shadow += (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
+            vec2 offset = vec2(x, y) * texelSize;
+            // The receiver's own expected depth *at this tap's offset*,
+            // extrapolated along its real local slope -- not the center
+            // tap's depth reused for every neighbor. This is what lets
+            // PCF and receiver-plane bias combine correctly instead of
+            // needing a flat bias sized for the whole kernel's worst
+            // case.
+            float expectedDepth = currentDepth + dot(depthGradient, offset);
+            float sampledDepth = texture(shadowMapArray, vec3(uv + offset, float(cascade))).r;
+            shadow += (expectedDepth - minBias > sampledDepth) ? 0.0 : 1.0;
         }
     }
     return shadow / 9.0;
