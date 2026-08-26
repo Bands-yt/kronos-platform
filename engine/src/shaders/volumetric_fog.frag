@@ -106,28 +106,23 @@ float sampleFogShadow(vec3 worldPos, float viewDepth) {
     vec2 uv = projected.xy * 0.5 + 0.5;
     float currentDepth = projected.z;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || currentDepth > 1.0) return 1.0;
-    // Kronos ("Fix Avatar Scattering Darkening Artifact"): real fix -- this
-    // was a single flat bias with no per-cascade scaling at all, unlike
-    // scene.frag's own sampleCascadeShadow(), whose header comment already
-    // states exactly why that's wrong: "the same fixed bias constant is
-    // wrong for every cascade except the one it happens to match, showing
-    // up as acne... that differs by which cascade is currently active
-    // (i.e. by distance from the camera, which reads as 'looks wrong from
-    // some angles')". A raymarch sample near a close, dynamic mesh (an
-    // avatar orbiting a few units from camera) sits in the nearest,
-    // smallest-texel cascade far more often than a raymarch sample against
-    // distant static geometry does, so an under-scaled bias there produced
-    // real shadow acne right along the avatar's own body -- every acne
-    // sample's visibility flickering to 0 drops that step's real in-
-    // scattered light term (stepRadiance's own real light contribution),
-    // which reads as the avatar looking artificially darker at exactly the
-    // camera angles/cascades where the acne appears. Reusing the same real
-    // per-cascade scene.cascadeBiasScale[cascade] the main shading already
-    // uses (no real surface normal exists for a raymarch sample in open
-    // space, so this can't also carry a slope-scaled NdotL term the way
-    // sampleCascadeShadow() does -- the per-cascade scale alone is the
-    // real, missing piece here).
-    float bias = kFogShadowBaseBias * scene.cascadeBiasScale[cascade];
+    // Kronos ("Fix Avatar Scattering Darkening Artifact"): the original
+    // fix here multiplied by scene.cascadeBiasScale[cascade] to stop the
+    // nearest cascade's under-scaled bias from causing acne along a close
+    // avatar's body. That reasoning for the *near* cascade still holds,
+    // but the multiplication itself was the same bug scene.frag's own
+    // minBias had (see sampleCascadeShadow()'s comment): cascadeBiasScale
+    // is proportional to a cascade's own light-space depth range, and so
+    // is the implicit normalized-depth -> world-space conversion this
+    // bias undergoes once compared against real geometry -- multiplying
+    // by it made the *far* cascade's world-space bias grow with
+    // depthRange^2, badly over-biasing it (the peter-panning this whole
+    // fix chain was chasing). Dropped to a flat constant instead: for the
+    // near cascade specifically, depthRange/kReferenceShadowDepthRange
+    // is close to 1.0 already (the reference range was chosen to roughly
+    // match it), so this barely changes the near-cascade behavior the
+    // avatar fix depends on, while fixing the far-cascade blowup.
+    float bias = kFogShadowBaseBias;
     float sampledDepth = texture(shadowMapArray, vec3(uv, float(cascade))).r;
     return (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
 }

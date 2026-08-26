@@ -187,6 +187,9 @@ int selectCascade(float viewDepth) {
     return 2;
 }
 
+// `N` here must be the *geometric* normal -- see shaders/scene.frag's
+// own sampleCascadeShadow() for why (same "self-contained twin"
+// convention this file already follows).
 float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     vec4 lightSpacePos = scene.lightViewProj[cascade] * vec4(worldPos, 1.0);
     vec3 projected = lightSpacePos.xyz / lightSpacePos.w;
@@ -197,41 +200,45 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
         return 1.0;
     }
 
-    // Receiver-plane depth bias -- see shaders/scene.frag's own
-    // sampleCascadeShadow() for the full explanation (same "self-
-    // contained twin" convention this file already follows for its
-    // cloud-shadow functions). Fixes peter-panning without swinging
-    // back into acne by sizing the bias to each fragment's own real
-    // surface slope (derived from real screen-space derivatives)
-    // instead of a flat NdotL guess sized for the worst case.
-    //
-    // Differentiates worldPos (quad-coherent regardless of which
-    // cascade a neighboring lane picked) and pushes that through
-    // lightViewProj as a direction (w=0), not the already-projected
-    // uv/depth directly -- see scene.frag's own comment for why the
-    // latter produces a garbage gradient at cascade-blend seams, and
-    // why this orthographic-projection direction transform is exact,
-    // not an approximation.
+    // Receiver-plane depth bias, analytic form -- see shaders/scene.frag's
+    // own sampleCascadeShadow() for the full explanation. Builds the two
+    // probe directions from the geometric normal N (a tangent-plane
+    // basis), not from camera screen-space derivatives: hardware testing
+    // found the derivative-based version still peter-panned because it
+    // conflates the *camera's* grazing angle with the *light's*, and
+    // this version is entirely camera-independent.
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
 
-    vec3 dWorldPos_dx = dFdx(worldPos);
-    vec3 dWorldPos_dy = dFdy(worldPos);
+    vec3 Nn = normalize(N);
+    vec3 helper = abs(Nn.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T1 = normalize(cross(Nn, helper));
+    vec3 T2 = cross(Nn, T1);
+
     mat4 M = scene.lightViewProj[cascade];
-    vec3 dProjected_dx = (M * vec4(dWorldPos_dx, 0.0)).xyz;
-    vec3 dProjected_dy = (M * vec4(dWorldPos_dy, 0.0)).xyz;
-    vec3 duvz_dx = vec3(dProjected_dx.xy * 0.5, dProjected_dx.z);
-    vec3 duvz_dy = vec3(dProjected_dy.xy * 0.5, dProjected_dy.z);
-    float det = duvz_dx.x * duvz_dy.y - duvz_dy.x * duvz_dx.y;
+    vec3 dProjected_dT1 = (M * vec4(T1, 0.0)).xyz;
+    vec3 dProjected_dT2 = (M * vec4(T2, 0.0)).xyz;
+    vec3 duvz_dT1 = vec3(dProjected_dT1.xy * 0.5, dProjected_dT1.z);
+    vec3 duvz_dT2 = vec3(dProjected_dT2.xy * 0.5, dProjected_dT2.z);
+    float det = duvz_dT1.x * duvz_dT2.y - duvz_dT2.x * duvz_dT1.y;
     vec2 depthGradient = vec2(0.0);
     if (abs(det) > 1e-9) {
-        depthGradient = vec2(duvz_dy.y * duvz_dx.z - duvz_dx.y * duvz_dy.z,
-                              duvz_dx.x * duvz_dy.z - duvz_dy.x * duvz_dx.z) / det;
-        const float kMaxReceiverSlope = 2.0;
+        depthGradient = vec2(duvz_dT2.y * duvz_dT1.z - duvz_dT1.y * duvz_dT2.z,
+                              duvz_dT1.x * duvz_dT2.z - duvz_dT2.x * duvz_dT1.z) / det;
+        // Kept small on purpose -- a surface this grazing to the light
+        // is already fully NdotL-attenuated in direct lighting, so the
+        // shadow result stops mattering right where this would blow up.
+        const float kMaxReceiverSlope = 2.5;
         depthGradient = clamp(depthGradient, -kMaxReceiverSlope, kMaxReceiverSlope);
     }
 
+    // Deliberately *not* multiplied by scene.cascadeBiasScale -- see
+    // scene.frag's sampleCascadeShadow() (this function's mirror) for
+    // why: this floor guards a normalized-depth precision limit that's
+    // uniform across cascades, and multiplying it by cascadeBiasScale
+    // made its world-space consequence scale with depthRange^2 instead
+    // of the correct, linear depthRange.
     float NdotL = max(dot(N, L), 0.0);
-    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008) * scene.cascadeBiasScale[cascade];
+    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008);
 
     // Sprint 14 ("Performance Mode"): a real, direct per-fragment cost
     // cut -- one center tap instead of the real 3x3 (9-tap) PCF loop,
@@ -489,6 +496,12 @@ vec3 traceIndirectDiffuse(vec3 origin, vec3 N) {
     return accum / float(kGISampleCount);
 }
 
+// `N` must be the geometric normal in both branches: rayQueryShadow()
+// offsets the ray origin off the *actual* rasterized surface (a
+// texture-perturbed normal could offset toward, not away from, that
+// surface at a grazing angle), and sampleCsmShadow()'s receiver-plane
+// bias needs it for the same reason scene.frag's own sampleCascadeShadow()
+// does -- see that function's comment.
 float computeShadow(vec3 worldPos, vec3 N, vec3 L, float viewDepth) {
     // Real, dynamic runtime branch on the real per-frame toggle (see
     // this UBO field's own comment) -- both real code paths exist in
@@ -614,7 +627,8 @@ void main() {
     vec3 diffuse = kD * albedo / PI;
 
     float viewDepth = -(scene.view * vec4(inWorldPos, 1.0)).z;
-    float shadow = computeShadow(inWorldPos, N, L, viewDepth);
+    // geometricNormal, not N -- see computeShadow()'s own comment.
+    float shadow = computeShadow(inWorldPos, geometricNormal, L, viewDepth);
     // Kronos ("Environmental Detail" -- dynamic cloud shadows): a real,
     // exact no-op when the toggle is off, same convention as scene.frag's
     // own identical hook.
