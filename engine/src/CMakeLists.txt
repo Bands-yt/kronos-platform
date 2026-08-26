@@ -127,6 +127,7 @@ add_library(engine_core STATIC
     core/AssetCache.cpp
     core/AssetRegistry.cpp
     core/AssetImportQueue.cpp
+    core/TextureBaker.cpp
     core/LocalProfile.cpp
     core/ParticleSystem.cpp
     core/SceneFile.cpp

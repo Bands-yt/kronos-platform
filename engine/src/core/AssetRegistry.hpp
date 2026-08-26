@@ -33,6 +33,11 @@ struct AssetRegistryEntry {
     int32_t width = 0;
     int32_t height = 0;
     int32_t channels = 0;
+    // Kronos (Asset Hot-Import Pipeline): see AssetMetadata.hpp's own
+    // mipLevelsBaked/bakedMipSizeBytes fields -- carried through
+    // verbatim by adoptMetadata() below, same as every other field here.
+    uint32_t mipLevelsBaked = 0;
+    uint64_t bakedMipSizeBytes = 0;
     // Audio
     double durationSeconds = 0.0;
     uint32_t sampleRate = 0;

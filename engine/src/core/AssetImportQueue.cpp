@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "core/TextureBaker.hpp"
+
 namespace engine::core {
 
 AssetImportQueue::AssetImportQueue(size_t workerCount) {
@@ -65,6 +67,26 @@ void AssetImportQueue::workerLoop() {
         // other workers/submit()/poll() aren't blocked while this one
         // parses a large file.
         AssetMetadata metadata = extractAssetMetadata(path);
+
+        // Kronos (Asset Hot-Import Pipeline): the real "background
+        // compression/mipmaps" sub-task -- for a successfully-probed
+        // texture, this worker also bakes its real mip chain (see
+        // core::TextureBaker.hpp) right here, off the main thread, same
+        // as the metadata probe above. A bake failure is real and
+        // reported (metadata.error), but deliberately does NOT flip
+        // metadata.succeeded back to false -- the asset itself imported
+        // fine; it just won't have baked mips yet, same "partial
+        // success is still success" reasoning a failed thumbnail
+        // generation elsewhere in this codebase would follow.
+        if (metadata.succeeded && metadata.kind == AssetKind::Texture) {
+            TextureBakeResult bake = bakeTextureMips(path);
+            if (bake.succeeded) {
+                metadata.mipLevelsBaked = bake.mipLevels;
+                metadata.bakedMipSizeBytes = bake.bakedSizeBytes;
+            } else {
+                metadata.error = "mip bake failed: " + bake.error;
+            }
+        }
 
         {
             std::lock_guard<std::mutex> lock(mutex_);

@@ -54,8 +54,18 @@ void CreatorAssetBrowserPlugin::update(float /*dt*/, core::ECS& /*ecs*/, core::E
     // Browser is closed still completes and lands in assetRegistry_.
     for (const core::AssetImportQueue::Result& result : importQueue_.poll()) {
         assetRegistry_.adoptMetadata(result.path, result.metadata);
-        importStatusMessage_ = result.metadata.succeeded ? (std::string("Imported \"") + result.path + "\"")
-                                                           : (std::string("Import failed: ") + result.metadata.error);
+        if (!result.metadata.succeeded) {
+            importStatusMessage_ = std::string("Import failed: ") + result.metadata.error;
+        } else if (result.metadata.kind == core::AssetKind::Texture && result.metadata.mipLevelsBaked > 0) {
+            // Kronos (Asset Hot-Import Pipeline -- "compression/mipmaps"):
+            // real feedback that the background mip bake (see
+            // AssetImportQueue::workerLoop()) actually ran, not just the
+            // metadata probe.
+            importStatusMessage_ = "Imported \"" + result.path + "\" (" + std::to_string(result.metadata.mipLevelsBaked) +
+                                    " mips baked, " + std::to_string(result.metadata.bakedMipSizeBytes / 1024) + " KB)";
+        } else {
+            importStatusMessage_ = "Imported \"" + result.path + "\"";
+        }
     }
 }
 
@@ -235,8 +245,14 @@ void CreatorAssetBrowserPlugin::drawImportedAssetsSection() {
                                      static_cast<unsigned long long>(entry.fileSizeBytes));
                 break;
             case core::AssetKind::Texture:
-                ImGui::TextDisabled("%dx%d, %d channels, %llu bytes", entry.width, entry.height, entry.channels,
-                                     static_cast<unsigned long long>(entry.fileSizeBytes));
+                if (entry.mipLevelsBaked > 0) {
+                    ImGui::TextDisabled("%dx%d, %d channels, %llu bytes, %u mips baked (%llu KB)", entry.width,
+                                         entry.height, entry.channels, static_cast<unsigned long long>(entry.fileSizeBytes),
+                                         entry.mipLevelsBaked, static_cast<unsigned long long>(entry.bakedMipSizeBytes / 1024));
+                } else {
+                    ImGui::TextDisabled("%dx%d, %d channels, %llu bytes", entry.width, entry.height, entry.channels,
+                                         static_cast<unsigned long long>(entry.fileSizeBytes));
+                }
                 break;
             case core::AssetKind::Audio:
                 ImGui::TextDisabled("%.1fs, %u Hz, %u ch, %llu bytes", entry.durationSeconds, entry.sampleRate,
