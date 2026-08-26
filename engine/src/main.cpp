@@ -2171,7 +2171,13 @@ int main(int argc, char** argv) {
         for (int zi = 0; zi < kGridSize; ++zi) {
             auto entity = app.ecs().createEntity("MaterialSample");
             if (auto* transform = app.ecs().tryGetComponent<engine::core::Transform>(entity)) {
-                transform->position = {(xi - kGridSize / 2) * 1.4f, 0.5f, 5.0f + zi * 1.4f};
+                // Real bug fix (found via live playtest): boxMesh's own
+                // half-extent is 0.5, so at this 0.45 scale the box's real
+                // half-height is 0.225 -- Y must match that, not 0.5, or
+                // the box hovers 0.275 units above the ground with a
+                // permanently visible gap to its own shadow (this entity
+                // has no physics body, so nothing ever settles it).
+                transform->position = {(xi - kGridSize / 2) * 1.4f, 0.225f, 5.0f + zi * 1.4f};
                 transform->scale = {0.45f, 0.45f, 0.45f};
             }
             float metallic = static_cast<float>(xi) / static_cast<float>(kGridSize - 1);
@@ -2201,7 +2207,13 @@ int main(int argc, char** argv) {
             auto entity = app.ecs().createEntity("OreProp");
             float scale = scaleDist(rng);
             if (auto* transform = app.ecs().tryGetComponent<engine::core::Transform>(entity)) {
-                transform->position = {posDist(rng), scale, posDist(rng)};
+                // Real bug fix (same root cause as the material showcase
+                // grid above): boxMesh's own half-extent is 0.5, so this
+                // entity's real half-height is 0.5 * scale, not scale --
+                // Y must match that or the box hovers above the ground
+                // with a permanently visible gap to its own shadow (no
+                // physics body here to ever settle it).
+                transform->position = {posDist(rng), scale * 0.5f, posDist(rng)};
                 transform->scale = glm::vec3(scale);
             }
             auto& renderable = app.ecs().addComponent<engine::core::Renderable>(entity);
