@@ -190,8 +190,8 @@ RayTracingScene::BlasEntry RayTracingScene::buildBlasFor(const ShapeKey& key) {
         case MeshSourceKind::Plane: geometry = buildPlanePositions(key.params.x, key.params.z); break;
         default:
             // Real, honest unsupported-shape case -- Capsule/Quad/Obj/
-            // Gltf don't participate in ray-traced shadows this pass, see
-            // this class's own header comment. Empty entry (blas ==
+            // Gltf/Fbx don't participate in ray-traced shadows this
+            // pass, see this class's own header comment. Empty entry (blas ==
             // VK_NULL_HANDLE) signals "skip this instance" to the caller.
             return entry;
     }

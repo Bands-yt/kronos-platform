@@ -270,6 +270,24 @@ if(NOT tinygltf_POPULATED)
     FetchContent_Populate(tinygltf)
 endif()
 
+# --- ufbx (Asset Hot-Import Pipeline -- real FBX loading): Autodesk's
+#     own official FBX SDK is proprietary/EULA-gated (a plain fetch of
+#     its download page 403s -- the same shape of wall as the
+#     Ultralight SDK, see engine/external/ultralight-sdk/README.md);
+#     ufbx is the real, standard, license-clean (dual MIT/public-domain)
+#     alternative every open-source engine reaches for instead. Two
+#     files (ufbx.h/ufbx.c, real C99), no CMakeLists.txt of its own at
+#     all (unlike tinygltf/imnodes above, so no populate-only workaround
+#     needed here -- there's nothing for FetchContent_MakeAvailable to
+#     wrongly auto-configure).
+FetchContent_Declare(
+    ufbx
+    GIT_REPOSITORY https://github.com/ufbx/ufbx.git
+    GIT_TAG v0.23.0
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(ufbx)
+
 # GIT_SUBMODULES "" -- imnodes' own repo registers a vcpkg submodule
 # (used only by its own, unused-here find_package(imgui)-based
 # CMakeLists.txt) that a plain recursive clone would otherwise pull down
@@ -360,6 +378,19 @@ set_target_properties(tinygltf PROPERTIES
 )
 target_compile_definitions(tinygltf PUBLIC TINYGLTF3_ENABLE_FS) # real filesystem I/O -- resolves a .gltf's sibling .bin buffer files
 add_library(tinygltf::tinygltf ALIAS tinygltf)
+
+# ufbx.c is real C99 -- CMake compiles a .c file with the C compiler/
+# standard by default regardless of the linking target's own language,
+# same as tinygltf above.
+add_library(ufbx STATIC
+    ${ufbx_SOURCE_DIR}/ufbx.c
+)
+target_include_directories(ufbx PUBLIC ${ufbx_SOURCE_DIR})
+set_target_properties(ufbx PROPERTIES
+    C_STANDARD 99
+    C_STANDARD_REQUIRED ON
+)
+add_library(ufbx::ufbx ALIAS ufbx)
 
 # ImGuizmo's own CMakeLists.txt (FetchContent_MakeAvailable already ran
 # it, producing the imguizmo::imguizmo target with its `src/` include dir)

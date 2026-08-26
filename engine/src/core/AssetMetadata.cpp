@@ -7,6 +7,7 @@
 #include <miniaudio.h> // declarations only -- MINIAUDIO_IMPLEMENTATION is defined once, in Audio.cpp's translation unit
 #include <stb_image.h>
 
+#include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
 #include "core/ObjLoader.hpp"
 
@@ -28,7 +29,9 @@ AssetKind detectAssetKind(const std::string& path) {
     // (core/GltfLoader.hpp) -- .gltf (JSON + external/embedded buffers)
     // and .glb (self-contained binary) both real-parse to the same
     // GltfLoadResult shape extractAssetMetadata() below dispatches on.
-    if (ext == "obj" || ext == "gltf" || ext == "glb") return AssetKind::Mesh;
+    // Kronos (Asset Hot-Import Pipeline, Phase 3): real FBX support
+    // (core/FbxLoader.hpp) via ufbx.
+    if (ext == "obj" || ext == "gltf" || ext == "glb" || ext == "fbx") return AssetKind::Mesh;
     if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "tga" || ext == "gif") {
         return AssetKind::Texture;
     }
@@ -63,6 +66,13 @@ AssetMetadata extractAssetMetadata(const std::string& path) {
                     return meta;
                 }
                 counts = {gltf.vertices.size(), gltf.indices.size()};
+            } else if (ext == "fbx") {
+                FbxLoadResult fbx = loadFbx(path);
+                if (!fbx.succeeded) {
+                    meta.error = fbx.error;
+                    return meta;
+                }
+                counts = {fbx.vertices.size(), fbx.indices.size()};
             } else {
                 ObjLoadResult obj = loadObj(path);
                 if (!obj.succeeded) {

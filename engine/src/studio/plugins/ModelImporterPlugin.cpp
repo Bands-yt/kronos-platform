@@ -3,6 +3,7 @@
 #include <imgui.h>
 
 #include "core/Components.hpp"
+#include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
 #include "core/ObjLoader.hpp"
 
@@ -41,8 +42,9 @@ void ModelImporterPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
                                       const std::vector<core::EntityId>& /*selectedEntities*/) {
     ImGui::Begin("Model Importer");
 
-    ImGui::TextWrapped("Import a Wavefront .obj or glTF 2.0 (.gltf/.glb) file -- loads onto a real \"ModelPreview\" "
-                        "entity you can select and orbit in the Viewport panel, the same as any other entity.");
+    ImGui::TextWrapped("Import a Wavefront .obj, glTF 2.0 (.gltf/.glb), or FBX (.fbx) file -- loads onto a real "
+                        "\"ModelPreview\" entity you can select and orbit in the Viewport panel, the same as any "
+                        "other entity.");
     ImGui::SetNextItemWidth(320.0f);
     ImGui::InputText("Path", pathBuffer_, sizeof(pathBuffer_));
     ImGui::SameLine();
@@ -51,13 +53,19 @@ void ModelImporterPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
         lastMetadata_ = core::extractAssetMetadata(path);
 
         if (!lastMetadata_.succeeded || lastMetadata_.kind != core::AssetKind::Mesh) {
-            statusMessage_ = lastMetadata_.succeeded ? "Not a recognized mesh file (expected .obj/.gltf/.glb)."
+            statusMessage_ = lastMetadata_.succeeded ? "Not a recognized mesh file (expected .obj/.gltf/.glb/.fbx)."
                                                       : ("Failed: " + lastMetadata_.error);
         } else {
             // Real dispatch on the actual extension -- see
             // core/AssetMetadata.cpp's own identical dispatch for why
-            // (both real loaders report the same vertices/indices shape).
-            bool isGltf = hasExtension(path, ".gltf") || hasExtension(path, ".glb");
+            // (every real loader reports the same vertices/indices
+            // shape). Reuses core::MeshSourceKind itself as the
+            // dispatch value (rather than a second, parallel enum/bool
+            // scheme) since that's also what gets stored on the
+            // resulting entity's MeshSource below.
+            core::MeshSourceKind sourceKind = core::MeshSourceKind::Obj;
+            if (hasExtension(path, ".gltf") || hasExtension(path, ".glb")) sourceKind = core::MeshSourceKind::Gltf;
+            else if (hasExtension(path, ".fbx")) sourceKind = core::MeshSourceKind::Fbx;
 
             uint32_t cachedHandle = 0;
             uint32_t meshHandle;
@@ -69,12 +77,18 @@ void ModelImporterPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
                 std::vector<uint32_t> indices;
                 std::string parseError;
                 bool parsed;
-                if (isGltf) {
+                if (sourceKind == core::MeshSourceKind::Gltf) {
                     core::GltfLoadResult gltf = core::loadGltf(path);
                     parsed = gltf.succeeded;
                     parseError = gltf.error;
                     vertices = std::move(gltf.vertices);
                     indices = std::move(gltf.indices);
+                } else if (sourceKind == core::MeshSourceKind::Fbx) {
+                    core::FbxLoadResult fbx = core::loadFbx(path);
+                    parsed = fbx.succeeded;
+                    parseError = fbx.error;
+                    vertices = std::move(fbx.vertices);
+                    indices = std::move(fbx.indices);
                 } else {
                     core::ObjLoadResult obj = core::loadObj(path);
                     parsed = obj.succeeded;
@@ -106,7 +120,7 @@ void ModelImporterPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
                 renderable.meshHandle = meshHandle;
 
                 auto& meshSource = ecs.addComponent<core::MeshSource>(entity);
-                meshSource.kind = isGltf ? core::MeshSourceKind::Gltf : core::MeshSourceKind::Obj;
+                meshSource.kind = sourceKind;
                 meshSource.path = path;
                 hasPreview_ = true;
             }

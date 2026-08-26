@@ -263,13 +263,13 @@ struct Name {
 // 5th case. Coupling this to Prefab's format would also be the wrong
 // dependency direction -- scene serialization should be free to evolve
 // independently of the prefab-template format.
-// Kronos (Asset Hot-Import Pipeline, Phase 2): Gltf appended at the end
-// (not alphabetically/logically slotted next to Obj) so the existing
-// Box=0/Plane=1/Capsule=2/Quad=3/Obj=4 integer values SceneFile.cpp's
-// own meshSourceKindToIndex()/FromIndex() persist stay unchanged --
-// an old saved scene's real on-disk index values must keep meaning what
-// they always meant.
-enum class MeshSourceKind { Box, Plane, Capsule, Quad, Obj, Gltf };
+// Kronos (Asset Hot-Import Pipeline, Phase 2/3): Gltf/Fbx appended at
+// the end (not alphabetically/logically slotted) so the existing
+// Box=0/Plane=1/Capsule=2/Quad=3/Obj=4/Gltf=5 integer values
+// SceneFile.cpp's own meshSourceKindToIndex()/FromIndex() persist stay
+// unchanged -- an old saved scene's real on-disk index values must
+// keep meaning what they always meant.
+enum class MeshSourceKind { Box, Plane, Capsule, Quad, Obj, Gltf, Fbx };
 
 // Attached alongside Renderable on any entity whose mesh a scene save
 // needs to be able to rebuild later -- core::MeshLibrary handles are
@@ -278,9 +278,9 @@ enum class MeshSourceKind { Box, Plane, Capsule, Quad, Obj, Gltf };
 // Renderable::meshHandle alone is not enough to reconstruct anything.
 // `params` follows Prefab::meshParams' per-kind convention (Box:
 // half-extents xyz, Plane: halfWidth=x/halfDepth=z, Capsule: radius=x/
-// halfHeight=y, Quad: halfSize=x) and is unused when kind == Obj or
-// Gltf, where `path` (a real filesystem path to the source .obj/.gltf/
-// .glb) is used instead.
+// halfHeight=y, Quad: halfSize=x) and is unused when kind == Obj, Gltf,
+// or Fbx, where `path` (a real filesystem path to the source .obj/
+// .gltf/.glb/.fbx) is used instead.
 // An entity with Renderable but no MeshSource is legal (its mesh simply
 // won't survive a save/load round trip) -- see studio/SceneManager.hpp
 // for where that gap is surfaced rather than silently producing a

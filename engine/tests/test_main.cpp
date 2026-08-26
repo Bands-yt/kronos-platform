@@ -42,6 +42,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/EditableMesh.hpp"
+#include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
 #include "core/KMeshFile.hpp"
 #include "core/ObjLoader.hpp"
@@ -1881,6 +1882,234 @@ void testSceneFileMeshSourceKindGltfRoundTrips() {
         check(loaded.entities[0].meshSource.path == "assets/models/character.glb", "the glTF source path round-trips");
     }
     std::remove(path);
+}
+
+const char* kMinimalFbxAscii = R"FBXFIXTURE(; FBX 5.8.0 project file
+; Copyright (C) 1997-2007 Autodesk Inc. and/or its licensors.
+; All rights reserved.
+; ----------------------------------------------------
+
+FBXHeaderExtension:  {
+    FBXHeaderVersion: 1003
+    FBXVersion: 5800
+    CreationTimeStamp:  {
+        Version: 1000
+        Year: 2023
+        Month: 9
+        Day: 1
+        Hour: 14
+        Minute: 23
+        Second: 15
+        Millisecond: 117
+    }
+    Creator: "FBX SDK/FBX Plugins build 20080212"
+    OtherFlags:  {
+        FlagPLE: 0
+    }
+}
+CreationTime: "2023-09-01 14:23:15:117"
+Creator: "FBX SDK/FBX Plugins build 20080212"
+Media:  {
+    Video:  {
+        Video: "tiny_clouds" {
+            Type: "Clip"
+            Filename: "C:\Documents and Settings\XP3\My Documents\tiny_clouds.png"
+            RelativeFilename: "..\..\tiny_clouds.png"
+        }
+    }
+}
+Model: "Model::Box01" {
+    Version: 194
+    MultiLayer: 0
+    MultiTake: 1
+    Shading: T
+    Culling: "CullingOff"
+    Limits:  {
+        TAuto: 1
+        RAuto: 1
+        SAuto: 1
+    }
+    AnimatedProperty: "mTranslationProperty", "mRotationProperty", "mScalingProperty"
+    Animated: "Lcl Translation", "Lcl Rotation", "Lcl Scaling"
+    Material: "Material::Clouds" {
+        Version: 100
+        ShadingModel: "phong"
+        Ambient: 0.588235318660736,0.588235318660736,0.588235318660736
+        Diffuse: 0.588235318660736,0.588235318660736,0.588235318660736
+        Specular: 0,0,0
+        Emissive: 0,0,0
+        Shininess: 1.99999991737042
+        Alpha: 1
+        Reflectivity: 1
+    }
+    GeometryVersion: 123
+    Vertices: -10.0000047683716,-10.0000047683716,0,10.0000047683716,-10.0000047683716,0,-10.0000047683716,10.0000047683716,0,10.0000047683716
+     ,10.0000047683716,0,-10.0000047683716,-10.0000047683716,20.0000095367432,10.0000047683716,-10.0000047683716,20.0000095367432
+     ,-10.0000047683716,10.0000047683716,20.0000095367432,10.0000047683716,10.0000047683716,20.0000095367432
+    Normals: 0,0,-0.999999940395355,0,0,-1,0,0,-0.999999940395355,0,0,-0.999999940395355,0,0,-1,0,0,-0.999999940395355,0,0,0.999999940395355
+     ,0,0,1,0,0,0.999999940395355,0,0,0.999999940395355,0,0,1,0,0,0.999999940395355,0,-0.999999940395355,0,0,-1,0,0,-0.999999940395355
+     ,0,0,-0.999999940395355,0,0,-1,0,0,-0.999999940395355,0,0.999999940395355,0,0,1,0,0,0.999999940395355,0,0,0.999999940395355
+     ,0,0,1,0,0,0.999999940395355,0,0,0,0.999999940395355,0,0,1,0,0,0.999999940395355,0,0,0.999999940395355,0,0,1,0,0,0.999999940395355
+     ,0,-0.999999940395355,0,0,-1,0,0,-0.999999940395355,0,0,-0.999999940395355,0,0,-1,0,0,-0.999999940395355,0,0
+    MaterialAssignation: "AllSame"
+    Materials: 0
+    PolygonVertexIndex: 0,2,-4,3,1,-1,4,5,-8,7,6,-5,0,1,-6,5,4,-1,1,3,-8,7,5,-2,3,2,-7,6,7,-4,2,0,-5,4,6,-3
+    GeometryUVInfo:  {
+        Version: 240
+        MappingInformationType: "ByPolygon"
+        TextureUV: 0,0,1,0,0,1,1,1,0,0,1,0,0,1,1,1,0,0,1,0,0,1,1,1
+        TextureUVVerticeIndex: 9,11,10,10,8,9,8,9,11,11,10,8,4,5,7,7,6,4,0,1,3,3,2,0,4,5,7,7,6,4,0,1,3,3,2,0
+    }
+}
+;Takes and animation section
+;----------------------------------------------------
+
+Takes:  {
+    Current: "Take 001"
+    Take: "Take 001" {
+        FileName: "Take_001.tak"
+        LocalTime: 0,46186158000
+        ReferenceTime: 0,46186158000
+        ;Models animation
+        ;----------------------------------------------------
+        
+        Model: "Model::Box01" {
+            Version: 1.1
+            Channel: "Transform" {
+                Channel: "T" {
+                    Channel: "X" {
+                        Default: 0
+                        Color: 1,1,1
+                    }
+                    Channel: "Y" {
+                        Default: 0
+                        Color: 1,1,1
+                    }
+                    Channel: "Z" {
+                        Default: 0
+                        Color: 1,1,1
+                    }
+                    LayerType: 1
+                }
+                Channel: "R" {
+                    Channel: "X" {
+                        Default: 0
+                        Color: 1,1,1
+                    }
+                    Channel: "Y" {
+                        Default: 0
+                        Color: 1,1,1
+                    }
+                    Channel: "Z" {
+                        Default: 0
+                        Color: 1,1,1
+                    }
+                    LayerType: 2
+                }
+                Channel: "S" {
+                    Channel: "X" {
+                        Default: 1
+                        Color: 1,1,1
+                    }
+                    Channel: "Y" {
+                        Default: 1
+                        Color: 1,1,1
+                    }
+                    Channel: "Z" {
+                        Default: 1
+                        Color: 1,1,1
+                    }
+                    LayerType: 3
+                }
+            }
+        }
+        ;Textures animation
+        ;----------------------------------------------------
+        
+        ;Materials animation
+        ;----------------------------------------------------
+        
+    }
+}
+GoboManager:  {
+}
+SceneGenericPersistence:  {
+    SceneInfo: "SceneInfo::GlobalInfo" {
+        Type: "UserData"
+        Version: 100
+        MetaData:  {
+            Version: 100
+            Title: ""
+            Subject: ""
+            Author: ""
+            Keywords: ""
+            Revision: ""
+            Comment: ""
+        }
+    }
+}
+AmbientRenderSettings:  {
+    Version: 101
+    AmbientLightColor: 0,0,0,1
+}
+FogOptions:  {
+    FlogEnable: 0
+    FogMode: 0
+    FogDensity: 0.002
+    FogStart: 0.3
+    FogEnd: 1000
+    FogColor: 1,1,1,1
+}
+RendererSetting:  {
+    DefaultCamera: ""
+    DefaultViewingMode: 0
+}
+Settings:  {
+    TimeMode: 3
+    FrameRate: "30"
+    TimeFormat: 1
+    SnapOnFrames: 0
+    ReferenceTimeIndex: -1
+}
+)FBXFIXTURE";
+
+void testFbxLoaderRealValidCube() {
+    const char* path = "test_fbx_cube.fbx";
+    {
+        std::ofstream out(path);
+        out << kMinimalFbxAscii;
+    }
+
+    engine::core::FbxLoadResult result = engine::core::loadFbx(path);
+    check(result.succeeded, "a real, valid FBX file (ufbx's own real max2009_cube_texture test fixture) loads successfully");
+    if (!result.succeeded) std::fprintf(stderr, "[test] loadFbx error: %s\n", result.error.c_str());
+    check(!result.vertices.empty(), "the real cube's vertices are read");
+    check(!result.indices.empty() && result.indices.size() % 3 == 0,
+          "the real cube's indices are read and form whole triangles");
+    if (!result.vertices.empty()) {
+        float normalLength = glm::length(result.vertices[0].normal);
+        check(normalLength > 0.9f && normalLength < 1.1f,
+              "vertex normals are real and unit-length (ufbx's own generate_missing_normals or real file data)");
+    }
+    std::remove(path);
+}
+
+void testFbxLoaderRealMalformedFileFailsCleanly() {
+    const char* path = "test_fbx_malformed.fbx";
+    {
+        std::ofstream out(path);
+        out << "this is not a real FBX file at all, just plain text\n";
+    }
+    engine::core::FbxLoadResult result = engine::core::loadFbx(path);
+    check(!result.succeeded, "a real malformed/non-FBX file real-fails, not a crash");
+    check(!result.error.empty(), "the real failure carries a real, non-empty error message");
+    std::remove(path);
+}
+
+void testFbxLoaderRealMissingFileFailsCleanly() {
+    engine::core::FbxLoadResult result = engine::core::loadFbx("this_fbx_really_does_not_exist.fbx");
+    check(!result.succeeded, "a missing .fbx path real-fails cleanly");
+    check(!result.error.empty(), "the real failure carries a real, non-empty error message");
 }
 
 void testGltfLoaderRealMalformedFileFailsCleanly() {
@@ -33164,6 +33393,9 @@ int main() {
     testGltfLoaderRealValidTriangle();
     testAssetMetadataExtractionRecognizesGltf();
     testSceneFileMeshSourceKindGltfRoundTrips();
+    testFbxLoaderRealValidCube();
+    testFbxLoaderRealMalformedFileFailsCleanly();
+    testFbxLoaderRealMissingFileFailsCleanly();
     testGltfLoaderRealMalformedFileFailsCleanly();
     testGltfLoaderRealNoMeshesFailsCleanly();
     testGltfLoaderRealMissingFileFailsCleanly();

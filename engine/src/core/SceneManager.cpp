@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <unordered_map>
 
+#include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/ObjLoader.hpp"
@@ -46,6 +47,20 @@ Mesh buildMeshFromSource(const MeshSource& source, VmaAllocator allocator, VkDev
             }
             Mesh mesh;
             if (!mesh.uploadFromHost(allocator, device, cmdPool, queue, gltf.vertices, gltf.indices)) {
+                std::fprintf(stderr, "SceneManager: GPU upload failed re-importing \"%s\"\n", source.path.c_str());
+                return Mesh{};
+            }
+            return mesh;
+        }
+        case MeshSourceKind::Fbx: {
+            FbxLoadResult fbx = loadFbx(source.path);
+            if (!fbx.succeeded) {
+                std::fprintf(stderr, "SceneManager: failed to re-import \"%s\": %s\n", source.path.c_str(),
+                             fbx.error.c_str());
+                return Mesh{};
+            }
+            Mesh mesh;
+            if (!mesh.uploadFromHost(allocator, device, cmdPool, queue, fbx.vertices, fbx.indices)) {
                 std::fprintf(stderr, "SceneManager: GPU upload failed re-importing \"%s\"\n", source.path.c_str());
                 return Mesh{};
             }
