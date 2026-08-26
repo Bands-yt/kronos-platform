@@ -30,6 +30,7 @@
 #include <SDL2/SDL.h>
 
 #include "core/CrashReporter.hpp"
+#include "core/Logger.hpp"
 #include "studio/StudioApp.hpp"
 
 namespace {
@@ -43,7 +44,15 @@ namespace {
 // a replacement for that.
 void showFatalErrorDialog(const std::string& message) {
     std::fprintf(stderr, "studio: fatal: %s\n", message.c_str());
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Kronos Studio - Fatal Error", message.c_str(), nullptr);
+    // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+    // report): points whoever sees this dialog at the real, persistent
+    // log file (see main()'s own Logger::instance().enableFileLogging()
+    // call) -- the dialog text itself is already the full diagnosis, but
+    // a tester reporting this back (Jay's own report was exactly a
+    // paraphrase with no detail) benefits from knowing there's a real
+    // file to attach/paste from instead of retyping what they saw.
+    std::string withLogHint = message + "\n\nSee kronos_engine.log (next to this program) for full details.";
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Kronos Studio - Fatal Error", withLogHint.c_str(), nullptr);
 }
 
 } // namespace
@@ -51,6 +60,23 @@ void showFatalErrorDialog(const std::string& message) {
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
+
+    // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+    // report): the real, persistent counterpart to the message box below
+    // -- a dialog only helps if someone reads/screenshots it before
+    // dismissing it, and says nothing at all about *why* to whoever
+    // triages the report afterward. Enabled first, before anything else
+    // (including installCrashReporter() just below), so even a failure
+    // in Window::initialize() -- which happens before Studio has any UI
+    // at all -- still gets its real diagnosis (see
+    // Window.cpp's own classifySdlFailure()) written to a real file on
+    // disk. A real, honest best-effort: if the working directory itself
+    // isn't writable, this just silently stays off (stderr/the dialog
+    // still work either way) rather than crashing Studio before it even
+    // starts over a logging nicety.
+    if (!engine::core::Logger::instance().enableFileLogging("kronos_engine.log")) {
+        std::fprintf(stderr, "studio: could not open kronos_engine.log for writing -- continuing without a log file.\n");
+    }
 
     // Kronos (Alpha Completion Checklist, "Crash & Error Telemetry" --
     // "Crash report file"): same real signal handler engine_runtime

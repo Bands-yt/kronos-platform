@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdarg>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -78,6 +79,23 @@ public:
     void setMinLevel(LogLevel level);
     [[nodiscard]] LogLevel minLevel() const;
 
+    // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+    // report): a real, optional to-disk sink -- off by default (nothing
+    // here should surprise a test/tool with a stray file), opt in by
+    // calling this once, as early as possible in a real entry point
+    // (see StudioMain.cpp/main.cpp's own call sites). Every log() call
+    // after this succeeds ALSO appends a real line to `path` (opened in
+    // append mode -- a real, persistent history across runs, not
+    // truncated on each launch) and is flushed immediately, not just
+    // buffered -- this exists specifically so a fatal failure that kills
+    // the process moments later (Window::initialize() failing before any
+    // UI exists to show the in-memory ring buffer, an uncaught
+    // exception, a hard crash) still leaves a real, complete record on
+    // disk. Returns false (and leaves file logging disabled) if `path`
+    // couldn't be opened -- a real, honest failure a caller can decide
+    // how to handle, not a silent no-op.
+    [[nodiscard]] bool enableFileLogging(const std::string& path);
+
     // Real, bounded copy of the most recent entries (oldest first) --
     // safe to call from any thread; returns a snapshot, not a live view.
     [[nodiscard]] std::vector<LogEntry> recentEntries(size_t maxCount = 200) const;
@@ -93,6 +111,9 @@ private:
     std::deque<LogEntry> ring_;
     LogLevel minLevel_ = LogLevel::Debug;
     std::chrono::steady_clock::time_point startTime_;
+    // Real, honest empty-when-disabled state -- .is_open() is exactly
+    // what log() checks, no separate bool needed to track it.
+    std::ofstream fileSink_;
 };
 
 // Real, terse free-function wrappers -- Logger::instance().logf(...) at

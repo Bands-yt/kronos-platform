@@ -147,8 +147,19 @@ bool StudioApp::initialize() {
     windowInfo.iconPath =
         core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/icons/kronos_icon.png";
     if (!window_.initialize(windowInfo)) {
-        lastInitError_ = "Window::initialize failed (SDL/video init). Is a display/GPU driver available?";
-        std::fprintf(stderr, "StudioApp: %s\n", lastInitError_.c_str());
+        // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+        // report): real, specific diagnosis from Window::initialize()
+        // itself (raw SDL_GetError() text plus a classified, actionable
+        // hint -- see Window.cpp's own classifySdlFailure()), not one
+        // fixed generic string here that couldn't possibly say anything
+        // about *why* the display/GPU driver isn't available.
+        // Window::initialize() already logged this via core::logError()
+        // (mirrors to stderr, and -- once StudioMain.cpp's own
+        // Logger::instance().enableFileLogging() call has run --
+        // persists it to a real on-disk log file), so no need to
+        // fprintf it again here.
+        lastInitError_ = window_.lastError();
+        if (lastInitError_.empty()) lastInitError_ = "Window::initialize failed for an unspecified reason.";
         return false;
     }
 

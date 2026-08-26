@@ -88,6 +88,7 @@
 #include "core/Navigation.hpp"
 #include "core/Noise.hpp"
 #include "core/ObjLoader.hpp"
+#include "core/Window.hpp"
 #include "core/ParticleSystem.hpp"
 #include "core/Economy.hpp"
 #include "core/Inventory.hpp"
@@ -12363,6 +12364,70 @@ void testLoggerRingBufferIsBounded() {
     check(entries.size() == engine::core::Logger::kMaxRingEntries,
           "the ring buffer real-caps at kMaxRingEntries even after real-logging well past that count, oldest entries real-evicted first");
     logger.clearRingBuffer(); // real, honest reset -- leaves shared singleton state clean for every test after this one
+}
+
+void testLoggerEnableFileLoggingWritesRealFile() {
+    // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+    // report): real coverage of the new to-disk sink -- what makes a
+    // fatal Window::initialize() failure (which happens before Studio
+    // has any UI to show the in-memory ring buffer) actually diagnosable
+    // after the process exits.
+    const char* logPath = "test_logger_file_sink.log";
+    std::remove(logPath); // real, honest -- start from a known-clean file, not whatever a previous run left
+
+    engine::core::Logger& logger = engine::core::Logger::instance();
+    logger.clearRingBuffer();
+    logger.setMinLevel(engine::core::LogLevel::Debug);
+
+    check(logger.enableFileLogging(logPath), "enableFileLogging() real-succeeds for a real, writable path");
+    logger.log(engine::core::LogLevel::Error, "FileSink", "fatal test message");
+    logger.log(engine::core::LogLevel::Info, "FileSink", "second real line");
+
+    // Real, direct read-back -- a separate ifstream over the same real
+    // file the Logger singleton still holds open (flush()ed after every
+    // write, see Logger::log()'s own comment), not a guess about what
+    // got written.
+    std::ifstream in(logPath);
+    check(in.is_open(), "the real log file really exists on disk and is really readable");
+    std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    check(contents.find("[ERROR][FileSink] fatal test message") != std::string::npos,
+          "the real file contains the real first logged line, level and category included");
+    check(contents.find("[INFO ][FileSink] second real line") != std::string::npos,
+          "the real file contains the real second logged line too -- append, not overwrite, per call");
+
+    // No disableFileLogging() exists (deliberate -- see
+    // enableFileLogging()'s own header comment: a real process enables
+    // this once, at startup, and keeps it on for its entire lifetime).
+    // The sink singleton stays open for the rest of this test binary's
+    // run, so this file is deliberately NOT removed here -- deleting it
+    // out from under the still-open ofstream would leave later log()
+    // calls in this same process writing into an unlinked file no one
+    // can read back.
+    logger.clearRingBuffer();
+}
+
+void testWindowClassifySdlFailure() {
+    std::string noVideoDevice = engine::core::classifySdlFailure("SDL video/event subsystem initialization",
+                                                                   "No available video device");
+    check(noVideoDevice.find("No available video device") != std::string::npos,
+          "classifySdlFailure() always includes the raw SDL error text verbatim");
+    check(noVideoDevice.find("Remote Desktop") != std::string::npos,
+          "a missing video device gets the real remote-desktop/headless-session hint");
+
+    std::string vulkanIcd = engine::core::classifySdlFailure("Window creation", "Failed to load Vulkan ICD");
+    check(vulkanIcd.find("Vulkan Runtime") != std::string::npos, "a Vulkan/ICD error gets the real Vulkan-runtime hint");
+
+    std::string driverIssue = engine::core::classifySdlFailure("Window creation", "graphics driver returned an error");
+    check(driverIssue.find("graphics driver") != std::string::npos, "a driver-mentioning error gets the real driver-update hint");
+
+    std::string unrecognized = engine::core::classifySdlFailure("Window creation", "some entirely novel SDL failure text");
+    check(unrecognized.find("some entirely novel SDL failure text") != std::string::npos,
+          "an unrecognized error still includes the real raw text verbatim, not silence");
+    check(unrecognized.find("Common causes") != std::string::npos,
+          "an unrecognized error still gets a real, honest generic fallback hint");
+
+    check(noVideoDevice.rfind("SDL video/event subsystem initialization failed:", 0) == 0,
+          "the result is prefixed with the real caller-supplied context, not just the raw error");
 }
 
 // Kronos (Alpha Roadmap Phase 2, "Scene system") -- core::hierarchy real
@@ -33924,6 +33989,8 @@ int main() {
     testLoggerRecentEntriesRespectsMaxCount();
     testLoggerClearRingBufferEmptiesIt();
     testLoggerRingBufferIsBounded();
+    testLoggerEnableFileLoggingWritesRealFile();
+    testWindowClassifySdlFailure();
     testHierarchySetParentBuildsTwoSidedRelationship();
     testHierarchySetParentRejectsSelfParenting();
     testHierarchySetParentRejectsCycle();

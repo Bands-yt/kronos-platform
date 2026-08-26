@@ -55,7 +55,14 @@ bool Application::initialize(const CreateInfo& info) {
     windowInfo.iconPath =
         resolveResourceDir(executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/icons/kronos_icon.png";
     if (!window_.initialize(windowInfo)) {
-        std::fprintf(stderr, "Application: Window::initialize failed.\n");
+        // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+        // report): Window::initialize() itself already logged the real,
+        // specific diagnosis (raw SDL_GetError() plus a classified,
+        // actionable hint -- see Window.cpp's own classifySdlFailure())
+        // via core::logError(), which both mirrors to stderr and, once
+        // main.cpp's own Logger::instance().enableFileLogging() call has
+        // run, persists to a real on-disk log file. No need to repeat a
+        // second, less specific message here.
         return false;
     }
 

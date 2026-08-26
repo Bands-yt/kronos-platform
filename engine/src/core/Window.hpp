@@ -48,6 +48,14 @@ public:
     [[nodiscard]] bool initialize(const CreateInfo& info);
     void shutdown();
 
+    // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+    // report): real, specific detail for a real initialize()==false --
+    // the raw SDL_GetError() text plus a classified, actionable hint
+    // (see Window.cpp's own classifySdlFailure()), not a fixed generic
+    // string a caller would otherwise have to hardcode itself. Empty
+    // when initialize() hasn't failed (or hasn't run yet).
+    [[nodiscard]] const std::string& lastError() const { return lastError_; }
+
     // Pumps the SDL event queue. Returns false when a quit was requested.
     // Every raw SDL_Event is forwarded to rawEventCallback (if set) before
     // Window's own handling runs -- the same extension pattern
@@ -95,6 +103,17 @@ private:
     uint32_t height_ = 0;
     bool resized_ = false;
     RawEventCallback rawEventCallback_;
+    std::string lastError_;
 };
+
+// Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+// report): exposed (not file-local in Window.cpp) specifically so it's
+// a real, directly testable pure function -- see
+// testWindowClassifySdlFailure() in tests/test_main.cpp. `context` names
+// what was being attempted ("SDL video/event subsystem initialization",
+// "Window creation"); `rawSdlError` is SDL_GetError()'s own text,
+// verbatim, always included in the result -- this never hides the real
+// underlying error behind only a canned hint.
+[[nodiscard]] std::string classifySdlFailure(const std::string& context, const std::string& rawSdlError);
 
 } // namespace engine::core

@@ -102,6 +102,21 @@ bool readWholeFile(const std::string& path, std::string& outContents) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
+    // report): enabled first, before anything else (including
+    // installCrashReporter() just below), so even a failure in
+    // Window::initialize() -- which core::Application::initialize() can
+    // hit before anything else exists to report it -- gets its real
+    // diagnosis (see Window.cpp's own classifySdlFailure()) written to a
+    // real, persistent file on disk, not just stderr (which a
+    // double-clicked/service-launched process may have nowhere visible
+    // to send). A real, honest best-effort: an unwritable working
+    // directory just leaves this off silently rather than failing
+    // startup over a logging nicety.
+    if (!engine::core::Logger::instance().enableFileLogging("kronos_engine.log")) {
+        std::fprintf(stderr, "engine_runtime: could not open kronos_engine.log for writing -- continuing without a log file.\n");
+    }
+
     // Kronos (Alpha Completion Checklist, "Crash & Error Telemetry" --
     // "Crash report file"): installed first, before anything else, so a
     // crash during startup itself is caught too, not just once the main
