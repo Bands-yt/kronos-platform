@@ -23,6 +23,16 @@ struct AssetMetadata {
     int32_t width = 0;
     int32_t height = 0;
     int32_t channels = 0;
+    // Kronos (Asset Hot-Import Pipeline): filled in by
+    // core::AssetImportQueue's worker (see its own workerLoop() comment)
+    // after this metadata's own extractAssetMetadata() probe succeeds --
+    // NOT set by extractAssetMetadata() itself, which only inspects the
+    // header (stbi_info(), no pixel decode). 0 for every non-Texture
+    // kind, and for a Texture whose mip bake itself failed (a real,
+    // honest partial success: the import still registers, just without
+    // baked mips -- see core::TextureBaker.hpp).
+    uint32_t mipLevelsBaked = 0;
+    uint64_t bakedMipSizeBytes = 0;
 
     // Audio
     double durationSeconds = 0.0;

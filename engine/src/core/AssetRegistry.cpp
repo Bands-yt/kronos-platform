@@ -24,6 +24,8 @@ void AssetRegistry::adoptMetadata(const std::string& path, const AssetMetadata& 
     entry.width = metadata.width;
     entry.height = metadata.height;
     entry.channels = metadata.channels;
+    entry.mipLevelsBaked = metadata.mipLevelsBaked;
+    entry.bakedMipSizeBytes = metadata.bakedMipSizeBytes;
     entry.durationSeconds = metadata.durationSeconds;
     entry.sampleRate = metadata.sampleRate;
     entry.channelCount = metadata.channelCount;
@@ -49,15 +51,22 @@ bool AssetRegistry::saveToFile(const std::string& path) const {
     std::ofstream out(path, std::ios::trunc);
     if (!out.is_open()) return false;
 
-    out << "ASSETREGISTRY 1\n";
+    // Version 2 (Kronos, Asset Hot-Import Pipeline): inserts
+    // mipLevelsBaked/bakedMipSizeBytes into the numeric field list --
+    // loadFromFile() below branches on this version number so an
+    // on-disk version-1 registry (written before mip baking existed)
+    // still parses correctly instead of misreading durationSeconds as
+    // mipLevelsBaked.
+    out << "ASSETREGISTRY 2\n";
     for (const auto& e : entries_) {
         // path is last on the line (never quoted -- loadFromFile reads it
         // as "everything after the numeric fields"), same trailing-string
         // convention SceneFile's own MESHSOURCE line already uses, so a
         // real path with spaces round-trips correctly.
         out << "ASSET " << static_cast<int>(e.kind) << ' ' << e.fileSizeBytes << ' ' << e.vertexCount << ' '
-            << e.triangleCount << ' ' << e.width << ' ' << e.height << ' ' << e.channels << ' ' << e.durationSeconds
-            << ' ' << e.sampleRate << ' ' << e.channelCount << ' ' << e.path << "\n";
+            << e.triangleCount << ' ' << e.width << ' ' << e.height << ' ' << e.channels << ' ' << e.mipLevelsBaked
+            << ' ' << e.bakedMipSizeBytes << ' ' << e.durationSeconds << ' ' << e.sampleRate << ' ' << e.channelCount
+            << ' ' << e.path << "\n";
     }
     out << "END\n";
     return out.good();
@@ -69,6 +78,9 @@ bool AssetRegistry::loadFromFile(const std::string& path) {
 
     std::string header;
     if (!std::getline(in, header) || header.rfind("ASSETREGISTRY", 0) != 0) return false;
+    std::istringstream headerStream(header.substr(13)); // strip "ASSETREGISTRY", leaves " N"
+    int version = 1;
+    headerStream >> version;
 
     std::vector<AssetRegistryEntry> loaded;
     std::string line;
@@ -77,8 +89,19 @@ bool AssetRegistry::loadFromFile(const std::string& path) {
             AssetRegistryEntry e;
             std::istringstream iss(line.substr(6));
             int kindInt = 0;
-            iss >> kindInt >> e.fileSizeBytes >> e.vertexCount >> e.triangleCount >> e.width >> e.height >> e.channels >>
-                e.durationSeconds >> e.sampleRate >> e.channelCount;
+            // Version 2 adds mipLevelsBaked/bakedMipSizeBytes between
+            // channels and durationSeconds -- see saveToFile()'s own
+            // comment. A version-1 line simply never had those fields,
+            // so they stay at their real, honest default (0), not a
+            // guess.
+            if (version >= 2) {
+                iss >> kindInt >> e.fileSizeBytes >> e.vertexCount >> e.triangleCount >> e.width >> e.height >>
+                    e.channels >> e.mipLevelsBaked >> e.bakedMipSizeBytes >> e.durationSeconds >> e.sampleRate >>
+                    e.channelCount;
+            } else {
+                iss >> kindInt >> e.fileSizeBytes >> e.vertexCount >> e.triangleCount >> e.width >> e.height >>
+                    e.channels >> e.durationSeconds >> e.sampleRate >> e.channelCount;
+            }
             e.kind = static_cast<AssetKind>(kindInt);
             std::string rest;
             std::getline(iss, rest);

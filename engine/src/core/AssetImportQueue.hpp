@@ -35,6 +35,12 @@ namespace engine::core {
 // extractAssetMetadata() themselves, not this queue -- every kind they
 // already recognize, and every kind added later, runs through this
 // same background path for free, with zero further changes here.
+//
+// For a successfully-probed Texture, the same worker also bakes its
+// real mip chain (core::bakeTextureMips(), TextureBaker.hpp) right
+// after the metadata probe -- the "compression/mipmaps" half of this
+// pipeline, sharing the exact same off-main-thread execution this class
+// already exists to provide, not a second queue.
 class AssetImportQueue {
 public:
     // `workerCount` is real, fixed, and chosen once at construction --

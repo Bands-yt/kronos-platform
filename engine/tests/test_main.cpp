@@ -61,6 +61,7 @@
 #include "core/AssetImportQueue.hpp"
 #include "core/AssetMetadata.hpp"
 #include "core/AssetRegistry.hpp"
+#include "core/TextureBaker.hpp"
 #include "core/Audio.hpp"
 #include "core/AvatarAttachment.hpp"
 #include "core/AvatarController.hpp"
@@ -1722,6 +1723,58 @@ void testAssetRegistryAdoptMetadata() {
     check(registry.entries()[0].vertexCount == 24, "the replaced entry carries the real, newer metadata");
 }
 
+void testTextureBakerMipChain() {
+    // Unlike buildPng() above (a real PNG header with no IDAT chunk --
+    // sufficient for stbi_info()'s header-only probe, but
+    // bakeTextureMips() needs actual decodable pixel data), this uses
+    // the real RGBA->PNG encoder (migration::AssetConverter::
+    // encodeRgbaAsPng, already covered by testTextureInspectionEncoding())
+    // to build a real, fully-decodable source image.
+    const int width = 16;
+    const int height = 8;
+    std::vector<uint8_t> rgba(static_cast<size_t>(width) * static_cast<size_t>(height) * 4, 0);
+    for (size_t i = 0; i < rgba.size(); i += 4) {
+        rgba[i + 0] = 128;
+        rgba[i + 1] = 64;
+        rgba[i + 2] = 32;
+        rgba[i + 3] = 255;
+    }
+    std::vector<uint8_t> png;
+    check(engine::migration::AssetConverter::encodeRgbaAsPng(rgba, width, height, png),
+          "real RGBA pixels encode to a real, decodable PNG for this fixture");
+
+    const char* pngPath = "test_texture_baker.png";
+    {
+        std::ofstream out(pngPath, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    }
+
+    engine::core::TextureBakeResult bake = engine::core::bakeTextureMips(pngPath);
+    check(bake.succeeded, "bakeTextureMips() real-succeeds for a real, valid, fully-decodable PNG");
+    // 16x8 -> 8x4 -> 4x2 -> 2x1 -> 1x1: 5 real levels.
+    check(bake.mipLevels == 5, "a 16x8 source real-bakes exactly 5 real mip levels down to 1x1");
+    check(bake.bakedSizeBytes > 0, "the real baked mip chain has real, non-zero total on-disk size");
+    check(!bake.cacheDir.empty(), "bakeTextureMips() reports the real cache directory it wrote to");
+
+    for (uint32_t level = 0; level < bake.mipLevels; ++level) {
+        std::filesystem::path mipPath = std::filesystem::path(bake.cacheDir) / ("mip_" + std::to_string(level) + ".png");
+        check(std::filesystem::exists(mipPath), "each real mip level really exists on disk");
+        int mw = 0, mh = 0, mc = 0;
+        check(stbi_info(mipPath.string().c_str(), &mw, &mh, &mc) != 0, "each written mip is a real, header-readable PNG");
+        int expectedW = std::max(1, width >> level);
+        int expectedH = std::max(1, height >> level);
+        check(mw == expectedW && mh == expectedH, "each real mip level really halves the previous level's real dimensions");
+    }
+
+    // Real, honest failure -- no such source file.
+    engine::core::TextureBakeResult missing = engine::core::bakeTextureMips("does_not_exist_baker.png");
+    check(!missing.succeeded && !missing.error.empty(), "bakeTextureMips() real-fails cleanly for a missing source file");
+
+    std::remove(pngPath);
+    std::error_code cleanupEc;
+    std::filesystem::remove_all(std::filesystem::path(bake.cacheDir).parent_path(), cleanupEc);
+}
+
 // Real, bounded poll loop -- every real test below waits for actual
 // background worker threads, so a fixed sleep would be either flaky
 // (too short under load) or needlessly slow (too long); this polls
@@ -1810,6 +1863,43 @@ void testAssetImportQueueRealMultipleConcurrentImports() {
     check(succeededCount == 3, "every one of the three real jobs real-succeeds");
 
     for (const char* path : {pathA, pathB, pathC}) std::remove(path);
+}
+
+void testAssetImportQueueBakesTextureMips() {
+    // Real, direct coverage of the "compression/mipmaps" wiring in
+    // AssetImportQueue::workerLoop() -- confirms the real background
+    // worker doesn't just probe a texture's metadata but also bakes its
+    // real mip chain (core::bakeTextureMips(), TextureBaker.hpp) and
+    // reports it on the same real Result.
+    const int width = 8;
+    const int height = 8;
+    std::vector<uint8_t> rgba(static_cast<size_t>(width) * static_cast<size_t>(height) * 4, 200);
+    std::vector<uint8_t> png;
+    check(engine::migration::AssetConverter::encodeRgbaAsPng(rgba, width, height, png),
+          "real RGBA pixels encode to a real, decodable PNG for this fixture");
+
+    const char* pngPath = "test_import_queue_texture.png";
+    {
+        std::ofstream out(pngPath, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    }
+
+    engine::core::AssetImportQueue queue(1);
+    queue.submit(pngPath);
+    std::vector<engine::core::AssetImportQueue::Result> results = pollUntil(queue, 1);
+
+    check(results.size() == 1, "a real submitted texture job produces exactly one real result");
+    if (!results.empty()) {
+        check(results[0].metadata.succeeded, "the real background probe succeeds for a real, valid PNG");
+        // 8x8 -> 4x4 -> 2x2 -> 1x1: 4 real levels.
+        check(results[0].metadata.mipLevelsBaked == 4,
+              "AssetImportQueue's worker really bakes the real mip chain alongside the real metadata probe");
+        check(results[0].metadata.bakedMipSizeBytes > 0, "the real baked mip chain's total size is reported on the real result");
+    }
+
+    std::remove(pngPath);
+    std::error_code cleanupEc;
+    std::filesystem::remove_all(std::filesystem::path(".kronos_mips"), cleanupEc);
 }
 
 // Real, minimal, valid, self-contained glTF 2.0 JSON -- one triangle
@@ -33428,6 +33518,8 @@ int main() {
     testAssetImportQueueRealMissingFileFailsCleanly();
     testAssetImportQueueDeduplicatesInFlightSubmissions();
     testAssetImportQueueRealMultipleConcurrentImports();
+    testTextureBakerMipChain();
+    testAssetImportQueueBakesTextureMips();
     testGltfLoaderRealValidTriangle();
     testAssetMetadataExtractionRecognizesGltf();
     testSceneFileMeshSourceKindGltfRoundTrips();
