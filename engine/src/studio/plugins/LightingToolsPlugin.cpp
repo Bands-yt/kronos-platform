@@ -125,8 +125,9 @@ void LightingToolsPlugin::drawCascadedShadowMapSection() {
                 core::Renderer::kShadowMapResolution, core::Renderer::kShadowMapResolution);
     ImGui::Text("Covers camera near plane to %.0f units", core::Renderer::kShadowMaxDistance);
     ImGui::TextWrapped(
-        "3x3 PCF, receiver-plane depth bias (derived per-fragment from real screen-space depth derivatives, "
-        "with a small N.L + per-cascade-scaled floor as a backstop) -- see shaders/scene.frag's "
+        "3x3 PCF, receiver-plane depth bias (derived per-fragment from an analytic tangent-plane basis around "
+        "the geometric normal, projected through the light's own view-proj -- camera-independent, not a "
+        "screen-space derivative -- with a small flat N.L floor as a backstop) -- see shaders/scene.frag's "
         "sampleCascadeShadow().");
     ImGui::SameLine();
     helpMarker(

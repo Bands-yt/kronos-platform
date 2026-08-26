@@ -257,6 +257,14 @@ int selectCascade(float viewDepth) {
 // a cascade's coverage (this can happen right at a cascade's own edge
 // before the next cascade's coverage begins, or while blending against a
 // neighboring cascade whose volume this point falls outside of).
+// `N` here must be the *geometric* normal (the raw interpolated
+// triangle normal -- what shadow.vert actually rasterized into the
+// shadow map), not a normal-mapped/triplanar shading normal. See this
+// function's own call site: the receiver-plane math below reconstructs
+// the real rasterized surface's own plane, and a texture-perturbed
+// normal would reconstruct a plane that doesn't match what's actually
+// stored in the shadow map, reintroducing a slope error that varies
+// with the normal map's own detail pattern.
 float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     vec4 lightSpacePos = scene.lightViewProj[cascade] * vec4(worldPos, 1.0);
     vec3 projected = lightSpacePos.xyz / lightSpacePos.w;
@@ -270,67 +278,88 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
 
     // Receiver-plane depth bias (Isidoro, "Shadow Mapping: GPU-based
-    // Tips and Techniques"): derive the receiver surface's *actual*
-    // rate of change of light-space depth per shadow-map texel from
-    // this fragment's own screen-space derivatives, instead of guessing
-    // it from NdotL alone. Correct at any surface angle, and
-    // automatically correct per-cascade (it falls straight out of this
-    // cascade's own lightViewProj, no manually tuned per-cascade
-    // constant to get wrong). This is what actually fixes peter-panning
-    // without swinging back into acne: the old flat NdotL bias had to
-    // be sized for the *worst* slope a cascade could ever show, so it
-    // over-biased everything else; this sizes the bias to each
-    // fragment's own real slope instead.
+    // Tips and Techniques"), analytic form: derive the receiver
+    // surface's real light-space depth gradient (dDepth/dU, dDepth/dV)
+    // directly from its geometric normal N and this cascade's own
+    // lightViewProj, instead of from screen-space derivatives of the
+    // *camera's* rasterization.
     //
-    // Deliberately differentiate `worldPos` (not `uv`/`currentDepth`
-    // directly) and push that through lightViewProj as a *direction*
-    // (w=0): `cascade` is picked per-fragment by selectCascade(), so at
-    // a cascade-blend seam neighboring lanes in the same 2x2 quad can be
-    // evaluating this function with *different* cascade indices --
-    // dFdx/dFdy on the already-projected uv/depth would then difference
-    // two different cascades' projections and produce a garbage
-    // gradient no clamp can safely catch. worldPos itself has the same
-    // real value in every lane regardless of which cascade that lane
-    // picked, so its derivative stays quad-coherent; and because this
-    // projection is orthographic (w is always exactly 1, no perspective
-    // divide), transforming that derivative through M is exact, not an
-    // approximation -- M is linear, so d(M*p)/dx == M*(dp/dx).
-    vec3 dWorldPos_dx = dFdx(worldPos);
-    vec3 dWorldPos_dy = dFdy(worldPos);
+    // An earlier version of this function used dFdx/dFdy(worldPos) (the
+    // main camera's own screen-space derivatives) as the two probe
+    // directions instead of N. Hardware testing found that version
+    // still peter-panned: it conflates the *camera's* viewing angle
+    // with the *light's*. A ground plane receding into the distance is
+    // grazing to the camera (a large world-space step per screen pixel,
+    // from perspective foreshortening) long before it's grazing to an
+    // overhead sun, but that version read the camera-driven derivative
+    // magnitude as "steep receiver slope" and over-biased it anyway --
+    // worse the farther away (and the more oblique the camera's view),
+    // which reads as peter-panning that tracks cascade distance. This
+    // version is entirely camera-independent: the same real surface,
+    // viewed from any angle, produces the same receiver-plane bias. It
+    // also drops the earlier "different lanes in a quad can be
+    // evaluating different cascades at a blend seam" divergence concern
+    // for free -- there are no screen-space derivatives left to be
+    // incoherent.
+    //
+    // T1/T2 span the tangent plane (any two vectors perpendicular to N,
+    // built the same way a TBN frame is built without explicit tangent
+    // data): probing the light-space projection along T1/T2 (as
+    // *directions*, w=0 -- exact for this orthographic projection, not
+    // an approximation) gives the same 2x2 Jacobian this function
+    // always solved, just fed real geometry instead of a camera
+    // artifact.
+    vec3 Nn = normalize(N);
+    vec3 helper = abs(Nn.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T1 = normalize(cross(Nn, helper));
+    vec3 T2 = cross(Nn, T1);
+
     mat4 M = scene.lightViewProj[cascade];
-    vec3 dProjected_dx = (M * vec4(dWorldPos_dx, 0.0)).xyz;
-    vec3 dProjected_dy = (M * vec4(dWorldPos_dy, 0.0)).xyz;
-    vec3 duvz_dx = vec3(dProjected_dx.xy * 0.5, dProjected_dx.z);
-    vec3 duvz_dy = vec3(dProjected_dy.xy * 0.5, dProjected_dy.z);
-    float det = duvz_dx.x * duvz_dy.y - duvz_dy.x * duvz_dx.y;
+    vec3 dProjected_dT1 = (M * vec4(T1, 0.0)).xyz;
+    vec3 dProjected_dT2 = (M * vec4(T2, 0.0)).xyz;
+    vec3 duvz_dT1 = vec3(dProjected_dT1.xy * 0.5, dProjected_dT1.z);
+    vec3 duvz_dT2 = vec3(dProjected_dT2.xy * 0.5, dProjected_dT2.z);
+    float det = duvz_dT1.x * duvz_dT2.y - duvz_dT2.x * duvz_dT1.y;
     vec2 depthGradient = vec2(0.0);
-    // Degenerate case (silhouette edges, near-parallel derivatives):
+    // Degenerate case (N parallel to the light's own projection axes):
     // fall back to no receiver-plane term rather than a divide-by-near-
     // zero blowup -- the constant floor below still covers these.
     if (abs(det) > 1e-9) {
-        depthGradient = vec2(duvz_dy.y * duvz_dx.z - duvz_dx.y * duvz_dy.z,
-                              duvz_dx.x * duvz_dy.z - duvz_dy.x * duvz_dx.z) / det;
-        // An almost-edge-on receiver can still produce a huge (correct,
-        // but useless) slope; capping it keeps this bias from ever
-        // exceeding what a 3x3 PCF kernel could possibly need to cover.
-        // Now that the derivative above is quad-coherent (not garbage
-        // at cascade seams), this only needs to cover genuinely steep
-        // real receivers, not a divergence failure mode -- kept tight.
-        const float kMaxReceiverSlope = 2.0;
+        depthGradient = vec2(duvz_dT2.y * duvz_dT1.z - duvz_dT1.y * duvz_dT2.z,
+                              duvz_dT1.x * duvz_dT2.z - duvz_dT2.x * duvz_dT1.z) / det;
+        // The gradient grows toward infinity as N becomes grazing to
+        // the light (NdotL -> 0) -- physically real, but pointless to
+        // chase past a few texels: a surface that grazing is already
+        // fully attenuated by the NdotL term in the direct-lighting sum
+        // (see this function's caller), so the shadow result stops
+        // mattering right where this would otherwise blow up. Kept
+        // small on purpose -- unlike the old camera-derivative version,
+        // this cap is no longer catching divergence garbage, just
+        // bounding a real value past the point it's useful.
+        const float kMaxReceiverSlope = 2.5;
         depthGradient = clamp(depthGradient, -kMaxReceiverSlope, kMaxReceiverSlope);
     }
 
-    // Small constant+slope-scaled floor -- a backstop for the
-    // degenerate case above and residual float precision error, not
+    // Small constant+NdotL floor -- a backstop for the degenerate case
+    // above (depthGradient == 0, e.g. a flat receiver directly under an
+    // overhead light) and residual D32_SFLOAT quantization error, not
     // the primary defense the way this used to be (that's the receiver-
-    // plane term now). Still NdotL- and per-cascade-scaled (see
-    // Renderer::kReferenceShadowDepthRange's comment), just an order of
-    // magnitude smaller: this stays correct under a moving/dynamic
-    // light too, since NdotL and every scene.* field here are
-    // recomputed fresh every frame from whatever the light direction
-    // currently is.
+    // plane term now). Deliberately *not* multiplied by
+    // scene.cascadeBiasScale here: this floor guards a normalized-depth
+    // precision limit, which is uniform across cascades by construction
+    // -- multiplying it by cascadeBiasScale (proportional to a
+    // cascade's own light-space depth range) compounded with the
+    // implicit normalized->world conversion (also proportional to that
+    // same depth range) to make the *world-space* consequence of this
+    // floor scale with depthRange^2, not depthRange. That's what was
+    // still peter-panning on the far cascades after the receiver-plane
+    // fix landed: the far cascade's depth range is ~4x the near
+    // cascade's, so its floor was ~15x larger in world units, not ~4x.
+    // A bare (NdotL-only) constant makes that scaling linear again --
+    // the same as the receiver-plane term's own, unavoidable, correct
+    // depthRange-proportional behavior.
     float NdotL = max(dot(N, L), 0.0);
-    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008) * scene.cascadeBiasScale[cascade];
+    float minBias = max(0.00035 * (1.0 - NdotL), 0.00008);
 
     // Sprint 14 ("Performance Mode"): a real, direct per-fragment cost
     // cut -- one center tap instead of the real 3x3 (9-tap) PCF loop,
@@ -633,7 +662,11 @@ void main() {
     // since it's one mat4-vec4 multiply and a negate, cheaper than adding
     // an interpolated output just for this.
     float viewDepth = -(scene.view * vec4(inWorldPos, 1.0)).z;
-    float shadow = computeShadow(inWorldPos, N, L, viewDepth);
+    // geometricNormal, not N (the shading normal, possibly perturbed by
+    // a normal map or triplanar blend above) -- see
+    // sampleCascadeShadow()'s own comment on why the receiver-plane bias
+    // needs the real rasterized surface, not the shaded-appearance one.
+    float shadow = computeShadow(inWorldPos, geometricNormal, L, viewDepth);
     // Kronos ("Environmental Detail" -- dynamic cloud shadows): a real,
     // exact no-op (this whole call doesn't even evaluate) when the toggle
     // is off, same "off means byte-identical" convention as every other
