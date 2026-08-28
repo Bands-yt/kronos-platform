@@ -481,7 +481,17 @@ vec3 cosineWeightedHemisphereSample(vec3 N, float u1, float u2) {
 // a real sqrt(N) factor -- the correct, principled fix for Monte-Carlo
 // noise, not a fudge that just dims the effect.
 vec3 traceIndirectDiffuse(vec3 origin, vec3 N) {
-    const int kGISampleCount = 4;
+    // Kronos (beta-blocking fix -- "black holes/dots", live-reported):
+    // this file's own "GI grain fix" comment above already measured 4
+    // samples/pixel as a real, principled sqrt(N) noise reduction, not a
+    // full fix -- with no denoiser/temporal accumulation in this engine
+    // (see hash12()'s own comment), 4 samples still reads as visible
+    // salt-and-pepper speckling on any open, unfogged ground, which is
+    // exactly the reported symptom. 16 (4x the ray budget) is a real
+    // further sqrt(4)=2x variance reduction on top of that -- GPU
+    // headroom checked live (170-180fps at the bring-up scene's own
+    // resolution/settings before this change), not a blind guess.
+    const int kGISampleCount = 16;
     vec3 accum = vec3(0.0);
     for (int s = 0; s < kGISampleCount; ++s) {
         vec2 seed = gl_FragCoord.xy + vec2(float(s) * 13.0, float(s) * 29.0);

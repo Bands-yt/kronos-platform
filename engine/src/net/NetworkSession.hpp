@@ -10,6 +10,7 @@
 #include "anticheat/RollingEventCounter.hpp"
 #include "core/ECS.hpp"
 #include "core/GameManifest.hpp"
+#include "core/Physics.hpp"
 #include "core/LocalProfile.hpp"
 #include "moderation/AccountModerationRegistry.hpp"
 #include "moderation/AppealLog.hpp"
@@ -193,7 +194,14 @@ public:
     // entity being predicted; unused directly in server mode, but the
     // server still needs `ecs` to read every networked entity's real
     // Transform for the snapshots it builds).
-    void tick(float dt, core::ECS& ecs, core::EntityId localPlayerEntity);
+    // `physics`: optional, real gravity/ground raycasts for
+    // net::applyNetworkedMovement() when supplied (see NetworkedMovement.hpp).
+    // Defaults to null -- falls back to fallbackPhysics_ (a real, safe,
+    // never-initialized instance: Physics::raycast()/gravity() are both
+    // well-defined no-ops uninitialized), so every pre-existing call site
+    // (tests, Studio's NetworkOverlayPlugin) keeps compiling and behaving
+    // unchanged.
+    void tick(float dt, core::ECS& ecs, core::EntityId localPlayerEntity, core::Physics* physics = nullptr);
 
     // Real client-side input sampling entry point -- called once per
     // tick with this client's current intent; internally builds the real
@@ -202,7 +210,7 @@ public:
     // and queues it for sending on the next tick()/poll pass. A real,
     // honest no-op outside Client mode.
     void sampleLocalInput(core::ECS& ecs, core::EntityId localPlayerEntity, glm::vec3 moveAxis, bool jump,
-                           bool primaryAction, float yaw, float pitch, float dt);
+                           bool primaryAction, float yaw, float pitch, float dt, core::Physics* physics = nullptr);
 
     [[nodiscard]] NetworkStats& stats() { return networkStats_; }
     [[nodiscard]] size_t connectedPeerCount() const { return transport_.connectedPeerCount(); }
@@ -775,6 +783,14 @@ private:
     // fresh into every per-frame call rather than storing a reference
     // long-term).
     core::ECS* currentEcs_ = nullptr;
+    // Same "refreshed every call, read by callbacks configured once"
+    // convention as currentEcs_ above -- net::applyNetworkedMovement()
+    // needs real gravity/ground raycasts now. Never initialized (no live
+    // Jolt sim of its own) -- the real, safe fallback tick()/
+    // sampleLocalInput() point currentPhysics_ at when their own optional
+    // `physics` parameter is null.
+    core::Physics fallbackPhysics_;
+    core::Physics* currentPhysics_ = nullptr;
 
     std::function<core::EntityId(core::ECS&, PlayerId)> onPlayerJoin_;
     // Kronos ("Active Joining UI"): see setOnPlayerAdded()/

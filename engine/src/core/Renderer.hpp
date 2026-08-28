@@ -1420,6 +1420,19 @@ private:
     bool ssrEnabled_ = false;
     float ssrMaxDistance_ = 60.0f;
     float ssrThickness_ = 0.6f;
+    // Kronos (beta-blocking fix -- "SSR noise"): real, was missing --
+    // drawSSRPass() built its SSRPushConstants without ever touching
+    // `.stepCount`, so shaders/ssr.frag's `int steps = int(push.stepCount)`
+    // read the struct's own zero-init default every frame; its raymarch
+    // loop (`for (int i = 1; i <= steps; ...)`) never ran a single
+    // iteration, so `hit` stayed false and every pixel silently fell back
+    // to the unmodified input color -- this pass has been a complete,
+    // silent no-op (whenever SSR is actually enabled at all -- off by
+    // default, see ssrEnabled_ above) since it shipped, not something a
+    // toggle exposed. Same step-count order of magnitude as
+    // volumetricFogStepCount_'s own real default below (20.0f) -- both
+    // are "screen-space raymarch, world-unit step budget" passes.
+    float ssrStepCount_ = 24.0f;
 
     // Kronos ("Rendering Fidelity" -- ray-traced bounce lighting/GI) --
     // see setRTGIEnabled()/setRTGIIntensity()'s own comments.

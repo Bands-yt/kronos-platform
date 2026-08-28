@@ -213,6 +213,22 @@ public:
     // read.
     void tick(float dt, ECS& ecs, Physics& physics, EntityId character, const std::vector<EntityId>& skinnedEntities);
 
+    // Kronos (beta, "restore the 18-bone humanoid for online play"): the
+    // real, physics-free twin of tick() above -- for the networked local
+    // player entity, which is deliberately kinematic with no RigidBody
+    // (see net::applyNetworkedMovement()'s own header comment on why),
+    // so there is no live Jolt body for isGrounded()/getLinearVelocity()
+    // to query. Same real positioning/animation/skinning work as tick()
+    // (they share one private implementation), just fed `grounded`/
+    // `velocity` directly by the caller instead of deriving them from
+    // Physics -- see Application.cpp's own networked pre-tick hook for
+    // how it derives an honest "grounded" (always true; this entity's
+    // own Y is already ground-clamped, see applyNetworkedMovement()) and
+    // "velocity" (the real per-tick position delta, not a physics
+    // velocity that doesn't exist here).
+    void tick(float dt, ECS& ecs, EntityId character, const std::vector<EntityId>& skinnedEntities, bool grounded,
+              glm::vec3 velocity);
+
     // The pure animation-side half of tick() above: given this tick's
     // already-known horizontal speed, grounded state, and vertical
     // velocity (tick() reads all three from Physics and forwards them
