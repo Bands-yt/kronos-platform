@@ -139,8 +139,23 @@ struct SceneFile {
     float cameraPitchDegrees = -10.0f;
     float cameraFovDegrees = 60.0f;
 
+    // Kronos ("Binary Scene Serialization"): dispatches on `path`'s own
+    // extension -- ".kronos" real-uses the binary format below, anything
+    // else keeps using the original text format untouched. Every
+    // existing caller (SceneManager::saveScene()/loadScene(), and
+    // whatever's saved on disk already) keeps working exactly as before;
+    // a caller only gets the binary format by actually asking for a
+    // ".kronos" path.
     [[nodiscard]] bool saveToFile(const std::string& path) const;
     [[nodiscard]] bool loadFromFile(const std::string& path);
+
+    // The real binary format itself -- same field set, same semantics,
+    // as the text format above (kept in exact parity by hand; see
+    // SceneFile.cpp's own comment on why there's no single shared
+    // implementation between the two). Callable directly if a caller
+    // wants to force one format regardless of `path`'s extension.
+    [[nodiscard]] bool saveToBinaryFile(const std::string& path) const;
+    [[nodiscard]] bool loadFromBinaryFile(const std::string& path);
 };
 
 } // namespace engine::core

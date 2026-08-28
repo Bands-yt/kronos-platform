@@ -4340,6 +4340,218 @@ void testSceneFileRigidBodyColliderRoundTrip() {
     std::remove(meshPath);
 }
 
+// Kronos ("Binary Scene Serialization"): real, comprehensive coverage of
+// the new .kronos binary format -- every field SceneEntityRecord has,
+// through SceneFile::saveToFile()/loadFromFile()'s own real extension
+// dispatch (".kronos" -> binary), not by calling
+// saveToBinaryFile()/loadFromBinaryFile() directly, so this also proves
+// the dispatch itself picks the real binary path.
+void testSceneFileBinaryRoundTrip() {
+    engine::core::SceneFile file;
+    file.cameraPosition = {4.0f, 5.0f, 6.0f};
+    file.cameraYawDegrees = 120.0f;
+    file.cameraPitchDegrees = -30.0f;
+    file.cameraFovDegrees = 55.0f;
+
+    engine::core::SceneEntityRecord parent;
+    parent.name = "Rig";
+    parent.position = {0.0f, 1.0f, 0.0f};
+    file.entities.push_back(parent);
+
+    engine::core::SceneEntityRecord child;
+    child.name = "Prop";
+    child.parentName = "Rig"; // real hierarchy round-trip, by name
+    child.position = {1.0f, 2.0f, 3.0f};
+    child.rotation = glm::quat(0.7071f, 0.0f, 0.7071f, 0.0f);
+    child.scale = {2.0f, 2.0f, 2.0f};
+    child.hasRenderable = true;
+    child.baseColor = {0.5f, 0.6f, 0.7f, 0.9f};
+    child.metallic = 0.25f;
+    child.roughness = 0.75f;
+    child.normalIntensity = 1.5f;
+    child.emissiveColor = {1.0f, 0.5f, 0.0f};
+    child.emissiveIntensity = 2.0f;
+    child.castsShadow = false;
+    child.instanced = true;
+    child.hasMeshSource = true;
+    child.meshSource.kind = engine::core::MeshSourceKind::Obj;
+    child.meshSource.path = "assets/models/my prop.obj"; // spaces on purpose -- proves length-prefixing, not delimiter parsing
+    file.entities.push_back(child);
+
+    engine::core::SceneEntityRecord withEverythingElse;
+    withEverythingElse.name = "Kitchen Sink";
+    withEverythingElse.hasParticleEmitter = true;
+    withEverythingElse.emitter.emissionRate = 42.0f;
+    withEverythingElse.emitter.looping = false;
+    withEverythingElse.emitter.colorStart = {1.0f, 0.0f, 0.0f, 1.0f};
+    withEverythingElse.emitter.colorEnd = {0.0f, 0.0f, 1.0f, 0.0f};
+    withEverythingElse.hasLight = true;
+    withEverythingElse.light.enabled = false;
+    withEverythingElse.light.color = {1.0f, 0.5f, 0.25f};
+    withEverythingElse.light.intensity = 3.5f;
+    withEverythingElse.light.radius = 12.0f;
+    withEverythingElse.hasRigidBody = true;
+    withEverythingElse.motionType = engine::core::RigidBodyMotionType::Dynamic;
+    withEverythingElse.hasColliderShape = true;
+    withEverythingElse.colliderShape.kind = engine::core::ColliderShapeKind::Sphere;
+    withEverythingElse.colliderShape.params = {0.75f, 0.0f, 0.0f};
+    withEverythingElse.hasScript = true;
+    // Real, deliberately awkward source -- embedded newlines/quotes, the
+    // exact content the old text format needed base64 for; the binary
+    // format's own length-prefixed string carries it natively.
+    withEverythingElse.scriptSource = "local x = \"hi\"\nprint(x)\n-- trailing space \n";
+    withEverythingElse.scriptAutoRun = false;
+    file.entities.push_back(withEverythingElse);
+
+    const char* path = "test_scene_binary_roundtrip.kronos";
+    check(file.saveToFile(path), "SceneFile::saveToFile() with a .kronos path real-succeeds");
+
+    engine::core::SceneFile loaded;
+    check(loaded.loadFromFile(path), "SceneFile::loadFromFile() with a .kronos path real-succeeds");
+    check(loaded.entities.size() == 3, "all three entity records round-trip through the binary format");
+    check(nearlyEqual(loaded.cameraPosition.x, 4.0f) && nearlyEqual(loaded.cameraYawDegrees, 120.0f) &&
+              nearlyEqual(loaded.cameraFovDegrees, 55.0f),
+          "camera pose round-trips through the binary format");
+
+    if (loaded.entities.size() == 3) {
+        check(loaded.entities[0].name == "Rig" && loaded.entities[0].parentName.empty(),
+              "root entity name/no-parent round-trips");
+
+        check(loaded.entities[1].name == "Prop" && loaded.entities[1].parentName == "Rig",
+              "child entity's real parentName round-trips through the binary format");
+        check(nearlyEqual(loaded.entities[1].position.z, 3.0f), "entity position round-trips");
+        check(nearlyEqual(loaded.entities[1].rotation.w, 0.7071f, 1e-3f) &&
+                  nearlyEqual(loaded.entities[1].rotation.y, 0.7071f, 1e-3f),
+              "entity rotation round-trips"); // glm::quat(w, x, y, z) -- w and y are the nonzero components set above
+        check(nearlyEqual(loaded.entities[1].scale.x, 2.0f), "entity scale round-trips");
+        check(nearlyEqual(loaded.entities[1].baseColor.w, 0.9f), "baseColor alpha round-trips (proves writeVec4, not writeVec3)");
+        check(loaded.entities[1].instanced && !loaded.entities[1].castsShadow, "renderable bool flags round-trip");
+        check(loaded.entities[1].meshSource.kind == engine::core::MeshSourceKind::Obj, "mesh source kind round-trips");
+        check(loaded.entities[1].meshSource.path == "assets/models/my prop.obj",
+              "mesh source path with embedded spaces round-trips byte-for-byte (length-prefixed, not delimiter-parsed)");
+
+        const auto& e = loaded.entities[2];
+        check(e.hasParticleEmitter && nearlyEqual(e.emitter.emissionRate, 42.0f) && !e.emitter.looping,
+              "particle emitter settings + bool field round-trip");
+        check(nearlyEqual(e.emitter.colorEnd.z, 1.0f) && nearlyEqual(e.emitter.colorEnd.w, 0.0f),
+              "particle emitter colorEnd round-trips");
+        check(e.hasLight && !e.light.enabled && nearlyEqual(e.light.intensity, 3.5f) && nearlyEqual(e.light.radius, 12.0f),
+              "light data round-trips");
+        check(e.hasRigidBody && e.motionType == engine::core::RigidBodyMotionType::Dynamic,
+              "rigid body motion type round-trips");
+        check(e.hasColliderShape && e.colliderShape.kind == engine::core::ColliderShapeKind::Sphere &&
+                  nearlyEqual(e.colliderShape.params.x, 0.75f),
+              "collider shape round-trips");
+        check(e.hasScript && e.scriptSource == withEverythingElse.scriptSource && !e.scriptAutoRun,
+              "script source (newlines/quotes intact, no base64 needed) + autoRun round-trip byte-for-byte");
+    }
+
+    std::remove(path);
+}
+
+// Real cross-format consistency check: the same populated SceneFile,
+// saved through both the text (.scene) and binary (.kronos) formats,
+// must load back to equivalent data -- proving the binary format isn't
+// just internally self-consistent, but a real match for the format it's
+// meant to be a faster alternative to.
+void testSceneFileBinaryMatchesTextFormatData() {
+    engine::core::SceneFile file;
+    engine::core::SceneEntityRecord record;
+    record.name = "CrossCheck";
+    record.position = {7.0f, 8.0f, 9.0f};
+    record.hasRenderable = true;
+    record.baseColor = {0.1f, 0.2f, 0.3f, 0.4f};
+    record.hasMeshSource = true;
+    record.meshSource.kind = engine::core::MeshSourceKind::Capsule;
+    record.meshSource.params = {0.5f, 1.0f, 0.0f};
+    file.entities.push_back(record);
+
+    const char* textPath = "test_scene_crosscheck.scene";
+    const char* binaryPath = "test_scene_crosscheck.kronos";
+    check(file.saveToFile(textPath), "text-format save real-succeeds");
+    check(file.saveToFile(binaryPath), "binary-format save real-succeeds");
+
+    engine::core::SceneFile loadedText;
+    engine::core::SceneFile loadedBinary;
+    check(loadedText.loadFromFile(textPath), "text-format load real-succeeds");
+    check(loadedBinary.loadFromFile(binaryPath), "binary-format load real-succeeds");
+
+    check(loadedText.entities.size() == loadedBinary.entities.size(),
+          "both formats real-agree on entity count for the exact same source data");
+    if (loadedText.entities.size() == 1 && loadedBinary.entities.size() == 1) {
+        check(loadedText.entities[0].name == loadedBinary.entities[0].name,
+              "both formats real-agree on entity name");
+        check(nearlyEqual(loadedText.entities[0].position.x, loadedBinary.entities[0].position.x) &&
+                  nearlyEqual(loadedText.entities[0].position.z, loadedBinary.entities[0].position.z),
+              "both formats real-agree on position");
+        check(nearlyEqual(loadedText.entities[0].baseColor.w, loadedBinary.entities[0].baseColor.w),
+              "both formats real-agree on baseColor alpha");
+        check(loadedText.entities[0].meshSource.kind == loadedBinary.entities[0].meshSource.kind,
+              "both formats real-agree on mesh source kind");
+    }
+
+    std::remove(textPath);
+    std::remove(binaryPath);
+}
+
+// Real safety coverage: a corrupted/truncated/foreign .kronos file must
+// real-fail to load, not crash or silently produce a partial/garbage
+// scene -- the same "never trust bytes read from disk" discipline
+// net::ByteReader's own header comment states for network input, applied
+// here to a file that could just as easily be hand-edited or truncated
+// by a crash mid-write.
+void testSceneFileBinaryRejectsCorruptedInput() {
+    {
+        const char* path = "test_scene_binary_wrong_magic.kronos";
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        // Four bytes that are real, plausible-looking data but not the
+        // real "KSCN" magic this format actually writes.
+        const uint8_t garbage[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x00, 0x00, 0x00};
+        out.write(reinterpret_cast<const char*>(garbage), sizeof(garbage));
+        out.close();
+
+        engine::core::SceneFile loaded;
+        check(!loaded.loadFromFile(path), "a .kronos file with the wrong magic real-fails to load, not silently accepted");
+        std::remove(path);
+    }
+    {
+        const char* path = "test_scene_binary_truncated.kronos";
+        // A real, validly-populated file, truncated mid-write (the exact
+        // real failure mode a crash during saveToBinaryFile() would
+        // produce) -- write a real one first, then re-save only its
+        // first half.
+        engine::core::SceneFile file;
+        engine::core::SceneEntityRecord record;
+        record.name = "WillBeTruncated";
+        record.hasRenderable = true;
+        record.hasMeshSource = true;
+        record.meshSource.path = "assets/models/something.obj";
+        file.entities.push_back(record);
+        check(file.saveToFile(path), "fixture file for the truncation test real-saves first");
+
+        std::ifstream in(path, std::ios::binary);
+        std::vector<char> fullBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        check(fullBytes.size() > 4, "sanity: the real fixture file has more than 4 bytes to truncate");
+
+        std::ofstream truncated(path, std::ios::binary | std::ios::trunc);
+        truncated.write(fullBytes.data(), static_cast<std::streamsize>(fullBytes.size() / 2));
+        truncated.close();
+
+        engine::core::SceneFile loaded;
+        check(!loaded.loadFromFile(path), "a truncated .kronos file real-fails to load cleanly, not a partial/garbage scene");
+        std::remove(path);
+    }
+    {
+        const char* path = "test_scene_binary_empty.kronos";
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.close();
+        engine::core::SceneFile loaded;
+        check(!loaded.loadFromFile(path), "a real, genuinely empty .kronos file real-fails to load, not a crash");
+        std::remove(path);
+    }
+}
+
 void testProjectFileSaveLoadRoundTrip() {
     engine::core::ProjectFile project;
     project.name = "My Game";
@@ -33713,6 +33925,9 @@ int main() {
     testScriptingUnloadPurgesSessionAndPlayerCallbacksForThatScriptOnly();
     testSceneFileSaveLoadRoundTrip();
     testSceneFileRigidBodyColliderRoundTrip();
+    testSceneFileBinaryRoundTrip();
+    testSceneFileBinaryMatchesTextFormatData();
+    testSceneFileBinaryRejectsCorruptedInput();
     testProjectFileSaveLoadRoundTrip();
     testProjectFileVersionCompatibility();
     testProjectFileRecoveryPathHelpers();
