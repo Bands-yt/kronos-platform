@@ -108,6 +108,29 @@ constexpr float kMovementRejectionWeight = 0.2f;
 
 constexpr uint8_t kReliableChannel = 0;
 constexpr uint8_t kUnreliableChannel = 1;
+
+// Kronos (beta-blocking fix -- "collides but i cant exactly move objects...
+// glued with the object"): real push of whatever applyNetworkedMovement()'s
+// own horizontal blocker probe just ran into, IF it's actually movable.
+// Deliberately not inside applyNetworkedMovement() itself -- see
+// NetworkedMovementPush's own header comment for why this mutating,
+// ECS-aware step belongs one layer up, here, where both a real (non-const)
+// Physics& and the ECS are actually available. Gated on
+// RigidBodyMotionType::Dynamic -- pushing a Static wall or a Kinematic
+// platform is meaningless (and core::Physics::applyImpulse() itself
+// already no-ops on a missing/invalid body, but not on a *valid* Static
+// one, so this check is the real, necessary gate, not defensive noise).
+constexpr float kPlayerPushMass = 70.0f;    // matches CharacterController::spawn()'s own capsule mass
+constexpr float kPushImpulseScale = 0.5f;   // real, deliberate fraction -- a full 1:1 momentum transfer reads as an
+                                             // unrealistically hard shove for a simple "walked into it" push, not a tackle
+void pushBlockedDynamicBody(core::Physics& physics, core::ECS& ecs, const engine::net::NetworkedMovementPush& push,
+                             float deltaTime) {
+    if (push.entity == core::kNullEntity || deltaTime <= 0.0f) return;
+    auto* rigidBody = ecs.tryGetComponent<core::RigidBody>(push.entity);
+    if (!rigidBody || rigidBody->motionType != core::RigidBodyMotionType::Dynamic) return;
+    glm::vec3 pushVelocity = push.direction * (push.strength / deltaTime);
+    physics.applyImpulse(push.entity, ecs, pushVelocity * kPlayerPushMass * kPushImpulseScale);
+}
 } // namespace
 
 uint64_t generateSessionId() {
@@ -252,7 +275,9 @@ bool NetworkSession::initialize(const Config& config) {
             if (auto* transform = currentEcs_->tryGetComponent<core::Transform>(it->second)) {
                 auto* vertical = currentEcs_->tryGetComponent<NetworkedVerticalMotion>(it->second);
                 if (!vertical) vertical = &currentEcs_->addComponent<NetworkedVerticalMotion>(it->second);
-                applyNetworkedMovement(*transform, *vertical, *currentPhysics_, command, config_.moveSpeed);
+                NetworkedMovementPush push;
+                applyNetworkedMovement(*transform, *vertical, *currentPhysics_, command, config_.moveSpeed, &push);
+                pushBlockedDynamicBody(*currentPhysics_, *currentEcs_, push, command.deltaTime);
             }
         });
         serverReconciliation_.setGatherState([this](PlayerId) -> std::vector<EntityState> {

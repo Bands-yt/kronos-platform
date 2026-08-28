@@ -16,6 +16,27 @@ struct NetworkedVerticalMotion {
     bool grounded = true;
 };
 
+// Kronos (beta-blocking fix -- "collides but i cant exactly move objects...
+// glued with the object"): real, optional out-param filled in when the
+// horizontal blocker probe below is actually blocked by something --
+// `entity` is whichever body the most-restrictive ray hit, `direction` is
+// the player's own intended move direction at the moment of contact, and
+// `strength` is how much horizontal distance was blocked (a harder push
+// against the object -> a bigger strength). Deliberately NOT applied
+// inside applyNetworkedMovement() itself: this function stays ECS-free and
+// Physics-const (see its own class comment on why prediction/
+// reconciliation share it verbatim), but pushing a body is a real,
+// mutating Physics call that also needs the ECS to check the body's own
+// RigidBodyMotionType (only Dynamic bodies should ever move -- pushing a
+// Static or Kinematic one is meaningless/unsafe) -- both of which only
+// NetworkSession's own call sites actually have. Left at its default
+// (entity == kNullEntity) whenever nothing was blocked this tick.
+struct NetworkedMovementPush {
+    core::EntityId entity = core::kNullEntity;
+    glm::vec3 direction{0.0f};
+    float strength = 0.0f;
+};
+
 // Sprint 11 ("Networking Foundation") task 2's real, deliberately simple
 // kinematic movement model shared *identically* by client-side
 // prediction (net::ClientPrediction's predictedApply) and server-side
@@ -43,6 +64,6 @@ struct NetworkedVerticalMotion {
 // +X), so a future unification has one consistent convention to build on
 // rather than two to reconcile.
 void applyNetworkedMovement(core::Transform& transform, NetworkedVerticalMotion& vertical, const core::Physics& physics,
-                             const InputCommand& command, float moveSpeed);
+                             const InputCommand& command, float moveSpeed, NetworkedMovementPush* outPush = nullptr);
 
 } // namespace engine::net
