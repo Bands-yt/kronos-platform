@@ -2180,15 +2180,21 @@ int main(int argc, char** argv) {
     constexpr int kGridSize = 6;
     for (int xi = 0; xi < kGridSize; ++xi) {
         for (int zi = 0; zi < kGridSize; ++zi) {
-            auto entity = app.ecs().createEntity("MaterialSample");
+            // Kronos (beta-blocking fix -- "clipping through the white grid
+            // blocks"): this whole grid used to be a bare Transform+
+            // Renderable with no physics body at all (see the old comment
+            // this replaced) -- real, solid, matching Physics::createStaticBox()
+            // now, same "create the physics entity, then fill in its
+            // pre-attached Renderable" pattern OreNode.cpp's createOreNode()
+            // already uses. boxMesh's own half-extent is 0.5, so at this
+            // 0.45 scale the box's real half-extent is 0.225 in every axis --
+            // both the collider and Y position must match that, not 0.5, or
+            // either the box hovers above the ground or the collider doesn't
+            // match what's actually rendered.
+            constexpr glm::vec3 kHalfExtent(0.225f, 0.225f, 0.225f);
+            glm::vec3 position{(xi - kGridSize / 2) * 1.4f, 0.225f, 5.0f + zi * 1.4f};
+            auto entity = app.physics().createStaticBox(app.ecs(), position, kHalfExtent);
             if (auto* transform = app.ecs().tryGetComponent<engine::core::Transform>(entity)) {
-                // Real bug fix (found via live playtest): boxMesh's own
-                // half-extent is 0.5, so at this 0.45 scale the box's real
-                // half-height is 0.225 -- Y must match that, not 0.5, or
-                // the box hovers 0.275 units above the ground with a
-                // permanently visible gap to its own shadow (this entity
-                // has no physics body, so nothing ever settles it).
-                transform->position = {(xi - kGridSize / 2) * 1.4f, 0.225f, 5.0f + zi * 1.4f};
                 transform->scale = {0.45f, 0.45f, 0.45f};
             }
             float metallic = static_cast<float>(xi) / static_cast<float>(kGridSize - 1);
@@ -2215,19 +2221,20 @@ int main(int argc, char** argv) {
         // direction, not off its edge.
         constexpr int kOreCount = 80;
         for (int i = 0; i < kOreCount; ++i) {
-            auto entity = app.ecs().createEntity("OreProp");
             float scale = scaleDist(rng);
+            // Kronos (beta-blocking fix -- "clipping through the white grid
+            // blocks"): same fix as the material showcase grid above -- a
+            // real static collider now, sized to match what's actually
+            // rendered (boxMesh's own half-extent is 0.5, so this entity's
+            // real half-extent is 0.5 * scale).
+            glm::vec3 halfExtent(scale * 0.5f);
+            glm::vec3 position{posDist(rng), scale * 0.5f, posDist(rng)};
+            auto entity = app.physics().createStaticBox(app.ecs(), position, halfExtent);
             if (auto* transform = app.ecs().tryGetComponent<engine::core::Transform>(entity)) {
-                // Real bug fix (same root cause as the material showcase
-                // grid above): boxMesh's own half-extent is 0.5, so this
-                // entity's real half-height is 0.5 * scale, not scale --
-                // Y must match that or the box hovers above the ground
-                // with a permanently visible gap to its own shadow (no
-                // physics body here to ever settle it).
-                transform->position = {posDist(rng), scale * 0.5f, posDist(rng)};
                 transform->scale = glm::vec3(scale);
             }
-            auto& renderable = app.ecs().addComponent<engine::core::Renderable>(entity);
+            auto* renderablePtr = app.ecs().tryGetComponent<engine::core::Renderable>(entity);
+            auto& renderable = *renderablePtr;
             renderable.meshHandle = boxMesh;
             renderable.instanced = true;
 

@@ -37,23 +37,29 @@ endif()
 option(ENGINE_BUILD_RUNTIME "Build the engine_runtime executable" ON)
 option(ENGINE_BUILD_STUDIO  "Build the Studio desktop shell executable" ON)
 option(ENGINE_BUILD_TESTS   "Build unit tests" ON)
-# Kronos ("Polyglot ECS" -- isolated backbone): src/polyglot/'s own
-# CMakeLists.txt depends on nothing but the C++ standard library +
-# threads, and nothing in src/CMakeLists.txt references it back --
-# genuinely decoupled from engine_core/engine_runtime/studio, not just a
-# separate target name. See src/polyglot/README.md for real scope.
-option(ENGINE_BUILD_POLYGLOT_CORE "Build the isolated polyglot_core static lib + its own tests" ON)
+# Kronos ("Polyglot ECS" -- Beta Roadmap "Package Registry Integration" /
+# "VFS Mounting"): src/polyglot/'s own CMakeLists.txt still depends on
+# nothing but the C++ standard library + threads, but engine_core now
+# DOES link against it (see src/CMakeLists.txt's own
+# target_link_libraries) to use its real PackageRegistry/
+# VirtualFileSystem for local package resolution and .kronos path
+# resolution -- no longer the "nothing references it back" isolation
+# src/polyglot/README.md used to describe (updated there too). Added
+# *before* add_subdirectory(src) below so the polyglot_core target
+# already exists by the time engine_core's own CMakeLists.txt links
+# against it.
+option(ENGINE_BUILD_POLYGLOT_CORE "Build the polyglot_core static lib (linked into engine_core) + its own tests" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(cmake/Dependencies.cmake)
 include(cmake/ShaderCompiler.cmake)
 
-add_subdirectory(src)
-
 if(ENGINE_BUILD_POLYGLOT_CORE)
     add_subdirectory(src/polyglot)
 endif()
+
+add_subdirectory(src)
 
 # ---------------------------------------------------------------------------
 # tests/: assertion-based checks over pure logic (animation interpolation

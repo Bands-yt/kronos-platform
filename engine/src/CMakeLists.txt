@@ -132,6 +132,7 @@ add_library(engine_core STATIC
     core/ParticleSystem.cpp
     core/BinaryIO.cpp
     core/SceneFile.cpp
+    core/PackageManager.cpp
     core/ProjectFile.cpp
     core/GameManifest.cpp
     core/LocalGameDirectory.cpp
@@ -477,6 +478,17 @@ target_link_libraries(engine_core PUBLIC
     ZLIB::ZLIB
     CURL::libcurl
 )
+
+# Kronos (Beta Roadmap "Package Registry Integration" / "VFS Mounting"):
+# real PackageRegistry/VirtualFileSystem, now used by core::PackageManager
+# (PackageManager.hpp/.cpp) and core::SceneFile respectively -- see
+# src/polyglot/README.md for exactly what's real vs. still stub in that
+# directory. Guarded on the same option that adds the src/polyglot
+# subdirectory (../CMakeLists.txt), so turning it off cleanly disables
+# both sides together.
+if(ENGINE_BUILD_POLYGLOT_CORE)
+    target_link_libraries(engine_core PUBLIC polyglot_core)
+endif()
 
 if(WIN32)
     # Kronos ("Google OAuth Authentication"): Crypt32 for DPAPI

@@ -143,6 +143,68 @@ void appendSphere(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
     }
 }
 
+// Kronos (beta-blocking fix -- "shoulder disconnected from torso"): a
+// blended two-joint sphere, same "middle blends smoothly between two
+// bones" idea appendSmoothLimb() already uses for limb rings, applied to
+// a cap sphere instead of a tube. A rigid single-joint cap (plain
+// appendSphere()) always opens a visible gap on one side of a two-bone
+// junction once it rotates away from bind pose: bound to the torso's
+// joint it stays with the torso but separates from the swinging limb;
+// bound to the limb's joint it swings with the limb but separates from
+// the torso side. `blendAxis` is the cap's own real bind-pose direction
+// from `primaryJoint` toward `secondaryJoint` (e.g. shoulder->elbow) --
+// vertices nearest that direction (where the limb cylinder actually
+// attaches) blend toward `secondaryJoint`; vertices on the opposite pole
+// (nearest the torso's own bulge) stay closer to `primaryJoint`. Same
+// 8-segment/4-ring layout as appendSphere() -- only the per-vertex skin
+// weight differs.
+void appendSphereBlended(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
+                          std::vector<HumanoidBodySegment>& segments, glm::vec3 center, glm::vec3 radii,
+                          int primaryJoint, int secondaryJoint, glm::vec3 blendAxis, HumanoidBodySegment segment,
+                          SkinWeights& skinWeights) {
+    constexpr uint32_t kSegments = 8;
+    constexpr uint32_t kRings = 4;
+    uint32_t base = static_cast<uint32_t>(vertices.size());
+    glm::vec3 axis = glm::length(blendAxis) > 1e-5f ? glm::normalize(blendAxis) : glm::vec3(0.0f, -1.0f, 0.0f);
+
+    for (uint32_t r = 0; r <= kRings; ++r) {
+        float v = static_cast<float>(r) / static_cast<float>(kRings); // 0 (top pole) -> 1 (bottom pole)
+        float phi = v * 3.14159265f;
+        for (uint32_t s = 0; s <= kSegments; ++s) {
+            float u = static_cast<float>(s) / static_cast<float>(kSegments);
+            float theta = u * 2.0f * 3.14159265f;
+            glm::vec3 unit(std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta));
+            Vertex vert;
+            vert.position = center + unit * radii;
+            vert.normal = glm::normalize(unit);
+            vert.uv = {u, v};
+            vertices.push_back(vert);
+            segments.push_back(segment);
+
+            // Real linear blend along blendAxis: 0 at the pole facing
+            // -blendAxis (primaryJoint's own side) -> 1 at the pole
+            // facing +blendAxis (secondaryJoint's own side). dot() ranges
+            // [-1, 1], remapped to [0, 1].
+            float blend = std::clamp((glm::dot(unit, axis) + 1.0f) * 0.5f, 0.0f, 1.0f);
+            VertexSkinWeights sw;
+            sw.jointIndices = {primaryJoint, secondaryJoint, -1, -1};
+            sw.weights = {1.0f - blend, blend, 0.0f, 0.0f};
+            skinWeights.perVertex.push_back(sw);
+        }
+    }
+
+    uint32_t ringStride = kSegments + 1;
+    for (uint32_t r = 0; r < kRings; ++r) {
+        for (uint32_t s = 0; s < kSegments; ++s) {
+            uint32_t a = base + r * ringStride + s;
+            uint32_t b = base + r * ringStride + s + 1;
+            uint32_t c = base + (r + 1) * ringStride + s + 1;
+            uint32_t d = base + (r + 1) * ringStride + s;
+            indices.insert(indices.end(), {a, b, c, a, c, d});
+        }
+    }
+}
+
 // Kronos ("Avatar Visual Silhouette Pass" -- "Head" -- "reshape the head
 // to a stylised human oval... add cheek curvature and a subtle jawline
 // for personality", revised after a live-screenshot check showed a
@@ -922,17 +984,34 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
 
     float ls = bodyProportions.limbScale;
 
-    // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Shoulder Redesign"):
-    // real, rounded dome geometry bridging the torso's own shoulder-bulge
-    // ring (0.29*w above) and each arm's proximal cylinder ring
-    // (shoulderCrossSection, 0.125*ls below) -- appendSphere() already
-    // computes correct per-vertex smooth normals (see its own comment),
-    // so this reads as a soft, rounded cap rather than another hard
-    // block. Positioned at each arm's real bind-pose shoulder joint, but
-    // rigidly bound to spine_upper (the torso's own joint) -- NOT the arm
-    // joint -- so the cap stays fixed to the torso's own shoulder bulge
-    // as the arm swings during animation, instead of swinging away from
-    // it and reopening the exact gap this is meant to close.
+    // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Shoulder Redesign",
+    // beta-blocking fix -- "shoulder disconnected from torso", real
+    // second pass after a blended two-joint cap still showed a visible
+    // seam): real, rounded dome geometry bridging the torso's own
+    // shoulder-bulge ring (0.29*w above) and each arm's proximal cylinder
+    // ring (shoulderCrossSection, 0.125*ls below). A 50/50-blended cap
+    // (tried first) reads as pinched/torn right at this joint: idle.anim
+    // rotates arm_L_upper/arm_R_upper by close to 90 degrees from bind
+    // pose (T-pose out to hanging at the sides -- see idle.anim's own
+    // quaternion keyframes), and linear blend skinning pulls any
+    // multi-joint vertex *inward*, off the sphere's own surface, once the
+    // two joints' rotations diverge that far -- fine for
+    // appendSmoothLimb()'s small elbow-bend angles, visibly wrong here.
+    // Real fix instead: rigid, single-joint, bound to the arm's own
+    // shoulder joint (jointIndexFor("arm_*_upper"), the same joint the
+    // cylinder's own start ring already uses) -- NOT spine_upper. This
+    // cap's center is built at `worldPos("arm_*_upper")`, i.e. exactly
+    // that joint's own bind-pose pivot point, and idle.anim never changes
+    // that joint's *translation* (only its rotation, see idle.anim's KEY
+    // lines) -- so this cap's world position never moves at all: a sphere
+    // centered on its own rotation pivot is rotationally invariant (looks
+    // identical from any angle), and since arm_L_upper is a child of
+    // spine_upper, this stays correctly anchored to the torso through any
+    // torso motion too, via the normal FK chain -- not by also binding to
+    // spine_upper directly. Stays flush with the torso's own shoulder
+    // bulge for exactly the same reason the bind-pose margin already
+    // documented above (0.025 units of deliberate overlap) holds: nothing
+    // here ever moves relative to it.
     // HumanoidBodySegment::LeftArm/RightArm (not Torso) -- correctly
     // reflects that this cap is anchored to the arm's own shoulder joint
     // (governed by the real, separate `shoulderWidth` proportion, not
@@ -941,16 +1020,14 @@ HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headS
     // real "wider `width` -> wider Torso bbox" check meaningful (a
     // Torso-tagged cap whose own size/position never responds to `width`
     // would dominate and flatten that measurement). Colors identically to
-    // the torso either way -- LeftArm/RightArm also use
-    // kDefaultShirtColor (see resolveSegmentColorsForLoadout()) -- and
-    // still binds to spine_upper for skinning (the segment tag only
-    // affects coloring/bounding-box grouping, not which joint deforms
-    // it, see appendSphere()'s own jointIndex parameter).
+    // the torso either way -- LeftArm/RightArm also use kDefaultShirtColor
+    // (see resolveSegmentColorsForLoadout()) -- the segment tag only
+    // affects coloring/bounding-box grouping, not which joint deforms it.
     float shoulderCapRadius = 0.15f * ls;
     appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_upper"), glm::vec3(shoulderCapRadius),
-                 jointIndexFor("spine_upper"), HumanoidBodySegment::LeftArm, data.skinWeights);
+                 jointIndexFor("arm_L_upper"), HumanoidBodySegment::LeftArm, data.skinWeights);
     appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("arm_R_upper"), glm::vec3(shoulderCapRadius),
-                 jointIndexFor("spine_upper"), HumanoidBodySegment::RightArm, data.skinWeights);
+                 jointIndexFor("arm_R_upper"), HumanoidBodySegment::RightArm, data.skinWeights);
 
     // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Unified Lower Body"):
     // real, rounded ellipsoid cap bridging the torso's own waist ring

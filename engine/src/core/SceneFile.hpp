@@ -8,6 +8,7 @@
 
 #include "core/Components.hpp"
 #include "core/ParticleSystem.hpp"
+#include "polyglot/VirtualFileSystem.hpp"
 
 namespace engine::core {
 
@@ -146,8 +147,20 @@ struct SceneFile {
     // whatever's saved on disk already) keeps working exactly as before;
     // a caller only gets the binary format by actually asking for a
     // ".kronos" path.
-    [[nodiscard]] bool saveToFile(const std::string& path) const;
-    [[nodiscard]] bool loadFromFile(const std::string& path);
+    //
+    // Kronos (Beta Roadmap "VFS Mounting"): `vfs`, when non-null, resolves
+    // `path` as a *virtual* path (e.g. "scenes/spawn.kronos" against a
+    // mounted "scenes" prefix) through polyglot::VirtualFileSystem::
+    // resolve() before any real file I/O happens -- same path-traversal
+    // protection VirtualFileSystem::resolve() already provides (see its
+    // own header comment), applied here rather than reimplemented. A
+    // resolve() failure (no matching mount, or a traversal attempt) is a
+    // real, honest load/save failure, same as a plain missing file would
+    // be. Defaults to nullptr, meaning every existing call site keeps
+    // treating `path` as a real, direct filesystem path exactly as before
+    // -- opting into VFS resolution is additive, not a behavior change.
+    [[nodiscard]] bool saveToFile(const std::string& path, const polyglot::VirtualFileSystem* vfs = nullptr) const;
+    [[nodiscard]] bool loadFromFile(const std::string& path, const polyglot::VirtualFileSystem* vfs = nullptr);
 
     // The real binary format itself -- same field set, same semantics,
     // as the text format above (kept in exact parity by hand; see

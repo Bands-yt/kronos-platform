@@ -126,6 +126,7 @@
 #include "core/RiggedMesh.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/SceneFile.hpp"
+#include "core/PackageManager.hpp"
 #include "core/ScenePicking.hpp"
 #include "core/ScriptHotReload.hpp"
 #include "core/ScriptNetworkApi.hpp"
@@ -4550,6 +4551,117 @@ void testSceneFileBinaryRejectsCorruptedInput() {
         check(!loaded.loadFromFile(path), "a real, genuinely empty .kronos file real-fails to load, not a crash");
         std::remove(path);
     }
+}
+
+// Kronos (Beta Roadmap "VFS Mounting"): real, opt-in VFS resolution for
+// SceneFile -- a mounted virtual prefix round-trips a .kronos save/load
+// exactly like a direct real path would.
+void testSceneFileRoundTripsThroughVirtualFileSystem() {
+    const char* dir = "test_scenefile_vfs_dir";
+    std::filesystem::create_directory(dir);
+
+    engine::polyglot::VirtualFileSystem vfs;
+    check(vfs.mount("scenes", dir), "vfs test: real mount succeeds");
+
+    engine::core::SceneFile file;
+    file.cameraPosition = {1.0f, 2.0f, 3.0f};
+    engine::core::SceneEntityRecord entity;
+    entity.name = "ViaVfs";
+    file.entities.push_back(entity);
+
+    check(file.saveToFile("scenes/room.kronos", &vfs),
+          "SceneFile::saveToFile() real-resolves a virtual path through the VFS before writing");
+    check(std::filesystem::exists(std::string(dir) + "/room.kronos"),
+          "the real file actually landed at the VFS mount's own real directory, not literally \"scenes/room.kronos\"");
+
+    engine::core::SceneFile loaded;
+    check(loaded.loadFromFile("scenes/room.kronos", &vfs),
+          "SceneFile::loadFromFile() real-resolves the same virtual path back through the VFS");
+    check(loaded.entities.size() == 1 && loaded.entities[0].name == "ViaVfs",
+          "the round-tripped scene real-matches what was saved through the virtual path");
+
+    // Real, honest failure -- an unmounted prefix has nothing to resolve
+    // against, same as a plain missing file.
+    engine::core::SceneFile unresolvable;
+    check(!unresolvable.loadFromFile("nonexistent_prefix/room.kronos", &vfs),
+          "SceneFile::loadFromFile() real-fails when the VFS can't resolve the virtual path at all");
+
+    std::filesystem::remove_all(dir);
+}
+
+// Kronos (Beta Roadmap "Package Registry Integration"): real filesystem
+// scan -- one subdirectory per package, each with its own
+// package.manifest, same "scan a real local directory, one manifest per
+// subfolder" discipline testScanLocalGameDirectoryDiscoversRealManifests()
+// already establishes for games.
+void testPackageManagerLoadsFromDirectoryAndResolves() {
+    const char* dir = "test_package_manager_dir";
+    std::filesystem::create_directory(dir);
+    std::filesystem::create_directory(std::string(dir) + "/base-utils");
+    std::filesystem::create_directory(std::string(dir) + "/ui-kit");
+    std::filesystem::create_directory(std::string(dir) + "/empty-folder"); // no manifest -- must be real-ignored
+
+    {
+        std::ofstream out(std::string(dir) + "/base-utils/package.manifest");
+        out << "PACKAGE base-utils\nVERSION 1.0.0\n";
+    }
+    {
+        std::ofstream out(std::string(dir) + "/ui-kit/package.manifest");
+        out << "PACKAGE ui-kit\nVERSION 1.0.0\nDEPENDS base-utils\n"
+               "ARTIFACT LuauModule src/main.luau sha256:abc\n";
+        std::filesystem::create_directory(std::string(dir) + "/ui-kit/src");
+        std::ofstream artifact(std::string(dir) + "/ui-kit/src/main.luau");
+        artifact << "-- real artifact file\n";
+    }
+
+    engine::core::PackageManager manager;
+    std::vector<std::string> warnings;
+    check(manager.loadFromDirectory(dir, warnings), "PackageManager::loadFromDirectory() real-succeeds scanning a real directory");
+    check(warnings.empty(), "no real warnings for two well-formed packages and one real, ordinary non-package subfolder");
+    check(manager.size() == 2, "PackageManager real-registers exactly the two subfolders with a real package.manifest");
+
+    auto result = manager.resolveInstallOrder("ui-kit");
+    check(result.status == engine::polyglot::DependencyResolutionStatus::Ok,
+          "PackageManager::resolveInstallOrder() real-resolves ui-kit's own dependency chain");
+    check(result.installOrder.size() == 2 && result.installOrder[0] == "base-utils" && result.installOrder[1] == "ui-kit",
+          "real install order puts base-utils (the dependency) before ui-kit (the dependent)");
+
+    std::string verifyError;
+    check(manager.verifyArtifactsExist("ui-kit", verifyError),
+          "PackageManager::verifyArtifactsExist() real-succeeds when the declared artifact actually exists on disk");
+
+    std::filesystem::remove_all(dir);
+}
+
+void testPackageManagerLoadFromDirectoryToleratesMissingDirectory() {
+    engine::core::PackageManager manager;
+    std::vector<std::string> warnings;
+    check(manager.loadFromDirectory("test_package_manager_dir_that_does_not_exist", warnings),
+          "PackageManager::loadFromDirectory() real-treats a not-yet-created packages directory as empty, not an error");
+    check(manager.size() == 0, "nothing real-registered when the directory doesn't exist");
+}
+
+void testPackageManagerVerifyArtifactsExistCatchesAMissingFile() {
+    const char* dir = "test_package_manager_missing_artifact_dir";
+    std::filesystem::create_directory(dir);
+    std::filesystem::create_directory(std::string(dir) + "/broken-pkg");
+    {
+        std::ofstream out(std::string(dir) + "/broken-pkg/package.manifest");
+        // Claims an artifact that's never actually written to disk -- a
+        // real, honest "the manifest lied" case.
+        out << "PACKAGE broken-pkg\nVERSION 1.0.0\nARTIFACT LuauModule src/missing.luau sha256:abc\n";
+    }
+
+    engine::core::PackageManager manager;
+    std::vector<std::string> warnings;
+    check(manager.loadFromDirectory(dir, warnings), "PackageManager::loadFromDirectory() real-succeeds even though this package will fail verification");
+
+    std::string verifyError;
+    check(!manager.verifyArtifactsExist("broken-pkg", verifyError),
+          "PackageManager::verifyArtifactsExist() real-fails when a declared artifact doesn't actually exist on disk");
+    check(!verifyError.empty(), "a real, non-empty error message names the actual problem");
+
+    std::filesystem::remove_all(dir);
 }
 
 void testProjectFileSaveLoadRoundTrip() {
@@ -15081,6 +15193,108 @@ void testApplyNetworkedMovementCombinedStrafeAndForward() {
     engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
     check(nearlyEqual(transform.position.x, 1.0f, 1e-3f) && nearlyEqual(transform.position.z, 1.0f, 1e-3f),
           "applyNetworkedMovement() real-combines forward (+X) and strafe-right (+Z) components additively");
+}
+
+void testApplyNetworkedMovementCornerRayStopsClipThroughWall() {
+    // Real regression for the "walk through wall corners" gap: a thin
+    // static wall box positioned so its Z-range only overlaps the +side
+    // probe ray, not the center ray -- proves the 3-ray fan (not just the
+    // old single center ray) is what's actually stopping the capsule here.
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "corner-clip test: real Physics initializes headlessly");
+    // capsuleRadius = 0.35 (kCapsuleRadius); box Z-range [0.30, 0.40] sits
+    // entirely outside z=0 (misses the center ray) but inside z=+0.35*0.999
+    // (hits the +side ray).
+    physics.createStaticBox(ecs, glm::vec3(5.0f, 0.0f, 0.35f), glm::vec3(0.1f, 1.0f, 0.05f));
+
+    engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::net::InputCommand cmd;
+    cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f); // forward
+    cmd.yaw = 0.0f;
+    cmd.deltaTime = 1.0f;
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 10.0f); // would travel x=10 unblocked
+    // Box near face at x=4.9, minus kCapsuleRadius (0.35) skin -> stops
+    // around x=4.55, nowhere near the naive unblocked x=10.
+    check(transform.position.x < 4.6f,
+          "applyNetworkedMovement() real-stops the capsule at a wall corner its old single center ray would have missed");
+    check(transform.position.x > 4.4f,
+          "applyNetworkedMovement() stops right at the wall's near face minus capsule radius, not short/long of it");
+}
+
+void testApplyNetworkedMovementSlidesAlongWallInsteadOfSnagging() {
+    // Real regression for "getting stuck/snagging pushing directly against
+    // static blocks": a full wall spanning Z at x=[4.9, 5.1], approached
+    // diagonally (forward + strafe-right at yaw=0 -> moveDir (0.707, 0,
+    // 0.707)). The old behavior just clamped the whole move to
+    // `allowedDist` along the *original* diagonal direction, losing the
+    // entire Z component too and reading as "stuck" against the wall. The
+    // real collide-and-slide fix should keep sliding along Z (the wall's
+    // own tangent) for the leftover distance the X-blocking ate.
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "wall-slide test: real Physics initializes headlessly");
+    physics.createStaticBox(ecs, glm::vec3(5.0f, 0.0f, 0.0f), glm::vec3(0.1f, 1.0f, 50.0f));
+
+    engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::net::InputCommand cmd;
+    cmd.moveAxis = glm::vec3(1.0f, 0.0f, 1.0f); // strafe-right + forward, diagonal into the wall
+    cmd.yaw = 0.0f;
+    cmd.deltaTime = 1.0f;
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 5.0f);
+    // X real-stops short of the wall's near face (4.9), never tunneling
+    // through it.
+    check(transform.position.x < 4.9f,
+          "applyNetworkedMovement() real-stops X short of the wall face when sliding, no tunneling");
+    check(transform.position.x > 4.3f,
+          "applyNetworkedMovement() X-block distance matches the direct raycast-minus-radius stop, not something shorter");
+    // Z real-keeps going well past X -- the leftover diagonal distance the
+    // X-block ate got redirected along the wall's own tangent (Z) instead
+    // of being discarded outright, which is the real, observable
+    // difference between "sliding" and "stuck".
+    check(transform.position.z > transform.position.x + 0.2f,
+          "applyNetworkedMovement() real-slides along the wall's tangent instead of just stopping dead");
+}
+
+void testApplyNetworkedMovementFillsOutPushWhenBlocked() {
+    // Real regression for "collides but i cant exactly move objects...
+    // glued with the object": applyNetworkedMovement() itself stays
+    // ECS-free/Physics-const (see NetworkedMovementPush's own header
+    // comment), but it must correctly report *what* it hit and *how hard*
+    // so NetworkSession's own pushBlockedDynamicBody() has something real
+    // to act on.
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "outPush test: real Physics initializes headlessly");
+    engine::core::EntityId box = physics.createStaticBox(ecs, glm::vec3(5.0f, 0.0f, 0.0f), glm::vec3(1.0f, 1.0f, 1.0f));
+
+    engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::net::InputCommand cmd;
+    cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f); // forward
+    cmd.yaw = 0.0f;
+    cmd.deltaTime = 1.0f;
+    engine::net::NetworkedMovementPush push;
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 10.0f, &push); // would travel x=10 unblocked
+    check(push.entity == box, "applyNetworkedMovement() real-reports the exact entity its blocker probe hit");
+    check(nearlyEqual(push.direction.x, 1.0f, 1e-2f) && nearlyEqual(push.direction.z, 0.0f, 1e-2f),
+          "applyNetworkedMovement() real-reports the player's own intended move direction as the push direction");
+    check(push.strength > 0.0f, "applyNetworkedMovement() real-reports a positive push strength when actually blocked");
+}
+
+void testApplyNetworkedMovementLeavesOutPushUntouchedWhenClear() {
+    engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics; // uninitialized -- every raycast real-misses, nothing to block
+    engine::net::InputCommand cmd;
+    cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f);
+    cmd.deltaTime = 1.0f;
+    engine::net::NetworkedMovementPush push;
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f, &push);
+    check(push.entity == engine::core::kNullEntity,
+          "applyNetworkedMovement() real-leaves outPush at its default (no entity) when nothing was actually blocked");
 }
 
 // --- ClientPrediction ----------------------------------------------------------
@@ -33928,6 +34142,10 @@ int main() {
     testSceneFileBinaryRoundTrip();
     testSceneFileBinaryMatchesTextFormatData();
     testSceneFileBinaryRejectsCorruptedInput();
+    testSceneFileRoundTripsThroughVirtualFileSystem();
+    testPackageManagerLoadsFromDirectoryAndResolves();
+    testPackageManagerLoadFromDirectoryToleratesMissingDirectory();
+    testPackageManagerVerifyArtifactsExistCatchesAMissingFile();
     testProjectFileSaveLoadRoundTrip();
     testProjectFileVersionCompatibility();
     testProjectFileRecoveryPathHelpers();
@@ -34488,6 +34706,10 @@ int main() {
     testApplyNetworkedMovementHoldsFacingWhenNotMoving();
     testApplyNetworkedMovementZeroMoveAxisNoHorizontalDisplacement();
     testApplyNetworkedMovementCombinedStrafeAndForward();
+    testApplyNetworkedMovementCornerRayStopsClipThroughWall();
+    testApplyNetworkedMovementSlidesAlongWallInsteadOfSnagging();
+    testApplyNetworkedMovementFillsOutPushWhenBlocked();
+    testApplyNetworkedMovementLeavesOutPushUntouchedWhenClear();
     testClientPredictionRecordAndPredictAssignsSequentialSequence();
     testClientPredictionRecordAndPredictCallsPredictedApplyImmediately();
     testClientPredictionRecordAndPredictBuffersInput();

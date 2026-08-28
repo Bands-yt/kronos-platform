@@ -121,10 +121,16 @@ bool hasKronosExtension(const std::string& path) {
 
 } // namespace
 
-bool SceneFile::saveToFile(const std::string& path) const {
-    if (hasKronosExtension(path)) return saveToBinaryFile(path);
+bool SceneFile::saveToFile(const std::string& path, const polyglot::VirtualFileSystem* vfs) const {
+    // Real VFS resolution, opt-in: a nullptr `vfs` (every existing call
+    // site) leaves `path` untouched, exactly as before this parameter
+    // existed.
+    std::string realPath = path;
+    if (vfs != nullptr && !vfs->resolve(path, realPath)) return false;
 
-    std::ofstream out(path, std::ios::trunc);
+    if (hasKronosExtension(realPath)) return saveToBinaryFile(realPath);
+
+    std::ofstream out(realPath, std::ios::trunc);
     if (!out.is_open()) return false;
 
     out << "SCENE 1\n";
@@ -199,10 +205,13 @@ bool SceneFile::saveToFile(const std::string& path) const {
     return out.good();
 }
 
-bool SceneFile::loadFromFile(const std::string& path) {
-    if (hasKronosExtension(path)) return loadFromBinaryFile(path);
+bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFileSystem* vfs) {
+    std::string realPath = path;
+    if (vfs != nullptr && !vfs->resolve(path, realPath)) return false;
 
-    std::ifstream in(path);
+    if (hasKronosExtension(realPath)) return loadFromBinaryFile(realPath);
+
+    std::ifstream in(realPath);
     if (!in.is_open()) return false;
 
     std::string header;
