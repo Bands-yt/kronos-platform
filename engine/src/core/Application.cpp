@@ -2342,14 +2342,39 @@ void Application::setNetworkedLocalPlayerEntity(EntityId entity) {
     if (auto* renderable = ecs_.tryGetComponent<Renderable>(entity)) renderable->visible = false;
 
     Skeleton skeleton = buildHumanoidSkeleton();
+    glm::vec4 skinTone(0.85f, 0.75f, 0.65f, 1.0f); // same default spawnLocalPlayerAvatar() itself uses
     std::string spawnError;
     if (!spawnRiggedAvatar(ecs_, skeleton, AvatarLoadout{}, CatalogueIndex{}, riggedMeshLibrary_, renderer_.allocator(),
                             renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
-                            networkedAvatarSkinnedEntities_, spawnError)) {
+                            networkedAvatarSkinnedEntities_, spawnError, skinTone)) {
         std::fprintf(stderr, "Application: setNetworkedLocalPlayerEntity() -- spawnRiggedAvatar() failed: %s\n",
                      spawnError.c_str());
         networkedAvatarSkinnedEntities_.clear();
         return; // real, honest degrade -- the hidden plain capsule (still real, still positioned) stays the fallback
+    }
+
+    // Same "fold face/hair into the one real skinned-entity list" pattern
+    // spawnLocalPlayerAvatar() uses -- a faceless/hairless-but-otherwise-
+    // correct avatar is still real and playable if either fails.
+    std::vector<EntityId> faceEntities;
+    std::string faceError;
+    if (spawnAvatarFace(ecs_, skeleton, skinTone, riggedMeshLibrary_, renderer_.allocator(), renderer_.device(),
+                         renderer_.commandPool(), renderer_.graphicsQueue(), faceEntities, faceError)) {
+        networkedAvatarSkinnedEntities_.insert(networkedAvatarSkinnedEntities_.end(), faceEntities.begin(), faceEntities.end());
+    } else {
+        std::fprintf(stderr, "Application: setNetworkedLocalPlayerEntity() -- spawnAvatarFace() failed: %s\n",
+                     faceError.c_str());
+    }
+
+    std::vector<EntityId> hairEntities;
+    std::string hairError;
+    if (spawnAvatarDefaultHair(ecs_, skeleton, AvatarLoadout{}, kDefaultHairColor, riggedMeshLibrary_, renderer_.allocator(),
+                                renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), hairEntities,
+                                hairError)) {
+        networkedAvatarSkinnedEntities_.insert(networkedAvatarSkinnedEntities_.end(), hairEntities.begin(), hairEntities.end());
+    } else {
+        std::fprintf(stderr, "Application: setNetworkedLocalPlayerEntity() -- spawnAvatarDefaultHair() failed: %s\n",
+                     hairError.c_str());
     }
 
     networkedAvatarController_ = std::make_unique<AvatarController>(skeleton);
