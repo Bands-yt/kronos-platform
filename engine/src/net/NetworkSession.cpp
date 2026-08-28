@@ -248,9 +248,11 @@ bool NetworkSession::initialize(const Config& config) {
         });
         serverReconciliation_.setApply([this](PlayerId player, const InputCommand& command) {
             auto it = serverPlayerEntities_.find(player);
-            if (it == serverPlayerEntities_.end() || currentEcs_ == nullptr) return;
+            if (it == serverPlayerEntities_.end() || currentEcs_ == nullptr || currentPhysics_ == nullptr) return;
             if (auto* transform = currentEcs_->tryGetComponent<core::Transform>(it->second)) {
-                applyNetworkedMovement(*transform, command, config_.moveSpeed);
+                auto* vertical = currentEcs_->tryGetComponent<NetworkedVerticalMotion>(it->second);
+                if (!vertical) vertical = &currentEcs_->addComponent<NetworkedVerticalMotion>(it->second);
+                applyNetworkedMovement(*transform, *vertical, *currentPhysics_, command, config_.moveSpeed);
             }
         });
         serverReconciliation_.setGatherState([this](PlayerId) -> std::vector<EntityState> {
@@ -403,7 +405,7 @@ publishing::PublishValidationResult NetworkSession::publishWorld(publishing::Wor
 }
 
 void NetworkSession::sampleLocalInput(core::ECS& ecs, core::EntityId localPlayerEntity, glm::vec3 moveAxis, bool jump,
-                                       bool primaryAction, float yaw, float pitch, float dt) {
+                                       bool primaryAction, float yaw, float pitch, float dt, core::Physics* physics) {
     if (config_.mode != NetworkMode::Client) return;
 
     InputCommand command;
@@ -415,6 +417,7 @@ void NetworkSession::sampleLocalInput(core::ECS& ecs, core::EntityId localPlayer
     command.pitch = pitch;
 
     currentEcs_ = &ecs;
+    currentPhysics_ = physics ? physics : &fallbackPhysics_;
     // Reconfigured every call rather than lazily-once: `localPlayerEntity`
     // is a plain function parameter here (not stored), so there's no
     // cheap way to detect "did it change since last time" -- reassigning
@@ -422,9 +425,11 @@ void NetworkSession::sampleLocalInput(core::ECS& ecs, core::EntityId localPlayer
     // real-time-game scale, not a hot-path concern worth the extra
     // state-tracking complexity.
     clientPrediction_.setPredictedApply([this, localPlayerEntity](const InputCommand& cmd) {
-        if (currentEcs_ == nullptr) return;
+        if (currentEcs_ == nullptr || currentPhysics_ == nullptr) return;
         if (auto* transform = currentEcs_->tryGetComponent<core::Transform>(localPlayerEntity)) {
-            applyNetworkedMovement(*transform, cmd, config_.moveSpeed);
+            auto* vertical = currentEcs_->tryGetComponent<NetworkedVerticalMotion>(localPlayerEntity);
+            if (!vertical) vertical = &currentEcs_->addComponent<NetworkedVerticalMotion>(localPlayerEntity);
+            applyNetworkedMovement(*transform, *vertical, *currentPhysics_, cmd, config_.moveSpeed);
         }
     });
     clientPrediction_.setAuthoritativeState([this, localPlayerEntity](const EntityState& state) {
@@ -444,9 +449,10 @@ void NetworkSession::sampleLocalInput(core::ECS& ecs, core::EntityId localPlayer
     transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kUnreliableChannel, false);
 }
 
-void NetworkSession::tick(float dt, core::ECS& ecs, core::EntityId localPlayerEntity) {
+void NetworkSession::tick(float dt, core::ECS& ecs, core::EntityId localPlayerEntity, core::Physics* physics) {
     if (config_.mode == NetworkMode::Offline) return;
     currentEcs_ = &ecs;
+    currentPhysics_ = physics ? physics : &fallbackPhysics_;
     clockSeconds_ += dt;
     networkStats_.tick(dt);
 

@@ -195,6 +195,11 @@ void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId chara
                              const std::vector<EntityId>& skinnedEntities) {
     bool grounded = physics.isGrounded(character, ecs, settings_.capsuleHalfHeight, settings_.capsuleRadius);
     glm::vec3 velocity = physics.getLinearVelocity(character, ecs);
+    tick(dt, ecs, character, skinnedEntities, grounded, velocity);
+}
+
+void AvatarController::tick(float dt, ECS& ecs, EntityId character, const std::vector<EntityId>& skinnedEntities,
+                             bool grounded, glm::vec3 velocity) {
     float horizontalSpeed = glm::length(glm::vec2(velocity.x, velocity.z));
 
     tickAnimation(dt, horizontalSpeed, grounded, velocity.y);

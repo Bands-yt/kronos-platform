@@ -397,7 +397,14 @@ public:
     // comment on why this is deliberately not characterController_'s
     // entity. kNullEntity (the default) means "not networked" and is
     // what keeps every existing offline call site's behavior unchanged.
-    void setNetworkedLocalPlayerEntity(EntityId entity) { networkedLocalPlayerEntity_ = entity; }
+    // Kronos (beta, "restore the 18-bone humanoid for online play"): real
+    // -- was a plain, inline setter; now also spawns/tears down the real
+    // rigged avatar that visually follows `entity` (see
+    // Application.cpp's own implementation and networkedAvatarController_'s
+    // header comment for why this needs its own AvatarController/
+    // skinnedEntities, separate from the offline avatarController_/
+    // skinnedAvatarEntities_ pair).
+    void setNetworkedLocalPlayerEntity(EntityId entity);
     [[nodiscard]] EntityId networkedLocalPlayerEntity() const { return networkedLocalPlayerEntity_; }
 
     // Sprint 15 ("TNT-Wars Trailer Production"): real, optional --
@@ -1003,6 +1010,46 @@ private:
     // own comment.
     net::NetworkSession networkSession_;
     EntityId networkedLocalPlayerEntity_ = kNullEntity;
+
+    // Kronos (beta, "restore the 18-bone humanoid for online play"): the
+    // real rigged-avatar body that visually follows networkedLocalPlayerEntity_
+    // (a deliberately kinematic, physics-free Transform -- see
+    // net::applyNetworkedMovement()'s own header comment) once a session
+    // is actually joined. A second, separate AvatarController/skinned-
+    // entity-list from avatarController_/skinnedAvatarEntities_ above, not
+    // a reuse of them: those stay real, intact, and hidden (see
+    // wasNetworkedClient_'s own comment) for the offline character the
+    // whole time this one is active, so leaveSession() can hand control
+    // straight back with nothing to re-spawn. Null/empty whenever no
+    // session is joined -- setNetworkedLocalPlayerEntity()'s own real
+    // spawn/teardown pair is what keeps that true.
+    std::unique_ptr<AvatarController> networkedAvatarController_;
+    std::vector<EntityId> networkedAvatarSkinnedEntities_;
+    // Real per-tick finite-difference velocity for the networked avatar's
+    // walk/run/idle blend -- this entity has no RigidBody for
+    // AvatarController::tick()'s usual physics.getLinearVelocity() to
+    // read (see above), so networkTickHook computes "how far did
+    // networkedLocalPlayerEntity_'s own Transform actually move this
+    // tick" instead and feeds that to the new physics-free tick()
+    // overload directly.
+    glm::vec3 networkedAvatarLastPosition_{0.0f};
+
+    // Kronos (beta-blocking fix -- "rigged avatar turns into a capsule on
+    // rejoin"): what actually happened wasn't a degrade at all --
+    // characterController_.tick() (this file's own PreTickHook) has no
+    // network-session guard, so it kept driving the offline rigged avatar
+    // AND overwriting camera_ every sim tick even after joining an online
+    // session, fighting the network hook above (which drives the separate
+    // networkedLocalPlayerEntity_ capsule + camera_ on its own 60Hz
+    // cadence) for the same camera_ object every frame -- see that hook's
+    // own "driving characterController_'s physics-backed entity ... would
+    // fight physics.step()" comment, which only ever solved the entity-
+    // ownership half of this, not the tick/camera half. Tracks the
+    // client-session edge (set in the PreTickHook below) so the offline
+    // rigged avatar is real-hidden for the duration of a joined session --
+    // not destroyed, so it's exactly as it was the instant leaveSession()
+    // hands control back to it.
+    bool wasNetworkedClient_ = false;
 
     // Sprint 14 ("render-tick decoupling"): the networked-client camera-
     // follow's own real mouse-look sampling moved from the (now 120Hz)

@@ -4113,6 +4113,7 @@ void Renderer::drawSSRPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent2D ext
     SSRPushConstants push{};
     push.maxDistance = ssrMaxDistance_;
     push.thickness = ssrThickness_;
+    push.stepCount = ssrStepCount_;
     vkCmdPushConstants(cmd, ssrPipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     recordDraw(3, 1);

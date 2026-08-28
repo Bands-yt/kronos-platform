@@ -2,6 +2,7 @@
 
 #include "core/ScriptChatApi.hpp"
 #include "net/HttpWorkerPool.hpp"
+#include "net/NetworkedMovement.hpp"
 #include "safety/GeminiModerationClient.hpp"
 
 #include <algorithm>
@@ -448,7 +449,30 @@ bool Application::initialize(const CreateInfo& info) {
         // never calls spawnLocalPlayerAvatar() (every CLI rich mode still
         // spawning its own plain-capsule character directly), so this is
         // purely additive, not a behavior change for them.
-        if (!cameraShowcaseModeEnabled_ && !movementInputSuspended_) {
+        //
+        // Kronos (beta-blocking fix -- "rigged avatar turns into a capsule
+        // on rejoin"): also gated on !networkSession_.isClient() now --
+        // see wasNetworkedClient_'s own comment in Application.hpp for why
+        // this offline tick (and the camera_ writes inside it) must not
+        // keep running once a networked session's own hook
+        // (setNetworkTickHook() below) owns camera_ instead.
+        bool isNetworkedClientNow = networkSession_.isClient();
+        if (isNetworkedClientNow != wasNetworkedClient_) {
+            // Real hide/show, not a spawn/despawn -- the offline rigged
+            // avatar's entities, GPU mesh handles, and AvatarController
+            // state all stay exactly as they were, so leaveSession()
+            // resumes local play with the same avatar instead of paying
+            // spawnLocalPlayerAvatar()'s real GPU-upload cost again just to
+            // undo this.
+            for (EntityId entity : skinnedAvatarEntities_) {
+                if (auto* skinned = ecs_.tryGetComponent<SkinnedRenderable>(entity)) {
+                    skinned->visible = !isNetworkedClientNow;
+                }
+            }
+            wasNetworkedClient_ = isNetworkedClientNow;
+        }
+
+        if (!cameraShowcaseModeEnabled_ && !movementInputSuspended_ && !isNetworkedClientNow) {
             characterController_.tick(dt, ecs_, physics_, input_, camera_, avatarController_.get(),
                                        avatarController_ ? &skinnedAvatarEntities_ : nullptr);
         }
@@ -2054,15 +2078,29 @@ bool Application::initialize(const CreateInfo& info) {
             bool jump = input_.isActionDown("Jump");
 
             networkSession_.sampleLocalInput(ecs_, networkedLocalPlayerEntity_, moveAxis, jump, false,
-                                              camera_.yawDegrees, camera_.pitchDegrees, dt);
+                                              camera_.yawDegrees, camera_.pitchDegrees, dt, &physics_);
 
             if (auto* transform = ecs_.tryGetComponent<Transform>(networkedLocalPlayerEntity_)) {
                 constexpr float kCameraDistance = 6.0f;
                 camera_.position = transform->position - camera_.forward() * kCameraDistance +
                                     glm::vec3(0.0f, 1.7f, 0.0f);
+
+                // Real grounded/velocity now, from applyNetworkedMovement()'s
+                // own gravity+raycast state (net::NetworkedVerticalMotion),
+                // not a hardcoded/approximated stand-in -- drives the same
+                // Jump/Falling/Landing states the offline avatar gets.
+                if (networkedAvatarController_ && dt > 0.0f) {
+                    auto* vertical = ecs_.tryGetComponent<net::NetworkedVerticalMotion>(networkedLocalPlayerEntity_);
+                    glm::vec3 horizontalVelocity = (transform->position - networkedAvatarLastPosition_) / dt;
+                    networkedAvatarLastPosition_ = transform->position;
+                    glm::vec3 velocity(horizontalVelocity.x, vertical ? vertical->velocityY : 0.0f, horizontalVelocity.z);
+                    bool grounded = vertical ? vertical->grounded : true;
+                    networkedAvatarController_->tick(dt, ecs_, networkedLocalPlayerEntity_,
+                                                       networkedAvatarSkinnedEntities_, grounded, velocity);
+                }
             }
         }
-        networkSession_.tick(dt, ecs_, networkedLocalPlayerEntity_);
+        networkSession_.tick(dt, ecs_, networkedLocalPlayerEntity_, &physics_);
     });
 
     // The other real event.onX trigger: Physics' actual Jolt
@@ -2280,6 +2318,56 @@ bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skin
     loadClip("jump_land", &AvatarController::setJumpLandClip, animationOverrides.jumpLandClipPath);
 
     return true;
+}
+
+void Application::setNetworkedLocalPlayerEntity(EntityId entity) {
+    // Kronos (beta, "restore the 18-bone humanoid for online play"): real
+    // teardown-then-spawn, mirroring spawnLocalPlayerAvatar()'s own
+    // "real, honest reset" precedent -- a fresh join must not leave a
+    // stale networkedAvatarController_ driving entities a previous
+    // session's ECS wipe (or this same reset) already destroyed.
+    for (EntityId e : networkedAvatarSkinnedEntities_) ecs_.destroyEntity(e);
+    networkedAvatarSkinnedEntities_.clear();
+    networkedAvatarController_.reset();
+    networkedLocalPlayerEntity_ = entity;
+    if (entity == kNullEntity) return; // real, honest no-op -- leaveSession()'s own teardown call
+
+    // The plain capsule spawnNetworkedPlayerEntity_() (main.cpp) already
+    // built on `entity` was this session's only real visual before
+    // tonight -- real-hidden now (not destroyed: `entity`'s own Transform
+    // is still the real, single source of position this rig, the
+    // camera-follow hook, and net::applyNetworkedMovement() all share),
+    // the same "hide, don't destroy" precedent wasNetworkedClient_ above
+    // already established for the offline avatar's own capsule/mesh.
+    if (auto* renderable = ecs_.tryGetComponent<Renderable>(entity)) renderable->visible = false;
+
+    Skeleton skeleton = buildHumanoidSkeleton();
+    std::string spawnError;
+    if (!spawnRiggedAvatar(ecs_, skeleton, AvatarLoadout{}, CatalogueIndex{}, riggedMeshLibrary_, renderer_.allocator(),
+                            renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                            networkedAvatarSkinnedEntities_, spawnError)) {
+        std::fprintf(stderr, "Application: setNetworkedLocalPlayerEntity() -- spawnRiggedAvatar() failed: %s\n",
+                     spawnError.c_str());
+        networkedAvatarSkinnedEntities_.clear();
+        return; // real, honest degrade -- the hidden plain capsule (still real, still positioned) stays the fallback
+    }
+
+    networkedAvatarController_ = std::make_unique<AvatarController>(skeleton);
+    std::string animDir = resolveResourceDir(executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/animations";
+    auto loadShippedClip = [&](const char* fileBaseName, void (AvatarController::*setter)(AnimationClip)) {
+        AnimationClip clip;
+        if (clip.loadFromFile(animDir + "/" + fileBaseName + ".anim")) {
+            (networkedAvatarController_.get()->*setter)(std::move(clip));
+        }
+    };
+    loadShippedClip("idle", &AvatarController::setIdleClip);
+    loadShippedClip("walk", &AvatarController::setWalkClip);
+    loadShippedClip("run", &AvatarController::setRunClip);
+    loadShippedClip("jump_start", &AvatarController::setJumpClip);
+    loadShippedClip("jump_air", &AvatarController::setJumpAirClip);
+    loadShippedClip("jump_land", &AvatarController::setJumpLandClip);
+
+    if (auto* transform = ecs_.tryGetComponent<Transform>(entity)) networkedAvatarLastPosition_ = transform->position;
 }
 
 void Application::refreshLocalPlayerAvatarAppearance(glm::vec4 skinTone, const AvatarLoadout& loadout,

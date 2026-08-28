@@ -1744,6 +1744,17 @@ int main(int argc, char** argv) {
     // used to (app.run() -> app.shutdown() -> return 0), just after real
     // setup work that early return used to skip entirely.
     if (headless) {
+        // Kronos (beta-blocking fix -- "gravity rules don't apply either"):
+        // physics-only, no renderer needed -- net::applyNetworkedMovement()'s
+        // real ground raycast (added tonight) had nothing to hit against a
+        // headless server's empty physics world, so its own authoritative
+        // position free-fell forever and dragged every client down with it
+        // via reconciliation. Same 25x25 ground plane the windowed bring-up
+        // scene creates below, minus the makeRenderable() call this
+        // headless run has no Renderer to satisfy.
+        if (networkConfig.mode == engine::net::NetworkMode::Server) {
+            app.physics().createGroundPlane(app.ecs(), 25.0f, 25.0f);
+        }
         std::fprintf(stdout, "engine_runtime: headless mode started (%s)\n",
                      networkConfig.mode == engine::net::NetworkMode::Server ? "server" : "offline/client");
         app.run();
@@ -1837,7 +1848,7 @@ int main(int argc, char** argv) {
     if (networkConfig.mode == engine::net::NetworkMode::Client) {
         auto networkedPlayer = app.ecs().createEntity("NetworkedPlayer");
         if (auto* transform = app.ecs().tryGetComponent<engine::core::Transform>(networkedPlayer)) {
-            transform->position = {2.0f, 3.0f, -6.0f};
+            transform->position = {2.0f, 0.9f, -6.0f}; // matches net::applyNetworkedMovement()'s kGroundHeight
         }
         makeRenderable(app.ecs(), networkedPlayer, capsuleMesh, {0.85f, 0.55f, 0.25f}, 0.05f, 0.55f);
         app.setNetworkedLocalPlayerEntity(networkedPlayer);
@@ -2331,7 +2342,25 @@ int main(int argc, char** argv) {
             // starts.
             auto networkedPlayer = app.ecs().createEntity("NetworkedPlayer");
             if (auto* transform = app.ecs().tryGetComponent<engine::core::Transform>(networkedPlayer)) {
-                transform->position = {2.0f, 3.0f, -6.0f};
+                // Kronos (beta-blocking fix -- "I'm literally levitating"):
+                // this entity is deliberately kinematic, no RigidBody (see
+                // this lambda's own comment above) -- net::applyNetworkedMovement()
+                // only ever moves it horizontally plus an upward jump nudge,
+                // there is no gravity or ground clamp to ever bring a bad
+                // spawn Y back down. Y=3.0 (an old airborne bring-up-world
+                // spawn height, never meant for a body with no physics to
+                // settle it) left every online session's local player
+                // floating at that exact height forever, every single join.
+                // Kronos (round 2 -- "I'm floating" persisted): 1.0f was
+                // the LOCAL avatar's spawn *clearance* (extra room for
+                // gravity to settle it down onto the ground), not its
+                // rest height -- this entity has no gravity to do that
+                // settling, so it needs to spawn directly at the real
+                // rest height instead. 0.9 = capsuleRadius (0.35) +
+                // capsuleHalfHeight (0.55), matching
+                // net::applyNetworkedMovement()'s own kGroundHeight this
+                // Transform is clamped to every tick from here on.
+                transform->position = {2.0f, 0.9f, -6.0f};
             }
             makeRenderable(app.ecs(), networkedPlayer, capsuleMesh, {0.85f, 0.55f, 0.25f}, 0.05f, 0.55f);
             return networkedPlayer;

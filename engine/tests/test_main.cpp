@@ -14677,126 +14677,198 @@ void testIsTeleportDestinationValidUsesReal3dDistance() {
 
 void testApplyNetworkedMovementForwardAtZeroYaw() {
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f); // forward
     cmd.yaw = 0.0f;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 1.0f);
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
     check(nearlyEqual(transform.position.x, 1.0f, 1e-3f) && nearlyEqual(transform.position.z, 0.0f, 1e-3f),
           "applyNetworkedMovement() at yaw=0 moves forward along +X, matching core::Camera::forward()'s own yaw=0-faces-+X convention");
 }
 
 void testApplyNetworkedMovementRightAtZeroYaw() {
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(1.0f, 0.0f, 0.0f); // strafe right
     cmd.yaw = 0.0f;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 1.0f);
-    check(nearlyEqual(transform.position.z, -1.0f, 1e-3f),
-          "applyNetworkedMovement() strafing right (moveAxis.x=1) at yaw=0 moves along the real right vector (sin(yaw),0,-cos(yaw)) = -Z at yaw=0");
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
+    check(nearlyEqual(transform.position.z, 1.0f, 1e-3f),
+          "applyNetworkedMovement() strafing right (moveAxis.x=1) at yaw=0 moves along cross(forward, up) = (-sin(yaw),0,cos(yaw)) = +Z at yaw=0, "
+          "matching CharacterController.cpp's proven-correct camRight (the old (sin,0,-cos) was cross(up, forward), the inverted one)");
 }
 
 void testApplyNetworkedMovementForwardAtNinetyYaw() {
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f);
     cmd.yaw = 90.0f;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 1.0f);
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
     check(nearlyEqual(transform.position.x, 0.0f, 1e-2f) && nearlyEqual(transform.position.z, 1.0f, 1e-2f),
           "applyNetworkedMovement() real-rotates moveAxis by yaw=90 degrees into world space (forward becomes +Z)");
 }
 
 void testApplyNetworkedMovementForwardAtOneEightyYaw() {
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f);
     cmd.yaw = 180.0f;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 1.0f);
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
     check(nearlyEqual(transform.position.x, -1.0f, 1e-2f), "applyNetworkedMovement() at yaw=180 real-reverses forward movement to -X");
 }
 
 void testApplyNetworkedMovementBackwardMovesOppositeForward() {
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f, 0.0f, -1.0f); // backward
     cmd.yaw = 0.0f;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 1.0f);
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
     check(nearlyEqual(transform.position.x, -1.0f, 1e-3f), "applyNetworkedMovement() with a negative forward moveAxis.z real-moves backward (-X at yaw=0)");
 }
 
 void testApplyNetworkedMovementScalesWithMoveSpeed() {
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f);
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 5.0f);
-    check(nearlyEqual(transform.position.x, 5.0f, 1e-3f), "applyNetworkedMovement() real-scales displacement by moveSpeed");
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 5.0f);
+    check(nearlyEqual(transform.position.x, 5.0f, 1e-3f), "applyNetworkedMovement() real-scales horizontal displacement by moveSpeed");
 }
 
 void testApplyNetworkedMovementScalesWithDeltaTime() {
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f);
     cmd.deltaTime = 0.5f;
-    engine::net::applyNetworkedMovement(transform, cmd, 2.0f);
-    check(nearlyEqual(transform.position.x, 1.0f, 1e-3f), "applyNetworkedMovement() real-scales displacement by deltaTime (2.0 speed * 0.5 dt = 1.0)");
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 2.0f);
+    check(nearlyEqual(transform.position.x, 1.0f, 1e-3f), "applyNetworkedMovement() real-scales horizontal displacement by deltaTime (2.0 speed * 0.5 dt = 1.0)");
 }
 
-void testApplyNetworkedMovementJumpAddsVerticalNudge() {
+void testApplyNetworkedMovementJumpAppliesRealImpulseThenGravity() {
+    // Kronos (beta-blocking fix -- "I'm literally flying" / "gravity
+    // rules don't apply either"): real gravity + jump impulse now, not
+    // the old unconditional moveSpeed*0.5*deltaTime hover nudge. A bare,
+    // uninitialized Physics (this test's own fixture) real-misses every
+    // raycast (see Physics::raycast()'s own "!initialized_" early return),
+    // so there is no ground to land on here -- exactly the "walked off a
+    // platform" case, which is the real point: gravity must keep winning
+    // even mid-jump, not stop at some fixed hover height.
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical; // grounded=true by default -- the jump impulse is allowed to fire
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f);
     cmd.jump = true;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 2.0f);
-    check(nearlyEqual(transform.position.y, 1.0f, 1e-3f), "applyNetworkedMovement() jump real-adds the documented moveSpeed*0.5*deltaTime vertical nudge (2.0*0.5*1.0=1.0)");
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 2.0f);
+    // kJumpSpeed (7.0) real-impulse, then one real tick of gravity
+    // (-9.81) at dt=1.0: velocityY = 7.0 - 9.81 = -2.81, position.y += that.
+    check(nearlyEqual(transform.position.y, -2.81f, 1e-2f),
+          "applyNetworkedMovement() jump real-applies a kJumpSpeed=7.0 impulse, then real gravity immediately starts pulling it back down");
+    check(!vertical.grounded, "applyNetworkedMovement() real-reports airborne once jumped with no ground under it");
 }
 
-void testApplyNetworkedMovementNoJumpNoVerticalChange() {
+void testApplyNetworkedMovementFallsUnderGravityWithoutGround() {
+    // Kronos (beta-blocking fix -- "gravity rules don't apply either"):
+    // no Jump held, no ground found (bare uninitialized Physics) -- real
+    // gravity must still pull position.y down every tick, not hold it in
+    // place the way the old fixed-height-clamp model did.
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f);
     cmd.jump = false;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 2.0f);
-    check(nearlyEqual(transform.position.y, 0.0f), "applyNetworkedMovement() real-leaves Y unchanged when jump is false");
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 2.0f);
+    check(nearlyEqual(transform.position.y, -9.81f, 1e-2f),
+          "applyNetworkedMovement() real-falls under gravity (-9.81 * dt) when not grounded and not jumping");
+    check(!vertical.grounded, "applyNetworkedMovement() real-reports airborne when falling with nothing found below it");
 }
 
-void testApplyNetworkedMovementSetsRotationFromYaw() {
+void testApplyNetworkedMovementSetsRotationFromMovementDirection() {
+    // Kronos (beta-blocking fix -- "wrong avatar orientation" /
+    // "moonwalking"): real facing now comes from the actual movement
+    // direction (atan2(worldMove.x, worldMove.z)), the same convention
+    // CharacterController.cpp's proven-correct facingYawRadians_ uses --
+    // not command.yaw (the camera's own convention) directly, which is a
+    // fixed 90 degrees off from this one for straight-ahead movement.
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
-    cmd.yaw = 90.0f;
+    cmd.moveAxis = glm::vec3(0.0f, 0.0f, 1.0f); // forward
+    cmd.yaw = 0.0f;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 1.0f);
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
+    // worldMove = (1,0,0) at yaw=0 -> atan2(1, 0) = 90 degrees.
     glm::quat expected = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     check(nearlyEqual(transform.rotation.w, expected.w) && nearlyEqual(transform.rotation.y, expected.y),
-          "applyNetworkedMovement() real-sets Transform::rotation to angleAxis(yaw, +Y), the documented rotation convention");
+          "applyNetworkedMovement() real-faces the actual movement direction, matching CharacterController.cpp's atan2(moveDir.x, moveDir.z) convention");
 }
 
-void testApplyNetworkedMovementZeroMoveAxisNoDisplacement() {
+void testApplyNetworkedMovementHoldsFacingWhenNotMoving() {
+    engine::core::Transform transform;
+    transform.rotation = glm::angleAxis(glm::radians(42.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
+    engine::net::InputCommand cmd;
+    cmd.moveAxis = glm::vec3(0.0f);
+    cmd.yaw = 200.0f; // deliberately different from the held facing, and from moveAxis (which is zero anyway)
+    cmd.deltaTime = 1.0f;
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
+    glm::quat expected = glm::angleAxis(glm::radians(42.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    check(nearlyEqual(transform.rotation.w, expected.w) && nearlyEqual(transform.rotation.y, expected.y),
+          "applyNetworkedMovement() real-holds the last facing when there is no movement this tick, matching the offline "
+          "\"face direction of movement\" behavior (not the camera's raw yaw)");
+}
+
+void testApplyNetworkedMovementZeroMoveAxisNoHorizontalDisplacement() {
     engine::core::Transform transform;
     transform.position = glm::vec3(3.0f, 4.0f, 5.0f);
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(0.0f);
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 10.0f);
-    check(nearlyEqual(transform.position.x, 3.0f) && nearlyEqual(transform.position.y, 4.0f) && nearlyEqual(transform.position.z, 5.0f),
-          "applyNetworkedMovement() with a zero moveAxis real-leaves position unchanged");
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 10.0f);
+    // X/Z real-unaffected by a zero moveAxis; Y still real-falls under
+    // gravity (see testApplyNetworkedMovementFallsUnderGravityWithoutGround)
+    // -- this is no longer a "nothing at all changes" case.
+    check(nearlyEqual(transform.position.x, 3.0f) && nearlyEqual(transform.position.z, 5.0f),
+          "applyNetworkedMovement() with a zero moveAxis real-leaves horizontal position unchanged");
+    check(nearlyEqual(transform.position.y, 4.0f - 9.81f, 1e-2f),
+          "applyNetworkedMovement() with a zero moveAxis still real-applies gravity to Y");
 }
 
 void testApplyNetworkedMovementCombinedStrafeAndForward() {
     engine::core::Transform transform;
+    engine::net::NetworkedVerticalMotion vertical;
+    engine::core::Physics physics;
     engine::net::InputCommand cmd;
     cmd.moveAxis = glm::vec3(1.0f, 0.0f, 1.0f); // real diagonal input: forward + strafe-right
     cmd.yaw = 0.0f;
     cmd.deltaTime = 1.0f;
-    engine::net::applyNetworkedMovement(transform, cmd, 1.0f);
-    check(nearlyEqual(transform.position.x, 1.0f, 1e-3f) && nearlyEqual(transform.position.z, -1.0f, 1e-3f),
-          "applyNetworkedMovement() real-combines forward (+X) and strafe-right (-Z) components additively");
+    engine::net::applyNetworkedMovement(transform, vertical, physics, cmd, 1.0f);
+    check(nearlyEqual(transform.position.x, 1.0f, 1e-3f) && nearlyEqual(transform.position.z, 1.0f, 1e-3f),
+          "applyNetworkedMovement() real-combines forward (+X) and strafe-right (+Z) components additively");
 }
 
 // --- ClientPrediction ----------------------------------------------------------
@@ -14892,9 +14964,12 @@ void testClientPredictionPredictionAndReconciliationUseSameApplyFunction() {
     // function, not a test-local stand-in.
     engine::core::Transform predictedTransform;
     engine::core::Transform replayedTransform;
+    engine::net::NetworkedVerticalMotion predictedVertical;
+    engine::net::NetworkedVerticalMotion replayedVertical;
+    engine::core::Physics physics;
     engine::net::ClientPrediction prediction;
     prediction.setPredictedApply([&](const engine::net::InputCommand& cmd) {
-        engine::net::applyNetworkedMovement(predictedTransform, cmd, 5.0f);
+        engine::net::applyNetworkedMovement(predictedTransform, predictedVertical, physics, cmd, 5.0f);
     });
 
     engine::net::InputCommand cmd;
@@ -14905,7 +14980,7 @@ void testClientPredictionPredictionAndReconciliationUseSameApplyFunction() {
     // Now replay the exact same real input on a fresh transform via
     // reconcile(), as if the server hadn't acknowledged it yet.
     prediction.setPredictedApply([&](const engine::net::InputCommand& replayCmd) {
-        engine::net::applyNetworkedMovement(replayedTransform, replayCmd, 5.0f);
+        engine::net::applyNetworkedMovement(replayedTransform, replayedVertical, physics, replayCmd, 5.0f);
     });
     prediction.reconcile(engine::net::EntityState{}, 0); // lastProcessedSequence=0 -> replays everything buffered
 
@@ -34192,10 +34267,11 @@ int main() {
     testApplyNetworkedMovementBackwardMovesOppositeForward();
     testApplyNetworkedMovementScalesWithMoveSpeed();
     testApplyNetworkedMovementScalesWithDeltaTime();
-    testApplyNetworkedMovementJumpAddsVerticalNudge();
-    testApplyNetworkedMovementNoJumpNoVerticalChange();
-    testApplyNetworkedMovementSetsRotationFromYaw();
-    testApplyNetworkedMovementZeroMoveAxisNoDisplacement();
+    testApplyNetworkedMovementJumpAppliesRealImpulseThenGravity();
+    testApplyNetworkedMovementFallsUnderGravityWithoutGround();
+    testApplyNetworkedMovementSetsRotationFromMovementDirection();
+    testApplyNetworkedMovementHoldsFacingWhenNotMoving();
+    testApplyNetworkedMovementZeroMoveAxisNoHorizontalDisplacement();
     testApplyNetworkedMovementCombinedStrafeAndForward();
     testClientPredictionRecordAndPredictAssignsSequentialSequence();
     testClientPredictionRecordAndPredictCallsPredictedApplyImmediately();

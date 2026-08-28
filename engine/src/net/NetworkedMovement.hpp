@@ -1,9 +1,20 @@
 #pragma once
 
 #include "core/Components.hpp"
+#include "core/Physics.hpp"
 #include "net/NetTypes.hpp"
 
 namespace engine::net {
+
+// Persistent per-entity vertical-motion state for applyNetworkedMovement()
+// below -- real gravity/ground-relative state, not something that fits in
+// the per-tick InputCommand or the position-only Transform. One of these
+// per networked player entity (client's own predicted entity, and each
+// player's own entity server-side).
+struct NetworkedVerticalMotion {
+    float velocityY = 0.0f;
+    bool grounded = true;
+};
 
 // Sprint 11 ("Networking Foundation") task 2's real, deliberately simple
 // kinematic movement model shared *identically* by client-side
@@ -31,6 +42,7 @@ namespace engine::net {
 // same yaw convention core::Camera::forward() already uses (yaw=0 faces
 // +X), so a future unification has one consistent convention to build on
 // rather than two to reconcile.
-void applyNetworkedMovement(core::Transform& transform, const InputCommand& command, float moveSpeed);
+void applyNetworkedMovement(core::Transform& transform, NetworkedVerticalMotion& vertical, const core::Physics& physics,
+                             const InputCommand& command, float moveSpeed);
 
 } // namespace engine::net

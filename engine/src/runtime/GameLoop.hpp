@@ -98,8 +98,14 @@ public:
     void setPreRenderHook(PreRenderHook hook) { preRenderHook_ = std::move(hook); }
 
     struct RunConfig {
-        float simDt = 1.0f / 120.0f;    // Sprint 14: physics/scripting/ecs/audio tick rate
-        float networkDt = 1.0f / 60.0f; // Sprint 14: independent, real networking tick rate
+        float simDt = 1.0f / 120.0f;     // Sprint 14: physics/scripting/ecs/audio tick rate
+        // Kronos (beta-blocking fix -- "lag in each jump"): 60Hz meant
+        // client-side prediction (and the camera-follow computed from it)
+        // only refreshed every OTHER sim tick, felt as visible latency on
+        // fast vertical motion like a jump. Matching simDt removes that
+        // sampling gap; the real bandwidth cost (2x input packets/sec) is
+        // accepted for tonight's launch, not tuned for at-scale yet.
+        float networkDt = 1.0f / 120.0f; // Sprint 14: independent, real networking tick rate
         // Real render frame-pacing target -- 0 means uncapped (render as
         // fast as the real per-frame work + present mode allow, which on
         // this engine's lightweight demo scenes is typically well above
