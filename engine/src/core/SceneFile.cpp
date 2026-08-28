@@ -1,7 +1,11 @@
 #include "core/SceneFile.hpp"
 
 #include <fstream>
+#include <iterator>
 #include <sstream>
+#include <string_view>
+
+#include "core/BinaryIO.hpp"
 
 namespace engine::core {
 
@@ -107,9 +111,19 @@ std::string base64Decode(const std::string& input) {
     return out;
 }
 
+constexpr uint32_t kBinaryMagic = 0x4E435343; // "KSCN" as a little-endian u32 (bytes 'K','S','C','N')
+constexpr uint32_t kBinaryVersion = 1;
+
+bool hasKronosExtension(const std::string& path) {
+    constexpr std::string_view kExt = ".kronos";
+    return path.size() >= kExt.size() && path.compare(path.size() - kExt.size(), kExt.size(), kExt) == 0;
+}
+
 } // namespace
 
 bool SceneFile::saveToFile(const std::string& path) const {
+    if (hasKronosExtension(path)) return saveToBinaryFile(path);
+
     std::ofstream out(path, std::ios::trunc);
     if (!out.is_open()) return false;
 
@@ -186,6 +200,8 @@ bool SceneFile::saveToFile(const std::string& path) const {
 }
 
 bool SceneFile::loadFromFile(const std::string& path) {
+    if (hasKronosExtension(path)) return loadFromBinaryFile(path);
+
     std::ifstream in(path);
     if (!in.is_open()) return false;
 
@@ -285,6 +301,208 @@ bool SceneFile::loadFromFile(const std::string& path) {
         // Any other/unrecognized line is skipped -- forward-compatible with
         // a future field addition, same convention as AnimationClip.
     }
+
+    *this = std::move(loaded);
+    return true;
+}
+
+// Real binary format -- exact field-for-field parity with the text
+// format above, kept in sync by hand rather than sharing one
+// implementation: the text format's own field order/optionality was
+// designed around "KEY value per line, human-diffable," and forcing a
+// single (de)serialization path down to bytes-vs-text would make
+// neither format read cleanly. A real round-trip test
+// (tests/test_main.cpp) is what actually guarantees the two stay in
+// parity, not a shared code path.
+bool SceneFile::saveToBinaryFile(const std::string& path) const {
+    BinaryWriter w;
+    w.writeU32(kBinaryMagic);
+    w.writeU32(kBinaryVersion);
+
+    w.writeVec3(cameraPosition);
+    w.writeFloat(cameraYawDegrees);
+    w.writeFloat(cameraPitchDegrees);
+    w.writeFloat(cameraFovDegrees);
+
+    w.writeU32(static_cast<uint32_t>(entities.size()));
+    for (const auto& e : entities) {
+        w.writeString(e.name);
+        w.writeString(e.parentName);
+        w.writeVec3(e.position);
+        w.writeQuat(e.rotation);
+        w.writeVec3(e.scale);
+
+        w.writeBool(e.hasRenderable);
+        if (e.hasRenderable) {
+            w.writeVec4(e.baseColor);
+            w.writeFloat(e.metallic);
+            w.writeFloat(e.roughness);
+            w.writeFloat(e.normalIntensity);
+            w.writeVec3(e.emissiveColor);
+            w.writeFloat(e.emissiveIntensity);
+            w.writeBool(e.castsShadow);
+            w.writeBool(e.instanced);
+
+            w.writeBool(e.hasMeshSource);
+            if (e.hasMeshSource) {
+                w.writeU8(static_cast<uint8_t>(meshSourceKindToIndex(e.meshSource.kind)));
+                w.writeVec3(e.meshSource.params);
+                w.writeString(e.meshSource.path);
+            }
+        }
+
+        w.writeBool(e.hasParticleEmitter);
+        if (e.hasParticleEmitter) {
+            const auto& s = e.emitter;
+            w.writeBool(s.enabled);
+            w.writeBool(s.looping);
+            w.writeFloat(s.emissionRate);
+            w.writeFloat(s.particleLifetime);
+            w.writeFloat(s.particleLifetimeVariance);
+            w.writeVec3(s.velocityMin);
+            w.writeVec3(s.velocityMax);
+            w.writeVec3(s.gravity);
+            w.writeFloat(s.sizeStart);
+            w.writeFloat(s.sizeEnd);
+            w.writeVec4(s.colorStart);
+            w.writeVec4(s.colorEnd);
+        }
+
+        w.writeBool(e.hasLight);
+        if (e.hasLight) {
+            w.writeBool(e.light.enabled);
+            w.writeVec3(e.light.color);
+            w.writeFloat(e.light.intensity);
+            w.writeFloat(e.light.radius);
+        }
+
+        w.writeBool(e.hasRigidBody);
+        if (e.hasRigidBody) {
+            w.writeU8(static_cast<uint8_t>(rigidBodyMotionTypeToIndex(e.motionType)));
+            w.writeBool(e.hasColliderShape);
+            if (e.hasColliderShape) {
+                w.writeU8(static_cast<uint8_t>(colliderShapeKindToIndex(e.colliderShape.kind)));
+                w.writeVec3(e.colliderShape.params);
+                w.writeString(e.colliderShape.path);
+            }
+        }
+
+        w.writeBool(e.hasScript);
+        if (e.hasScript) {
+            w.writeBool(e.scriptAutoRun);
+            // Real, length-prefixed raw bytes -- unlike the text format's
+            // own SCRIPT line, a binary length-prefixed string handles
+            // embedded newlines/arbitrary bytes natively, no base64
+            // workaround needed here.
+            w.writeString(e.scriptSource);
+        }
+    }
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+    const auto& bytes = w.bytes();
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return out.good();
+}
+
+bool SceneFile::loadFromBinaryFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return false;
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    BinaryReader r(bytes.data(), bytes.size());
+    if (r.readU32() != kBinaryMagic) return false; // not a real .kronos file at all
+    uint32_t version = r.readU32();
+    if (version != kBinaryVersion) return false; // real, honest refusal -- no older version to migrate from yet
+
+    SceneFile loaded;
+    loaded.cameraPosition = r.readVec3();
+    loaded.cameraYawDegrees = r.readFloat();
+    loaded.cameraPitchDegrees = r.readFloat();
+    loaded.cameraFovDegrees = r.readFloat();
+
+    uint32_t entityCount = r.readU32();
+    // Real, honest sanity cap -- a corrupted/truncated file could read
+    // back a huge entityCount from garbage bytes; without this, the
+    // loop below would try to reserve/emplace an absurd number of
+    // entities before ever hitting hasError() on the reads themselves.
+    constexpr uint32_t kMaxReasonableEntityCount = 1'000'000;
+    if (entityCount > kMaxReasonableEntityCount) return false;
+    loaded.entities.reserve(entityCount);
+
+    for (uint32_t i = 0; i < entityCount && !r.hasError(); ++i) {
+        SceneEntityRecord e;
+        e.name = r.readString();
+        e.parentName = r.readString();
+        e.position = r.readVec3();
+        e.rotation = r.readQuat();
+        e.scale = r.readVec3();
+
+        e.hasRenderable = r.readBool();
+        if (e.hasRenderable) {
+            e.baseColor = r.readVec4();
+            e.metallic = r.readFloat();
+            e.roughness = r.readFloat();
+            e.normalIntensity = r.readFloat();
+            e.emissiveColor = r.readVec3();
+            e.emissiveIntensity = r.readFloat();
+            e.castsShadow = r.readBool();
+            e.instanced = r.readBool();
+
+            e.hasMeshSource = r.readBool();
+            if (e.hasMeshSource) {
+                e.meshSource.kind = meshSourceKindFromIndex(r.readU8());
+                e.meshSource.params = r.readVec3();
+                e.meshSource.path = r.readString();
+            }
+        }
+
+        e.hasParticleEmitter = r.readBool();
+        if (e.hasParticleEmitter) {
+            auto& s = e.emitter;
+            s.enabled = r.readBool();
+            s.looping = r.readBool();
+            s.emissionRate = r.readFloat();
+            s.particleLifetime = r.readFloat();
+            s.particleLifetimeVariance = r.readFloat();
+            s.velocityMin = r.readVec3();
+            s.velocityMax = r.readVec3();
+            s.gravity = r.readVec3();
+            s.sizeStart = r.readFloat();
+            s.sizeEnd = r.readFloat();
+            s.colorStart = r.readVec4();
+            s.colorEnd = r.readVec4();
+        }
+
+        e.hasLight = r.readBool();
+        if (e.hasLight) {
+            e.light.enabled = r.readBool();
+            e.light.color = r.readVec3();
+            e.light.intensity = r.readFloat();
+            e.light.radius = r.readFloat();
+        }
+
+        e.hasRigidBody = r.readBool();
+        if (e.hasRigidBody) {
+            e.motionType = rigidBodyMotionTypeFromIndex(r.readU8());
+            e.hasColliderShape = r.readBool();
+            if (e.hasColliderShape) {
+                e.colliderShape.kind = colliderShapeKindFromIndex(r.readU8());
+                e.colliderShape.params = r.readVec3();
+                e.colliderShape.path = r.readString();
+            }
+        }
+
+        e.hasScript = r.readBool();
+        if (e.hasScript) {
+            e.scriptAutoRun = r.readBool();
+            e.scriptSource = r.readString();
+        }
+
+        loaded.entities.push_back(std::move(e));
+    }
+
+    if (r.hasError()) return false; // real, honest refusal on any truncated/corrupted read, not a partial scene
 
     *this = std::move(loaded);
     return true;

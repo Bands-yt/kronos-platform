@@ -130,6 +130,7 @@ add_library(engine_core STATIC
     core/TextureBaker.cpp
     core/LocalProfile.cpp
     core/ParticleSystem.cpp
+    core/BinaryIO.cpp
     core/SceneFile.cpp
     core/ProjectFile.cpp
     core/GameManifest.cpp
