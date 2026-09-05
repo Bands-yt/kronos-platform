@@ -413,3 +413,20 @@ add_library(miniaudio::miniaudio ALIAS miniaudio)
 add_library(stb_image INTERFACE)
 target_include_directories(stb_image INTERFACE ${CMAKE_SOURCE_DIR}/external/vendor/stb)
 add_library(stb::image ALIAS stb_image)
+
+# --- tinyexr (vendored single header, BSD 3-clause -- same treatment as
+#     stb_image above). Real trailer-export EXR support (trailer/
+#     FrameEncoding.cpp) for Depth/MotionVectors channels, which are float
+#     data that an 8-bit PNG would quantise away (see cinematic/
+#     OfflineExport.hpp's own ExportImageFormat comment). Bundles miniz
+#     internally (TINYEXR_USE_MINIZ defaults to 1 -- see the header's own
+#     comment), so this needs no separate zlib link, matching stb_image's
+#     own "one header, no extra dependency" shape. Sourced from tinygltf's
+#     own vendored copy (build/_deps/tinygltf-src/attic/examples/common/
+#     tinyexr.h -- tinygltf itself never compiles or links it, it's example
+#     code) and copied here as a first-class checked-in dependency rather
+#     than reached into a build/ directory that CMake can regenerate out
+#     from under it at any time.
+add_library(tinyexr INTERFACE)
+target_include_directories(tinyexr INTERFACE ${CMAKE_SOURCE_DIR}/external/vendor/tinyexr)
+add_library(tinyexr::tinyexr ALIAS tinyexr)

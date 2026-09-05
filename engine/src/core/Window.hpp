@@ -48,6 +48,14 @@ public:
     [[nodiscard]] bool initialize(const CreateInfo& info);
     void shutdown();
 
+    // Kronos (beta-blocking fix -- "flickering when opening a game"): the
+    // real window is created hidden now (see Window.cpp's own comment on
+    // why) -- this is what actually reveals it, meant to be called once
+    // real content is ready to present (the caller's own first successful
+    // renderFrame()), not at creation time. A no-op if the window is
+    // already shown or initialize() never ran.
+    void show();
+
     // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
     // report): real, specific detail for a real initialize()==false --
     // the raw SDL_GetError() text plus a classified, actionable hint
@@ -72,6 +80,13 @@ public:
     [[nodiscard]] VkSurfaceKHR createSurface(VkInstance instance) const;
 
     [[nodiscard]] SDL_Window* handle() const { return window_; }
+    // 0 (SDL's own "invalid window" sentinel is UINT32_MAX from
+    // SDL_GetWindowID's docs, but this class treats "no window created
+    // yet" as plainly falsy) when initialize() hasn't run -- lets a
+    // multi-window event dispatcher (studio::KronosPluginHost) compare
+    // an incoming SDL_Event's own windowID against this without needing
+    // to know whether the window exists yet.
+    [[nodiscard]] uint32_t windowId() const { return window_ != nullptr ? SDL_GetWindowID(window_) : 0; }
     [[nodiscard]] uint32_t width() const { return width_; }
     [[nodiscard]] uint32_t height() const { return height_; }
     [[nodiscard]] bool wasResized() const { return resized_; }

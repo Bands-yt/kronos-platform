@@ -22,6 +22,7 @@
 #include "net/NetworkSession.hpp"
 #include "safety/TrustSafetyService.hpp"
 #include "studio/CommandPalette.hpp"
+#include "studio/KronosPluginHost.hpp"
 #include "studio/Notification.hpp"
 #include "studio/OffscreenTarget.hpp"
 #include "studio/PluginManager.hpp"
@@ -36,6 +37,7 @@
 #include "studio/panels/PerformanceOverlayPanel.hpp"
 #include "studio/panels/StatsPanel.hpp"
 #include "studio/panels/ViewportPanel.hpp"
+#include "studio/plugins/MeshCsgWindowPlugin.hpp"
 
 struct VkDescriptorPool_T;
 using VkDescriptorPool = VkDescriptorPool_T*;
@@ -204,6 +206,13 @@ private:
     std::string hiddenGemsComputedMonthKey_;
 
     core::Window window_;
+    // Kronos (beta-blocking fix -- "flickering when opening a game"):
+    // same real reveal-on-first-frame as core::Application's own
+    // windowShown_ -- window_ is created hidden now (see
+    // Window::initialize()'s own comment), so this class must reveal it
+    // itself too, not rely on Application's copy (Studio owns a wholly
+    // separate window_/renderer_ pair, see this header's own class comment).
+    bool windowShown_ = false;
     core::Renderer renderer_;
     core::ECS ecs_;
     core::MeshLibrary meshLibrary_;
@@ -242,6 +251,18 @@ private:
     // ...) are registered here in initialize() -- see PluginManager.hpp's
     // header comment for what "plugin" does and doesn't mean yet.
     PluginManager pluginManager_;
+
+    // Kronos ("3D Mesh & CSG Editor" -- Beta Roadmap Phase 2, "windowed
+    // plugin module"): the IKronosPlugin sibling of pluginManager_ above
+    // -- see KronosPluginHost.hpp's own class comment for why a plugin
+    // that owns a real standalone OS window needs a different lifecycle
+    // than IStudioPlugin's docked-panel one.
+    KronosPluginHost kronosPluginHost_;
+    // Raw, non-owning pointer into a plugin kronosPluginHost_ already
+    // owns -- same "raw pointer into what the manager owns" pattern as
+    // every other plugin below, needed here so drawDockspace()'s own
+    // menu can toggle it open/closed by name.
+    plugins::MeshCsgWindowPlugin* meshCsgWindowPlugin_ = nullptr;
 
     // Raw, non-owning pointer into a plugin pluginManager_ already owns
     // (via unique_ptr) -- IStudioPlugin has no generic init/shutdown hook

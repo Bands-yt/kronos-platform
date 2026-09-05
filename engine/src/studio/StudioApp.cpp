@@ -204,6 +204,13 @@ bool StudioApp::initialize() {
     // registration order.
     window_.setRawEventCallback([this](const SDL_Event& event) {
         ImGui_ImplSDL2_ProcessEvent(&event);
+        // Kronos ("3D Mesh & CSG Editor" -- multi-window event dispatch):
+        // this is the one real SDL_PollEvent loop for the whole process
+        // (see core::Window::pumpEvents()'s own comment) -- every
+        // IKronosPlugin's own SecondaryViewport filters by its own
+        // windowId() internally, so forwarding every event here
+        // unconditionally is correct rather than a second competing poll.
+        kronosPluginHost_.handleEvent(event);
         if (event.type == SDL_DROPFILE) {
             // SDL owns this allocation (SDL_malloc'd) -- real, required
             // free on our side per SDL's own documented SDL_DROPFILE
@@ -312,6 +319,17 @@ bool StudioApp::initialize() {
         if (trailerPanel_ != nullptr && trailerPanel_->isOpen()) {
             trailerPanel_->renderPreview(cmd, renderer_, ecs_);
         }
+        // Movie Mode's own real Offline Export needs a live Renderer&
+        // too, cached the same way TrailerPanel's own director_ needs one
+        // (see MovieModePlugin::renderPreview()'s own comment) -- gated
+        // on isOpen() the same as every other panel above; update()
+        // itself still runs regardless of open state (see IStudioPlugin's
+        // class comment), so an in-progress export keeps running even if
+        // a creator closes the panel mid-render, using whatever Renderer&
+        // was cached the last time this panel was open.
+        if (movieModePlugin_ != nullptr && movieModePlugin_->isOpen()) {
+            movieModePlugin_->renderPreview(cmd, renderer_);
+        }
     });
 
     buildBringUpScene();
@@ -353,6 +371,17 @@ bool StudioApp::initialize() {
     // editing over whatever Block Builder (above) placed.
     pluginManager_.registerPlugin(std::make_unique<plugins::ModelingModePlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_));
+
+    // 3D Mesh & CSG Editor ("windowed plugin module" -- Beta Roadmap
+    // Phase 2): a real, standalone-window live viewport onto the same
+    // ECS Modeling Mode above edits -- see MeshCsgWindowPlugin.hpp's own
+    // class comment. Registered closed (IKronosPlugin::open() is a real,
+    // separate opt-in that creates a real OS window + swapchain, unlike
+    // IStudioPlugin's docked panels which cost nothing while closed) --
+    // toggled from the View menu, see drawDockspace().
+    auto meshCsgWindow = std::make_unique<plugins::MeshCsgWindowPlugin>(meshLibrary_, textureLibrary_);
+    meshCsgWindowPlugin_ = meshCsgWindow.get();
+    kronosPluginHost_.registerPlugin(std::move(meshCsgWindow));
 
     auto particleEditor = std::make_unique<plugins::ParticleEditorPlugin>(
         particleSystem_, renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
@@ -581,7 +610,7 @@ bool StudioApp::initialize() {
     // pointer as well as registered, because ViewportPanel draws its
     // camera-rail gizmo and needs to read the live rail -- the same shape
     // physicsPreviewPlugin_ already uses for its collider overlays.
-    auto movieMode = std::make_unique<plugins::MovieModePlugin>();
+    auto movieMode = std::make_unique<plugins::MovieModePlugin>(meshLibrary_, textureLibrary_);
     movieModePlugin_ = movieMode.get();
     pluginManager_.registerPlugin(std::move(movieMode));
 
@@ -658,7 +687,7 @@ bool StudioApp::initialize() {
         plugin->setOpen(false);
     }
 
-    if (!debugConsolePanel_.initialize(ecs_)) {
+    if (!debugConsolePanel_.initialize(ecs_, *movieModePlugin_, renderer_)) {
         std::fprintf(stderr, "StudioApp: DebugConsolePanel::initialize failed.\n");
         return false;
     }
@@ -870,6 +899,22 @@ void StudioApp::drawDockspace() {
             // yet" alone.
             if (ImGui::MenuItem("Reset Layout to Default")) {
                 layoutResetRequested_ = true;
+            }
+            ImGui::Separator();
+            // Kronos ("3D Mesh & CSG Editor" -- windowed plugin module):
+            // the one real IKronosPlugin toggle -- see
+            // KronosPluginHost.hpp's own comment for why this isn't
+            // drawn by pluginManager_.drawMenu() below (that's
+            // IStudioPlugin-only). open()/close() are real, idempotent
+            // GPU-resource transitions (see IKronosPlugin.hpp), not a
+            // plain visibility flag.
+            if (meshCsgWindowPlugin_ != nullptr &&
+                ImGui::MenuItem(meshCsgWindowPlugin_->name(), nullptr, meshCsgWindowPlugin_->isOpen())) {
+                if (meshCsgWindowPlugin_->isOpen()) {
+                    meshCsgWindowPlugin_->close(renderer_);
+                } else {
+                    meshCsgWindowPlugin_->open(renderer_);
+                }
             }
             ImGui::EndMenu();
         }
@@ -1807,6 +1852,14 @@ void StudioApp::run() {
         pluginManager_.update(deltaTime, ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
         pluginManager_.drawPanels(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
 
+        // IKronosPlugin sibling of the two calls above -- see
+        // KronosPluginHost.hpp's own comment for why this only ticks/
+        // renders plugins that are currently open() (a closed one has no
+        // window/swapchain at all, unlike a merely-hidden IStudioPlugin
+        // panel).
+        kronosPluginHost_.tick(deltaTime, ecs_, explorerPanel_.selectedEntity(), renderer_);
+        kronosPluginHost_.renderFrame(renderer_, ecs_, explorerPanel_.selectedEntity());
+
         // Sprint 7 ("Studio UI Revamp") task category 6 -- ticked and
         // drawn every frame regardless of whether anything was just
         // pushed, the same "always runs, only visibly does something
@@ -1820,6 +1873,14 @@ void StudioApp::run() {
         if (!renderer_.renderFrame()) {
             std::fprintf(stderr, "StudioApp: renderFrame() reported an unrecoverable error.\n");
             break;
+        }
+        // Kronos (beta-blocking fix -- "flickering when opening a game"):
+        // real, one-time reveal, same reasoning as core::Application's own
+        // postRenderHook -- only shown once a real, complete frame has
+        // actually been presented.
+        if (!windowShown_) {
+            windowShown_ = true;
+            window_.show();
         }
 
         // Kronos ("UI/UX Revamp" / "Avatar & Chat System" -- "Confirm
@@ -1864,6 +1925,8 @@ void StudioApp::shutdown() {
     if (particleEditorPlugin_ != nullptr) particleEditorPlugin_->shutdown(renderer_);
     if (publishingPanel_ != nullptr) publishingPanel_->shutdown(renderer_);
     if (trailerPanel_ != nullptr) trailerPanel_->shutdown(renderer_);
+    if (movieModePlugin_ != nullptr) movieModePlugin_->shutdown(renderer_);
+    kronosPluginHost_.shutdown(renderer_);
 
     vkDeviceWaitIdle(renderer_.device());
 

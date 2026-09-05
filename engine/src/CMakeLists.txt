@@ -102,11 +102,14 @@ add_library(engine_core STATIC
     core/Application.cpp
     core/Window.cpp
     core/Renderer.cpp
+    core/SwapchainSelection.cpp
+    core/CubeLut.cpp
     core/UIRenderer.cpp
     core/RayTracingScene.cpp
     core/VmaImpl.cpp
     core/Mesh.cpp
     core/EditableMesh.cpp
+    core/CsgMesh.cpp
     core/UvTools.cpp
     core/KMeshFile.cpp
     core/CharacterController.cpp
@@ -114,6 +117,7 @@ add_library(engine_core STATIC
     core/PropAnimation.cpp
     core/RuntimeAnimationPlayer.cpp
     core/ScriptWorldApi.cpp
+    core/ScriptMeshApi.cpp
     core/ScriptNetworkApi.cpp
     core/ScriptChatApi.cpp
     core/ScriptAvatarApi.cpp
@@ -179,6 +183,9 @@ add_library(engine_core STATIC
     cinematic/Sequencer.cpp
     cinematic/TimelineLayout.cpp
     cinematic/OfflineExport.cpp
+    cinematic/SequenceApplier.cpp
+    cinematic/RailCamera.cpp
+    cinematic/ExportRunner.cpp
     core/Texture.cpp
     core/ProceduralMaterials.cpp
     core/Prefab.cpp
@@ -205,6 +212,7 @@ add_library(engine_core STATIC
     core/Profiler.cpp
     core/Logger.cpp
     core/CrashReporter.cpp
+    core/ConsoleQuickEdit.cpp
     core/ResourcePaths.cpp
     core/Audio.cpp
     core/Scripting.cpp
@@ -236,6 +244,8 @@ add_library(engine_core STATIC
     net/NetworkIdentity.cpp
     net/Serialization.cpp
     net/ChatProtocol.cpp
+    net/StudioCollabState.cpp
+    net/StudioCollabProtocol.cpp
     net/HttpWorkerPool.cpp
     net/NetworkStats.cpp
     net/RemoteEntityInterpolation.cpp
@@ -354,6 +364,7 @@ add_library(engine_core STATIC
     trailer/TrailerCinematics.cpp
     trailer/TrailerScenes.cpp
     trailer/CaptureRig.cpp
+    trailer/FrameEncoding.cpp
     trailer/TrailerDirector.cpp
     trailer/TimeglassModel.cpp
     trailer/RenderShowcase.cpp
@@ -471,6 +482,7 @@ target_link_libraries(engine_core PUBLIC
     enet
     miniaudio::miniaudio
     stb::image
+    tinyexr::tinyexr
     tinygltf::tinygltf
     ufbx::ufbx
     nlohmann_json::nlohmann_json
@@ -567,6 +579,9 @@ if(ENGINE_BUILD_STUDIO)
         studio/OffscreenTarget.cpp
         studio/PluginManager.cpp
         studio/StudioEcsScriptApi.cpp
+        studio/ScriptCinematicApi.cpp
+        studio/ScriptRenderApi.cpp
+        studio/ScriptPhysicsPreviewApi.cpp
         studio/StudioStyle.cpp
         studio/StudioIcons.cpp
         studio/PluginChrome.cpp
@@ -583,6 +598,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/CreatorConsole.cpp
         studio/PreviewScene.cpp
         studio/ThumbnailCameraRig.cpp
+        studio/SecondaryViewport.cpp
         studio/panels/ViewportPanel.cpp
         studio/panels/ExplorerPanel.cpp
         studio/panels/InspectorPanel.cpp
@@ -602,6 +618,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/CreatorToolsPlugin.cpp
         studio/plugins/BlockBuilderPlugin.cpp
         studio/plugins/ModelingModePlugin.cpp
+        studio/plugins/MeshCsgWindowPlugin.cpp
         studio/plugins/ParticleEditorPlugin.cpp
         studio/plugins/PrefabPlugin.cpp
         studio/plugins/ModelImporterPlugin.cpp

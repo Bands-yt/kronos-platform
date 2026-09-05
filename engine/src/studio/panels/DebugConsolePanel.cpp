@@ -5,6 +5,7 @@
 
 #include "core/Logger.hpp"
 #include "studio/StudioEcsScriptApi.hpp"
+#include "studio/plugins/MovieModePlugin.hpp"
 
 namespace engine::studio::panels {
 
@@ -20,15 +21,36 @@ ImVec4 logLevelColor(core::LogLevel level) {
 }
 } // namespace
 
-bool DebugConsolePanel::initialize(core::ECS& ecs) {
+bool DebugConsolePanel::initialize(core::ECS& ecs, plugins::MovieModePlugin& movieMode, core::Renderer& renderer) {
     ecs_ = &ecs;
     if (!scripting_.initialize()) return false;
 
-    scripting_.setBindingsHook([this](lua_State* L) { registerStudioEcsBindings(L, *ecs_); });
+    scriptMeshApi_ = std::make_unique<core::ScriptMeshApi>(*ecs_);
+    scriptCinematicApi_ =
+        std::make_unique<ScriptCinematicApi>(movieMode.sequence(), movieMode.rail(), movieMode.exportSettings());
+    scriptRenderApi_ = std::make_unique<ScriptRenderApi>(renderer);
+    scripting_.setBindingsHook([this](lua_State* L) {
+        registerStudioEcsBindings(L, *ecs_);
+        scriptMeshApi_->registerInto(L);
+        scriptCinematicApi_->registerInto(L);
+        scriptRenderApi_->registerInto(L);
+    });
     scripting_.setOutputCallback([this](const std::string& line) { appendLine(line); });
 
-    history_.push_back("Debug Console ready -- print/engine.log/task.*/events.* and a small ECS-only world.* "
-                        "(findByName/getPosition/setPosition/setColor) are available. Enter to run.");
+    history_.push_back("Debug Console ready -- print/engine.log/task.*/events.*, a small ECS-only world.* "
+                        "(findByName/getPosition/setPosition/setColor), mesh.* (beginEditingBox/extrudeFace/"
+                        "insetFace/subdivideFace/mergeVertices/setVertexPosition/setVertexUv), cinematic.* "
+                        "(addTrack/addKeyframe/sampleChannel/play/setPlayhead/addRailPoint/sampleRail/"
+                        "setPhysicalCamera/depthOfFieldRangeMeters/buildExportSchedule/...), and render.* "
+                        "(setExposure/exposure/setBloomSettings/bloomSettings/setCinematicMode/"
+                        "isCinematicModeEnabled/setDepthOfFieldEnabled/isDepthOfFieldEnabled/setDepthOfFieldParams/"
+                        "depthOfFieldParams/setTonemapOperator/tonemapOperator/setColorGradingLutStrength/"
+                        "colorGradingLutStrength/loadColorGradingLut/resetColorGradingLutToIdentity -- real, "
+                        "numeric/enum tuning knobs only, never a raw Vulkan handle) are available. "
+                        "A mesh.* edit shows up in the viewport next frame via Modeling Mode's own re-upload "
+                        "sweep; a cinematic.* Transform/LightIntensity track applies live via Movie Mode's own "
+                        "update(); a render.* call applies live, the same real Renderer state the Lighting Tools "
+                        "panel's own sliders edit. Enter to run.");
     return true;
 }
 

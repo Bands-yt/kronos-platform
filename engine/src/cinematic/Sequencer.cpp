@@ -162,4 +162,27 @@ void Sequence::advance(float deltaSeconds, std::vector<TrackEvent>& outFiredEven
               [](const TrackEvent& a, const TrackEvent& b) { return a.timeSeconds < b.timeSeconds; });
 }
 
+float railParameterAtTime(const Sequence& sequence, float timeSeconds) {
+    const float duration = std::max(sequence.durationSeconds(), 1e-4f);
+    const float linearFallback = std::clamp(timeSeconds / duration, 0.0f, 1.0f);
+    const float sampled =
+        sequence.sampleChannel(kCameraRailTrackName, kCameraRailChannelName, timeSeconds, linearFallback);
+    // CameraRail::sample()/samplePosition() already clamp their own `t`
+    // internally (see CameraRail.cpp's own resolveSegment()), but this
+    // function's own contract is "returns a value in [0,1]" regardless
+    // of what a hand-authored curve's keys/tangents happen to overshoot
+    // to -- explicit here rather than relying on a caller two files away.
+    return std::clamp(sampled, 0.0f, 1.0f);
+}
+
+PostFxSample postFxAtTime(const Sequence& sequence, float timeSeconds, const PostFxSample& fallback) {
+    PostFxSample result;
+    result.bloomIntensity =
+        sequence.sampleChannel(kPostFxTrackName, kBloomIntensityChannelName, timeSeconds, fallback.bloomIntensity);
+    result.bloomThreshold =
+        sequence.sampleChannel(kPostFxTrackName, kBloomThresholdChannelName, timeSeconds, fallback.bloomThreshold);
+    result.exposure = sequence.sampleChannel(kPostFxTrackName, kExposureChannelName, timeSeconds, fallback.exposure);
+    return result;
+}
+
 } // namespace engine::cinematic

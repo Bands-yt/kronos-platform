@@ -17,6 +17,7 @@
 #include <chrono>
 
 #include "core/Camera.hpp"
+#include "core/CubeLut.hpp"
 #include "core/ECS.hpp"
 #include "core/Mesh.hpp"
 #include "core/ParticleSystem.hpp"
@@ -234,6 +235,17 @@ public:
         bloomSoftKnee_ = softKnee;
         bloomIntensity_ = intensity;
     }
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline"):
+    // real getters, same "read current state back before a partial live
+    // update" reasoning as exposure()'s own comment above -- what lets
+    // trailer::CaptureRig::exportSequence() save the renderer's real
+    // current bloom tuning before an export drives it from sequencer
+    // keyframes, and restore it exactly afterward, rather than leaving
+    // Studio's live viewport permanently stuck on whatever the last
+    // exported frame's values were.
+    [[nodiscard]] float bloomThreshold() const { return bloomThreshold_; }
+    [[nodiscard]] float bloomSoftKnee() const { return bloomSoftKnee_; }
+    [[nodiscard]] float bloomIntensity() const { return bloomIntensity_; }
 
     // Sprint 14 ("RTX Upgrade" Phase 2): real hardware ray-traced shadows
     // via VK_KHR_ray_query -- see RayTracingScene.hpp's own header
@@ -528,6 +540,11 @@ public:
         dofFocusRange_ = focusRange;
         dofMaxCoCRadiusPx_ = maxCoCRadiusPx;
     }
+    // Real getters -- same save/restore reasoning as bloomThreshold()'s
+    // own comment above.
+    [[nodiscard]] float dofFocusDistance() const { return dofFocusDistance_; }
+    [[nodiscard]] float dofFocusRange() const { return dofFocusRange_; }
+    [[nodiscard]] float dofMaxCoCRadiusPx() const { return dofMaxCoCRadiusPx_; }
     // Kronos ("Critical Visual Fixes" -- "High Quality Graphics
     // Blurriness"): real, independent gate -- drawCinematicPass() used to
     // force `push.dofEnabled = 1.0f` unconditionally whenever Cinematic
@@ -558,6 +575,13 @@ public:
     // never open = no blur; 360 degrees = shutter open the whole frame
     // interval = maximum blur).
     void setMotionBlurShutterAngle(float degrees) { motionBlurStrength_ = std::clamp(degrees, 0.0f, 360.0f) / 360.0f; }
+    // Real, raw [0,1] getter (not degrees -- the conversion in
+    // setMotionBlurShutterAngle() above is lossy at the clamp boundary
+    // only, never in the middle of the range, so round-tripping through
+    // this and setMotionBlurShutterAngle(strength * 360.0f) reproduces
+    // the exact original value for anything already in [0,360]). Same
+    // save/restore reasoning as bloomThreshold()'s own comment above.
+    [[nodiscard]] float motionBlurStrength() const { return motionBlurStrength_; }
     void setSsaoParams(float radius, float strength) {
         ssaoRadius_ = radius;
         ssaoStrength_ = strength;
@@ -568,6 +592,47 @@ public:
     }
     void setSaturation(float saturation) { saturation_ = saturation; }
     void setGodRayStrength(float strength) { godRayStrength_ = strength; }
+
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline"):
+    // real, selectable final tonemap curve -- see
+    // shaders/composite.frag's own acesFilm()/agxTonemap() comments.
+    // Applies identically to the live viewport and to trailer::CaptureRig
+    // exports (both real paths through the same drawBloomAndComposite()),
+    // so there is no separate export-side setting to keep in sync.
+    enum class TonemapOperator : uint8_t { AcesFilm = 0, AgX = 1 };
+    void setTonemapOperator(TonemapOperator op) { tonemapOperator_ = op; }
+    [[nodiscard]] TonemapOperator tonemapOperator() const { return tonemapOperator_; }
+
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // real 3D LUT color grading): real, live-replaceable creator-
+    // authored grading, sampled in shaders/composite.frag as a real
+    // sampler3D -- see core/CubeLut.hpp's own header comment for the
+    // `.cube` format support and its one stated limitation (non-default
+    // DOMAIN_MIN/MAX aren't rescaled).
+    //
+    // A real identity LUT (core::generateIdentityCubeLut()) is created
+    // during initialize() and bound before this method is ever called,
+    // so the composite pass's LUT binding is always valid -- calling
+    // this is a real, optional creator action, never a prerequisite for
+    // rendering at all. Real, honest failure (outError set, false
+    // returned, the *previous* LUT left bound and untouched) for a
+    // missing/malformed file or a GPU upload failure -- never leaves the
+    // composite pass's LUT binding null or half-written.
+    [[nodiscard]] bool loadColorGradingLut(const std::string& cubeFilePath, std::string& outError);
+    // Real, explicit way back to a true no-op grade without restarting --
+    // same real identity-LUT generator initialize() itself uses.
+    [[nodiscard]] bool resetColorGradingLutToIdentity(std::string& outError);
+
+    // How strongly the LUT's own output blends over the pre-LUT color
+    // (shaders/composite.frag's own `mix()`) -- 0 is a real, exact
+    // pass-through (the LUT never visibly matters, identity or not);
+    // 1 is the LUT's full, unblended output. Real, independent of
+    // setSaturation() above, which still applies *after* the LUT blend
+    // (see composite.frag's own comment) as a real, separate fine-tune
+    // knob studio::plugins::LightingToolsPlugin's existing live slider
+    // already drives -- loading a real LUT doesn't remove that control.
+    void setColorGradingLutStrength(float strength) { lutStrength_ = std::clamp(strength, 0.0f, 1.0f); }
+    [[nodiscard]] float colorGradingLutStrength() const { return lutStrength_; }
 
     // Kronos ("Four RTX Maps" Phase 5b, Volcano Map): real heat-haze
     // color-buffer shimmer -- see shaders/cinematic.frag's own comment for
@@ -687,10 +752,26 @@ public:
     // so no other live handle's index shifts) -- just zeroed out and
     // unusable; there is no handle-reuse/free-list.
     void destroyAuxiliaryScene(AuxiliarySceneHandle handle);
+    // `applyWeatherEffects`/`applyBloom`/`suppressSunDisk`/`useFlatBackground`
+    // default to this overload's own long-standing real values (false,
+    // false, true, true -- see the .cpp's own "Avatar Scene Lighting
+    // Calibration Pass"/"Avatar Preview Rendering pre-launch fix"
+    // comments for why): every existing caller (studio::ThumbnailCameraRig,
+    // studio::PreviewScene -- avatar/item preview thumbnails, where real
+    // bloom bleed and the live outdoor sky/weather are genuinely wrong)
+    // keeps compiling and behaving byte-identically without passing
+    // these. Kronos ("Cinematic Camera Physics & Post-Processing
+    // Pipeline"): trailer::CaptureRig is the one real exception -- an
+    // exported cinematic frame should look like the actual game (real
+    // bloom, real sky/weather, real background), the same real defaults
+    // drawSceneIntoImpl() itself declares and the main viewport's plain
+    // drawSceneInto() overload above already gets -- so it passes
+    // (true, true, false, false) explicitly instead of inheriting these.
     void drawSceneInto(AuxiliarySceneHandle handle, VkCommandBuffer cmd, VkImage colorImage, VkImageView colorView,
                         VkImage depthImage, VkImageView depthView, VkExtent2D extent, const Camera& camera, ECS& ecs,
                         MeshLibrary& meshLibrary, const ParticleSystem& particleSystem, TextureLibrary& textureLibrary,
-                        RiggedMeshLibrary* riggedMeshLibrary = nullptr);
+                        RiggedMeshLibrary* riggedMeshLibrary = nullptr, bool applyWeatherEffects = false,
+                        bool applyBloom = false, bool suppressSunDisk = true, bool useFlatBackground = true);
 
     // Invoked (if set) right after vkBeginCommandBuffer, before the main
     // pass's swapchain-image transition -- Studio uses this to record its
@@ -1080,6 +1161,35 @@ private:
                                                                     TextureLibrary& textureLibrary);
 
     bool createPostProcessResources(); // sampler + descriptor set layouts/pool -- everything NOT per-frame-sized
+
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // real 3D LUT support): the real GPU half of loadColorGradingLut()/
+    // resetColorGradingLutToIdentity() (declared public, further up) --
+    // creates a brand-new lutImage_/lutAllocation_/lutImageView_ from
+    // `data` (real staging-buffer upload, same one-shot synchronous
+    // pattern Texture::uploadPixels() already uses, just VK_IMAGE_TYPE_3D
+    // instead of 2D), destroys whichever LUT image previously existed
+    // only after the new one has *fully* succeeded, then re-writes
+    // binding 2 of every already-allocated compositeDescriptorSet
+    // (frames_[] and auxiliaryScenes_[], see rewriteCompositeLutBindings())
+    // to point at it. Real, honest failure (outError set, false
+    // returned, the previous LUT left completely untouched) on any real
+    // GPU allocation/upload failure along the way.
+    [[nodiscard]] bool uploadColorGradingLut(const CubeLutData& data, std::string& outError);
+    // Frees lutImage_/lutAllocation_/lutImageView_ only -- never
+    // postProcessSampler_ (shared, real, separate lifetime) -- called
+    // from destroyPostProcessResources() and from
+    // uploadColorGradingLut() right before installing a new image.
+    void destroyColorGradingLutImage();
+    // Re-writes binding 2 (the LUT sampler3D) of every FrameSync's and
+    // every AuxiliarySceneHandle's own compositeDescriptorSet that has
+    // already been allocated (compositeDescriptorSet != VK_NULL_HANDLE)
+    // to point at the *current* lutImageView_ -- called once right after
+    // uploadColorGradingLut() installs a new image. A slot that hasn't
+    // allocated its compositeDescriptorSet yet needs no rewrite here --
+    // ensurePostProcessTargets()'s own initial-write path already reads
+    // lutImageView_ fresh whenever that slot first allocates.
+    void rewriteCompositeLutBindings();
     void destroyPostProcessResources();
     bool createPostProcessPipelines(); // bloom extract + composite, both full-screen-triangle passes
     void destroyPostProcessPipelines();
@@ -1589,6 +1699,23 @@ private:
     float chromaticAberrationStrength_ = 0.0015f;
     float saturation_ = 1.05f;
     float godRayStrength_ = 0.15f;
+    TonemapOperator tonemapOperator_ = TonemapOperator::AcesFilm;
+
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // real 3D LUT color grading): the one, globally-shared LUT image
+    // every frame-in-flight's and every AuxiliarySceneHandle's own
+    // compositeDescriptorSet binding 2 points at -- unlike hdrImage/
+    // bloomImage (per-slot, sized per-slot), there is exactly one LUT
+    // image for the whole Renderer, real-created once at initialize()
+    // (a real identity LUT) and real-replaced wholesale by
+    // loadColorGradingLut()/resetColorGradingLutToIdentity(), which then
+    // re-writes binding 2 on every already-allocated compositeDescriptorSet
+    // -- see those methods' own .cpp comments.
+    VkImage lutImage_ = VK_NULL_HANDLE;
+    VmaAllocation lutAllocation_ = nullptr;
+    VkImageView lutImageView_ = VK_NULL_HANDLE;
+    uint32_t lutSize_ = 0;
+    float lutStrength_ = 1.0f;
     // Kronos ("Four RTX Maps" Phase 5b) -- see setHeatDistortionEnabled()/
     // setHeatDistortionStrength()'s own comments. 0.006 is a real, tuned
     // UV-space magnitude (this pass runs in [0,1] UV space) -- large
@@ -1619,7 +1746,14 @@ private:
 
     VkSampler postProcessSampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout postProcessSingleSetLayout_ = VK_NULL_HANDLE; // 1 combined-image-sampler binding -- bloom extract's input
-    VkDescriptorSetLayout postProcessDualSetLayout_ = VK_NULL_HANDLE;   // 2 bindings -- composite's HDR + bloom inputs
+    // 3 bindings -- composite's HDR + bloom + LUT inputs. Renamed from
+    // postProcessDualSetLayout_ (Kronos "Cinematic Camera Physics &
+    // Post-Processing Pipeline" -- real 3D LUT support): NOT the same
+    // VkDescriptorSetLayoutBinding array as cinematicDescriptorSetLayout_
+    // (still real, separate, 2 bindings) -- see createPostProcessResources()'s
+    // own comment for why sharing one binding-count-3 array between both
+    // would have been a real bug.
+    VkDescriptorSetLayout postProcessCompositeSetLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool postProcessDescriptorPool_ = VK_NULL_HANDLE;
 
     VkPipelineLayout bloomExtractPipelineLayout_ = VK_NULL_HANDLE;

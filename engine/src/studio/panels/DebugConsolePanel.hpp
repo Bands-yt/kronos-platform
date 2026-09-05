@@ -3,8 +3,21 @@
 #include <string>
 #include <vector>
 
+#include <memory>
+
 #include "core/ECS.hpp"
 #include "core/Scripting.hpp"
+#include "core/ScriptMeshApi.hpp"
+#include "studio/ScriptCinematicApi.hpp"
+#include "studio/ScriptRenderApi.hpp"
+
+namespace engine::core {
+class Renderer;
+}
+
+namespace engine::studio::plugins {
+class MovieModePlugin;
+}
 
 namespace engine::studio::panels {
 
@@ -27,13 +40,32 @@ namespace engine::studio::panels {
 // (via core::Scripting itself) plus a small ECS-only `world` table
 // (studio::registerStudioEcsBindings(), StudioEcsScriptApi.hpp -- see its
 // header for why this is a smaller table than core::ScriptWorldApi's,
-// and why that's a real constraint, not a missing feature). The Engine
-// Log tab is a separate, real thing: every core::logDebug/Info/Warn/
-// Error() call from anywhere in the process (not just this console's own
-// scripts), filterable by level.
+// and why that's a real constraint, not a missing feature), plus the
+// real `mesh` table (core::ScriptMeshApi) -- unlike world's Physics/
+// Animation gap, ScriptMeshApi needs nothing Studio lacks (only ECS +
+// core::EditableMesh, both real here), so it's registered whole, not a
+// cut-down version -- and the real `cinematic` table
+// (studio::ScriptCinematicApi), sharing the SAME live cinematic::
+// Sequence/CameraRail/ExportSettings studio::plugins::MovieModePlugin's
+// own timeline UI edits, via that plugin's own sequence()/rail()/
+// exportSettings() accessors (passed into initialize() below), and the
+// real `render` table (studio::ScriptRenderApi) -- a real, deliberately
+// narrow surface over the same core::Renderer post-FX tuning knobs
+// studio::plugins::LightingToolsPlugin's own sliders drive, with no
+// binding anywhere that returns a raw Vulkan handle -- see that class's
+// own header comment for the full, stated security boundary. The
+// Engine Log tab is a separate, real thing: every core::logDebug/Info/
+// Warn/Error() call from anywhere in the process (not just this
+// console's own scripts), filterable by level.
 class DebugConsolePanel {
 public:
-    [[nodiscard]] bool initialize(core::ECS& ecs);
+    // `movieMode` must outlive this panel -- StudioApp owns both and
+    // constructs/registers Movie Mode before calling this (see
+    // StudioApp.cpp's own movieModePlugin_ capture, right after
+    // registerPlugin()).
+    // `renderer` must outlive this panel -- same "StudioApp owns both"
+    // contract as `movieMode` (see this method's own existing comment).
+    [[nodiscard]] bool initialize(core::ECS& ecs, plugins::MovieModePlugin& movieMode, core::Renderer& renderer);
     void shutdown();
 
     // Call once per Studio frame, unconditionally (same as any other
@@ -51,6 +83,17 @@ private:
 
     core::Scripting scripting_;
     core::ECS* ecs_ = nullptr;
+    // Constructed lazily in initialize() (needs a live ECS& that doesn't
+    // exist at panel-construction time), same reasoning as
+    // core::Application::scriptWorldApi_'s own lazy construction.
+    std::unique_ptr<core::ScriptMeshApi> scriptMeshApi_;
+    // Same lazy-construction reasoning -- also needs `movieMode`'s own
+    // sequence()/rail()/exportSettings() refs, which don't exist until
+    // StudioApp has registered that plugin.
+    std::unique_ptr<ScriptCinematicApi> scriptCinematicApi_;
+    // Same lazy-construction reasoning -- needs a live core::Renderer&,
+    // which doesn't exist until StudioApp's own Renderer is initialized.
+    std::unique_ptr<ScriptRenderApi> scriptRenderApi_;
 
     std::vector<std::string> history_;
     std::string inputBuffer_;

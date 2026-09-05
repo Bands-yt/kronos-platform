@@ -42,8 +42,12 @@ public:
     // A real, editable unit box (half-extents 0.5) -- the same 24-vertex
     // flat-shaded-per-face layout Mesh::createBox() uploads, just kept on
     // the CPU here instead of going straight to the GPU. Used as Modeling
-    // Mode's own "start from a box" entry point.
-    [[nodiscard]] static EditableMesh createBox(glm::vec3 halfExtents);
+    // Mode's own "start from a box" entry point. `center` defaults to the
+    // origin (every pre-existing call site is unaffected); a non-zero
+    // center is what ModelingModePlugin's own CSG panel uses to place a
+    // real second box operand anywhere relative to the mesh being edited,
+    // without needing a second seed constructor.
+    [[nodiscard]] static EditableMesh createBox(glm::vec3 halfExtents, glm::vec3 center = glm::vec3(0.0f));
 
     [[nodiscard]] const std::vector<Vertex>& vertices() const { return vertices_; }
     [[nodiscard]] const std::vector<uint32_t>& indices() const { return indices_; }
@@ -52,6 +56,15 @@ public:
     // UV coordinate without exposing the whole vertex list as mutable.
     void setVertexUv(uint32_t index, glm::vec2 uv) {
         if (index < vertices_.size()) vertices_[index].uv = uv;
+    }
+    // The same real, narrow mutation point as setVertexUv() above, for
+    // position instead -- what a script-driven "runtime vertex
+    // deformation" caller (core::ScriptMeshApi) needs that no existing
+    // topology op already provides (every op above moves vertices as a
+    // side effect of a specific topology change, not an arbitrary
+    // single-vertex move).
+    void setVertexPosition(uint32_t index, glm::vec3 position) {
+        if (index < vertices_.size()) vertices_[index].position = position;
     }
     [[nodiscard]] glm::vec3 boundsMin() const;
     [[nodiscard]] glm::vec3 boundsMax() const;

@@ -203,7 +203,7 @@ authRouter.post(
 // Bridges an authenticated browser session to a freshly-launched desktop
 // client, which starts with no session of its own -- the website's own
 // access_token lives in JS memory only and is not something a native
-// process can ever read (see backend/public/index.html's own comment).
+// process can ever read (see backend/public/discover.html's own comment).
 //
 // Deliberately NOT the real access_token embedded in the kronos:// URI
 // itself: a custom-scheme URI is handed to the OS's own URL-dispatch

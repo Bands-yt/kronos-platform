@@ -7,6 +7,7 @@
 #include <imgui.h>
 
 #include "cinematic/CurveInterpolation.hpp"
+#include "cinematic/SequenceApplier.hpp"
 #include "studio/PluginChrome.hpp"
 
 namespace engine::studio::plugins {
@@ -64,7 +65,8 @@ void drawDiamond(ImDrawList* dl, ImVec2 c, float r, ImU32 fill, ImU32 border) {
 
 } // namespace
 
-MovieModePlugin::MovieModePlugin() {
+MovieModePlugin::MovieModePlugin(core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary)
+    : meshLibrary_(&meshLibrary), textureLibrary_(&textureLibrary) {
     seedDefaultSequence();
 
     // A rail with real points, not an empty one: an empty rail draws
@@ -90,8 +92,8 @@ void MovieModePlugin::seedDefaultSequence() {
     // One track per TrackKind -- the six the sequencer models. Seeded with
     // real, sampleable content so the timeline and curve editor open onto
     // something to edit rather than an empty grid.
-    auto& camera = sequence_.addTrack("Camera Rail", TrackKind::Camera);
-    auto& railParam = camera.channel("railT");
+    auto& camera = sequence_.addTrack(kCameraRailTrackName, TrackKind::Camera);
+    auto& railParam = camera.channel(kCameraRailChannelName);
     railParam.keys.push_back(Keyframe{0.0f, 0.0f, InterpolationMode::Bezier, {-0.4f, 0.0f}, {0.8f, 0.0f}});
     railParam.keys.push_back(Keyframe{6.0f, 1.0f, InterpolationMode::Bezier, {-0.8f, 0.0f}, {0.4f, 0.0f}});
 
@@ -116,7 +118,53 @@ void MovieModePlugin::seedDefaultSequence() {
     sequence_.setLoopRegion(0.0f, 6.0f);
 }
 
-void MovieModePlugin::update(float dt, core::ECS&, core::EntityId, const std::vector<core::EntityId>&) {
+void MovieModePlugin::update(float dt, core::ECS& ecs, core::EntityId, const std::vector<core::EntityId>&) {
+    // Kronos ("Cinematic Sequencer Luau & TypeScript Bindings" -- Beta
+    // Roadmap): real application of Transform/LightIntensity tracks to
+    // the live scene (cinematic::applySequenceToScene(), SequenceApplier
+    // .hpp) -- unconditional, not gated on isPlaying(), so a paused scrub
+    // (via the timeline UI or a script's cinematic.setPlayhead()) still
+    // visibly moves whatever the sequence targets, the same way dragging
+    // the playhead already visibly moves the rail camera through
+    // railParameterAtPlayhead()'s own always-live read.
+    cinematic::applySequenceToScene(sequence_, sequence_.playheadSeconds(), ecs);
+
+    // Real Offline Export: the "Render" button (drawExporterModal()) only
+    // sets exportRequested_ -- it has no live Renderer& to act on from
+    // inside ImGui, so the actual real render happens here instead, on
+    // the next real update() tick once cachedRenderer_ has been set by
+    // renderPreview() (same real deferred-by-one-frame shape StudioApp's
+    // own packageThumbnailCaptureRequested_ already uses). This is a
+    // real, synchronous, blocking call -- matching OfflineExport.hpp's
+    // own "offline... runs unthrottled, decoupled from real time" design
+    // intent (see that header's own comment): a multi-thousand-frame
+    // render is expected to take real, non-trivial time and Studio
+    // blocking for it is the honest cost, not a bug. An incremental,
+    // non-blocking progress UI is real, future scope.
+    if (exportRequested_) {
+        exportRequested_ = false;
+        if (cachedRenderer_ == nullptr) {
+            exportStatus_ = "Export failed: no live renderer available yet -- try again once Studio has rendered at least one frame.";
+        } else {
+            ensureCaptureRig(*cachedRenderer_, VkExtent2D{exportSettings_.resolution.width, exportSettings_.resolution.height});
+            if (!captureRigInitialized_) {
+                exportStatus_ = "Export failed: the capture rig could not be initialized.";
+            } else {
+                std::string error;
+                bool ok = captureRig_.exportSequence(*cachedRenderer_, ecs, *meshLibrary_, *textureLibrary_, sequence_,
+                                                       rail_, exportSettings_, error);
+                char status[320];
+                if (ok) {
+                    std::snprintf(status, sizeof(status), "Rendered %zu frames into \"%s\".", lastSchedule_.size(),
+                                  exportSettings_.outputDirectory.c_str());
+                } else {
+                    std::snprintf(status, sizeof(status), "Export failed: %s", error.c_str());
+                }
+                exportStatus_ = status;
+            }
+        }
+    }
+
     if (!sequence_.isPlaying()) return;
     // Scrubbing takes the transport over for as long as the gesture
     // lasts. Without this, update() advances the playhead and the drag
@@ -151,8 +199,14 @@ void MovieModePlugin::moveRailPoint(int index, const glm::vec3& position) {
 }
 
 float MovieModePlugin::railParameterAtPlayhead() const {
-    const float duration = std::max(sequence_.durationSeconds(), 1e-4f);
-    return std::clamp(sequence_.playheadSeconds() / duration, 0.0f, 1.0f);
+    // Real, authored easing: samples the "Camera Rail"/"railT" curve
+    // seedDefaultSequence() actually writes (see cinematic::
+    // railParameterAtTime()'s own comment) instead of a raw linear
+    // playhead/duration scrub -- the same real source of truth
+    // cinematic::runExportSchedule() now uses for the Offline Export
+    // pipeline, so what a creator sees live in the viewport is what
+    // actually gets rendered to disk.
+    return cinematic::railParameterAtTime(sequence_, sequence_.playheadSeconds());
 }
 
 bool MovieModePlugin::buildExport(std::string& outError) {
@@ -163,6 +217,27 @@ bool MovieModePlugin::buildExport(std::string& outError) {
     buildExportSchedule(exportSettings_, sequence_.durationSeconds(), lastSchedule_);
     outError.clear();
     return true;
+}
+
+void MovieModePlugin::renderPreview(VkCommandBuffer /*cmd*/, core::Renderer& renderer) { cachedRenderer_ = &renderer; }
+
+void MovieModePlugin::ensureCaptureRig(core::Renderer& renderer, VkExtent2D desired) {
+    if (captureRigInitialized_ && captureRig_.extent().width == desired.width &&
+        captureRig_.extent().height == desired.height) {
+        return;
+    }
+    if (captureRigInitialized_) {
+        captureRig_.shutdown(renderer);
+        captureRigInitialized_ = false;
+    }
+    captureRigInitialized_ = captureRig_.initialize(renderer, desired);
+}
+
+void MovieModePlugin::shutdown(core::Renderer& renderer) {
+    if (captureRigInitialized_) {
+        captureRig_.shutdown(renderer);
+        captureRigInitialized_ = false;
+    }
 }
 
 void MovieModePlugin::drawTransport() {
@@ -852,8 +927,13 @@ void MovieModePlugin::drawExporterModal() {
     if (ImGui::Button("Render", ImVec2(120.0f, 0.0f))) {
         std::string error;
         if (buildExport(error)) {
+            // Real capture: update()'s own next tick actually renders
+            // this real schedule to disk via trailer::CaptureRig -- see
+            // that function's own comment on why it can't happen here,
+            // synchronously, from inside this ImGui callback.
+            exportRequested_ = true;
             char status[256];
-            std::snprintf(status, sizeof(status), "Scheduled %zu frames into \"%s\".", lastSchedule_.size(),
+            std::snprintf(status, sizeof(status), "Rendering %zu frames into \"%s\"...", lastSchedule_.size(),
                           exportSettings_.outputDirectory.c_str());
             exportStatus_ = status;
         } else {
