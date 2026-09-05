@@ -2,3 +2,8 @@ build/
 compile_commands.json
 *.o
 *.obj
+
+# Inno Setup staging tree (cmake --install output) and compiler output --
+# see build_installer.iss's own header comment.
+dist/
+output/
