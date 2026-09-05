@@ -1,10 +1,14 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
+#include "cinematic/CameraRail.hpp"
+#include "cinematic/OfflineExport.hpp"
+#include "cinematic/Sequencer.hpp"
 #include "core/Camera.hpp"
 #include "core/ECS.hpp"
 #include "core/ParticleSystem.hpp"
@@ -48,10 +52,45 @@ public:
                                      core::TextureLibrary& textureLibrary, const core::Camera& camera,
                                      const std::string& outputDirectory, int frameIndex);
 
+    // Real end-to-end Offline Export: walks `sequence`/`rail`'s real
+    // schedule (cinematic::runExportSchedule(), built from `settings` via
+    // cinematic::buildExportSchedule() -- the exact same function
+    // ScriptCinematicApi's `cinematic.buildExportSchedule()` and Studio's
+    // "Render Movie Sequence" button already call for their own dry-run
+    // preview), and for every sub-frame sample does a real render
+    // (drawSceneInto) + real GPU readback into memory, accumulates
+    // motion-blur sub-frames, and writes real PNG (Color, via stb_image_
+    // write) and/or EXR (Depth, via tinyexr) files to
+    // `settings.outputDirectory` using cinematic::exportFrameFilename()
+    // for real, collision-free names.
+    //
+    // Headless safety: returns false immediately (logged, `outError`
+    // filled) when this rig isn't isValid() rather than dereferencing a
+    // null image -- the honest "no GPU swapchain" branch (see this
+    // header's own file comment on why this is never called from
+    // engine_tests, matching CaptureRig::captureFrame()'s own existing
+    // convention).
+    [[nodiscard]] bool exportSequence(core::Renderer& renderer, core::ECS& ecs, core::MeshLibrary& meshLibrary,
+                                       core::TextureLibrary& textureLibrary, cinematic::Sequence& sequence,
+                                       cinematic::CameraRail& rail, const cinematic::ExportSettings& settings,
+                                       std::string& outError);
+
     [[nodiscard]] VkExtent2D extent() const { return extent_; }
     [[nodiscard]] bool isValid() const { return colorImage_ != VK_NULL_HANDLE; }
 
 private:
+    // Real, self-contained one-shot render + GPU readback into memory
+    // (unlike captureFrame(), which reads back straight to a PPM file via
+    // publishing::captureThumbnailToFile()) -- exportSequence()'s own
+    // real per-sample capture path, kept private since nothing outside
+    // this class has a use for a raw in-memory frame. `outDepth` is only
+    // filled when `captureDepth` is true; a null/empty result otherwise
+    // is a real, honest "not requested", not a failure.
+    [[nodiscard]] bool renderAndReadback(core::Renderer& renderer, core::ECS& ecs, core::MeshLibrary& meshLibrary,
+                                          core::TextureLibrary& textureLibrary, const core::Camera& camera,
+                                          bool captureDepth, std::vector<uint8_t>& outColorRgba8,
+                                          std::vector<float>& outDepth);
+
     VkExtent2D extent_{0, 0};
     VkFormat colorFormat_ = VK_FORMAT_UNDEFINED;
 

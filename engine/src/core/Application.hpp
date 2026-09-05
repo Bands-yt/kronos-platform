@@ -743,6 +743,12 @@ private:
     // Edge-detection for the "Interact" input action (UnifiedInput only
     // exposes level state via isActionDown(), see its header) -- so
     // events.onInteract fires once per press, not once per tick while held.
+    // Kronos (beta-blocking fix -- "flickering when opening a game"): set
+    // true the first time the postRenderHook below actually reveals the
+    // real window, after its own first successful renderFrame() -- see
+    // Window::show()'s own comment for why this can't just happen at
+    // window-creation time any more.
+    bool windowShown_ = false;
     bool interactKeyWasDown_ = false;
     // Sprint 14: same real edge-detection pattern, for the real
     // F6/F7 runtime toggles -- see initialize()'s pretick hook.

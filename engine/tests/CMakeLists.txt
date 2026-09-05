@@ -38,6 +38,9 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/PluginManifest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/LocalPluginDirectory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/StudioEcsScriptApi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ScriptCinematicApi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ScriptRenderApi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ScriptPhysicsPreviewApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/ScriptedPlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/PhysicsPreviewPlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/MovieModePlugin.cpp

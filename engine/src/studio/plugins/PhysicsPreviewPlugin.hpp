@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -8,6 +9,7 @@
 #include "core/Physics.hpp"
 #include "core/Scripting.hpp"
 #include "studio/IStudioPlugin.hpp"
+#include "studio/ScriptPhysicsPreviewApi.hpp"
 
 namespace engine::studio::plugins {
 
@@ -66,6 +68,26 @@ public:
     void play(core::ECS& ecs);
     void stop(core::ECS& ecs);
 
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // Luau Studio API Bindings, "deterministic physics step triggers"):
+    // real, explicit pause -- update()'s own per-frame auto-step (see its
+    // own real-time, frame-rate-dependent dt) is suspended while paused,
+    // so a script (studio::ScriptPhysicsPreviewApi's `physics` table,
+    // registered into this class's own scripting_) can drive the
+    // simulation forward by exact, reproducible amounts via stepOnce()
+    // instead -- "deterministic" specifically means a script choosing
+    // its own dt per call, not the real-time value update() would
+    // otherwise pass. A no-op (real, honest) while not playing at all --
+    // there is no live simulation to pause/step yet.
+    void pause() { paused_ = true; }
+    void resume() { paused_ = false; }
+    [[nodiscard]] bool isPaused() const { return paused_; }
+    // Real, single fixed-size physics step -- only while playing() AND
+    // paused() (see pause()'s own comment for why calling this while
+    // update() is also auto-stepping would double-step); a real, honest
+    // no-op (false returned) otherwise, never a silent double-step.
+    bool stepOnce(core::ECS& ecs, float dt);
+
     [[nodiscard]] core::Physics& physics() { return physics_; }
 
     // Real debug-draw toggles -- state studio::panels::ViewportPanel's
@@ -96,8 +118,14 @@ public:
 private:
     core::Physics physics_;
     core::Scripting scripting_;
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // "deterministic physics step triggers"): (re)constructed every real
+    // play() call, matching scripting_'s own "fresh VM every Play" real
+    // reset -- see ScriptPhysicsPreviewApi.hpp's own header comment.
+    std::unique_ptr<ScriptPhysicsPreviewApi> scriptPhysicsPreviewApi_;
     bool physicsInitialized_ = false;
     bool playing_ = false;
+    bool paused_ = false;
     std::vector<core::EntityId> attachedEntities_;
     std::vector<core::Physics::CollisionEvent> recentContacts_;
     std::string statusMessage_;

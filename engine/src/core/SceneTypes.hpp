@@ -157,6 +157,16 @@ struct CompositePushConstants {
     // comment) -- shaders/composite.frag rounds it back to an integer
     // mode index itself.
     float colorblindMode = 0.0f;
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline"):
+    // 0=ACES filmic (the long-standing default), 1=AgX -- see
+    // shaders/composite.frag's own agxTonemap() comment. A plain float,
+    // not an int, for the same std430-layout reason every other field
+    // in this struct already is one.
+    float tonemapOperator = 0.0f;
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // real 3D LUT color grading): see Renderer::setColorGradingLutStrength()'s
+    // own comment. Also a plain float, consistent with every other field.
+    float lutStrength = 1.0f;
 };
 
 // Must exactly match the `push_constant` block in shaders/cinematic.frag.

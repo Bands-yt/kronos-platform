@@ -3,11 +3,20 @@
 #include <string>
 #include <vector>
 
+#include <volk.h>
+
 #include "cinematic/CameraRail.hpp"
 #include "cinematic/OfflineExport.hpp"
 #include "cinematic/Sequencer.hpp"
 #include "cinematic/TimelineLayout.hpp"
 #include "studio/IStudioPlugin.hpp"
+#include "trailer/CaptureRig.hpp"
+
+namespace engine::core {
+class Renderer;
+class MeshLibrary;
+class TextureLibrary;
+} // namespace engine::core
 
 namespace engine::studio::plugins {
 
@@ -30,19 +39,36 @@ namespace engine::studio::plugins {
 // overlays.
 class MovieModePlugin final : public IStudioPlugin {
 public:
-    MovieModePlugin();
+    MovieModePlugin(core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary);
 
     [[nodiscard]] const char* name() const override { return "Movie Mode"; }
     [[nodiscard]] const char* category() const override { return "Cinematics"; }
 
     // Advances the transport. Runs regardless of whether the panel is
     // open, so a sequence left playing keeps playing while the window is
-    // closed -- see IStudioPlugin's class comment.
+    // closed -- see IStudioPlugin's class comment. Also drives the real
+    // Offline Export pipeline: when the "Render" button has requested one
+    // (see drawExporterModal()), this is where trailer::CaptureRig's real
+    // exportSequence() actually runs -- see this file's own .cpp comment
+    // on why here rather than renderPreview(), and on the real "this
+    // blocks Studio until it's done" tradeoff that implies.
     void update(float dt, core::ECS& ecs, core::EntityId selected,
                  const std::vector<core::EntityId>& selectedEntities) override;
 
     void drawPanel(core::ECS& ecs, core::EntityId selected,
                     const std::vector<core::EntityId>& selectedEntities) override;
+
+    // Real, minimal "give me a live Renderer&" hook -- the same real
+    // shape avatarPreviewer_'s own renderPreview(cmd, renderer) already
+    // uses in StudioApp's shared pre-pass callback (see that file's own
+    // comment), just without a live preview texture of its own: this
+    // plugin doesn't need one, only a real Renderer& to actually drive
+    // trailer::CaptureRig with, cached for update() to use afterward --
+    // the same real cachedRenderer_ shape studio::plugins::TrailerPanel
+    // already established for exactly this reason (see that class's own
+    // header comment).
+    void renderPreview(VkCommandBuffer cmd, core::Renderer& renderer);
+    void shutdown(core::Renderer& renderer);
 
     // --- read/written by ViewportPanel's rail overlay ---------------------
     [[nodiscard]] cinematic::CameraRail& rail() { return rail_; }
@@ -92,10 +118,33 @@ private:
     // (a track or channel removed since it was made).
     [[nodiscard]] cinematic::TrackChannel* selectedChannel();
 
+    // (Re-)initializes captureRig_ at `desired` if it isn't already
+    // initialized at exactly that extent -- CaptureRig's own real
+    // "resolution chosen once, not resized live" contract (see its own
+    // header comment) means a creator changing the export resolution
+    // between renders needs a real shutdown()+initialize() cycle, not a
+    // live resize.
+    void ensureCaptureRig(core::Renderer& renderer, VkExtent2D desired);
+
     cinematic::Sequence sequence_;
     cinematic::TimelineView view_;
     cinematic::CameraRail rail_;
     cinematic::ExportSettings exportSettings_;
+
+    // --- real Offline Export GPU state -------------------------------------
+    core::MeshLibrary* meshLibrary_;
+    core::TextureLibrary* textureLibrary_;
+    trailer::CaptureRig captureRig_;
+    bool captureRigInitialized_ = false;
+    // Set by renderPreview(), read by update() -- see TrailerPanel's own
+    // identical cachedRenderer_ field for why update() (which runs
+    // regardless of this panel's open/closed state) needs its own cached
+    // pointer rather than a Renderer& parameter it doesn't have.
+    core::Renderer* cachedRenderer_ = nullptr;
+    // Deferred-by-one-frame trigger, same real shape StudioApp's own
+    // packageThumbnailCaptureRequested_ already established for "an
+    // ImGui button click has no live Renderer& to act on immediately."
+    bool exportRequested_ = false;
 
     // --- selection -------------------------------------------------------
     int selectedTrack_ = 0;

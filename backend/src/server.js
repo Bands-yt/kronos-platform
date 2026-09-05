@@ -32,11 +32,20 @@ export function createApp() {
     next();
   });
 
-  // The management dashboard. Serves public/index.html at '/' and any
-  // other static asset placed alongside it; falls through (via next())
-  // for every path that isn't a real file, so this never shadows the API
-  // routes or the 404 handler below.
+  // The developer-facing engine landing page. Serves public/index.html at
+  // '/' and any other static asset placed alongside it (including the
+  // game discovery/management dashboard below); falls through (via
+  // next()) for every path that isn't a real file, so this never shadows
+  // the API routes or the 404 handler below.
   app.use(express.static(publicDir, { index: 'index.html', maxAge: '5m' }));
+
+  // The game discovery/management dashboard used to be served at '/' --
+  // it now lives at public/discover.html (still reachable directly at
+  // /discover.html via the static middleware above); this is just the
+  // clean-URL alias.
+  app.get('/discover', (_req, res) => {
+    res.sendFile(path.join(publicDir, 'discover.html'));
+  });
 
   app.get('/healthz', async (_req, res) => {
     const health = { status: 'ok', postgres: false, redis: false };

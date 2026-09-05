@@ -14,7 +14,10 @@
 #include <string>
 #include <thread>
 
+#include <SDL2/SDL.h>
+
 #include "core/Application.hpp"
+#include "core/ConsoleQuickEdit.hpp"
 #include "core/CrashReporter.hpp"
 #include "core/Biome.hpp"
 #include "core/Components.hpp"
@@ -102,6 +105,8 @@ bool readWholeFile(const std::string& path, std::string& outContents) {
 } // namespace
 
 int main(int argc, char** argv) {
+    engine::core::disableConsoleQuickEditMode();
+
     // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
     // report): enabled first, before anything else (including
     // installCrashReporter() just below), so even a failure in
@@ -147,6 +152,7 @@ int main(int argc, char** argv) {
     std::string tntWarsMapArg; // real, optional positional map-name selector for --tntwars (see below)
     bool testerSafetyMode = false;
     bool headless = false;
+    bool selfTestMode = false;
     // Kronos ("kronos:// launch URI"): populated when this process was
     // started by the OS's own URL-protocol activation -- see
     // installer/src/PlatformIntegration.cpp for what actually registers
@@ -314,6 +320,8 @@ int main(int argc, char** argv) {
             testerSafetyMode = true;
         } else if (arg == "--headless") {
             headless = true;
+        } else if (arg == "--self-test") {
+            selfTestMode = true;
         } else if (arg.rfind("--kronos-uri=", 0) == 0) {
             // The Windows registration shape: %1 substituted inline
             // within this one flag (see applyKronosLaunchUri's own
@@ -436,6 +444,15 @@ int main(int argc, char** argv) {
 
     if (!app.initialize(info)) {
         std::fprintf(stderr, "engine_runtime: Application::initialize failed.\n");
+        // No dialog in headless/server mode -- that's a real, unattended
+        // process, not a windowed launch someone is watching.
+        if (!headless) {
+            SDL_ShowSimpleMessageBox(
+                SDL_MESSAGEBOX_ERROR, "Kronos - Fatal Error",
+                "Kronos failed to start (often a missing/outdated GPU driver or Vulkan runtime).\n\n"
+                "See kronos_engine.log (next to this program) for details.",
+                nullptr);
+        }
         return 1;
     }
 
@@ -1764,6 +1781,27 @@ int main(int argc, char** argv) {
         if (heartbeatThread.joinable()) heartbeatThread.join();
         app.shutdown();
         return 0;
+    }
+
+    if (selfTestMode) {
+        constexpr int kSelfTestFrames = 10;
+        constexpr float kSelfTestDt = 1.0f / 60.0f;
+        bool ok = true;
+        int framesRendered = 0;
+        for (; framesRendered < kSelfTestFrames; ++framesRendered) {
+            if (!app.window().pumpEvents()) break;
+            app.scripting().tick(kSelfTestDt);
+            app.physics().step(kSelfTestDt, app.ecs());
+            if (!app.renderer().renderFrame()) {
+                ok = false;
+                break;
+            }
+        }
+        ok = ok && framesRendered == kSelfTestFrames;
+        std::fprintf(stdout, "engine_runtime: --self-test %s (%d/%d frames rendered)\n", ok ? "PASSED" : "FAILED",
+                     framesRendered, kSelfTestFrames);
+        app.shutdown();
+        return ok ? 0 : 1;
     }
 
     // Real geometry, uploaded once via VMA-backed vertex/index buffers

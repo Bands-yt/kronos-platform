@@ -21,8 +21,19 @@ game_play_log.playlog
 transaction_log.transactions
 telemetry.log
 *_launch.log
+kronos_engine.log
 
 # Real, per-machine downloaded/extracted package cache (Dynamic Asset
 # Streaming) -- content-addressed local state, never source.
 games/.package_cache/
 .package_cache/
+
+# engine_tests scratch output (world package/registry/leaderboard
+# round-trip fixtures), written to whatever the current working
+# directory happens to be -- not source.
+test_dir/
+test_leaderboard_*.json
+test_world_package_*/
+test_world_registry*.json
+test_world_metadata.json
+test_logger_file_sink.log

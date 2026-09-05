@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kronos Engine</title>
+<meta name="description" content="A C++20 / Vulkan game engine with an EnTT-backed ECS and a sandboxed Luau scripting layer." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #09090b;
+    --surface: #0e0e11;
+    --surface-2: #17171b;
+    --border: #27272a;
+    --border-strong: #3f3f46;
+    --text: #e4e4e7;
+    --text-dim: #a1a1aa;
+    --text-faint: #52525b;
+    --accent: #fb923c;
+    --accent-dim: #7c4a25;
+    --accent-wash: rgba(251, 146, 60, 0.09);
+    --good: #4ade80;
+    --warn: #facc15;
+    --code-str: #86efac;
+    --code-num: #7dd3fc;
+    --code-com: #52525b;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
+    --font-sans: "Inter", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --measure: 62ch;
+  }
+
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+
+  ::selection { background: var(--accent-dim); color: #fff; }
+
+  a { color: inherit; }
+  a:focus-visible, button:focus-visible, .tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  img, video { max-width: 100%; display: block; }
+
+  .measure { max-width: var(--measure); }
+
+  .shell {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  code, .mono { font-family: var(--font-mono); }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  h1, h2, h3 { font-family: var(--font-mono); text-wrap: balance; margin: 0; }
+
+  /* ------------------------------------------------------------------ */
+  /* Nav                                                                  */
+  /* ------------------------------------------------------------------ */
+  header.top {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgba(9, 9, 11, 0.88);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 56px;
+  }
+  .wordmark {
+    font-family: var(--font-mono);
+    font-weight: 800;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    text-decoration: none;
+    color: var(--text);
+  }
+  .wordmark .dot { color: var(--accent); }
+  nav.links {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  nav.links a {
+    font-size: 13px;
+    color: var(--text-dim);
+    text-decoration: none;
+    padding: 7px 12px;
+    border-radius: 3px;
+  }
+  nav.links a:hover { color: var(--text); background: var(--surface-2); }
+  .btn {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 500;
+    padding: 7px 14px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .btn:hover { border-color: var(--text-faint); background: var(--surface-2); }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #1c0f04;
+    font-weight: 700;
+  }
+  .btn.primary:hover { background: #fca85c; border-color: #fca85c; }
+
+  /* ------------------------------------------------------------------ */
+  /* Hero                                                                 */
+  /* ------------------------------------------------------------------ */
+  .hero {
+    padding: 84px 0 72px;
+    display: grid;
+    gap: 40px;
+  }
+  .hero-copy h1 {
+    font-size: clamp(32px, 4.4vw, 50px);
+    line-height: 1.12;
+    letter-spacing: -0.01em;
+  }
+  .hero-copy h1 .accent { color: var(--accent); }
+  .hero-copy p.sub {
+    font-family: var(--font-sans);
+    font-size: 16.5px;
+    color: var(--text-dim);
+    margin: 18px 0 0;
+    max-width: 56ch;
+  }
+  .cta-row { display: flex; gap: 10px; margin-top: 28px; flex-wrap: wrap; }
+
+  .window {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .window-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .window-bar .light { width: 9px; height: 9px; border-radius: 50%; background: var(--border-strong); }
+  .window-bar .path {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text-faint);
+    margin-left: 8px;
+  }
+  .window video { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; }
+
+  /* ------------------------------------------------------------------ */
+  /* Spec strip                                                           */
+  /* ------------------------------------------------------------------ */
+  .specs {
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 22px 0;
+  }
+  .specs .shell {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 22px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+  .specs .prompt { color: var(--accent); }
+  .flag { color: var(--text); }
+  .flag .k { color: var(--text-faint); }
+
+  /* ------------------------------------------------------------------ */
+  /* Section scaffolding                                                  */
+  /* ------------------------------------------------------------------ */
+  section.block { padding: 88px 0; border-bottom: 1px solid var(--border); }
+  section.block:last-of-type { border-bottom: none; }
+  .block-head { margin-bottom: 40px; }
+  .block-head h2 { font-size: 26px; margin-top: 10px; }
+  .block-head p { color: var(--text-dim); margin: 12px 0 0; max-width: 58ch; font-size: 15px; }
+
+  /* ------------------------------------------------------------------ */
+  /* Architecture grid                                                    */
+  /* ------------------------------------------------------------------ */
+  .arch-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+  .arch-card {
+    background: var(--bg);
+    padding: 26px 26px 24px;
+  }
+  .arch-card .tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .arch-card h3 { font-size: 17px; margin: 10px 0 10px; }
+  .arch-card p { font-size: 14px; color: var(--text-dim); margin: 0; }
+
+  /* ------------------------------------------------------------------ */
+  /* Code panel                                                           */
+  /* ------------------------------------------------------------------ */
+  .code-panel { border: 1px solid var(--border); background: var(--surface); }
+  .tabs {
+    display: flex;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .tab {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    border-right: 1px solid var(--border);
+    padding: 11px 18px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); background: var(--bg); box-shadow: inset 0 -2px 0 var(--accent); }
+  .code-body { position: relative; overflow-x: auto; }
+  .code-body pre {
+    margin: 0;
+    padding: 22px 24px;
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    line-height: 1.7;
+    display: none;
+  }
+  .code-body pre.active { display: block; }
+  .code-body .ln { color: var(--text-faint); display: inline-block; width: 1.6em; user-select: none; }
+  .tok-com { color: var(--code-com); }
+  .tok-str { color: var(--code-str); }
+  .tok-num { color: var(--code-num); }
+  .tok-fn { color: var(--accent); }
+  .tok-kw { color: #f472b6; }
+
+  /* ------------------------------------------------------------------ */
+  /* Telemetry                                                            */
+  /* ------------------------------------------------------------------ */
+  .telemetry { border: 1px solid var(--border); background: var(--surface); }
+  .telemetry-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .telemetry-head .path { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+  .live-dot {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .live-dot::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.6);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.5); }
+    70% { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+  }
+  .telemetry-grid {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 1px;
+    background: var(--border);
+  }
+  .telemetry-grid > div { background: var(--bg); }
+  .graph-cell { padding: 18px; }
+  .graph-cell canvas { width: 100%; height: 140px; display: block; }
+  .stat-list { display: flex; flex-direction: column; }
+  .stat-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 13px 18px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-row .label { font-size: 12px; color: var(--text-dim); }
+  .stat-row .value { font-size: 14px; font-variant-numeric: tabular-nums; }
+  .stat-row .value.good { color: var(--good); }
+  .telemetry-note {
+    font-size: 11.5px;
+    color: var(--text-faint);
+    padding: 10px 18px;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Footer                                                               */
+  /* ------------------------------------------------------------------ */
+  footer { padding: 40px 0 60px; }
+  footer .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: 12.5px;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+  }
+  footer a { color: var(--text-dim); text-decoration: none; }
+  footer a:hover { color: var(--text); }
+  footer .flinks { display: flex; gap: 18px; }
+
+  @media (max-width: 760px) {
+    .arch-grid { grid-template-columns: 1fr; }
+    .telemetry-grid { grid-template-columns: 1fr; }
+    .hero { padding: 56px 0 48px; }
+    section.block { padding: 56px 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .live-dot::before { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="shell topbar">
+    <a class="wordmark" href="#top">KRONOS<span class="dot">_</span>ENGINE</a>
+    <nav class="links">
+      <a href="#architecture">Architecture</a>
+      <a href="#scripting">Scripting</a>
+      <a href="#telemetry">Runtime</a>
+      <a href="/discover">Discover Games</a>
+      <a class="btn" href="#" role="button">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="shell">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">C++20 &middot; Vulkan &middot; EnTT &middot; Luau</p>
+        <h1>A game engine built to be<br /><span class="accent">read, not guessed at.</span></h1>
+        <p class="sub">Kronos is a Vulkan-renderer engine with a real Forward+ pipeline, a bare EnTT-registry ECS, deterministic Jolt physics, and a sandboxed Luau layer that scripts against the same live state the editor does &mdash; no partial Instance-API illusion standing in for either.</p>
+        <div class="cta-row">
+          <a class="btn primary" href="#scripting" role="button">Read the API &rarr;</a>
+          <a class="btn" href="#architecture" role="button">Architecture</a>
+        </div>
+      </div>
+
+      <div class="window" aria-label="Kronos engine capture, looping">
+        <div class="window-bar">
+          <span class="light"></span><span class="light"></span><span class="light"></span>
+          <span class="path">kronos_opening.mp4 &mdash; engine capture, no post</span>
+        </div>
+        <video autoplay muted loop playsinline poster="../kronos_trailer_thumbnail.svg">
+          <source src="../kronos_opening.mp4" type="video/mp4" />
+        </video>
+      </div>
+    </section>
+  </div>
+
+  <div class="specs">
+    <div class="shell">
+      <span class="prompt">$</span>
+      <span class="flag"><span class="k">--lang=</span>C++20</span>
+      <span class="flag"><span class="k">--gfx=</span>Vulkan 1.3, dynamic rendering</span>
+      <span class="flag"><span class="k">--shadows=</span>4-cascade CSM</span>
+      <span class="flag"><span class="k">--ecs=</span>EnTT, sparse-set</span>
+      <span class="flag"><span class="k">--physics=</span>Jolt, fixed-tick</span>
+      <span class="flag"><span class="k">--script=</span>Luau, sandboxed</span>
+    </div>
+  </div>
+
+  <div class="shell">
+    <section class="block" id="architecture">
+      <div class="block-head">
+        <p class="eyebrow">Architecture</p>
+        <h2>Four subsystems, one frame graph.</h2>
+        <p>Nothing here is a stub behind a marketing name &mdash; each panel below is a real, load-bearing part of the runtime, not an aspirational roadmap item.</p>
+      </div>
+      <div class="arch-grid">
+        <div class="arch-card">
+          <p class="tag">Renderer</p>
+          <h3>Forward+, one real frame graph</h3>
+          <p>Opaque pass &rarr; cascaded shadow maps &rarr; SSAO/DOF/motion-blur &rarr; bloom &rarr; ACES or AgX tonemap &rarr; an optional sampled 3D LUT. Studio's own viewport and an offline capture rig render through the identical path, so what a creator previews is what gets exported.</p>
+        </div>
+        <div class="arch-card">
+          <p class="tag">ECS</p>
+          <h3>A thin wrapper, not a framework</h3>
+          <p>Entities are opaque numbers over a real <code class="mono">entt::registry</code>. No inheritance hierarchy, no hidden allocation graph &mdash; component storage is exactly what EnTT gives you, queried with <code class="mono">view&lt;T...&gt;()</code>.</p>
+        </div>
+        <div class="arch-card">
+          <p class="tag">Physics</p>
+          <h3>Jolt, stepped on purpose</h3>
+          <p>A fixed-tick simulation that steps automatically during play, or can be paused and single-stepped by exact, chosen deltas &mdash; the same mechanism a tooling script uses to reproduce a physics bug frame by frame.</p>
+        </div>
+        <div class="arch-card">
+          <p class="tag">Scripting</p>
+          <h3>Luau, with a stated boundary</h3>
+          <p>Flat global tables (<code class="mono">world</code>, <code class="mono">mesh</code>, <code class="mono">render</code>, <code class="mono">physics</code>) expose numbers, booleans, and strings only. No script ever holds a Vulkan handle, a pipeline, or a raw pointer &mdash; that boundary is enforced by what the bindings return, not by a runtime permission check.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="scripting">
+      <div class="block-head">
+        <p class="eyebrow">Scripting surface</p>
+        <h2>The console runs against the live scene.</h2>
+        <p>Every snippet below is real, callable Luau &mdash; the same tables Studio's own Debug Console registers against the running ECS, mesh editor, sequencer, renderer, and physics preview.</p>
+      </div>
+
+      <div class="code-panel">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="world" role="tab" aria-selected="true">world.lua</button>
+          <button class="tab" data-tab="mesh" role="tab" aria-selected="false">mesh.lua</button>
+          <button class="tab" data-tab="cinematic" role="tab" aria-selected="false">cinematic.lua</button>
+          <button class="tab" data-tab="render" role="tab" aria-selected="false">render.lua</button>
+          <button class="tab" data-tab="physics" role="tab" aria-selected="false">physics.lua</button>
+        </div>
+        <div class="code-body">
+<pre class="active" data-panel="world"><span class="ln">1</span><span class="tok-com">-- entities are plain numbers -- no Instance metatable to guess at</span>
+<span class="ln">2</span><span class="tok-fn">local</span> id = world.createEntity(<span class="tok-str">"Turret"</span>)
+<span class="ln">3</span>world.setPosition(id, <span class="tok-num">12.5</span>, <span class="tok-num">0.0</span>, <span class="tok-num">-4.0</span>)
+<span class="ln">4</span>world.setMaterial(id, <span class="tok-str">"Metal"</span>)
+<span class="ln">5</span>world.applyImpulse(id, <span class="tok-num">0</span>, <span class="tok-num">8</span>, <span class="tok-num">0</span>)
+<span class="ln">6</span>
+<span class="ln">7</span><span class="tok-fn">local</span> hit = world.raycast(<span class="tok-num">0</span>, <span class="tok-num">5</span>, <span class="tok-num">0</span>,  <span class="tok-num">0</span>, <span class="tok-num">-1</span>, <span class="tok-num">0</span>,  <span class="tok-num">50</span>)
+<span class="ln">8</span><span class="tok-fn">if</span> hit <span class="tok-fn">then</span> print(hit.entityId, hit.distance) <span class="tok-fn">end</span></pre>
+
+<pre data-panel="mesh"><span class="ln">1</span><span class="tok-com">-- real vertex/edge/face topology, live in the viewport</span>
+<span class="ln">2</span>mesh.beginEditingBox(id, <span class="tok-num">0.5</span>, <span class="tok-num">0.5</span>, <span class="tok-num">0.5</span>)
+<span class="ln">3</span>mesh.extrudeFace(id, <span class="tok-num">3</span>, <span class="tok-num">0.75</span>)
+<span class="ln">4</span>mesh.insetFace(id, <span class="tok-num">3</span>, <span class="tok-num">0.2</span>)
+<span class="ln">5</span>mesh.setVertexPosition(id, <span class="tok-num">0</span>, <span class="tok-num">9</span>, <span class="tok-num">8</span>, <span class="tok-num">7</span>)
+<span class="ln">6</span><span class="tok-com">-- editVersion bumps -- Modeling Mode re-uploads to the GPU next frame</span></pre>
+
+<pre data-panel="cinematic"><span class="ln">1</span><span class="tok-com">-- the same Sequence a creator's own timeline UI edits</span>
+<span class="ln">2</span>cinematic.addTrack(<span class="tok-str">"Camera Rail"</span>, <span class="tok-str">"Camera"</span>)
+<span class="ln">3</span>cinematic.addKeyframe(<span class="tok-str">"Camera Rail"</span>, <span class="tok-str">"railT"</span>, <span class="tok-num">0.0</span>, <span class="tok-num">0.0</span>, <span class="tok-str">"Bezier"</span>)
+<span class="ln">4</span>cinematic.addKeyframe(<span class="tok-str">"Camera Rail"</span>, <span class="tok-str">"railT"</span>, <span class="tok-num">4.0</span>, <span class="tok-num">1.0</span>, <span class="tok-str">"Bezier"</span>)
+<span class="ln">5</span>cinematic.setPlayhead(<span class="tok-num">2.0</span>)</pre>
+
+<pre data-panel="render"><span class="ln">1</span><span class="tok-com">-- numeric/enum tuning only -- never a raw Vulkan handle</span>
+<span class="ln">2</span>render.setCinematicMode(<span class="tok-fn">true</span>)
+<span class="ln">3</span>render.setTonemapOperator(<span class="tok-str">"agx"</span>)
+<span class="ln">4</span>render.setBloomSettings(<span class="tok-num">1.1</span>, <span class="tok-num">0.4</span>, <span class="tok-num">0.7</span>)
+<span class="ln">5</span>render.loadColorGradingLut(<span class="tok-str">"looks/teal_orange.cube"</span>)</pre>
+
+<pre data-panel="physics"><span class="ln">1</span><span class="tok-com">-- deterministic, script-triggered steps -- for reproducing a bug exactly</span>
+<span class="ln">2</span>physics.pause()
+<span class="ln">3</span><span class="tok-fn">local</span> ok = physics.step(<span class="tok-num">1</span> / <span class="tok-num">60</span>)
+<span class="ln">4</span>assert(ok, <span class="tok-str">"step only runs while playing + paused"</span>)
+<span class="ln">5</span>physics.resume()</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="telemetry">
+      <div class="block-head">
+        <p class="eyebrow">Runtime</p>
+        <h2>What the profiler sees.</h2>
+        <p>A representative capture of the runtime's own frame-time graph and scene counters &mdash; illustrative, not a live socket into a running instance.</p>
+      </div>
+
+      <div class="telemetry">
+        <div class="telemetry-head">
+          <span class="path">kronos --profile --scene=tntwars_arena</span>
+          <span class="live-dot">simulated</span>
+        </div>
+        <div class="telemetry-grid">
+          <div class="graph-cell">
+            <canvas id="frameGraph" width="640" height="140" role="img" aria-label="Simulated frame time graph"></canvas>
+          </div>
+          <div class="stat-list">
+            <div class="stat-row"><span class="label">frame time</span><span class="value good" id="statFrame">6.42 ms</span></div>
+            <div class="stat-row"><span class="label">draw calls</span><span class="value" id="statDraws">318</span></div>
+            <div class="stat-row"><span class="label">entities</span><span class="value" id="statEntities">4,096</span></div>
+            <div class="stat-row"><span class="label">shadow cascades</span><span class="value">4</span></div>
+            <div class="stat-row"><span class="label">GPU memory</span><span class="value" id="statMem">612 MB</span></div>
+            <div class="stat-row"><span class="label">tonemap</span><span class="value">AgX</span></div>
+          </div>
+        </div>
+        <p class="telemetry-note">Numbers animate client-side for illustration; they are not streamed from a live Kronos process.</p>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <div class="shell row">
+      <span>&copy; Kronos Engine. Built with C++20 and Vulkan.</span>
+      <div class="flinks">
+        <a href="#">Source</a>
+        <a href="#">Docs</a>
+        <a href="/discover">Discover Games</a>
+      </div>
+    </div>
+  </footer>
+</main>
+
+<script>
+  // Tab switching for the scripting code panel.
+  document.querySelectorAll(".tab").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      document.querySelectorAll(".tab").forEach(function (t) { t.classList.remove("active"); t.setAttribute("aria-selected", "false"); });
+      document.querySelectorAll(".code-body pre").forEach(function (p) { p.classList.remove("active"); });
+      tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
+      var panel = document.querySelector('.code-body pre[data-panel="' + tab.dataset.tab + '"]');
+      if (panel) panel.classList.add("active");
+    });
+  });
+
+  // Simulated frame-time graph + counters -- explicitly labeled as such
+  // in the markup above. Respects reduced-motion by freezing on a single
+  // representative frame instead of animating.
+  (function () {
+    var canvas = document.getElementById("frameGraph");
+    if (!canvas) return;
+    var ctx = canvas.getContext("2d");
+    var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var W = canvas.width, H = canvas.height;
+    var points = [];
+    var N = 64;
+    for (var i = 0; i < N; i++) points.push(6 + Math.random() * 2.2);
+
+    var statFrame = document.getElementById("statFrame");
+    var statDraws = document.getElementById("statDraws");
+    var statEntities = document.getElementById("statEntities");
+    var statMem = document.getElementById("statMem");
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      // grid
+      ctx.strokeStyle = "#1c1c20";
+      ctx.lineWidth = 1;
+      for (var gy = 0; gy <= 4; gy++) {
+        var y = (H / 4) * gy + 0.5;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      }
+      // fill + line
+      var max = 12;
+      var stepX = W / (N - 1);
+      ctx.beginPath();
+      points.forEach(function (v, i) {
+        var x = i * stepX;
+        var y = H - (v / max) * H;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = "#fb923c";
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+      ctx.fillStyle = "rgba(251,146,60,0.08)";
+      ctx.fill();
+      // endpoint
+      var lastX = (N - 1) * stepX;
+      var lastY = H - (points[N - 1] / max) * H;
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 2.6, 0, Math.PI * 2);
+      ctx.fillStyle = "#fb923c";
+      ctx.fill();
+    }
+
+    draw();
+    if (reduceMotion) return;
+
+    setInterval(function () {
+      points.shift();
+      var next = Math.max(4.5, Math.min(11.5, points[points.length - 1] + (Math.random() - 0.5) * 2.4));
+      points.push(next);
+      draw();
+      if (statFrame) statFrame.textContent = next.toFixed(2) + " ms";
+      if (statDraws) statDraws.textContent = Math.round(300 + Math.random() * 40);
+      if (statEntities) statEntities.textContent = (4096 + Math.round(Math.random() * 120)).toLocaleString();
+      if (statMem) statMem.textContent = Math.round(600 + Math.random() * 30) + " MB";
+    }, 900);
+  })();
+</script>
+
+</body>
+</html>

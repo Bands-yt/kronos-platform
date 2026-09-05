@@ -24,6 +24,38 @@ void ModelingModePlugin::reuploadMesh(core::EditableMeshComponent& component, co
     meshLibrary_->replaceMesh(renderable.meshHandle, std::move(newMesh), allocator_);
 }
 
+void ModelingModePlugin::update(float /*dt*/, core::ECS& ecs, core::EntityId /*selected*/,
+                                 const std::vector<core::EntityId>& /*selectedEntities*/) {
+    auto view = ecs.view<core::EditableMeshComponent, core::Renderable>();
+    for (auto entity : view) {
+        auto& component = view.get<core::EditableMeshComponent>(entity);
+        uint64_t& lastApplied = lastAppliedEditVersion_[entity];
+        if (component.editVersion == lastApplied) continue;
+        reuploadMesh(component, view.get<core::Renderable>(entity));
+        lastApplied = component.editVersion;
+    }
+}
+
+void ModelingModePlugin::applyCsg(core::EditableMeshComponent& component, core::Renderable& renderable,
+                                   core::CsgOperation op) {
+    core::EditableMesh box = core::EditableMesh::createBox(csgBoxHalfExtents_, csgBoxOffset_);
+    core::EditableMesh result = core::booleanOp(component.mesh, box, op);
+    if (result.faceCount() == 0) {
+        csgStatus_ = "CSG produced an empty result -- left the current mesh untouched. Try a smaller/overlapping "
+                      "box offset, or see CsgMesh.hpp's own scope comment (exact coincident planes are a known "
+                      "edge case).";
+        return;
+    }
+    component.mesh = std::move(result);
+    // Same "indices may have shifted" precedent Auto Unwrap's own button
+    // already follows -- a CSG result has entirely new, unrelated
+    // topology, so the old face/edge selection is stale by construction.
+    component.selectedFace = 0;
+    component.selectedEdge = {0, 0};
+    reuploadMesh(component, renderable);
+    csgStatus_ = "CSG applied.";
+}
+
 void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
                                     const std::vector<core::EntityId>& /*selectedEntities*/) {
     ImGui::Begin(name());
@@ -118,6 +150,20 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
         size_t merged = mesh.mergeVertices(mergeThreshold_);
         if (merged > 0) reuploadMesh(*editable, *renderable);
     }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Boolean (CSG)");
+    ImGui::DragFloat3("Box Offset##csg", &csgBoxOffset_.x, 0.05f);
+    ImGui::DragFloat3("Box Half-Extents##csg", &csgBoxHalfExtents_.x, 0.05f, 0.01f, 10.0f);
+    if (ImGui::Button("Union##csg")) applyCsg(*editable, *renderable, core::CsgOperation::Union);
+    ImGui::SameLine();
+    if (ImGui::Button("Subtract##csg")) applyCsg(*editable, *renderable, core::CsgOperation::Subtract);
+    ImGui::SameLine();
+    if (ImGui::Button("Intersect##csg")) applyCsg(*editable, *renderable, core::CsgOperation::Intersect);
+    ImGui::SameLine();
+    helpMarker("Combines the current mesh with a real box at the given offset/half-extents. Only correct for "
+               "closed, manifold meshes with consistent winding -- see core::CsgMesh.hpp's own scope comment.");
+    if (!csgStatus_.empty()) ImGui::TextWrapped("%s", csgStatus_.c_str());
 
     ImGui::Spacing();
     ImGui::SeparatorText("UV");

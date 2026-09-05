@@ -115,7 +115,25 @@ bool Window::initialize(const CreateInfo& info) {
         return false;
     }
 
-    Uint32 flags = SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN;
+    // Kronos (beta-blocking fix -- "flickering when opening a game"):
+    // real root cause -- SDL_WINDOW_SHOWN used to map this window to the
+    // screen immediately on creation, well before Renderer::initialize()
+    // (Vulkan instance/device/swapchain/pipeline setup -- the slowest
+    // part of startup) or any of Application::initialize()'s later
+    // physics/audio/scripting/scene-build work had run. The compositor
+    // had nothing real to show for that whole window, so it composited
+    // whatever the newly-allocated surface buffer happened to contain
+    // (undefined GPU memory, not necessarily even black) for the
+    // real, perceptible duration of that init work -- exactly the
+    // "opening a game" trigger this was reported against, since that's
+    // precisely when a brand new engine_runtime window gets created.
+    // Real fix: create hidden (SDL's own default when SHOWN isn't
+    // passed), let the caller reveal it via show() once its own first
+    // real renderFrame() has actually succeeded (see
+    // Application::initialize()'s postRenderHook) -- the compositor then
+    // has real, complete, already-cleared content the very first time
+    // this window is ever mapped.
+    Uint32 flags = SDL_WINDOW_VULKAN;
     if (info.resizable) {
         flags |= SDL_WINDOW_RESIZABLE;
     }
@@ -130,7 +148,12 @@ bool Window::initialize(const CreateInfo& info) {
     if (!window_) {
         lastError_ = classifySdlFailure("Window creation", SDL_GetError());
         logError("Window", "%s", lastError_.c_str());
-        SDL_Quit();
+        // SDL_QuitSubSystem, not SDL_Quit() -- see shutdown()'s own
+        // comment on why a real second core::Window makes that
+        // distinction load-bearing: this window failing to create must
+        // not tear down a different, already-live core::Window's video
+        // subsystem.
+        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
         return false;
     }
 
@@ -141,11 +164,28 @@ bool Window::initialize(const CreateInfo& info) {
     return true;
 }
 
+void Window::show() {
+    if (window_ != nullptr) SDL_ShowWindow(window_);
+}
+
 void Window::shutdown() {
     if (window_) {
         SDL_DestroyWindow(window_);
         window_ = nullptr;
-        SDL_Quit();
+        // Kronos ("3D Mesh & CSG Editor" -- standalone plugin window):
+        // real bug this fixes -- SDL_Quit() unconditionally tears down
+        // *every* SDL subsystem process-wide, ignoring the reference
+        // count SDL_Init() itself maintains per subsystem. With a single
+        // core::Window for the process's whole lifetime that was
+        // harmless (nothing else needed SDL afterward), but the moment a
+        // second core::Window exists (studio::SecondaryViewport, a
+        // plugin's own OS window) closing it would silently kill the
+        // main window's video/event subsystem too, out from under a
+        // still-live SDL_Window*. SDL_QuitSubSystem() is the real,
+        // documented ref-counted equivalent -- decrements only what
+        // *this* initialize() call incremented, matching the exact flags
+        // passed to SDL_Init() above.
+        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
     }
 }
 
@@ -159,8 +199,27 @@ bool Window::pumpEvents() {
             case SDL_QUIT:
                 return false;
             case SDL_WINDOWEVENT:
-                if (event.window.event == SDL_WINDOWEVENT_RESIZED ||
-                    event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                // Kronos ("3D Mesh & CSG Editor" -- standalone plugin
+                // window): SDL's event queue is one global, process-wide
+                // queue -- with a second real OS window now possible
+                // (studio::SecondaryViewport), a resize/size-changed
+                // event belonging to *that* window would otherwise reach
+                // here and get misapplied to this Window's own
+                // width_/height_, corrupting this window's tracked size
+                // and spuriously setting resized_ (which callers use to
+                // decide whether to call Renderer::recreateSwapchain()
+                // on *this* window's swapchain). Only this window's own
+                // events may mutate this window's own state; every event
+                // is still forwarded to rawEventCallback_ above
+                // regardless of windowID, unchanged -- ImGui_ImplSDL2_
+                // ProcessEvent() and any other listener already knows
+                // how to filter by windowID itself, and a second SDL_
+                // PollEvent loop competing for the same queue is exactly
+                // what this callback mechanism exists to avoid (see this
+                // function's own header comment).
+                if ((event.window.event == SDL_WINDOWEVENT_RESIZED ||
+                     event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) &&
+                    event.window.windowID == SDL_GetWindowID(window_)) {
                     width_ = static_cast<uint32_t>(event.window.data1);
                     height_ = static_cast<uint32_t>(event.window.data2);
                     resized_ = true;

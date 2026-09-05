@@ -56,9 +56,19 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
     // by the previous stop()).
     if (!scripting_.initialize()) {
         statusMessage_ = "Scripting failed to initialize -- scripts will not run this session.";
+    } else {
+        // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline"
+        // -- "deterministic physics step triggers"): a real, fresh
+        // `physics` table for this real, fresh VM -- see
+        // ScriptPhysicsPreviewApi.hpp's own header comment for why this,
+        // not DebugConsolePanel's separate VM, is the one real place a
+        // script can pause/resume/step this simulation.
+        scriptPhysicsPreviewApi_ = std::make_unique<ScriptPhysicsPreviewApi>(*this, ecs);
+        scripting_.setBindingsHook([this](lua_State* L) { scriptPhysicsPreviewApi_->registerInto(L); });
     }
 
     playing_ = true;
+    paused_ = false;
     statusMessage_ = "Playing -- " + std::to_string(attachedEntities_.size()) + " bodies simulating";
     if (skippedMesh > 0) {
         statusMessage_ += " (" + std::to_string(skippedMesh) + " Mesh collider(s) skipped, see README Known Issues)";
@@ -86,14 +96,24 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
     scripting_.shutdown();
 
     playing_ = false;
+    paused_ = false;
     statusMessage_ = "Stopped -- every entity reverted to its plain, physics-free authored state.";
+}
+
+bool PhysicsPreviewPlugin::stepOnce(core::ECS& ecs, float dt) {
+    if (!playing_ || !paused_) return false; // see this method's own .hpp comment
+    physics_.step(dt, ecs);
+    recentContacts_ = physics_.drainCollisionEvents();
+    return true;
 }
 
 void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*selected*/,
                                    const std::vector<core::EntityId>& /*selectedEntities*/) {
     if (!playing_) return;
-    physics_.step(dt, ecs);
-    recentContacts_ = physics_.drainCollisionEvents();
+    if (!paused_) {
+        physics_.step(dt, ecs);
+        recentContacts_ = physics_.drainCollisionEvents();
+    }
 
     // Real hot-reload: a script saved from the Script Editor while
     // Playing gets diffed and (re)loaded here, then ticked -- see
@@ -126,6 +146,19 @@ void PhysicsPreviewPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/
         if (ImGui::Button("Play")) play(ecs);
     } else {
         if (ImGui::Button("Stop")) stop(ecs);
+        ImGui::SameLine();
+        // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+        // "deterministic physics step triggers"): the real UI half of
+        // pause()/resume()/stepOnce() -- see those methods' own .hpp
+        // comments. A script (studio::ScriptPhysicsPreviewApi's `physics`
+        // table) can drive the same real state these buttons do.
+        if (paused_) {
+            if (ImGui::Button("Resume")) resume();
+            ImGui::SameLine();
+            if (ImGui::Button("Step One Frame")) stepOnce(ecs, 1.0f / 60.0f);
+        } else {
+            if (ImGui::Button("Pause")) pause();
+        }
     }
     if (!statusMessage_.empty()) ImGui::TextWrapped("%s", statusMessage_.c_str());
 

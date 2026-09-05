@@ -129,7 +129,7 @@ void installCrashReporter() {
     // Real, honest no-op -- see this function's own header comment on
     // why (Linux/glibc-only for now, not silently pretending to cover
     // Windows too).
-    logInfo("Crash", "crash reporter not installed -- this platform isn't Linux/glibc yet");
+    logDebug("Crash", "crash reporter not installed -- this platform isn't Linux/glibc yet");
 }
 
 #endif

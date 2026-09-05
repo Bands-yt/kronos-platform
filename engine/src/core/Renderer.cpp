@@ -3,6 +3,7 @@
 #include "core/CascadeSplitMath.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/ResourcePaths.hpp"
+#include "core/SwapchainSelection.hpp"
 
 #include <algorithm>
 #include <array>
@@ -40,58 +41,12 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     return VK_FALSE;
 }
 
-VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
-    for (const auto& f : formats) {
-        if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            return f;
-        }
-    }
-    return formats.front();
-}
-
-VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& modes, bool vsyncEnabled) {
-    // Kronos ("UI/UX Revamp" -- "Performance & Stability", "whistling
-    // sound when Studio opens"): real, identified root cause -- MAILBOX
-    // presents as fast as the GPU can produce frames, uncapped by the
-    // display's own refresh rate. On an idle/near-static scene (the Home
-    // Screen, an empty Studio viewport) that means sustained
-    // near-100%-duty-cycle GPU work for zero visible benefit -- a
-    // textbook cause of both fan ramp-up and coil whine. FIFO is real
-    // vsync: guaranteed present-mode support (unlike MAILBOX, which
-    // isn't universally available -- see the fallback below), capped to
-    // the display's own refresh rate, and the real, standard default
-    // every editor/engine uses for exactly this "idle quietly" reason.
-    //
-    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
-    // Layer" -- "Graphics: VSync"): MAILBOX's real, legitimate use case
-    // (lower input latency for a fast-paced game, at the real cost of
-    // burning full GPU power even when idle) is now the real, explicit,
-    // user-facing graphics setting this comment always said it should
-    // be -- see Renderer::setVsyncEnabled(). Real, honest fallback if
-    // the physical device doesn't actually support MAILBOX (the Vulkan
-    // spec never guarantees it): stay on FIFO rather than silently
-    // requesting an unsupported mode.
-    if (!vsyncEnabled) {
-        for (VkPresentModeKHR mode : modes) {
-            if (mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
-        }
-    }
-    return VK_PRESENT_MODE_FIFO_KHR;
-}
-
-VkExtent2D chooseExtent(const VkSurfaceCapabilitiesKHR& caps, uint32_t width, uint32_t height) {
-    if (caps.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
-        return caps.currentExtent;
-    }
-    VkExtent2D extent{width, height};
-    extent.width = std::clamp(extent.width, caps.minImageExtent.width, caps.maxImageExtent.width);
-    extent.height = std::clamp(extent.height, caps.minImageExtent.height, caps.maxImageExtent.height);
-    return extent;
-}
-
 std::vector<char> readBinaryFile(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return {};
+    if (!f) {
+        std::fprintf(stderr, "Renderer: could not open shader file \"%s\".\n", path.c_str());
+        return {};
+    }
     std::fseek(f, 0, SEEK_END);
     long size = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
@@ -104,7 +59,14 @@ std::vector<char> readBinaryFile(const std::string& path) {
     return data;
 }
 
+// Empty `code` (a missing/unreadable/truncated .spv) would otherwise
+// reach vkCreateShaderModule with codeSize=0 -- invalid usage that's
+// undefined without a validation layer, rather than a clean failure.
 VkShaderModule createShaderModule(VkDevice device, const std::vector<char>& code) {
+    if (code.empty()) {
+        std::fprintf(stderr, "Renderer: refusing to create a shader module from empty/missing SPIR-V.\n");
+        return VK_NULL_HANDLE;
+    }
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     info.codeSize = code.size();
     info.pCode = reinterpret_cast<const uint32_t*>(code.data());
@@ -161,6 +123,24 @@ bool Renderer::initialize(const CreateInfo& info) {
     if (!createParticleResources()) return false;          // same requirement, plus needs allocator_ for the quad mesh
     if (!createSkinningDescriptorResources()) return false; // same requirement -- see FrameSync's skinning fields
     if (!createPostProcessResources()) return false;       // sampler + descriptor set layouts/pool (not per-frame-sized)
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // real 3D LUT support): a real, always-valid default -- see
+    // uploadColorGradingLut()'s own header comment for why the composite
+    // pass's LUT binding must never be null/unwritten. No FrameSync/
+    // AuxiliarySceneHandle has allocated a compositeDescriptorSet yet at
+    // this point in initialize() (see ensurePostProcessTargets()'s own
+    // "lazily created on first drawSceneInto()" comment) -- that's fine,
+    // rewriteCompositeLutBindings() inside this call is then a real no-op
+    // loop, and each slot's own later first-allocation write in
+    // ensurePostProcessTargets() reads lutImageView_ fresh.
+    {
+        std::string lutError;
+        if (!resetColorGradingLutToIdentity(lutError)) {
+            std::fprintf(stderr, "Renderer: failed to create the default identity color-grading LUT: %s\n",
+                         lutError.c_str());
+            return false;
+        }
+    }
     if (!createMaterialResources()) return false;          // also not per-frame-sized -- must exist before createScenePipeline()'s 2-set layout
     // Needs defaultWhiteTexture_ (createMaterialResources) for its
     // pre-fill, and must precede createScenePipeline() which consumes the
@@ -2738,13 +2718,34 @@ bool Renderer::createPostProcessResources() {
     std::array<VkDescriptorSetLayoutBinding, 2> dualBindings{singleBinding, singleBinding};
     dualBindings[1].binding = 1;
 
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // real 3D LUT support): composite's own real, separate 3-binding
+    // array (HDR + bloom + LUT) -- deliberately NOT dualBindings above,
+    // which cinematicDescriptorSetLayout_ below also uses as-is (2
+    // bindings: hdrColor + depth). Mutating dualBindings itself to 3
+    // bindings for composite's sake would have silently grown
+    // cinematicDescriptorSetLayout_ to 3 bindings too (it's created from
+    // the same local variable a few lines down) even though
+    // drawCinematicPass() only ever writes 2 descriptors into it --
+    // exactly the kind of "descriptor declared but never written" bug
+    // this codebase's own comments elsewhere warn is silent with no
+    // validation layer installed.
+    std::array<VkDescriptorSetLayoutBinding, 3> compositeBindings{singleBinding, singleBinding, singleBinding};
+    compositeBindings[1].binding = 1;
+    compositeBindings[2].binding = 2; // the LUT sampler3D -- see Renderer::loadColorGradingLut()
+
+    VkDescriptorSetLayoutCreateInfo compositeLayoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    compositeLayoutInfo.bindingCount = static_cast<uint32_t>(compositeBindings.size());
+    compositeLayoutInfo.pBindings = compositeBindings.data();
+    if (vkCreateDescriptorSetLayout(device_, &compositeLayoutInfo, nullptr, &postProcessCompositeSetLayout_) !=
+        VK_SUCCESS) {
+        std::fprintf(stderr, "Renderer: vkCreateDescriptorSetLayout (post-process composite) failed.\n");
+        return false;
+    }
+
     VkDescriptorSetLayoutCreateInfo dualLayoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     dualLayoutInfo.bindingCount = static_cast<uint32_t>(dualBindings.size());
     dualLayoutInfo.pBindings = dualBindings.data();
-    if (vkCreateDescriptorSetLayout(device_, &dualLayoutInfo, nullptr, &postProcessDualSetLayout_) != VK_SUCCESS) {
-        std::fprintf(stderr, "Renderer: vkCreateDescriptorSetLayout (post-process dual) failed.\n");
-        return false;
-    }
 
     // Sprint 16 ("Cinematic Graphics"): a dedicated NEAREST-filtered
     // sampler for reading depth back as a texture (drawCinematicPass())
@@ -2774,16 +2775,17 @@ bool Renderer::createPostProcessResources() {
     // volumetric-fog input + Kronos "Rendering Fidelity" SSR-fallback's
     // own input) per frame-in-flight *plus* per auxiliary scene slot (see
     // AuxiliarySceneHandle's doc comment -- each studio::PreviewScene's
-    // ensurePostProcessTargets() call draws from this same pool); 11
+    // ensurePostProcessTargets() call draws from this same pool); 12
     // combined-image-sampler descriptors per slot (1 for bloomExtract's
-    // single binding, 2 for composite's dual bindings, 2 for cinematic's
-    // dual bindings, 1 for luminance's single binding, 1 for
-    // particleDepth's single binding, 2 for the fog input's own dual
-    // bindings, 2 for the SSR input's own dual bindings -- see
-    // FrameSync::fogInputDescriptorSet's/ssrInputDescriptorSet's own
-    // comments).
+    // single binding, 3 for composite's HDR+bloom+LUT bindings -- Kronos
+    // "Cinematic Camera Physics & Post-Processing Pipeline", real 3D LUT
+    // support, raised from 2 -- 2 for cinematic's dual bindings, 1 for
+    // luminance's single binding, 1 for particleDepth's single binding,
+    // 2 for the fog input's own dual bindings, 2 for the SSR input's own
+    // dual bindings -- see FrameSync::fogInputDescriptorSet's/
+    // ssrInputDescriptorSet's own comments).
     uint32_t totalPostProcessSlots = framesInFlight_ + static_cast<uint32_t>(kMaxAuxiliaryScenes);
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, totalPostProcessSlots * 11};
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, totalPostProcessSlots * 12};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     // FREE_DESCRIPTOR_SET_BIT: ensurePostProcessTargets() frees and
     // reallocates these sets on every resize (window resize, Studio
@@ -2799,7 +2801,178 @@ bool Renderer::createPostProcessResources() {
     return true;
 }
 
+void Renderer::destroyColorGradingLutImage() {
+    if (lutImageView_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(device_, lutImageView_, nullptr);
+        lutImageView_ = VK_NULL_HANDLE;
+    }
+    if (lutImage_ != VK_NULL_HANDLE) {
+        vmaDestroyImage(allocator_, lutImage_, lutAllocation_);
+        lutImage_ = VK_NULL_HANDLE;
+        lutAllocation_ = nullptr;
+    }
+    lutSize_ = 0;
+}
+
+bool Renderer::uploadColorGradingLut(const CubeLutData& data, std::string& outError) {
+    if (!data.isValid()) {
+        outError = "CubeLutData is not valid (size/rgb mismatch).";
+        return false;
+    }
+
+    // Real RGBA8 conversion -- an 8-bit-per-channel 3D LUT is the same
+    // real, standard precision most real-time engines ship (Unity/
+    // Unreal's own default LUT formats), plenty for a display "look"
+    // grade; higher precision (R16G16B16A16_SFLOAT) is real, separate
+    // scope if banding is ever actually observed.
+    const uint32_t size = data.size;
+    std::vector<uint8_t> rgba8(static_cast<size_t>(size) * size * size * 4);
+    for (size_t i = 0; i < static_cast<size_t>(size) * size * size; ++i) {
+        rgba8[i * 4 + 0] = static_cast<uint8_t>(std::clamp(data.rgb[i * 3 + 0], 0.0f, 1.0f) * 255.0f + 0.5f);
+        rgba8[i * 4 + 1] = static_cast<uint8_t>(std::clamp(data.rgb[i * 3 + 1], 0.0f, 1.0f) * 255.0f + 0.5f);
+        rgba8[i * 4 + 2] = static_cast<uint8_t>(std::clamp(data.rgb[i * 3 + 2], 0.0f, 1.0f) * 255.0f + 0.5f);
+        rgba8[i * 4 + 3] = 255;
+    }
+
+    const VkDeviceSize imageBytes = static_cast<VkDeviceSize>(rgba8.size());
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VmaAllocation stagingAllocation = nullptr;
+    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = imageBytes;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo stagingAllocInfo{};
+    stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    if (vmaCreateBuffer(allocator_, &bufferInfo, &stagingAllocInfo, &stagingBuffer, &stagingAllocation, nullptr) !=
+        VK_SUCCESS) {
+        outError = "Failed to create the LUT upload staging buffer.";
+        return false;
+    }
+    VmaAllocationInfo stagingInfo{};
+    vmaGetAllocationInfo(allocator_, stagingAllocation, &stagingInfo);
+    std::memcpy(stagingInfo.pMappedData, rgba8.data(), static_cast<size_t>(imageBytes));
+
+    VkImage newImage = VK_NULL_HANDLE;
+    VmaAllocation newAllocation = nullptr;
+    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType = VK_IMAGE_TYPE_3D;
+    imageInfo.extent = {size, size, size};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo imageAllocInfo{};
+    imageAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    if (vmaCreateImage(allocator_, &imageInfo, &imageAllocInfo, &newImage, &newAllocation, nullptr) != VK_SUCCESS) {
+        outError = "vmaCreateImage (3D LUT) failed.";
+        vmaDestroyBuffer(allocator_, stagingBuffer, stagingAllocation);
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmdAllocInfo.commandPool = commandPool_;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device_, &cmdAllocInfo, &cmd) != VK_SUCCESS) {
+        outError = "vkAllocateCommandBuffers failed while uploading the LUT.";
+        vmaDestroyImage(allocator_, newImage, newAllocation);
+        vmaDestroyBuffer(allocator_, stagingBuffer, stagingAllocation);
+        return false;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    transitionImage(cmd, newImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_2_NONE,
+                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT);
+
+    VkBufferImageCopy copyRegion{};
+    copyRegion.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copyRegion.imageExtent = {size, size, size};
+    vkCmdCopyBufferToImage(cmd, stagingBuffer, newImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+    transitionImage(cmd, newImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
+    // One-shot, synchronous -- this runs at initialize() and whenever a
+    // creator explicitly loads a new .cube file, never per-frame, so the
+    // same real tradeoff Texture::uploadPixels()/trailer::CaptureRig's
+    // one-shot renders already make applies here too.
+    vkQueueWaitIdle(graphicsQueue_);
+    vkFreeCommandBuffers(device_, commandPool_, 1, &cmd);
+    vmaDestroyBuffer(allocator_, stagingBuffer, stagingAllocation);
+
+    VkImageView newView = VK_NULL_HANDLE;
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = newImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(device_, &viewInfo, nullptr, &newView) != VK_SUCCESS) {
+        outError = "vkCreateImageView (3D LUT) failed.";
+        vmaDestroyImage(allocator_, newImage, newAllocation);
+        return false;
+    }
+
+    // Only now, with the new image/view fully real and valid, do we
+    // touch the previous one -- see this method's own .hpp comment on
+    // why a failure above must never leave the previous LUT half-replaced.
+    destroyColorGradingLutImage();
+    lutImage_ = newImage;
+    lutAllocation_ = newAllocation;
+    lutImageView_ = newView;
+    lutSize_ = size;
+    rewriteCompositeLutBindings();
+    return true;
+}
+
+void Renderer::rewriteCompositeLutBindings() {
+    VkDescriptorImageInfo lutInfo{postProcessSampler_, lutImageView_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstBinding = 2;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &lutInfo;
+
+    for (FrameSync& frame : frames_) {
+        if (frame.compositeDescriptorSet == VK_NULL_HANDLE) continue;
+        write.dstSet = frame.compositeDescriptorSet;
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+    for (FrameSync& scene : auxiliaryScenes_) {
+        if (scene.compositeDescriptorSet == VK_NULL_HANDLE) continue;
+        write.dstSet = scene.compositeDescriptorSet;
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+}
+
+bool Renderer::loadColorGradingLut(const std::string& cubeFilePath, std::string& outError) {
+    CubeLutData data;
+    if (!parseCubeLutFile(cubeFilePath, data, outError)) return false;
+    return uploadColorGradingLut(data, outError);
+}
+
+bool Renderer::resetColorGradingLutToIdentity(std::string& outError) {
+    constexpr uint32_t kDefaultLutSize = 16; // matches the real default seeded at initialize()
+    return uploadColorGradingLut(generateIdentityCubeLut(kDefaultLutSize), outError);
+}
+
 void Renderer::destroyPostProcessResources() {
+    destroyColorGradingLutImage();
     if (postProcessDescriptorPool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device_, postProcessDescriptorPool_, nullptr);
         postProcessDescriptorPool_ = VK_NULL_HANDLE;
@@ -2812,9 +2985,9 @@ void Renderer::destroyPostProcessResources() {
         vkDestroySampler(device_, depthSampler_, nullptr);
         depthSampler_ = VK_NULL_HANDLE;
     }
-    if (postProcessDualSetLayout_ != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device_, postProcessDualSetLayout_, nullptr);
-        postProcessDualSetLayout_ = VK_NULL_HANDLE;
+    if (postProcessCompositeSetLayout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device_, postProcessCompositeSetLayout_, nullptr);
+        postProcessCompositeSetLayout_ = VK_NULL_HANDLE;
     }
     if (postProcessSingleSetLayout_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device_, postProcessSingleSetLayout_, nullptr);
@@ -2958,7 +3131,7 @@ bool Renderer::createPostProcessPipelines() {
 
             VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             layoutInfo.setLayoutCount = 1;
-            layoutInfo.pSetLayouts = &postProcessDualSetLayout_;
+            layoutInfo.pSetLayouts = &postProcessCompositeSetLayout_;
             layoutInfo.pushConstantRangeCount = 1;
             layoutInfo.pPushConstantRanges = &pushRange;
             ok = vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &compositePipelineLayout_) == VK_SUCCESS;
@@ -3512,7 +3685,7 @@ bool Renderer::ensurePostProcessTargets(FrameSync& frame, VkExtent2D extent, VkI
     VkDescriptorSetAllocateInfo dualAllocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     dualAllocInfo.descriptorPool = postProcessDescriptorPool_;
     dualAllocInfo.descriptorSetCount = 1;
-    dualAllocInfo.pSetLayouts = &postProcessDualSetLayout_;
+    dualAllocInfo.pSetLayouts = &postProcessCompositeSetLayout_;
     if (vkAllocateDescriptorSets(device_, &dualAllocInfo, &frame.compositeDescriptorSet) != VK_SUCCESS) {
         std::fprintf(stderr, "Renderer: vkAllocateDescriptorSets (composite) failed.\n");
         return false;
@@ -3524,8 +3697,15 @@ bool Renderer::ensurePostProcessTargets(FrameSync& frame, VkExtent2D extent, VkI
     // createSceneDescriptorResources().
     VkDescriptorImageInfo hdrImageInfo{postProcessSampler_, frame.hdrView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo bloomImageInfo{postProcessSampler_, frame.bloomView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // real 3D LUT support): lutImageView_ is always real and valid by
+    // the time any frame slot first reaches here -- initialize() seeds a
+    // real identity LUT before any FrameSync/AuxiliarySceneHandle can
+    // allocate a compositeDescriptorSet at all (see that call site's own
+    // comment).
+    VkDescriptorImageInfo lutImageInfo{postProcessSampler_, lutImageView_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    std::array<VkWriteDescriptorSet, 3> writes{};
+    std::array<VkWriteDescriptorSet, 4> writes{};
     writes[0] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     writes[0].dstSet = frame.bloomExtractDescriptorSet;
     writes[0].dstBinding = 0;
@@ -3546,6 +3726,13 @@ bool Renderer::ensurePostProcessTargets(FrameSync& frame, VkExtent2D extent, VkI
     writes[2].descriptorCount = 1;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[2].pImageInfo = &bloomImageInfo;
+
+    writes[3] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[3].dstSet = frame.compositeDescriptorSet;
+    writes[3].dstBinding = 2;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo = &lutImageInfo;
 
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     // hdrView is correct after a fresh (re)allocation above -- see the
@@ -4464,6 +4651,12 @@ void Renderer::drawBloomAndComposite(VkCommandBuffer cmd, FrameSync& frame, VkIm
     // active even with every other composite-pass effect at its own
     // real, cinematic-mode-off zero value.
     compositePush.colorblindMode = static_cast<float>(colorblindModeIndex_);
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline"):
+    // real, applies regardless of Cinematic Mode, same reasoning as
+    // colorblindMode above -- the tonemap curve is a real display
+    // transform every frame needs, not a cinematic-only effect.
+    compositePush.tonemapOperator = tonemapOperator_ == TonemapOperator::AgX ? 1.0f : 0.0f;
+    compositePush.lutStrength = lutStrength_;
     vkCmdPushConstants(cmd, compositePipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(compositePush),
                         &compositePush);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -5044,28 +5237,26 @@ void Renderer::drawSceneInto(AuxiliarySceneHandle handle, VkCommandBuffer cmd, V
                               VkImageView colorView, VkImage depthImage, VkImageView depthView, VkExtent2D extent,
                               const Camera& camera, ECS& ecs, MeshLibrary& meshLibrary,
                               const ParticleSystem& particleSystem, TextureLibrary& textureLibrary,
-                              RiggedMeshLibrary* riggedMeshLibrary) {
+                              RiggedMeshLibrary* riggedMeshLibrary, bool applyWeatherEffects, bool applyBloom,
+                              bool suppressSunDisk, bool useFlatBackground) {
     if (handle == kInvalidAuxiliaryScene || handle >= auxiliaryScenes_.size()) {
         std::fprintf(stderr, "Renderer: drawSceneInto() called with an invalid AuxiliarySceneHandle.\n");
         return;
     }
-    // Kronos ("Avatar Scene Lighting Calibration Pass"): real,
-    // explicit `false` -- see drawSceneIntoImpl()'s own header comment
-    // on why every auxiliary/preview scene (Home's avatar preview,
-    // every Studio PreviewScene consumer) must not inherit the outdoor
-    // world's own live weather perturbation.
-    // Kronos ("Avatar Preview Rendering" pre-launch fix): also real,
-    // explicit `false` for bloom -- see drawBloomAndComposite()'s own
-    // comment on why a close-up preview's bloom bleed reads as a much
-    // larger washed-out effect than the same settings produce on a
-    // normal full-scene shot. Real, explicit `true` for suppressSunDisk
-    // -- see shaders/sky.frag's own comment. And real, explicit `true`
-    // for useFlatBackground -- the direct, guaranteed hardware-level
-    // override: a fixed dark-slate clear color with the sky pass
-    // skipped entirely, see this function's own header comment.
+    // Kronos ("Avatar Scene Lighting Calibration Pass" / "Avatar Preview
+    // Rendering" pre-launch fix): the four flags above default (see this
+    // function's own .hpp declaration) to exactly what used to be
+    // hardcoded here -- no weather, no bloom, a suppressed sun disk, a
+    // flat background -- so studio::ThumbnailCameraRig/studio::PreviewScene
+    // (every existing caller) behave byte-identically. Kronos ("Cinematic
+    // Camera Physics & Post-Processing Pipeline"): trailer::CaptureRig
+    // now passes real values instead, so an exported cinematic frame
+    // gets the same real bloom/weather/sky/background the live Studio
+    // viewport's own plain drawSceneInto() overload already renders --
+    // see that overload's own real (true/true/false/false) defaults.
     drawSceneIntoImpl(auxiliaryScenes_[handle], cmd, colorImage, colorView, depthImage, depthView, extent, camera, ecs,
-                       meshLibrary, particleSystem, textureLibrary, riggedMeshLibrary, /*applyWeatherEffects=*/false,
-                       /*applyBloom=*/false, /*suppressSunDisk=*/true, /*useFlatBackground=*/true);
+                       meshLibrary, particleSystem, textureLibrary, riggedMeshLibrary, applyWeatherEffects, applyBloom,
+                       suppressSunDisk, useFlatBackground);
 }
 
 Renderer::AuxiliarySceneHandle Renderer::createAuxiliaryScene() {

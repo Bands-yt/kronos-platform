@@ -123,4 +123,72 @@ private:
     float loopEnd_ = 0.0f;
 };
 
+// The authoring convention a TrackKind::Camera track uses to drive a rail
+// parameter: a track named kCameraRailTrackName with a single scalar
+// channel named kCameraRailChannelName, holding whatever real easing
+// (Bezier, Cubic, Stepped...) an editor drew on its keys -- see
+// TrackKind::Camera's own "rail parameter over time" comment above.
+// Named constants rather than repeated string literals so
+// studio::plugins::MovieModePlugin's own seedDefaultSequence() (the only
+// real writer) and railParameterAtTime() below (the only real reader)
+// can't silently drift apart into two different magic strings.
+inline constexpr const char* kCameraRailTrackName = "Camera Rail";
+inline constexpr const char* kCameraRailChannelName = "railT";
+
+// Normalised [0,1] rail parameter for `timeSeconds`, sourced from the
+// real authored easing on kCameraRailTrackName/kCameraRailChannelName
+// when `sequence` has one. Sequence::sampleChannel() itself already
+// returns a real, honest fallback when the track/channel is missing or
+// has no keys (a muted track, or a bare CameraRail with no matching
+// Sequence track authored at all) -- that fallback IS the plain linear
+// timeSeconds/duration mapping, so there is exactly one code path here,
+// not "curve, else linear" as two separate branches.
+//
+// The one real, single source of truth both studio::plugins::
+// MovieModePlugin::railParameterAtPlayhead() (the live editor/viewport
+// preview) and cinematic::runExportSchedule() (the Offline Export
+// pipeline) call, so a creator's authored camera easing is what actually
+// gets rendered, not silently discarded in favour of a raw linear scrub.
+[[nodiscard]] float railParameterAtTime(const Sequence& sequence, float timeSeconds);
+
+// Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" -- Beta
+// Roadmap Phase 3): the same real authoring convention as
+// kCameraRailTrackName above, for post-processing tuning instead of a
+// rail parameter. A track named kPostFxTrackName with up to three scalar
+// channels (kBloomIntensityChannelName, kBloomThresholdChannelName,
+// kExposureChannelName), each independently optional -- an unauthored
+// channel real-falls back to whatever value the caller already had
+// (see postFxAtTime()'s own comment), not an invented default, matching
+// Sequence::sampleChannel()'s own "missing track/channel means leave it
+// alone" contract.
+//
+// Deliberately does NOT expose focal length/aperture/ISO/focus distance
+// here: those are already real, per-point-interpolated CameraRail state
+// (see CameraRail.hpp's own RailPoint::focalLengthMm/aperture) -- a
+// second, parallel Sequence-track path for the same physical parameters
+// would just be two competing sources of truth for one real camera.
+inline constexpr const char* kPostFxTrackName = "Post FX";
+inline constexpr const char* kBloomIntensityChannelName = "bloomIntensity";
+inline constexpr const char* kBloomThresholdChannelName = "bloomThreshold";
+inline constexpr const char* kExposureChannelName = "exposure";
+
+// core::Renderer's own real tuning knobs (see Renderer::setBloomSettings()/
+// setExposure()), sampled from the sequencer instead of dialled in by
+// hand. Deliberately excludes bloom soft-knee -- a minor tuning constant
+// this codebase's own post-FX panels never animate, kept at whatever the
+// renderer already has rather than adding a fourth rarely-used channel.
+struct PostFxSample {
+    float bloomIntensity = 0.6f; // matches Renderer's own class-default bloomIntensity_
+    float bloomThreshold = 1.0f; // matches Renderer's own class-default bloomThreshold_
+    float exposure = 1.0f;       // matches Renderer's own class-default exposure_
+};
+
+// Samples kPostFxTrackName's three channels at `timeSeconds`, falling
+// back to `fallback`'s own fields (the caller's real current renderer
+// state -- see trailer::CaptureRig::exportSequence()'s own save-before/
+// restore-after use) per-channel independently when no authored curve
+// exists for that specific one, so authoring only a bloom-intensity
+// ramp doesn't also silently reset exposure to some invented constant.
+[[nodiscard]] PostFxSample postFxAtTime(const Sequence& sequence, float timeSeconds, const PostFxSample& fallback);
+
 } // namespace engine::cinematic

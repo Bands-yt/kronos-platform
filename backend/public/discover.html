@@ -1,0 +1,2133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kronos &mdash; Discover Games</title>
+<style>
+  :root {
+    --bg: #0a0c10;
+    --surface: #14171d;
+    --surface-2: #1a1e26;
+    --surface-3: #20242d;
+    --border: #262b34;
+    --border-soft: #1e222a;
+    --text: #e7eaf0;
+    --text-muted: #8b93a3;
+    --text-dim: #5b6373;
+    --accent: #4ea8de;
+    --accent-dim: #2f6f95;
+    --accent-glow: rgba(78, 168, 222, 0.18);
+    --good: #34d399;
+    --good-dim: rgba(52, 211, 153, 0.14);
+    --warn: #fbbf24;
+    --warn-dim: rgba(251, 191, 36, 0.14);
+    --bad: #f87171;
+    --bad-dim: rgba(248, 113, 113, 0.14);
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+    --radius: 14px;
+    --radius-sm: 8px;
+    --nav-h: 62px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    min-height: 100vh;
+    background-image:
+      radial-gradient(circle at 12% 0%, rgba(78, 168, 222, 0.07), transparent 40%),
+      radial-gradient(circle at 88% 8%, rgba(78, 168, 222, 0.045), transparent 38%);
+  }
+
+  ::selection { background: var(--accent-glow); color: var(--text); }
+  a { color: var(--accent); }
+  button { font-family: inherit; }
+
+  .shell {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 0 24px 72px;
+  }
+
+  [hidden] { display: none !important; }
+
+  /* ====================================================================
+     Top navigation -- persistent across the storefront and admin views.
+     ==================================================================== */
+
+  nav.top {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    height: var(--nav-h);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 24px;
+    margin: 0 -24px;
+    background: rgba(10, 12, 16, 0.82);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: linear-gradient(155deg, var(--accent), var(--accent-dim));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13.5px;
+    color: #05141f;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset, 0 6px 16px -6px var(--accent-glow);
+  }
+
+  .brand span.word {
+    font-size: 15.5px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+
+  .nav-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .nav-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    font-weight: 560;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 7px 11px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .nav-link:hover { color: var(--text); background: var(--surface-2); }
+  .nav-link.active { color: var(--accent); border-color: rgba(78,168,222,0.25); background: var(--accent-glow); }
+  .nav-link svg { width: 14px; height: 14px; }
+
+  .nav-sep { width: 1px; height: 22px; background: var(--border); margin: 0 2px; }
+
+  .user-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+    padding: 5px 6px 5px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .user-chip .avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: linear-gradient(155deg, var(--accent), var(--accent-dim));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #05141f;
+    flex-shrink: 0;
+  }
+
+  .user-chip strong { color: var(--text); font-weight: 600; }
+
+  /* ---------- buttons (shared) ---------- */
+
+  .btn {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 560;
+    padding: 9px 14px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+    white-space: nowrap;
+  }
+
+  .btn:hover { border-color: #333a46; background: #1e232c; }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .btn.primary {
+    background: linear-gradient(155deg, var(--accent), var(--accent-dim));
+    border-color: transparent;
+    color: #04141f;
+    font-weight: 650;
+  }
+  .btn.primary:hover { filter: brightness(1.07); }
+  .btn.ghost { background: transparent; }
+  .btn.sm { padding: 6px 11px; font-size: 11.5px; }
+  .btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+  /* ====================================================================
+     View switching -- #store (default) and #admin, toggled by location.hash
+     ==================================================================== */
+
+  .view { padding-top: 28px; }
+
+  /* ====================================================================
+     Storefront: hero + controls
+     ==================================================================== */
+
+  .hero {
+    padding: 30px 2px 22px;
+  }
+
+  .hero h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 8px;
+  }
+
+  .hero p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 14px;
+    max-width: 560px;
+    line-height: 1.5;
+  }
+
+  .store-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 22px 0 22px;
+  }
+
+  .search-box {
+    position: relative;
+    flex: 1 1 280px;
+    min-width: 220px;
+  }
+
+  .search-box svg {
+    position: absolute;
+    left: 13px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 15px;
+    height: 15px;
+    color: var(--text-dim);
+    pointer-events: none;
+  }
+
+  .search-box input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13.5px;
+    padding: 11px 14px 11px 36px;
+    border-radius: 999px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .search-box input::placeholder { color: var(--text-dim); }
+  .search-box input:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+  .segmented {
+    display: inline-flex;
+    padding: 3px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    flex-shrink: 0;
+  }
+
+  .segmented button {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 560;
+    padding: 7px 15px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .segmented button.active {
+    background: linear-gradient(155deg, var(--accent), var(--accent-dim));
+    color: #04141f;
+    font-weight: 650;
+  }
+
+  .result-count {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin: -8px 0 18px 2px;
+  }
+
+  /* ---------- game grid & cards ---------- */
+
+  .game-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 16px;
+  }
+
+  .game-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+  }
+
+  .game-card:hover {
+    transform: translateY(-3px);
+    border-color: #333a46;
+    box-shadow: 0 14px 30px -14px rgba(0,0,0,0.55);
+  }
+
+  .thumb {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    background-size: cover;
+    background-position: center;
+    display: flex;
+    align-items: flex-end;
+    overflow: hidden;
+  }
+
+  .thumb .thumb-letter {
+    position: absolute;
+    right: -6px;
+    bottom: -22px;
+    font-size: 96px;
+    font-weight: 800;
+    color: rgba(255,255,255,0.09);
+    line-height: 1;
+    user-select: none;
+  }
+
+  .thumb img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .players-pill {
+    position: relative;
+    margin: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px 4px 7px;
+    border-radius: 999px;
+    background: rgba(10, 12, 16, 0.72);
+    backdrop-filter: blur(4px);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .players-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
+  .players-pill.live { color: #b6f3d9; }
+  .players-pill.live .dot { background: var(--good); box-shadow: 0 0 0 3px var(--good-dim); }
+
+  .game-body {
+    padding: 14px 15px 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+  }
+
+  .game-title {
+    font-size: 14.5px;
+    font-weight: 640;
+    margin: 0;
+    letter-spacing: -0.005em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .game-creator {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    margin: 0 0 2px;
+  }
+
+  .game-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0;
+    flex: 1;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .game-foot {
+    margin-top: 10px;
+    display: flex;
+  }
+
+  .game-foot .btn { width: 100%; justify-content: center; }
+
+  /* ---------- skeleton loading state ---------- */
+
+  .skel-card {
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .skel-thumb { aspect-ratio: 16 / 10; background: var(--surface-2); }
+
+  .skel-line {
+    height: 10px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    margin: 14px 15px;
+  }
+
+  .skel-line.w60 { width: 60%; }
+  .skel-line.w40 { width: 40%; margin-top: -6px; }
+
+  .skel-thumb, .skel-line {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .skel-thumb::after, .skel-line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.045), transparent);
+    animation: shimmer 1.4s infinite;
+  }
+
+  @keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  /* ---------- empty / error states ---------- */
+
+  .state-panel {
+    text-align: center;
+    padding: 64px 20px;
+    color: var(--text-muted);
+  }
+
+  .state-panel .state-icon {
+    width: 44px;
+    height: 44px;
+    margin: 0 auto 14px;
+    color: var(--text-dim);
+  }
+
+  .state-panel h3 { margin: 0 0 6px; font-size: 15px; color: var(--text); font-weight: 620; }
+  .state-panel p { margin: 0 0 16px; font-size: 13px; max-width: 380px; margin-left: auto; margin-right: auto; }
+  .state-panel.error .state-icon { color: var(--bad); }
+
+  .load-more-row { display: flex; justify-content: center; margin-top: 26px; }
+
+  /* ====================================================================
+     Auth drawer
+     ==================================================================== */
+
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 5, 7, 0.6);
+    backdrop-filter: blur(2px);
+    z-index: 90;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+
+  .drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(400px, 100vw);
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    z-index: 91;
+    transform: translateX(100%);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    display: flex;
+    flex-direction: column;
+    box-shadow: -20px 0 50px -20px rgba(0,0,0,0.6);
+  }
+
+  .drawer.open { transform: translateX(0); }
+
+  .drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-shrink: 0;
+  }
+
+  .drawer-head h2 { margin: 0; font-size: 15px; font-weight: 640; }
+
+  .drawer-close {
+    appearance: none;
+    border: none;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .drawer-close:hover { color: var(--text); }
+  .drawer-close svg { width: 14px; height: 14px; }
+
+  .drawer-body {
+    padding: 20px;
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .auth-tabs {
+    display: flex;
+    gap: 6px;
+    padding: 3px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    margin-bottom: 20px;
+  }
+
+  .auth-tabs button {
+    flex: 1;
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 8px 0;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .auth-tabs button.active {
+    background: var(--surface-3);
+    color: var(--text);
+    box-shadow: 0 0 0 1px var(--border);
+  }
+
+  .auth-pane { display: none; flex-direction: column; gap: 13px; }
+  .auth-pane.active { display: flex; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+
+  .field label {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.01em;
+  }
+
+  .field input {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .field input::placeholder { color: var(--text-dim); }
+  .field input:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-glow); }
+  .field .hint { font-size: 10.5px; color: var(--text-dim); }
+
+  .auth-error {
+    display: none;
+    font-size: 12px;
+    color: #ffc4c0;
+    background: var(--bad-dim);
+    border: 1px solid rgba(248,113,113,0.28);
+    border-radius: var(--radius-sm);
+    padding: 9px 12px;
+    line-height: 1.4;
+  }
+  .auth-error.visible { display: block; }
+
+  .auth-submit { width: 100%; justify-content: center; margin-top: 2px; }
+
+  .auth-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 4px 0 2px;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
+
+  .drawer-note {
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.55;
+    margin-top: 4px;
+  }
+  .drawer-note code {
+    background: rgba(255,255,255,0.05);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 10.5px;
+  }
+
+  /* ====================================================================
+     Launch fallback modal -- centered, unlike the auth drawer's
+     slide-over: this is a quick yes/no moment (retry or download), not a
+     task with fields, and the layout says so.
+     ==================================================================== */
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 5, 7, 0.62);
+    backdrop-filter: blur(3px);
+    z-index: 100;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+
+  .launch-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: min(380px, calc(100vw - 32px));
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 30px 26px 24px;
+    text-align: center;
+    z-index: 101;
+    transform: translate(-50%, -50%) scale(0.94);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+    box-shadow: 0 30px 70px -20px rgba(0,0,0,0.65);
+  }
+  .launch-modal.open { transform: translate(-50%, -50%) scale(1); opacity: 1; pointer-events: auto; }
+
+  .modal-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+  }
+
+  .launch-modal-icon {
+    width: 46px;
+    height: 46px;
+    margin: 0 auto 16px;
+    border-radius: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+  }
+  .launch-modal-icon svg { width: 22px; height: 22px; }
+
+  .launch-modal h2 { margin: 0 0 8px; font-size: 16.5px; font-weight: 650; }
+  .launch-modal p { margin: 0 0 20px; font-size: 12.5px; color: var(--text-muted); line-height: 1.55; }
+
+  .launch-modal-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .launch-modal-actions .btn { width: 100%; justify-content: center; }
+
+  .launch-modal-note {
+    margin: 16px 0 0 !important;
+    font-size: 10.5px !important;
+    color: var(--text-dim) !important;
+  }
+
+  /* ====================================================================
+     Toast (used for "Open in Kronos" and sign-in confirmation)
+     ==================================================================== */
+
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translate(-50%, 12px);
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12.5px;
+    padding: 11px 16px;
+    border-radius: 999px;
+    box-shadow: 0 12px 30px -10px rgba(0,0,0,0.6);
+    z-index: 120;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    max-width: 90vw;
+    text-align: center;
+  }
+  .toast.visible { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ====================================================================
+     Admin / Systems view -- reuses the card/health/console language
+     ==================================================================== */
+
+  .admin-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 22px;
+  }
+
+  .admin-head h1 { font-size: 20px; font-weight: 660; margin: 0 0 3px; letter-spacing: -0.01em; }
+  .admin-head p { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 14px 7px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 12.5px;
+    font-weight: 550;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    transition: border-color 0.25s ease, background 0.25s ease;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+    position: relative;
+  }
+  .status-dot::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    background: inherit;
+    opacity: 0.35;
+    filter: blur(3px);
+  }
+
+  .status-pill[data-state="checking"] .status-dot { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
+  .status-pill[data-state="online"] .status-dot { background: var(--good); }
+  .status-pill[data-state="degraded"] .status-dot { background: var(--warn); }
+  .status-pill[data-state="offline"] .status-dot { background: var(--bad); }
+  .status-pill[data-state="online"] { border-color: rgba(52,211,153,0.28); background: var(--good-dim); color: #b6f3d9; }
+  .status-pill[data-state="degraded"] { border-color: rgba(251,191,36,0.28); background: var(--warn-dim); color: #ffe3a3; }
+  .status-pill[data-state="offline"] { border-color: rgba(248,113,113,0.28); background: var(--bad-dim); color: #ffc4c0; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.82); }
+  }
+
+  .status-pill time {
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    border-left: 1px solid var(--border);
+    padding-left: 9px;
+    margin-left: 1px;
+  }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .grid.two-thirds { grid-template-columns: 1.3fr 1fr; }
+  @media (max-width: 860px) { .grid, .grid.two-thirds { grid-template-columns: 1fr; } }
+  section.stack { margin-top: 18px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+  }
+
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .card-head h2 { font-size: 13.5px; font-weight: 620; margin: 0; letter-spacing: 0.01em; }
+  .card-head .eyebrow { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); font-weight: 600; }
+
+  .health-rows { display: flex; flex-direction: column; gap: 10px; }
+
+  .health-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 13px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+  }
+
+  .health-row .label { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 550; }
+  .health-row .label .icon {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: rgba(255,255,255,0.03);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-muted); flex-shrink: 0;
+  }
+
+  .badge { font-size: 11px; font-weight: 650; padding: 3px 9px; border-radius: 999px; letter-spacing: 0.02em; }
+  .badge.up { background: var(--good-dim); color: #7ee9c4; }
+  .badge.down { background: var(--bad-dim); color: #ffa39d; }
+  .badge.pending { background: rgba(255,255,255,0.05); color: var(--text-dim); }
+
+  .health-footnote {
+    margin-top: 14px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .action-row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .action-row .btn { flex: 1 1 140px; justify-content: center; }
+
+  .login-note { font-size: 11px; color: var(--text-dim); line-height: 1.5; margin-top: -2px; }
+  .login-note code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-size: 10.5px; }
+
+  .session-chip { font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+  .session-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); }
+  .session-chip.signed-in { color: #7ee9c4; }
+  .session-chip.signed-in .dot { background: var(--good); }
+
+  .console-controls { display: flex; gap: 8px; margin-bottom: 12px; }
+
+  select.method {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
+    outline: none;
+    cursor: pointer;
+    width: 92px;
+    flex-shrink: 0;
+  }
+
+  input.path {
+    flex: 1;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    outline: none;
+    min-width: 0;
+  }
+
+  select.method:focus, input.path:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+  textarea.body {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    outline: none;
+    resize: vertical;
+    min-height: 64px;
+    margin-bottom: 12px;
+    display: none;
+  }
+  textarea.body.visible { display: block; }
+  textarea.body:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+  .preset-row { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-soft);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .chip:hover { border-color: var(--border); color: var(--text); background: var(--surface-2); }
+
+  .response-shell { border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: #0c0e12; overflow: hidden; }
+
+  .response-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 13px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+  }
+
+  .response-meta .status-code { font-weight: 700; padding: 1px 7px; border-radius: 5px; }
+  .response-meta .status-code.s2xx { background: var(--good-dim); color: #7ee9c4; }
+  .response-meta .status-code.s4xx { background: var(--warn-dim); color: #ffe3a3; }
+  .response-meta .status-code.s5xx, .response-meta .status-code.serr { background: var(--bad-dim); color: #ffa39d; }
+  .response-meta .status-code.sidle { background: rgba(255,255,255,0.05); color: var(--text-dim); }
+
+  pre.json-out {
+    margin: 0;
+    padding: 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    max-height: 340px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-muted);
+  }
+  pre.json-out .k { color: #79c0ff; }
+  pre.json-out .s { color: #a5d6a7; }
+  pre.json-out .n { color: #f4b678; }
+  pre.json-out .b { color: #d19fe8; }
+  pre.json-out .null { color: var(--text-dim); }
+
+  .log-list { display: flex; flex-direction: column-reverse; gap: 6px; max-height: 230px; overflow-y: auto; padding-right: 2px; }
+  .log-empty { font-size: 12px; color: var(--text-dim); padding: 18px 0; text-align: center; }
+
+  .log-row {
+    display: grid;
+    grid-template-columns: 52px 1fr auto 52px;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 7px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .log-row .method { font-weight: 700; color: var(--accent); }
+  .log-row .path { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-row .time { color: var(--text-dim); font-size: 10px; }
+  .log-row .code { text-align: right; font-weight: 700; }
+  .log-row .code.ok { color: #7ee9c4; }
+  .log-row .code.err { color: #ffa39d; }
+
+  footer.foot { margin-top: 34px; text-align: center; font-size: 11px; color: var(--text-dim); }
+
+  @media (max-width: 640px) {
+    .brand span.word { display: none; }
+    nav.top { padding: 0 16px; margin: 0 -16px; }
+    .shell { padding: 0 16px 60px; }
+    .hero h1 { font-size: 23px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <button class="brand" id="brandHome" type="button" aria-label="Kronos home">
+    <div class="brand-mark">K</div>
+    <span class="word">Kronos</span>
+  </button>
+
+  <div class="nav-right">
+    <a class="nav-link" id="navAdmin" href="#admin">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+      Admin / Systems
+    </a>
+    <span class="nav-sep"></span>
+
+    <!-- Signed-out state -->
+    <span id="navSignedOut" style="display:flex; gap:8px;">
+      <button class="btn ghost sm" id="btnOpenLogin" type="button">Log In</button>
+      <button class="btn primary sm" id="btnOpenSignup" type="button">Sign Up</button>
+    </span>
+
+    <!-- Signed-in state -->
+    <span id="navSignedIn" style="display:none; align-items:center; gap:8px;">
+      <span class="user-chip">
+        <span class="avatar" id="userAvatarLetter">?</span>
+        <strong id="userNameLabel">&mdash;</strong>
+      </span>
+      <button class="btn ghost sm" id="btnSignOut" type="button">Sign out</button>
+    </span>
+  </div>
+</nav>
+
+<div class="shell">
+
+  <!-- ======================================================================
+       STORE VIEW (default) -- public game directory
+       ====================================================================== -->
+  <section class="view" id="viewStore" data-view="store">
+
+    <div class="hero">
+      <h1>Discover Kronos games</h1>
+      <p>Browse everything published on the platform, live from <code style="font-family:var(--font-mono); font-size:12.5px; background:rgba(255,255,255,0.05); padding:1px 6px; border-radius:4px;">GET /v1/catalog/games</code>. No account needed to look around.</p>
+    </div>
+
+    <div class="store-controls">
+      <div class="search-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input type="text" id="searchInput" placeholder="Search games by title&hellip;" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="segmented" id="sortSegmented">
+        <button class="active" data-sort="newest" type="button">Newest</button>
+        <button data-sort="active" type="button">Most Active</button>
+      </div>
+    </div>
+
+    <div class="result-count" id="resultCount"></div>
+
+    <div id="gameGrid" class="game-grid" aria-live="polite"></div>
+
+    <div class="load-more-row" id="loadMoreRow" hidden>
+      <button class="btn" id="btnLoadMore" type="button">Load more games</button>
+    </div>
+
+  </section>
+
+  <!-- ======================================================================
+       ADMIN VIEW -- backend status monitor + API console
+       ====================================================================== -->
+  <section class="view" id="viewAdmin" data-view="admin" hidden>
+
+    <div class="admin-head">
+      <div>
+        <h1>Admin / Systems</h1>
+        <p>Backend operations &amp; API console &mdash; <a href="#" id="backToStore">&larr; back to the store</a></p>
+      </div>
+      <div class="status-pill" id="statusPill" data-state="checking">
+        <span class="status-dot"></span>
+        <span id="statusLabel">Checking&hellip;</span>
+        <time id="statusTime"></time>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card" id="healthCard">
+        <div class="card-head">
+          <h2>System Overview</h2>
+          <span class="eyebrow">/healthz</span>
+        </div>
+        <div class="health-rows">
+          <div class="health-row" data-svc="status">
+            <span class="label">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg></span>
+              Node API
+            </span>
+            <span class="badge pending" data-field="status">&mdash;</span>
+          </div>
+          <div class="health-row" data-svc="postgres">
+            <span class="label">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg></span>
+              PostgreSQL
+            </span>
+            <span class="badge pending" data-field="postgres">&mdash;</span>
+          </div>
+          <div class="health-row" data-svc="redis">
+            <span class="label">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2 3 7l9 5 9-5-9-5Z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span>
+              Redis
+            </span>
+            <span class="badge pending" data-field="redis">&mdash;</span>
+          </div>
+        </div>
+        <div class="health-footnote">
+          <span id="healthLatency">Not checked yet</span>
+          <span>auto-refresh every 15s</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Quick Actions</h2>
+          <span class="eyebrow">Shortcuts</span>
+        </div>
+        <div class="action-row">
+          <button class="btn primary" id="btnCheckStatus" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3.2-6.9"/><path d="M21 3v6h-6"/></svg>
+            Check Status
+          </button>
+          <button class="btn" id="btnRefreshData" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>
+            Refresh Data
+          </button>
+          <button class="btn" id="btnViewLogs" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v4H4zM4 10h10v4H4zM4 16h13v4H4z"/></svg>
+            View Logs
+          </button>
+        </div>
+        <p class="login-note" style="margin-top:14px;">
+          "Check Status" re-polls <code>/healthz</code> immediately. "Refresh Data" also pulls a live sample from
+          <code>/v1/catalog/games</code>. "View Logs" jumps to this page's own request activity log below &mdash;
+          there is no server log-streaming endpoint yet, so this reflects only what your browser has sent.
+        </p>
+      </div>
+    </div>
+
+    <section class="stack grid two-thirds">
+      <div class="card">
+        <div class="card-head">
+          <h2>API Test Console</h2>
+          <span class="eyebrow">Raw request / response</span>
+        </div>
+
+        <div class="preset-row">
+          <button class="chip" data-preset="GET|/healthz|">GET /healthz</button>
+          <button class="chip" data-preset="GET|/v1/catalog/games|">GET /v1/catalog/games</button>
+          <button class="chip" data-preset='POST|/v1/auth/login|{"email":"you@example.com","password":"••••••••"}'>POST /v1/auth/login</button>
+        </div>
+
+        <div class="console-controls">
+          <select class="method" id="consoleMethod">
+            <option>GET</option>
+            <option>POST</option>
+            <option>PATCH</option>
+            <option>DELETE</option>
+          </select>
+          <input class="path" id="consolePath" type="text" value="/v1/catalog/games" spellcheck="false" autocomplete="off" />
+          <button class="btn primary" id="btnSend" type="button">Send</button>
+        </div>
+
+        <textarea class="body" id="consoleBody" placeholder='{"key": "value"}' spellcheck="false"></textarea>
+
+        <div class="response-shell">
+          <div class="response-meta">
+            <span class="status-code sidle" id="respCode">idle</span>
+            <span id="respTiming">&mdash;</span>
+            <span id="respPath" style="margin-left:auto; opacity:0.7;"></span>
+          </div>
+          <pre class="json-out" id="respOut">// Response output appears here.
+// Try a preset above, or edit the method / path and hit Send.</pre>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Session</h2>
+          <span class="eyebrow">Bearer token</span>
+        </div>
+        <p class="login-note">
+          Signing in from the "Log In" / "Sign Up" button in the top nav keeps an
+          <code>access_token</code> in memory (never localStorage) for the lifetime of this tab, and
+          auto-attaches it as a Bearer token to every request sent from the console on the left.
+        </p>
+        <div class="form-foot" style="display:flex; align-items:center; justify-content:space-between; margin-top:14px;">
+          <span class="session-chip" id="sessionChipAdmin"><span class="dot"></span> Not signed in</span>
+          <button class="btn ghost" id="btnOpenLoginAdmin" type="button">Log In</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="stack">
+      <div class="card" id="logCard">
+        <div class="card-head">
+          <h2>Activity Log</h2>
+          <span class="eyebrow" id="logCount">0 requests this session</span>
+        </div>
+        <div class="log-list" id="logList">
+          <div class="log-empty">No requests sent yet.</div>
+        </div>
+      </div>
+    </section>
+
+  </section>
+
+  <footer class="foot">Kronos &middot; served from <code>public/</code> &middot; all requests are relative to this origin</footer>
+
+</div>
+
+<!-- ========================================================================
+     Auth drawer (shared by both views)
+     ======================================================================== -->
+<div class="drawer-backdrop" id="drawerBackdrop"></div>
+<div class="drawer" id="authDrawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+  <div class="drawer-head">
+    <h2 id="drawerTitle">Welcome to Kronos</h2>
+    <button class="drawer-close" id="btnCloseDrawer" type="button" aria-label="Close">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body">
+
+    <div class="auth-tabs">
+      <button class="active" data-tab="login" type="button">Log In</button>
+      <button data-tab="signup" type="button">Sign Up</button>
+    </div>
+
+    <div class="auth-error" id="authError"></div>
+
+    <!-- Log in -->
+    <form class="auth-pane active" id="paneLogin" data-pane="login" autocomplete="off">
+      <div class="field">
+        <label for="loginEmail">Email</label>
+        <input id="loginEmail" name="email" type="email" placeholder="you@example.com" required />
+      </div>
+      <div class="field">
+        <label for="loginPassword">Password</label>
+        <input id="loginPassword" name="password" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" required />
+      </div>
+      <button class="btn primary auth-submit" id="btnLoginSubmit" type="submit">Sign in</button>
+      <div class="auth-divider">or</div>
+      <button class="btn auth-submit" id="btnGuestFromLogin" type="button">Continue as Guest</button>
+      <p class="drawer-note">
+        Kronos accounts are keyed by <strong>email</strong>, not a separate username &mdash; this authenticates
+        against <code>POST /v1/auth/login</code>.
+      </p>
+    </form>
+
+    <!-- Sign up -->
+    <form class="auth-pane" id="paneSignup" data-pane="signup" autocomplete="off">
+      <div class="field">
+        <label for="signupName">Display name <span style="font-weight:400; color:var(--text-dim);">(optional)</span></label>
+        <input id="signupName" name="display_name" type="text" placeholder="How you'll appear to other players" maxlength="64" />
+      </div>
+      <div class="field">
+        <label for="signupEmail">Email</label>
+        <input id="signupEmail" name="email" type="email" placeholder="you@example.com" required />
+      </div>
+      <div class="field">
+        <label for="signupPassword">Password</label>
+        <input id="signupPassword" name="password" type="password" placeholder="At least 8 characters" required minlength="8" />
+        <span class="hint">The server enforces its own strength rules &mdash; if this is too weak, it'll tell you exactly why.</span>
+      </div>
+      <button class="btn primary auth-submit" id="btnSignupSubmit" type="submit">Create account</button>
+      <div class="auth-divider">or</div>
+      <button class="btn auth-submit" id="btnGuestFromSignup" type="button">Continue as Guest</button>
+      <p class="drawer-note">
+        Creates a real account via <code>POST /v1/auth/signup</code>. Your <code>access_token</code> is kept in
+        memory only for this tab &mdash; never written to localStorage &mdash; and cleared on sign out or tab close.
+      </p>
+    </form>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ========================================================================
+     Launch fallback modal -- shown when kronos://launch?game=<slug> goes
+     unanswered (see attemptLaunch() for why that's the expected outcome
+     on every machine today, not just a failure case).
+     ======================================================================== -->
+<div class="modal-backdrop" id="launchModalBackdrop"></div>
+<div class="launch-modal" id="launchModal" role="dialog" aria-modal="true" aria-labelledby="launchModalTitle">
+  <button class="drawer-close modal-close" id="btnCloseLaunchModal" type="button" aria-label="Close">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+  <div class="launch-modal-icon">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>
+  </div>
+  <h2 id="launchModalTitle">Looking for Kronos?</h2>
+  <p>Make sure the Kronos client is installed<span id="launchModalGame"></span>, or download it below. If it's already
+    installed, your browser may have blocked the launch request &mdash; try again after allowing it.</p>
+  <div class="launch-modal-actions">
+    <a class="btn primary" id="downloadInstallerLink" href="https://github.com/Bands-yt/kronos-platform/releases/latest" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+      Download the installer
+    </a>
+    <button class="btn ghost" id="btnRetryLaunch" type="button">Try again</button>
+  </div>
+  <p class="launch-modal-note">Windows and Linux builds, direct from GitHub Releases &mdash; <span id="launchModalOsHint"></span></p>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+  /* =====================================================================
+     Shared session state -- used by both the storefront and the admin
+     console, so signing in from either surface is visible in both.
+     =====================================================================
+     Deliberately in memory only, never localStorage/sessionStorage: a
+     token that outlives the tab is a token that can leak through an XSS
+     in anything else served from this origin.
+     ===================================================================== */
+
+  let accessToken = null;
+  let refreshToken = null;
+  let currentUser = null; // { email, display_name, id, ... } | null
+  let requestSeq = 0;
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function showToast(message, ms = 2600) {
+    const toast = $("#toast");
+    toast.textContent = message;
+    toast.classList.add("visible");
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove("visible"), ms);
+  }
+
+  /* =====================================================================
+     Core fetch helper -- every network call funnels through here so the
+     activity log and Bearer token are applied in exactly one place.
+     ===================================================================== */
+
+  // Guards the retry-after-refresh branch below against two callers
+  // racing an expired access token into two concurrent refreshes (the
+  // second would present an already-rotated token and get treated as
+  // reuse -- see tokens.js's own rotateRefreshToken() comment): every
+  // caller shares the one in-flight refresh instead of starting its own.
+  let refreshInFlight = null;
+  function refreshSession() {
+    if (!refreshInFlight) {
+      refreshInFlight = apiFetch("POST", "/v1/auth/refresh", {}, true).finally(() => {
+        refreshInFlight = null;
+      });
+    }
+    return refreshInFlight;
+  }
+
+  async function apiFetch(method, path, body, _isRefreshOrRetry) {
+    const started = performance.now();
+    const headers = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const res = await fetch(path, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      const ms = Math.round(performance.now() - started);
+      const text = await res.text();
+      let parsed;
+      try {
+        parsed = text ? JSON.parse(text) : null;
+      } catch {
+        parsed = text;
+      }
+
+      pushLog(method, path, res.status, res.ok);
+
+      // A live session that suddenly 401s is almost always just the
+      // 15-minute access token expiring mid-use, not a real auth failure
+      // -- silently refresh (the httpOnly cookie carries the refresh
+      // token even if this tab's own copy was lost) and replay the
+      // original request exactly once before giving up and signing the
+      // tab out. `_isRefreshOrRetry` stops this from recursing into the
+      // refresh call itself or retrying more than once.
+      if (res.status === 401 && !_isRefreshOrRetry && accessToken) {
+        const refreshed = await refreshSession();
+        if (refreshed.ok && refreshed.data && refreshed.data.access_token) {
+          applySession(refreshed.data.user, refreshed.data);
+          return apiFetch(method, path, body, true);
+        }
+        applySession(null, null);
+      }
+
+      return { ok: res.ok, status: res.status, ms, data: parsed };
+    } catch (err) {
+      clearTimeout(timeout);
+      const ms = Math.round(performance.now() - started);
+      const message = err.name === "AbortError" ? "Request timed out after 8s" : (err.message || "Network error");
+      pushLog(method, path, 0, false);
+      return { ok: false, status: 0, ms, data: { error: { code: "network_error", message } } };
+    }
+  }
+
+  /* =====================================================================
+     View router -- #store (default) / #admin
+     ===================================================================== */
+
+  function setView(name) {
+    const isAdmin = name === "admin";
+    $("#viewStore").hidden = isAdmin;
+    $("#viewAdmin").hidden = !isAdmin;
+    $("#navAdmin").classList.toggle("active", isAdmin);
+    if (isAdmin) pollHealth();
+    window.scrollTo({ top: 0 });
+  }
+
+  function routeFromHash() {
+    setView(location.hash === "#admin" ? "admin" : "store");
+  }
+
+  window.addEventListener("hashchange", routeFromHash);
+  $("#brandHome").addEventListener("click", () => { location.hash = ""; });
+  $("#backToStore").addEventListener("click", (e) => { e.preventDefault(); location.hash = ""; });
+
+  /* =====================================================================
+     Storefront -- GET /v1/catalog/games
+     ===================================================================== */
+
+  const PAGE_SIZE = 24;
+  let allGames = [];       // every game fetched so far this session (for client-side "Most Active" sort)
+  let nextCursor = null;
+  let playerCountsAvailable = true;
+  let currentSort = "newest";
+  let currentQuery = "";
+  let storeLoading = false;
+  let searchDebounce = null;
+
+  // Deterministic hue from a string, so a game with no thumbnail always
+  // gets the SAME generated card color rather than a new random one on
+  // every reload.
+  function hashHue(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+    return h % 360;
+  }
+
+  function thumbHtml(game) {
+    const hue = hashHue(game.slug || game.title || "kronos");
+    const bg = `linear-gradient(135deg, hsl(${hue} 60% 20%), hsl(${(hue + 42) % 360} 65% 12%))`;
+    const letter = (game.title || "?").trim().charAt(0).toUpperCase() || "?";
+    const img = game.thumbnail_url
+      ? `<img src="${escapeHtml(game.thumbnail_url)}" alt="" loading="lazy" onerror="this.remove()" />`
+      : "";
+    return `<div class="thumb" style="background-image:${bg}">${img}<span class="thumb-letter">${escapeHtml(letter)}</span>${playersPillHtml(game)}</div>`;
+  }
+
+  function playersPillHtml(game) {
+    const has = Object.prototype.hasOwnProperty.call(game, "active_players") && game.active_players !== null;
+    if (!playerCountsAvailable || !has) {
+      return `<span class="players-pill"><span class="dot"></span>Live count unavailable</span>`;
+    }
+    const n = game.active_players;
+    if (n > 0) return `<span class="players-pill live"><span class="dot"></span>${n} playing now</span>`;
+    return `<span class="players-pill"><span class="dot"></span>No players online</span>`;
+  }
+
+  function gameCardHtml(game) {
+    const desc = game.description ? escapeHtml(game.description) : "No description provided.";
+    const creator = game.creator && game.creator.display_name ? escapeHtml(game.creator.display_name) : "an unknown creator";
+    return `
+      <article class="game-card" data-slug="${escapeHtml(game.slug || "")}">
+        ${thumbHtml(game)}
+        <div class="game-body">
+          <h3 class="game-title" title="${escapeHtml(game.title || "Untitled")}">${escapeHtml(game.title || "Untitled")}</h3>
+          <p class="game-creator">by ${creator}</p>
+          <p class="game-desc">${desc}</p>
+          <div class="game-foot">
+            <button class="btn sm open-in-kronos" type="button"
+                    data-slug="${escapeHtml(game.slug || "")}"
+                    data-title="${escapeHtml(game.title || "this game")}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              Open in Kronos
+            </button>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  function sortedGames() {
+    if (currentSort === "active") {
+      return [...allGames].sort((a, b) => {
+        const av = typeof a.active_players === "number" ? a.active_players : -1;
+        const bv = typeof b.active_players === "number" ? b.active_players : -1;
+        return bv - av;
+      });
+    }
+    return allGames; // server order is already newest-first (id DESC)
+  }
+
+  function renderGameGrid() {
+    const grid = $("#gameGrid");
+    const games = sortedGames();
+
+    if (storeLoading && allGames.length === 0) {
+      grid.innerHTML = Array.from({ length: 8 })
+        .map(() => `<div class="skel-card"><div class="skel-thumb"></div><div class="skel-line w60"></div><div class="skel-line w40"></div></div>`)
+        .join("");
+      $("#resultCount").textContent = "";
+      $("#loadMoreRow").hidden = true;
+      return;
+    }
+
+    if (games.length === 0) {
+      grid.innerHTML = `
+        <div class="state-panel" style="grid-column:1/-1;">
+          <svg class="state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18M8 4v5"/></svg>
+          <h3>${currentQuery ? "No games match that search" : "No games published yet"}</h3>
+          <p>${currentQuery ? "Try a different title, or clear the search to see everything." : "Once a creator publishes a game through Kronos Studio, it will show up here."}</p>
+        </div>`;
+      $("#resultCount").textContent = "";
+      $("#loadMoreRow").hidden = true;
+      return;
+    }
+
+    grid.innerHTML = games.map(gameCardHtml).join("");
+    $("#resultCount").textContent = `${games.length} game${games.length === 1 ? "" : "s"}${currentQuery ? ` matching "${currentQuery}"` : ""}`;
+    $("#loadMoreRow").hidden = !nextCursor;
+
+    $$(".open-in-kronos").forEach((btn) => {
+      btn.addEventListener("click", () => attemptLaunch(btn.dataset.slug, btn.dataset.title));
+    });
+  }
+
+  function renderGridError(message) {
+    $("#gameGrid").innerHTML = `
+      <div class="state-panel error" style="grid-column:1/-1;">
+        <svg class="state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 9v4M12 17h.01M10.3 3.9L2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <h3>Couldn't load games</h3>
+        <p>${escapeHtml(message)}</p>
+        <button class="btn primary sm" id="btnRetryGrid" type="button">Try again</button>
+      </div>`;
+    $("#resultCount").textContent = "";
+    $("#loadMoreRow").hidden = true;
+    $("#btnRetryGrid").addEventListener("click", () => loadGames({ reset: true }));
+  }
+
+  async function loadGames({ reset }) {
+    if (storeLoading) return;
+    storeLoading = true;
+    if (reset) {
+      allGames = [];
+      nextCursor = null;
+    }
+    renderGameGrid();
+
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+    if (nextCursor) params.set("cursor", nextCursor);
+    if (currentQuery) params.set("q", currentQuery);
+
+    const result = await apiFetch("GET", `/v1/catalog/games?${params.toString()}`);
+    storeLoading = false;
+
+    if (!result.ok) {
+      const message = (result.data && result.data.error && result.data.error.message) || `HTTP ${result.status || "error"} contacting the catalogue.`;
+      renderGridError(message);
+      return;
+    }
+
+    const data = result.data || {};
+    const games = Array.isArray(data.games) ? data.games : [];
+    allGames = reset ? games : allGames.concat(games);
+    nextCursor = data.next_cursor || null;
+    playerCountsAvailable = data.player_counts_available !== false;
+    renderGameGrid();
+  }
+
+  $("#btnLoadMore").addEventListener("click", () => loadGames({ reset: false }));
+
+  $$("#sortSegmented button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $$("#sortSegmented button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentSort = btn.dataset.sort;
+      renderGameGrid();
+    });
+  });
+
+  $("#searchInput").addEventListener("input", (e) => {
+    clearTimeout(searchDebounce);
+    const value = e.target.value.trim();
+    searchDebounce = setTimeout(() => {
+      currentQuery = value;
+      loadGames({ reset: true });
+    }, 320);
+  });
+
+  /* =====================================================================
+     Launch flow -- "Open in Kronos"
+     =====================================================================
+     Attempts the custom URI scheme kronos://launch?game=<slug>, exactly
+     the pattern Slack/Zoom/Discord use for "open in the desktop app":
+     there is no synchronous way to ask a browser "is a handler
+     registered for this scheme", because navigating an iframe to an
+     unregistered scheme fails SILENTLY (no exception, no event). The
+     only real signal is indirect -- if a handler exists, the OS's own
+     "Open Kronos?" confirmation steals focus from the page, which fires
+     visibilitychange/blur *before* our timeout does. If the timeout
+     fires first with the page still focused, nothing caught it.
+
+     HONESTY NOTE, not decoration: as of this build, kronos:// is not
+     registered by anything -- not the Windows installer (a plain
+     Desktop .lnk shortcut, see installer/src/PlatformIntegration.cpp),
+     not the Linux .desktop entry (a plain Exec= launcher, no
+     MimeType=x-scheme-handler/kronos), and nothing in main.cpp parses a
+     kronos:// argv either. So on every machine today this attempt will
+     correctly and immediately fall through to the install prompt below
+     -- which is the right behavior, not a bug -- and the moment a future
+     client build DOES register the scheme, this same code starts
+     succeeding with zero frontend changes.
+     ===================================================================== */
+
+  const LAUNCH_TIMEOUT_MS = 1300;
+  let lastLaunchAttempt = null; // { slug, title } -- what "Try again" in the fallback modal retries
+  let launchWatchTimer = null;
+
+  async function attemptLaunch(slug, title) {
+    if (!slug) return;
+    lastLaunchAttempt = { slug, title };
+    showToast(`Opening Kronos…`);
+
+    // "Open in Kronos" sign-in hand-off: a freshly-launched desktop
+    // process has no session of its own -- this page's own accessToken
+    // lives in JS memory only (see applySession()'s own comment) and is
+    // not something a native process can ever read. Bridged with a
+    // real, short-lived, single-use code (POST /v1/auth/handoff) minted
+    // HERE, while this page still has a real authenticated fetch to make
+    // it with, and exchanged by the desktop client for a real session of
+    // its own (POST /v1/auth/handoff/exchange).
+    //
+    // Deliberately NOT the real accessToken riding along in the URI
+    // itself: a kronos:// link is handed to the OS's own URL-dispatch
+    // machinery, and on both Linux and Windows any other process running
+    // as the same user can read another process's full command line
+    // (/proc/<pid>/cmdline, Task Manager) -- a long-lived bearer
+    // credential in argv would be a real local credential-exposure
+    // surface, not a hypothetical one. A one-time code worth nothing
+    // seconds later has none of that exposure.
+    //
+    // A signed-out visitor gets the exact same plain link this always
+    // sent: there is no session here to bridge, and the desktop client
+    // falls back to whatever it already has, exactly as before this
+    // existed.
+    let handoffParam = "";
+    if (accessToken) {
+      const minted = await apiFetch("POST", "/v1/auth/handoff", {});
+      if (minted.ok && minted.data && minted.data.code) {
+        handoffParam = `&handoff=${encodeURIComponent(minted.data.code)}`;
+      }
+      // A failed mint (network hiccup, rate limited) is not fatal to the
+      // launch attempt -- it just means the desktop client will fall
+      // back to whatever native session (if any) it already has,
+      // instead of being freshly signed in as this browser's user.
+    }
+
+    // A hidden iframe rather than window.location.href: setting the
+    // visible tab's own location to an unregistered custom scheme risks
+    // a jarring native "can't find application" interstitial replacing
+    // the page in some browsers. An iframe's failed navigation is
+    // contained and invisible either way.
+    const frame = document.createElement("iframe");
+    frame.style.display = "none";
+    frame.src = `kronos://launch?game=${encodeURIComponent(slug)}${handoffParam}`;
+    document.body.appendChild(frame);
+
+    const wasHiddenAtStart = document.hidden;
+    clearTimeout(launchWatchTimer);
+
+    const onVisibilityChange = () => {
+      if (document.hidden && !wasHiddenAtStart) {
+        // The page lost focus before our timeout fired -- almost
+        // certainly the OS's own "Open Kronos?" dialog. Assume success;
+        // there is nothing more definitive to check.
+        cleanup();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    function cleanup() {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearTimeout(launchWatchTimer);
+      if (frame.parentNode) frame.parentNode.removeChild(frame);
+    }
+
+    launchWatchTimer = setTimeout(() => {
+      cleanup();
+      if (!document.hidden) openLaunchModal(title);
+    }, LAUNCH_TIMEOUT_MS);
+  }
+
+  const launchModal = $("#launchModal");
+  const launchModalBackdrop = $("#launchModalBackdrop");
+
+  function openLaunchModal(title) {
+    $("#launchModalGame").textContent = title ? `to play "${title}"` : "";
+    launchModal.classList.add("open");
+    launchModalBackdrop.classList.add("open");
+  }
+
+  function closeLaunchModal() {
+    launchModal.classList.remove("open");
+    launchModalBackdrop.classList.remove("open");
+  }
+
+  $("#btnCloseLaunchModal").addEventListener("click", closeLaunchModal);
+  launchModalBackdrop.addEventListener("click", closeLaunchModal);
+  $("#btnRetryLaunch").addEventListener("click", () => {
+    if (lastLaunchAttempt) attemptLaunch(lastLaunchAttempt.slug, lastLaunchAttempt.title);
+    closeLaunchModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && launchModal.classList.contains("open")) closeLaunchModal();
+  });
+
+  /* =====================================================================
+     Auth drawer
+     ===================================================================== */
+
+  const drawer = $("#authDrawer");
+  const backdrop = $("#drawerBackdrop");
+
+  function openDrawer(tab) {
+    setAuthTab(tab || "login");
+    $("#authError").classList.remove("visible");
+    drawer.classList.add("open");
+    backdrop.classList.add("open");
+    document.body.style.overflow = "hidden";
+    setTimeout(() => {
+      const active = drawer.querySelector(".auth-pane.active input");
+      if (active) active.focus();
+    }, 260);
+  }
+
+  function closeDrawer() {
+    drawer.classList.remove("open");
+    backdrop.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  function setAuthTab(tab) {
+    $$(".auth-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+    $$(".auth-pane").forEach((p) => p.classList.toggle("active", p.dataset.pane === tab));
+    $("#authError").classList.remove("visible");
+  }
+
+  $$(".auth-tabs button").forEach((btn) => btn.addEventListener("click", () => setAuthTab(btn.dataset.tab)));
+
+  $("#btnOpenLogin").addEventListener("click", () => openDrawer("login"));
+  $("#btnOpenSignup").addEventListener("click", () => openDrawer("signup"));
+  $("#btnOpenLoginAdmin").addEventListener("click", () => openDrawer("login"));
+  $("#btnCloseDrawer").addEventListener("click", closeDrawer);
+  backdrop.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && drawer.classList.contains("open")) closeDrawer(); });
+
+  function showAuthError(message) {
+    const el = $("#authError");
+    el.textContent = message;
+    el.classList.add("visible");
+  }
+
+  function applySession(user, tokens) {
+    currentUser = user;
+    accessToken = tokens ? tokens.access_token : null;
+    refreshToken = tokens ? tokens.refresh_token : null;
+
+    const signedIn = !!user;
+    $("#navSignedOut").style.display = signedIn ? "none" : "flex";
+    $("#navSignedIn").style.display = signedIn ? "flex" : "none";
+
+    if (signedIn) {
+      const label = user.display_name || user.email || "Player";
+      $("#userNameLabel").textContent = label;
+      $("#userAvatarLetter").textContent = label.trim().charAt(0).toUpperCase() || "?";
+      $("#sessionChipAdmin").className = "session-chip signed-in";
+      $("#sessionChipAdmin").innerHTML = `<span class="dot"></span> Signed in as ${escapeHtml(label)}`;
+      $("#btnOpenLoginAdmin").style.display = "none";
+    } else {
+      $("#sessionChipAdmin").className = "session-chip";
+      $("#sessionChipAdmin").innerHTML = `<span class="dot"></span> Not signed in`;
+      $("#btnOpenLoginAdmin").style.display = "inline-flex";
+    }
+  }
+
+  // A page reload wipes accessToken/refreshToken (both real, in-memory
+  // JS variables -- see this block's own header comment), but the
+  // httpOnly refresh-token cookie a prior sign-in/guest session set
+  // survives it. Try to trade that cookie for a fresh access token
+  // before settling into the signed-out state, so reloading mid-session
+  // doesn't look like a real sign-out and push the visitor toward
+  // "Continue as Guest" (which mints a brand new guest account every
+  // time) just to get back in.
+  applySession(null, null);
+  refreshSession().then((result) => {
+    if (result.ok && result.data && result.data.access_token) {
+      applySession(result.data.user, result.data);
+    }
+  });
+
+  $("#paneLogin").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = $("#loginEmail").value.trim();
+    const password = $("#loginPassword").value;
+    if (!email || !password) return;
+
+    const submitBtn = $("#btnLoginSubmit");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Signing in…";
+    $("#authError").classList.remove("visible");
+
+    const result = await apiFetch("POST", "/v1/auth/login", { email, password });
+
+    if (result.ok && result.data && result.data.access_token) {
+      applySession(result.data.user || { email }, result.data);
+      $("#loginPassword").value = "";
+      closeDrawer();
+      showToast(`Welcome back${result.data.user && result.data.user.display_name ? ", " + result.data.user.display_name : ""}.`);
+    } else {
+      const message = (result.data && result.data.error && result.data.error.message) || "Sign in failed.";
+      showAuthError(message);
+    }
+
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Sign in";
+  });
+
+  $("#paneSignup").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const displayName = $("#signupName").value.trim();
+    const email = $("#signupEmail").value.trim();
+    const password = $("#signupPassword").value;
+    if (!email || !password) return;
+
+    const submitBtn = $("#btnSignupSubmit");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Creating account…";
+    $("#authError").classList.remove("visible");
+
+    const body = { email, password };
+    if (displayName) body.display_name = displayName;
+
+    const result = await apiFetch("POST", "/v1/auth/signup", body);
+
+    if (result.ok && result.data && result.data.access_token) {
+      applySession(result.data.user || { email, display_name: displayName }, result.data);
+      $("#signupPassword").value = "";
+      closeDrawer();
+      showToast("Account created. Welcome to Kronos.");
+    } else {
+      const message = (result.data && result.data.error && result.data.error.message) || "Could not create that account.";
+      showAuthError(message);
+    }
+
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Create account";
+  });
+
+  async function continueAsGuest() {
+    $("#authError").classList.remove("visible");
+    const result = await apiFetch("POST", "/v1/auth/guest", {});
+    if (result.ok && result.data && result.data.access_token) {
+      applySession(result.data.user || { display_name: "Guest" }, result.data);
+      closeDrawer();
+      showToast("Playing as a guest.");
+    } else {
+      const message = (result.data && result.data.error && result.data.error.message) || "Could not start a guest session.";
+      showAuthError(message);
+    }
+  }
+  $("#btnGuestFromLogin").addEventListener("click", continueAsGuest);
+  $("#btnGuestFromSignup").addEventListener("click", continueAsGuest);
+
+  async function signOut() {
+    // A real server-side revoke, not just dropping the token locally --
+    // POST /v1/auth/logout invalidates the refresh token so it can't be
+    // used again even if it leaked.
+    if (refreshToken) {
+      await apiFetch("POST", "/v1/auth/logout", { refresh_token: refreshToken });
+    }
+    applySession(null, null);
+    showToast("Signed out.");
+  }
+  $("#btnSignOut").addEventListener("click", signOut);
+
+  /* =====================================================================
+     Activity log
+     ===================================================================== */
+
+  const MAX_LOG_ENTRIES = 40;
+  const logEntries = [];
+
+  function pushLog(method, path, status, ok) {
+    logEntries.push({ id: ++requestSeq, method, path, status, ok, at: new Date() });
+    if (logEntries.length > MAX_LOG_ENTRIES) logEntries.shift();
+    renderLog();
+  }
+
+  function renderLog() {
+    const list = $("#logList");
+    $("#logCount").textContent = `${logEntries.length} request${logEntries.length === 1 ? "" : "s"} this session`;
+
+    if (logEntries.length === 0) {
+      list.innerHTML = '<div class="log-empty">No requests sent yet.</div>';
+      return;
+    }
+
+    list.innerHTML = logEntries
+      .map((entry) => {
+        const time = entry.at.toLocaleTimeString([], { hour12: false });
+        const codeClass = entry.ok ? "ok" : "err";
+        const codeLabel = entry.status === 0 ? "ERR" : String(entry.status);
+        return `
+          <div class="log-row">
+            <span class="method">${escapeHtml(entry.method)}</span>
+            <span class="path" title="${escapeHtml(entry.path)}">${escapeHtml(entry.path)}</span>
+            <span class="time">${time}</span>
+            <span class="code ${codeClass}">${codeLabel}</span>
+          </div>`;
+      })
+      .join("");
+  }
+
+  /* =====================================================================
+     JSON pretty-printer for the console output panel.
+     ===================================================================== */
+
+  function highlightJson(value) {
+    const json = JSON.stringify(value, null, 2);
+    if (json === undefined) return escapeHtml(String(value));
+    return escapeHtml(json).replace(
+      /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+      (match) => {
+        if (/^"/.test(match)) {
+          const cls = /:$/.test(match) ? "k" : "s";
+          return `<span class="${cls}">${match}</span>`;
+        }
+        if (/true|false/.test(match)) return `<span class="b">${match}</span>`;
+        if (match === "null") return `<span class="null">${match}</span>`;
+        return `<span class="n">${match}</span>`;
+      }
+    );
+  }
+
+  /* =====================================================================
+     Admin: health polling
+     ===================================================================== */
+
+  function setPill(state, label) {
+    const pill = $("#statusPill");
+    pill.dataset.state = state;
+    $("#statusLabel").textContent = label;
+    $("#statusTime").textContent = new Date().toLocaleTimeString([], { hour12: false });
+  }
+
+  function setBadge(field, up) {
+    const el = document.querySelector(`[data-field="${field}"]`);
+    el.textContent = up ? "Online" : "Offline";
+    el.className = `badge ${up ? "up" : "down"}`;
+  }
+
+  async function pollHealth() {
+    setPill("checking", "Checking…");
+    const result = await apiFetch("GET", "/healthz");
+
+    if (!result.ok && result.status === 0) {
+      setPill("offline", "API unreachable");
+      setBadge("status", false);
+      setBadge("postgres", false);
+      setBadge("redis", false);
+      $("#healthLatency").textContent = `Failed after ${result.ms}ms`;
+      return;
+    }
+
+    const health = result.data || {};
+    const postgresUp = health.postgres === true;
+    const redisUp = health.redis === true;
+    const overallOk = health.status === "ok";
+
+    setBadge("status", overallOk);
+    setBadge("postgres", postgresUp);
+    setBadge("redis", redisUp);
+
+    if (overallOk) setPill("online", "All systems operational");
+    else if (postgresUp || redisUp) setPill("degraded", "Degraded");
+    else setPill("offline", "Offline");
+
+    $("#healthLatency").textContent = `Responded in ${result.ms}ms (HTTP ${result.status})`;
+  }
+
+  $("#btnCheckStatus").addEventListener("click", () => pollHealth());
+
+  $("#btnRefreshData").addEventListener("click", async () => {
+    const btn = $("#btnRefreshData");
+    btn.disabled = true;
+    await pollHealth();
+    await runConsoleRequest("GET", "/v1/catalog/games", undefined);
+    btn.disabled = false;
+  });
+
+  $("#btnViewLogs").addEventListener("click", () => {
+    $("#logCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  /* =====================================================================
+     Admin: API console
+     ===================================================================== */
+
+  const methodSelect = $("#consoleMethod");
+  const pathInput = $("#consolePath");
+  const bodyInput = $("#consoleBody");
+
+  function syncBodyVisibility() {
+    bodyInput.classList.toggle("visible", methodSelect.value !== "GET" && methodSelect.value !== "DELETE");
+  }
+  methodSelect.addEventListener("change", syncBodyVisibility);
+  syncBodyVisibility();
+
+  $$(".chip[data-preset]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const [method, path, body] = chip.dataset.preset.split("|");
+      methodSelect.value = method;
+      pathInput.value = path;
+      bodyInput.value = body || "";
+      syncBodyVisibility();
+      if (path === "/v1/auth/login") {
+        openDrawer("login");
+      } else {
+        runConsoleRequest(method, path, undefined);
+      }
+    });
+  });
+
+  $("#btnSend").addEventListener("click", () => {
+    const method = methodSelect.value;
+    const path = pathInput.value.trim() || "/";
+    let body;
+    if (bodyInput.classList.contains("visible") && bodyInput.value.trim()) {
+      try {
+        body = JSON.parse(bodyInput.value);
+      } catch {
+        renderConsoleResult({ ok: false, status: "n/a", ms: 0, data: { error: { code: "invalid_json", message: "Request body is not valid JSON." } } }, path);
+        return;
+      }
+    }
+    runConsoleRequest(method, path, body);
+  });
+
+  async function runConsoleRequest(method, path, body) {
+    $("#respCode").textContent = "…";
+    $("#respCode").className = "status-code sidle";
+    $("#respOut").textContent = "Sending…";
+    const result = await apiFetch(method, path, body);
+    renderConsoleResult(result, path);
+  }
+
+  function renderConsoleResult(result, path) {
+    const codeEl = $("#respCode");
+    codeEl.textContent = result.status === 0 ? "ERR" : result.status;
+    let cls = "sidle";
+    if (result.status >= 200 && result.status < 300) cls = "s2xx";
+    else if (result.status >= 400 && result.status < 500) cls = "s4xx";
+    else if (result.status >= 500 || result.status === 0) cls = "serr";
+    codeEl.className = `status-code ${cls}`;
+
+    $("#respTiming").textContent = `${result.ms}ms`;
+    $("#respPath").textContent = path;
+    $("#respOut").innerHTML = highlightJson(result.data);
+  }
+
+  /* =====================================================================
+     Boot
+     ===================================================================== */
+
+  routeFromHash();
+  loadGames({ reset: true });
+  setInterval(pollHealth, 15000); // matches Caddy's own health_interval
+
+  // Cosmetic only -- the download button always points at the same
+  // releases page either way, this just saves a click figuring out
+  // which asset on that page is the right one.
+  {
+    const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+    const hint = /win/i.test(platform) ? "look for the Windows build" : /linux/i.test(platform) ? "look for the Linux build" : "pick your platform on that page";
+    $("#launchModalOsHint").textContent = hint + ".";
+  }
+})();
+</script>
+</body>
+</html>

@@ -45,6 +45,35 @@ bool validateExportSettings(const ExportSettings& settings, std::string& outErro
         outError = "Select at least one channel to export.";
         return false;
     }
+    // Real, honest gap, not a silently-dropped one: Color reads back
+    // CaptureRig's own real color image, and Depth reads back its own
+    // real depth image (see CaptureRig::exportSequence()), but no render
+    // target anywhere in this engine currently writes per-pixel motion
+    // vectors (confirmed by grepping core::Renderer for any velocity/
+    // motion-vector buffer) -- refusing up front here is the same real
+    // "fail before 4000 frames in" policy the rest of this function
+    // already applies, applied to a capability gap instead of a bad
+    // setting.
+    if (std::find(settings.channels.begin(), settings.channels.end(), ExportChannel::MotionVectors) !=
+        settings.channels.end()) {
+        outError = "Motion vector export isn't supported yet -- no motion vector render target exists.";
+        return false;
+    }
+    // Same real, honest-gap policy as MotionVectors above: CaptureRig's
+    // own real Color readback is 8-bit RGBA (core::Renderer::
+    // swapchainFormat(), see CaptureRig::renderAndReadback()) and
+    // trailer::writePngRgba8() is the only real Color encoder
+    // exportSequence() calls -- a real float-HDR color EXR path (reading
+    // back frame.hdrImage before tonemap, rather than the already-
+    // tonemapped 8-bit colorImage_) does not exist yet. Refusing this
+    // combination up front is better than silently writing 8-bit PNG
+    // bytes into a file named "*.exr" (see exportFrameFilename()'s own
+    // extension-from-format derivation).
+    if (settings.colorFormat == ExportImageFormat::Exr &&
+        std::find(settings.channels.begin(), settings.channels.end(), ExportChannel::Color) != settings.channels.end()) {
+        outError = "EXR color export isn't supported yet -- CaptureRig's own color readback is 8-bit; choose PNG.";
+        return false;
+    }
     if (settings.motionBlur.enabled) {
         if (settings.motionBlur.subFrameSamples < 1 || settings.motionBlur.subFrameSamples > kMaxSubFrameSamples) {
             outError = "Motion blur samples must be between 1 and 64.";

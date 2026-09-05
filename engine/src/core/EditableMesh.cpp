@@ -13,7 +13,7 @@ EditableMesh EditableMesh::fromVertexData(std::vector<Vertex> vertices, std::vec
     return mesh;
 }
 
-EditableMesh EditableMesh::createBox(glm::vec3 h) {
+EditableMesh EditableMesh::createBox(glm::vec3 h, glm::vec3 center) {
     // Same 24-vertex (4 per face x 6 faces), flat-per-face-normal layout
     // Mesh::createBox() uploads -- kept here as real, CPU-retained data
     // instead of going straight to the GPU. See Mesh.cpp's own
@@ -32,6 +32,9 @@ EditableMesh EditableMesh::createBox(glm::vec3 h) {
         {{-h.x, -h.y, -h.z}, {0, 0, -1}, {0, 0}}, {{h.x, -h.y, -h.z}, {0, 0, -1}, {1, 0}},
         {{h.x, h.y, -h.z}, {0, 0, -1}, {1, 1}}, {{-h.x, h.y, -h.z}, {0, 0, -1}, {0, 1}},
     };
+    if (center != glm::vec3(0.0f)) {
+        for (Vertex& v : vertices) v.position += center;
+    }
     std::vector<uint32_t> indices;
     indices.reserve(36);
     for (uint32_t face = 0; face < 6; ++face) {

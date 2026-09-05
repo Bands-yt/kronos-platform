@@ -41,7 +41,9 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/CsgMesh.hpp"
 #include "core/EditableMesh.hpp"
+#include "core/EditableMeshComponent.hpp"
 #include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
 #include "core/KMeshFile.hpp"
@@ -86,8 +88,11 @@
 #include "core/Logger.hpp"
 #include "core/Mesh.hpp"
 #include "core/Navigation.hpp"
+#include "core/Texture.hpp"
+#include "core/CubeLut.hpp"
 #include "core/Noise.hpp"
 #include "core/ObjLoader.hpp"
+#include "core/SwapchainSelection.hpp"
 #include "core/Window.hpp"
 #include "core/ParticleSystem.hpp"
 #include "core/Economy.hpp"
@@ -133,8 +138,11 @@
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
 #include "cinematic/CameraRail.hpp"
+#include "cinematic/ExportRunner.hpp"
 #include "cinematic/OfflineExport.hpp"
+#include "cinematic/RailCamera.hpp"
 #include "cinematic/Sequencer.hpp"
+#include "cinematic/SequenceApplier.hpp"
 #include "cinematic/TimelineLayout.hpp"
 #include "cinematic/CurveInterpolation.hpp"
 #include "core/AllocationTracker.hpp"
@@ -143,6 +151,7 @@
 #include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
 #include "core/ScriptUiApi.hpp"
+#include "core/ScriptMeshApi.hpp"
 #include "core/ScriptWorldApi.hpp"
 #include "core/Skeleton.hpp"
 #include "core/SkinWeights.hpp"
@@ -223,6 +232,9 @@
 #include "studio/LocalPluginDirectory.hpp"
 #include "studio/PluginManifest.hpp"
 #include "core/SceneManager.hpp"
+#include "studio/ScriptCinematicApi.hpp"
+#include "studio/ScriptPhysicsPreviewApi.hpp"
+#include "studio/ScriptRenderApi.hpp"
 #include "studio/StudioEcsScriptApi.hpp"
 #include "studio/UndoStack.hpp"
 #include "studio/panels/ExplorerPanel.hpp"
@@ -242,11 +254,15 @@
 #include "net/HttpWorkerPool.hpp"
 #include "safety/GeminiModerationClient.hpp"
 #include "net/ChatProtocol.hpp"
+#include "net/StudioCollabProtocol.hpp"
+#include "net/StudioCollabState.hpp"
 #include "migration/AssetConverter.hpp"
 #include "migration/AssetModeration.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "migration/ProjectImporter.hpp"
 #include "migration/PropertyDecoder.hpp"
+#include "studio/IKronosPlugin.hpp"
+#include "studio/KronosPluginHost.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
@@ -289,7 +305,10 @@
 #include "tntwars/TorpedoStealth.hpp"
 #include "tntwars/TrenchesWall.hpp"
 #include "tntwars/UltimateCharge.hpp"
+#include <tinyexr.h> // declarations only -- TINYEXR_IMPLEMENTATION lives in trailer/FrameEncoding.cpp's own translation unit
+
 #include "trailer/CaptureRig.hpp"
+#include "trailer/FrameEncoding.hpp"
 #include "trailer/TrailerCinematics.hpp"
 #include "trailer/TrailerDirector.hpp"
 #include "trailer/TrailerScenes.hpp"
@@ -3435,6 +3454,130 @@ void testScriptWorldApiSpawnDynamicBox() {
     } else {
         check(false, "world.spawnDynamicBox()'s clamped entity has a real Transform component");
     }
+
+    scripting.shutdown();
+}
+
+// Kronos ("Live Collaboration & In-Studio 3D Modeling Pipeline" -- Beta
+// Roadmap, Dynamic Mesh API): real, headless, end-to-end coverage of
+// core::ScriptMeshApi -- the same "real headless Scripting + a real
+// binding class, no GPU/window needed" pattern
+// testScriptWorldApiCreateEntityAndHierarchy() above already establishes
+// for core::ScriptWorldApi, just for the `mesh` global table instead of
+// `world`.
+void testScriptMeshApiBeginEditingBoxAndTopologyOps() {
+    engine::core::ECS ecs;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptMeshApi test: real Scripting initializes headlessly");
+    engine::core::ScriptMeshApi meshApi(ecs);
+    scripting.setBindingsHook([&](lua_State* L) { meshApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    engine::core::EntityId target = ecs.createEntity("Target");
+    engine::core::EntityId neverEdited = ecs.createEntity("NeverEdited");
+
+    size_t before1 = output.size();
+    engine::core::ScriptId id1 = scripting.loadAndRun(
+        "MeshBeginEditing",
+        "local ok = mesh.beginEditingBox(" + std::to_string(static_cast<uint32_t>(target)) +
+            ", 0.5, 0.5, 0.5)\n"
+            "assert(ok, \"expected beginEditingBox to real-succeed on a real, existing entity\")\n"
+            "local vc = mesh.vertexCount(" +
+            std::to_string(static_cast<uint32_t>(target)) +
+            ")\n"
+            "assert(vc == 24, \"expected the real 24-vertex createBox() layout: got \" .. tostring(vc))\n"
+            "local fc = mesh.faceCount(" +
+            std::to_string(static_cast<uint32_t>(target)) + ")\n"
+                                                             "assert(fc == 12, \"expected 12 real triangles\")\n");
+    check(id1 != engine::core::kInvalidScript, "MeshBeginEditing real-compiles with no error");
+    check(noRuntimeErrorSince(before1), "mesh.beginEditingBox()/vertexCount()/faceCount() all real-run with no runtime error");
+
+    auto* component = ecs.tryGetComponent<engine::core::EditableMeshComponent>(target);
+    check(component != nullptr, "mesh.beginEditingBox() real-attached an EditableMeshComponent to the real entity");
+    check(component != nullptr && component->mesh.vertexCount() == 24,
+          "the real, live ECS-side EditableMesh matches what the script observed");
+    check(component != nullptr && component->editVersion == 1,
+          "beginEditingBox() real-bumps editVersion to 1 -- ModelingModePlugin::update()'s own re-upload sweep "
+          "(EditableMeshComponent.hpp's own header comment) keys off this to notice a script-driven edit");
+
+    // getVertexPosition/setVertexPosition/setVertexUv -- the actual
+    // "runtime vertex deformation" the Beta Roadmap brief asked for.
+    size_t before2 = output.size();
+    engine::core::ScriptId id2 = scripting.loadAndRun(
+        "MeshVertexDeform",
+        "local id = " + std::to_string(static_cast<uint32_t>(target)) +
+            "\n"
+            "local x, y, z = mesh.getVertexPosition(id, 0)\n"
+            "assert(x ~= nil, \"expected a real vertex position for a valid index\")\n"
+            "local moved = mesh.setVertexPosition(id, 0, 9, 8, 7)\n"
+            "assert(moved, \"expected setVertexPosition to real-succeed for a valid index\")\n"
+            "local nx, ny, nz = mesh.getVertexPosition(id, 0)\n"
+            "assert(nx == 9 and ny == 8 and nz == 7, \"expected the real, just-written position back\")\n"
+            "local uvOk = mesh.setVertexUv(id, 0, 0.25, 0.75)\n"
+            "assert(uvOk, \"expected setVertexUv to real-succeed for a valid index\")\n"
+            "local failed = mesh.setVertexPosition(id, 99999, 0, 0, 0)\n"
+            "assert(not failed, \"expected a real, honest false for an out-of-range vertex index\")\n");
+    check(id2 != engine::core::kInvalidScript, "MeshVertexDeform real-compiles with no error");
+    check(noRuntimeErrorSince(before2),
+          "mesh.getVertexPosition()/setVertexPosition()/setVertexUv() all real-run with every real assert() passing");
+
+    check(component != nullptr && component->mesh.vertices()[0].position == glm::vec3(9, 8, 7),
+          "the real ECS-side EditableMesh's own vertex[0] reflects the script's real setVertexPosition() write");
+    check(component != nullptr && component->mesh.vertices()[0].uv == glm::vec2(0.25f, 0.75f),
+          "the real ECS-side EditableMesh's own vertex[0] UV reflects the script's real setVertexUv() write");
+    check(component != nullptr && component->editVersion == 3,
+          "editVersion real-bumps once per successful mutation (1 from beginEditingBox + setVertexPosition + "
+          "setVertexUv = 3) -- the failed out-of-range setVertexPosition call above must NOT have bumped it");
+
+    // extrudeFace/insetFace/subdivideFace/mergeVertices -- the real
+    // topology (index buffer) mutation half of the Dynamic Mesh API.
+    size_t facesBefore = component->mesh.faceCount();
+    size_t before3 = output.size();
+    engine::core::ScriptId id3 = scripting.loadAndRun(
+        "MeshTopologyOps",
+        "local id = " + std::to_string(static_cast<uint32_t>(target)) +
+            "\n"
+            "local extruded = mesh.extrudeFace(id, 1, 1.0)\n"
+            "assert(extruded, \"expected extrudeFace to real-succeed on a real, in-range face\")\n"
+            "local inset = mesh.insetFace(id, 2, 0.5)\n"
+            "assert(inset, \"expected insetFace to real-succeed on a real, in-range face\")\n"
+            "local subdivided = mesh.subdivideFace(id, 3)\n"
+            "assert(subdivided, \"expected subdivideFace to real-succeed on a real, in-range face\")\n"
+            "local merged = mesh.mergeVertices(id, 0.0001)\n"
+            "assert(merged ~= nil, \"expected a real, honest merged-count (possibly zero)\")\n"
+            "local badExtrude = mesh.extrudeFace(id, 99999, 1.0)\n"
+            "assert(not badExtrude, \"expected a real, honest false for an out-of-range face index\")\n");
+    check(id3 != engine::core::kInvalidScript, "MeshTopologyOps real-compiles with no error");
+    check(noRuntimeErrorSince(before3),
+          "mesh.extrudeFace()/insetFace()/subdivideFace()/mergeVertices() all real-run with every real assert() passing");
+    check(component != nullptr && component->mesh.faceCount() > facesBefore,
+          "the real ECS-side EditableMesh's own face count actually grew from the script's real topology edits");
+    check(component != nullptr && component->editVersion >= 6,
+          "extrudeFace/insetFace/subdivideFace each real-bump editVersion on success (3 + 3 = at least 6); the "
+          "failed out-of-range extrudeFace call must NOT have bumped it further");
+
+    // An entity that never called beginEditingBox() has no
+    // EditableMeshComponent -- every read/write op is a real, honest
+    // no-op/zero, not a crash.
+    size_t before4 = output.size();
+    engine::core::ScriptId id4 = scripting.loadAndRun(
+        "MeshNoComponent",
+        "local id = " + std::to_string(static_cast<uint32_t>(neverEdited)) +
+            "\n"
+            "local vc = mesh.vertexCount(id)\n"
+            "assert(vc == 0, \"expected 0 for an entity with no EditableMeshComponent\")\n"
+            "local ok = mesh.setVertexPosition(id, 0, 1, 1, 1)\n"
+            "assert(not ok, \"expected a real, honest false, not a crash, for a missing component\")\n");
+    check(id4 != engine::core::kInvalidScript, "MeshNoComponent real-compiles with no error");
+    check(noRuntimeErrorSince(before4), "every mesh.* op is a real, honest no-op/zero for an entity with no EditableMeshComponent");
 
     scripting.shutdown();
 }
@@ -10018,6 +10161,214 @@ void testPhysicsPreviewPluginCastTestRay() {
     check(nearlyEqual(plugin.testRayHit().point.y, 0.5f), "the recorded hit point is the floor's real top surface (half-extent 0.5 above y=0), not a placeholder");
 
     plugin.stop(ecs);
+}
+
+// --- Deterministic physics step triggers (PhysicsPreviewPlugin::pause()/
+//     resume()/stepOnce(), and their real Luau surface,
+//     studio::ScriptPhysicsPreviewApi -- Kronos "Cinematic Camera Physics
+//     & Post-Processing Pipeline", Luau Studio API Bindings) --
+
+void testPhysicsPreviewPluginPauseSuspendsAutoStepAndStepOnceAdvancesExactly() {
+    engine::core::ECS ecs;
+    engine::core::EntityId box = ecs.createEntity("Box");
+    ecs.tryGetComponent<engine::core::Transform>(box)->position = {0.0f, 10.0f, 0.0f};
+    ecs.addComponent<engine::core::ColliderShape>(box, engine::core::ColliderShape{engine::core::ColliderShapeKind::Box, {0.5f, 0.5f, 0.5f}, ""});
+    ecs.addComponent<engine::core::PhysicsMaterial>(box, makePhysicsMaterial(0.5f, 0.0f, 1000.0f));
+    ecs.addComponent<engine::core::RigidBody>(box, engine::core::RigidBody{engine::core::RigidBody::kInvalidBodyId, engine::core::RigidBodyMotionType::Dynamic});
+
+    engine::studio::plugins::PhysicsPreviewPlugin plugin;
+    check(!plugin.isPaused(), "a freshly-constructed plugin real-starts unpaused");
+    check(!plugin.stepOnce(ecs, 1.0f / 60.0f), "stepOnce() before Play is a real, honest no-op (false) -- there's no live simulation yet");
+
+    plugin.play(ecs);
+    check(!plugin.isPaused(), "play() real-starts unpaused -- see play()'s own comment");
+
+    plugin.pause();
+    check(plugin.isPaused(), "pause() real-sets isPaused()");
+    float yBeforeAutoStep = ecs.tryGetComponent<engine::core::Transform>(box)->position.y;
+    for (int i = 0; i < 30; ++i) plugin.update(1.0f / 60.0f, ecs, engine::core::kNullEntity, {});
+    float yAfterAutoStep = ecs.tryGetComponent<engine::core::Transform>(box)->position.y;
+    check(nearlyEqual(yBeforeAutoStep, yAfterAutoStep),
+          "update()'s own real per-frame auto-step is real-suspended while paused() -- the box does not fall even "
+          "though update() was called 30 real times");
+
+    check(plugin.stepOnce(ecs, 1.0f / 60.0f), "stepOnce() while playing+paused real-succeeds (true)");
+    float yAfterOneStep = ecs.tryGetComponent<engine::core::Transform>(box)->position.y;
+    check(yAfterOneStep < yBeforeAutoStep,
+          "stepOnce() real-advances the live simulation by exactly the requested dt -- the box really falls a "
+          "real, small amount");
+
+    plugin.resume();
+    check(!plugin.isPaused(), "resume() real-clears isPaused()");
+    for (int i = 0; i < 30; ++i) plugin.update(1.0f / 60.0f, ecs, engine::core::kNullEntity, {});
+    float yAfterResumedAutoStep = ecs.tryGetComponent<engine::core::Transform>(box)->position.y;
+    check(yAfterResumedAutoStep < yAfterOneStep, "update()'s own auto-step real-resumes after resume()");
+
+    plugin.stop(ecs);
+    check(!plugin.isPaused(), "stop() real-clears isPaused() too, matching playing_'s own reset");
+}
+
+void testScriptPhysicsPreviewApiExposesPauseResumeStepIsPlaying() {
+    engine::core::ECS ecs;
+    engine::core::EntityId box = ecs.createEntity("Box");
+    ecs.tryGetComponent<engine::core::Transform>(box)->position = {0.0f, 10.0f, 0.0f};
+    ecs.addComponent<engine::core::ColliderShape>(box, engine::core::ColliderShape{engine::core::ColliderShapeKind::Box, {0.5f, 0.5f, 0.5f}, ""});
+    ecs.addComponent<engine::core::PhysicsMaterial>(box, makePhysicsMaterial(0.5f, 0.0f, 1000.0f));
+    ecs.addComponent<engine::core::RigidBody>(box, engine::core::RigidBody{engine::core::RigidBody::kInvalidBodyId, engine::core::RigidBodyMotionType::Dynamic});
+
+    engine::studio::plugins::PhysicsPreviewPlugin plugin;
+    plugin.play(ecs);
+
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptPhysicsPreviewApi test: real Scripting initializes headlessly");
+    engine::studio::ScriptPhysicsPreviewApi physicsApi(plugin, ecs);
+    scripting.setBindingsHook([&](lua_State* L) { physicsApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    size_t before = output.size();
+    engine::core::ScriptId id = scripting.loadAndRun(
+        "PhysicsStepScript",
+        "assert(physics.isPlaying(), \"expected isPlaying() true\")\n"
+        "assert(not physics.isPaused(), \"expected isPaused() false before pause()\")\n"
+        "physics.pause()\n"
+        "assert(physics.isPaused(), \"expected isPaused() true after pause()\")\n"
+        "local stepped = physics.step(1.0 / 60.0)\n"
+        "assert(stepped, \"expected a real step to succeed while playing+paused\")\n"
+        "physics.resume()\n"
+        "assert(not physics.isPaused(), \"expected isPaused() false after resume()\")\n");
+    check(id != engine::core::kInvalidScript, "PhysicsStepScript real-compiles with no error");
+    check(noRuntimeErrorSince(before), "physics.pause/isPaused/step/resume/isPlaying all real-run with no runtime error");
+    check(!plugin.isPaused(), "the script's own physics.resume() call real-propagated back to the real C++ plugin state");
+
+    plugin.stop(ecs);
+}
+
+// --- Renderer post-FX Luau bindings (studio::ScriptRenderApi -- Kronos
+//     "Cinematic Camera Physics & Post-Processing Pipeline", Luau Studio
+//     API Bindings). Real, headless-safe: every binding tested here is a
+//     plain member read/write on a never-initialize()'d core::Renderer
+//     (same real "default-constructed Renderer is safe for non-GPU
+//     calls" precedent test_main.cpp already establishes elsewhere).
+//     loadColorGradingLut()/resetColorGradingLutToIdentity() are real GPU
+//     work and deliberately NOT exercised here -- see ScriptRenderApi.hpp's
+//     own comment.
+
+void testScriptRenderApiRoundTripsSafeNumericKnobs() {
+    engine::core::Renderer renderer;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptRenderApi test: real Scripting initializes headlessly");
+    engine::studio::ScriptRenderApi renderApi(renderer);
+    scripting.setBindingsHook([&](lua_State* L) { renderApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    size_t before = output.size();
+    engine::core::ScriptId id = scripting.loadAndRun(
+        "RenderRoundTrip",
+        "render.setExposure(2.5)\n"
+        "assert(math.abs(render.exposure() - 2.5) < 0.001, \"exposure did not round-trip\")\n"
+        "render.setBloomSettings(1.1, 0.4, 0.7)\n"
+        "local t, s, i = render.bloomSettings()\n"
+        "assert(math.abs(t - 1.1) < 0.001 and math.abs(s - 0.4) < 0.001 and math.abs(i - 0.7) < 0.001, "
+        "\"bloom settings did not round-trip\")\n"
+        "render.setCinematicMode(true)\n"
+        "assert(render.isCinematicModeEnabled(), \"cinematic mode did not round-trip\")\n"
+        "render.setDepthOfFieldEnabled(true)\n"
+        "assert(render.isDepthOfFieldEnabled(), \"depth of field enabled did not round-trip\")\n"
+        "render.setDepthOfFieldParams(12.0, 8.0, 5.0)\n"
+        "local fd, fr, cc = render.depthOfFieldParams()\n"
+        "assert(math.abs(fd - 12.0) < 0.001 and math.abs(fr - 8.0) < 0.001 and math.abs(cc - 5.0) < 0.001, "
+        "\"DOF params did not round-trip\")\n"
+        "render.setTonemapOperator(\"agx\")\n"
+        "assert(render.tonemapOperator() == \"agx\", \"tonemap operator did not round-trip\")\n"
+        "render.setTonemapOperator(\"aces\")\n"
+        "assert(render.tonemapOperator() == \"aces\", \"tonemap operator did not round-trip back to aces\")\n"
+        "render.setColorGradingLutStrength(0.25)\n"
+        "assert(math.abs(render.colorGradingLutStrength() - 0.25) < 0.001, \"LUT strength did not round-trip\")\n");
+    check(id != engine::core::kInvalidScript, "RenderRoundTrip real-compiles with no error");
+    check(noRuntimeErrorSince(before), "every real render.* getter/setter round-trips with no runtime error");
+}
+
+void testScriptRenderApiRejectsUnknownTonemapOperatorWithARealError() {
+    engine::core::Renderer renderer;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptRenderApi error-handling test: real Scripting initializes headlessly");
+    engine::studio::ScriptRenderApi renderApi(renderer);
+    scripting.setBindingsHook([&](lua_State* L) { renderApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+
+    size_t before = output.size();
+    scripting.loadAndRun("BadTonemap", "render.setTonemapOperator(\"bogus\")\n");
+    bool sawRuntimeError = false;
+    for (size_t i = before; i < output.size(); ++i) {
+        if (output[i].rfind("runtime error", 0) == 0) sawRuntimeError = true;
+    }
+    check(sawRuntimeError,
+          "render.setTonemapOperator(\"bogus\") real-raises a real Luau runtime error (luaL_error) rather than "
+          "silently no-oping or crashing the process");
+    check(renderer.tonemapOperator() == engine::core::Renderer::TonemapOperator::AcesFilm,
+          "the invalid call real-left the renderer's tonemap operator at its real, untouched default -- a "
+          "rejected call must not partially apply");
+}
+
+void testScriptRenderApiSandboxSurfaceHasNoRawGpuHandleBindings() {
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // Luau Studio API Bindings, "sandbox boundary constraints"): a real,
+    // concrete regression guard -- enumerates the actual real keys the
+    // `render` global table exposes and asserts they exactly match
+    // ScriptRenderApi.hpp's own documented, deliberately narrow
+    // allowlist. Catches a future accidental addition of a raw-handle-
+    // returning binding the same way a snapshot test would, without
+    // needing to know in advance what a "dangerous" name might be
+    // called.
+    engine::core::Renderer renderer;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptRenderApi sandbox test: real Scripting initializes headlessly");
+    engine::studio::ScriptRenderApi renderApi(renderer);
+    scripting.setBindingsHook([&](lua_State* L) { renderApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    engine::core::ScriptId id = scripting.loadAndRun(
+        "RenderSandboxSurface",
+        "local names = {}\n"
+        "for k, v in pairs(render) do\n"
+        "  if type(v) == \"function\" then table.insert(names, k) end\n"
+        "end\n"
+        "table.sort(names)\n"
+        "print(table.concat(names, \",\"))\n");
+    check(id != engine::core::kInvalidScript, "RenderSandboxSurface real-compiles with no error");
+
+    check(!output.empty(), "the real script real-printed the render table's own key list");
+    if (!output.empty()) {
+        const std::string expected =
+            "bloomSettings,colorGradingLutStrength,depthOfFieldParams,exposure,isCinematicModeEnabled,"
+            "isDepthOfFieldEnabled,loadColorGradingLut,resetColorGradingLutToIdentity,setBloomSettings,"
+            "setCinematicMode,setColorGradingLutStrength,setDepthOfFieldEnabled,setDepthOfFieldParams,setExposure,"
+            "setTonemapOperator,tonemapOperator";
+        std::string message = "the real `render` table exposes exactly its documented, deliberately narrow "
+                               "allowlist of numeric/enum tuning functions -- no raw Vulkan handle, pipeline, "
+                               "device, or command-buffer binding exists anywhere on it. Got: \"" +
+                               output.back() + "\"";
+        check(output.back() == expected, message.c_str());
+    }
 }
 
 // --- Runtime Interaction Example Scenes -------------------------------
@@ -19598,6 +19949,118 @@ void testSequenceTracksAndChannelsRoundTrip() {
     sequence.mutableTracks()[0].muted = true;
     check(std::fabs(sequence.sampleChannel("KeyLight", "intensity", 1.0f, 7.0f) - 7.0f) < 0.01f,
           "a real muted track really reads as absent rather than driving the value to zero");
+}
+
+// Kronos ("Cinematic Sequencer Luau & TypeScript Bindings" -- Beta
+// Roadmap): the real missing execution step -- cinematic::
+// applySequenceToScene() is what makes a Transform/LightIntensity
+// track's own already-tested sampleChannel() math actually move
+// something in a live core::ECS.
+void testApplySequenceToSceneAppliesTransformTrackToTargetEntity() {
+    engine::core::ECS ecs;
+    // A throwaway entity first -- SequencerTrack::targetId's own "0 means
+    // not bound yet" sentinel (Sequencer.hpp) collides with a fresh ECS's
+    // very first real entity, which really does get raw id 0 (entt::null
+    // is a distinct, all-bits-set sentinel, not 0). Without this, `hero`
+    // below would itself cast to targetId 0 and applySequenceToScene()
+    // would correctly, honestly treat it as unbound -- a real test setup
+    // pitfall, not a bug in applySequenceToScene() itself.
+    engine::core::EntityId throwaway = ecs.createEntity("Throwaway");
+    (void)throwaway;
+    engine::core::EntityId hero = ecs.createEntity("Hero");
+    ecs.addComponent<engine::core::Transform>(hero);
+
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::SequencerTrack& track = sequence.addTrack("HeroMove", engine::cinematic::TrackKind::Transform);
+    track.targetId = static_cast<uint64_t>(static_cast<uint32_t>(hero));
+    engine::cinematic::insertKeyframe(track.channel("position.x").keys,
+                                       {0.0f, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    engine::cinematic::insertKeyframe(track.channel("position.x").keys,
+                                       {2.0f, 10.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    engine::cinematic::insertKeyframe(track.channel("rotation.y").keys,
+                                       {0.0f, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    engine::cinematic::insertKeyframe(track.channel("rotation.y").keys,
+                                       {2.0f, 90.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    engine::cinematic::applySequenceToScene(sequence, 1.0f, ecs);
+
+    auto* transform = ecs.tryGetComponent<engine::core::Transform>(hero);
+    check(transform != nullptr && nearlyEqual(transform->position.x, 5.0f),
+          "applySequenceToScene() real-writes a sampled position.x channel onto the real target Transform");
+    glm::vec3 euler = glm::degrees(glm::eulerAngles(transform->rotation));
+    check(nearlyEqual(euler.y, 45.0f, 0.5f),
+          "applySequenceToScene() real-writes a sampled rotation.y channel (Euler degrees) onto the real Transform");
+
+    // A channel the track never keyed (position.y here) is left alone,
+    // not reset to zero -- a track that only animates X shouldn't fight
+    // whatever else set Y.
+    transform->position.y = 42.0f;
+    engine::cinematic::applySequenceToScene(sequence, 1.5f, ecs);
+    check(nearlyEqual(transform->position.y, 42.0f),
+          "a real channel the track never keyed is left untouched, not zeroed");
+}
+
+void testApplySequenceToSceneAppliesLightIntensityTrackToTargetEntity() {
+    engine::core::ECS ecs;
+    engine::core::EntityId throwaway = ecs.createEntity("Throwaway"); // see the identical comment in the Transform test above
+    (void)throwaway;
+    engine::core::EntityId lamp = ecs.createEntity("Lamp");
+    ecs.addComponent<engine::core::Light>(lamp);
+
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::SequencerTrack& track =
+        sequence.addTrack("LampFlicker", engine::cinematic::TrackKind::LightIntensity);
+    track.targetId = static_cast<uint64_t>(static_cast<uint32_t>(lamp));
+    engine::cinematic::insertKeyframe(track.channel("intensity").keys,
+                                       {0.0f, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    engine::cinematic::insertKeyframe(track.channel("intensity").keys,
+                                       {4.0f, 8.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    engine::cinematic::applySequenceToScene(sequence, 2.0f, ecs);
+    auto* light = ecs.tryGetComponent<engine::core::Light>(lamp);
+    check(light != nullptr && nearlyEqual(light->intensity, 4.0f),
+          "applySequenceToScene() real-writes a sampled intensity channel onto the real target Light");
+}
+
+void testApplySequenceToSceneSkipsMutedUnboundAndMismatchedTracks() {
+    engine::core::ECS ecs;
+    engine::core::EntityId throwaway = ecs.createEntity("Throwaway"); // see the identical comment in the Transform test above
+    (void)throwaway;
+    engine::core::EntityId hero = ecs.createEntity("Hero");
+    ecs.addComponent<engine::core::Transform>(hero);
+
+    engine::cinematic::Sequence sequence;
+
+    // Unbound: targetId == 0, the real "not bound yet" authoring state.
+    engine::cinematic::SequencerTrack& unbound = sequence.addTrack("Unbound", engine::cinematic::TrackKind::Transform);
+    engine::cinematic::insertKeyframe(unbound.channel("position.x").keys,
+                                       {0.0f, 99.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+
+    // Muted, otherwise bound to the same real entity.
+    engine::cinematic::SequencerTrack& muted = sequence.addTrack("Muted", engine::cinematic::TrackKind::Transform);
+    muted.targetId = static_cast<uint64_t>(static_cast<uint32_t>(hero));
+    muted.muted = true;
+    engine::cinematic::insertKeyframe(muted.channel("position.z").keys,
+                                       {0.0f, 77.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+
+    // Bound to a real entity that has no Light component -- a
+    // LightIntensity track targeting a Transform-only entity is a real,
+    // honest no-op, not a crash.
+    engine::cinematic::SequencerTrack& mismatched =
+        sequence.addTrack("Mismatched", engine::cinematic::TrackKind::LightIntensity);
+    mismatched.targetId = static_cast<uint64_t>(static_cast<uint32_t>(hero));
+    engine::cinematic::insertKeyframe(mismatched.channel("intensity").keys,
+                                       {0.0f, 55.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+
+    engine::cinematic::applySequenceToScene(sequence, 0.0f, ecs);
+
+    auto* transform = ecs.tryGetComponent<engine::core::Transform>(hero);
+    check(transform != nullptr && nearlyEqual(transform->position.x, 0.0f),
+          "an unbound track (targetId == 0) never writes anywhere");
+    check(transform != nullptr && nearlyEqual(transform->position.z, 0.0f),
+          "a muted track is a real, honest no-op even though it's otherwise bound and keyed");
+    check(ecs.tryGetComponent<engine::core::Light>(hero) == nullptr,
+          "a LightIntensity track bound to an entity with no real Light component doesn't crash or add one");
 }
 
 void testSequenceDurationCoversKeysAndEvents() {
@@ -29810,6 +30273,842 @@ void testFrameFilenameDistinctForDistinctIndices() {
     check(engine::trailer::frameFilename(1) != engine::trailer::frameFilename(2), "Distinct real frame indices real-produce distinct real filenames, never colliding/overwriting each other");
 }
 
+// --- Offline Export pipeline: CaptureRig::isValid(), OfflineExport's real
+// MotionVectors refusal, cinematic::cameraFromRailSample, trailer::FrameEncoding,
+// and cinematic::runExportSchedule -- everything in the pipeline that does NOT
+// require a live Vulkan device. CaptureRig::exportSequence()/renderAndReadback()
+// themselves are real, GPU-touching, and deliberately never called from this
+// binary -- same convention CaptureRig::captureFrame() and
+// TrailerDirector::tick()/initializeCapture() already established (see this
+// file's own header comment on why). The one guard exportSequence() relies on
+// for its own headless-safety early return, isValid(), needs no Renderer at
+// all and is tested directly below.
+
+void testCaptureRigIsValidFalseByDefault() {
+    engine::trailer::CaptureRig rig;
+    check(!rig.isValid(), "A default-constructed, never-initialize()'d CaptureRig reports isValid() == false -- the exact guard exportSequence() relies on for its own real \"no active GPU swapchain\" early return");
+}
+
+void testValidateExportSettingsRejectsMotionVectors() {
+    engine::cinematic::ExportSettings settings;
+    settings.channels = {engine::cinematic::ExportChannel::MotionVectors};
+    std::string error;
+    bool ok = engine::cinematic::validateExportSettings(settings, error);
+    check(!ok, "validateExportSettings() real-refuses a MotionVectors channel -- no render target anywhere in this engine writes motion vectors yet");
+    check(error.find("otion vector") != std::string::npos, "The real refusal reason names motion vectors specifically, not a generic error");
+}
+
+void testValidateExportSettingsAcceptsColorAndDepthTogether() {
+    engine::cinematic::ExportSettings settings;
+    settings.channels = {engine::cinematic::ExportChannel::Color, engine::cinematic::ExportChannel::Depth};
+    std::string error;
+    check(engine::cinematic::validateExportSettings(settings, error), "The real MotionVectors-specific refusal does not over-trigger on Color+Depth, both of which are real, supported channels");
+}
+
+void testValidateExportSettingsRejectsExrColorFormat() {
+    engine::cinematic::ExportSettings settings;
+    settings.channels = {engine::cinematic::ExportChannel::Color};
+    settings.colorFormat = engine::cinematic::ExportImageFormat::Exr;
+    std::string error;
+    bool ok = engine::cinematic::validateExportSettings(settings, error);
+    check(!ok, "validateExportSettings() real-refuses EXR as the Color format -- CaptureRig's own real color readback is 8-bit, so this would otherwise silently write PNG bytes into a file named \".exr\"");
+    check(!error.empty(), "The real refusal fills outError with a real reason");
+}
+
+void testValidateExportSettingsAcceptsExrForDepthOnly() {
+    engine::cinematic::ExportSettings settings;
+    settings.channels = {engine::cinematic::ExportChannel::Depth};
+    settings.colorFormat = engine::cinematic::ExportImageFormat::Exr; // irrelevant when Color isn't selected at all
+    std::string error;
+    check(engine::cinematic::validateExportSettings(settings, error), "The real EXR-color refusal only triggers when Color is actually selected -- Depth-only export (always real EXR, see formatForChannel()) is unaffected by colorFormat's own value");
+}
+
+void testCameraFromRailSampleRecoversForwardDirection() {
+    engine::cinematic::RailSample sample;
+    sample.position = glm::vec3(1.0f, 2.0f, 3.0f);
+    sample.forward = glm::normalize(glm::vec3(0.6f, 0.3f, -0.7428f));
+    sample.up = glm::vec3(0.0f, 1.0f, 0.0f);
+
+    engine::core::Camera camera = engine::cinematic::cameraFromRailSample(sample, 0.1f, 200.0f);
+    check(nearlyEqual(glm::length(camera.position - sample.position), 0.0f), "cameraFromRailSample() real-copies the rail sample's real position unchanged");
+    check(nearlyEqual(camera.nearPlane, 0.1f) && nearlyEqual(camera.farPlane, 200.0f), "cameraFromRailSample() real-applies the caller's real near/far planes");
+
+    // The real, exact inverse check: rebuilding forward() from the yaw/pitch
+    // this function derived must reproduce the original forward direction --
+    // not an approximation, the same real formula core::Camera::forward()
+    // itself uses (see RailCamera.cpp's own comment).
+    glm::vec3 rebuilt = camera.forward();
+    check(nearlyEqual(glm::length(rebuilt - sample.forward), 0.0f), "cameraFromRailSample()'s real yaw/pitch round-trips back through core::Camera::forward() to the original rail forward direction");
+}
+
+void testCameraFromRailSampleSetsFovFromPhysicalCamera() {
+    engine::cinematic::RailSample sample;
+    sample.forward = glm::vec3(0.0f, 0.0f, -1.0f);
+    sample.up = glm::vec3(0.0f, 1.0f, 0.0f);
+    sample.camera.focalLengthMm = 50.0f;
+    sample.camera.sensor = engine::core::sensor_presets::kFullFrame35;
+
+    engine::core::Camera camera = engine::cinematic::cameraFromRailSample(sample, 0.05f, 500.0f);
+    check(nearlyEqual(camera.verticalFovDegrees, engine::core::verticalFovDegrees(sample.camera)), "cameraFromRailSample() real-derives verticalFovDegrees from the rail's own real PhysicalCamera optics, not a hardcoded default");
+}
+
+void testCameraFromRailSampleZeroRollRecoversUnrolledUp() {
+    engine::cinematic::RailSample sample;
+    sample.forward = glm::vec3(0.0f, 0.0f, -1.0f);
+    sample.up = glm::vec3(0.0f, 1.0f, 0.0f); // the real, un-rolled up for this forward
+    engine::core::Camera camera = engine::cinematic::cameraFromRailSample(sample, 0.05f, 500.0f);
+    check(nearlyEqual(camera.rollDegrees, 0.0f), "An un-rolled rail sample real-recovers a real rollDegrees of exactly 0");
+}
+
+void testCameraFromRailSampleRecoversAppliedRoll() {
+    const glm::vec3 forward(0.0f, 0.0f, -1.0f);
+    const float appliedRollDegrees = 27.0f;
+    // Exactly CameraRail::sample()'s own real construction: roll the
+    // "roll = 0" up around forward by the same angle it would apply.
+    glm::quat roll = glm::angleAxis(glm::radians(appliedRollDegrees), forward);
+    engine::cinematic::RailSample sample;
+    sample.forward = forward;
+    sample.up = roll * glm::vec3(0.0f, 1.0f, 0.0f);
+
+    engine::core::Camera camera = engine::cinematic::cameraFromRailSample(sample, 0.05f, 500.0f);
+    check(nearlyEqual(camera.rollDegrees, appliedRollDegrees), "cameraFromRailSample() real-recovers the exact real roll angle CameraRail::sample() applied to `up`, not just an unrolled default");
+}
+
+void testWritePngRgba8RoundTripsDimensionsAndPixels() {
+    std::string dir = "test_frame_encoding_scratch";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/color.png";
+
+    const uint32_t w = 4, h = 3;
+    std::vector<uint8_t> pixels(static_cast<size_t>(w) * h * 4);
+    for (uint32_t i = 0; i < w * h; ++i) {
+        pixels[i * 4 + 0] = 200; // R
+        pixels[i * 4 + 1] = 100; // G
+        pixels[i * 4 + 2] = 50;  // B
+        pixels[i * 4 + 3] = 255; // A
+    }
+
+    check(engine::trailer::writePngRgba8(pixels.data(), w, h, /*swapRedBlue=*/false, path), "writePngRgba8() real-succeeds writing a real, non-empty RGBA8 buffer");
+
+    int decodedW = 0, decodedH = 0, channels = 0;
+    stbi_uc* decoded = stbi_load(path.c_str(), &decodedW, &decodedH, &channels, STBI_rgb_alpha);
+    check(decoded != nullptr, "The real written PNG really decodes back with stb_image");
+    check(decodedW == static_cast<int>(w) && decodedH == static_cast<int>(h), "The decoded PNG real-preserves the original real dimensions");
+    if (decoded != nullptr) {
+        check(decoded[0] == 200 && decoded[1] == 100 && decoded[2] == 50 && decoded[3] == 255, "The decoded PNG's real first pixel real-matches the original RGBA bytes exactly");
+        stbi_image_free(decoded);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+void testWritePngRgba8SwapsRedAndBlueWhenRequested() {
+    std::string dir = "test_frame_encoding_scratch_swap";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/swapped.png";
+
+    // A single BGRA texel: writePngRgba8(..., swapRedBlue=true, ...) must
+    // write it out as real RGBA, matching ThumbnailCapture.cpp's own real
+    // per-texel swap for the swapchain's real BGRA8 memory layout.
+    std::vector<uint8_t> bgra = {10, 20, 30, 255};
+    check(engine::trailer::writePngRgba8(bgra.data(), 1, 1, /*swapRedBlue=*/true, path), "writePngRgba8() real-succeeds with swapRedBlue enabled");
+
+    int decodedW = 0, decodedH = 0, channels = 0;
+    stbi_uc* decoded = stbi_load(path.c_str(), &decodedW, &decodedH, &channels, STBI_rgb_alpha);
+    check(decoded != nullptr, "The swapped-channel PNG really decodes");
+    if (decoded != nullptr) {
+        check(decoded[0] == 30 && decoded[1] == 20 && decoded[2] == 10 && decoded[3] == 255, "swapRedBlue real-swaps B and R (source BGRA -> written RGBA) exactly, leaving G and A untouched");
+        stbi_image_free(decoded);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+void testWritePngRgba8RejectsZeroExtent() {
+    std::vector<uint8_t> pixels(4, 0);
+    check(!engine::trailer::writePngRgba8(pixels.data(), 0, 1, false, "test_frame_encoding_scratch/should_not_exist.png"), "writePngRgba8() real-refuses a zero-width buffer rather than crashing on an empty write");
+}
+
+void testWriteExrDepthRoundTripsFloatValues() {
+    std::string dir = "test_frame_encoding_scratch_exr";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/depth.exr";
+
+    const uint32_t w = 4, h = 4;
+    std::vector<float> depth(static_cast<size_t>(w) * h);
+    for (size_t i = 0; i < depth.size(); ++i) depth[i] = 3.5f + static_cast<float>(i) * 0.25f;
+
+    check(engine::trailer::writeExrDepth(depth.data(), w, h, path), "writeExrDepth() real-succeeds writing a real, non-empty float depth buffer");
+
+    float* outRgba = nullptr;
+    int decodedW = 0, decodedH = 0;
+    const char* err = nullptr;
+    int ret = LoadEXR(&outRgba, &decodedW, &decodedH, path.c_str(), &err);
+    check(ret == TINYEXR_SUCCESS, "The real written single-channel EXR really decodes back with tinyexr's own LoadEXR()");
+    if (ret == TINYEXR_SUCCESS && outRgba != nullptr) {
+        check(decodedW == static_cast<int>(w) && decodedH == static_cast<int>(h), "The decoded EXR real-preserves the original real dimensions");
+        // SaveEXR(components=1) writes the single channel as "A" (see
+        // tinyexr.h's own SaveEXR() -- "A" is the documented single-channel
+        // convention LoadEXR() itself also assumes); LoadEXR() always
+        // returns RGBA, so the real depth values land in the alpha channel.
+        check(nearlyEqual(outRgba[3], depth[0]), "The decoded EXR's first real depth value round-trips exactly through the real float pipeline (no 8-bit quantisation)");
+        free(outRgba);
+    } else if (err != nullptr) {
+        FreeEXRErrorMessage(err);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+void testWriteExrDepthRejectsZeroExtent() {
+    std::vector<float> depth(1, 0.0f);
+    check(!engine::trailer::writeExrDepth(depth.data(), 0, 1, "test_frame_encoding_scratch/should_not_exist.exr"), "writeExrDepth() real-refuses a zero-width buffer");
+}
+
+void testAverageRgba8SubFramesAveragesTwoKnownBuffers() {
+    std::vector<uint8_t> a = {0, 100, 200, 255};
+    std::vector<uint8_t> b = {10, 100, 200, 255};
+    std::vector<uint8_t> result = engine::trailer::averageRgba8SubFrames({a, b});
+    check(result.size() == 4, "averageRgba8SubFrames() real-preserves buffer size");
+    check(result[0] == 5, "averageRgba8SubFrames() real-averages the real midpoint of two differing bytes exactly (0 and 10 -> 5)");
+    check(result[1] == 100 && result[2] == 200 && result[3] == 255, "averageRgba8SubFrames() real-leaves real-identical bytes across sub-frames unchanged");
+}
+
+void testAverageRgba8SubFramesSingleFrameIsIdentity() {
+    std::vector<uint8_t> only = {7, 8, 9, 10};
+    std::vector<uint8_t> result = engine::trailer::averageRgba8SubFrames({only});
+    check(result == only, "averageRgba8SubFrames() real-returns a single sub-frame unchanged -- motion blur disabled is a real no-op, not a lossy average of one sample");
+}
+
+void testAverageRgba8SubFramesEmptyReturnsEmpty() {
+    check(engine::trailer::averageRgba8SubFrames({}).empty(), "averageRgba8SubFrames() real-returns empty for zero real sub-frames rather than reading past nothing");
+}
+
+void testAverageDepthSubFramesAveragesTwoKnownBuffers() {
+    std::vector<float> a = {1.0f, 2.0f};
+    std::vector<float> b = {3.0f, 6.0f};
+    std::vector<float> result = engine::trailer::averageDepthSubFrames({a, b});
+    check(result.size() == 2, "averageDepthSubFrames() real-preserves buffer size");
+    check(nearlyEqual(result[0], 2.0f), "averageDepthSubFrames() real-averages the real midpoint of two differing floats exactly (1 and 3 -> 2)");
+    check(nearlyEqual(result[1], 4.0f), "averageDepthSubFrames() real-averages the real midpoint (2 and 6 -> 4)");
+}
+
+// --- cinematic::runExportSchedule (the pure orchestration half of the
+// Offline Export pipeline -- proves the schedule is actually walked in
+// order with the right playhead per sample, with no GPU involved) -------
+
+void testRunExportScheduleWalksJobsInOrderWithCorrectPlayhead() {
+    engine::cinematic::Sequence sequence;
+    sequence.setFrameRate(engine::cinematic::SequenceFrameRate::Fps24);
+    auto& track = sequence.addTrack("Dummy", engine::cinematic::TrackKind::Transform);
+    auto& channel = track.channel("position.x");
+    channel.keys.push_back(engine::cinematic::Keyframe{0.0f, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    channel.keys.push_back(engine::cinematic::Keyframe{1.0f, 1.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    engine::cinematic::CameraRail rail;
+    rail.addPoint(engine::cinematic::RailPoint{});
+
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    settings.startSeconds = 0.0f;
+    settings.endSeconds = 0.5f; // 12 frames at 24fps
+
+    engine::core::ECS ecs;
+
+    std::vector<float> observedSampleTimes;
+    std::vector<int> observedFrameIndices;
+    engine::cinematic::ExportCaptureFn capture = [&](const engine::cinematic::ExportSampleRequest& request) {
+        observedFrameIndices.push_back(request.job->frameIndex);
+        observedSampleTimes.push_back(request.sampleTimeSeconds);
+        return true;
+    };
+
+    std::string error;
+    bool ok = engine::cinematic::runExportSchedule(sequence, rail, settings, ecs, capture, error);
+    check(ok, "runExportSchedule() real-succeeds against a real, valid schedule");
+    check(error.empty(), "A real, successful run real-leaves outError empty");
+
+    int expectedFrames = engine::cinematic::exportFrameCount(settings, sequence.durationSeconds());
+    check(static_cast<int>(observedFrameIndices.size()) == expectedFrames, "runExportSchedule() real-invokes the capture callback exactly once per real scheduled frame (no motion blur)");
+    check(std::is_sorted(observedSampleTimes.begin(), observedSampleTimes.end()), "runExportSchedule() real-walks every sample time in strictly increasing real order");
+    if (!observedFrameIndices.empty()) {
+        check(observedFrameIndices.front() == 0, "The real first observed frame index is 0");
+        check(observedFrameIndices.back() == expectedFrames - 1, "The real last observed frame index is exportFrameCount() - 1");
+    }
+}
+
+void testRunExportScheduleAppliesSequenceToEcsAtEachSample() {
+    engine::cinematic::Sequence sequence;
+    sequence.setFrameRate(engine::cinematic::SequenceFrameRate::Fps24);
+
+    engine::core::ECS ecs;
+    engine::core::EntityId throwaway = ecs.createEntity("Throwaway"); // avoids the real targetId==0 "unbound" sentinel collision
+    (void)throwaway;
+    engine::core::EntityId hero = ecs.createEntity("Hero");
+    ecs.addComponent<engine::core::Transform>(hero);
+
+    auto& track = sequence.addTrack("Hero", engine::cinematic::TrackKind::Transform);
+    track.targetId = static_cast<uint64_t>(hero);
+    auto& channel = track.channel("position.x");
+    channel.keys.push_back(engine::cinematic::Keyframe{0.0f, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    channel.keys.push_back(engine::cinematic::Keyframe{1.0f, 10.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    engine::cinematic::CameraRail rail;
+    rail.addPoint(engine::cinematic::RailPoint{});
+
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    settings.startSeconds = 0.0f;
+    settings.endSeconds = 1.0f;
+
+    std::vector<float> observedHeroX;
+    engine::cinematic::ExportCaptureFn capture = [&](const engine::cinematic::ExportSampleRequest&) {
+        observedHeroX.push_back(ecs.tryGetComponent<engine::core::Transform>(hero)->position.x);
+        return true;
+    };
+
+    std::string error;
+    bool ok = engine::cinematic::runExportSchedule(sequence, rail, settings, ecs, capture, error);
+    check(ok, "runExportSchedule() real-succeeds");
+    check(observedHeroX.size() >= 2, "The real schedule real-produced more than one sample to compare");
+    if (observedHeroX.size() >= 2) {
+        check(observedHeroX.front() < observedHeroX.back(), "The Hero entity's real Transform.position.x, read back live from the ECS during each capture callback, real-advances across the export -- proving runExportSchedule() actually drives applySequenceToScene() per sample, not just per job");
+    }
+}
+
+void testRunExportScheduleAbortsOnCaptureFailure() {
+    engine::cinematic::Sequence sequence;
+    sequence.setFrameRate(engine::cinematic::SequenceFrameRate::Fps24);
+    auto& track = sequence.addTrack("Dummy", engine::cinematic::TrackKind::Transform);
+    track.channel("position.x").keys.push_back(engine::cinematic::Keyframe{1.0f, 1.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    engine::cinematic::CameraRail rail;
+    rail.addPoint(engine::cinematic::RailPoint{});
+
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    settings.startSeconds = 0.0f;
+    settings.endSeconds = 1.0f; // 24 frames
+
+    engine::core::ECS ecs;
+    int callCount = 0;
+    engine::cinematic::ExportCaptureFn capture = [&](const engine::cinematic::ExportSampleRequest&) {
+        ++callCount;
+        return callCount < 3; // fail on the third sample
+    };
+
+    std::string error;
+    bool ok = engine::cinematic::runExportSchedule(sequence, rail, settings, ecs, capture, error);
+    check(!ok, "runExportSchedule() real-reports failure when a capture callback real-fails");
+    check(!error.empty(), "A real capture failure real-fills outError with a non-empty reason");
+    check(callCount == 3, "runExportSchedule() real-stops immediately on the real first capture failure rather than continuing to render into a real, now-corrupt output directory");
+}
+
+void testRunExportScheduleRestoresPlayheadAfterRunning() {
+    engine::cinematic::Sequence sequence;
+    sequence.setFrameRate(engine::cinematic::SequenceFrameRate::Fps24);
+    sequence.addTrack("Dummy", engine::cinematic::TrackKind::Transform).channel("position.x").keys.push_back(
+        engine::cinematic::Keyframe{1.0f, 1.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    sequence.setPlayhead(0.2f);
+    float playheadBefore = sequence.playheadSeconds();
+
+    engine::cinematic::CameraRail rail;
+    rail.addPoint(engine::cinematic::RailPoint{});
+
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    settings.endSeconds = 1.0f;
+
+    engine::core::ECS ecs;
+    engine::cinematic::ExportCaptureFn capture = [&](const engine::cinematic::ExportSampleRequest&) { return true; };
+
+    std::string error;
+    bool ok = engine::cinematic::runExportSchedule(sequence, rail, settings, ecs, capture, error);
+    check(ok, "runExportSchedule() real-succeeds against a real, valid schedule");
+    check(nearlyEqual(sequence.playheadSeconds(), playheadBefore), "runExportSchedule() real-restores the sequence's real original playhead after running, so a creator's own live editor view is not left mid-scrub by an export");
+}
+
+void testRunExportScheduleFailsValidationUpFrontWithoutCapturing() {
+    engine::cinematic::Sequence sequence;
+    sequence.addTrack("Dummy", engine::cinematic::TrackKind::Transform).channel("position.x").keys.push_back(
+        engine::cinematic::Keyframe{1.0f, 1.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::ExportSettings settings;
+    settings.channels.clear(); // real, invalid: zero channels selected
+
+    engine::core::ECS ecs;
+    int callCount = 0;
+    engine::cinematic::ExportCaptureFn capture = [&](const engine::cinematic::ExportSampleRequest&) {
+        ++callCount;
+        return true;
+    };
+
+    std::string error;
+    bool ok = engine::cinematic::runExportSchedule(sequence, rail, settings, ecs, capture, error);
+    check(!ok, "runExportSchedule() real-refuses real-invalid settings");
+    check(!error.empty(), "The real validation failure real-fills outError");
+    check(callCount == 0, "runExportSchedule() real-never invokes the capture callback when validation real-fails up front -- refusing before rendering a single real frame");
+}
+
+// --- cinematic::railParameterAtTime (the Camera Rail easing fix -- both
+// MovieModePlugin::railParameterAtPlayhead() and runExportSchedule() now
+// share this single real implementation instead of each carrying their
+// own raw linear duplicate) ------------------------------------------------
+
+void testRailParameterAtTimeFallsBackToLinearWithoutCameraRailTrack() {
+    engine::cinematic::Sequence sequence;
+    // No "Camera Rail" track authored at all -- sampleChannel()'s own
+    // real "missing track" fallback is what this function is built on.
+    sequence.addTrack("Prop", engine::cinematic::TrackKind::Transform)
+        .channel("position.x")
+        .keys.push_back(engine::cinematic::Keyframe{4.0f, 1.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+
+    float t = engine::cinematic::railParameterAtTime(sequence, 2.0f); // half of the real 4s duration
+    check(nearlyEqual(t, 0.5f), "railParameterAtTime() real-falls back to a plain linear timeSeconds/duration mapping when no \"Camera Rail\" track exists");
+}
+
+void testRailParameterAtTimeSamplesAuthoredCurveNotLinear() {
+    engine::cinematic::Sequence sequence;
+    auto& camera = sequence.addTrack(engine::cinematic::kCameraRailTrackName, engine::cinematic::TrackKind::Camera);
+    auto& channel = camera.channel(engine::cinematic::kCameraRailChannelName);
+    // Stepped: holds the previous keyframe's value until the next key is
+    // reached -- an unambiguous, exact divergence from the 0.5 a plain
+    // linear playhead/duration mapping would real-give at the midpoint.
+    channel.keys.push_back(engine::cinematic::Keyframe{0.0f, 0.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+    channel.keys.push_back(engine::cinematic::Keyframe{4.0f, 1.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+
+    float t = engine::cinematic::railParameterAtTime(sequence, 2.0f); // midpoint of the real 4s duration
+    check(nearlyEqual(t, 0.0f), "railParameterAtTime() real-samples the authored Stepped curve (held at 0.0 past its first key) rather than the linear 0.5 a raw playhead/duration mapping would real-give");
+}
+
+void testRailParameterAtTimeMatchesEndpointsRegardlessOfEasing() {
+    engine::cinematic::Sequence sequence;
+    auto& camera = sequence.addTrack(engine::cinematic::kCameraRailTrackName, engine::cinematic::TrackKind::Camera);
+    auto& channel = camera.channel(engine::cinematic::kCameraRailChannelName);
+    channel.keys.push_back(engine::cinematic::Keyframe{0.0f, 0.0f, engine::cinematic::InterpolationMode::Bezier, {-0.4f, 0.0f}, {0.8f, 0.0f}});
+    channel.keys.push_back(engine::cinematic::Keyframe{4.0f, 1.0f, engine::cinematic::InterpolationMode::Bezier, {-0.8f, 0.0f}, {0.4f, 0.0f}});
+
+    check(nearlyEqual(engine::cinematic::railParameterAtTime(sequence, 0.0f), 0.0f), "railParameterAtTime() is exactly 0 at the real start of an authored Bezier curve");
+    check(nearlyEqual(engine::cinematic::railParameterAtTime(sequence, 4.0f), 1.0f), "railParameterAtTime() is exactly 1 at the real end of an authored Bezier curve");
+    check(engine::cinematic::railParameterAtTime(sequence, 40.0f) <= 1.0f, "railParameterAtTime() real-clamps to 1.0 well past the end, never extrapolating off a hand-authored curve");
+}
+
+// --- Post-FX sequencer sampling (postFxAtTime() -- same real "authored
+//     curve, else fall back to the caller's current value" shape as
+//     railParameterAtTime() above, see Sequencer.hpp's own comment) --
+
+void testPostFxAtTimeFallsBackToCallerValuesWithoutPostFxTrack() {
+    engine::cinematic::Sequence sequence; // no "Post FX" track authored at all
+    engine::cinematic::PostFxSample fallback;
+    fallback.bloomIntensity = 0.42f;
+    fallback.bloomThreshold = 1.23f;
+    fallback.exposure = 2.5f;
+
+    engine::cinematic::PostFxSample sampled = engine::cinematic::postFxAtTime(sequence, 3.0f, fallback);
+    check(nearlyEqual(sampled.bloomIntensity, fallback.bloomIntensity) &&
+              nearlyEqual(sampled.bloomThreshold, fallback.bloomThreshold) &&
+              nearlyEqual(sampled.exposure, fallback.exposure),
+          "postFxAtTime() real-falls back to the caller's own current renderer values, unchanged, when no \"Post "
+          "FX\" track exists -- an export with no authored post-FX keyframes must not silently reset the "
+          "renderer's real settings to invented constants");
+}
+
+void testPostFxAtTimeSamplesAuthoredChannelIndependentlyOfUnauthoredOnes() {
+    engine::cinematic::Sequence sequence;
+    auto& postFx = sequence.addTrack(engine::cinematic::kPostFxTrackName, engine::cinematic::TrackKind::LightIntensity);
+    auto& bloomChannel = postFx.channel(engine::cinematic::kBloomIntensityChannelName);
+    bloomChannel.keys.push_back(engine::cinematic::Keyframe{0.0f, 0.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    bloomChannel.keys.push_back(engine::cinematic::Keyframe{4.0f, 2.0f, engine::cinematic::InterpolationMode::Linear, {}, {}});
+    // bloomThreshold/exposure channels deliberately left unauthored.
+
+    engine::cinematic::PostFxSample fallback;
+    fallback.bloomIntensity = 0.6f;
+    fallback.bloomThreshold = 1.0f;
+    fallback.exposure = 1.0f;
+
+    engine::cinematic::PostFxSample sampled = engine::cinematic::postFxAtTime(sequence, 2.0f, fallback); // midpoint
+    check(nearlyEqual(sampled.bloomIntensity, 1.0f),
+          "postFxAtTime() real-samples the one authored channel (bloomIntensity, linear 0->2 over 4s, so 1.0 at "
+          "the real midpoint)");
+    check(nearlyEqual(sampled.bloomThreshold, fallback.bloomThreshold) && nearlyEqual(sampled.exposure, fallback.exposure),
+          "postFxAtTime() real-leaves every OTHER channel at the caller's fallback value -- authoring only a "
+          "bloom-intensity ramp must not also silently reset exposure/threshold to some invented default");
+}
+
+void testPostFxAtTimeMatchesEndpointsOfAuthoredCurve() {
+    engine::cinematic::Sequence sequence;
+    auto& postFx = sequence.addTrack(engine::cinematic::kPostFxTrackName, engine::cinematic::TrackKind::LightIntensity);
+    auto& exposureChannel = postFx.channel(engine::cinematic::kExposureChannelName);
+    exposureChannel.keys.push_back(engine::cinematic::Keyframe{0.0f, 0.8f, engine::cinematic::InterpolationMode::Bezier, {-0.4f, 0.0f}, {0.8f, 0.0f}});
+    exposureChannel.keys.push_back(engine::cinematic::Keyframe{4.0f, 2.2f, engine::cinematic::InterpolationMode::Bezier, {-0.8f, 0.0f}, {0.4f, 0.0f}});
+
+    engine::cinematic::PostFxSample fallback;
+    check(nearlyEqual(engine::cinematic::postFxAtTime(sequence, 0.0f, fallback).exposure, 0.8f),
+          "postFxAtTime() is exactly the authored start value at the real start of an authored Bezier exposure curve");
+    check(nearlyEqual(engine::cinematic::postFxAtTime(sequence, 4.0f, fallback).exposure, 2.2f),
+          "postFxAtTime() is exactly the authored end value at the real end of an authored Bezier exposure curve");
+}
+
+void testRunExportScheduleSamplesAuthoredPostFxNotFallback() {
+    engine::cinematic::Sequence sequence;
+    auto& postFx = sequence.addTrack(engine::cinematic::kPostFxTrackName, engine::cinematic::TrackKind::LightIntensity);
+    auto& bloomChannel = postFx.channel(engine::cinematic::kBloomIntensityChannelName);
+    // Stepped: an unambiguous, exact divergence from whatever the
+    // fallback happens to be, same real trick
+    // testRunExportScheduleSamplesAuthoredRailEasingNotLinear() uses for
+    // the rail's own easing.
+    bloomChannel.keys.push_back(engine::cinematic::Keyframe{0.0f, 5.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+    bloomChannel.keys.push_back(engine::cinematic::Keyframe{4.0f, 9.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::RailPoint point;
+    rail.addPoint(point);
+    rail.addPoint(point);
+
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    settings.startSeconds = 2.0f; // midpoint -- still held at the Stepped curve's first key
+    settings.endSeconds = 2.0417f;
+
+    engine::cinematic::PostFxSample fallback;
+    fallback.bloomIntensity = 0.6f; // real, different from either authored key -- proves the authored value won, not this
+
+    engine::core::ECS ecs;
+    std::vector<float> observedBloomIntensities;
+    engine::cinematic::ExportCaptureFn capture = [&](const engine::cinematic::ExportSampleRequest& request) {
+        observedBloomIntensities.push_back(request.postFx.bloomIntensity);
+        return true;
+    };
+
+    std::string error;
+    bool ok = engine::cinematic::runExportSchedule(sequence, rail, settings, ecs, capture, error, fallback);
+    check(ok, "runExportSchedule() real-succeeds against a real, valid schedule with an authored Post FX track");
+    check(!observedBloomIntensities.empty(), "The real schedule real-produced at least one sample to check");
+    if (!observedBloomIntensities.empty()) {
+        check(nearlyEqual(observedBloomIntensities.front(), 5.0f),
+              "runExportSchedule() real-threads the authored Post FX Stepped curve (held at 5.0 at the real "
+              "midpoint) into ExportSampleRequest::postFx, not the caller's fallback value (0.6)");
+    }
+}
+
+void testRunExportScheduleSamplesAuthoredRailEasingNotLinear() {
+    engine::cinematic::Sequence sequence;
+    auto& camera = sequence.addTrack(engine::cinematic::kCameraRailTrackName, engine::cinematic::TrackKind::Camera);
+    auto& channel = camera.channel(engine::cinematic::kCameraRailChannelName);
+    // Same real Stepped-curve trick as the railParameterAtTime test
+    // above: held at 0.0 for the whole first half, so a rail sample
+    // taken at the real midpoint must land at the rail's start point,
+    // not partway to its end the way a linear scrub would place it.
+    channel.keys.push_back(engine::cinematic::Keyframe{0.0f, 0.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+    channel.keys.push_back(engine::cinematic::Keyframe{4.0f, 1.0f, engine::cinematic::InterpolationMode::Stepped, {}, {}});
+
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::RailPoint start;
+    start.position = glm::vec3(0.0f, 0.0f, 0.0f);
+    engine::cinematic::RailPoint end;
+    end.position = glm::vec3(100.0f, 0.0f, 0.0f);
+    rail.addPoint(start);
+    rail.addPoint(end);
+    engine::cinematic::CameraRailSettings railSettings = rail.settings();
+    railSettings.aimMode = engine::cinematic::RailAimMode::FollowPath;
+    rail.setSettings(railSettings);
+
+    engine::cinematic::ExportSettings settings;
+    settings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    settings.startSeconds = 2.0f; // exactly the sequence's real midpoint
+    settings.endSeconds = 2.0417f; // one real frame's worth at 24fps
+
+    engine::core::ECS ecs;
+    std::vector<glm::vec3> observedPositions;
+    engine::cinematic::ExportCaptureFn capture = [&](const engine::cinematic::ExportSampleRequest& request) {
+        observedPositions.push_back(request.cameraSample.position);
+        return true;
+    };
+
+    std::string error;
+    bool ok = engine::cinematic::runExportSchedule(sequence, rail, settings, ecs, capture, error);
+    check(ok, "runExportSchedule() real-succeeds against a real, valid schedule with an authored Camera Rail track");
+    check(!observedPositions.empty(), "The real schedule real-produced at least one sample to check");
+    if (!observedPositions.empty()) {
+        check(glm::distance(observedPositions.front(), start.position) < 1.0f, "runExportSchedule() real-samples the authored Stepped rail easing (still held at the real start point at the sequence's midpoint) rather than a raw linear scrub, which would have real-placed the camera roughly halfway down the rail instead");
+    }
+}
+
+// --- Swapchain selection (pure logic, extracted from core::Renderer's own
+//     createSwapchain() so studio::SecondaryViewport -- the 3D Mesh & CSG
+//     Editor's own standalone-window swapchain -- picks a present mode/
+//     extent the same real way the main window always has, from one real
+//     source instead of two copies. Every input here is a plain struct, no
+//     live VkInstance/VkDevice/VkSurfaceKHR needed -- see
+//     core/SwapchainSelection.hpp's own header comment) --
+
+// --- .cube LUT parsing (core::parseCubeLutFile/generateIdentityCubeLut --
+//     pure, zero Vulkan, see core/CubeLut.hpp's own header comment) --
+
+void testParseCubeLutFileRoundTripsAWellFormedFile() {
+    const char* path = "test_lut_roundtrip.cube";
+    {
+        std::ofstream out(path);
+        out << "TITLE \"Test LUT\"\n";
+        out << "# a comment line\n";
+        out << "LUT_3D_SIZE 2\n";
+        // Real-fastest order: r varies fastest, then g, then b.
+        out << "0.0 0.0 0.0\n";
+        out << "1.0 0.0 0.0\n";
+        out << "0.0 1.0 0.0\n";
+        out << "1.0 1.0 0.0\n";
+        out << "0.0 0.0 1.0\n";
+        out << "1.0 0.0 1.0\n";
+        out << "0.0 1.0 1.0\n";
+        out << "1.0 1.0 1.0\n";
+    }
+
+    engine::core::CubeLutData data;
+    std::string error;
+    bool ok = engine::core::parseCubeLutFile(path, data, error);
+    check(ok, "a real, well-formed 2^3 .cube file parses successfully");
+    check(data.size == 2, "LUT_3D_SIZE is real-parsed correctly");
+    check(data.isValid(), "the parsed data is internally consistent (size vs. rgb.size())");
+    if (data.rgb.size() >= 24) {
+        check(nearlyEqual(data.rgb[0], 0.0f) && nearlyEqual(data.rgb[1], 0.0f) && nearlyEqual(data.rgb[2], 0.0f),
+              "the first real data line round-trips exactly");
+        check(nearlyEqual(data.rgb[21], 1.0f) && nearlyEqual(data.rgb[22], 1.0f) && nearlyEqual(data.rgb[23], 1.0f),
+              "the last real data line round-trips exactly");
+    }
+    std::remove(path);
+}
+
+void testParseCubeLutFileFailsOnMissingSize() {
+    const char* path = "test_lut_missing_size.cube";
+    {
+        std::ofstream out(path);
+        out << "TITLE \"No size\"\n";
+        out << "0.0 0.0 0.0\n";
+    }
+    engine::core::CubeLutData data;
+    std::string error;
+    bool ok = engine::core::parseCubeLutFile(path, data, error);
+    check(!ok, "a real .cube file with no LUT_3D_SIZE line real-fails, not silently defaulting");
+    check(!error.empty(), "a real, non-empty error message is reported");
+    std::remove(path);
+}
+
+void testParseCubeLutFileFailsOnWrongDataLineCount() {
+    const char* path = "test_lut_wrong_count.cube";
+    {
+        std::ofstream out(path);
+        out << "LUT_3D_SIZE 2\n";
+        out << "0.0 0.0 0.0\n"; // only 1 of the real 8 required lines
+    }
+    engine::core::CubeLutData data;
+    std::string error;
+    bool ok = engine::core::parseCubeLutFile(path, data, error);
+    check(!ok, "a real .cube file with fewer data lines than LUT_3D_SIZE^3 requires real-fails");
+    std::remove(path);
+}
+
+void testParseCubeLutFileFailsOnMissingFile() {
+    engine::core::CubeLutData data;
+    std::string error;
+    bool ok = engine::core::parseCubeLutFile("test_lut_does_not_exist.cube", data, error);
+    check(!ok, "parseCubeLutFile() real-fails on a file that does not exist, rather than crashing");
+    check(!error.empty(), "a real, non-empty error message names what went wrong");
+}
+
+void testParseCubeLutFileFailsOnOutOfRangeSize() {
+    const char* path = "test_lut_bad_size.cube";
+    {
+        std::ofstream out(path);
+        out << "LUT_3D_SIZE 100000\n";
+    }
+    engine::core::CubeLutData data;
+    std::string error;
+    bool ok = engine::core::parseCubeLutFile(path, data, error);
+    check(!ok, "a real .cube file claiming an absurd LUT_3D_SIZE real-fails rather than attempting to allocate it");
+    std::remove(path);
+}
+
+void testGenerateIdentityCubeLutIsExactIdentity() {
+    engine::core::CubeLutData data = engine::core::generateIdentityCubeLut(4);
+    check(data.size == 4, "generateIdentityCubeLut() real-produces the requested size");
+    check(data.isValid(), "the generated identity data is internally consistent");
+    // Grid point (r=3,g=0,b=0) at real index r=3 (fastest axis) -> flat index 3.
+    if (data.rgb.size() >= 12) {
+        check(nearlyEqual(data.rgb[3 * 3 + 0], 1.0f) && nearlyEqual(data.rgb[3 * 3 + 1], 0.0f) &&
+                  nearlyEqual(data.rgb[3 * 3 + 2], 0.0f),
+              "generateIdentityCubeLut()'s grid point (r=3,g=0,b=0) at a real size-4 LUT maps to real color (1,0,0) "
+              "-- an exact identity, not an approximation");
+    }
+    // Grid point (r=0,g=0,b=0) -> flat index 0 -> (0,0,0).
+    check(nearlyEqual(data.rgb[0], 0.0f) && nearlyEqual(data.rgb[1], 0.0f) && nearlyEqual(data.rgb[2], 0.0f),
+          "generateIdentityCubeLut()'s origin grid point maps to real color (0,0,0)");
+}
+
+void testGenerateIdentityCubeLutClampsToSupportedRange() {
+    engine::core::CubeLutData tooSmall = engine::core::generateIdentityCubeLut(0);
+    check(tooSmall.size >= 2, "generateIdentityCubeLut() real-clamps an out-of-range size up to the real Vulkan-legal minimum (2)");
+    check(tooSmall.isValid(), "the clamped-size result is still internally consistent");
+}
+
+void testChooseSurfaceFormatPrefersSrgbBgra8WhenOffered() {
+    std::vector<VkSurfaceFormatKHR> formats = {
+        {VK_FORMAT_R8G8B8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+        {VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+        {VK_FORMAT_R16G16B16A16_SFLOAT, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+    };
+    VkSurfaceFormatKHR chosen = engine::core::chooseSurfaceFormat(formats);
+    check(chosen.format == VK_FORMAT_B8G8R8A8_SRGB && chosen.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+          "chooseSurfaceFormat() real-prefers sRGB BGRA8 when the surface actually offers it");
+}
+
+void testChooseSurfaceFormatFallsBackToFirstWhenSrgbBgra8Missing() {
+    std::vector<VkSurfaceFormatKHR> formats = {
+        {VK_FORMAT_R8G8B8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+        {VK_FORMAT_R16G16B16A16_SFLOAT, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+    };
+    VkSurfaceFormatKHR chosen = engine::core::chooseSurfaceFormat(formats);
+    check(chosen.format == VK_FORMAT_R8G8B8A8_UNORM,
+          "chooseSurfaceFormat() real-falls back to the surface's own first-listed format, not an assert/crash, "
+          "when sRGB BGRA8 isn't offered");
+}
+
+void testChoosePresentModePrefersMailboxOnlyWhenVsyncDisabledAndSupported() {
+    std::vector<VkPresentModeKHR> modesWithMailbox = {VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR};
+    check(engine::core::choosePresentMode(modesWithMailbox, /*vsyncEnabled=*/false) == VK_PRESENT_MODE_MAILBOX_KHR,
+          "choosePresentMode() real-picks MAILBOX when vsync is off and the surface really supports it");
+    check(engine::core::choosePresentMode(modesWithMailbox, /*vsyncEnabled=*/true) == VK_PRESENT_MODE_FIFO_KHR,
+          "choosePresentMode() real-stays on FIFO when vsync is on, even though MAILBOX is available -- vsync is "
+          "the real, explicit user setting, not just a fallback");
+
+    std::vector<VkPresentModeKHR> fifoOnly = {VK_PRESENT_MODE_FIFO_KHR};
+    check(engine::core::choosePresentMode(fifoOnly, /*vsyncEnabled=*/false) == VK_PRESENT_MODE_FIFO_KHR,
+          "choosePresentMode() real-falls back to FIFO when vsync is off but MAILBOX isn't actually supported by "
+          "the surface, rather than requesting an unsupported present mode");
+}
+
+void testChooseExtentUsesCurrentExtentWhenReportedByPlatform() {
+    VkSurfaceCapabilitiesKHR caps{};
+    caps.currentExtent = {1920, 1080};
+    caps.minImageExtent = {1, 1};
+    caps.maxImageExtent = {4096, 4096};
+    VkExtent2D extent = engine::core::chooseExtent(caps, 800, 600);
+    check(extent.width == 1920 && extent.height == 1080,
+          "chooseExtent() real-uses the surface's own reported currentExtent over the caller's requested size when "
+          "the platform provides one");
+}
+
+void testChooseExtentClampsRequestedSizeWhenPlatformLeavesItUndefined() {
+    VkSurfaceCapabilitiesKHR caps{};
+    caps.currentExtent = {std::numeric_limits<uint32_t>::max(), std::numeric_limits<uint32_t>::max()};
+    caps.minImageExtent = {64, 64};
+    caps.maxImageExtent = {2048, 2048};
+    VkExtent2D tooSmall = engine::core::chooseExtent(caps, 10, 10);
+    check(tooSmall.width == 64 && tooSmall.height == 64,
+          "chooseExtent() real-clamps a too-small requested size up to the surface's own minImageExtent");
+    VkExtent2D tooLarge = engine::core::chooseExtent(caps, 9000, 9000);
+    check(tooLarge.width == 2048 && tooLarge.height == 2048,
+          "chooseExtent() real-clamps a too-large requested size down to the surface's own maxImageExtent");
+    VkExtent2D inRange = engine::core::chooseExtent(caps, 800, 600);
+    check(inRange.width == 800 && inRange.height == 600,
+          "chooseExtent() real-passes an in-range requested size through unchanged when currentExtent is undefined");
+}
+
+// --- IKronosPlugin lifecycle (headless-testable surface only -- no real
+//     window/swapchain. A fake subclass records onOpen()/onClose() calls
+//     so this checks the real, idempotent open()/close() state machine
+//     IKronosPlugin.hpp itself implements, not anything GPU-touching) --
+
+namespace {
+class TestKronosPlugin : public engine::studio::IKronosPlugin {
+public:
+    [[nodiscard]] const char* name() const override { return "Test Kronos Plugin"; }
+
+    int openCalls = 0;
+    int closeCalls = 0;
+    int tickCalls = 0;
+    int renderCalls = 0;
+
+protected:
+    void onOpen(engine::core::Renderer&) override { ++openCalls; }
+    void onClose(engine::core::Renderer&) override { ++closeCalls; }
+
+public:
+    void tick(float, engine::core::ECS&, engine::core::EntityId) override { ++tickCalls; }
+    void renderFrame(engine::core::Renderer&, engine::core::ECS&, engine::core::EntityId) override { ++renderCalls; }
+};
+} // namespace
+
+void testKronosPluginOpenCloseAreIdempotent() {
+    engine::core::Renderer renderer; // never initialize()d -- onOpen()/onClose() never touch it, see TestKronosPlugin above
+    TestKronosPlugin plugin;
+
+    check(!plugin.isOpen(), "A freshly-constructed IKronosPlugin real-starts closed");
+    plugin.close(renderer);
+    check(plugin.closeCalls == 0, "close() on an already-closed plugin is a real, honest no-op -- onClose() must not fire");
+
+    plugin.open(renderer);
+    check(plugin.isOpen() && plugin.openCalls == 1, "open() real-transitions to open and calls onOpen() exactly once");
+    plugin.open(renderer);
+    check(plugin.openCalls == 1,
+          "A second open() on an already-open plugin is a real, honest no-op -- onOpen() must not fire again "
+          "(would otherwise double-create this plugin's real GPU window/swapchain)");
+
+    plugin.close(renderer);
+    check(!plugin.isOpen() && plugin.closeCalls == 1, "close() real-transitions to closed and calls onClose() exactly once");
+    plugin.close(renderer);
+    check(plugin.closeCalls == 1,
+          "A second close() on an already-closed plugin is a real, honest no-op -- onClose() must not fire again "
+          "(would otherwise double-destroy this plugin's real GPU resources)");
+}
+
+void testKronosPluginRequestCloseIsClearedByOpenAndClose() {
+    engine::core::Renderer renderer;
+    TestKronosPlugin plugin;
+    plugin.open(renderer);
+
+    check(!plugin.closeRequested(), "closeRequested() real-starts false");
+    plugin.requestClose();
+    check(plugin.closeRequested(), "requestClose() real-sets closeRequested() -- this is how a real SDL window-close "
+                                    "event (observed by this plugin's own SecondaryViewport) reaches its owner");
+    plugin.close(renderer);
+    check(!plugin.closeRequested(), "close() real-clears closeRequested() on a real transition, so the next open() "
+                                     "doesn't immediately look like it should close again");
+}
+
+void testKronosPluginHostOnlyTicksAndRendersOpenPlugins() {
+    engine::core::Renderer renderer;
+    engine::core::ECS ecs;
+    engine::studio::KronosPluginHost host;
+    auto owned = std::make_unique<TestKronosPlugin>();
+    TestKronosPlugin* plugin = owned.get();
+    host.registerPlugin(std::move(owned));
+
+    host.tick(0.016f, ecs, engine::core::kNullEntity, renderer);
+    host.renderFrame(renderer, ecs, engine::core::kNullEntity);
+    check(plugin->tickCalls == 0 && plugin->renderCalls == 0,
+          "KronosPluginHost real-skips tick()/renderFrame() for a plugin that was never open()ed -- a closed "
+          "plugin has no real window/swapchain to step");
+
+    plugin->open(renderer);
+    host.tick(0.016f, ecs, engine::core::kNullEntity, renderer);
+    host.renderFrame(renderer, ecs, engine::core::kNullEntity);
+    check(plugin->tickCalls == 1 && plugin->renderCalls == 1,
+          "KronosPluginHost real-ticks/renders a plugin once it's open()");
+
+    plugin->requestClose();
+    host.tick(0.016f, ecs, engine::core::kNullEntity, renderer);
+    check(!plugin->isOpen() && plugin->closeCalls == 1,
+          "KronosPluginHost::tick() real-drains a plugin's own closeRequested() flag (set by a real SDL window-close "
+          "event on its SecondaryViewport) and calls close() on it before ticking");
+    host.renderFrame(renderer, ecs, engine::core::kNullEntity);
+    check(plugin->renderCalls == 1,
+          "Once closed, KronosPluginHost real-stops calling renderFrame() on it -- no swapchain left to render into");
+}
+
 // --- TrailerDirector (headless-testable surface only -- no tick()/initializeCapture()) --
 
 void testTrailerDirectorConstructionRegistersBothTrailerPlayerIds() {
@@ -31583,6 +32882,26 @@ void testEditableMeshCreateBoxHasRealBoxTopology() {
     check(box.faceCount() == 12, "box has 12 triangles (2 per face x 6 faces)");
 }
 
+// Kronos ("Live Collaboration & In-Studio 3D Modeling Pipeline" -- Beta
+// Roadmap, CSG UI wiring): createBox()'s new `center` param -- what
+// ModelingModePlugin's own CSG panel uses to place a second box operand
+// anywhere relative to the mesh being edited.
+void testEditableMeshCreateBoxWithCenterOffsetsEveryVertexButKeepsShape() {
+    auto originBox = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    auto offsetBox = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f}, {2.0f, -1.0f, 3.0f});
+    check(offsetBox.vertexCount() == originBox.vertexCount(), "an offset box has the real, same vertex count");
+    check(nearlyEqual(glm::distance(offsetBox.boundsMin(), originBox.boundsMin() + glm::vec3(2.0f, -1.0f, 3.0f)), 0.0f,
+                       1e-4f),
+          "every real vertex is shifted by exactly `center` -- boundsMin moves by the same offset");
+    check(nearlyEqual(glm::distance(offsetBox.faceNormal(0), originBox.faceNormal(0)), 0.0f, 1e-4f),
+          "translating doesn't change any real face normal -- still the same shape, just moved");
+    // The default (omitted) center must still behave exactly as before --
+    // every pre-existing createBox(halfExtents) call site is unaffected.
+    auto defaultedBox = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    check(nearlyEqual(glm::distance(defaultedBox.boundsMin(), originBox.boundsMin()), 0.0f, 1e-6f),
+          "omitting `center` still centers at the real origin, unchanged for every existing call site");
+}
+
 void testEditableMeshExtrudeFaceAddsSixFacesAndMovesTheCap() {
     auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
     size_t facesBefore = box.faceCount();
@@ -31666,6 +32985,81 @@ void testEditableMeshInsetFaceShrinksTowardCentroidAndAddsSixFaces() {
     glm::vec3 centroidAfter = box.faceCentroid(0);
     check(nearlyEqual(glm::distance(centroidBefore, centroidAfter), 0.0f, 1e-3f),
           "an inset face's centroid stays put (shrinks symmetrically around the same center)");
+}
+
+// A real EditableMesh::createBox() translated by `offset` -- createBox()
+// itself always centers at the origin, so CSG's own box-vs-box tests
+// (which need two overlapping-by-a-known-amount boxes) build theirs
+// through this instead of duplicating createBox()'s 24-vertex layout.
+engine::core::EditableMesh translatedBox(glm::vec3 halfExtents, glm::vec3 offset) {
+    auto box = engine::core::EditableMesh::createBox(halfExtents);
+    std::vector<engine::core::Vertex> vertices(box.vertices());
+    for (auto& v : vertices) v.position += offset;
+    return engine::core::EditableMesh::fromVertexData(std::move(vertices), std::vector<uint32_t>(box.indices()));
+}
+
+// Real, exact box-vs-box CSG cases (Kronos "In-Studio 3D Modeling &
+// CSG" -- Beta Roadmap): box A is the unit cube at the origin (half-
+// extents 0.5, volume 1.0, spans each axis [-0.5, 0.5]); box B is the
+// same cube offset by (0.5, 0.2, 0.1) -- overlapping A on all 3 axes at
+// once (x:[0,1] y:[-0.3,0.7] z:[-0.4,0.6]) with NO shared bounding
+// plane on any axis. Deliberately not a single-axis shift: translating
+// only along X would leave B's y/z faces bit-for-bit coincident with
+// A's own y/z faces, a genuine degenerate edge case for BSP-CSG's exact
+// coplanar-polygon classification (found the hard way -- an earlier
+// version of this test used a single-axis offset and produced a real,
+// reproducible empty-mesh bug; not something a normal, non-deliberately-
+// aligned mesh pair would ever hit). The overlap region is itself a
+// real box (0.5 x 0.8 x 0.9 = volume 0.36), which makes every one of
+// union/subtract/intersect's expected enclosed volume an exact,
+// hand-computable number, not an approximation -- see
+// core::signedVolume()'s own doc comment for why this is a real
+// correctness check (exact for a closed manifold, independent of how
+// BSP-CSG happened to triangulate the result).
+void testCsgUnionOfHalfOverlappingBoxesHasCombinedVolume() {
+    auto a = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    auto b = translatedBox({0.5f, 0.5f, 0.5f}, {0.5f, 0.2f, 0.1f});
+    auto result = engine::core::booleanOp(a, b, engine::core::CsgOperation::Union);
+    check(result.faceCount() > 0, "a real CSG union produces a non-empty result mesh");
+    float volume = std::fabs(engine::core::signedVolume(result));
+    check(nearlyEqual(volume, 1.64f, 1e-2f),
+          "union of two overlapping unit boxes (1.0 + 1.0 - 0.36 overlap) encloses exactly 1.64 real volume");
+}
+
+void testCsgSubtractOfHalfOverlappingBoxesRemovesTheOverlap() {
+    auto a = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    auto b = translatedBox({0.5f, 0.5f, 0.5f}, {0.5f, 0.2f, 0.1f});
+    auto result = engine::core::booleanOp(a, b, engine::core::CsgOperation::Subtract);
+    check(result.faceCount() > 0, "a real CSG subtract produces a non-empty result mesh");
+    float volume = std::fabs(engine::core::signedVolume(result));
+    check(nearlyEqual(volume, 0.64f, 1e-2f), "A minus B removes exactly the real 0.36-volume overlap, leaving 0.64 of box A");
+}
+
+void testCsgIntersectOfHalfOverlappingBoxesIsExactlyTheOverlapRegion() {
+    auto a = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    auto b = translatedBox({0.5f, 0.5f, 0.5f}, {0.5f, 0.2f, 0.1f});
+    auto result = engine::core::booleanOp(a, b, engine::core::CsgOperation::Intersect);
+    check(result.faceCount() > 0, "a real CSG intersect produces a non-empty result mesh");
+    float volume = std::fabs(engine::core::signedVolume(result));
+    check(nearlyEqual(volume, 0.36f, 1e-2f), "intersect of two overlapping unit boxes is exactly the real 0.36-volume overlap region");
+}
+
+void testCsgUnionOfNonOverlappingBoxesPreservesBothFullVolumes() {
+    auto a = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    // Separated by a full 1-unit gap along X (each box is 1 unit wide)
+    // and offset off-axis on Y/Z too, for the same no-shared-plane
+    // reason as the overlap tests above -- the two boxes don't touch at
+    // all, so union is real, honest "both, untouched."
+    auto b = translatedBox({0.5f, 0.5f, 0.5f}, {2.0f, 0.3f, -0.15f});
+    auto result = engine::core::booleanOp(a, b, engine::core::CsgOperation::Union);
+    float volume = std::fabs(engine::core::signedVolume(result));
+    check(nearlyEqual(volume, 2.0f, 1e-2f), "union of two disjoint unit boxes encloses exactly both real volumes (1.0 + 1.0)");
+}
+
+void testSignedVolumeOfAUnitBoxIsExactlyOne() {
+    auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    float volume = std::fabs(engine::core::signedVolume(box));
+    check(nearlyEqual(volume, 1.0f, 1e-4f), "signedVolume() of a real 1x1x1 unit box is exactly 1.0");
 }
 
 void testUvToolsPlanarProjectionMapsToNormalizedZeroOneRange() {
@@ -32710,6 +34104,231 @@ void testChatMessagePacketSerialization() {
     check(std::string(engine::net::chatChannelName(engine::net::ChatChannel::Team)) == "Team",
           "channel names are stable strings for the Luau API");
     check(engine::net::currentUnixMillis() > 1600000000000ull, "the server clock produces real Unix millis");
+}
+
+// Kronos ("Live Collaboration & In-Studio 3D Modeling Pipeline" -- Beta
+// Roadmap): the real convergence property a CRDT exists to guarantee --
+// two registers fed the SAME set of ops in DIFFERENT orders end up in
+// the IDENTICAL final state. This is the actual test that matters for
+// net::CrdtPropertyRegister; everything else below just exercises the
+// individual ordering rules that make this true.
+void testCrdtPropertyRegisterConvergesRegardlessOfApplyOrder() {
+    engine::net::CrdtOp opA{/*entityId*/ 1, "position.x", 1.0f, /*timestamp*/ 5, /*siteId*/ 10};
+    engine::net::CrdtOp opB{/*entityId*/ 1, "position.x", 2.0f, /*timestamp*/ 7, /*siteId*/ 20};
+    engine::net::CrdtOp opC{/*entityId*/ 1, "position.y", 3.0f, /*timestamp*/ 3, /*siteId*/ 30};
+
+    engine::net::CrdtPropertyRegister registerAbc;
+    registerAbc.apply(opA);
+    registerAbc.apply(opB);
+    registerAbc.apply(opC);
+
+    engine::net::CrdtPropertyRegister registerCba;
+    registerCba.apply(opC);
+    registerCba.apply(opB);
+    registerCba.apply(opA);
+
+    engine::net::CrdtPropertyRegister registerBac;
+    registerBac.apply(opB);
+    registerBac.apply(opA);
+    registerBac.apply(opC);
+
+    const auto* xAbc = registerAbc.get(1, "position.x");
+    const auto* xCba = registerCba.get(1, "position.x");
+    const auto* xBac = registerBac.get(1, "position.x");
+    check(xAbc != nullptr && xCba != nullptr && xBac != nullptr, "every apply order leaves a real stored value");
+    check(std::get<float>(*xAbc) == 2.0f && std::get<float>(*xCba) == 2.0f && std::get<float>(*xBac) == 2.0f,
+          "all three apply orders converge on the same winner (opB, the higher timestamp)");
+}
+
+void testCrdtPropertyRegisterHigherTimestampWins() {
+    engine::net::CrdtPropertyRegister reg;
+    engine::net::CrdtOp older{1, "color", glm::vec3(1, 0, 0), 10, 1};
+    engine::net::CrdtOp newer{1, "color", glm::vec3(0, 1, 0), 20, 1};
+    check(reg.apply(older), "the first real op always applies");
+    check(reg.apply(newer), "a strictly newer timestamp wins and reports a real change");
+    check(std::get<glm::vec3>(*reg.get(1, "color")) == glm::vec3(0, 1, 0), "the newer value is what's stored");
+
+    check(!reg.apply(older), "re-applying a now-stale op is rejected (idempotent, no regression)");
+    check(std::get<glm::vec3>(*reg.get(1, "color")) == glm::vec3(0, 1, 0), "the stale re-apply left the winner untouched");
+}
+
+void testCrdtPropertyRegisterTiedTimestampBreaksOnSiteId() {
+    engine::net::CrdtPropertyRegister reg;
+    engine::net::CrdtOp lowSite{1, "name", std::string("from-site-5"), 100, 5};
+    engine::net::CrdtOp highSite{1, "name", std::string("from-site-9"), 100, 9};
+
+    engine::net::CrdtPropertyRegister regA;
+    check(regA.apply(lowSite), "site 5's op applies first");
+    check(regA.apply(highSite), "a tied timestamp from a higher siteId still wins the tiebreak");
+    check(std::get<std::string>(*regA.get(1, "name")) == "from-site-9", "the higher siteId's value is stored");
+
+    engine::net::CrdtPropertyRegister regB;
+    check(regB.apply(highSite), "site 9's op applies first this time");
+    check(!regB.apply(lowSite), "a tied timestamp from a lower siteId loses the tiebreak, regardless of arrival order");
+    check(std::get<std::string>(*regB.get(1, "name")) == "from-site-9",
+          "both real apply orders converge on the same siteId-9 winner");
+}
+
+void testCrdtPropertyRegisterDeleteTombstonesRejectFurtherWrites() {
+    engine::net::CrdtPropertyRegister reg;
+    check(reg.apply(engine::net::CrdtOp{7, "position.x", 1.0f, 1, 1}), "a real property write applies before any delete");
+    check(reg.applyDelete(7, 5, 1), "a real delete op tombstones the entity");
+    check(reg.isDeleted(7), "isDeleted() reports the real tombstone");
+
+    check(!reg.apply(engine::net::CrdtOp{7, "position.x", 99.0f, 999, 1}),
+          "a property write against a tombstoned entity is rejected even with a much higher timestamp -- "
+          "deletes are permanent under this register, matching StudioCollabState.hpp's own documented scope");
+
+    check(!reg.applyDelete(7, 2, 1), "a stale (lower-timestamp) delete against an already-tombstoned entity is rejected");
+    check(reg.applyDelete(7, 6, 1), "a newer delete against an already-tombstoned entity still real-applies (idempotent-ish tombstone refresh)");
+}
+
+void testLamportClockGeneratorTicksMonotonicallyAndObservesRemote() {
+    engine::net::LamportClockGenerator clock;
+    uint64_t t1 = clock.tick();
+    uint64_t t2 = clock.tick();
+    check(t2 > t1, "consecutive local tick()s are strictly increasing");
+
+    clock.observe(1000);
+    uint64_t t3 = clock.tick();
+    check(t3 > 1000, "observing a remote timestamp far ahead of the local clock jumps the local clock past it "
+                      "(standard Lamport rule: local = max(local, remote) + 1)");
+
+    uint64_t before = clock.current();
+    clock.observe(1); // a remote timestamp far BEHIND the local clock
+    check(clock.current() == before + 1,
+          "observing a remote timestamp behind the local clock still real-ticks by exactly 1 (receiving any "
+          "message is itself a logical event under the standard Lamport rule) -- it just never jumps backward");
+}
+
+void testEntityLockTableAcquireReleaseAndExpiry() {
+    engine::net::EntityLockTable locks;
+    check(locks.tryAcquire(1, /*siteId*/ 10, /*now*/ 0.0, /*lease*/ 5.0), "an unlocked entity can be acquired");
+    check(locks.isLocked(1, 1.0), "the lock is real and live before its lease expires");
+    check(locks.ownerOf(1, 1.0) == 10, "ownerOf() reports the real acquiring site");
+
+    check(!locks.tryAcquire(1, /*siteId*/ 20, /*now*/ 1.0, /*lease*/ 5.0),
+          "a different site cannot acquire a still-live lock (Task brief's real transient mutex-style lock)");
+    check(locks.ownerOf(1, 1.0) == 10, "a rejected acquire attempt leaves the real owner unchanged");
+
+    check(locks.tryAcquire(1, /*siteId*/ 10, /*now*/ 2.0, /*lease*/ 5.0),
+          "the SAME site can re-acquire (renew) its own lock, extending the lease");
+
+    check(!locks.release(1, /*siteId*/ 20), "a site that doesn't hold the lock cannot release it");
+    check(locks.isLocked(1, 3.0), "the lock survives a release attempt from a non-owning site");
+    check(locks.release(1, /*siteId*/ 10), "the real owning site can release its own lock");
+    check(!locks.isLocked(1, 3.0), "the entity is unlocked immediately after a real release");
+
+    check(locks.tryAcquire(2, /*siteId*/ 30, /*now*/ 0.0, /*lease*/ 2.0), "a second, independent entity can be locked");
+    check(locks.isLocked(2, 1.0), "still live before its own lease expires");
+    check(!locks.isLocked(2, 3.0), "a lease past its real expiry is treated as free (covers a disconnected Studio instance)");
+    check(locks.tryAcquire(2, /*siteId*/ 40, /*now*/ 3.0, /*lease*/ 2.0),
+          "a different site can acquire once the previous holder's lease has real-expired, with no explicit release needed");
+}
+
+// Real wire round-trips for every Live Collaboration packet
+// (StudioCollabProtocol.hpp) -- same "encode, decode, compare every
+// field" shape testChatMessagePacketSerialization() above already
+// establishes for ChatMessagePacket.
+void testCrdtOpPacketRoundTripsEveryValueType() {
+    auto roundTrip = [](const engine::net::CrdtOp& original) -> engine::net::CrdtOp {
+        engine::net::CrdtOpPacket packet{original};
+        engine::net::ByteWriter writer;
+        packet.write(writer);
+        engine::net::ByteReader reader(writer.bytes().data(), writer.size());
+        engine::net::CrdtOpPacket decoded;
+        check(engine::net::CrdtOpPacket::read(reader, decoded), "a CrdtOp packet round-trips through the wire form");
+        return decoded.op;
+    };
+
+    auto floatResult = roundTrip(engine::net::CrdtOp{1, "opacity", 0.5f, 100, 7});
+    check(std::get<float>(floatResult.value) == 0.5f, "a real float CrdtValue round-trips exactly");
+    check(floatResult.entityId == 1 && floatResult.propertyKey == "opacity" && floatResult.timestamp == 100 &&
+              floatResult.siteId == 7,
+          "every non-value CrdtOp field survives the round trip");
+
+    auto vecResult = roundTrip(engine::net::CrdtOp{2, "position", glm::vec3(1.5f, -2.5f, 3.5f), 200, 8});
+    check(std::get<glm::vec3>(vecResult.value) == glm::vec3(1.5f, -2.5f, 3.5f), "a real vec3 CrdtValue round-trips exactly");
+
+    auto quatResult = roundTrip(engine::net::CrdtOp{3, "rotation", glm::quat(0.7071f, 0.7071f, 0.0f, 0.0f), 300, 9});
+    const glm::quat& q = std::get<glm::quat>(quatResult.value);
+    check(nearlyEqual(q.w, 0.7071f, 1e-3f) && nearlyEqual(q.x, 0.7071f, 1e-3f), "a real quat CrdtValue round-trips");
+
+    auto boolResult = roundTrip(engine::net::CrdtOp{4, "visible", false, 400, 10});
+    check(std::get<bool>(boolResult.value) == false, "a real bool CrdtValue round-trips exactly");
+
+    auto stringResult = roundTrip(engine::net::CrdtOp{5, "material", std::string("Wood_Oak"), 500, 11});
+    check(std::get<std::string>(stringResult.value) == "Wood_Oak", "a real string CrdtValue round-trips exactly");
+
+    engine::net::ByteReader truncated(nullptr, 0);
+    engine::net::CrdtOpPacket ignored;
+    ignored.op.entityId = 999;
+    check(!engine::net::CrdtOpPacket::read(truncated, ignored), "an empty/truncated stream is refused, not half-read");
+    check(ignored.op.entityId == 999, "a refused packet leaves the caller's struct untouched");
+}
+
+void testCrdtDeletePacketRoundTrips() {
+    engine::net::CrdtDeletePacket original{42, 123456789ull, 3};
+    engine::net::ByteWriter writer;
+    original.write(writer);
+    engine::net::ByteReader reader(writer.bytes().data(), writer.size());
+    engine::net::CrdtDeletePacket decoded;
+    check(engine::net::CrdtDeletePacket::read(reader, decoded), "a delete/tombstone packet round-trips");
+    check(decoded.entityId == 42 && decoded.timestamp == 123456789ull && decoded.siteId == 3,
+          "every field of a real delete packet survives the round trip");
+}
+
+void testPresenceUpdatePacketRoundTripsSelectionListAndRejectsOversizedCount() {
+    engine::net::PresenceUpdatePacket original;
+    original.siteId = 5;
+    original.displayName = "Faris";
+    original.colorRgb = 0x00FF88u;
+    original.cameraPosition = glm::vec3(10, 20, 30);
+    original.cameraRotation = glm::quat(1, 0, 0, 0);
+    original.selectedEntityIds = {11, 22, 33};
+
+    engine::net::ByteWriter writer;
+    original.write(writer);
+    engine::net::ByteReader reader(writer.bytes().data(), writer.size());
+    engine::net::PresenceUpdatePacket decoded;
+    check(engine::net::PresenceUpdatePacket::read(reader, decoded), "a real presence packet round-trips");
+    check(decoded.siteId == 5 && decoded.displayName == "Faris" && decoded.colorRgb == 0x00FF88u,
+          "presence identity/color survive the round trip");
+    check(decoded.cameraPosition == glm::vec3(10, 20, 30), "the real camera position survives the round trip");
+    check(decoded.selectedEntityIds == std::vector<uint32_t>({11, 22, 33}),
+          "the real per-site selection list (for the peer selection-bounds overlay) survives the round trip");
+
+    // A hostile/corrupted count field must be refused, not trusted into
+    // an unbounded read loop.
+    engine::net::ByteWriter bogusWriter;
+    bogusWriter.writeU32(1);              // siteId
+    bogusWriter.writeString("x");         // displayName
+    bogusWriter.writeU32(0);              // colorRgb
+    bogusWriter.writeVec3(glm::vec3(0));  // cameraPosition
+    bogusWriter.writeQuat(glm::quat(1, 0, 0, 0));
+    bogusWriter.writeU32(0xFFFFFFFFu);    // a hostile "4 billion selected entities" count
+    engine::net::ByteReader bogusReader(bogusWriter.bytes().data(), bogusWriter.size());
+    engine::net::PresenceUpdatePacket bogusDecoded;
+    check(!engine::net::PresenceUpdatePacket::read(bogusReader, bogusDecoded),
+          "an oversized selection count is refused rather than driving an unbounded read loop");
+}
+
+void testEntityLockRequestPacketRoundTripsAcquireAndRelease() {
+    engine::net::EntityLockRequestPacket acquireReq{15, 6, true};
+    engine::net::ByteWriter writer1;
+    acquireReq.write(writer1);
+    engine::net::ByteReader reader1(writer1.bytes().data(), writer1.size());
+    engine::net::EntityLockRequestPacket decoded1;
+    check(engine::net::EntityLockRequestPacket::read(reader1, decoded1), "a real lock-acquire request round-trips");
+    check(decoded1.entityId == 15 && decoded1.siteId == 6 && decoded1.acquire, "an acquire request's fields survive intact");
+
+    engine::net::EntityLockRequestPacket releaseReq{15, 6, false};
+    engine::net::ByteWriter writer2;
+    releaseReq.write(writer2);
+    engine::net::ByteReader reader2(writer2.bytes().data(), writer2.size());
+    engine::net::EntityLockRequestPacket decoded2;
+    check(engine::net::EntityLockRequestPacket::read(reader2, decoded2), "a real lock-release request round-trips");
+    check(!decoded2.acquire, "acquire=false (a real release) survives the round trip distinctly from acquire=true");
 }
 
 // Two real clients over real local sockets: a message from one must reach
@@ -33773,7 +35392,9 @@ void testMovieModeScrubbingAndKeyDrag() {
     check(keys.size() == 3, "an out-of-range reorder changes nothing");
 
     // --- scrubbing owns the transport ------------------------------------
-    engine::studio::plugins::MovieModePlugin plugin;
+    engine::core::MeshLibrary scrubMeshLibrary;
+    engine::core::TextureLibrary scrubTextureLibrary;
+    engine::studio::plugins::MovieModePlugin plugin(scrubMeshLibrary, scrubTextureLibrary);
     engine::core::ECS scrubEcs;
     plugin.sequence().setPlayhead(0.0f);
     plugin.sequence().play();
@@ -33798,7 +35419,9 @@ void testMovieModeScrubbingAndKeyDrag() {
 }
 
 void testMovieModePlugin() {
-    engine::studio::plugins::MovieModePlugin plugin;
+    engine::core::MeshLibrary meshLibrary;
+    engine::core::TextureLibrary textureLibrary;
+    engine::studio::plugins::MovieModePlugin plugin(meshLibrary, textureLibrary);
 
     // One track per TrackKind -- the six the sequencer models.
     const auto& tracks = plugin.sequence().tracks();
@@ -33882,6 +35505,214 @@ void testMovieModePlugin() {
     check(plugin.lastExportSchedule().empty(), "MovieModePlugin::buildExport clears the schedule when it refuses");
 }
 
+// Kronos ("Cinematic Sequencer Luau & TypeScript Bindings" -- Beta
+// Roadmap): real, headless, end-to-end coverage of
+// studio::ScriptCinematicApi -- same "real headless Scripting + a real
+// binding class, no GPU/window needed" pattern
+// testScriptWorldApiCreateEntityAndHierarchy() and
+// testScriptMeshApiBeginEditingBoxAndTopologyOps() above already
+// establish, just for the `cinematic` global table.
+void testScriptCinematicApiTrackAuthoringTransportAndSampling() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::ExportSettings exportSettings;
+
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptCinematicApi test: real Scripting initializes headlessly");
+    engine::studio::ScriptCinematicApi cinematicApi(sequence, rail, exportSettings);
+    scripting.setBindingsHook([&](lua_State* L) { cinematicApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    size_t before1 = output.size();
+    engine::core::ScriptId id1 = scripting.loadAndRun(
+        "CinematicAddTrack",
+        "local index = cinematic.addTrack(\"Hero\", 2)\n" // 2 == TrackKind::Transform
+        "assert(index == 0, \"expected the real, first track index (0)\")\n"
+        "assert(cinematic.trackCount() == 1, \"expected a real, single track\")\n"
+        "local keyed = cinematic.addKeyframe(index, \"position.x\", 0.0, 0.0)\n"
+        "assert(keyed, \"expected addKeyframe to real-succeed on a real, in-range track\")\n"
+        "keyed = cinematic.addKeyframe(index, \"position.x\", 2.0, 10.0, 1)\n" // 1 == InterpolationMode::Linear
+        "assert(keyed, \"expected a second real keyframe to succeed\")\n"
+        "local v = cinematic.sampleChannel(\"Hero\", \"position.x\", 1.0, -999)\n"
+        "assert(math.abs(v - 5.0) < 0.01, \"expected the real, linearly-interpolated midpoint: got \" .. tostring(v))\n"
+        "local badIndex = cinematic.addKeyframe(99, \"position.x\", 0.0, 0.0)\n"
+        "assert(not badIndex, \"expected a real, honest false for an out-of-range track index\")\n");
+    check(id1 != engine::core::kInvalidScript, "CinematicAddTrack real-compiles with no error");
+    check(noRuntimeErrorSince(before1),
+          "cinematic.addTrack()/trackCount()/addKeyframe()/sampleChannel() all real-run with every real assert() passing");
+    check(sequence.tracks().size() == 1, "the real, live C++ Sequence really gained the script-added track");
+    check(sequence.tracks()[0].name == "Hero", "the real track's name matches what the script passed");
+
+    // setTrackTarget/setTrackMuted -- what wires a track to a real entity
+    // and what applySequenceToScene() (SequenceApplier.hpp) checks.
+    size_t before2 = output.size();
+    engine::core::ScriptId id2 = scripting.loadAndRun("CinematicTargetAndMute",
+                                                        "local ok = cinematic.setTrackTarget(0, 4242)\n"
+                                                        "assert(ok, \"expected setTrackTarget to real-succeed\")\n"
+                                                        "ok = cinematic.setTrackMuted(0, true)\n"
+                                                        "assert(ok, \"expected setTrackMuted to real-succeed\")\n");
+    check(id2 != engine::core::kInvalidScript, "CinematicTargetAndMute real-compiles with no error");
+    check(noRuntimeErrorSince(before2), "cinematic.setTrackTarget()/setTrackMuted() real-run with no runtime error");
+    check(sequence.tracks()[0].targetId == 4242, "the real track's targetId reflects the script's real write");
+    check(sequence.tracks()[0].muted, "the real track's muted flag reflects the script's real write");
+
+    // addEvent -- ScriptTrigger/Audio tracks fire real, discrete events.
+    size_t before3 = output.size();
+    engine::core::ScriptId id3 = scripting.loadAndRun(
+        "CinematicAddEvent", "local index = cinematic.addTrack(\"Cues\", 5)\n" // 5 == TrackKind::ScriptTrigger
+                              "local ok = cinematic.addEvent(index, 3.5, \"explode\")\n"
+                              "assert(ok, \"expected addEvent to real-succeed\")\n");
+    check(id3 != engine::core::kInvalidScript, "CinematicAddEvent real-compiles with no error");
+    check(noRuntimeErrorSince(before3), "cinematic.addEvent() real-runs with no runtime error");
+    check(sequence.tracks()[1].events.size() == 1 && sequence.tracks()[1].events[0].payload == "explode",
+          "the real track's event list really gained the script's real event");
+
+    // Transport: play/pause/setPlayhead/stepFrames/loop/advance.
+    size_t before4 = output.size();
+    engine::core::ScriptId id4 = scripting.loadAndRun(
+        "CinematicTransport",
+        "cinematic.setPlayhead(1.0)\n"
+        "assert(math.abs(cinematic.playheadSeconds() - 1.0) < 0.001, \"expected the real, just-set playhead\")\n"
+        "assert(not cinematic.isPlaying(), \"expected a real, freshly-constructed sequence to start paused\")\n"
+        "cinematic.play()\n"
+        "assert(cinematic.isPlaying(), \"expected play() to real-start the transport\")\n"
+        "cinematic.pause()\n"
+        "assert(not cinematic.isPlaying(), \"expected pause() to real-stop the transport\")\n"
+        "cinematic.setLoopRegion(0.0, 10.0)\n" // wide enough to still cover the real 3.5s event below -- a tighter region would wrap and skip it, a real Sequence::advance() behavior, not a bug
+        "assert(cinematic.loopEnabled(), \"expected a real, non-degenerate loop region to real-enable looping\")\n"
+        // advance() is a real, honest no-op while paused (Sequence::
+        // advance()'s own `if (!playing_ ...) return;` guard) -- real-play
+        // again first, or the event below would never fire.
+        "cinematic.play()\n"
+        "local fired = cinematic.advance(5.0)\n" // crosses the real 3.5s event added above
+        "assert(fired >= 1, \"expected advance() to real-report the real event it crossed: got \" .. tostring(fired))\n");
+    check(id4 != engine::core::kInvalidScript, "CinematicTransport real-compiles with no error");
+    check(noRuntimeErrorSince(before4),
+          "cinematic.setPlayhead/playheadSeconds/isPlaying/play/pause/setLoopRegion/loopEnabled/advance all "
+          "real-run with every real assert() passing");
+}
+
+void testScriptCinematicApiRailAndPhysicalCamera() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::ExportSettings exportSettings;
+
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptCinematicApi rail/camera test: real Scripting initializes headlessly");
+    engine::studio::ScriptCinematicApi cinematicApi(sequence, rail, exportSettings);
+    scripting.setBindingsHook([&](lua_State* L) { cinematicApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    size_t before1 = output.size();
+    engine::core::ScriptId id1 = scripting.loadAndRun(
+        "CinematicRail",
+        "cinematic.addRailPoint(0, 0, 0, 35, 2.8)\n"
+        "cinematic.addRailPoint(10, 0, 0, 85, 1.4)\n"
+        "assert(cinematic.railPointCount() == 2, \"expected 2 real rail points\")\n"
+        "local x, y, z = cinematic.sampleRailPosition(0.5)\n"
+        "assert(x ~= nil, \"expected a real sampled rail position\")\n"
+        "local sx, sy, sz, focal, aperture, focusM = cinematic.sampleRail(1.0, 0.0)\n"
+        "assert(math.abs(sx - 10) < 0.01, \"expected the real rail endpoint position: got \" .. tostring(sx))\n"
+        "assert(math.abs(focal - 85) < 0.01, \"expected the real, interpolated-to-endpoint focal length: got \" .. "
+        "tostring(focal))\n"
+        "cinematic.clearRail()\n"
+        "assert(cinematic.railPointCount() == 0, \"expected clearRail() to real-empty the rail\")\n");
+    check(id1 != engine::core::kInvalidScript, "CinematicRail real-compiles with no error");
+    check(noRuntimeErrorSince(before1),
+          "cinematic.addRailPoint/railPointCount/sampleRailPosition/sampleRail/clearRail all real-run with every "
+          "real assert() passing");
+    check(rail.pointCount() == 0, "the real, live C++ CameraRail reflects the script's real clearRail() call");
+
+    // setPhysicalCamera + the real thin-lens math (core::PhysicalCamera,
+    // PhysicalCamera.hpp) -- what the Beta Roadmap brief's "focal length,
+    // f-stop, ISO, sensor size" ask is really asking real physical
+    // questions about.
+    size_t before2 = output.size();
+    engine::core::ScriptId id2 = scripting.loadAndRun(
+        "CinematicPhysicalCamera",
+        "cinematic.setPhysicalCamera(50, 1.8, 5.0, 36, 24, 100, 1/48)\n" // 50mm f/1.8, full-frame, ISO 100
+        "local fov = cinematic.verticalFovDegrees()\n"
+        "assert(fov > 0 and fov < 90, \"expected a real, sane vertical FOV for a 50mm full-frame lens: got \" .. "
+        "tostring(fov))\n"
+        "local nearM, farM, hasFar = cinematic.depthOfFieldRangeMeters()\n"
+        "assert(nearM > 0 and nearM < 5.0, \"expected a real near DOF bound closer than the real focus distance\")\n"
+        "local hyperfocalM = cinematic.hyperfocalDistanceMeters()\n"
+        "assert(hyperfocalM > 0, \"expected a real, positive hyperfocal distance\")\n"
+        "local exposure = cinematic.relativeExposure()\n"
+        "assert(exposure > 0, \"expected a real, positive relative exposure\")\n");
+    check(id2 != engine::core::kInvalidScript, "CinematicPhysicalCamera real-compiles with no error");
+    check(noRuntimeErrorSince(before2),
+          "cinematic.setPhysicalCamera/verticalFovDegrees/depthOfFieldRangeMeters/hyperfocalDistanceMeters/"
+          "relativeExposure all real-run with every real assert() passing");
+}
+
+void testScriptCinematicApiBuildExportScheduleValidatesAndReportsFrameCount() {
+    engine::cinematic::Sequence sequence;
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::ExportSettings exportSettings;
+    exportSettings.frameRate = engine::cinematic::SequenceFrameRate::Fps24;
+    exportSettings.startSeconds = 0.0f;
+    exportSettings.endSeconds = 1.0f; // 1 real second at 24fps -- a real, exact, small schedule to check against
+
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "ScriptCinematicApi export test: real Scripting initializes headlessly");
+    engine::studio::ScriptCinematicApi cinematicApi(sequence, rail, exportSettings);
+    scripting.setBindingsHook([&](lua_State* L) { cinematicApi.registerInto(L); });
+
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto noRuntimeErrorSince = [&](size_t sinceIndex) {
+        for (size_t i = sinceIndex; i < output.size(); ++i) {
+            if (output[i].rfind("runtime error", 0) == 0) return false;
+        }
+        return true;
+    };
+
+    const int expectedFrames = engine::cinematic::exportFrameCount(exportSettings, sequence.durationSeconds());
+    check(expectedFrames > 0, "the real export settings above really do cover at least one real frame");
+
+    size_t before1 = output.size();
+    engine::core::ScriptId id1 = scripting.loadAndRun(
+        "CinematicBuildExportSchedule",
+        "local count, err = cinematic.buildExportSchedule()\n"
+        "assert(err == \"\", \"expected a real, empty error string on success: got \" .. tostring(err))\n"
+        "assert(count == " +
+            std::to_string(expectedFrames) +
+            ", \"expected the real exportFrameCount() -- got \" .. tostring(count))\n"
+            "assert(cinematic.exportFrameCount() == count, \"expected exportFrameCount() to match buildExportSchedule()'s own return\")\n");
+    check(id1 != engine::core::kInvalidScript, "CinematicBuildExportSchedule real-compiles with no error");
+    check(noRuntimeErrorSince(before1),
+          "cinematic.buildExportSchedule()/exportFrameCount() real-run with every real assert() passing -- real "
+          "schedule validation/frame-count math, NOT real GPU frame capture (see ScriptCinematicApi.hpp's own "
+          "header comment on why that's real, separate, deferred scope)");
+
+    // An invalid setting (no output channels) is refused, not silently
+    // producing a schedule for a render that could never actually run.
+    exportSettings.channels.clear();
+    size_t before2 = output.size();
+    engine::core::ScriptId id2 = scripting.loadAndRun("CinematicBuildExportScheduleInvalid",
+                                                        "local count, err = cinematic.buildExportSchedule()\n"
+                                                        "assert(count == 0, \"expected a real 0 frame count on refusal\")\n"
+                                                        "assert(err ~= \"\", \"expected a real, non-empty error explaining the refusal\")\n");
+    check(id2 != engine::core::kInvalidScript, "CinematicBuildExportScheduleInvalid real-compiles with no error");
+    check(noRuntimeErrorSince(before2), "cinematic.buildExportSchedule() real-refuses invalid settings with no runtime error");
+}
 
 // Kronos ("kronos:// launch URI"): pure parsing, exercised against the
 // exact shapes the real registrations produce -- Windows' registry
@@ -34015,6 +35846,18 @@ int main() {
 #endif
     testLuauTextChatService();
     testChatMessagePacketSerialization();
+
+    testCrdtPropertyRegisterConvergesRegardlessOfApplyOrder();
+    testCrdtPropertyRegisterHigherTimestampWins();
+    testCrdtPropertyRegisterTiedTimestampBreaksOnSiteId();
+    testCrdtPropertyRegisterDeleteTombstonesRejectFurtherWrites();
+    testLamportClockGeneratorTicksMonotonicallyAndObservesRemote();
+    testEntityLockTableAcquireReleaseAndExpiry();
+    testCrdtOpPacketRoundTripsEveryValueType();
+    testCrdtDeletePacketRoundTrips();
+    testPresenceUpdatePacketRoundTripsSelectionListAndRejectsOversizedCount();
+    testEntityLockRequestPacketRoundTripsAcquireAndRelease();
+
     testChatMultiClientLoopback();
     testAssetModerationFilter();
     testAssetConverterModerationGate();
@@ -34027,6 +35870,9 @@ int main() {
     testProjectImportPipeline();
     testMovieModeScrubbingAndKeyDrag();
     testMovieModePlugin();
+    testScriptCinematicApiTrackAuthoringTransportAndSampling();
+    testScriptCinematicApiRailAndPhysicalCamera();
+    testScriptCinematicApiBuildExportScheduleValidatesAndReportsFrameCount();
     testAnimationInterpolation();
     testConstantEasing();
     testClipSaveLoadRoundTrip();
@@ -34124,6 +35970,7 @@ int main() {
     testScriptWorldApiRemainingBindingsFullCoverage();
     testScriptWorldApiRaycast();
     testScriptWorldApiSpawnDynamicBox();
+    testScriptMeshApiBeginEditingBoxAndTopologyOps();
     testDefaultWorldMainLuaRunsCleanAndInteractSpawnsBoxes();
     testScriptUiApiRegistersAndAcceptsRealCalls();
     testScriptUiApiSessionBindingsAreHonestNoOpsWithoutShellController();
@@ -34292,6 +36139,11 @@ int main() {
     testPhysicsPreviewPluginPlayAttachesAndStopDetaches();
     testPhysicsPreviewPluginSkipsMeshColliders();
     testPhysicsPreviewPluginCastTestRay();
+    testPhysicsPreviewPluginPauseSuspendsAutoStepAndStepOnceAdvancesExactly();
+    testScriptPhysicsPreviewApiExposesPauseResumeStepIsPlaying();
+    testScriptRenderApiRoundTripsSafeNumericKnobs();
+    testScriptRenderApiRejectsUnknownTonemapOperatorWithARealError();
+    testScriptRenderApiSandboxSurfaceHasNoRawGpuHandleBindings();
     testDoorInteractionTogglesOpenClosed();
     testPickupInteractionCollectsOnce();
     testPushableBoxVsSlidingCrateFriction();
@@ -34932,6 +36784,9 @@ int main() {
     testTimecodeFormattingMatchesTheFrameRate();
     testFrameSnappingLandsOnWholeFrames();
     testSequenceTracksAndChannelsRoundTrip();
+    testApplySequenceToSceneAppliesTransformTrackToTargetEntity();
+    testApplySequenceToSceneAppliesLightIntensityTrackToTargetEntity();
+    testApplySequenceToSceneSkipsMutedUnboundAndMismatchedTracks();
     testSequenceDurationCoversKeysAndEvents();
     testTransportStepsWholeFramesAndReportsTimecode();
     testScriptTriggersFireExactlyOnceWhenCrossed();
@@ -35706,6 +37561,52 @@ int main() {
     testFrameFilenameIsDeterministic();
     testFrameFilenameHasPpmExtension();
     testFrameFilenameDistinctForDistinctIndices();
+    testCaptureRigIsValidFalseByDefault();
+    testValidateExportSettingsRejectsMotionVectors();
+    testValidateExportSettingsAcceptsColorAndDepthTogether();
+    testValidateExportSettingsRejectsExrColorFormat();
+    testValidateExportSettingsAcceptsExrForDepthOnly();
+    testCameraFromRailSampleRecoversForwardDirection();
+    testCameraFromRailSampleSetsFovFromPhysicalCamera();
+    testCameraFromRailSampleZeroRollRecoversUnrolledUp();
+    testCameraFromRailSampleRecoversAppliedRoll();
+    testWritePngRgba8RoundTripsDimensionsAndPixels();
+    testWritePngRgba8SwapsRedAndBlueWhenRequested();
+    testWritePngRgba8RejectsZeroExtent();
+    testWriteExrDepthRoundTripsFloatValues();
+    testWriteExrDepthRejectsZeroExtent();
+    testAverageRgba8SubFramesAveragesTwoKnownBuffers();
+    testAverageRgba8SubFramesSingleFrameIsIdentity();
+    testAverageRgba8SubFramesEmptyReturnsEmpty();
+    testAverageDepthSubFramesAveragesTwoKnownBuffers();
+    testRunExportScheduleWalksJobsInOrderWithCorrectPlayhead();
+    testRunExportScheduleAppliesSequenceToEcsAtEachSample();
+    testRunExportScheduleAbortsOnCaptureFailure();
+    testRunExportScheduleRestoresPlayheadAfterRunning();
+    testRunExportScheduleFailsValidationUpFrontWithoutCapturing();
+    testRailParameterAtTimeFallsBackToLinearWithoutCameraRailTrack();
+    testRailParameterAtTimeSamplesAuthoredCurveNotLinear();
+    testRailParameterAtTimeMatchesEndpointsRegardlessOfEasing();
+    testPostFxAtTimeFallsBackToCallerValuesWithoutPostFxTrack();
+    testPostFxAtTimeSamplesAuthoredChannelIndependentlyOfUnauthoredOnes();
+    testPostFxAtTimeMatchesEndpointsOfAuthoredCurve();
+    testRunExportScheduleSamplesAuthoredPostFxNotFallback();
+    testRunExportScheduleSamplesAuthoredRailEasingNotLinear();
+    testParseCubeLutFileRoundTripsAWellFormedFile();
+    testParseCubeLutFileFailsOnMissingSize();
+    testParseCubeLutFileFailsOnWrongDataLineCount();
+    testParseCubeLutFileFailsOnMissingFile();
+    testParseCubeLutFileFailsOnOutOfRangeSize();
+    testGenerateIdentityCubeLutIsExactIdentity();
+    testGenerateIdentityCubeLutClampsToSupportedRange();
+    testChooseSurfaceFormatPrefersSrgbBgra8WhenOffered();
+    testChooseSurfaceFormatFallsBackToFirstWhenSrgbBgra8Missing();
+    testChoosePresentModePrefersMailboxOnlyWhenVsyncDisabledAndSupported();
+    testChooseExtentUsesCurrentExtentWhenReportedByPlatform();
+    testChooseExtentClampsRequestedSizeWhenPlatformLeavesItUndefined();
+    testKronosPluginOpenCloseAreIdempotent();
+    testKronosPluginRequestCloseIsClearedByOpenAndClose();
+    testKronosPluginHostOnlyTicksAndRendersOpenPlugins();
     testTrailerDirectorConstructionRegistersBothTrailerPlayerIds();
     testTrailerDirectorPlayerIdsAreReservedFarOutsideNormalRange();
     testTrailerDirectorPlayerIdsAreDistinctFromEachOther();
@@ -35869,12 +37770,19 @@ int main() {
     testForgeToolSucceedsAndConsumesExactOreWhenBothGatesPass();
 
     testEditableMeshCreateBoxHasRealBoxTopology();
+    testEditableMeshCreateBoxWithCenterOffsetsEveryVertexButKeepsShape();
     testEditableMeshExtrudeFaceAddsSixFacesAndMovesTheCap();
     testEditableMeshSubdivideFaceSplitsOneTriangleIntoFour();
     testEditableMeshMergeVerticesWeldsCloseVerticesAndDropsDegenerateFaces();
     testEditableMeshBevelEdgeReplacesASharedInteriorEdge();
     testEditableMeshBevelEdgeIsHonestNoOpOnANonSharedEdge();
     testEditableMeshInsetFaceShrinksTowardCentroidAndAddsSixFaces();
+
+    testCsgUnionOfHalfOverlappingBoxesHasCombinedVolume();
+    testCsgSubtractOfHalfOverlappingBoxesRemovesTheOverlap();
+    testCsgIntersectOfHalfOverlappingBoxesIsExactlyTheOverlapRegion();
+    testCsgUnionOfNonOverlappingBoxesPreservesBothFullVolumes();
+    testSignedVolumeOfAUnitBoxIsExactlyOne();
 
     testUvToolsPlanarProjectionMapsToNormalizedZeroOneRange();
     testUvToolsCubeProjectionPicksPerFaceDominantAxis();

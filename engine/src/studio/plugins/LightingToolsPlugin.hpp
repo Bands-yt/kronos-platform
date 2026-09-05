@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "core/Renderer.hpp"
@@ -71,6 +72,15 @@ private:
     float chromaticAberrationStrength_ = 0.0015f;
     float saturation_ = 1.05f;
     float godRayStrength_ = 0.15f;
+
+    // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
+    // real 3D LUT color grading + AgX tonemap): same "local UI state,
+    // pushed live" pattern as the cinematic tuning knobs above.
+    int tonemapOperatorIndex_ = 0; // 0=ACES filmic, 1=AgX -- matches core::Renderer::TonemapOperator's own order
+    std::string lutPathBuffer_ = "lut.cube";
+    float lutStrength_ = 1.0f;
+    std::string lutStatus_;
 };
+
 
 } // namespace engine::studio::plugins

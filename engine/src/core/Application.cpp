@@ -2127,6 +2127,19 @@ bool Application::initialize(const CreateInfo& info) {
     // "Performance Stats Panel" for the client half of this task; Studio
     // gets the real ImGui panel (see StudioApp.cpp).
     if (!info.headless) gameLoop_->setPostRenderHook([this](float dt) {
+        // Kronos (beta-blocking fix -- "flickering when opening a game"):
+        // real, one-time reveal -- the window was created hidden (see
+        // Window::initialize()'s own comment) specifically so nothing
+        // ever composites it before this exact point: right after its
+        // own first real renderFrame() has actually succeeded and
+        // presented a complete, correct frame. Every call after the
+        // first is a real no-op (Window::show() itself is idempotent,
+        // this flag just skips the call entirely).
+        if (!windowShown_) {
+            windowShown_ = true;
+            window_.show();
+        }
+
         uint32_t loadedChunks = terrain_ != nullptr ? static_cast<uint32_t>(terrain_->loadedChunkCount()) : 0;
         uint32_t totalChunks = terrain_ != nullptr ? static_cast<uint32_t>(terrain_->chunkCount()) : 0;
         ProcessStats processStats = processStatsSampler_.sample();

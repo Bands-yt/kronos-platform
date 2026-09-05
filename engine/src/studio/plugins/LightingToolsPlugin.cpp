@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include <imgui.h>
+#include <imgui_stdlib.h>
 
 #include "studio/PluginChrome.hpp"
 
@@ -214,6 +215,42 @@ void LightingToolsPlugin::drawRenderingModeSection() {
         renderer_->setVignetteAndChromaticAberration(vignetteStrength_, chromaticAberrationStrength_);
         renderer_->setSaturation(saturation_);
         renderer_->setGodRayStrength(godRayStrength_);
+
+        // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline"):
+        // real tonemap operator selection + real 3D LUT color grading --
+        // see core::Renderer::setTonemapOperator()/loadColorGradingLut()'s
+        // own comments. Deliberately still inside the same cinematicEnabled
+        // section as every other post-FX knob above, not a separate panel.
+        ImGui::Separator();
+        ImGui::Text("Tonemap & Color Grading");
+        const char* tonemapOperators[] = {"ACES Filmic", "AgX"};
+        if (ImGui::Combo("Tonemap Operator", &tonemapOperatorIndex_, tonemapOperators,
+                          IM_ARRAYSIZE(tonemapOperators))) {
+            renderer_->setTonemapOperator(tonemapOperatorIndex_ == 1 ? core::Renderer::TonemapOperator::AgX
+                                                                      : core::Renderer::TonemapOperator::AcesFilm);
+        }
+        ImGui::InputText("LUT File Path", &lutPathBuffer_);
+        ImGui::SameLine();
+        helpMarker("A standard Adobe .cube 3D LUT file (the format DaVinci Resolve/Premiere/Blender export).");
+        if (ImGui::Button("Load LUT")) {
+            std::string error;
+            if (renderer_->loadColorGradingLut(lutPathBuffer_, error)) {
+                lutStatus_ = "Loaded \"" + lutPathBuffer_ + "\".";
+            } else {
+                lutStatus_ = "Failed: " + error;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset to Identity")) {
+            std::string error;
+            lutStatus_ = renderer_->resetColorGradingLutToIdentity(error) ? "Reset to a real, exact identity LUT."
+                                                                            : "Failed: " + error;
+        }
+        if (!lutStatus_.empty()) ImGui::TextWrapped("%s", lutStatus_.c_str());
+        if (ImGui::SliderFloat("LUT Strength", &lutStrength_, 0.0f, 1.0f, "%.2f")) {
+            renderer_->setColorGradingLutStrength(lutStrength_);
+        }
+
         ImGui::Unindent();
     }
 }
