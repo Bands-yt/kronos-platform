@@ -1,16 +1,18 @@
 ; Kronos Engine -- Inno Setup script for a traditional, offline,
 ; self-contained Windows installer (KronosSetup.exe). This is separate
-; from installer/src/ (the small GitHub-release bootstrap/updater app) --
-; that one downloads a release at runtime; this one packages a build
-; you already have on disk.
+; from installer/src/main.cpp (kronos_installer.exe, the small
+; GitHub-release bootstrap/updater app that downloads a release at
+; runtime) and from KronosBootstrapper.exe (installer/src/BootstrapperMain.cpp,
+; the real kronos:// URI protocol handler this script registers below --
+; a tiny per-launch wrapper that forwards the clicked URI to
+; engine_runtime.exe, nothing more).
 ;
-; Prerequisite: produce a staged install tree first, e.g. from the
-; engine/ directory:
-;   cmake --install build --prefix ..\installer\dist --config Release
-; That gives this script exactly the layout engine/src/CMakeLists.txt's
-; own install() rules already define (binaries + DLLs flat, plus
-; shaders/assets/games/templates/docs/plugins subfolders) under
-; installer\dist\, which [Files] below packages verbatim.
+; Prerequisite: produce a staged install tree first --
+;   from engine/:     cmake --install build --prefix ..\installer\dist --config Release
+;   from installer/:  cmake --install build --prefix dist --config Release
+; The second command adds KronosBootstrapper.exe (and kronos_installer.exe)
+; alongside the engine binaries in installer\dist\, which [Files] below
+; packages verbatim.
 ;
 ; Compile with: iscc build_installer.iss
 
@@ -77,9 +79,15 @@ Name: "{autodesktop}\Kronos Studio"; Filename: "{app}\studio.exe"; WorkingDir: "
 ; registerUrlProtocolHandler() already registers for the bootstrap
 ; installer's own install path. uninsdeletekey on the root key only, so
 ; uninstalling removes the whole "kronos" key tree in one step.
+;
+; Points at KronosBootstrapper.exe, not engine_runtime.exe directly --
+; the bootstrapper is the one real, minimal per-launch wrapper
+; (installer/src/BootstrapperMain.cpp) that forwards the raw clicked
+; URI (%1, unformatted) on to engine_runtime.exe as --kronos-uri=<uri>
+; itself; this command line hands it the raw URI, not a pre-built flag.
 Root: HKCU; Subkey: "Software\Classes\kronos"; ValueType: string; ValueName: ""; ValueData: "URL:Kronos Protocol"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\kronos"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCU; Subkey: "Software\Classes\kronos\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\engine_runtime.exe"" ""--kronos-uri=%1"""
+Root: HKCU; Subkey: "Software\Classes\kronos\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\KronosBootstrapper.exe"" ""%1"""
 
 [Run]
 Filename: "{app}\studio.exe"; Description: "Launch Kronos Studio"; Flags: nowait postinstall skipifsilent unchecked

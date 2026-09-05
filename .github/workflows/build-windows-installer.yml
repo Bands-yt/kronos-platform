@@ -71,6 +71,21 @@ jobs:
           }
           Copy-Item "$vcpkgBin\*.dll" "installer\dist\" -Force
 
+      # installer/ is its own, separate CMake project (KronosBootstrapper.exe
+      # -- the real kronos:// URI handler build_installer.iss registers --
+      # and kronos_installer.exe) -- reuses the same vcpkg toolchain
+      # file/packages already installed above, no new dependencies.
+      - name: Configure and build installer/ tools (Release)
+        run: |
+          cmake -S installer -B installer/build `
+            -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build installer/build --config Release --parallel
+
+      - name: Stage installer/ tools into the install tree
+        run: cmake --install installer/build --config Release --prefix installer/dist
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
