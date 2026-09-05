@@ -1,6 +1,7 @@
 #include "core/Application.hpp"
 
 #include "core/ScriptChatApi.hpp"
+#include "core/Utf8.hpp"
 #include "net/HttpWorkerPool.hpp"
 #include "net/NetworkedMovement.hpp"
 #include "safety/GeminiModerationClient.hpp"
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 
@@ -66,6 +68,48 @@ bool Application::initialize(const CreateInfo& info) {
         // second, less specific message here.
         return false;
     }
+
+    // In-game text chat: '/' or Enter (when not already focused) opens
+    // the input box and starts real SDL text input; while focused,
+    // characters/backspace/Enter(submit)/Escape(cancel) are all handled
+    // here rather than through UnifiedInput's action-polling (that's for
+    // discrete actions, not free text).
+    window_.setRawEventCallback([this](const SDL_Event& event) {
+        if (!tntWarsLiveModeEnabled_) return;
+
+        if (!tntWarsChatFocused_) {
+            if (event.type == SDL_KEYDOWN && event.key.repeat == 0 &&
+                (event.key.keysym.sym == SDLK_SLASH || event.key.keysym.sym == SDLK_RETURN ||
+                 event.key.keysym.sym == SDLK_KP_ENTER)) {
+                tntWarsChatFocused_ = true;
+                tntWarsChatInputBuffer_.clear();
+                SDL_StartTextInput();
+            }
+            return;
+        }
+
+        if (event.type == SDL_TEXTINPUT) {
+            // event.text.text is a real, null-terminated UTF-8 fragment
+            // (possibly multiple bytes for one character) -- appended
+            // as-is rather than assumed single-byte.
+            if (tntWarsChatInputBuffer_.size() + std::strlen(event.text.text) <= net::ChatMessagePacket::kMaxBodyBytes) {
+                tntWarsChatInputBuffer_ += event.text.text;
+            }
+        } else if (event.type == SDL_KEYDOWN) {
+            if (event.key.keysym.sym == SDLK_BACKSPACE && !tntWarsChatInputBuffer_.empty()) {
+                tntWarsChatInputBuffer_ = utf8TrimTrailingCharacter(tntWarsChatInputBuffer_);
+            } else if (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER) {
+                if (!tntWarsChatInputBuffer_.empty()) networkSession_.sendChatMessage(tntWarsChatInputBuffer_);
+                tntWarsChatInputBuffer_.clear();
+                tntWarsChatFocused_ = false;
+                SDL_StopTextInput();
+            } else if (event.key.keysym.sym == SDLK_ESCAPE) {
+                tntWarsChatInputBuffer_.clear();
+                tntWarsChatFocused_ = false;
+                SDL_StopTextInput();
+            }
+        }
+    });
 
     Renderer::CreateInfo rendererInfo;
     rendererInfo.window = &window_;
@@ -759,6 +803,18 @@ bool Application::initialize(const CreateInfo& info) {
         if (tntWarsLiveModeEnabled_) {
             tntwars::TntWarsMatch& match = networkSession_.tntWarsMatch();
             match.matchFlow().tick(dt);
+
+            if (!tntWarsChatCallbackRegistered_) {
+                tntWarsChatCallbackRegistered_ = true;
+                networkSession_.setOnChatMessageReceived([this](net::PlayerId sender, const std::string& text) {
+                    std::string senderName = "Player";
+                    const auto& known = networkSession_.clientKnownPlayers();
+                    auto it = known.find(sender);
+                    if (it != known.end()) senderName = it->second;
+                    tntWarsChatHistory_.push_back({senderName, text});
+                    while (tntWarsChatHistory_.size() > kTntWarsChatHistoryLimit) tntWarsChatHistory_.pop_front();
+                });
+            }
 
             // Kronos ("TNT Wars Gameplay Loop"): real explosion damage +
             // knockback against the live local player -- see
@@ -1754,6 +1810,35 @@ bool Application::initialize(const CreateInfo& info) {
                     std::snprintf(line, sizeof(line), "  Node %zu: %s", i, controlledBy);
                     uiRenderer_.drawText(line, cursor, 0.6f, glm::vec4(0.9f, 0.9f, 0.9f, 1.0f));
                     cursor.y += 24.0f;
+                }
+            }
+
+            // In-game chat overlay: recent history bottom-left, always
+            // visible in live mode; the input box only while focused.
+            {
+                constexpr float kChatWidth = 420.0f;
+                constexpr float kLineHeight = 20.0f;
+                float chatBottom = static_cast<float>(window_.height()) - 24.0f;
+                if (tntWarsChatFocused_) {
+                    glm::vec2 inputPos(24.0f, chatBottom - kLineHeight);
+                    uiRenderer_.drawRect(inputPos, glm::vec2(kChatWidth, kLineHeight + 6.0f), glm::vec4(0.0f, 0.0f, 0.0f, 0.75f));
+                    std::string inputLine = "> " + tntWarsChatInputBuffer_ + "_";
+                    uiRenderer_.drawText(inputLine, inputPos + glm::vec2(6.0f, 3.0f), 0.6f, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+                    chatBottom -= (kLineHeight + 10.0f);
+                }
+                size_t historyCount = std::min(tntWarsChatHistory_.size(), kTntWarsChatVisibleLines);
+                if (historyCount > 0) {
+                    glm::vec2 panelPos(24.0f, chatBottom - static_cast<float>(historyCount) * kLineHeight - 8.0f);
+                    glm::vec2 panelSize(kChatWidth, static_cast<float>(historyCount) * kLineHeight + 12.0f);
+                    uiRenderer_.drawRect(panelPos, panelSize, glm::vec4(0.0f, 0.0f, 0.0f, 0.45f));
+                    glm::vec2 cursor = panelPos + glm::vec2(8.0f, 6.0f);
+                    size_t start = tntWarsChatHistory_.size() - historyCount;
+                    for (size_t i = start; i < tntWarsChatHistory_.size(); ++i) {
+                        const TntWarsChatEntry& entry = tntWarsChatHistory_[i];
+                        std::string line = "[" + entry.senderName + "]: " + entry.body;
+                        uiRenderer_.drawText(line, cursor, 0.55f, glm::vec4(0.95f, 0.95f, 0.95f, 1.0f));
+                        cursor.y += kLineHeight;
+                    }
                 }
             }
 

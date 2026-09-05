@@ -104,6 +104,7 @@ add_library(engine_core STATIC
     core/Renderer.cpp
     core/SwapchainSelection.cpp
     core/CubeLut.cpp
+    core/Utf8.cpp
     core/UIRenderer.cpp
     core/RayTracingScene.cpp
     core/VmaImpl.cpp
