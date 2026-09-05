@@ -90,6 +90,7 @@
 #include "core/Navigation.hpp"
 #include "core/Texture.hpp"
 #include "core/CubeLut.hpp"
+#include "core/Utf8.hpp"
 #include "core/Noise.hpp"
 #include "core/ObjLoader.hpp"
 #include "core/SwapchainSelection.hpp"
@@ -30849,6 +30850,33 @@ void testRunExportScheduleSamplesAuthoredRailEasingNotLinear() {
 // --- .cube LUT parsing (core::parseCubeLutFile/generateIdentityCubeLut --
 //     pure, zero Vulkan, see core/CubeLut.hpp's own header comment) --
 
+// --- In-game chat: UTF-8-safe backspace trim (core::utf8TrimTrailingCharacter --
+//     pure, used by Application.cpp's chat input box so backspace on a
+//     multi-byte character removes the whole character, not one byte) --
+
+void testUtf8TrimTrailingCharacterRemovesOneAsciiChar() {
+    check(engine::core::utf8TrimTrailingCharacter("hello") == "hell",
+          "trimming a plain ASCII string removes exactly the last character");
+}
+
+void testUtf8TrimTrailingCharacterRemovesOneMultiByteChar() {
+    // U+1F600 GRINNING FACE, a real 4-byte UTF-8 sequence (F0 9F 98 80) --
+    // trimming must drop all 4 bytes together, not leave a broken tail.
+    std::string withEmoji = std::string("hi ") + "\xF0\x9F\x98\x80";
+    check(engine::core::utf8TrimTrailingCharacter(withEmoji) == "hi ",
+          "trimming a 4-byte UTF-8 character (an emoji) removes the whole real character, not one byte of it");
+
+    // U+00E9 é, a real 2-byte UTF-8 sequence (C3 A9).
+    std::string withAccent = std::string("caf") + "\xC3\xA9";
+    check(engine::core::utf8TrimTrailingCharacter(withAccent) == "caf",
+          "trimming a 2-byte UTF-8 character (an accented letter) removes the whole real character");
+}
+
+void testUtf8TrimTrailingCharacterOnEmptyStringIsANoOp() {
+    check(engine::core::utf8TrimTrailingCharacter("").empty(),
+          "trimming an empty string is a real, honest no-op, not an out-of-bounds access");
+}
+
 void testParseCubeLutFileRoundTripsAWellFormedFile() {
     const char* path = "test_lut_roundtrip.cube";
     {
@@ -37592,6 +37620,9 @@ int main() {
     testPostFxAtTimeMatchesEndpointsOfAuthoredCurve();
     testRunExportScheduleSamplesAuthoredPostFxNotFallback();
     testRunExportScheduleSamplesAuthoredRailEasingNotLinear();
+    testUtf8TrimTrailingCharacterRemovesOneAsciiChar();
+    testUtf8TrimTrailingCharacterRemovesOneMultiByteChar();
+    testUtf8TrimTrailingCharacterOnEmptyStringIsANoOp();
     testParseCubeLutFileRoundTripsAWellFormedFile();
     testParseCubeLutFileFailsOnMissingSize();
     testParseCubeLutFileFailsOnWrongDataLineCount();

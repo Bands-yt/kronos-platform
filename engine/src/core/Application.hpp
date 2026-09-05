@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <random>
+#include <deque>
 #include <string>
 
 #include "core/Audio.hpp"
@@ -918,6 +919,19 @@ private:
     bool tntWarsSettingsKeyWasDown_ = false;
     bool tntWarsLeaderboardOverlayVisible_ = false;
     bool tntWarsLeaderboardKeyWasDown_ = false;
+    // In-game text chat -- '/' or Enter focuses the input box (raw SDL
+    // text input, not an action binding: free text needs SDL_TEXTINPUT,
+    // not a discrete action), Enter again submits, Escape cancels.
+    bool tntWarsChatFocused_ = false;
+    std::string tntWarsChatInputBuffer_;
+    bool tntWarsChatCallbackRegistered_ = false;
+    struct TntWarsChatEntry {
+        std::string senderName;
+        std::string body;
+    };
+    std::deque<TntWarsChatEntry> tntWarsChatHistory_;
+    static constexpr size_t kTntWarsChatHistoryLimit = 50;
+    static constexpr size_t kTntWarsChatVisibleLines = 8;
     // Kronos ("Quality-of-Life & Finalization", "Respawn system") -- see
     // setTntWarsRespawnPosition()'s own comment.
     glm::vec3 tntWarsRespawnPosition_{0.0f};
