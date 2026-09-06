@@ -18,6 +18,17 @@
 
 #define AppName "Kronos Engine"
 #define AppVersion "0.3.0-beta"
+; Kronos ("Windows Installer Build Verification"): VersionInfoVersion
+; (below) feeds the PE VS_VERSIONINFO numeric version field directly --
+; Inno Setup requires strictly "major.minor.build.private" (1-4 plain
+; integers, no suffix), so AppVersion's own "-beta" tag (correct for the
+; user-facing display strings below) can't be reused there verbatim.
+; This never surfaced before because every prior Windows CI run failed
+; earlier, mid-engine-compile; confirmed for real once that earlier
+; failure was fixed and this build actually reached "Compile installer"
+; for the first time (iscc's own error: "Value of [Setup] section
+; directive "VersionInfoVersion" is invalid.").
+#define AppVersionNumeric "0.3.0.0"
 #define AppPublisher "Kronos"
 #define AppURL "https://github.com/Bands-yt/kronos-platform"
 #define SourceDir "dist"
@@ -31,7 +42,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#AppVersionNumeric}
 
 ; Per-user, no-admin install -- {localappdata} is writable by the
 ; current user, and PrivilegesRequired=lowest stops Setup from
