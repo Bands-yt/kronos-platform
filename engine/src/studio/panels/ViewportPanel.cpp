@@ -899,88 +899,110 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     ImVec2 iconSize(kIconButtonSize, kIconButtonSize);
 
     // Adobe-style persistent left tool column, not a horizontal bar --
-    // each control group stacks vertically (no SameLine() between
-    // groups) down the viewport's left edge. Beginner mode shows only
-    // Translate/Rotate/Scale + Add Primitive/Import; Advanced adds
-    // gizmo space + the three snap controls.
+    // every control is always present in both modes (no feature gating);
+    // Beginner adds an inline text label after each control (clearer
+    // breakdown for newcomers), Advanced stays icon-only/compact to
+    // maximize viewport space.
+    auto beginnerLabel = [&](const char* text) {
+        if (!advancedMode_) {
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(text);
+        }
+    };
+
     ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 8.0f + kToolbarPadding, imageOrigin.y + 8.0f + kToolbarPadding));
     ImGui::BeginGroup();
     if (iconButton("gizmo_translate", Icon::Translate, iconSize, gizmoOperation_ == GizmoOperation::Translate,
-                    "Translate (W)")) {
+                    "Translate (W) -- move the selected object.")) {
         gizmoOperation_ = GizmoOperation::Translate;
     }
-    if (iconButton("gizmo_rotate", Icon::Rotate, iconSize, gizmoOperation_ == GizmoOperation::Rotate, "Rotate (E)")) {
+    beginnerLabel("Move (W)");
+    if (iconButton("gizmo_rotate", Icon::Rotate, iconSize, gizmoOperation_ == GizmoOperation::Rotate,
+                    "Rotate (E) -- turn the selected object.")) {
         gizmoOperation_ = GizmoOperation::Rotate;
     }
-    if (iconButton("gizmo_scale", Icon::Scale, iconSize, gizmoOperation_ == GizmoOperation::Scale, "Scale (R)")) {
+    beginnerLabel("Rotate (E)");
+    if (iconButton("gizmo_scale", Icon::Scale, iconSize, gizmoOperation_ == GizmoOperation::Scale,
+                    "Scale (R) -- resize the selected object.")) {
         gizmoOperation_ = GizmoOperation::Scale;
     }
+    beginnerLabel("Scale (R)");
 
-    if (advancedMode_) {
-        ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
 
-        bool worldSpace = gizmoSpace_ == GizmoSpace::World;
-        if (iconButton("gizmo_space", worldSpace ? Icon::WorldSpace : Icon::LocalSpace, iconSize, false,
-                        worldSpace ? "World Space (click for Local)" : "Local Space (click for World)")) {
-            gizmoSpace_ = worldSpace ? GizmoSpace::Local : GizmoSpace::World;
-        }
-        ImGui::Dummy(ImVec2(0.0f, 6.0f));
-
-        // Grid Snap and Angle Snap are independently toggleable and apply
-        // to Translate/Rotate respectively regardless of which is
-        // currently selected, so switching gizmo modes never silently
-        // changes what's snapping.
-        if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_, gridSnapEnabled_ ? "Grid Snap On" : "Grid Snap Off")) {
-            gridSnapEnabled_ = !gridSnapEnabled_;
-        }
-        ImGui::SetNextItemWidth(kIconButtonSize);
-        static constexpr float kGridSnapPresets[] = {0.25f, 1.0f, 5.0f};
-        char gridPresetLabel[16];
-        std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%.2fm", translateSnap_);
-        if (ImGui::BeginCombo("##grid_snap_preset", gridPresetLabel)) {
-            for (float preset : kGridSnapPresets) {
-                char label[16];
-                std::snprintf(label, sizeof(label), "%.2fm", preset);
-                bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
-                if (ImGui::Selectable(label, selected)) translateSnap_ = preset;
-                if (selected) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            ImGui::SetTooltip("Grid Snap increment (meters) -- how far Translate moves per step while Grid Snap is on.");
-        }
-
-        if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_, angleSnapEnabled_ ? "Angle Snap On" : "Angle Snap Off")) {
-            angleSnapEnabled_ = !angleSnapEnabled_;
-        }
-        ImGui::SetNextItemWidth(kIconButtonSize);
-        static constexpr float kAngleSnapPresets[] = {15.0f, 45.0f, 90.0f};
-        char anglePresetLabel[16];
-        std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f%s", rotateSnapDegrees_, "\xc2\xb0"); // UTF-8 degree sign
-        if (ImGui::BeginCombo("##angle_snap_preset", anglePresetLabel)) {
-            for (float preset : kAngleSnapPresets) {
-                char label[16];
-                std::snprintf(label, sizeof(label), "%.0f%s", preset, "\xc2\xb0");
-                bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
-                if (ImGui::Selectable(label, selected)) rotateSnapDegrees_ = preset;
-                if (selected) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            ImGui::SetTooltip("Angle Snap increment (degrees) -- how far Rotate turns per step while Angle Snap is on.");
-        }
-
-        if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_, scaleSnapEnabled_ ? "Scale Snap On" : "Scale Snap Off")) {
-            scaleSnapEnabled_ = !scaleSnapEnabled_;
-        }
-        ImGui::SetNextItemWidth(kIconButtonSize);
-        ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            ImGui::SetTooltip("Scale Snap increment -- how far Scale changes per step while Scale Snap is on. Drag to adjust.");
-        }
+    bool worldSpace = gizmoSpace_ == GizmoSpace::World;
+    if (iconButton("gizmo_space", worldSpace ? Icon::WorldSpace : Icon::LocalSpace, iconSize, false,
+                    worldSpace ? "World Space -- gizmo axes stay aligned to the world (click for Local)"
+                               : "Local Space -- gizmo axes follow the object's own rotation (click for World)")) {
+        gizmoSpace_ = worldSpace ? GizmoSpace::Local : GizmoSpace::World;
     }
+    beginnerLabel(worldSpace ? "World Space" : "Local Space");
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+
+    // Grid Snap and Angle Snap are independently toggleable and apply
+    // to Translate/Rotate respectively regardless of which is
+    // currently selected, so switching gizmo modes never silently
+    // changes what's snapping.
+    if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_,
+                    "Grid Snap -- while on, Translate moves in fixed steps instead of freely.")) {
+        gridSnapEnabled_ = !gridSnapEnabled_;
+    }
+    beginnerLabel(gridSnapEnabled_ ? "Grid Snap: On" : "Grid Snap: Off");
+    ImGui::SetNextItemWidth(kIconButtonSize);
+    static constexpr float kGridSnapPresets[] = {0.25f, 1.0f, 5.0f};
+    char gridPresetLabel[16];
+    std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%.2fm", translateSnap_);
+    if (ImGui::BeginCombo("##grid_snap_preset", gridPresetLabel)) {
+        for (float preset : kGridSnapPresets) {
+            char label[16];
+            std::snprintf(label, sizeof(label), "%.2fm", preset);
+            bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
+            if (ImGui::Selectable(label, selected)) translateSnap_ = preset;
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Grid Snap increment (meters) -- how far Translate moves per step while Grid Snap is on.");
+    }
+    beginnerLabel("Grid Snap step");
+
+    if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_,
+                    "Angle Snap -- while on, Rotate turns in fixed steps instead of freely.")) {
+        angleSnapEnabled_ = !angleSnapEnabled_;
+    }
+    beginnerLabel(angleSnapEnabled_ ? "Angle Snap: On" : "Angle Snap: Off");
+    ImGui::SetNextItemWidth(kIconButtonSize);
+    static constexpr float kAngleSnapPresets[] = {15.0f, 45.0f, 90.0f};
+    char anglePresetLabel[16];
+    std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f%s", rotateSnapDegrees_, "\xc2\xb0"); // UTF-8 degree sign
+    if (ImGui::BeginCombo("##angle_snap_preset", anglePresetLabel)) {
+        for (float preset : kAngleSnapPresets) {
+            char label[16];
+            std::snprintf(label, sizeof(label), "%.0f%s", preset, "\xc2\xb0");
+            bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
+            if (ImGui::Selectable(label, selected)) rotateSnapDegrees_ = preset;
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Angle Snap increment (degrees) -- how far Rotate turns per step while Angle Snap is on.");
+    }
+    beginnerLabel("Angle Snap step");
+
+    if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_,
+                    "Scale Snap -- while on, Scale changes in fixed steps instead of freely.")) {
+        scaleSnapEnabled_ = !scaleSnapEnabled_;
+    }
+    beginnerLabel(scaleSnapEnabled_ ? "Scale Snap: On" : "Scale Snap: Off");
+    ImGui::SetNextItemWidth(kIconButtonSize);
+    ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Scale Snap increment -- how far Scale changes per step while Scale Snap is on. Drag to adjust.");
+    }
+    beginnerLabel("Scale Snap step");
 
     // Kronos ("Clean Viewport & Mesh Import Pipeline"): real "Import 3D
     // Asset..."/"Add Primitive" controls -- see setAssetTools()'s own
@@ -989,12 +1011,15 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
 
         if (modelImporterPlugin_ != nullptr) {
-            if (iconButton("import_asset", Icon::Folder, iconSize, false, "Import 3D Asset...")) {
+            if (iconButton("import_asset", Icon::Folder, iconSize, false,
+                            "Import 3D Asset -- opens a real file browser for glTF/.OBJ/.FBX.")) {
                 modelImporterPlugin_->setOpen(true);
                 modelImporterPlugin_->browseForFile();
             }
+            beginnerLabel("Import 3D Asset...");
         }
 
+        ImGui::SetNextItemWidth(kIconButtonSize);
         if (ImGui::BeginCombo("##add_primitive", "+", ImGuiComboFlags_NoArrowButton)) {
             // Real, honest fallback spawn point: 4m in front of the
             // camera, never below the y=0 ground grid -- so a repeated
@@ -1049,15 +1074,17 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
             }
             ImGui::EndCombo();
         }
+        beginnerLabel("Add Primitive");
     }
 
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    if (ImGui::SmallButton(advancedMode_ ? "Adv" : "Beg")) advancedMode_ = !advancedMode_;
+    if (ImGui::SmallButton(advancedMode_ ? "Pro" : "Beg")) advancedMode_ = !advancedMode_;
+    beginnerLabel("Beginner Mode");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip(advancedMode_ ? "Advanced mode -- click for Beginner (hides gizmo space, snap, and "
-                                           "debug-overlay controls)"
-                                         : "Beginner mode -- click for Advanced (adds gizmo space, snap, and "
-                                           "debug-overlay controls)");
+        ImGui::SetTooltip(advancedMode_ ? "Professional mode -- compact icons only. Click for Beginner (adds "
+                                           "text labels and richer tooltips; every tool stays available in both)."
+                                         : "Beginner mode -- every tool labeled for clarity. Click for "
+                                           "Professional for a compact, icon-only layout (same tools, less space).");
     }
     ImGui::EndGroup();
 
