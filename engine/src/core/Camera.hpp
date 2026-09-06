@@ -59,6 +59,34 @@ public:
         proj[1][1] *= -1.0f;
         return proj;
     }
+
+    // Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite, live
+    // viewport picking): the same real "un-project the near/far NDC
+    // points through the inverse view-projection matrix" ray
+    // construction studio::ViewportPanel::computeMouseRay() already
+    // established for the main scene's click-to-select, factored onto
+    // Camera itself so any camera (studio::PreviewScene's orbit camera
+    // included) can build the same real world-space ray without a
+    // second, drift-prone reimplementation. `ndcX`/`ndcY` are already in
+    // NDC (-1..1, Y up) -- the caller converts its own mouse/image
+    // coordinates first, matching computeMouseRay()'s own convention.
+    void screenPointToRay(float ndcX, float ndcY, float aspectRatio, glm::vec3& outOrigin,
+                           glm::vec3& outDirection) const {
+        glm::mat4 invViewProj = glm::inverse(projectionMatrix(aspectRatio) * viewMatrix());
+
+        // NDC z=0 is the near plane, z=1 the far plane -- this project's
+        // Vulkan clip-space convention (GLM_FORCE_DEPTH_ZERO_TO_ONE), not
+        // GLM's own OpenGL-style default -- see computeMouseRay()'s own
+        // comment for why getting this backwards would still compile and
+        // still produce *a* ray, just not one through the cursor.
+        glm::vec4 nearPoint = invViewProj * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
+        nearPoint /= nearPoint.w;
+        glm::vec4 farPoint = invViewProj * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+        farPoint /= farPoint.w;
+
+        outOrigin = glm::vec3(nearPoint);
+        outDirection = glm::normalize(glm::vec3(farPoint) - glm::vec3(nearPoint));
+    }
 };
 
 } // namespace engine::core

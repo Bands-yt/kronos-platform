@@ -41,6 +41,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/Camera.hpp"
 #include "core/CsgMesh.hpp"
 #include "core/EditableMesh.hpp"
 #include "core/EditableMeshComponent.hpp"
@@ -2269,6 +2270,75 @@ void testPickTriangleUvReturnsClosestHitNotFirstHit() {
     check(result.hit, "the stacked-quads ray hits");
     check(nearlyEqual(result.distance, 4.0f, 0.01f), "closest hit is the UPPER quad at y=1 (distance 4), not the lower one at y=0 (distance 5)");
     check(nearlyEqual(result.uv.x, 0.9f, 0.01f), "returned UV belongs to the upper quad's own distinct UV, confirming which face was actually picked");
+}
+
+void testEditableMeshCreateCapsuleMatchesMeshCreateCapsuleGeometry() {
+    using namespace engine::core;
+    // Kronos ("Vulkan Compute PBR Painter" -- live viewport picking):
+    // EditableMesh::createCapsule() and Mesh::createCapsule() share the
+    // exact same core::generateCapsuleGeometry() call -- this is a real,
+    // headless proof that the CPU pick target studio::plugins::
+    // MaterialPlugin ray-tests against (previewPickMesh_) is genuinely
+    // the same geometry as the GPU mesh it renders (previewSphereMesh_),
+    // not a second, independently-authored approximation that could
+    // silently drift out of sync.
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    generateCapsuleGeometry(0.5f, 0.0f, 16, 8, vertices, indices);
+
+    EditableMesh mesh = EditableMesh::createCapsule(0.5f, 0.0f, 16, 8);
+    check(mesh.vertexCount() == vertices.size(), "EditableMesh::createCapsule() produces the same vertex count as the shared generator");
+    check(mesh.indices().size() == indices.size(), "EditableMesh::createCapsule() produces the same index count as the shared generator");
+    bool allMatch = true;
+    for (size_t i = 0; i < vertices.size() && allMatch; ++i) {
+        allMatch = nearlyEqual(mesh.vertices()[i].position.x, vertices[i].position.x, 0.0001f) &&
+                   nearlyEqual(mesh.vertices()[i].position.y, vertices[i].position.y, 0.0001f) &&
+                   nearlyEqual(mesh.vertices()[i].position.z, vertices[i].position.z, 0.0001f);
+    }
+    check(allMatch, "every EditableMesh::createCapsule() vertex position matches the shared generator's own output exactly");
+
+    // Real ray straight down the +Y axis through the sphere's north pole
+    // (radius 0.5, centered at the origin) -- the analytically known hit
+    // point is (0, 0.5, 0), and the capsule generator's own top-pole UV
+    // is (anything, 0.0) (t=0 at the pole, see generateCapsuleGeometry()'s
+    // own comment), so a real pickTriangleUv() hit here proves the CPU
+    // pick target is a real, exact sphere, not just "some mesh with the
+    // right vertex count".
+    MeshUvPickResult pick = pickTriangleUv(mesh, glm::vec3(0.0f, 5.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), 10.0f);
+    check(pick.hit, "a ray straight down through a real UV-sphere's north pole hits");
+    check(nearlyEqual(pick.point.y, 0.5f, 0.01f), "hit point is the real north pole at y=radius (0.5)");
+    check(nearlyEqual(pick.uv.y, 0.0f, 0.05f), "hit UV.y is the real pole value (t=0), matching generateCapsuleGeometry()'s own convention");
+}
+
+void testCameraScreenPointToRayMatchesKnownGeometry() {
+    using namespace engine::core;
+    // A camera looking straight down -Z from a real, known position with
+    // no roll/pitch/yaw offset from its own forward() convention --
+    // yawDegrees=-90 (this class's own default) points forward() exactly
+    // along -Z (see forward()'s own trig), so the NDC origin (0,0) must
+    // produce a ray whose origin is the camera's own position and whose
+    // direction is exactly forward(), the same real "un-project the
+    // center of the screen" sanity check any camera-ray implementation
+    // must satisfy.
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
+    camera.yawDegrees = -90.0f;
+    camera.pitchDegrees = 0.0f;
+
+    glm::vec3 rayOrigin, rayDirection;
+    camera.screenPointToRay(0.0f, 0.0f, 1.0f, rayOrigin, rayDirection);
+
+    // The near-plane point, not the camera position itself -- real
+    // distance nearPlane (0.05, this class's own default) along forward()
+    // from camera.position, not zero.
+    glm::vec3 expectedForward = camera.forward();
+    glm::vec3 expectedNearPoint = camera.position + expectedForward * camera.nearPlane;
+    check(nearlyEqual(rayOrigin.x, expectedNearPoint.x, 0.01f) && nearlyEqual(rayOrigin.y, expectedNearPoint.y, 0.01f) &&
+              nearlyEqual(rayOrigin.z, expectedNearPoint.z, 0.01f),
+          "screenPointToRay's near-plane origin lands at the real camera position offset by nearPlane along forward() for the screen center");
+    check(nearlyEqual(rayDirection.x, expectedForward.x, 0.01f) && nearlyEqual(rayDirection.y, expectedForward.y, 0.01f) &&
+              nearlyEqual(rayDirection.z, expectedForward.z, 0.01f),
+          "screenPointToRay's direction for the screen center matches the camera's own real forward() vector");
 }
 
 void testRayAabbIntersection() {
@@ -37169,6 +37239,8 @@ int main() {
     testPickTriangleUvHitsInteriorPointWithInterpolatedUv();
     testPickTriangleUvMissesOutsideMesh();
     testPickTriangleUvReturnsClosestHitNotFirstHit();
+    testEditableMeshCreateCapsuleMatchesMeshCreateCapsuleGeometry();
+    testCameraScreenPointToRayMatchesKnownGeometry();
     testRayAabbIntersection();
     testObjLoaderRoundTrip();
     testAssetMetadataExtraction();

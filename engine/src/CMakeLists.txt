@@ -584,8 +584,19 @@ endif()
 # dockable panel host.
 # ---------------------------------------------------------------------------
 if(ENGINE_BUILD_STUDIO)
-    add_executable(studio
-        studio/StudioMain.cpp
+    # Kronos ("Modular Executable Targets" -- v0.4.0 Creator Suite): every
+    # source below (everything the flagship `studio` target needs except
+    # its own StudioMain.cpp) is shared by the 4 new standalone apps in
+    # studio/apps/ too -- they link the exact same engine_core-backed
+    # StudioApp (see StudioApp::StudioMode's own comment for how they
+    # differ at *runtime*, by registering a smaller plugin subset, not by
+    # being a smaller build). A real, deliberate build-graph choice: each
+    # is its own full executable (not one binary with a --mode flag) so
+    # e.g. Kronos Audio genuinely launches, docks, and alt-tabs as its own
+    # app, matching the brief's "standalone executable frontends" ask --
+    # not "lightweight" in binary size (they all link the same ~30 first-
+    # party plugins' object code either way), but in what each one boots.
+    set(KRONOS_STUDIO_SHARED_SOURCES
         studio/StudioApp.cpp
         studio/OffscreenTarget.cpp
         studio/PluginManager.cpp
@@ -666,6 +677,18 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/LauncherPlugin.cpp
         studio/ParticlePresets.cpp
     )
+
+    add_executable(studio studio/StudioMain.cpp ${KRONOS_STUDIO_SHARED_SOURCES})
+    add_executable(kronos_studio studio/apps/KronosStudioMain.cpp studio/apps/StandaloneAppMain.cpp
+        ${KRONOS_STUDIO_SHARED_SOURCES})
+    add_executable(kronos_3d_maker studio/apps/Kronos3dMakerMain.cpp studio/apps/StandaloneAppMain.cpp
+        ${KRONOS_STUDIO_SHARED_SOURCES})
+    add_executable(kronos_movie_maker studio/apps/KronosMovieMakerMain.cpp studio/apps/StandaloneAppMain.cpp
+        ${KRONOS_STUDIO_SHARED_SOURCES})
+    add_executable(kronos_audio studio/apps/KronosAudioMain.cpp studio/apps/StandaloneAppMain.cpp
+        ${KRONOS_STUDIO_SHARED_SOURCES})
+    set(KRONOS_STUDIO_TARGETS studio kronos_studio kronos_3d_maker kronos_movie_maker kronos_audio)
+
     # Luau.Analysis/Luau.Config: Studio-only (see ColorTextEditBackend.cpp's
     # LuauLiveAnalyzer) -- engine_runtime never edits scripts, so it has no
     # reason to also link Luau's type-checker on top of the Luau.VM/
@@ -675,32 +698,37 @@ if(ENGINE_BUILD_STUDIO)
     # (RuntimeShaderCompiler.hpp, Shader Graph Phase 1) does. Guarded by
     # TARGET so a build with KRONOS_BUILD_SHADER_COMPILER OFF still
     # configures (ShaderCompiler.cmake's own real, honest opt-out).
-    target_link_libraries(studio PRIVATE engine_core imgui::imgui imguizmo::imguizmo
-        imguicolortextedit::imguicolortextedit Luau.Analysis Luau.Config imnodes::imnodes)
-    if(TARGET kronos::shaderc)
-        target_link_libraries(studio PRIVATE kronos::shaderc)
-    endif()
-    if(WIN32)
-        # Same real SDL2main linkage need as engine_runtime above -- see
-        # that target's own comment for why.
-        target_link_libraries(studio PRIVATE SDL2::SDL2main)
-        # Kronos ("Windows Studio Launch Crash" -- Jay's issue): without
-        # this, studio.exe links fine but stays a console-subsystem PE
-        # image, so every double-click launch pops a real console window
-        # that -- with no cmd.exe holding it open -- closes itself the
-        # instant the process exits. That's a second, independent real
-        # contributor to "opens and closes immediately, no error message"
-        # on top of the actual initialize()-failure root cause (see
-        # core::executableDirectory()'s own comment): even a *successful*
-        # launch flashed a console a normal user has no reason to expect
-        # from a creator tool. WIN32_EXECUTABLE makes this a real GUI-
-        # subsystem app -- no console at all, matching "launching the
-        # Studio executable ... defaults cleanly into editor mode" -- and
-        # is exactly why StudioMain.cpp's own fatal-error path now uses a
-        # real SDL_ShowSimpleMessageBox popup instead of stderr: a GUI-
-        # subsystem process has no console for stderr to reach at all.
-        set_target_properties(studio PROPERTIES WIN32_EXECUTABLE TRUE)
-    endif()
+    # Applied to every one of KRONOS_STUDIO_TARGETS -- see that variable's
+    # own comment for why all 5 executables need the identical link set.
+    foreach(_kronos_studio_target ${KRONOS_STUDIO_TARGETS})
+        target_link_libraries(${_kronos_studio_target} PRIVATE engine_core imgui::imgui imguizmo::imguizmo
+            imguicolortextedit::imguicolortextedit Luau.Analysis Luau.Config imnodes::imnodes)
+        if(TARGET kronos::shaderc)
+            target_link_libraries(${_kronos_studio_target} PRIVATE kronos::shaderc)
+        endif()
+        if(WIN32)
+            # Same real SDL2main linkage need as engine_runtime above -- see
+            # that target's own comment for why.
+            target_link_libraries(${_kronos_studio_target} PRIVATE SDL2::SDL2main)
+            # Kronos ("Windows Studio Launch Crash" -- Jay's issue): without
+            # this, studio.exe links fine but stays a console-subsystem PE
+            # image, so every double-click launch pops a real console window
+            # that -- with no cmd.exe holding it open -- closes itself the
+            # instant the process exits. That's a second, independent real
+            # contributor to "opens and closes immediately, no error message"
+            # on top of the actual initialize()-failure root cause (see
+            # core::executableDirectory()'s own comment): even a *successful*
+            # launch flashed a console a normal user has no reason to expect
+            # from a creator tool. WIN32_EXECUTABLE makes this a real GUI-
+            # subsystem app -- no console at all, matching "launching the
+            # Studio executable ... defaults cleanly into editor mode" -- and
+            # is exactly why StudioMain.cpp's/StandaloneAppMain.cpp's own
+            # fatal-error paths now use a real SDL_ShowSimpleMessageBox popup
+            # instead of stderr: a GUI-subsystem process has no console for
+            # stderr to reach at all.
+            set_target_properties(${_kronos_studio_target} PROPERTIES WIN32_EXECUTABLE TRUE)
+        endif()
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -731,7 +759,7 @@ if(ENGINE_BUILD_RUNTIME OR ENGINE_BUILD_STUDIO)
         list(APPEND _kronos_install_targets engine_runtime)
     endif()
     if(ENGINE_BUILD_STUDIO)
-        list(APPEND _kronos_install_targets studio)
+        list(APPEND _kronos_install_targets ${KRONOS_STUDIO_TARGETS})
     endif()
 
     if(WIN32)

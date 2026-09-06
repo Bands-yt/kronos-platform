@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include "core/Components.hpp"
+#include "core/MeshUvPicking.hpp"
 #include "studio/MaterialPresets.hpp"
 #include "studio/PluginChrome.hpp"
 
@@ -88,12 +89,56 @@ void MaterialPlugin::drawTextureSlot(Slot slot, const char* label, core::Rendera
     ImGui::PopID();
 }
 
+void MaterialPlugin::stampAllSlots(core::Renderable& renderable, glm::vec2 uv) {
+    if (!painterReady_) {
+        std::string error;
+        painterReady_ = painter_.initialize(allocator_, device_, cmdPool_, queue_, error);
+        if (!painterReady_) paintStatusMessage_ = "Painter init failed: " + error;
+    }
+    if (!painterReady_) return;
+
+    std::string error;
+    int stamped = 0;
+    auto tryStamp = [&](uint32_t handle, glm::vec4 color) {
+        const core::Texture* texture = textureLibrary_->get(handle);
+        if (texture == nullptr) return;
+        if (painter_.stamp(*texture, uv, paintRadius_, color, paintSoftness_, error)) ++stamped;
+    };
+    tryStamp(renderable.albedoTexture, paintAlbedoColor_);
+    // Real, stated brush-shape simplification: a flat "up" tangent-space
+    // normal, not sculpted bump detail -- see this section's own drawn
+    // header text and ComputePbrPainter.hpp's class comment.
+    tryStamp(renderable.normalTexture, glm::vec4(0.5f, 0.5f, 1.0f, 1.0f));
+    tryStamp(renderable.roughnessTexture, glm::vec4(paintRoughnessValue_, paintRoughnessValue_, paintRoughnessValue_, 1.0f));
+    tryStamp(renderable.metallicTexture, glm::vec4(paintMetallicValue_, paintMetallicValue_, paintMetallicValue_, 1.0f));
+    paintStatusMessage_ = "Stamped " + std::to_string(stamped) + " real texture(s) directly in GPU memory.";
+}
+
+void MaterialPlugin::handleViewportPickPaint(core::Renderable& renderable) {
+    glm::vec3 rayOrigin, rayDirection;
+    if (!previewScene_.consumeClickRay(rayOrigin, rayDirection)) return;
+
+    bool anyPaintable = renderable.albedoTexture != core::Renderable::kInvalidHandle ||
+                         renderable.normalTexture != core::Renderable::kInvalidHandle ||
+                         renderable.roughnessTexture != core::Renderable::kInvalidHandle ||
+                         renderable.metallicTexture != core::Renderable::kInvalidHandle;
+    if (!anyPaintable) return;
+
+    constexpr float kMaxPickDistance = 100.0f;
+    core::MeshUvPickResult pick = core::pickTriangleUv(previewPickMesh_, rayOrigin, rayDirection, kMaxPickDistance);
+    if (!pick.hit) return;
+
+    paintUv_ = pick.uv;
+    stampAllSlots(renderable, paintUv_);
+}
+
 void MaterialPlugin::drawComputePaintSection(core::Renderable& renderable) {
     ImGui::SeparatorText("Compute Paint (direct-to-VRAM PBR stamp)");
     ImGui::TextWrapped(
-        "Create a paintable texture per slot, then stamp a soft circular brush directly into GPU memory via a real "
-        "compute shader -- see core::ComputePbrPainter's own header comment for exactly what this does (and the real "
-        "scope cuts: no live 3D-viewport click picking yet, a flat normal brush rather than sculpted detail).");
+        "Create a paintable texture per slot, then click directly on the preview sphere above (or use the Stamp "
+        "button below) to stamp a soft circular brush directly into GPU memory via a real compute shader -- see "
+        "core::ComputePbrPainter's own header comment for exactly what this does (and the real scope cuts: a flat "
+        "normal brush rather than sculpted detail).");
 
     auto createPaintable = [&](uint32_t* handle, glm::vec4 clearColor, const char* label) {
         ImGui::PushID(label);
@@ -136,31 +181,7 @@ void MaterialPlugin::drawComputePaintSection(core::Renderable& renderable) {
                          renderable.metallicTexture != core::Renderable::kInvalidHandle;
     ImGui::BeginDisabled(!anyPaintable);
     if (ImGui::Button("Stamp")) {
-        if (!painterReady_) {
-            std::string error;
-            painterReady_ = painter_.initialize(allocator_, device_, cmdPool_, queue_, error);
-            if (!painterReady_) paintStatusMessage_ = "Painter init failed: " + error;
-        }
-        if (painterReady_) {
-            std::string error;
-            int stamped = 0;
-            auto tryStamp = [&](uint32_t handle, glm::vec4 color) {
-                const core::Texture* texture = textureLibrary_->get(handle);
-                if (texture == nullptr) return;
-                if (painter_.stamp(*texture, paintUv_, paintRadius_, color, paintSoftness_, error)) ++stamped;
-            };
-            tryStamp(renderable.albedoTexture, paintAlbedoColor_);
-            // Real, stated brush-shape simplification: a flat "up"
-            // tangent-space normal, not sculpted bump detail -- see
-            // this section's own drawn header text and
-            // ComputePbrPainter.hpp's class comment.
-            tryStamp(renderable.normalTexture, glm::vec4(0.5f, 0.5f, 1.0f, 1.0f));
-            tryStamp(renderable.roughnessTexture,
-                     glm::vec4(paintRoughnessValue_, paintRoughnessValue_, paintRoughnessValue_, 1.0f));
-            tryStamp(renderable.metallicTexture,
-                     glm::vec4(paintMetallicValue_, paintMetallicValue_, paintMetallicValue_, 1.0f));
-            paintStatusMessage_ = "Stamped " + std::to_string(stamped) + " real texture(s) directly in GPU memory.";
-        }
+        stampAllSlots(renderable, paintUv_);
     }
     ImGui::EndDisabled();
     if (!anyPaintable) ImGui::TextDisabled("Create at least one paintable texture above first.");
@@ -214,6 +235,7 @@ void MaterialPlugin::drawPanel(core::ECS& ecs, core::EntityId selected, const st
     ImGui::BeginChild("##material_preview", ImVec2(0.0f, 220.0f), true);
     previewScene_.drawAndHandleOrbit();
     ImGui::EndChild();
+    handleViewportPickPaint(*renderable);
 
     ImGui::Separator();
     ImGui::TextUnformatted("Presets (sets color, metallic, roughness, and emissive)");

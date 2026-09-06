@@ -48,6 +48,18 @@ public:
     // real second box operand anywhere relative to the mesh being edited,
     // without needing a second seed constructor.
     [[nodiscard]] static EditableMesh createBox(glm::vec3 halfExtents, glm::vec3 center = glm::vec3(0.0f));
+    // Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite, live
+    // viewport picking): the exact same geometry Mesh::createCapsule()
+    // uploads to the GPU (via the shared core::generateCapsuleGeometry()
+    // in Mesh.hpp/.cpp), kept here as real CPU-retained vertex/index data
+    // so core::pickTriangleUv() can ray-test against the actual triangles
+    // a preview sphere/capsule renders -- not a second, drift-prone
+    // sphere approximation. studio::plugins::MaterialPlugin's preview
+    // sphere is `createCapsule(radius, halfHeight=0.0f)` on both the
+    // Mesh (GPU) and EditableMesh (CPU pick target) sides, matching
+    // exactly.
+    [[nodiscard]] static EditableMesh createCapsule(float radius, float halfHeight, uint32_t radialSegments = 16,
+                                                     uint32_t capRings = 8);
 
     [[nodiscard]] const std::vector<Vertex>& vertices() const { return vertices_; }
     [[nodiscard]] const std::vector<uint32_t>& indices() const { return indices_; }

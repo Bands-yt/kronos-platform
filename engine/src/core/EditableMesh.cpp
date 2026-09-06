@@ -44,6 +44,14 @@ EditableMesh EditableMesh::createBox(glm::vec3 h, glm::vec3 center) {
     return fromVertexData(std::move(vertices), std::move(indices));
 }
 
+EditableMesh EditableMesh::createCapsule(float radius, float halfHeight, uint32_t radialSegments,
+                                          uint32_t capRings) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    generateCapsuleGeometry(radius, halfHeight, radialSegments, capRings, vertices, indices);
+    return fromVertexData(std::move(vertices), std::move(indices));
+}
+
 glm::vec3 EditableMesh::boundsMin() const {
     if (vertices_.empty()) return glm::vec3(0.0f);
     glm::vec3 result = vertices_[0].position;

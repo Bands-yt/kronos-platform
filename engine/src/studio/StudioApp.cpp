@@ -134,11 +134,20 @@ bool loadHiddenGemsState(std::string& outMonthKey, std::vector<std::string>& out
 StudioApp::StudioApp() = default;
 StudioApp::~StudioApp() { shutdown(); }
 
-bool StudioApp::initialize() {
+bool StudioApp::initialize(StudioMode mode) {
+    mode_ = mode;
     core::Window::CreateInfo windowInfo;
     // Kronos ("Branding + Release Prep"): real OS window title -- "Studio"
     // alone read as a generic app-category name, not this product's own.
-    windowInfo.title = "Kronos Studio";
+    // Kronos ("Modular Executable Targets"): the 3 narrow modes get their
+    // own real window title so a taskbar/alt-tab full of all 4 apps open
+    // at once is actually distinguishable -- see StudioMode's own comment.
+    switch (mode_) {
+        case StudioMode::ThreeDMaker: windowInfo.title = "Kronos 3D Maker"; break;
+        case StudioMode::MovieMaker: windowInfo.title = "Kronos Movie Maker"; break;
+        case StudioMode::Audio: windowInfo.title = "Kronos Audio"; break;
+        case StudioMode::Full: default: windowInfo.title = "Kronos Studio"; break;
+    }
     windowInfo.width = 1600;
     windowInfo.height = 900;
     // Kronos ("UI/UX Revamp" -- "App Icon"): same real icon, same real
@@ -334,6 +343,15 @@ bool StudioApp::initialize() {
 
     buildBringUpScene();
 
+    // Kronos ("Modular Executable Targets" -- v0.4.0 Creator Suite): the
+    // full plugin roster below is StudioMode::Full only, unchanged from
+    // before this mode existed -- kronos_studio (the flagship app) still
+    // gets literally everything. The 3 narrow executables register only
+    // their own dedicated pair instead, in the `else` branch right after
+    // PluginBrowserPlugin's registration below -- see StudioMode's own
+    // header comment for why plugins::MovieModePlugin itself is always
+    // registered regardless of branch.
+    if (mode_ == StudioMode::Full) {
     // First-party plugins -- see PluginManager.hpp/IStudioPlugin.hpp for
     // what registering here actually buys: a toolbar/menu entry plus a
     // per-frame update()+drawPanel() call, nothing more (no plugin
@@ -669,6 +687,65 @@ bool StudioApp::initialize() {
     // category-change separator logic.
     pluginManager_.registerPlugin(
         std::make_unique<plugins::PluginBrowserPlugin>(pluginManager_, networkSession_, notifications_));
+    } else {
+        // Kronos ("Modular Executable Targets"): the 3 narrow apps'
+        // subsets. plugins::MovieModePlugin is registered in every one of
+        // them (not just MovieMaker) because debugConsolePanel_.initialize()
+        // below takes a hard, unconditional plugins::MovieModePlugin&
+        // reference (ScriptCinematicApi) -- a real dependency discovered
+        // while wiring this feature, not something a narrow mode can
+        // safely leave unregistered. It's cheap (meshLibrary_/textureLibrary_
+        // only, no GPU allocation of its own) and simply won't be the
+        // plugin a 3D Maker or Audio user actually opens.
+        auto movieMode = std::make_unique<plugins::MovieModePlugin>(meshLibrary_, textureLibrary_);
+        movieModePlugin_ = movieMode.get();
+        pluginManager_.registerPlugin(std::move(movieMode));
+
+        if (mode_ == StudioMode::ThreeDMaker) {
+            // The v0.4.0 brief's "3D Maker boots MaterialPlugin/MeshCsgPlugin"
+            // -- "MeshCsgPlugin" corrected to the real
+            // plugins::MeshCsgWindowPlugin (see StudioMode's own comment).
+            // Neither has a cross-plugin constructor dependency (unlike
+            // CreatorToolsPlugin/BlockBuilderPlugin, which both need
+            // terrainEditorPlugin_ -- see the Full branch above), so this
+            // pair is safe standing alone. Real, stated scope cut: not
+            // Studio's full modeling toolset, just this exact pair.
+            auto materialPlugin = std::make_unique<plugins::MaterialPlugin>(
+                renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                meshLibrary_, textureLibrary_);
+            materialPlugin_ = materialPlugin.get();
+            pluginManager_.registerPlugin(std::move(materialPlugin));
+
+            auto meshCsgWindow = std::make_unique<plugins::MeshCsgWindowPlugin>(meshLibrary_, textureLibrary_);
+            meshCsgWindowPlugin_ = meshCsgWindow.get();
+            kronosPluginHost_.registerPlugin(std::move(meshCsgWindow));
+        } else if (mode_ == StudioMode::MovieMaker) {
+            // plugins::TrailerPanel -- MovieModePlugin itself is already
+            // registered above (every mode gets it). Same "no cross-plugin
+            // dependency" safety as MaterialPlugin/MeshCsgWindowPlugin
+            // above -- ecs_/meshLibrary_/textureLibrary_/particleSystem_/
+            // networkSession_ are all StudioApp's own members, not other
+            // plugins.
+            auto trailerPanel = std::make_unique<plugins::TrailerPanel>(
+                renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), ecs_,
+                meshLibrary_, textureLibrary_, particleSystem_, networkSession_);
+            trailerPanel_ = trailerPanel.get();
+            pluginManager_.registerPlugin(std::move(trailerPanel));
+        } else if (mode_ == StudioMode::Audio) {
+            // The v0.4.0 brief's "Audio boots AudioPreviewPlugin/DSPGraph"
+            // -- corrected: core::AudioDspGraph is a real member *inside*
+            // AudioPreviewPlugin already (see that plugin's own
+            // drawDspGraphSection()), not a second, separate plugin to
+            // register -- registering AudioPreviewPlugin alone is the
+            // complete, real pairing.
+            auto audioPreview = std::make_unique<plugins::AudioPreviewPlugin>();
+            if (!audioPreview->initialize()) {
+                std::fprintf(stderr, "StudioApp: AudioPreviewPlugin::initialize failed -- continuing without it.\n");
+            }
+            audioPreviewPlugin_ = audioPreview.get();
+            pluginManager_.registerPlugin(std::move(audioPreview));
+        }
+    }
 
     // Real bug fix (found via a live playtest): every first-party plugin's
     // own `open_` default is `true` (IStudioPlugin.hpp), so a fresh launch
