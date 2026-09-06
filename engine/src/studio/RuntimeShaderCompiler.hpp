@@ -29,11 +29,14 @@ public:
     RuntimeShaderCompiler(const RuntimeShaderCompiler&) = delete;
     RuntimeShaderCompiler& operator=(const RuntimeShaderCompiler&) = delete;
 
-    // The two real shader stages this engine's existing pipelines use
-    // (see Renderer::createScenePipeline() and friends) -- no geometry/
-    // tessellation/compute stage exists in this renderer to compile for
-    // yet, so this enum doesn't invent cases nothing would consume.
-    enum class ShaderStage { Fragment, Vertex };
+    // The two real shader stages this engine's existing raster pipelines
+    // use (see Renderer::createScenePipeline() and friends), plus
+    // Compute -- added for core::ParticleComputeGraph's own generated
+    // GLSL (see studio/ParticleComputeCodegen.hpp), the first real
+    // compute-shader source this engine ever compiles. No geometry/
+    // tessellation stage exists in this renderer to compile for yet, so
+    // this enum still doesn't invent cases nothing would consume.
+    enum class ShaderStage { Fragment, Vertex, Compute };
 
     struct Result {
         bool success = false;

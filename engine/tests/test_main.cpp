@@ -134,7 +134,11 @@
 #include "core/SceneFile.hpp"
 #include "core/PackageManager.hpp"
 #include "core/ScenePicking.hpp"
+#include "core/MeshUvPicking.hpp"
+#include "core/UILayout.hpp"
+#include "core/CppHotReloadHost.hpp"
 #include "core/ScriptHotReload.hpp"
+#include "hotreload_fixtures/CounterComponent.hpp"
 #include "core/ScriptNetworkApi.hpp"
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
@@ -270,6 +274,8 @@
 #include "studio/RuntimeShaderCompiler.hpp"
 #include "studio/ShaderGraph.hpp"
 #include "studio/ShaderGraphCodegen.hpp"
+#include "studio/ParticleComputeGraph.hpp"
+#include "studio/ParticleComputeCodegen.hpp"
 #include "tntwars/ClassSystem.hpp"
 #include "tntwars/CinematicSequence.hpp"
 #include "tntwars/CombatFx.hpp"
@@ -895,6 +901,95 @@ void testShaderGraphCodegenEndToEndCompilesToRealSpirv() {
 #endif
 }
 
+void testParticleComputeCodegenRequiresExactlyOneOutput() {
+    engine::studio::ParticleComputeGraph emptyGraph;
+    engine::studio::ParticleComputeCodegenResult emptyResult = engine::studio::generateComputeParticleShaderGlsl(emptyGraph);
+    check(!emptyResult.success, "no Particle Output node -- codegen real-fails, not a silent empty shader");
+
+    engine::studio::ParticleComputeGraph twoOutputsGraph;
+    twoOutputsGraph.addNode(engine::studio::ParticleNodeKind::ParticleOutput);
+    twoOutputsGraph.addNode(engine::studio::ParticleNodeKind::ParticleOutput);
+    engine::studio::ParticleComputeCodegenResult twoResult = engine::studio::generateComputeParticleShaderGlsl(twoOutputsGraph);
+    check(!twoResult.success, "two Particle Output nodes -- real, ambiguous, codegen fails rather than picking one arbitrarily");
+}
+
+void testParticleComputeCodegenDetectsCycle() {
+    engine::studio::ParticleComputeGraph graph;
+    int a = graph.addNode(engine::studio::ParticleNodeKind::AddVec3);
+    int b = graph.addNode(engine::studio::ParticleNodeKind::AddVec3);
+    int output = graph.addNode(engine::studio::ParticleNodeKind::ParticleOutput);
+    std::string error;
+    // a's output feeds b's input A, b's output feeds a's input A -- a
+    // real cycle with no InputPosition/InputVelocity/Constant to ground it.
+    check(graph.addLink(graph.findNode(a)->pinIds[2], graph.findNode(b)->pinIds[0], error), "a -> b links");
+    check(graph.addLink(graph.findNode(b)->pinIds[2], graph.findNode(a)->pinIds[0], error), "b -> a links (closes the cycle)");
+    check(graph.addLink(graph.findNode(a)->pinIds[2], graph.findNode(output)->pinIds[0], error), "a -> output links");
+
+    engine::studio::ParticleComputeCodegenResult result = engine::studio::generateComputeParticleShaderGlsl(graph);
+    check(!result.success, "a real cycle is detected, not an infinite-recursion crash");
+    check(result.errorMessage.find("cycle") != std::string::npos, "the real error message names the cycle, not a generic failure");
+}
+
+void testParticleComputeCodegenEndToEndCompilesToRealSpirv() {
+    // Real, small but non-trivial graph: a real "apply gravity, then
+    // Euler-integrate position" particle update -- velocity += gravity *
+    // dt; position += velocity * dt (using the just-updated velocity,
+    // the same semi-implicit Euler step core::ParticleSystem::update()
+    // already documents for its own CPU path).
+    engine::studio::ParticleComputeGraph graph;
+    int velocityIn = graph.addNode(engine::studio::ParticleNodeKind::InputVelocity, 0.0f, 0.0f);
+    int positionIn = graph.addNode(engine::studio::ParticleNodeKind::InputPosition, 0.0f, 100.0f);
+    int dt = graph.addNode(engine::studio::ParticleNodeKind::InputDeltaTime, 0.0f, 200.0f);
+    int gravity = graph.addNode(engine::studio::ParticleNodeKind::ConstantVec3, 0.0f, 300.0f);
+    int gravityStep = graph.addNode(engine::studio::ParticleNodeKind::ScaleVec3, 200.0f, 300.0f);
+    int newVelocity = graph.addNode(engine::studio::ParticleNodeKind::AddVec3, 400.0f, 100.0f);
+    int velocityStep = graph.addNode(engine::studio::ParticleNodeKind::ScaleVec3, 600.0f, 100.0f);
+    int newPosition = graph.addNode(engine::studio::ParticleNodeKind::AddVec3, 800.0f, 0.0f);
+    int output = graph.addNode(engine::studio::ParticleNodeKind::ParticleOutput, 1000.0f, 50.0f);
+
+    graph.findNode(gravity)->constantValue[1] = -9.8f;
+
+    std::string error;
+    bool ok = true;
+    ok &= graph.addLink(graph.findNode(gravity)->pinIds[0], graph.findNode(gravityStep)->pinIds[0], error);
+    ok &= graph.addLink(graph.findNode(dt)->pinIds[0], graph.findNode(gravityStep)->pinIds[1], error);
+    ok &= graph.addLink(graph.findNode(velocityIn)->pinIds[0], graph.findNode(newVelocity)->pinIds[0], error);
+    ok &= graph.addLink(graph.findNode(gravityStep)->pinIds[2], graph.findNode(newVelocity)->pinIds[1], error);
+    ok &= graph.addLink(graph.findNode(newVelocity)->pinIds[2], graph.findNode(velocityStep)->pinIds[0], error);
+    ok &= graph.addLink(graph.findNode(dt)->pinIds[0], graph.findNode(velocityStep)->pinIds[1], error);
+    ok &= graph.addLink(graph.findNode(positionIn)->pinIds[0], graph.findNode(newPosition)->pinIds[0], error);
+    ok &= graph.addLink(graph.findNode(velocityStep)->pinIds[2], graph.findNode(newPosition)->pinIds[1], error);
+    ok &= graph.addLink(graph.findNode(newPosition)->pinIds[2], graph.findNode(output)->pinIds[0], error); // -> New Position
+    ok &= graph.addLink(graph.findNode(newVelocity)->pinIds[2], graph.findNode(output)->pinIds[1], error); // -> New Velocity
+    check(ok, ("constructing the real gravity+integrate particle graph succeeds: " + error).c_str());
+
+    engine::studio::ParticleComputeCodegenResult codegen = engine::studio::generateComputeParticleShaderGlsl(graph);
+    check(codegen.success, "gravity+integrate particle graph generates GLSL successfully");
+    if (!codegen.success) {
+        std::fprintf(stderr, "[test] particle codegen error: %s\n", codegen.errorMessage.c_str());
+        return;
+    }
+    check(codegen.glsl.find("layout(local_size_x = 256) in;") != std::string::npos,
+          "generated compute shader declares a real local_size_x workgroup layout");
+    check(codegen.glsl.find("buffer ParticleBuffer") != std::string::npos,
+          "generated compute shader declares a real particle SSBO");
+    check(codegen.glsl.find("void main()") != std::string::npos, "generated GLSL has a real main()");
+
+#ifdef KRONOS_WITH_SHADERC
+    engine::studio::RuntimeShaderCompiler compiler;
+    engine::studio::RuntimeShaderCompiler::Result compiled = compiler.compile(
+        codegen.glsl, engine::studio::RuntimeShaderCompiler::ShaderStage::Compute, "particle_compute_test.comp");
+    check(compiled.success, "generated GLSL from the particle compute graph actually compiles to real SPIR-V");
+    if (!compiled.success) {
+        std::fprintf(stderr, "[test] shaderc error compiling generated particle compute shader:\n%s\n---generated source---\n%s\n",
+                      compiled.errorMessage.c_str(), codegen.glsl.c_str());
+    } else {
+        check(!compiled.spirv.empty() && compiled.spirv.front() == 0x07230203u,
+              "particle-graph-generated compute SPIR-V starts with the real SPIR-V magic number");
+    }
+#endif
+}
+
 void testIPInfringementScanner() {
     engine::safety::IPInfringementScanner scanner;
 
@@ -1460,6 +1555,251 @@ void testComputeTangents() {
     check(nearlyEqual(vertices[0].tangent.x, 1.0f, 0.05f) && nearlyEqual(vertices[0].tangent.z, 0.0f, 0.05f),
           "tangent points along the direction of increasing U (+X for this UV layout)");
     check(vertices[0].tangent.w == 1.0f || vertices[0].tangent.w == -1.0f, "handedness is a real +/-1, not left at 0");
+}
+
+void testUILayoutFlexGrowDistributesRemainingSpace() {
+    using namespace engine::core;
+    UILayoutTree tree;
+    int root = tree.addNode(UINodeKind::Container);
+    tree.setRoot(root);
+    int a = tree.addNode(UINodeKind::Rect);
+    int b = tree.addNode(UINodeKind::Rect);
+    tree.findNode(a)->flexGrow = 1.0f;
+    tree.findNode(b)->flexGrow = 3.0f;
+    tree.setParent(a, root);
+    tree.setParent(b, root);
+
+    tree.resolveBindings();
+    tree.computeLayout(glm::vec2(400.0f, 100.0f));
+
+    // No fixed basis on either child -- all 400px of main-axis space is
+    // remaining space, split 1:3 by flexGrow.
+    check(nearlyEqual(tree.findNode(a)->computedSize.x, 100.0f, 0.5f), "flexGrow=1 child gets 1/4 of 400px");
+    check(nearlyEqual(tree.findNode(b)->computedSize.x, 300.0f, 0.5f), "flexGrow=3 child gets 3/4 of 400px");
+    check(nearlyEqual(tree.findNode(a)->computedSize.y, 100.0f, 0.5f),
+          "align-items default (Stretch) fills the cross axis for a Row container");
+    check(nearlyEqual(tree.findNode(b)->computedPosition.x, 100.0f, 0.5f), "second child starts right after the first");
+}
+
+void testUILayoutJustifyContentCentersFixedChildren() {
+    using namespace engine::core;
+    UILayoutTree tree;
+    int root = tree.addNode(UINodeKind::Container);
+    tree.setRoot(root);
+    tree.findNode(root)->justify = JustifyContent::Center;
+    int a = tree.addNode(UINodeKind::Rect);
+    tree.findNode(a)->width = UISize{UISizeMode::Fixed, 40.0f};
+    tree.findNode(a)->height = UISize{UISizeMode::Fixed, 40.0f};
+    tree.setParent(a, root);
+
+    tree.resolveBindings();
+    tree.computeLayout(glm::vec2(200.0f, 100.0f));
+
+    check(nearlyEqual(tree.findNode(a)->computedPosition.x, 80.0f, 0.5f),
+          "justify-content:Center centers a single 40px-wide fixed child in a 200px row ((200-40)/2)");
+}
+
+void testUILayoutPercentSizingResolvesAgainstParentContentBox() {
+    using namespace engine::core;
+    UILayoutTree tree;
+    int root = tree.addNode(UINodeKind::Container);
+    tree.setRoot(root);
+    tree.findNode(root)->paddingLeft = 10.0f;
+    tree.findNode(root)->paddingRight = 10.0f;
+    int a = tree.addNode(UINodeKind::Rect);
+    tree.findNode(a)->width = UISize{UISizeMode::Percent, 50.0f};
+    tree.setParent(a, root);
+
+    tree.resolveBindings();
+    tree.computeLayout(glm::vec2(220.0f, 50.0f));
+
+    // Content box is 220 - 10 - 10 = 200px wide; 50% of that is 100px.
+    check(nearlyEqual(tree.findNode(a)->computedSize.x, 100.0f, 0.5f),
+          "Percent size resolves against the parent's content box, not its outer box");
+    check(nearlyEqual(tree.findNode(a)->computedPosition.x, 10.0f, 0.5f), "child position starts after left padding");
+}
+
+void testUILayoutFillFromValueDrivesWidthAndColor() {
+    using namespace engine::core;
+    UILayoutTree tree;
+    int root = tree.addNode(UINodeKind::Container);
+    tree.setRoot(root);
+    int bar = tree.addNode(UINodeKind::Rect);
+    UINode* barNode = tree.findNode(bar);
+    barNode->width = UISize{UISizeMode::Percent, 100.0f}; // placeholder value -- overridden by fillFromValue below
+    barNode->fillFromValue = true;
+    barNode->color = glm::vec4(0.75f, 0.15f, 0.15f, 1.0f);
+    barNode->colorEnd = glm::vec4(0.15f, 0.75f, 0.15f, 1.0f);
+    float health = 30.0f, maxHealth = 100.0f;
+    barNode->bindValue = [&]() { return health / maxHealth; };
+    tree.setParent(bar, root);
+
+    tree.resolveBindings();
+    tree.computeLayout(glm::vec2(200.0f, 20.0f));
+
+    check(nearlyEqual(tree.findNode(bar)->computedSize.x, 60.0f, 0.5f),
+          "fillFromValue overrides the Percent width with resolvedValue*100 (30/100 of 200px)");
+    check(nearlyEqual(tree.findNode(bar)->resolvedColor.r, glm::mix(0.75f, 0.15f, 0.3f), 0.01f),
+          "fillFromValue also lerps color->colorEnd by the same resolved value");
+
+    // A live gameplay variable read through the same bound closure --
+    // the "bound directly to a C++ gameplay variable" contract this
+    // whole feature exists for, not just a one-shot snapshot.
+    health = 100.0f;
+    tree.resolveBindings();
+    tree.computeLayout(glm::vec2(200.0f, 20.0f));
+    check(nearlyEqual(tree.findNode(bar)->computedSize.x, 200.0f, 0.5f),
+          "re-resolving after the bound C++ variable changes reflects the new value, not a stale snapshot");
+}
+
+void testUILayoutAutoTextSizingUsesInjectedMeasurer() {
+    using namespace engine::core;
+    UILayoutTree tree;
+    int root = tree.addNode(UINodeKind::Container);
+    tree.setRoot(root);
+    int label = tree.addNode(UINodeKind::Text);
+    tree.findNode(label)->text = "HP 30/100";
+    tree.setParent(label, root);
+
+    tree.resolveBindings();
+    TextMeasureFn measurer = [](const std::string& text, float scale) {
+        return glm::vec2(static_cast<float>(text.size()) * 8.0f * scale, 16.0f * scale);
+    };
+    tree.computeLayout(glm::vec2(400.0f, 40.0f), measurer);
+
+    check(nearlyEqual(tree.findNode(label)->computedSize.x, 9.0f * 8.0f, 0.5f),
+          "Auto-width Text node sizes itself via the injected TextMeasureFn (9 chars * 8px)");
+
+    // With no measurer at all (e.g. a headless caller with nothing to
+    // measure glyphs with), the honest, documented fallback is 0 -- not
+    // a silently wrong guess.
+    tree.computeLayout(glm::vec2(400.0f, 40.0f));
+    check(nearlyEqual(tree.findNode(label)->computedSize.x, 0.0f, 0.01f),
+          "Auto-width Text node with no TextMeasureFn injected falls back to 0, an honest no-op");
+}
+
+void testUILayoutNestedContainersRecurse() {
+    using namespace engine::core;
+    UILayoutTree tree;
+    int root = tree.addNode(UINodeKind::Container);
+    tree.setRoot(root);
+    tree.findNode(root)->direction = FlexDirection::Column;
+    int row = tree.addNode(UINodeKind::Container);
+    tree.findNode(row)->height = UISize{UISizeMode::Fixed, 30.0f};
+    tree.setParent(row, root);
+    int child = tree.addNode(UINodeKind::Rect);
+    tree.findNode(child)->width = UISize{UISizeMode::Fixed, 50.0f};
+    tree.setParent(child, row);
+
+    tree.resolveBindings();
+    tree.computeLayout(glm::vec2(200.0f, 200.0f));
+
+    check(nearlyEqual(tree.findNode(row)->computedPosition.y, 0.0f, 0.01f), "outer column's row sits at the top");
+    check(nearlyEqual(tree.findNode(child)->computedPosition.y, 0.0f, 0.01f),
+          "grandchild's position is relative to its own immediate parent's content box, computed recursively");
+    check(nearlyEqual(tree.findNode(child)->computedSize.x, 50.0f, 0.01f), "grandchild keeps its own fixed width");
+}
+
+void testUILayoutSetParentAndRemoveNodeMutateTreeCorrectly() {
+    using namespace engine::core;
+    UILayoutTree tree;
+    int root = tree.addNode(UINodeKind::Container);
+    int a = tree.addNode(UINodeKind::Rect);
+    int b = tree.addNode(UINodeKind::Rect);
+    tree.setParent(a, root);
+    tree.setParent(b, root);
+    check(tree.findNode(root)->children.size() == 2, "both children attached to root");
+
+    tree.setParent(a, 0); // detach
+    check(tree.findNode(root)->children.size() == 1, "detaching a removes it from root's children");
+    check(tree.findNode(a) != nullptr, "detaching does not delete the node itself");
+
+    tree.removeNode(b);
+    check(tree.findNode(b) == nullptr, "removeNode really erases the node");
+    check(tree.findNode(root)->children.empty(), "removing b also removes it from root's children list");
+
+    // Removing a parent with live children removes the whole subtree,
+    // not just the parent -- same "no dangling ids left behind"
+    // guarantee studio::ShaderGraph::removeNode() already provides for
+    // its own node/pin/link graph.
+    int parent = tree.addNode(UINodeKind::Container);
+    int grandchild = tree.addNode(UINodeKind::Rect);
+    tree.setParent(grandchild, parent);
+    tree.removeNode(parent);
+    check(tree.findNode(parent) == nullptr && tree.findNode(grandchild) == nullptr,
+          "removeNode recursively erases the whole subtree, not just the named node");
+}
+
+void testPickTriangleUvHitsInteriorPointWithInterpolatedUv() {
+    using namespace engine::core;
+    // Same flat XZ quad testComputeTangents() uses -- U along +X, V
+    // along +Z, both normalized into [0,1] across the quad's own real
+    // [-1,1] extent, so a hit point's expected UV is analytically known:
+    // u=(x+1)/2, v=(z+1)/2.
+    std::vector<Vertex> vertices = {
+        {{-1.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{1.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+        {{-1.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2, 0, 2, 3};
+    EditableMesh mesh = EditableMesh::fromVertexData(vertices, indices);
+
+    glm::vec3 origin(0.3f, 5.0f, -0.5f);
+    glm::vec3 direction(0.0f, -1.0f, 0.0f);
+    MeshUvPickResult result = pickTriangleUv(mesh, origin, direction, 10.0f);
+
+    check(result.hit, "a ray straight down through the quad's interior hits");
+    check(nearlyEqual(result.distance, 5.0f, 0.01f), "hit distance matches the real 5-unit drop to y=0");
+    check(nearlyEqual(result.point.x, 0.3f, 0.01f) && nearlyEqual(result.point.z, -0.5f, 0.01f),
+          "hit point's real X/Z match the ray's own X/Z (a straight-down ray)");
+    check(nearlyEqual(result.uv.x, 0.65f, 0.01f) && nearlyEqual(result.uv.y, 0.25f, 0.01f),
+          "barycentric-interpolated UV matches the analytically known planar mapping at this point ((0.3+1)/2, (-0.5+1)/2)");
+    check(nearlyEqual(result.normal.y, 1.0f, 0.01f), "interpolated normal matches the quad's own flat +Y normal");
+}
+
+void testPickTriangleUvMissesOutsideMesh() {
+    using namespace engine::core;
+    std::vector<Vertex> vertices = {
+        {{-1.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{1.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+        {{-1.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2, 0, 2, 3};
+    EditableMesh mesh = EditableMesh::fromVertexData(vertices, indices);
+
+    MeshUvPickResult miss = pickTriangleUv(mesh, glm::vec3(5.0f, 5.0f, 5.0f), glm::vec3(0.0f, -1.0f, 0.0f), 10.0f);
+    check(!miss.hit, "a ray straight down outside the quad's real extent misses");
+
+    MeshUvPickResult tooFar =
+        pickTriangleUv(mesh, glm::vec3(0.0f, 5.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), 2.0f);
+    check(!tooFar.hit, "a real hit beyond maxDistance is reported as a miss, not clamped");
+}
+
+void testPickTriangleUvReturnsClosestHitNotFirstHit() {
+    using namespace engine::core;
+    // Two overlapping quads stacked on the Y axis (upper at y=1, lower
+    // at y=0) -- a straight-down ray must report the UPPER one as the
+    // real closest hit, proving this isn't just "first triangle in
+    // winding order" but a genuine closest-along-the-ray comparison.
+    std::vector<Vertex> vertices = {
+        {{-1.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}}, // lower quad, y=0
+        {{1.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{1.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+        {{-1.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+        {{-1.0f, 1.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {0.9f, 0.9f}}, // upper quad, y=1 -- distinct UVs to prove which one hit
+        {{1.0f, 1.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {0.9f, 0.9f}},
+        {{1.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.9f, 0.9f}},
+        {{-1.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.9f, 0.9f}},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+    EditableMesh mesh = EditableMesh::fromVertexData(vertices, indices);
+
+    MeshUvPickResult result = pickTriangleUv(mesh, glm::vec3(0.0f, 5.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), 10.0f);
+    check(result.hit, "the stacked-quads ray hits");
+    check(nearlyEqual(result.distance, 4.0f, 0.01f), "closest hit is the UPPER quad at y=1 (distance 4), not the lower one at y=0 (distance 5)");
+    check(nearlyEqual(result.uv.x, 0.9f, 0.01f), "returned UV belongs to the upper quad's own distinct UV, confirming which face was actually picked");
 }
 
 void testRayAabbIntersection() {
@@ -24101,6 +24441,114 @@ void testTickScriptHotReloadSkipsWhenAutoRunFalse() {
     scripting.shutdown();
 }
 
+void testTickScriptHotReloadPreservesEcsAndPhysicsState() {
+    // Kronos ("Logic Hot-Reloading" -- v0.4.0 Creator Suite): the real,
+    // load-bearing claim behind "dynamic reloads without resetting
+    // physics state or engine memory" -- tickScriptHotReload() only ever
+    // reads/writes Script components (see its own .cpp: one
+    // ecs.view<Script>() loop, nothing else touched), so a live Jolt
+    // simulation running in the exact same ECS/World should be
+    // completely unaffected by a script reload happening alongside it.
+    // Proven here rather than just asserted from reading the source.
+    engine::core::Physics physics;
+    check(physics.initialize(), "hot-reload state test: Physics::initialize() succeeds");
+    engine::core::ECS ecs;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "hot-reload state test: Scripting::initialize() succeeds");
+
+    physics.createGroundPlane(ecs, 25.0f, 25.0f);
+    constexpr float kSpawnHeight = 10.0f;
+    engine::core::EntityId box = physics.createDynamicBox(ecs, {0.0f, kSpawnHeight, 0.0f}, {0.5f, 0.5f, 0.5f}, 1.0f,
+                                                            makePhysicsMaterial(0.5f, 0.0f, 1000.0f));
+
+    auto scriptEntity = ecs.createEntity("Scripted");
+    auto& script = ecs.addComponent<engine::core::Script>(scriptEntity);
+    script.source = "return 1\n";
+    engine::core::tickScriptHotReload(ecs, scripting); // first load
+
+    size_t entityCountBefore = ecs.entityCount();
+    for (int i = 0; i < 10; ++i) physics.step(1.0f / 60.0f, ecs);
+    glm::vec3 positionBeforeReload = ecs.tryGetComponent<engine::core::Transform>(box)->position;
+    glm::vec3 velocityBeforeReload = physics.getLinearVelocity(box, ecs);
+    check(positionBeforeReload.y < kSpawnHeight - 0.05f, "hot-reload state test: box is genuinely falling before any reload");
+
+    // Trigger a real script hot-reload -- same source-changed path
+    // testTickScriptHotReloadReloadsChangedScript() already exercises in
+    // isolation, run here alongside a live physics world instead.
+    engine::core::ScriptId idBeforeReload = script.scriptId;
+    script.source = "return 2\n";
+    engine::core::tickScriptHotReload(ecs, scripting);
+    check(script.scriptId != idBeforeReload, "hot-reload state test: the script actually reloaded (fresh scriptId)");
+
+    check(ecs.entityCount() == entityCountBefore,
+          "hot-reload does not create/destroy any ECS entities outside the reloaded Script's own");
+    glm::vec3 positionImmediatelyAfterReload = ecs.tryGetComponent<engine::core::Transform>(box)->position;
+    glm::vec3 velocityImmediatelyAfterReload = physics.getLinearVelocity(box, ecs);
+    check(nearlyEqual(glm::length(positionImmediatelyAfterReload - positionBeforeReload), 0.0f, 1e-5f),
+          "the physics body's Transform is bit-for-bit unchanged by a script reload happening beside it");
+    check(nearlyEqual(glm::length(velocityImmediatelyAfterReload - velocityBeforeReload), 0.0f, 1e-5f),
+          "the physics body's live velocity survives a script reload untouched -- real Jolt state, not reset to rest");
+
+    // And the simulation keeps running normally afterward -- no
+    // corrupted broadphase/body state left behind by the reload.
+    for (int i = 0; i < 300; ++i) physics.step(1.0f / 60.0f, ecs);
+    float restHeight = ecs.tryGetComponent<engine::core::Transform>(box)->position.y;
+    check(restHeight > -0.1f && restHeight < 1.5f,
+          "physics simulation continues correctly after a script hot-reload -- the box still comes to rest on the "
+          "ground plane, not corrupted by the reload");
+
+    scripting.shutdown();
+    physics.shutdown();
+}
+
+void testCppHotReloadHostSwapsCodeWhileEcsStatePersists() {
+    // Kronos ("Logic Hot-Reloading" -- v0.4.0 Creator Suite): the real,
+    // native-C++ half of hot-reload, proven the same way
+    // testTickScriptHotReloadPreservesEcsAndPhysicsState() proves the
+    // Lua half above -- load a real .so, tick it, hot-swap to a
+    // *different* real .so mid-flight, and confirm the ECS component
+    // data survives untouched while the code operating on it genuinely
+    // changed (V1 increments by 1/tick, V2 by 100/tick -- see
+    // hotreload_fixtures/CounterComponent.hpp).
+    engine::core::ECS ecs;
+    auto entity = ecs.createEntity("Counter");
+    auto& counter = ecs.addComponent<CounterComponent>(entity);
+
+    engine::core::CppHotReloadHost host;
+    std::string error;
+    check(host.load(HOTRELOAD_MODULE_V1_PATH, ecs, error), ("hot-reload host real-loads a fresh .so: " + error).c_str());
+    check(host.hasModuleLoaded(), "host reports a module loaded after a successful load()");
+
+    for (int i = 0; i < 5; ++i) host.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 5, "V1's real code ran 5 times against the real ECS component (+1 each)");
+
+    engine::core::EntityId counterEntityBeforeReload = entity;
+    check(host.load(HOTRELOAD_MODULE_V2_PATH, ecs, error),
+          ("hot-reload host real-swaps to a different .so: " + error).c_str());
+    check(entity == counterEntityBeforeReload, "the ECS entity itself is untouched by a code hot-swap");
+    check(counter.value == 5,
+          "the ECS component's real data survives the hot-swap unchanged -- state lives in the ECS, not the module");
+
+    for (int i = 0; i < 3; ++i) host.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 5 + 300,
+          "post-swap ticks run V2's real, different code (+100 each) against the SAME persisted counter value, not a "
+          "fresh one starting from 0");
+
+    // A real, deliberate ABI-version rejection -- load() must fail
+    // closed on a corrupt/incompatible path rather than dereferencing a
+    // module it never validated. There's no real "wrong ABI version"
+    // fixture built (that would need a second header revision that
+    // doesn't exist), so this instead proves the honest "file not
+    // found" failure path leaves the previously-loaded V2 module
+    // running rather than leaving the host in a half-swapped state.
+    check(!host.load("/nonexistent/not_a_real_module.so", ecs, error),
+          "load() real-fails closed on a missing file instead of silently no-op-succeeding");
+    check(!error.empty(), "a failed load() reports a real, non-empty error message");
+    host.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 5 + 300 + 100,
+          "a failed load() leaves the PREVIOUSLY loaded module (V2) running untouched, not half-torn-down");
+}
+
 // --- WorldPackage --------------------------------------------------------------
 
 void testWorldPackagePathHelpersUseRealFixedNames() {
@@ -35919,6 +36367,9 @@ int main() {
     testShaderGraphCodegenRequiresExactlyOnePbrOutput();
     testShaderGraphCodegenDetectsCycle();
     testShaderGraphCodegenEndToEndCompilesToRealSpirv();
+    testParticleComputeCodegenRequiresExactlyOneOutput();
+    testParticleComputeCodegenDetectsCycle();
+    testParticleComputeCodegenEndToEndCompilesToRealSpirv();
     testIPInfringementScanner();
     testIPInfringementScannerFuzzy();
     testIPInfringementScannerPhonetic();
@@ -35949,6 +36400,16 @@ int main() {
     testRuntimeAnimationPlayer();
     testParticleSystemLifetime();
     testComputeTangents();
+    testUILayoutFlexGrowDistributesRemainingSpace();
+    testUILayoutJustifyContentCentersFixedChildren();
+    testUILayoutPercentSizingResolvesAgainstParentContentBox();
+    testUILayoutFillFromValueDrivesWidthAndColor();
+    testUILayoutAutoTextSizingUsesInjectedMeasurer();
+    testUILayoutNestedContainersRecurse();
+    testUILayoutSetParentAndRemoveNodeMutateTreeCorrectly();
+    testPickTriangleUvHitsInteriorPointWithInterpolatedUv();
+    testPickTriangleUvMissesOutsideMesh();
+    testPickTriangleUvReturnsClosestHitNotFirstHit();
     testRayAabbIntersection();
     testObjLoaderRoundTrip();
     testAssetMetadataExtraction();
@@ -37022,6 +37483,8 @@ int main() {
     testTickScriptHotReloadSkipsUnchangedScript();
     testTickScriptHotReloadReloadsChangedScript();
     testTickScriptHotReloadSkipsWhenAutoRunFalse();
+    testTickScriptHotReloadPreservesEcsAndPhysicsState();
+    testCppHotReloadHostSwapsCodeWhileEcsStatePersists();
     testWorldPackagePathHelpersUseRealFixedNames();
     testWorldPackageSaveToDirectoryCreatesRealFiles();
     testWorldPackageSaveLoadRoundTrip();

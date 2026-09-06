@@ -106,6 +106,10 @@ add_library(engine_core STATIC
     core/CubeLut.cpp
     core/Utf8.cpp
     core/UIRenderer.cpp
+    core/UILayout.cpp
+    core/ScriptUiLayoutApi.cpp
+    core/CppHotReloadHost.cpp
+    core/MeshUvPicking.cpp
     core/RayTracingScene.cpp
     core/VmaImpl.cpp
     core/Mesh.cpp
@@ -608,6 +612,8 @@ if(ENGINE_BUILD_STUDIO)
         studio/RuntimeShaderCompiler.cpp
         studio/ShaderGraph.cpp
         studio/ShaderGraphCodegen.cpp
+        studio/ParticleComputeGraph.cpp
+        studio/ParticleComputeCodegen.cpp
         studio/panels/StatsPanel.cpp
         studio/panels/PerformanceOverlayPanel.cpp
         studio/panels/SceneSearchPanel.cpp
