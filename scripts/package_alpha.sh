@@ -28,6 +28,9 @@ fail() { echo "package_alpha.sh: $*" >&2; exit 1; }
 
 [ -x "${BUILD_DIR}/src/engine_runtime" ] || fail "engine_runtime not found/executable at ${BUILD_DIR}/src/engine_runtime -- build it first"
 [ -x "${BUILD_DIR}/src/studio" ] || fail "studio not found/executable at ${BUILD_DIR}/src/studio -- build it first"
+for bin in kronos_studio kronos_3d_maker kronos_movie_maker kronos_audio; do
+    [ -x "${BUILD_DIR}/src/${bin}" ] || fail "${bin} not found/executable at ${BUILD_DIR}/src/${bin} -- build it first"
+done
 [ -d "${BUILD_DIR}/shaders" ] || fail "no compiled shaders at ${BUILD_DIR}/shaders -- build engine_shaders first"
 [ -x "${BUILD_DIR}/tests/engine_tests" ] || fail "engine_tests not found/executable at ${BUILD_DIR}/tests/engine_tests -- build it first"
 
@@ -40,6 +43,9 @@ mkdir -p "${OUT_DIR}"
 # real "shaders"/"assets" siblings below resolve correctly for both.
 cp "${BUILD_DIR}/src/engine_runtime" "${OUT_DIR}/"
 cp "${BUILD_DIR}/src/studio" "${OUT_DIR}/"
+for bin in kronos_studio kronos_3d_maker kronos_movie_maker kronos_audio; do
+    cp "${BUILD_DIR}/src/${bin}" "${OUT_DIR}/"
+done
 
 # The real test binary -- a tester can run it locally (no GPU/window
 # needed, see docs/QUICKSTART.md's own "Test" section) as independent
@@ -135,6 +141,33 @@ Exec=${OUT_DIR}/studio
 Icon=${OUT_DIR}/assets/icons/kronos_icon.png
 Terminal=false
 Categories=Development;Game;
+EOF
+cat > "${OUT_DIR}/kronos-3d-maker.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Kronos 3D Maker
+Exec=${OUT_DIR}/kronos_3d_maker
+Icon=${OUT_DIR}/assets/icons/kronos_3d_maker_icon.png
+Terminal=false
+Categories=Graphics;3DGraphics;
+EOF
+cat > "${OUT_DIR}/kronos-movie-maker.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Kronos Movie Maker
+Exec=${OUT_DIR}/kronos_movie_maker
+Icon=${OUT_DIR}/assets/icons/kronos_movie_maker_icon.png
+Terminal=false
+Categories=AudioVideo;AudioVideoEditing;
+EOF
+cat > "${OUT_DIR}/kronos-audio.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Kronos Audio
+Exec=${OUT_DIR}/kronos_audio
+Icon=${OUT_DIR}/assets/icons/kronos_audio_icon.png
+Terminal=false
+Categories=AudioVideo;Audio;
 EOF
 
 echo "package_alpha.sh: done. Real package layout:"

@@ -857,28 +857,17 @@ void StudioApp::handleFileDrop(const std::string& path) {
 }
 
 void StudioApp::buildBringUpScene() {
-    // Kronos ("Clean Viewport & Mesh Import Pipeline"): this used to
-    // spawn 11 real entities here (GroundPlane, DynamicBox, and a 3x3
-    // "MaterialSample" grid) purely as bring-up dressing "so Explorer/
-    // Inspector/Viewport all have something substantial to show
-    // immediately" -- exactly the "legacy debug test objects" a creator
-    // opening a brand-new project doesn't want staring back at them. A
-    // fresh scene now starts genuinely empty; the "clean studio
-    // environment" this replaces it with is real too, just not ECS
-    // entities: ViewportPanel::drawGroundGridOverlay() draws a real,
-    // always-on world-space floor grid (not tied to any entity, so it's
-    // there even in a literally-empty ECS), and core::Renderer's own
-    // SceneLighting already default-constructs to a real directional key
-    // light (warm, intensity 3.0) plus a two-tone sky/ground ambient fill
-    // (SceneTypes.hpp) -- StudioApp never overrides it, so this was
-    // already the real lighting every scene rendered under; nothing new
-    // to add there. Only the camera's own starting pose (not a "debug
-    // object", just where a free-fly camera starts, matching this
-    // engine's real free-fly viewport -- see ViewportPanel.hpp's class
-    // comment) is real, kept dressing here.
     viewportPanel_.camera().position = {0.0f, 8.0f, -10.0f};
     viewportPanel_.camera().yawDegrees = 90.0f;
     viewportPanel_.camera().pitchDegrees = -22.0f;
+
+    // Same default project the Welcome panel's own "Open Default
+    // Project" button loads -- Ground/StarterBox/SunLight (see
+    // templates/project/default.scene), not the old 11-entity debug
+    // dressing. Falls back to the empty-but-lit/gridded scene on
+    // failure rather than crashing Studio over a missing template file.
+    switchToScene("templates/project/default.scene");
+    core::logEcsStats(ecs_);
 }
 
 bool StudioApp::initImGuiVulkanBackend() {
