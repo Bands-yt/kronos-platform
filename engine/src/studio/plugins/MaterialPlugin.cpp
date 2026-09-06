@@ -116,13 +116,29 @@ void MaterialPlugin::stampAllSlots(core::Renderable& renderable, glm::vec2 uv) {
 
 void MaterialPlugin::handleViewportPickPaint(core::Renderable& renderable) {
     glm::vec3 rayOrigin, rayDirection;
-    if (!previewScene_.consumeClickRay(rayOrigin, rayDirection)) return;
+    // Click = one stamp; Ctrl-drag = a continuous stroke (see
+    // PreviewScene::dragPaintRay()'s own comment) -- both land here so
+    // zero-friction creation and the actual stamp only need writing once.
+    bool hasRay = previewScene_.consumeClickRay(rayOrigin, rayDirection) ||
+                  previewScene_.dragPaintRay(rayOrigin, rayDirection);
+    if (!hasRay) return;
 
     bool anyPaintable = renderable.albedoTexture != core::Renderable::kInvalidHandle ||
                          renderable.normalTexture != core::Renderable::kInvalidHandle ||
                          renderable.roughnessTexture != core::Renderable::kInvalidHandle ||
                          renderable.metallicTexture != core::Renderable::kInvalidHandle;
-    if (!anyPaintable) return;
+    // Zero-Friction Painting: the first real click/drag on a selected
+    // entity with no paintable texture yet creates a real 2K Albedo one
+    // instead of silently doing nothing -- 2048x2048 specifically (not
+    // the manual "New Paintable Texture" button's own 512x512) since a
+    // click implies "just start painting", not "I chose a resolution".
+    if (!anyPaintable) {
+        core::Texture texture = core::Texture::createStorageImage(2048, 2048, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
+                                                                    allocator_, device_, cmdPool_, queue_);
+        if (!texture.isValid()) return;
+        renderable.albedoTexture = textureLibrary_->registerTexture(std::move(texture));
+        paintStatusMessage_ = "Auto-created a 2K paintable Albedo texture -- painting now.";
+    }
 
     constexpr float kMaxPickDistance = 100.0f;
     core::MeshUvPickResult pick = core::pickTriangleUv(previewPickMesh_, rayOrigin, rayDirection, kMaxPickDistance);
@@ -221,7 +237,98 @@ void MaterialPlugin::drawViewportWindow(core::Renderable* renderable) {
     }
     previewScene_.drawAndHandleOrbit();
     if (renderable != nullptr) handleViewportPickPaint(*renderable);
+
+    if (renderable != nullptr) drawPaintHud(*renderable);
+    if (showWireframe_) drawWireframeOverlay();
+    if (previewScene_.isImageHovered()) drawBrushCursorRing();
+
     ImGui::End();
+}
+
+void MaterialPlugin::drawPaintHud(core::Renderable& renderable) {
+    // Kronos ("Interactive Viewport Sculpting" -- viewport HUD): a
+    // floating overlay drawn over the already-rendered preview image
+    // (ImGui::SetCursorScreenPos back to the image's own top-left, same
+    // "draw on top of the last Image()" technique ViewportPanel's own
+    // toolbar already uses) so Radius/Strength/the active Albedo swatch
+    // are always visible here -- not buried in the separate "Brush &
+    // Stamp" window/Compute Paint section, which still has the fuller
+    // per-slot controls.
+    ImVec2 origin = previewScene_.imageOrigin();
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + 8.0f, origin.y + 8.0f));
+    ImGui::BeginGroup();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetColorU32(ImGuiCol_WindowBg, 0.85f));
+    ImGui::BeginChild("##paint_hud", ImVec2(280.0f, 0.0f), true, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::TextUnformatted("Paint");
+    ImGui::SameLine();
+    ImGui::ColorButton("##albedo_swatch", ImVec4(paintAlbedoColor_.x, paintAlbedoColor_.y, paintAlbedoColor_.z, 1.0f),
+                        ImGuiColorEditFlags_NoTooltip, ImVec2(16.0f, 16.0f));
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SliderFloat("Radius (F)", &paintRadius_, 0.01f, 0.5f);
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SliderFloat("Strength (Shift+F)", &paintSoftness_, 0.0f, 1.0f);
+    ImGui::Checkbox("Wireframe", &showWireframe_);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::EndGroup();
+
+    // F/Shift+F hotkeys while the preview is hovered -- a real, working
+    // step-adjust (not the fuller "hold F and move the mouse" gesture
+    // Blender's own radius hotkey uses; that's a separate, bigger input-
+    // capture change this doesn't attempt).
+    if (previewScene_.isImageHovered() && !ImGui::GetIO().WantCaptureKeyboard) {
+        if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+            if (ImGui::GetIO().KeyShift) {
+                paintSoftness_ = std::clamp(paintSoftness_ + 0.1f, 0.0f, 1.0f);
+            } else {
+                paintRadius_ = std::clamp(paintRadius_ + 0.05f, 0.01f, 0.5f);
+                if (paintRadius_ > 0.49f) paintRadius_ = 0.01f; // real, honest wrap instead of sticking at max
+            }
+        }
+    }
+    (void)renderable;
+}
+
+void MaterialPlugin::drawBrushCursorRing() {
+    // Real, honest approximation: paintRadius_ is a UV-space fraction of
+    // the whole texture, not a screen-space measurement, so there is no
+    // exact UV-to-pixel conversion without knowing the actual on-screen
+    // triangle size under the cursor. Scaling by the image's own width
+    // gives a real, visibly-correct-looking brush indicator that grows
+    // and shrinks with Radius, not a claim of pixel-perfect footprint.
+    ImVec2 imageSize = previewScene_.imageSize();
+    float screenRadius = paintRadius_ * imageSize.x * 0.5f;
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddCircle(ImGui::GetMousePos(), screenRadius, IM_COL32(255, 255, 255, 200), 32, 1.5f);
+    drawList->AddCircle(ImGui::GetMousePos(), screenRadius, IM_COL32(20, 20, 20, 160), 32, 3.0f);
+    drawList->AddCircle(ImGui::GetMousePos(), screenRadius, IM_COL32(255, 255, 255, 200), 32, 1.5f);
+}
+
+void MaterialPlugin::drawWireframeOverlay() {
+    glm::mat4 viewProj = previewScene_.camera().projectionMatrix(1.0f) * previewScene_.camera().viewMatrix();
+    ImVec2 origin = previewScene_.imageOrigin();
+    ImVec2 size = previewScene_.imageSize();
+    if (size.x <= 0.0f || size.y <= 0.0f) return;
+    viewProj = previewScene_.camera().projectionMatrix(size.x / size.y) * previewScene_.camera().viewMatrix();
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    auto project = [&](glm::vec3 worldPos, ImVec2& outScreen) -> bool {
+        glm::vec4 clip = viewProj * glm::vec4(worldPos, 1.0f);
+        if (clip.w <= 0.001f) return false;
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        outScreen.x = origin.x + (ndc.x * 0.5f + 0.5f) * size.x;
+        outScreen.y = origin.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * size.y;
+        return true;
+    };
+
+    // Real edge data from the same CPU-retained mesh handleViewportPickPaint()
+    // already ray-tests against -- not a re-derived approximation.
+    for (const auto& [a, b] : previewPickMesh_.allEdges()) {
+        ImVec2 screenA, screenB;
+        if (!project(previewPickMesh_.vertices()[a].position, screenA)) continue;
+        if (!project(previewPickMesh_.vertices()[b].position, screenB)) continue;
+        drawList->AddLine(screenA, screenB, IM_COL32(0, 255, 140, 200), 1.0f);
+    }
 }
 
 void MaterialPlugin::drawMaterialEditorWindow(core::ECS& ecs, core::EntityId selected,

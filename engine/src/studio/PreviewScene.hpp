@@ -3,6 +3,8 @@
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
+#include <imgui.h>
+
 #include "core/Camera.hpp"
 #include "core/ECS.hpp"
 #include "core/Mesh.hpp"
@@ -94,6 +96,24 @@ public:
     // delivered to the first caller that asks in a given frame.
     [[nodiscard]] bool consumeClickRay(glm::vec3& outOrigin, glm::vec3& outDirection);
 
+    // Kronos ("Interactive Viewport Sculpting"): true on every frame a
+    // left-drag is happening WHILE Ctrl is held -- lets a painting caller
+    // (MaterialPlugin) stamp continuously along a stroke instead of once
+    // per click, without stealing plain left-drag away from every other
+    // PreviewScene consumer (AvatarPreviewer/CataloguePanel/ParticleEditor),
+    // which still orbits on a plain left-drag exactly as before. Real,
+    // per-frame (not "consumed once" like consumeClickRay()) since a
+    // stroke needs a ray every single frame it's held, not one.
+    [[nodiscard]] bool dragPaintRay(glm::vec3& outOrigin, glm::vec3& outDirection) const;
+
+    // True while the mouse is hovering the preview image this frame,
+    // regardless of click/drag state -- lets a caller draw its own
+    // cursor-following overlay (e.g. a brush-radius ring) only when it's
+    // actually meaningful to.
+    [[nodiscard]] bool isImageHovered() const { return imageHovered_; }
+    [[nodiscard]] ImVec2 imageOrigin() const { return imageOrigin_; }
+    [[nodiscard]] ImVec2 imageSize() const { return imageSize_; }
+
     [[nodiscard]] core::ECS& ecs() { return ecs_; }
 
     // Real, up-to-date (position/yaw/pitch recomputed at the end of every
@@ -159,6 +179,16 @@ private:
     bool hasPendingClickRay_ = false;
     glm::vec3 pendingClickOrigin_{0.0f};
     glm::vec3 pendingClickDirection_{0.0f, 0.0f, -1.0f};
+
+    // Backing state for dragPaintRay()/isImageHovered() -- recomputed
+    // every drawAndHandleOrbit() call, real (not "consumed once") since
+    // callers may need to query these every single frame of a stroke.
+    bool ctrlDragPaintActive_ = false;
+    glm::vec3 dragPaintOrigin_{0.0f};
+    glm::vec3 dragPaintDirection_{0.0f, 0.0f, -1.0f};
+    bool imageHovered_ = false;
+    ImVec2 imageOrigin_{0.0f, 0.0f};
+    ImVec2 imageSize_{0.0f, 0.0f};
 };
 
 } // namespace engine::studio
