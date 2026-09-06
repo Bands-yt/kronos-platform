@@ -90,6 +90,57 @@ async function fetchLiveServers(gameId) {
 
 // --- allocation ------------------------------------------------------------
 
+// The real "find or spin up a live server with room, and mint a ticket
+// for it" logic -- shared between the plain /allocate route below and
+// matchmaking/routes.js's ticket-based queue, which reuses this exact
+// function once it has grouped enough players rather than reimplementing
+// server selection a second time. Throws the same HttpErrors either
+// caller would otherwise throw directly (notFound/serviceUnavailable).
+export async function allocatePlayerToGame(game, userId) {
+  let live = await fetchLiveServers(game.id);
+  if (live.length === 0) {
+    // Roblox-style on-demand hosting: nothing alive right now, so try
+    // to spin one up for real before giving up. A real, honest no-op
+    // (falls straight through to the same 503 below) wherever JIT
+    // provisioning isn't configured for this deployment -- see
+    // provisionServerForGame()'s own comment.
+    if (await provisionServerForGame(game)) {
+      live = await fetchLiveServers(game.id);
+    }
+  }
+  if (live.length === 0) throw serviceUnavailable('No servers for this game are online right now.');
+
+  const playerValues = await redis.mget(live.map((s) => keys.serverPlayers(s.server_key)));
+  const withRoom = live
+    .map((s, i) => ({ ...s, players: Number(playerValues[i]) || 0 }))
+    .filter((s) => s.players < s.max_players);
+  if (withRoom.length === 0) throw serviceUnavailable('Every server for this game is currently full.');
+
+  // Most-loaded-with-room first: packs players together so games feel
+  // populated, instead of scattering one player per empty server.
+  withRoom.sort((a, b) => b.players - a.players);
+  const chosen = withRoom[0];
+
+  // The ticket is what makes this allocation meaningful. Without it a
+  // client could connect straight to any server's ip:port and the
+  // server would have no way to know whether we sent them.
+  const ticket = issueJoinTicket({ userId, gameId: game.id, serverKey: chosen.server_key });
+
+  return {
+    game: { id: String(game.id), slug: game.slug, title: game.title },
+    // server_key travels back to the client so it can report exactly
+    // this in its own presence heartbeat -- without it, a friend
+    // watching this player's presence has no server to mint a
+    // direct-join ticket against (see social/routes.js's own
+    // /friends/list comment). Already implicit in `ticket` itself
+    // (its own `srv` claim); handing it over explicitly avoids the
+    // client needing to decode its own ticket to learn it.
+    server: { host: chosen.host, port: chosen.port, region: chosen.region, server_key: chosen.server_key },
+    join_ticket: ticket,
+    expires_in: config.joinTicketTtlSeconds,
+  };
+}
+
 sessionRouter.post(
   '/allocate',
   requireAuth,
@@ -99,50 +150,8 @@ sessionRouter.post(
 
     const { rows: games } = await query(`SELECT id, slug, title FROM games WHERE slug = $1 AND published = TRUE`, [slug]);
     if (games.length === 0) throw notFound('No such published game.');
-    const game = games[0];
 
-    let live = await fetchLiveServers(game.id);
-    if (live.length === 0) {
-      // Roblox-style on-demand hosting: nothing alive right now, so try
-      // to spin one up for real before giving up. A real, honest no-op
-      // (falls straight through to the same 503 below) wherever JIT
-      // provisioning isn't configured for this deployment -- see
-      // provisionServerForGame()'s own comment.
-      if (await provisionServerForGame(game)) {
-        live = await fetchLiveServers(game.id);
-      }
-    }
-    if (live.length === 0) throw serviceUnavailable('No servers for this game are online right now.');
-
-    const playerValues = await redis.mget(live.map((s) => keys.serverPlayers(s.server_key)));
-    const withRoom = live
-      .map((s, i) => ({ ...s, players: Number(playerValues[i]) || 0 }))
-      .filter((s) => s.players < s.max_players);
-    if (withRoom.length === 0) throw serviceUnavailable('Every server for this game is currently full.');
-
-    // Most-loaded-with-room first: packs players together so games feel
-    // populated, instead of scattering one player per empty server.
-    withRoom.sort((a, b) => b.players - a.players);
-    const chosen = withRoom[0];
-
-    // The ticket is what makes this allocation meaningful. Without it a
-    // client could connect straight to any server's ip:port and the
-    // server would have no way to know whether we sent them.
-    const ticket = issueJoinTicket({ userId: req.user.id, gameId: game.id, serverKey: chosen.server_key });
-
-    res.json({
-      game: { id: String(game.id), slug: game.slug, title: game.title },
-      // server_key travels back to the client so it can report exactly
-      // this in its own presence heartbeat -- without it, a friend
-      // watching this player's presence has no server to mint a
-      // direct-join ticket against (see social/routes.js's own
-      // /friends/list comment). Already implicit in `ticket` itself
-      // (its own `srv` claim); handing it over explicitly avoids the
-      // client needing to decode its own ticket to learn it.
-      server: { host: chosen.host, port: chosen.port, region: chosen.region, server_key: chosen.server_key },
-      join_ticket: ticket,
-      expires_in: config.joinTicketTtlSeconds,
-    });
+    res.json(await allocatePlayerToGame(games[0], req.user.id));
   }),
 );
 
@@ -156,6 +165,21 @@ sessionRouter.post(
     if (!payload) throw badRequest('Invalid or expired join ticket.');
     const serverKey = (req.body?.server_key || '').toString();
     if (serverKey && payload.srv !== serverKey) throw badRequest('This ticket was issued for a different server.');
-    res.json({ valid: true, user_id: payload.uid, game_id: payload.gid, server_key: payload.srv });
+
+    // The real, authoritative display name for whoever this ticket was
+    // issued to -- so the game server can bind the name it broadcasts in
+    // chat/roster to the account the ticket actually proved, not to
+    // whatever string the connecting client itself claims in its own
+    // JoinRequest (see NetworkSession::handleJoinRequestServer's own
+    // comment on why that claim alone is not trustworthy). Null, not a
+    // rejected verification, if the account was deleted in the narrow
+    // window between allocation and this call -- the ticket itself is
+    // still real and still checks out.
+    const { rows } = await query(`SELECT display_name FROM users WHERE id = $1`, [payload.uid]);
+    const displayName = rows.length > 0 ? rows[0].display_name : null;
+
+    res.json({
+      valid: true, user_id: payload.uid, game_id: payload.gid, server_key: payload.srv, display_name: displayName,
+    });
   }),
 );

@@ -14,6 +14,9 @@ import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, Delete
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 import { config } from '../config.js';
+import { packageObjectKey } from './objectKey.js';
+
+export { packageObjectKey };
 
 export const s3Configured = () => Boolean(config.s3Bucket);
 
@@ -30,14 +33,6 @@ function s3Client() {
     });
   }
   return cachedClient;
-}
-
-// Content-addressed: two creators publishing byte-identical archives
-// (a real, if uncommon, case -- e.g. re-publishing unchanged) land on
-// the exact same object, so a re-upload of unchanged content is a real,
-// free no-op rather than a second copy.
-export function packageObjectKey(sha256Hex) {
-  return `packages/${sha256Hex}.kronos`;
 }
 
 export async function createPresignedUploadUrl(key) {
@@ -84,4 +79,21 @@ export async function verifyObjectHash(key, expectedSha256Hex) {
 
 export async function deleteObject(key) {
   await s3Client().send(new DeleteObjectCommand({ Bucket: config.s3Bucket, Key: key }));
+}
+
+// Telemetry & Minidump Handler: unlike a package/chunk (which a client
+// PUTs straight to a presigned URL), a crash dump arrives as this
+// service's own request body -- there is no client-facing presign step
+// to skip, so this writes the already-received bytes directly instead.
+export async function putObjectBuffer(key, buffer) {
+  await s3Client().send(new PutObjectCommand({ Bucket: config.s3Bucket, Key: key, Body: buffer }));
+}
+
+// Used only by the optional minidump-stackwalk hook (telemetry/
+// routes.js) to materialize a stored dump as a real local file for that
+// external binary to read -- everything else in this module works with
+// keys and streamed bytes alone and never needs a local copy.
+export async function getObjectStream(key) {
+  const response = await s3Client().send(new GetObjectCommand({ Bucket: config.s3Bucket, Key: key }));
+  return response.Body;
 }
