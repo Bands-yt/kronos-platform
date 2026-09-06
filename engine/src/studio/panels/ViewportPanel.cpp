@@ -31,6 +31,15 @@ namespace engine::studio::panels {
 void ViewportPanel::updateFreeFly(float deltaTime) {
     bool hovered = ImGui::IsWindowHovered();
 
+    // Scroll to dolly, independent of right-click-drag -- Blender's own
+    // default scroll-wheel behavior (up = closer, down = further).
+    if (hovered) {
+        float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel != 0.0f) {
+            camera_.position += camera_.forward() * (wheel * 1.5f);
+        }
+    }
+
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         dragging_ = true;
     }
@@ -996,6 +1005,7 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         if (modelImporterPlugin_ != nullptr) {
             if (ImGui::Button("Import 3D Asset...")) {
                 modelImporterPlugin_->setOpen(true);
+                modelImporterPlugin_->browseForFile();
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
                 ImGui::SetTooltip("Opens the Model Importer panel -- loads a real glTF 2.0 (.gltf/.glb), Wavefront "
