@@ -1,0 +1,6 @@
+// Kronos ("Desktop Integration & Standalone App Icons"): real Windows
+// executable-icon resource script for kronos_movie_maker.exe -- see
+// kronos_studio.rc's own comment for the full reasoning (per-app
+// accent-colored icon, Slate/Indigo here per StudioApp::accentColor()'s
+// MovieMaker case).
+IDI_ICON1 ICON "kronos_movie_maker_icon.ico"

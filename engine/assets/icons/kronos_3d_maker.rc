@@ -1,0 +1,6 @@
+// Kronos ("Desktop Integration & Standalone App Icons"): real Windows
+// executable-icon resource script for kronos_3d_maker.exe -- see
+// kronos_studio.rc's own comment for the full reasoning (per-app
+// accent-colored icon, Amber/Gold here per StudioApp::accentColor()'s
+// ThreeDMaker case).
+IDI_ICON1 ICON "kronos_3d_maker_icon.ico"

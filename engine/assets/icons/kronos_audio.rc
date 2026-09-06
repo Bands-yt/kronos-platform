@@ -1,0 +1,6 @@
+// Kronos ("Desktop Integration & Standalone App Icons"): real Windows
+// executable-icon resource script for kronos_audio.exe -- see
+// kronos_studio.rc's own comment for the full reasoning (per-app
+// accent-colored icon, Cyan/Teal here per StudioApp::accentColor()'s
+// Audio case).
+IDI_ICON1 ICON "kronos_audio_icon.ico"

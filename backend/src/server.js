@@ -12,7 +12,7 @@ import { authRouter } from './auth/routes.js';
 import { avatarRouter } from './avatar/routes.js';
 import { catalogRouter } from './catalog/routes.js';
 import { assetsRouter } from './catalog/assets.js';
-import { downloadsRouter } from './catalog/downloads.js';
+import { downloadsRouter, desktopClientManifest } from './catalog/downloads.js';
 import { showcaseRouter } from './catalog/showcase.js';
 import { inventoryRouter } from './inventory/routes.js';
 import { leaderboardsRouter } from './leaderboards/routes.js';
@@ -63,6 +63,14 @@ export function createApp() {
   // endpoint under /v1, the bare one for a plain marketing link.
   app.get('/download', asyncRoute(downloadWindowsInstaller));
   app.get('/v1/download/windows', asyncRoute(downloadWindowsInstaller));
+
+  // Kronos ("Desktop Client Catalog/Version Check"): the real desktop
+  // client's own startup version-check/update-download request -- see
+  // desktopClientManifest()'s own comment for why this is a separate,
+  // differently-shaped endpoint from /v1/downloads/latest rather than a
+  // replacement of it (that one has its own real, tested "never
+  // fabricate" contract other callers rely on).
+  app.get('/v1/client-manifest', asyncRoute(desktopClientManifest));
 
   app.get('/healthz', async (_req, res) => {
     const health = { status: 'ok', postgres: false, redis: false };

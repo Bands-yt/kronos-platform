@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kronos 3D Maker
+Comment=Kronos Platform -- 3D modeling, materials, and mesh import
+Exec=kronos_3d_maker
+Icon=kronos_3d_maker
+Terminal=false
+Categories=Graphics;3DGraphics;

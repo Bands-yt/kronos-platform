@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kronos Movie Maker
+Comment=Kronos Platform -- cinematic timeline, camera rigs, and trailer capture
+Exec=kronos_movie_maker
+Icon=kronos_movie_maker
+Terminal=false
+Categories=AudioVideo;AudioVideoEditing;

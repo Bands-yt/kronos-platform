@@ -78,20 +78,32 @@ jobs:
       # included too since kronos_studio's own Full-mode publishing/
       # playtest flow (StudioApp.cpp) reads from a real games/ directory
       # the same way engine_runtime does.
+      # Kronos ("Desktop Integration & Standalone App Icons"): each
+      # package already gets the FULL engine/assets/ tree above (which
+      # includes assets/desktop/*.desktop and assets/icons/*_icon.png
+      # for every app), but this also copies just the ONE .desktop file
+      # this specific package's own app actually needs to the package
+      # ROOT (its real, hyphenated filename, e.g. kronos-3d-maker.desktop)
+      # so a tester can find and use it without digging through assets/ --
+      # same "real file a tester can use immediately" precedent
+      # scripts/package_alpha.sh's own header comment already establishes
+      # for its generated kronos.desktop/kronos-studio.desktop.
       - name: Package standalone apps (.zip)
         run: |
           set -euo pipefail
           for app in studio:kronos_studio 3d_maker:kronos_3d_maker movie_maker:kronos_movie_maker audio:kronos_audio; do
             assetName="${app%%:*}"
             target="${app##*:}"
+            desktopName="kronos-${assetName//_/-}"
             pkgDir="kronos_${assetName}_linux_x86_64"
             mkdir -p "$pkgDir/shaders"
             cp "$BUILD_DIR/src/$target" "$pkgDir/"
             cp "$BUILD_DIR"/shaders/*.spv "$pkgDir/shaders/"
             cp -r "$ENGINE_DIR/assets" "$pkgDir/"
             cp -r games "$pkgDir/"
+            cp "$pkgDir/assets/desktop/${desktopName}.desktop" "$pkgDir/"
 
-            for required in assets/textures/ui_font_atlas.png assets/animations/idle.anim games; do
+            for required in assets/textures/ui_font_atlas.png assets/animations/idle.anim games "${desktopName}.desktop"; do
               if [ ! -e "$pkgDir/$required" ]; then
                 echo "::error::$required missing from $pkgDir -- refusing to publish a broken archive."
                 exit 1

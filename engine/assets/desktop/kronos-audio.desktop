@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kronos Audio
+Comment=Kronos Platform -- audio DSP graph, waveform inspector, and track mixer
+Exec=kronos_audio
+Icon=kronos_audio
+Terminal=false
+Categories=AudioVideo;Audio;
