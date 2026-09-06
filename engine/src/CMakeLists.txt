@@ -613,7 +613,6 @@ if(ENGINE_BUILD_STUDIO)
         # above for why this lives here (and there) instead of in
         # engine_core.
         core/UITheme.cpp
-        $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos.rc>
         studio/Notification.cpp
         studio/EntityClassification.cpp
         studio/CreatorToolsSpawning.cpp
@@ -678,15 +677,29 @@ if(ENGINE_BUILD_STUDIO)
         studio/ParticlePresets.cpp
     )
 
-    add_executable(studio studio/StudioMain.cpp ${KRONOS_STUDIO_SHARED_SOURCES})
+    # Kronos ("Desktop Integration & Standalone App Icons"): each of the 5
+    # targets below gets its OWN Windows icon resource script (not the
+    # single shared kronos.rc every one of them used to pull in via
+    # KRONOS_STUDIO_SHARED_SOURCES) -- see kronos_studio.rc's own comment
+    # for why. `studio` (the legacy full-editor shell) reuses the same
+    # violet icon as kronos_studio since both are real "Kronos Studio"
+    # under the hood; engine_runtime above keeps the original shared
+    # kronos.rc since it's a different product (the player/game client),
+    # not one of these 4 creator apps.
+    add_executable(studio studio/StudioMain.cpp ${KRONOS_STUDIO_SHARED_SOURCES}
+        $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos_studio.rc>)
     add_executable(kronos_studio studio/apps/KronosStudioMain.cpp studio/apps/StandaloneAppMain.cpp
-        ${KRONOS_STUDIO_SHARED_SOURCES})
+        ${KRONOS_STUDIO_SHARED_SOURCES}
+        $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos_studio.rc>)
     add_executable(kronos_3d_maker studio/apps/Kronos3dMakerMain.cpp studio/apps/StandaloneAppMain.cpp
-        ${KRONOS_STUDIO_SHARED_SOURCES})
+        ${KRONOS_STUDIO_SHARED_SOURCES}
+        $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos_3d_maker.rc>)
     add_executable(kronos_movie_maker studio/apps/KronosMovieMakerMain.cpp studio/apps/StandaloneAppMain.cpp
-        ${KRONOS_STUDIO_SHARED_SOURCES})
+        ${KRONOS_STUDIO_SHARED_SOURCES}
+        $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos_movie_maker.rc>)
     add_executable(kronos_audio studio/apps/KronosAudioMain.cpp studio/apps/StandaloneAppMain.cpp
-        ${KRONOS_STUDIO_SHARED_SOURCES})
+        ${KRONOS_STUDIO_SHARED_SOURCES}
+        $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos_audio.rc>)
     set(KRONOS_STUDIO_TARGETS studio kronos_studio kronos_3d_maker kronos_movie_maker kronos_audio)
 
     # Luau.Analysis/Luau.Config: Studio-only (see ColorTextEditBackend.cpp's

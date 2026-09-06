@@ -1,0 +1,11 @@
+// Kronos ("Desktop Integration & Standalone App Icons"): real Windows
+// executable-icon resource script for kronos_studio.exe specifically --
+// see kronos.rc's own comment for why this only matters on a real
+// Windows build (no MSVC/MinGW toolchain here to compile it against).
+// Distinct from kronos.rc/engine_runtime's shared flagship icon: each
+// of the 4 standalone creator apps gets its own accent-colored icon
+// (see engine/src/CMakeLists.txt's own add_executable() calls) so
+// Explorer/the taskbar can actually tell them apart, matching the
+// distinct per-app accent colors StudioApp::accentColor() already
+// established (Electric Violet for Studio).
+IDI_ICON1 ICON "kronos_studio_icon.ico"

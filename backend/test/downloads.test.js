@@ -105,3 +105,18 @@ test('a real app/platform with no local build 302-redirects to the real GitHub R
     `https://github.com/${config.githubReleasesRepo}/releases/latest/download/kronos_movie_maker_win64.zip`,
   );
 });
+
+// Kronos ("Desktop Client Catalog/Version Check"): the real desktop
+// client's own startup manifest -- a fixed, always-populated map (never
+// omits an app the way /latest does), whose `url` for each app always
+// resolves to something real via the direct installer route (verified
+// separately above), not a fabricated per-app version.
+test('the desktop client manifest always reports all 4 apps with a real, resolvable installer URL', async () => {
+  const body = await fetch(`${baseUrl}/v1/client-manifest`).then((r) => r.json());
+  assert.equal(body.desktopAppsVersion, process.env.DESKTOP_APPS_VERSION || '0.4.0-beta');
+  assert.deepEqual(Object.keys(body.apps).sort(), ['3d-maker', 'audio', 'movie-maker', 'studio']);
+  for (const [app, entry] of Object.entries(body.apps)) {
+    assert.equal(entry.version, body.desktopAppsVersion);
+    assert.equal(entry.url, `${baseUrl}/v1/downloads/installers/${app}/win64`);
+  }
+});

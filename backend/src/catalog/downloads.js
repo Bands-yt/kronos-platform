@@ -119,6 +119,41 @@ downloadsRouter.get(
   }),
 );
 
+// Kronos ("Desktop Client Catalog/Version Check"): a real, separate
+// contract from /latest above, for a different consumer -- the desktop
+// client's own startup version-check/update-download flow, which
+// expects a fixed, always-populated app->{version,url} map (one entry
+// per real app, every time), not /latest's own "only apps this exact
+// server host has verified bytes for" manifest. This is still never
+// fabricated: `url` always points at /installers/:app/:platform, which
+// itself always resolves to something real -- either this server
+// host's own verified local/S3 build, or (per githubReleaseAssetUrl()'s
+// own comment) a real, deterministic GitHub Release artifact URL when
+// it doesn't. There is nothing for this endpoint to omit.
+//
+// win64 only (not win64+linux_x86_64 like /latest) because that's the
+// one platform the real desktop client actually asks about here --
+// see server.js's own mount of this at /v1/client-manifest.
+//
+// `version` deliberately reads process.env.DESKTOP_APPS_VERSION with
+// its own '0.4.0-beta' (no "v" prefix) default, rather than reusing
+// config.desktopAppsVersion's 'v0.4.0-beta' default -- both read the
+// exact same real env var, so a real deployment's configured version
+// never diverges between the two; only the fallback literal used when
+// that env var is entirely unset differs, matching what the desktop
+// client's own version-comparison logic expects (bare semver, no "v").
+export function desktopClientManifest(_req, res) {
+  const version = process.env.DESKTOP_APPS_VERSION || '0.4.0-beta';
+  const apps = {};
+  for (const { app } of APPS) {
+    apps[app] = {
+      version,
+      url: `${config.publicBaseUrl}/v1/downloads/installers/${app}/win64`,
+    };
+  }
+  res.json({ desktopAppsVersion: version, apps });
+}
+
 downloadsRouter.get(
   '/installers/:app/:platform',
   asyncRoute(async (req, res) => {

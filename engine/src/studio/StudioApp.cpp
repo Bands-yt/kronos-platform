@@ -901,10 +901,34 @@ bool StudioApp::initImGuiVulkanBackend() {
         return false;
     }
 
-    std::array<VkDescriptorPoolSize, 1> poolSizes{{{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64}}};
+    // Kronos ("Kronos Player Crash Fixes" -- ImGui Vulkan descriptor pool):
+    // this vendored ImGui's own Vulkan backend (1.92.9) no longer allocates
+    // ImGui_ImplVulkan_AddTexture()'s descriptor sets as a single
+    // VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER -- it splits them into a
+    // VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE set per texture plus a shared
+    // VK_DESCRIPTOR_TYPE_SAMPLER set (see that backend's own
+    // imgui_impl_vulkan.cpp change-log entry and
+    // IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE/
+    // IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE). A pool sized only for
+    // the old combined type has zero real capacity for either new type --
+    // this NVIDIA driver's vkAllocateDescriptorSets() only warns about it
+    // (validation layer message: "[some drivers] will not return
+    // VK_ERROR_OUT_OF_POOL_MEMORY as they should"), but a driver that DOES
+    // return that error turns every offscreen-preview panel (Viewport,
+    // Texture Preview, Material/Avatar/Animation previewers -- anything
+    // that calls ImGui_ImplVulkan_AddTexture()) into a real crash the very
+    // first time it registers a texture. 64 SAMPLED_IMAGE slots keeps the
+    // same real per-texture headroom the old pool already had; 8 SAMPLER
+    // slots is well above the backend's own stated minimum of 2 (one
+    // shared sampler set is normally enough, but this leaves headroom for
+    // more without another silent pool-capacity regression).
+    std::array<VkDescriptorPoolSize, 2> poolSizes{{
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 8},
+    }};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 64;
+    poolInfo.maxSets = 64 + 8;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     if (vkCreateDescriptorPool(renderer_.device(), &poolInfo, nullptr, &imguiDescriptorPool_) != VK_SUCCESS) {

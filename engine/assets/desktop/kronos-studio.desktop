@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kronos Studio
+Comment=Kronos Platform -- full creator suite (scenes, scripting, publishing)
+Exec=kronos_studio
+Icon=kronos_studio
+Terminal=false
+Categories=Development;Graphics;3DGraphics;

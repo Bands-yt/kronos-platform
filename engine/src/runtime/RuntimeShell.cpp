@@ -207,10 +207,25 @@ bool RuntimeShell::initialize() {
         return false;
     }
 
-    std::array<VkDescriptorPoolSize, 1> poolSizes{{{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64}}};
+    // Kronos ("Kronos Player Crash Fixes" -- ImGui Vulkan descriptor
+    // pool): see studio::StudioApp::initialize()'s own comment on this
+    // exact same pool for the full reasoning -- this vendored ImGui's
+    // Vulkan backend (1.92.9) splits ImGui_ImplVulkan_AddTexture()'s
+    // descriptor into VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE +
+    // VK_DESCRIPTOR_TYPE_SAMPLER now, not the old single
+    // COMBINED_IMAGE_SAMPLER type this pool used to provision for. The
+    // real player-facing risk here is HomeAvatarPreview/GameLoader's own
+    // offscreen previews (both call into the same AddTexture() path) --
+    // a driver that hard-fails an over-capacity pool (unlike this
+    // session's NVIDIA driver, which only warns) would crash right at
+    // the Home screen's own avatar preview, not some rare edge case.
+    std::array<VkDescriptorPoolSize, 2> poolSizes{{
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 8},
+    }};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 64;
+    poolInfo.maxSets = 64 + 8;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     if (vkCreateDescriptorPool(renderer.device(), &poolInfo, nullptr, &imguiDescriptorPool_) != VK_SUCCESS) {
