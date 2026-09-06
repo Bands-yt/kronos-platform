@@ -6,6 +6,8 @@
 // quietly defaults to a well-known string is indistinguishable from no
 // authentication at all.
 
+import path from 'node:path';
+
 const isProduction = process.env.NODE_ENV === 'production';
 
 function required(name, devFallback) {
@@ -146,4 +148,63 @@ export const config = {
   // (buggy or malicious) declaring an absurd size and this service
   // handing out a presigned URL for it.
   packageMaxSizeBytes: Number(process.env.PACKAGE_MAX_SIZE_BYTES || 500 * 1024 * 1024),
+
+  // Where package archives land when s3Bucket above is unset (see
+  // storage/local.js) -- a real, working default so a deployment with no
+  // S3 credentials at all still has somewhere on disk to put them,
+  // without requiring one more env var just to boot.
+  localStorageDir: process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'data', 'packages'),
+
+  // Chunked Delta-Binary Sync: chunks share the exact same storage
+  // backend as whole packages (see storage/objectKey.js's chunkObjectKey),
+  // just under a real per-chunk size cap of their own -- chunking is a
+  // client-side concern (this service never splits anything itself), so
+  // this is cheap insurance against a chunk declared absurdly large, same
+  // reasoning as packageMaxSizeBytes above.
+  assetChunkMaxSizeBytes: Number(process.env.ASSET_CHUNK_MAX_SIZE_BYTES || 16 * 1024 * 1024),
+  // How long an exclusive asset lock (Perforce-style checkout) is held
+  // before it auto-expires -- long enough for a real editing session,
+  // short enough that a creator who closed Studio without releasing one
+  // does not block collaborators indefinitely. Re-acquiring the same
+  // lock (the same owner asking again) refreshes it, same "heartbeat to
+  // stay alive" shape as serverHeartbeatTtlSeconds.
+  assetLockTtlSeconds: Number(process.env.ASSET_LOCK_TTL || 30 * 60),
+
+  // Native matchmaking: how long a queued ticket stays eligible for
+  // matching before it's treated as abandoned and dropped. Matching
+  // itself runs lazily on each GET of the ticket (see matchmaking/
+  // routes.js's own comment) rather than on a background worker -- this
+  // stack has no cron/queue infra to run one on.
+  matchmakingTicketTtlSeconds: Number(process.env.MATCHMAKING_TICKET_TTL || 120),
+  // Not a real skill-based MMR -- a matching pass only prefers grouping
+  // two still-queued tickets together when their ratings are within
+  // this band; ratings are tracked (player_ratings) and returned but
+  // nothing in this pass computes or adjusts them yet from match
+  // outcomes. Documented simplification, not a fabricated system.
+  matchmakingRatingBandPoints: Number(process.env.MATCHMAKING_RATING_BAND || 200),
+  // How long a ticket waits for a same-band companion before it's
+  // matched solo anyway -- real players outrank a perfect rating match;
+  // nobody should queue forever because nobody else nearby ever shows up.
+  matchmakingGraceSeconds: Number(process.env.MATCHMAKING_GRACE_SECONDS || 15),
+
+  // Telemetry & Minidump Handler: a real sanity bound on an uploaded
+  // crash dump, same "cheap insurance against an absurd declared size"
+  // reasoning as packageMaxSizeBytes.
+  crashReportMaxSizeBytes: Number(process.env.CRASH_REPORT_MAX_SIZE_BYTES || 25 * 1024 * 1024),
+  // Automated stack trace analysis: deliberately NOT required(...), same
+  // "not configured is a real, honest no-op" convention engineRuntimePath
+  // already established -- no minidump-stackwalk binary or symbol store
+  // ships with this repo, so a crash report just stays at status
+  // "received" (real bytes, safely stored, no trace) until an operator
+  // points this at a real one.
+  minidumpStackwalkPath: process.env.MINIDUMP_STACKWALK_PATH || '',
+  minidumpSymbolsDir: process.env.MINIDUMP_SYMBOLS_DIR || '',
+
+  // The Windows installer's real home: KronosSetup.exe (see
+  // installer/build_installer.iss and
+  // .github/workflows/build-windows-installer.yml) is attached to
+  // whichever GitHub Release this repo's latest v* tag produced. Only
+  // the owner/repo is configurable -- the release/asset lookup itself
+  // is not something a deployment should need to point elsewhere.
+  githubReleasesRepo: process.env.GITHUB_RELEASES_REPO || 'Bands-yt/kronos-platform',
 };

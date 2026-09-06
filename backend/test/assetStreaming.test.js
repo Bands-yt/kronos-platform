@@ -4,6 +4,9 @@
 // Express, real PostgreSQL. No mocks, no stubbed S3 client.
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test, { after, before } from 'node:test';
 
 import { createApp } from '../src/server.js';
@@ -14,18 +17,31 @@ import { setEmailTransport } from '../src/email/mailer.js';
 
 let server;
 let baseUrl;
+let localStorageTestDir;
 
 before(async () => {
   setEmailTransport(async () => {});
+  // Isolated from the repo's own real data/packages default -- a test run
+  // must never write real files into a real checkout, and must never
+  // collide with another test run's own directory.
+  localStorageTestDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kronos-test-storage-'));
+  config.localStorageDir = localStorageTestDir;
   server = createApp().listen(0);
   await new Promise((r) => server.once('listening', r));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
+  // The local-storage upload/download URLs the server hands back are
+  // built from config.publicBaseUrl (same convention mailer.js already
+  // uses for its own absolute links) -- match it to this real, ephemeral
+  // test server so a real fetch() to those URLs really lands here,
+  // instead of at publicBaseUrl's http://localhost:8080 default.
+  config.publicBaseUrl = baseUrl;
 });
 
 after(async () => {
   server.close();
   await pool.end();
   redis.disconnect();
+  await fsp.rm(localStorageTestDir, { recursive: true, force: true });
 });
 
 async function api(method, path, { body, token } = {}) {
@@ -86,15 +102,100 @@ async function withRealS3(fn) {
   }
 }
 
-test('package routes really answer 503 when object storage is not configured', async () => {
+test('package routes fall back to real local disk storage when S3 is not configured, with a real round trip', async () => {
   assert.equal(config.s3Bucket, '', 'sanity: S3 really is not configured for this test');
   const creator = await makeUser();
   const slug = `pkg-${crypto.randomBytes(4).toString('hex')}`;
   await publishGame(creator.token, slug);
 
-  const res = await api('POST', `/v1/catalog/games/${slug}/package/upload-url`,
-    { body: { sha256: 'a'.repeat(64), size_bytes: 100 }, token: creator.token });
-  assert.equal(res.status, 503);
+  const archiveBytes = Buffer.from(`a real local-disk .kronos archive body -- ${crypto.randomBytes(16).toString('hex')}`);
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+
+  const uploadUrlRes = await api('POST', `/v1/catalog/games/${slug}/package/upload-url`,
+    { body: { sha256, size_bytes: archiveBytes.length }, token: creator.token });
+  assert.equal(uploadUrlRes.status, 200, JSON.stringify(uploadUrlRes.body));
+  assert.equal(uploadUrlRes.body.storage, 'local');
+  assert.equal(uploadUrlRes.body.object_key, `packages/${sha256}.kronos`, 'the object key is really content-addressed');
+
+  // The real upload -- a plain authenticated PUT straight to this same
+  // backend, since there is no bucket to presign a URL against.
+  const putRes = await fetch(uploadUrlRes.body.upload_url, {
+    method: 'PUT',
+    body: archiveBytes,
+    headers: { authorization: `Bearer ${creator.token}` },
+  });
+  assert.equal(putRes.status, 200, `the real PUT to local storage really succeeded (got ${putRes.status})`);
+
+  const confirmRes = await api('POST', `/v1/catalog/games/${slug}/package/confirm`,
+    { body: { sha256 }, token: creator.token });
+  assert.equal(confirmRes.status, 200, JSON.stringify(confirmRes.body));
+  assert.equal(confirmRes.body.size_bytes, archiveBytes.length, 'the REAL uploaded size was reported, not the client\'s claim');
+
+  const { rows } = await query(
+    `SELECT scene_sha256, package_object_key, package_size_bytes FROM games WHERE slug = $1`, [slug],
+  );
+  assert.equal(rows[0].scene_sha256, sha256, 'the real hash really persisted to the games row');
+  assert.equal(rows[0].package_object_key, `packages/${sha256}.kronos`);
+  assert.equal(Number(rows[0].package_size_bytes), archiveBytes.length);
+
+  const packageRes = await api('GET', `/v1/catalog/games/${slug}/package`);
+  assert.equal(packageRes.status, 200);
+  assert.equal(packageRes.body.sha256, sha256);
+  assert.ok(packageRes.body.download_url.startsWith('http'), 'a real local download URL was returned');
+
+  // The real download -- fetching it back and confirming the bytes are
+  // genuinely identical to what was uploaded, not just that the request
+  // succeeded.
+  const downloadRes = await fetch(packageRes.body.download_url);
+  assert.equal(downloadRes.status, 200);
+  const downloaded = Buffer.from(await downloadRes.arrayBuffer());
+  assert.ok(downloaded.equals(archiveBytes), 'the real downloaded bytes are byte-for-byte identical to what was uploaded');
+});
+
+test('confirm on local disk storage really rejects when the uploaded content does not match the declared hash', async () => {
+  assert.equal(config.s3Bucket, '', 'sanity: S3 really is not configured for this test');
+  const creator = await makeUser();
+  const slug = `pkg-${crypto.randomBytes(4).toString('hex')}`;
+  await publishGame(creator.token, slug);
+
+  const claimedSha256 = crypto.createHash('sha256').update('what was CLAIMED locally').digest('hex');
+  const uploadUrlRes = await api('POST', `/v1/catalog/games/${slug}/package/upload-url`,
+    { body: { sha256: claimedSha256, size_bytes: 20 }, token: creator.token });
+  assert.equal(uploadUrlRes.status, 200);
+
+  const actualBytes = Buffer.from('this is NOT what was claimed at all, locally');
+  const putRes = await fetch(uploadUrlRes.body.upload_url, {
+    method: 'PUT',
+    body: actualBytes,
+    headers: { authorization: `Bearer ${creator.token}` },
+  });
+  assert.equal(putRes.status, 200, 'local storage itself has no reason to reject this upload -- the mismatch is caught server-side');
+
+  const confirmRes = await api('POST', `/v1/catalog/games/${slug}/package/confirm`,
+    { body: { sha256: claimedSha256 }, token: creator.token });
+  assert.equal(confirmRes.status, 400, 'the real server-side re-hash really catches the mismatch');
+
+  const { rows } = await query(`SELECT scene_sha256 FROM games WHERE slug = $1`, [slug]);
+  assert.equal(rows[0].scene_sha256, null, 'a failed confirm never touches the games row');
+});
+
+test('a stranger cannot PUT bytes onto a local-storage upload URL for someone else\'s game', async () => {
+  assert.equal(config.s3Bucket, '', 'sanity: S3 really is not configured for this test');
+  const owner = await makeUser();
+  const stranger = await makeUser();
+  const slug = `pkg-${crypto.randomBytes(4).toString('hex')}`;
+  await publishGame(owner.token, slug);
+
+  const uploadUrlRes = await api('POST', `/v1/catalog/games/${slug}/package/upload-url`,
+    { body: { sha256: 'b'.repeat(64), size_bytes: 10 }, token: owner.token });
+  assert.equal(uploadUrlRes.status, 200);
+
+  const stolenPut = await fetch(uploadUrlRes.body.upload_url, {
+    method: 'PUT',
+    body: Buffer.from('stolen bytes'),
+    headers: { authorization: `Bearer ${stranger.token}` },
+  });
+  assert.equal(stolenPut.status, 403);
 });
 
 test('a real presigned upload, a real confirm, and a real download round-trip byte-for-byte', async () => {

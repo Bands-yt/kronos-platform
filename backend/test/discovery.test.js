@@ -196,8 +196,7 @@ test('publishing registers a game in the public catalogue immediately', async ()
 
   const res = await api('POST', '/v1/catalog/games/publish', {
     body: { slug, title: 'My Published Place', description: 'Made in Studio.',
-            thumbnail_url: 'https://cdn.example/t.png',
-            scene_sha256: crypto.createHash('sha256').update('scene').digest('hex') },
+            thumbnail_url: 'https://cdn.example/t.png' },
     token: creator.token,
   });
   assert.equal(res.status, 201, JSON.stringify(res.body));
