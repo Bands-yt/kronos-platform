@@ -1,0 +1,200 @@
+name: Release Standalone Apps
+
+# Kronos ("GitHub Releases Binary Download Integration"): the real
+# publisher backend/src/catalog/downloads.js's own GitHub-redirect
+# fallback depends on -- a v* tag push here is the same real, deliberate
+# "build and publish" signal build.yml's own header comment already
+# documents, kept as a SEPARATE workflow (rather than added to build.yml)
+# because these 4 standalone creator apps are packaged one-per-app-per-
+# platform (kronos_<app>_<platform>.zip), not build.yml's own single
+# combined engine_runtime+studio+installer archive -- a different
+# packaging shape for a different consumer (the Web Download portal, not
+# the game client's own installer).
+on:
+  push:
+    tags:
+      - "v*"
+
+# Required so softprops/action-gh-release can attach assets to the
+# Release this tag push already created/updated (same real reasoning as
+# build.yml's own permissions block).
+permissions:
+  contents: write
+
+env:
+  ENGINE_DIR: engine
+  BUILD_DIR: engine/build
+
+jobs:
+  # Kronos ("Modular Executable Targets"): the 4 real standalone
+  # executables engine/src/CMakeLists.txt's own ENGINE_BUILD_STUDIO block
+  # defines (kronos_studio, kronos_3d_maker, kronos_movie_maker,
+  # kronos_audio) -- distinct from the legacy `studio` target build.yml
+  # already packages, which is the older single full-editor shell, not
+  # one of these 4 per-app binaries.
+  build-linux:
+    name: Linux (x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Same real dependency list as build.yml's own Linux job -- see
+      # that job's own comment for why each package is here.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            pkg-config \
+            libvulkan-dev \
+            libsdl2-dev \
+            zlib1g-dev \
+            libcurl4-openssl-dev \
+            libsecret-1-dev \
+            glslc
+
+      - name: Configure (Release)
+        run: |
+          cmake -S "$ENGINE_DIR" -B "$BUILD_DIR" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build standalone apps
+        run: cmake --build "$BUILD_DIR" --config Release --parallel --target kronos_studio kronos_3d_maker kronos_movie_maker kronos_audio
+
+      # Kronos: each app gets its OWN archive (kronos_<app>_linux_x86_64.zip),
+      # matching backend/src/catalog/downloads.js's own asset-name
+      # convention exactly -- a creator downloading "Kronos Audio" gets
+      # only Kronos Audio, not the other 3 apps' binaries bundled in for
+      # no reason. Each archive still needs its own real compiled shaders
+      # and assets/ (font atlas, avatar animations) -- same real "resolved
+      # relative to the executable, falls back to a CI-machine-only
+      # absolute path otherwise" reasoning build.yml's own package step
+      # already verified against a real broken archive; games/ is
+      # included too since kronos_studio's own Full-mode publishing/
+      # playtest flow (StudioApp.cpp) reads from a real games/ directory
+      # the same way engine_runtime does.
+      - name: Package standalone apps (.zip)
+        run: |
+          set -euo pipefail
+          for app in studio:kronos_studio 3d_maker:kronos_3d_maker movie_maker:kronos_movie_maker audio:kronos_audio; do
+            assetName="${app%%:*}"
+            target="${app##*:}"
+            pkgDir="kronos_${assetName}_linux_x86_64"
+            mkdir -p "$pkgDir/shaders"
+            cp "$BUILD_DIR/src/$target" "$pkgDir/"
+            cp "$BUILD_DIR"/shaders/*.spv "$pkgDir/shaders/"
+            cp -r "$ENGINE_DIR/assets" "$pkgDir/"
+            cp -r games "$pkgDir/"
+
+            for required in assets/textures/ui_font_atlas.png assets/animations/idle.anim games; do
+              if [ ! -e "$pkgDir/$required" ]; then
+                echo "::error::$required missing from $pkgDir -- refusing to publish a broken archive."
+                exit 1
+              fi
+            done
+
+            zip -qr "kronos_${assetName}_linux_x86_64.zip" "$pkgDir"
+          done
+
+      # Same real reasoning as build.yml's own checksum step.
+      - name: Generate checksums
+        run: |
+          for f in kronos_*_linux_x86_64.zip; do
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Upload archives to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            kronos_*_linux_x86_64.zip
+            kronos_*_linux_x86_64.zip.sha256
+
+  build-windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Same real recipe as build.yml's own Windows job -- see that
+      # job's own comments for why each step is here.
+      - name: Install Windows dependencies (vcpkg)
+        run: vcpkg install sdl2:x64-windows zlib:x64-windows curl:x64-windows
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.3.290.0
+          install_runtime: true
+          cache: true
+
+      - name: Add Vulkan SDK tools to PATH
+        run: echo "$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure (Release)
+        run: |
+          cmake -S "$env:ENGINE_DIR" -B "$env:BUILD_DIR" `
+            -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build standalone apps
+        run: cmake --build "$env:BUILD_DIR" --config Release --parallel --target kronos_studio kronos_3d_maker kronos_movie_maker kronos_audio
+
+      # Same per-app-per-platform archive shape as the Linux job, plus
+      # the real runtime DLLs each .exe actually imports -- same real
+      # "verified against a real archive that could not launch without
+      # them" reasoning as build.yml's own Windows package step.
+      - name: Package standalone apps (.zip)
+        run: |
+          $vcpkgBin = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+          if (-not (Test-Path $vcpkgBin)) {
+            Write-Error "vcpkg bin directory not found at $vcpkgBin -- the packages would ship without their runtime DLLs."
+            exit 1
+          }
+
+          $apps = @{
+            "studio" = "kronos_studio"
+            "3d_maker" = "kronos_3d_maker"
+            "movie_maker" = "kronos_movie_maker"
+            "audio" = "kronos_audio"
+          }
+          foreach ($assetName in $apps.Keys) {
+            $target = $apps[$assetName]
+            $pkgDir = "kronos_${assetName}_win64"
+            New-Item -ItemType Directory -Force -Path "$pkgDir\shaders" | Out-Null
+            Copy-Item "$env:BUILD_DIR\src\Release\$target.exe" "$pkgDir\"
+            Copy-Item "$env:BUILD_DIR\shaders\*.spv" "$pkgDir\shaders\"
+            Copy-Item -Recurse "$env:ENGINE_DIR\assets" "$pkgDir\"
+            Copy-Item -Recurse "games" "$pkgDir\"
+            Copy-Item "$vcpkgBin\*.dll" "$pkgDir\"
+
+            foreach ($required in @("assets\textures\ui_font_atlas.png", "assets\animations\idle.anim", "games", "SDL2.dll", "libcurl.dll", "z.dll")) {
+              if (-not (Test-Path "$pkgDir\$required")) {
+                Write-Error "$required is missing from $pkgDir -- refusing to publish a broken archive."
+                exit 1
+              }
+            }
+
+            Compress-Archive -Path $pkgDir -DestinationPath "kronos_${assetName}_win64.zip"
+          }
+
+      - name: Generate checksums
+        run: |
+          Get-ChildItem -Filter "kronos_*_win64.zip" | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Out-File -Encoding ascii "$($_.FullName).sha256"
+          }
+
+      - name: Upload archives to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            kronos_*_win64.zip
+            kronos_*_win64.zip.sha256

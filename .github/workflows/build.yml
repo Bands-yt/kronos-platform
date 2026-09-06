@@ -64,8 +64,17 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release
 
+      # Kronos ("GitHub Releases Binary Download Integration"): scoped to
+      # exactly the 3 targets this job's own Package step below actually
+      # ships (engine_runtime, studio, engine_tests) -- ENGINE_BUILD_STUDIO
+      # (default ON) also defines kronos_studio/kronos_3d_maker/
+      # kronos_movie_maker/kronos_audio, which this same tag push already
+      # builds AND publishes separately via release.yml. Without this
+      # --target list, a plain `cmake --build` builds those 4 a second
+      # time here for no reason -- doubling this job's own compile time
+      # for binaries it never packages.
       - name: Build
-        run: cmake --build "$BUILD_DIR" --config Release --parallel
+        run: cmake --build "$BUILD_DIR" --config Release --parallel --target engine_runtime studio engine_tests
 
       # Kronos ("In-App Auto-Updater"): the real updater helper ships
       # INSIDE the release archive, next to the binaries it replaces --
@@ -175,9 +184,11 @@ jobs:
 
       # Visual Studio's generator is multi-config -- CMAKE_BUILD_TYPE
       # above is a no-op for it; --config Release is the real switch
-      # that picks the Release configuration here.
+      # that picks the Release configuration here. Same real "don't
+      # rebuild what release.yml already builds and publishes separately"
+      # --target scoping as the Linux job above.
       - name: Build
-        run: cmake --build "$env:BUILD_DIR" --config Release --parallel
+        run: cmake --build "$env:BUILD_DIR" --config Release --parallel --target engine_runtime studio engine_tests
 
       # Same real reasoning as the Linux job's own updater-helper step.
       - name: Build updater helper
