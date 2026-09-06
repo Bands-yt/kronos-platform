@@ -2119,12 +2119,26 @@
   loadGames({ reset: true });
   setInterval(pollHealth, 15000); // matches Caddy's own health_interval
 
-  // Cosmetic only -- the download button always points at the same
-  // releases page either way, this just saves a click figuring out
-  // which asset on that page is the right one.
+  // On Windows, the button becomes a real direct download of
+  // KronosSetup.exe (GET /download, see src/download.js) instead of a
+  // link to the general releases page -- same-origin, so no target=_blank
+  // (a real file download has no page to show in a new tab). Every other
+  // platform keeps linking to the releases page itself, since /download
+  // is specifically the Windows installer.
   {
     const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
-    const hint = /win/i.test(platform) ? "look for the Windows build" : /linux/i.test(platform) ? "look for the Linux build" : "pick your platform on that page";
+    const isWindows = /win/i.test(platform);
+    const link = $("#downloadInstallerLink");
+    let hint;
+    if (isWindows) {
+      link.href = "/download";
+      link.removeAttribute("target");
+      hint = "a direct download of the Windows installer";
+    } else if (/linux/i.test(platform)) {
+      hint = "look for the Linux build";
+    } else {
+      hint = "pick your platform on that page";
+    }
     $("#launchModalOsHint").textContent = hint + ".";
   }
 })();

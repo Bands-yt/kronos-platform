@@ -6,14 +6,21 @@ import express from 'express';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { redis } from './redis.js';
-import { HttpError } from './errors.js';
+import { HttpError, asyncRoute } from './errors.js';
+import { downloadWindowsInstaller } from './download.js';
 import { authRouter } from './auth/routes.js';
 import { avatarRouter } from './avatar/routes.js';
 import { catalogRouter } from './catalog/routes.js';
+import { assetsRouter } from './catalog/assets.js';
+import { inventoryRouter } from './inventory/routes.js';
+import { leaderboardsRouter } from './leaderboards/routes.js';
+import { matchmakingRouter } from './matchmaking/routes.js';
 import { moderationRouter } from './moderation/routes.js';
 import { sessionRouter } from './sessions/routes.js';
 import { socialRouter } from './social/routes.js';
+import { telemetryRouter } from './telemetry/routes.js';
 import { authPageRouter } from './web/authPage.js';
+import { attachWebSocketGateway } from './realtime/gateway.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -47,6 +54,14 @@ export function createApp() {
     res.sendFile(path.join(publicDir, 'discover.html'));
   });
 
+  // The Windows installer's direct download route -- see download.js's
+  // own header comment for the real local-file / GitHub-release / release-
+  // page fallback chain. Both paths are the same real download; the /v1
+  // one exists for a client (e.g. the launcher) that expects every real
+  // endpoint under /v1, the bare one for a plain marketing link.
+  app.get('/download', asyncRoute(downloadWindowsInstaller));
+  app.get('/v1/download/windows', asyncRoute(downloadWindowsInstaller));
+
   app.get('/healthz', async (_req, res) => {
     const health = { status: 'ok', postgres: false, redis: false };
     try {
@@ -64,9 +79,14 @@ export function createApp() {
   app.use('/v1/auth', authRouter);
   app.use('/v1/avatar', avatarRouter);
   app.use('/v1/catalog', catalogRouter);
+  app.use('/v1/catalog', assetsRouter);
+  app.use('/v1/inventory', inventoryRouter);
+  app.use('/v1/leaderboards', leaderboardsRouter);
+  app.use('/v1/matchmaking', matchmakingRouter);
   app.use('/v1', moderationRouter);
   app.use('/v1/sessions', sessionRouter);
   app.use('/v1', socialRouter);
+  app.use('/v1/telemetry', telemetryRouter);
   // The browser sign-in page the launcher hands off to.
   app.use('/', authPageRouter);
 
@@ -103,6 +123,9 @@ export function createApp() {
     if (err?.type === 'entity.parse.failed') {
       return res.status(400).json({ error: { code: 'bad_request', message: 'Malformed JSON body.' } });
     }
+    if (err?.type === 'entity.too.large') {
+      return res.status(400).json({ error: { code: 'bad_request', message: 'Request body too large.' } });
+    }
     console.error('[error] unhandled:', err);
     res.status(500).json({ error: { code: 'internal', message: 'Something went wrong.' } });
   });
@@ -114,10 +137,15 @@ export function createApp() {
 // binding a port.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const app = createApp();
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     console.log(`[kronos-backend] listening on :${config.port}`);
     if (!config.googleClientId) {
       console.warn('[kronos-backend] GOOGLE_CLIENT_ID is unset -- Google sign-in will refuse all tokens.');
     }
   });
+  // The realtime gateway needs the raw http.Server (WebSocket upgrades
+  // happen below Express entirely) -- see realtime/gateway.js's own
+  // header comment. Not wired up for createApp()-only test servers,
+  // which construct their own listener separately (see test/realtime.test.js).
+  attachWebSocketGateway(server);
 }
