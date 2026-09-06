@@ -1,0 +1,37 @@
+#version 450
+
+// Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite): real,
+// direct-to-VRAM texture stamping -- see core::ComputePbrPainter's own
+// header comment for the full picture. One dispatch covers one texel
+// per invocation across the WHOLE target image (bounds-checked against
+// its real imageSize()); texels outside the real brush radius are
+// real, honest no-ops (imageLoad+imageStore only ever touches texels
+// actually inside the stroke).
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba8) uniform image2D targetImage;
+
+layout(push_constant) uniform PushConstants {
+    vec4 color;
+    vec2 uvCenter;
+    float radiusUv;
+    float softness; // 0..1 fraction of radiusUv over which the brush's real edge fades out
+} pc;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(targetImage);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    float dist = distance(uv, pc.uvCenter);
+    if (dist > pc.radiusUv) return;
+
+    float innerRadius = pc.radiusUv * (1.0 - clamp(pc.softness, 0.0, 1.0));
+    float falloff = 1.0 - smoothstep(innerRadius, pc.radiusUv, dist);
+
+    vec4 existing = imageLoad(targetImage, pixel);
+    vec4 blended = mix(existing, pc.color, falloff);
+    imageStore(targetImage, pixel, blended);
+}

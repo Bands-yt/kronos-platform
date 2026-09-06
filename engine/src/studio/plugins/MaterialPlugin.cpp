@@ -88,6 +88,86 @@ void MaterialPlugin::drawTextureSlot(Slot slot, const char* label, core::Rendera
     ImGui::PopID();
 }
 
+void MaterialPlugin::drawComputePaintSection(core::Renderable& renderable) {
+    ImGui::SeparatorText("Compute Paint (direct-to-VRAM PBR stamp)");
+    ImGui::TextWrapped(
+        "Create a paintable texture per slot, then stamp a soft circular brush directly into GPU memory via a real "
+        "compute shader -- see core::ComputePbrPainter's own header comment for exactly what this does (and the real "
+        "scope cuts: no live 3D-viewport click picking yet, a flat normal brush rather than sculpted detail).");
+
+    auto createPaintable = [&](uint32_t* handle, glm::vec4 clearColor, const char* label) {
+        ImGui::PushID(label);
+        if (ImGui::Button("New Paintable Texture")) {
+            core::Texture texture =
+                core::Texture::createStorageImage(512, 512, clearColor, allocator_, device_, cmdPool_, queue_);
+            if (texture.isValid()) {
+                *handle = textureLibrary_->registerTexture(std::move(texture));
+                paintStatusMessage_ = std::string(label) + ": new 512x512 paintable texture created.";
+            } else {
+                paintStatusMessage_ = std::string(label) + ": failed to create a paintable texture.";
+            }
+        }
+        ImGui::PopID();
+    };
+
+    ImGui::TextUnformatted("Albedo:");
+    ImGui::SameLine();
+    createPaintable(&renderable.albedoTexture, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f), "AlbedoPaint");
+    ImGui::TextUnformatted("Normal:");
+    ImGui::SameLine();
+    createPaintable(&renderable.normalTexture, glm::vec4(0.5f, 0.5f, 1.0f, 1.0f), "NormalPaint");
+    ImGui::TextUnformatted("Roughness:");
+    ImGui::SameLine();
+    createPaintable(&renderable.roughnessTexture, glm::vec4(0.5f, 0.5f, 0.5f, 1.0f), "RoughnessPaint");
+    ImGui::TextUnformatted("Metallic:");
+    ImGui::SameLine();
+    createPaintable(&renderable.metallicTexture, glm::vec4(0.0f, 0.0f, 0.0f, 1.0f), "MetallicPaint");
+
+    ImGui::SliderFloat2("Stamp UV Center", &paintUv_.x, 0.0f, 1.0f);
+    ImGui::SliderFloat("Stamp Radius (UV)", &paintRadius_, 0.01f, 0.5f);
+    ImGui::SliderFloat("Stamp Softness", &paintSoftness_, 0.0f, 1.0f);
+    ImGui::ColorEdit4("Albedo Stamp Color", &paintAlbedoColor_.x);
+    ImGui::SliderFloat("Roughness Stamp Value", &paintRoughnessValue_, 0.0f, 1.0f);
+    ImGui::SliderFloat("Metallic Stamp Value", &paintMetallicValue_, 0.0f, 1.0f);
+
+    bool anyPaintable = renderable.albedoTexture != core::Renderable::kInvalidHandle ||
+                         renderable.normalTexture != core::Renderable::kInvalidHandle ||
+                         renderable.roughnessTexture != core::Renderable::kInvalidHandle ||
+                         renderable.metallicTexture != core::Renderable::kInvalidHandle;
+    ImGui::BeginDisabled(!anyPaintable);
+    if (ImGui::Button("Stamp")) {
+        if (!painterReady_) {
+            std::string error;
+            painterReady_ = painter_.initialize(allocator_, device_, cmdPool_, queue_, error);
+            if (!painterReady_) paintStatusMessage_ = "Painter init failed: " + error;
+        }
+        if (painterReady_) {
+            std::string error;
+            int stamped = 0;
+            auto tryStamp = [&](uint32_t handle, glm::vec4 color) {
+                const core::Texture* texture = textureLibrary_->get(handle);
+                if (texture == nullptr) return;
+                if (painter_.stamp(*texture, paintUv_, paintRadius_, color, paintSoftness_, error)) ++stamped;
+            };
+            tryStamp(renderable.albedoTexture, paintAlbedoColor_);
+            // Real, stated brush-shape simplification: a flat "up"
+            // tangent-space normal, not sculpted bump detail -- see
+            // this section's own drawn header text and
+            // ComputePbrPainter.hpp's class comment.
+            tryStamp(renderable.normalTexture, glm::vec4(0.5f, 0.5f, 1.0f, 1.0f));
+            tryStamp(renderable.roughnessTexture,
+                     glm::vec4(paintRoughnessValue_, paintRoughnessValue_, paintRoughnessValue_, 1.0f));
+            tryStamp(renderable.metallicTexture,
+                     glm::vec4(paintMetallicValue_, paintMetallicValue_, paintMetallicValue_, 1.0f));
+            paintStatusMessage_ = "Stamped " + std::to_string(stamped) + " real texture(s) directly in GPU memory.";
+        }
+    }
+    ImGui::EndDisabled();
+    if (!anyPaintable) ImGui::TextDisabled("Create at least one paintable texture above first.");
+
+    if (!paintStatusMessage_.empty()) ImGui::TextDisabled("%s", paintStatusMessage_.c_str());
+}
+
 void MaterialPlugin::drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) {
     ImGui::Begin("Material Editor");
     drawPluginHeader("Material Editor");
@@ -156,6 +236,8 @@ void MaterialPlugin::drawPanel(core::ECS& ecs, core::EntityId selected, const st
     drawTextureSlot(Slot::Metallic, "Metallic", *renderable);
     drawTextureSlot(Slot::Roughness, "Roughness", *renderable);
     drawTextureSlot(Slot::AO, "Ambient Occlusion", *renderable);
+
+    drawComputePaintSection(*renderable);
 
     ImGui::Separator();
     bool canApplyAll = selectedEntities.size() > 1;

@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include <glm/glm.hpp>
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
@@ -41,9 +42,32 @@ public:
                                                    VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool,
                                                    VkQueue queue);
 
+    // Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite): a
+    // real sibling factory, NOT a retrofit of uploadPixels() above --
+    // see core::ComputePbrPainter's own class comment for why a compute
+    // shader needs a genuinely different image (VK_IMAGE_USAGE_STORAGE_BIT,
+    // real explicit layout transitions the painter manages around each
+    // dispatch) than every other Texture here, which is written once at
+    // upload time and never touched again. Always VK_FORMAT_R8G8B8A8_UNORM
+    // -- deliberately never _SRGB: the Vulkan spec does not mandate
+    // VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT support for sRGB formats (many
+    // real GPUs lack it), while plain UNORM storage-image support is
+    // guaranteed by the spec's own mandatory format table. A real,
+    // stated simplification for a first compute-paint pass: painted
+    // albedo colors are stored as raw UNORM values with no sRGB encode
+    // step, same "state the cut plainly" convention as this codebase's
+    // other real-but-simpler features. Ends in
+    // VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, cleared to `clearColor`
+    // -- immediately sampleable even before any real paint stroke, the
+    // same post-creation contract every other Texture factory here
+    // already guarantees.
+    [[nodiscard]] static Texture createStorageImage(int width, int height, glm::vec4 clearColor, VmaAllocator allocator,
+                                                      VkDevice device, VkCommandPool cmdPool, VkQueue queue);
+
     void destroy(VmaAllocator allocator, VkDevice device);
 
     [[nodiscard]] bool isValid() const { return image_ != VK_NULL_HANDLE; }
+    [[nodiscard]] VkImage image() const { return image_; }
     [[nodiscard]] VkImageView view() const { return view_; }
     [[nodiscard]] int width() const { return width_; }
     [[nodiscard]] int height() const { return height_; }

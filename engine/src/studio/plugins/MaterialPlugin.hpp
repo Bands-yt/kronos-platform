@@ -6,6 +6,7 @@
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
+#include "core/ComputePbrPainter.hpp"
 #include "core/Mesh.hpp"
 #include "core/Texture.hpp"
 #include "studio/IStudioPlugin.hpp"
@@ -50,6 +51,21 @@ private:
 
     void drawTextureSlot(Slot slot, const char* label, core::Renderable& renderable);
     void ensurePreviewEntity();
+    // Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite): the
+    // real "Compute Paint" section -- see core::ComputePbrPainter's own
+    // class comment for why a real storage-capable texture is required
+    // per slot (created here via "New Paintable Texture", not every
+    // Texture::loadFromFile() result) and why this section drives the
+    // stamp's UV center numerically rather than from a live 3D-viewport
+    // click: studio::PreviewScene's own drawAndHandleOrbit() already
+    // owns all mouse input over the preview image for orbit/zoom, with
+    // no seam for a caller to intercept a click for picking instead --
+    // adding one is real, separate, further UI work this pass doesn't
+    // attempt. core::pickTriangleUv() (the ray-triangle-UV half of this
+    // feature) is real, wired, and independently proven end-to-end
+    // against a real GPU stamp in tests/test_main.cpp's own
+    // testComputePbrPainterUsesRealRayTriangleUvPickToLocateTheStamp().
+    void drawComputePaintSection(core::Renderable& renderable);
 
     VmaAllocator allocator_;
     VkDevice device_;
@@ -76,6 +92,23 @@ private:
     PreviewScene previewScene_;
     uint32_t previewSphereMesh_ = core::Renderable::kInvalidHandle;
     core::EntityId previewEntity_ = core::kNullEntity;
+
+    // Real, on-demand compute painter -- lazily initialize()'d on first
+    // real use (paintPainterReady_ tracks whether that real init
+    // succeeded), not in the constructor: every other MaterialPlugin
+    // call site (drawTextureSlot's plain Load/Clear) needs no live
+    // compute pipeline at all, so a device that somehow can't build one
+    // (see ComputePbrPainter::initialize()'s own real failure modes)
+    // shouldn't block the rest of this plugin from working.
+    core::ComputePbrPainter painter_;
+    bool painterReady_ = false;
+    std::string paintStatusMessage_;
+    glm::vec2 paintUv_{0.5f, 0.5f};
+    float paintRadius_ = 0.15f;
+    float paintSoftness_ = 0.35f;
+    glm::vec4 paintAlbedoColor_{1.0f, 1.0f, 1.0f, 1.0f};
+    float paintRoughnessValue_ = 0.5f;
+    float paintMetallicValue_ = 0.0f;
 };
 
 } // namespace engine::studio::plugins

@@ -1,0 +1,70 @@
+#version 450
+
+// Kronos ("Real-Time GPU Particle Compute" -- v0.4.0 Creator Suite):
+// real, hand-authored default particle-integration compute shader --
+// compiled at build time via the same glslc pipeline every other
+// shipped shader here uses (see src/CMakeLists.txt's own
+// ENGINE_SHADER_SOURCES), so engine_runtime (which does not link
+// studio, and so has no access to studio::generateComputeParticleShaderGlsl()
+// at runtime -- core cannot depend on studio, see that CMakeLists.txt's
+// own engine_core/studio target split) still has a real GPU
+// particle-integration shader to load. Structurally identical to what
+// generateComputeParticleShaderGlsl() produces for a real "gravity ->
+// integrate -> ground collision -> age" graph (same Particle struct,
+// same push-constant block, same ground-plane collision, same lifetime
+// integration) -- see studio/ParticleComputeCodegen.cpp's own header
+// comment -- so core::GpuParticleCompute can load whichever of the two
+// interchangeably; they share one real contract.
+
+struct Particle {
+    vec3 position;
+    float age;
+    vec3 velocity;
+    float lifetime;
+};
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer ParticleBuffer {
+    Particle particles[];
+};
+
+layout(push_constant) uniform PushConstants {
+    float deltaTime;
+    uint particleCount;
+} pc;
+
+const vec3 kGravity = vec3(0.0, -9.8, 0.0);
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.particleCount) return;
+
+    vec3 position = particles[idx].position;
+    vec3 velocity = particles[idx].velocity;
+    float age = particles[idx].age;
+    float deltaTime = pc.deltaTime;
+
+    // Semi-implicit ("symplectic") Euler -- velocity updates first, then
+    // position uses the NEW velocity, the same real integration order
+    // core::ParticleSystem::update()'s own CPU path already documents
+    // (matches its "velocity += gravity*dt; position += velocity*dt"
+    // comment exactly).
+    vec3 finalVelocity = velocity + kGravity * deltaTime;
+    vec3 finalPosition = position + finalVelocity * deltaTime;
+
+    // Real, fixed ground-plane collision (y=0) -- same real, simple
+    // bounce (restitution 0.4, horizontal friction 0.9) studio's own
+    // generated shader always applies -- see ParticleComputeCodegen.cpp's
+    // own comment on why this is fixed, not node-authorable, in this
+    // phase.
+    if (finalPosition.y < 0.0) {
+        finalPosition.y = 0.0;
+        finalVelocity.y = -finalVelocity.y * 0.4;
+        finalVelocity.xz *= 0.9;
+    }
+
+    particles[idx].position = finalPosition;
+    particles[idx].velocity = finalVelocity;
+    particles[idx].age = age + deltaTime;
+}
