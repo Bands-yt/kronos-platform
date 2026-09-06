@@ -30,6 +30,8 @@ set(ENGINE_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/glass.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle_compute.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/stamp_texture.comp
 )
 set(ENGINE_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${ENGINE_SHADER_OUTPUT_DIR})
@@ -108,6 +110,10 @@ add_library(engine_core STATIC
     core/UIRenderer.cpp
     core/UILayout.cpp
     core/ScriptUiLayoutApi.cpp
+    core/AudioDspGraph.cpp
+    core/PhonemeLipSync.cpp
+    core/GpuParticleCompute.cpp
+    core/ComputePbrPainter.cpp
     core/CppHotReloadHost.cpp
     core/MeshUvPicking.cpp
     core/RayTracingScene.cpp

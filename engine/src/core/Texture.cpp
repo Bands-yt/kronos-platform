@@ -200,6 +200,90 @@ Texture Texture::createFromPixels(const uint8_t* rgba, int width, int height, bo
     return uploadPixels(rgba, width, height, srgb, allocator, device, cmdPool, queue);
 }
 
+Texture Texture::createStorageImage(int width, int height, glm::vec4 clearColor, VmaAllocator allocator, VkDevice device,
+                                     VkCommandPool cmdPool, VkQueue queue) {
+    Texture result;
+    // Deliberately UNORM, never _SRGB -- see this method's own header
+    // comment in Texture.hpp.
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+
+    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = format;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo imageAllocInfo{};
+    imageAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    if (vmaCreateImage(allocator, &imageInfo, &imageAllocInfo, &result.image_, &result.allocation_, nullptr) != VK_SUCCESS) {
+        logError("Texture", "createStorageImage: vmaCreateImage failed.");
+        return Texture{};
+    }
+
+    VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmdAllocInfo.commandPool = cmdPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device, &cmdAllocInfo, &cmd) != VK_SUCCESS) {
+        logError("Texture", "createStorageImage: vkAllocateCommandBuffers failed.");
+        vmaDestroyImage(allocator, result.image_, result.allocation_);
+        return Texture{};
+    }
+
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    transitionImageLayout(cmd, result.image_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_ACCESS_2_NONE, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT);
+
+    VkClearColorValue clearValue{};
+    clearValue.float32[0] = clearColor.r;
+    clearValue.float32[1] = clearColor.g;
+    clearValue.float32[2] = clearColor.b;
+    clearValue.float32[3] = clearColor.a;
+    VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cmd, result.image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearValue, 1, &range);
+
+    transitionImageLayout(cmd, result.image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(queue); // one-shot, synchronous -- same tradeoff uploadPixels() above makes
+
+    vkFreeCommandBuffers(device, cmdPool, 1, &cmd);
+
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = result.image_;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(device, &viewInfo, nullptr, &result.view_) != VK_SUCCESS) {
+        logError("Texture", "createStorageImage: vkCreateImageView failed.");
+        vmaDestroyImage(allocator, result.image_, result.allocation_);
+        return Texture{};
+    }
+
+    result.width_ = width;
+    result.height_ = height;
+    return result;
+}
+
 void Texture::destroy(VmaAllocator allocator, VkDevice device) {
     if (view_ != VK_NULL_HANDLE) {
         vkDestroyImageView(device, view_, nullptr);

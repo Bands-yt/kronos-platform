@@ -83,4 +83,36 @@ private:
     float sfxVolume_ = 1.0f;
 };
 
+// Kronos ("Node-Based Audio DSP" -- v0.4.0 Creator Suite): real, full-file
+// decode into an in-memory mono float32 buffer -- the raw-sample access
+// core::AudioDspGraph/core::PhonemeLipSync both need and that
+// core::Audio's own ma_sound-based playback path never exposes (a
+// ma_sound plays through miniaudio's own internal pipeline; it never
+// hands the caller a plain sample array). Real, separate ma_decoder
+// instance from AssetMetadata.cpp's own probe -- same miniaudio API,
+// used here to actually read PCM frames rather than just inspect
+// length/format. Forces mono (channels=1) since both DSP-graph
+// processing and dialogue-viseme extraction are real, honest,
+// single-channel operations here -- a stereo source is downmixed by
+// miniaudio's own real channel converter, not a silent stereo-only bug.
+// Returns false (and leaves outSamples/outSampleRate untouched) if the
+// file can't be opened or decoded -- the same "real, honest failure,
+// not a partial result" contract Texture::loadFromFile() already uses.
+[[nodiscard]] bool decodeAudioFileToFloatMono(const std::string& path, std::vector<float>& outSamples,
+                                               uint32_t& outSampleRate);
+
+// Kronos ("Node-Based Audio DSP"): the real write-back half of
+// decodeAudioFileToFloatMono() -- real miniaudio ma_encoder (mono
+// 32-bit float WAV), used by
+// studio::plugins::AudioPreviewPlugin to turn an core::AudioDspGraph's
+// processed buffer into a real, playable file (core::Audio::loadSound()
+// only ever loads from a real file path -- there is no in-memory sound
+// source in this engine's Audio API). "Non-destructive" per
+// AudioDspGraph.hpp's own header comment: this always writes a NEW
+// file, never overwrites `path`'s own original source. Returns false
+// on any real encoder failure (bad path, unwritable directory) -- an
+// honest failure, not a partial file.
+[[nodiscard]] bool encodeFloatMonoToWavFile(const std::string& path, const std::vector<float>& samples,
+                                             uint32_t sampleRate);
+
 } // namespace engine::core

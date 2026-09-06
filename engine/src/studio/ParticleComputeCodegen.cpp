@@ -189,8 +189,30 @@ ParticleComputeCodegenResult generateComputeParticleShaderGlsl(const ParticleCom
     out << "    float age = particles[idx].age;\n";
     out << "    float deltaTime = pc.deltaTime;\n\n";
     out << body.str();
-    out << "\n    particles[idx].position = " << newPositionVar << ";\n";
-    out << "    particles[idx].velocity = " << newVelocityVar << ";\n";
+    out << "\n    vec3 finalPosition = " << newPositionVar << ";\n";
+    out << "    vec3 finalVelocity = " << newVelocityVar << ";\n\n";
+    // Kronos ("Real-Time GPU Particle Compute" -- "collisions"): a real,
+    // fixed ground-plane collision (y=0), always applied after the
+    // graph's own real math -- not node-authorable in this phase (no
+    // ParticleNodeKind exists for it, see ParticleComputeGraph.hpp's own
+    // header comment on this phase's bounded node set). Real, simple
+    // bounce: restitution 0.4 damps the vertical rebound, 0.9 horizontal
+    // friction damps sliding -- a real, useful default, not a
+    // general-purpose collision system (no arbitrary collider shapes,
+    // no scene geometry query).
+    out << "    if (finalPosition.y < 0.0) {\n";
+    out << "        finalPosition.y = 0.0;\n";
+    out << "        finalVelocity.y = -finalVelocity.y * 0.4;\n";
+    out << "        finalVelocity.xz *= 0.9;\n";
+    out << "    }\n\n";
+    out << "    particles[idx].position = finalPosition;\n";
+    out << "    particles[idx].velocity = finalVelocity;\n";
+    // Real, fixed lifetime integration -- also always applied, same
+    // "not node-authorable in this phase" reasoning as the ground
+    // collision above: every particle ages by real deltaTime every
+    // dispatch regardless of what the graph itself computes, matching
+    // core::ParticleSystem::update()'s own CPU-side `age += dt`.
+    out << "    particles[idx].age = age + deltaTime;\n";
     out << "}\n";
 
     result.success = true;

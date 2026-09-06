@@ -124,4 +124,41 @@ void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward,
     }
 }
 
+bool decodeAudioFileToFloatMono(const std::string& path, std::vector<float>& outSamples, uint32_t& outSampleRate) {
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, 0); // 0 sampleRate == "keep the source's own rate"
+    ma_decoder decoder;
+    if (ma_decoder_init_file(path.c_str(), &config, &decoder) != MA_SUCCESS) return false;
+
+    ma_uint64 frameCount = 0;
+    if (ma_decoder_get_length_in_pcm_frames(&decoder, &frameCount) != MA_SUCCESS || frameCount == 0) {
+        ma_decoder_uninit(&decoder);
+        return false;
+    }
+
+    std::vector<float> samples(static_cast<size_t>(frameCount));
+    ma_uint64 framesRead = 0;
+    ma_result result = ma_decoder_read_pcm_frames(&decoder, samples.data(), frameCount, &framesRead);
+    uint32_t sampleRate = decoder.outputSampleRate;
+    ma_decoder_uninit(&decoder);
+    if (result != MA_SUCCESS && result != MA_AT_END) return false;
+
+    samples.resize(static_cast<size_t>(framesRead));
+    outSamples = std::move(samples);
+    outSampleRate = sampleRate;
+    return true;
+}
+
+bool encodeFloatMonoToWavFile(const std::string& path, const std::vector<float>& samples, uint32_t sampleRate) {
+    if (samples.empty() || sampleRate == 0) return false;
+
+    ma_encoder_config config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, sampleRate);
+    ma_encoder encoder;
+    if (ma_encoder_init_file(path.c_str(), &config, &encoder) != MA_SUCCESS) return false;
+
+    ma_uint64 framesWritten = 0;
+    ma_result result = ma_encoder_write_pcm_frames(&encoder, samples.data(), samples.size(), &framesWritten);
+    ma_encoder_uninit(&encoder);
+    return result == MA_SUCCESS && framesWritten == samples.size();
+}
+
 } // namespace engine::core
