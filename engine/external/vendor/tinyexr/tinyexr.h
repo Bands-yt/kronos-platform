@@ -7318,7 +7318,14 @@ typedef struct {
   unsigned char pad[3];
 } ChannelInfo;
 
-typedef struct {
+// Kronos: named (not anonymous) so the member function below is legal --
+// MSVC's conformance mode (error C7626) rejects a member function (only
+// data members/enums/nested classes are allowed) inside an unnamed
+// struct hiding behind a typedef; GCC/Clang silently accept the
+// non-standard extension, which is why this only ever broke Windows
+// builds. Naming the struct and dropping the typedef is behaviorally
+// identical in C++ (HeaderInfo is already a usable type name either way).
+struct HeaderInfo {
   std::vector<tinyexr::ChannelInfo> channels;
   std::vector<EXRAttribute> attributes;
 
@@ -7370,7 +7377,7 @@ typedef struct {
     header_len = 0;
     compression_type = 0;
   }
-} HeaderInfo;
+};
 
 static bool ReadChannelInfo(std::vector<ChannelInfo> &channels,
                             const std::vector<unsigned char> &data) {
