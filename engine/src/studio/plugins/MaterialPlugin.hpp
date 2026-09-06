@@ -7,6 +7,7 @@
 #include <vk_mem_alloc.h>
 
 #include "core/ComputePbrPainter.hpp"
+#include "core/EditableMesh.hpp"
 #include "core/Mesh.hpp"
 #include "core/Texture.hpp"
 #include "studio/IStudioPlugin.hpp"
@@ -55,17 +56,37 @@ private:
     // real "Compute Paint" section -- see core::ComputePbrPainter's own
     // class comment for why a real storage-capable texture is required
     // per slot (created here via "New Paintable Texture", not every
-    // Texture::loadFromFile() result) and why this section drives the
-    // stamp's UV center numerically rather than from a live 3D-viewport
-    // click: studio::PreviewScene's own drawAndHandleOrbit() already
-    // owns all mouse input over the preview image for orbit/zoom, with
-    // no seam for a caller to intercept a click for picking instead --
-    // adding one is real, separate, further UI work this pass doesn't
-    // attempt. core::pickTriangleUv() (the ray-triangle-UV half of this
-    // feature) is real, wired, and independently proven end-to-end
-    // against a real GPU stamp in tests/test_main.cpp's own
+    // Texture::loadFromFile() result). The UV center is still shown and
+    // adjustable numerically here (a live-viewport click, wired below in
+    // drawPanel() via previewScene_.consumeClickRay(), writes into this
+    // same paintUv_ and immediately stamps -- see handleViewportPickPaint()),
+    // so the slider stays the way to fine-tune or replay a stamp without
+    // needing to click again. core::pickTriangleUv() (the ray-triangle-UV
+    // half of this feature) is real, wired, and independently proven
+    // end-to-end against a real GPU stamp in tests/test_main.cpp's own
     // testComputePbrPainterUsesRealRayTriangleUvPickToLocateTheStamp().
     void drawComputePaintSection(core::Renderable& renderable);
+    // The real stamp dispatch -- one core::ComputePbrPainter::stamp()
+    // call per existing paintable slot at `uv`, using this plugin's own
+    // current paint*_ color/radius/softness settings. Shared by both the
+    // "Compute Paint" section's own Stamp button (uv = paintUv_, unchanged)
+    // and handleViewportPickPaint()'s live click-to-paint (uv = the real
+    // pickTriangleUv() hit), so a click paints exactly the same four real
+    // PBR channels a manual Stamp click always has.
+    void stampAllSlots(core::Renderable& renderable, glm::vec2 uv);
+    // Kronos ("Vulkan Compute PBR Painter" -- live viewport picking):
+    // consumes previewScene_'s pending click ray (if any -- see
+    // studio::PreviewScene::consumeClickRay()'s own comment), ray-tests
+    // it against previewPickMesh_ (the CPU-retained twin of
+    // previewSphereMesh_ -- same radius/halfHeight, see that member's
+    // comment), and on a real hit updates paintUv_ to the picked UV and
+    // stamps immediately via stampAllSlots(). previewEntity_ carries no
+    // Transform component (see ensurePreviewEntity()), so the sphere sits
+    // at the identity transform and the ray from consumeClickRay() (already
+    // in the preview scene's own world space) needs no further
+    // world-to-local transform before testing against previewPickMesh_'s
+    // local-space vertices.
+    void handleViewportPickPaint(core::Renderable& renderable);
 
     VmaAllocator allocator_;
     VkDevice device_;
@@ -92,6 +113,16 @@ private:
     PreviewScene previewScene_;
     uint32_t previewSphereMesh_ = core::Renderable::kInvalidHandle;
     core::EntityId previewEntity_ = core::kNullEntity;
+    // Kronos ("Vulkan Compute PBR Painter" -- live viewport picking): the
+    // CPU-retained twin of previewSphereMesh_ above -- same
+    // radius=0.5/halfHeight=0.0 real exact-UV-sphere geometry (via the
+    // shared core::generateCapsuleGeometry() both Mesh::createCapsule()
+    // and EditableMesh::createCapsule() call), kept here purely so
+    // handleViewportPickPaint() has real triangle/UV data to ray-test
+    // against -- previewSphereMesh_ itself is GPU-only once uploaded
+    // (see core::Mesh's own class comment on why it retains no host-side
+    // vertex data).
+    core::EditableMesh previewPickMesh_ = core::EditableMesh::createCapsule(0.5f, 0.0f);
 
     // Real, on-demand compute painter -- lazily initialize()'d on first
     // real use (paintPainterReady_ tracks whether that real init

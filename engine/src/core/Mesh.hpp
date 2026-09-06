@@ -58,6 +58,15 @@ struct Vertex {
 // Mesh::uploadFromHost()'s automatic call for every procedural generator.
 void computeTangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
 
+// The pure vertex/index generation Mesh::createCapsule() uploads to the
+// GPU, factored out so core::EditableMesh::createCapsule() (CPU-only,
+// no Vulkan handles) can build the exact same geometry for real
+// ray-triangle picking against a live preview mesh (see
+// core::pickTriangleUv() and studio::plugins::MaterialPlugin's viewport
+// picking) instead of a second, drift-prone reimplementation.
+void generateCapsuleGeometry(float radius, float halfHeight, uint32_t radialSegments, uint32_t capRings,
+                              std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices);
+
 // A GPU-resident mesh: VMA-allocated, device-local vertex + index buffers,
 // uploaded once via a staging buffer. Procedurally generated here
 // (createBox/createPlane) -- real asset loading is

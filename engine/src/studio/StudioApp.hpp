@@ -94,13 +94,31 @@ namespace engine::studio {
 // behavior yet, only File > Open Project to load one explicitly.
 class StudioApp {
 public:
+    // Kronos ("Modular Executable Targets" -- v0.4.0 Creator Suite):
+    // which real plugin subset initialize() registers, driving the 4
+    // standalone studio/apps/*.cpp entry points (kronos_studio,
+    // kronos_3d_maker, kronos_movie_maker, kronos_audio). `Full` is the
+    // existing, unconditional "every first-party plugin" behavior
+    // (byte-identical code path to before this enum existed) -- the
+    // three narrow modes each register only the pair the v0.4.0 brief
+    // names for that app (correcting its "MeshCsgPlugin" to the real
+    // plugins::MeshCsgWindowPlugin, and its "AudioPreviewPlugin/DSPGraph"
+    // to just AudioPreviewPlugin -- core::AudioDspGraph already lives
+    // *inside* that one plugin, not as a separate plugin to register).
+    // See initialize()'s own .cpp comment for why plugins::MovieModePlugin
+    // specifically is always registered regardless of mode: DebugConsolePanel
+    // holds a hard, unconditional reference into it (ScriptCinematicApi),
+    // discovered while wiring this in -- not a plugin this feature could
+    // safely leave out of a narrower mode.
+    enum class StudioMode { Full, ThreeDMaker, MovieMaker, Audio };
+
     StudioApp();
     ~StudioApp();
 
     StudioApp(const StudioApp&) = delete;
     StudioApp& operator=(const StudioApp&) = delete;
 
-    [[nodiscard]] bool initialize();
+    [[nodiscard]] bool initialize(StudioMode mode = StudioMode::Full);
     void shutdown();
     void run();
 
@@ -516,6 +534,9 @@ private:
     bool initialized_ = false;
     // See lastInitError()'s own comment above.
     std::string lastInitError_;
+    // The mode initialize() was actually called with -- see StudioMode's
+    // own comment.
+    StudioMode mode_ = StudioMode::Full;
 };
 
 } // namespace engine::studio

@@ -100,6 +100,9 @@ void PreviewScene::drawAndHandleOrbit() {
         ImGui::Dummy(avail);
     }
 
+    ImVec2 imageOrigin = ImGui::GetItemRectMin();
+    ImVec2 imageSize = ImGui::GetItemRectSize();
+
     bool hovered = ImGui::IsItemHovered();
     if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         ImVec2 delta = ImGui::GetIO().MouseDelta;
@@ -110,9 +113,36 @@ void PreviewScene::drawAndHandleOrbit() {
         orbitDistance_ = std::clamp(orbitDistance_ - ImGui::GetIO().MouseWheel * 0.4f, kMinOrbitDistance, kMaxOrbitDistance);
     }
 
+    // Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite, live
+    // viewport picking): a plain click -- released without ImGui's own
+    // drag threshold ever being crossed, so this never fires as a side
+    // effect of an orbit drag's mouse-up -- records a real world-space
+    // ray built from camera_ *as it stood this frame, before the
+    // yaw/pitch/position update below*, matching exactly what the image
+    // the user just clicked on actually showed.
+    ImGuiIO& io = ImGui::GetIO();
+    bool releasedWithoutDrag = ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                                io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] <
+                                    io.MouseDragThreshold * io.MouseDragThreshold;
+    if (hovered && imageSize.x > 0.0f && imageSize.y > 0.0f && releasedWithoutDrag) {
+        ImVec2 mousePos = io.MousePos;
+        float ndcX = ((mousePos.x - imageOrigin.x) / imageSize.x) * 2.0f - 1.0f;
+        float ndcY = 1.0f - ((mousePos.y - imageOrigin.y) / imageSize.y) * 2.0f; // screen Y-down -> NDC Y-up
+        camera_.screenPointToRay(ndcX, ndcY, imageSize.x / imageSize.y, pendingClickOrigin_, pendingClickDirection_);
+        hasPendingClickRay_ = true;
+    }
+
     camera_.yawDegrees = orbitYawDegrees_;
     camera_.pitchDegrees = orbitPitchDegrees_;
     camera_.position = focusPoint_ - camera_.forward() * orbitDistance_;
+}
+
+bool PreviewScene::consumeClickRay(glm::vec3& outOrigin, glm::vec3& outDirection) {
+    if (!hasPendingClickRay_) return false;
+    outOrigin = pendingClickOrigin_;
+    outDirection = pendingClickDirection_;
+    hasPendingClickRay_ = false;
+    return true;
 }
 
 void PreviewScene::reset() {

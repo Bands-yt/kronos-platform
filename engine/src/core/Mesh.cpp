@@ -305,13 +305,15 @@ Mesh Mesh::createQuad(VmaAllocator allocator, VkDevice device, VkCommandPool cmd
     return mesh;
 }
 
-Mesh Mesh::createCapsule(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue, float radius,
-                          float halfHeight, uint32_t radialSegments, uint32_t capRings) {
+void generateCapsuleGeometry(float radius, float halfHeight, uint32_t radialSegments, uint32_t capRings,
+                              std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices) {
     radialSegments = std::max(3u, radialSegments);
     capRings = std::max(1u, capRings);
 
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
+    std::vector<Vertex>& vertices = outVertices;
+    std::vector<uint32_t>& indices = outIndices;
+    vertices.clear();
+    indices.clear();
 
     const uint32_t verticesPerRing = radialSegments + 1; // last vertex duplicates the first, for a clean UV seam
     const float twoPi = 6.28318530718f;
@@ -368,6 +370,13 @@ Mesh Mesh::createCapsule(VmaAllocator allocator, VkDevice device, VkCommandPool 
                                             base + s + 1, nextBase + s + 1, nextBase + s});
         }
     }
+}
+
+Mesh Mesh::createCapsule(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue, float radius,
+                          float halfHeight, uint32_t radialSegments, uint32_t capRings) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    generateCapsuleGeometry(radius, halfHeight, radialSegments, capRings, vertices, indices);
 
     Mesh mesh;
     (void)mesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices);

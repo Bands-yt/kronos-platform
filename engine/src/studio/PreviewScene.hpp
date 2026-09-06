@@ -78,6 +78,22 @@ public:
     // framerates.
     void drawAndHandleOrbit();
 
+    // Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite, live
+    // viewport picking): true exactly once, on the frame a plain
+    // (non-drag) left click landed on the preview image during the most
+    // recent drawAndHandleOrbit() call -- outOrigin/outDirection are the
+    // real world-space ray built from the orbit camera as it was *that*
+    // frame (see drawAndHandleOrbit()'s own comment for why). PreviewScene
+    // stays domain-agnostic here (no EditableMesh/painting knowledge of
+    // its own) -- it only hands back the ray; deciding what it hit
+    // (studio::plugins::MaterialPlugin's own core::pickTriangleUv() +
+    // core::ComputePbrPainter::stamp() call) is the caller's job, the
+    // same "PreviewScene owns the camera, the caller owns the content"
+    // split camera()'s own doc comment already establishes. Consuming
+    // (calling this) clears the pending flag, so one click is only ever
+    // delivered to the first caller that asks in a given frame.
+    [[nodiscard]] bool consumeClickRay(glm::vec3& outOrigin, glm::vec3& outDirection);
+
     [[nodiscard]] core::ECS& ecs() { return ecs_; }
 
     // Real, up-to-date (position/yaw/pitch recomputed at the end of every
@@ -136,6 +152,13 @@ private:
     float orbitDistance_ = 3.0f;
     static constexpr float kMinOrbitDistance = 0.5f;
     static constexpr float kMaxOrbitDistance = 15.0f;
+
+    // Backing state for consumeClickRay() -- set at most once per
+    // drawAndHandleOrbit() call, cleared the first time a caller
+    // consumes it (see that method's own comment).
+    bool hasPendingClickRay_ = false;
+    glm::vec3 pendingClickOrigin_{0.0f};
+    glm::vec3 pendingClickDirection_{0.0f, 0.0f, -1.0f};
 };
 
 } // namespace engine::studio
