@@ -5,10 +5,12 @@
 #include "core/Components.hpp"
 #include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
+#include "core/NativeFileDialog.hpp"
 #include "core/ObjLoader.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 
 namespace engine::studio::plugins {
@@ -38,6 +40,11 @@ ModelImporterPlugin::ModelImporterPlugin(VmaAllocator allocator, VkDevice device
                                            core::MeshLibrary& meshLibrary)
     : allocator_(allocator), device_(device), cmdPool_(cmdPool), queue_(queue), meshLibrary_(&meshLibrary) {}
 
+void ModelImporterPlugin::browseForFile() {
+    auto path = core::openFileDialog("Import 3D Asset", {"*.gltf", "*.glb", "*.obj", "*.fbx"});
+    if (path) std::snprintf(pathBuffer_, sizeof(pathBuffer_), "%s", path->c_str());
+}
+
 void ModelImporterPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
                                       const std::vector<core::EntityId>& /*selectedEntities*/) {
     ImGui::Begin("Model Importer");
@@ -47,6 +54,8 @@ void ModelImporterPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
                         "other entity.");
     ImGui::SetNextItemWidth(320.0f);
     ImGui::InputText("Path", pathBuffer_, sizeof(pathBuffer_));
+    ImGui::SameLine();
+    if (ImGui::Button("Browse...")) browseForFile();
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
         std::string path = pathBuffer_;

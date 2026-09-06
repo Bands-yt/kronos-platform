@@ -237,6 +237,8 @@ add_library(engine_core STATIC
     core/GoogleAuth.cpp
     core/CredentialStoreLinux.cpp
     core/CredentialStoreWindows.cpp
+    core/NativeFileDialogLinux.cpp
+    core/NativeFileDialogWindows.cpp
 
     core/UpdateCheck.cpp
     core/KronosApi.cpp

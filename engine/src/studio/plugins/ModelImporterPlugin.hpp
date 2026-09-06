@@ -36,6 +36,13 @@ public:
 
     void drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) override;
 
+    // Opens a real native file-open dialog (core::openFileDialog()) and
+    // fills pathBuffer_ on success -- called by the "Browse..." button
+    // here and by ViewportPanel's own "Import 3D Asset..." toolbar
+    // button, so that one skips straight to the dialog instead of just
+    // opening this panel.
+    void browseForFile();
+
 private:
     VmaAllocator allocator_;
     VkDevice device_;
