@@ -203,11 +203,13 @@ bool Application::initialize(const CreateInfo& info) {
     // Holds `*this` (always valid), so no ordering constraint the way
     // scriptWorldApi_ above has.
     scriptAvatarApi_ = std::make_unique<ScriptAvatarApi>(*this);
+    scriptUiLayoutApi_ = std::make_unique<ScriptUiLayoutApi>(scripting_);
     scripting_.setBindingsHook([this](lua_State* L) {
         scriptWorldApi_->registerInto(L);
         scriptNetworkApi_->registerInto(L);
         scriptChatApi_->registerInto(L);
         scriptUiApi_.registerInto(L);
+        scriptUiLayoutApi_->registerInto(L);
         // Must run after scriptWorldApi_->registerInto(L) above --
         // ScriptAvatarApi::registerInto() appends world.spawnPlayer onto
         // the `world` global table scriptWorldApi_ just created, it
@@ -604,6 +606,12 @@ bool Application::initialize(const CreateInfo& info) {
             // -- see ScriptUiApi.hpp's own header comment for why this
             // can't be a direct pass-through.
             scriptUiApi_.flushInto(uiRenderer_);
+            // Kronos ("Native Vector UI Engine"): the declarative
+            // sibling of the immediate-mode flush above -- real no-op
+            // when no Lua script has built a uiLayout tree (root() names
+            // no node, UIRenderer::drawLayoutTree() returns immediately;
+            // see ScriptUiLayoutApi.hpp's own class comment).
+            scriptUiLayoutApi_->renderInto(uiRenderer_, glm::vec2(static_cast<float>(window_.width()), static_cast<float>(window_.height())));
             uiRenderer_.drawText(sceneName, glm::vec2(24.0f, 24.0f), 1.3f, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
             uiRenderer_.drawText(sceneDetail, glm::vec2(24.0f, 54.0f), 0.75f, glm::vec4(0.85f, 0.85f, 0.9f, 1.0f));
 
@@ -1650,6 +1658,12 @@ bool Application::initialize(const CreateInfo& info) {
             // call in the camera-showcase HUD block above for why this is
             // a flush, not a direct pass-through.
             scriptUiApi_.flushInto(uiRenderer_);
+            // Kronos ("Native Vector UI Engine"): the declarative
+            // sibling of the immediate-mode flush above -- real no-op
+            // when no Lua script has built a uiLayout tree (root() names
+            // no node, UIRenderer::drawLayoutTree() returns immediately;
+            // see ScriptUiLayoutApi.hpp's own class comment).
+            scriptUiLayoutApi_->renderInto(uiRenderer_, glm::vec2(static_cast<float>(window_.width()), static_cast<float>(window_.height())));
             if (match.hasSelectedClass(tntWarsLocalPlayerId_)) {
                 tntwars::ClassStats stats = match.classTuning().statsFor(match.classOf(tntWarsLocalPlayerId_));
                 float health = match.health(tntWarsLocalPlayerId_);

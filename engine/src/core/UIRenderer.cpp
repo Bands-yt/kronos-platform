@@ -342,6 +342,25 @@ glm::vec2 UIRenderer::measureText(const std::string& text, float scale) const {
     return glm::vec2(maxWidth, lines * kGlyphHeightPx * scale * (lines > 1.0f ? 1.2f : 1.0f));
 }
 
+void UIRenderer::drawLayoutTree(const UILayoutTree& tree, int rootId, glm::vec2 screenOffset) {
+    const UINode* node = tree.findNode(rootId);
+    if (!node) return;
+
+    glm::vec2 topLeft = screenOffset + node->computedPosition;
+    switch (node->kind) {
+        case UINodeKind::Rect:
+            drawRect(topLeft, node->computedSize, node->resolvedColor);
+            break;
+        case UINodeKind::Text:
+            drawText(node->resolvedText, topLeft, node->textScale, node->resolvedColor);
+            break;
+        case UINodeKind::Container:
+            break; // pure layout grouping -- nothing of its own to paint
+    }
+
+    for (int childId : node->children) drawLayoutTree(tree, childId, screenOffset);
+}
+
 void UIRenderer::draw(VkCommandBuffer cmd, VkImageView /*targetView*/, VkExtent2D extent) {
     if (pipeline_ == VK_NULL_HANDLE || vertexData_.empty()) return;
 

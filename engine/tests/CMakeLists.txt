@@ -59,6 +59,8 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/RuntimeShaderCompiler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ShaderGraph.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ShaderGraphCodegen.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticleComputeGraph.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticleComputeCodegen.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine_core imgui::imgui)
 if(TARGET kronos::shaderc)
@@ -90,3 +92,45 @@ if(WIN32)
 endif()
 
 add_test(NAME engine_tests COMMAND engine_tests)
+
+# Kronos ("Logic Hot-Reloading" -- v0.4.0 Creator Suite): two real,
+# separate SHARED library targets implementing the exact same
+# CounterComponent-mutating IHotReloadableModule with two different real
+# behaviors (see hotreload_fixtures/CounterComponent.hpp's own comment).
+# core::CppHotReloadHost's own tests dlopen() these by their real built
+# path to prove an actual runtime code swap, not a simulated one.
+#
+# Deliberately linked against EnTT::EnTT/glm::glm directly (both real
+# header-only interface targets, see src/CMakeLists.txt's own
+# target_link_libraries(engine_core ...) list) rather than engine_core
+# itself: engine_core is a real static library built WITHOUT -fPIC (the
+# correct default for something only ever linked into the two real
+# executables), so linking its own .a into a SHARED target fails at
+# link time ("relocation ... can not be used when making a shared
+# object"). ECS.hpp/Components.hpp are themselves header-only against
+# entt+glm, so no compiled engine_core code is actually needed to
+# implement IHotReloadableModule here -- these two module .cpp files
+# get their own fresh, real -fPIC objects (CMake's own default for a
+# direct SHARED-target source), same effective ABI (same compiler, same
+# C++ standard, same entt/glm versions) as CppHotReloadHost.hpp's own
+# class comment requires, just without engine_core's non-PIC object
+# code along for the ride.
+add_library(hotreload_counter_module_v1 SHARED hotreload_fixtures/CounterModuleV1.cpp)
+target_include_directories(hotreload_counter_module_v1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(hotreload_counter_module_v1 PRIVATE EnTT::EnTT glm::glm)
+target_compile_features(hotreload_counter_module_v1 PRIVATE cxx_std_20)
+
+add_library(hotreload_counter_module_v2 SHARED hotreload_fixtures/CounterModuleV2.cpp)
+target_include_directories(hotreload_counter_module_v2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(hotreload_counter_module_v2 PRIVATE EnTT::EnTT glm::glm)
+target_compile_features(hotreload_counter_module_v2 PRIVATE cxx_std_20)
+
+# Real, absolute build-tree paths baked in as a #define -- same
+# convention src/CMakeLists.txt's own ENGINE_SHADER_DIR/ENGINE_ASSET_DIR
+# already establish for "a test needs to find a real build output/asset
+# by absolute path, not a guess at the working directory it happens to
+# be run from."
+target_compile_definitions(engine_tests PRIVATE
+    HOTRELOAD_MODULE_V1_PATH="$<TARGET_FILE:hotreload_counter_module_v1>"
+    HOTRELOAD_MODULE_V2_PATH="$<TARGET_FILE:hotreload_counter_module_v2>"
+)
