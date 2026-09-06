@@ -1273,11 +1273,75 @@ void RuntimeShell::drawHomePanel() {
                            "Kronos services are unreachable right now. Local / Dev games under Create still work.");
     }
 
+    drawToolManagerSection();
+
     endContentCanvas();
 
     // Modals are drawn outside the canvas so they centre on the whole
     // viewport rather than inside the content inset.
     drawAddFriendsModal();
+}
+
+namespace {
+// Kronos ("In-Player Tool Manager"): the real, single source of truth
+// for which component ids/exe names this app itself knows about --
+// deliberately kept in step BY HAND with installer/src/main.cpp's own
+// kComponents table (that project has zero dependency on engine_core,
+// see installer/CMakeLists.txt's own header comment, so it can't be a
+// shared header) rather than by any build-time link, same real
+// precedent installer/src/Sha256.hpp's own header comment already
+// documents for duplicating engine_core's SHA-256 implementation.
+struct ToolManagerEntry {
+    const char* componentId; // matches installer/src/main.cpp's ComponentSpec::id exactly
+    const char* label;
+    const char* exeNameLinux;
+    const char* exeNameWindows;
+};
+constexpr ToolManagerEntry kToolManagerEntries[] = {
+    {"studio", "Studio", "kronos_studio", "kronos_studio.exe"},
+    {"3d-tools", "3D Tools", "kronos_3d_maker", "kronos_3d_maker.exe"},
+    {"movie-mode", "Movie Mode", "kronos_movie_maker", "kronos_movie_maker.exe"},
+    {"audio", "Audio", "kronos_audio", "kronos_audio.exe"},
+};
+} // namespace
+
+void RuntimeShell::drawToolManagerSection() {
+    using namespace core::kronos_palette;
+
+    ImGui::Dummy(ImVec2(0.0f, 12.0f));
+    ImGui::SeparatorText("Kronos Tools");
+    ImGui::TextColored(paletteColor(kTextMuted), "Player is already running (this app). Install or update the "
+                                                  "rest of the Kronos Creator Suite below.");
+
+    std::filesystem::path exeDir(core::executableDirectory());
+    for (const ToolManagerEntry& entry : kToolManagerEntries) {
+#if defined(_WIN32)
+        const char* exeName = entry.exeNameWindows;
+#else
+        const char* exeName = entry.exeNameLinux;
+#endif
+        bool installed = std::filesystem::exists(exeDir / exeName);
+
+        ImGui::PushID(entry.componentId);
+        ImGui::BeginChild("##tool_row", ImVec2(0.0f, 40.0f), true);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(paletteColor(kTextBright), "%s", entry.label);
+        ImGui::SameLine();
+        ImGui::TextColored(installed ? paletteColor(kGreen) : paletteColor(kTextMuted),
+                            installed ? "Installed" : "Not installed");
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 96.0f);
+        pushPrimaryActionButtonColors();
+        if (ImGui::SmallButton(installed ? "Update" : "Install")) {
+            startComponentInstall(entry.componentId, entry.label);
+        }
+        popPrimaryActionButtonColors();
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+
+    if (!toolManagerStatusMessage_.empty()) {
+        ImGui::TextColored(paletteColor(kTextMuted), "%s", toolManagerStatusMessage_.c_str());
+    }
 }
 
 // Kronos ("Home Screen Friends Carousel"): the circular Add-Friends action
@@ -4012,6 +4076,34 @@ bool RuntimeShell::startUpdateDownload() {
     quitEvent.type = SDL_QUIT;
     SDL_PushEvent(&quitEvent);
     return true;
+}
+
+// Kronos ("In-Player Tool Manager"): see this method's own header
+// comment (RuntimeShell.hpp) for the real fire-and-forget/no-quit
+// contract -- this is the per-component analogue of
+// startUpdateDownload() just above, reusing the exact same
+// "kronos_installer lives next to this executable" resolution.
+void RuntimeShell::startComponentInstall(const std::string& componentId, const std::string& label) {
+    std::filesystem::path exeDir(core::executableDirectory());
+#if defined(_WIN32)
+    std::filesystem::path helper = exeDir / "kronos_installer.exe";
+#else
+    std::filesystem::path helper = exeDir / "kronos_installer";
+#endif
+
+    std::error_code ec;
+    if (!std::filesystem::exists(helper, ec)) {
+        toolManagerStatusMessage_ =
+            "The installer helper isn't installed next to Kronos -- reinstall Kronos to get it back.";
+        return;
+    }
+
+    std::vector<std::string> args = {"--install-components", componentId, "--install-dir", exeDir.string()};
+    if (!core::launchProcess(helper.string(), args)) {
+        toolManagerStatusMessage_ = "Could not start the installer for " + label + ".";
+        return;
+    }
+    toolManagerStatusMessage_ = "Opening the installer for " + label + "...";
 }
 
 void RuntimeShell::startGoogleSignIn() {

@@ -443,6 +443,26 @@ private:
     // or started -- the app then keeps running, unchanged.
     bool startUpdateDownload();
 
+    // Kronos ("In-Player Tool Manager"): the Home screen's own
+    // Creative-Cloud-style tools section -- draws Player/Studio/3D
+    // Tools/Movie Mode/Audio, each with a real installed/not-installed
+    // status (a plain file-existence check next to this process's own
+    // executable, refreshed every draw -- no separate polling/IPC
+    // needed since installComponentStatuses_ just re-stats on the next
+    // frame after a launched kronos_installer run actually finishes) and
+    // an Install/Update button.
+    void drawToolManagerSection();
+    // Spawns kronos_installer --install-components <componentId>
+    // --install-dir <exeDir> as a real, separate, fire-and-forget
+    // process (same core::launchProcess() this file's own
+    // startUpdateDownload() already uses) -- unlike that whole-app
+    // self-update path, THIS process never quits: kronos_installer pops
+    // up its own real progress window (see installer/src/main.cpp's own
+    // --install-components mode) while Player keeps running normally,
+    // and drawToolManagerSection() picks up the new binary the next time
+    // it re-stats the target path.
+    void startComponentInstall(const std::string& componentId, const std::string& label);
+
     core::Application& app_;
     std::function<core::EntityId()> spawnNetworkedPlayerEntity_;
     std::function<core::EntityId(glm::vec4 skinTone, core::HeadShape headShape, core::BodyProportions bodyProportions,
@@ -593,6 +613,11 @@ private:
     // offered again next launch, not silently forgotten forever.
     bool updateBannerDismissed_ = false;
     std::string updateStatusMessage_;
+    // Kronos ("In-Player Tool Manager"): real, honest feedback from the
+    // most recent Install/Update click -- not a progress percentage
+    // (kronos_installer's own popped-up window owns that), just enough
+    // to confirm the button click actually did something.
+    std::string toolManagerStatusMessage_;
 
     // --- Kronos backend state -------------------------------------------
     core::KronosApi kronosApi_;

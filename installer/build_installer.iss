@@ -58,7 +58,7 @@ AllowNoIcons=yes
 OutputDir=output
 OutputBaseFilename=KronosSetup
 SetupIconFile={#IconFile}
-UninstallDisplayIcon={app}\studio.exe
+UninstallDisplayIcon={app}\kronos_studio.exe
 UninstallDisplayName={#AppName}
 
 Compression=lzma2
@@ -72,17 +72,68 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
+; Kronos ("Installer Component Selection"): a real Inno Setup component
+; page -- "full" preselects every real component (the "or check All"
+; case), "custom" (Inno's own built-in iscustom type) lets a user
+; deselect individual ones. `core` is `Flags: fixed`: the shared
+; runtime files below (DLLs, shaders, assets, games, templates, docs,
+; plugins, KronosBootstrapper.exe/kronos_installer.exe) are needed by
+; every one of the 5 apps, so it can never be unchecked -- shown, not
+; hidden, so a user can see it's there and why.
+[Types]
+Name: "full"; Description: "Full installation (all tools)"
+Name: "custom"; Description: "Custom installation"; Flags: iscustom
+
+[Components]
+Name: "core"; Description: "Kronos Engine core files (required by every app below)"; Types: full custom; Flags: fixed
+Name: "player"; Description: "Player (game client, kronos:// launch links)"; Types: full custom
+Name: "studio"; Description: "Studio (full creator suite)"; Types: full custom
+Name: "tools3d"; Description: "3D Tools"; Types: full custom
+Name: "moviemode"; Description: "Movie Mode"; Types: full custom
+Name: "audio"; Description: "Audio"; Types: full custom
+
 [Files]
-; Everything cmake --install produced -- binaries, resolved DLLs,
-; shaders, assets, games, templates, docs, plugins. See this file's own
-; header comment for how to produce {#SourceDir} first.
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; Kronos ("Installer Component Selection"): each real per-app .exe is
+; tagged to its own real component, so unchecking e.g. "3D Tools" really
+; leaves kronos_3d_maker.exe out of the install rather than always
+; copying everything and just hiding a shortcut. `studio` installs BOTH
+; studio.exe (the legacy full-editor shell) and kronos_studio.exe (the
+; standalone Full-mode app this component's own shortcut/launch entry
+; below actually points at) -- both are real "Kronos Studio" under the
+; hood (see engine/src/CMakeLists.txt's own comment on why they share an
+; icon), and neither costs anything extra to include alongside the
+; other since both are already staged in {#SourceDir} either way.
+;
+; Everything else (resolved DLLs, shaders, assets, games, templates,
+; docs, plugins, the two installer/ helper .exes) is real shared
+; support every one of the 5 apps needs regardless of which are
+; selected -- tagged `core` (Flags: fixed, see [Components] above), not
+; duplicated per-component.
+Source: "{#SourceDir}\engine_runtime.exe"; DestDir: "{app}"; Components: player; Flags: ignoreversion
+Source: "{#SourceDir}\studio.exe"; DestDir: "{app}"; Components: studio; Flags: ignoreversion
+Source: "{#SourceDir}\kronos_studio.exe"; DestDir: "{app}"; Components: studio; Flags: ignoreversion
+Source: "{#SourceDir}\kronos_3d_maker.exe"; DestDir: "{app}"; Components: tools3d; Flags: ignoreversion
+Source: "{#SourceDir}\kronos_movie_maker.exe"; DestDir: "{app}"; Components: moviemode; Flags: ignoreversion
+Source: "{#SourceDir}\kronos_audio.exe"; DestDir: "{app}"; Components: audio; Flags: ignoreversion
+Source: "{#SourceDir}\KronosBootstrapper.exe"; DestDir: "{app}"; Components: core; Flags: ignoreversion
+Source: "{#SourceDir}\kronos_installer.exe"; DestDir: "{app}"; Components: core; Flags: ignoreversion
+Source: "{#SourceDir}\*.dll"; DestDir: "{app}"; Components: core; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Components: core; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\shaders\*"; DestDir: "{app}\shaders"; Components: core; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#SourceDir}\assets\*"; DestDir: "{app}\assets"; Components: core; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#SourceDir}\games\*"; DestDir: "{app}\games"; Components: core; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#SourceDir}\templates\*"; DestDir: "{app}\templates"; Components: core; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#SourceDir}\docs\*"; DestDir: "{app}\docs"; Components: core; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#SourceDir}\plugins\*"; DestDir: "{app}\plugins"; Components: core; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{group}\Kronos Studio"; Filename: "{app}\studio.exe"; WorkingDir: "{app}"
-Name: "{group}\Kronos"; Filename: "{app}\engine_runtime.exe"; WorkingDir: "{app}"
+Name: "{group}\Kronos"; Filename: "{app}\engine_runtime.exe"; WorkingDir: "{app}"; Components: player
+Name: "{group}\Kronos Studio"; Filename: "{app}\kronos_studio.exe"; WorkingDir: "{app}"; Components: studio
+Name: "{group}\Kronos 3D Tools"; Filename: "{app}\kronos_3d_maker.exe"; WorkingDir: "{app}"; Components: tools3d
+Name: "{group}\Kronos Movie Mode"; Filename: "{app}\kronos_movie_maker.exe"; WorkingDir: "{app}"; Components: moviemode
+Name: "{group}\Kronos Audio"; Filename: "{app}\kronos_audio.exe"; WorkingDir: "{app}"; Components: audio
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Kronos Studio"; Filename: "{app}\studio.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\Kronos"; Filename: "{app}\engine_runtime.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Components: player
 
 [Registry]
 ; kronos:// URI protocol -- HKCU (not HKLM/HKCR) so it needs no
@@ -96,9 +147,17 @@ Name: "{autodesktop}\Kronos Studio"; Filename: "{app}\studio.exe"; WorkingDir: "
 ; (installer/src/BootstrapperMain.cpp) that forwards the raw clicked
 ; URI (%1, unformatted) on to engine_runtime.exe as --kronos-uri=<uri>
 ; itself; this command line hands it the raw URI, not a pre-built flag.
-Root: HKCU; Subkey: "Software\Classes\kronos"; ValueType: string; ValueName: ""; ValueData: "URL:Kronos Protocol"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\kronos"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCU; Subkey: "Software\Classes\kronos\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\KronosBootstrapper.exe"" ""%1"""
+; Components: player -- the kronos:// scheme launches the game client
+; specifically (KronosBootstrapper.exe forwards straight to
+; engine_runtime.exe), so registering it when Player wasn't even
+; installed would point the whole OS at a binary that isn't there.
+Root: HKCU; Subkey: "Software\Classes\kronos"; ValueType: string; ValueName: ""; ValueData: "URL:Kronos Protocol"; Flags: uninsdeletekey; Components: player
+Root: HKCU; Subkey: "Software\Classes\kronos"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Components: player
+Root: HKCU; Subkey: "Software\Classes\kronos\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\KronosBootstrapper.exe"" ""%1"""; Components: player
 
 [Run]
-Filename: "{app}\studio.exe"; Description: "Launch Kronos Studio"; Flags: nowait postinstall skipifsilent unchecked
+; Kronos ("Installer Component Selection"): gated per-component so the
+; post-install launch checkbox only ever offers an app that was really
+; installed.
+Filename: "{app}\kronos_studio.exe"; Description: "Launch Kronos Studio"; Flags: nowait postinstall skipifsilent unchecked; Components: studio
+Filename: "{app}\engine_runtime.exe"; Description: "Launch Kronos"; Flags: nowait postinstall skipifsilent unchecked; Components: player
