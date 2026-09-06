@@ -136,6 +136,16 @@ public:
     [[nodiscard]] core::Camera& camera() { return camera_; }
     [[nodiscard]] const core::Camera& camera() const { return camera_; }
 
+    // The camera pose actually used to render the texture currently on
+    // screen (OffscreenTarget.hpp's own one-frame latency means that's
+    // last frame's camera_, not this frame's just-updated one). Every
+    // overlay (gizmo, selection highlight, grid, picking ray) projects
+    // through this instead of camera_ directly, so they line up with the
+    // displayed image instead of the one about to be rendered. Called
+    // from StudioApp's pre-pass callback right where it hands camera_ to
+    // drawSceneInto().
+    void snapshotRenderCamera() { renderCamera_ = camera_; }
+
     // What size (in pixels) this panel's content region was at the end of
     // the most recent draw() call -- what StudioApp resizes the
     // OffscreenTarget to before the *next* frame's scene render.
@@ -269,10 +279,19 @@ private:
     void drawGroundGridOverlay(ImVec2 imageOrigin, ImVec2 imageSize);
 
     core::Camera camera_;
+    // See snapshotRenderCamera()'s own comment. Default-constructed to
+    // the same values as camera_ so the very first frame (before any
+    // snapshot is taken) still matches.
+    core::Camera renderCamera_;
     bool dragging_ = false;
     VkExtent2D desiredExtent_{0, 0};
     GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
     GizmoSpace gizmoSpace_ = GizmoSpace::World;
+    // Adobe-style Beginner/Advanced toggle for the left tool column.
+    // Beginner hides gizmo-space + snap controls and the physics/debug-
+    // overlay rows entirely. Defaults true (Advanced) so nothing anyone's
+    // already using disappears without them choosing Beginner first.
+    bool advancedMode_ = true;
     // Kronos ("Studio Asset Drag-and-Drop"): see setPropSpawnMeshHandles()'s
     // own comment. propSpawnCount_ is this panel's own real, independent
     // counter (spawnPropAuthoring()'s own `spawnIndex` -> "Tree 3" naming)

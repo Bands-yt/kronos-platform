@@ -274,6 +274,13 @@ bool StudioApp::initialize(StudioMode mode) {
         renderer_.drawSceneInto(cmd, viewportTarget_.colorImage(), viewportTarget_.colorView(),
                                  viewportTarget_.depthImage(), viewportTarget_.depthView(), viewportTarget_.extent(),
                                  viewportPanel_.camera(), ecs_, meshLibrary_, particleSystem_, textureLibrary_);
+        // The texture this just rendered into is what viewportPanel_.draw()
+        // displays starting *next* frame (OffscreenTarget.hpp's own
+        // one-frame latency) -- snapshot the camera pose used for it now,
+        // so next frame's overlays (gizmo/highlight/grid/picking) project
+        // through the same pose the displayed image was actually rendered
+        // with, instead of whatever camera_ has moved to by then.
+        viewportPanel_.snapshotRenderCamera();
         renderer_.transitionImage(cmd, viewportTarget_.colorImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                    VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,

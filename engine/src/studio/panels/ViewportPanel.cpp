@@ -76,8 +76,8 @@ void ViewportPanel::drawGizmo(core::ECS& ecs, core::EntityId selected, const std
     ImGuizmo::SetDrawlist();
     ImGuizmo::SetRect(imageOrigin.x, imageOrigin.y, imageSize.x, imageSize.y);
 
-    glm::mat4 view = camera_.viewMatrix();
-    glm::mat4 proj = camera_.projectionMatrix(imageSize.x / imageSize.y);
+    glm::mat4 view = renderCamera_.viewMatrix();
+    glm::mat4 proj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y);
     glm::mat4 model = transform->matrix();
 
     ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
@@ -164,7 +164,7 @@ void ViewportPanel::drawSelectionHighlight(core::ECS& ecs, core::MeshLibrary& me
                                             ImVec2 imageSize) {
     if (selectedEntities.empty() || imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
 
-    glm::mat4 viewProj = camera_.projectionMatrix(imageSize.x / imageSize.y) * camera_.viewMatrix();
+    glm::mat4 viewProj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y) * renderCamera_.viewMatrix();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     // A real, deliberately different color from every gizmo axis color
     // (red/green/blue) and from ImGuizmo's own yellow hover highlight --
@@ -234,8 +234,8 @@ void ViewportPanel::computeMouseRay(ImVec2 mousePos, ImVec2 imageOrigin, ImVec2 
     float ndcX = ((mousePos.x - imageOrigin.x) / imageSize.x) * 2.0f - 1.0f;
     float ndcY = 1.0f - ((mousePos.y - imageOrigin.y) / imageSize.y) * 2.0f; // screen Y-down -> NDC Y-up
 
-    glm::mat4 proj = camera_.projectionMatrix(imageSize.x / imageSize.y);
-    glm::mat4 view = camera_.viewMatrix();
+    glm::mat4 proj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y);
+    glm::mat4 view = renderCamera_.viewMatrix();
     glm::mat4 invViewProj = glm::inverse(proj * view);
 
     // NDC z=0 is the near plane, z=1 the far plane -- this project's
@@ -324,8 +324,8 @@ void ViewportPanel::handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibra
             ImVec2 rectMin(std::min(dragSelectStart_.x, io.MousePos.x), std::min(dragSelectStart_.y, io.MousePos.y));
             ImVec2 rectMax(std::max(dragSelectStart_.x, io.MousePos.x), std::max(dragSelectStart_.y, io.MousePos.y));
 
-            glm::mat4 proj = camera_.projectionMatrix(imageSize.x / imageSize.y);
-            glm::mat4 view = camera_.viewMatrix();
+            glm::mat4 proj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y);
+            glm::mat4 view = renderCamera_.viewMatrix();
             glm::mat4 viewProj = proj * view;
 
             std::vector<core::EntityId> picked;
@@ -424,7 +424,7 @@ void ViewportPanel::drawCameraRailOverlay(plugins::MovieModePlugin& movieMode, I
     if (rail.pointCount() < 2) return;
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    glm::mat4 viewProj = camera_.projectionMatrix(imageSize.x / imageSize.y) * camera_.viewMatrix();
+    glm::mat4 viewProj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y) * renderCamera_.viewMatrix();
 
     auto projectLine = [&](glm::vec3 a, glm::vec3 b, ImU32 color, float thickness) {
         ImVec2 screenA, screenB;
@@ -534,7 +534,7 @@ void ViewportPanel::drawPhysicsDebugOverlay(core::ECS& ecs, plugins::PhysicsPrev
     if (imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    glm::mat4 viewProj = camera_.projectionMatrix(imageSize.x / imageSize.y) * camera_.viewMatrix();
+    glm::mat4 viewProj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y) * renderCamera_.viewMatrix();
 
     auto projectLine = [&](glm::vec3 a, glm::vec3 b, ImU32 color, float thickness) {
         ImVec2 screenA, screenB;
@@ -632,7 +632,7 @@ void ViewportPanel::drawGroundGridOverlay(ImVec2 imageOrigin, ImVec2 imageSize) 
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     float aspect = imageSize.x / imageSize.y;
-    glm::mat4 viewProj = camera_.projectionMatrix(aspect) * camera_.viewMatrix();
+    glm::mat4 viewProj = renderCamera_.projectionMatrix(aspect) * renderCamera_.viewMatrix();
 
     auto projectLine = [&](glm::vec3 a, glm::vec3 b, ImU32 color, float thickness) {
         ImVec2 screenA, screenB;
@@ -666,7 +666,7 @@ void ViewportPanel::drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& 
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     float aspect = imageSize.x / imageSize.y;
-    glm::mat4 viewProj = camera_.projectionMatrix(aspect) * camera_.viewMatrix();
+    glm::mat4 viewProj = renderCamera_.projectionMatrix(aspect) * renderCamera_.viewMatrix();
 
     auto projectLine = [&](glm::vec3 a, glm::vec3 b, ImU32 color, float thickness) {
         ImVec2 screenA, screenB;
@@ -898,123 +898,104 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     constexpr float kToolbarPadding = 6.0f;
     ImVec2 iconSize(kIconButtonSize, kIconButtonSize);
 
+    // Adobe-style persistent left tool column, not a horizontal bar --
+    // each control group stacks vertically (no SameLine() between
+    // groups) down the viewport's left edge. Beginner mode shows only
+    // Translate/Rotate/Scale + Add Primitive/Import; Advanced adds
+    // gizmo space + the three snap controls.
     ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 8.0f + kToolbarPadding, imageOrigin.y + 8.0f + kToolbarPadding));
     ImGui::BeginGroup();
     if (iconButton("gizmo_translate", Icon::Translate, iconSize, gizmoOperation_ == GizmoOperation::Translate,
                     "Translate (W)")) {
         gizmoOperation_ = GizmoOperation::Translate;
     }
-    ImGui::SameLine();
     if (iconButton("gizmo_rotate", Icon::Rotate, iconSize, gizmoOperation_ == GizmoOperation::Rotate, "Rotate (E)")) {
         gizmoOperation_ = GizmoOperation::Rotate;
     }
-    ImGui::SameLine();
     if (iconButton("gizmo_scale", Icon::Scale, iconSize, gizmoOperation_ == GizmoOperation::Scale, "Scale (R)")) {
         gizmoOperation_ = GizmoOperation::Scale;
     }
 
-    ImGui::SameLine();
-    ImGui::Dummy(ImVec2(6.0f, 0.0f));
-    ImGui::SameLine();
+    if (advancedMode_) {
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
 
-    bool worldSpace = gizmoSpace_ == GizmoSpace::World;
-    if (iconButton("gizmo_space", worldSpace ? Icon::WorldSpace : Icon::LocalSpace, iconSize, false,
-                    worldSpace ? "World Space (click for Local)" : "Local Space (click for World)")) {
-        gizmoSpace_ = worldSpace ? GizmoSpace::Local : GizmoSpace::World;
-    }
-    ImGui::SameLine();
-    ImGui::Dummy(ImVec2(6.0f, 0.0f));
-    ImGui::SameLine();
-
-    // Kronos ("Developer Velocity Sprint" -- "Grid & Rotation Snapping"):
-    // real, always-visible preset dropdowns (not swapped based on the
-    // currently-active gizmo operation the way the single free-form drag
-    // control used to be) -- Grid Snap and Angle Snap are independently
-    // toggleable and apply to Translate/Rotate respectively regardless
-    // of which one is currently selected, so switching gizmo modes never
-    // silently changes what's snapping.
-    if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_, gridSnapEnabled_ ? "Grid Snap On" : "Grid Snap Off")) {
-        gridSnapEnabled_ = !gridSnapEnabled_;
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(64.0f);
-    static constexpr float kGridSnapPresets[] = {0.25f, 1.0f, 5.0f};
-    char gridPresetLabel[16];
-    std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%.2fm", translateSnap_);
-    if (ImGui::BeginCombo("##grid_snap_preset", gridPresetLabel)) {
-        for (float preset : kGridSnapPresets) {
-            char label[16];
-            std::snprintf(label, sizeof(label), "%.2fm", preset);
-            bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
-            if (ImGui::Selectable(label, selected)) translateSnap_ = preset;
-            if (selected) ImGui::SetItemDefaultFocus();
+        bool worldSpace = gizmoSpace_ == GizmoSpace::World;
+        if (iconButton("gizmo_space", worldSpace ? Icon::WorldSpace : Icon::LocalSpace, iconSize, false,
+                        worldSpace ? "World Space (click for Local)" : "Local Space (click for World)")) {
+            gizmoSpace_ = worldSpace ? GizmoSpace::Local : GizmoSpace::World;
         }
-        ImGui::EndCombo();
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("Grid Snap increment (meters) -- how far Translate moves per step while Grid Snap is on.");
-    }
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
 
-    ImGui::SameLine();
-    ImGui::Dummy(ImVec2(6.0f, 0.0f));
-    ImGui::SameLine();
-
-    if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_, angleSnapEnabled_ ? "Angle Snap On" : "Angle Snap Off")) {
-        angleSnapEnabled_ = !angleSnapEnabled_;
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(64.0f);
-    static constexpr float kAngleSnapPresets[] = {15.0f, 45.0f, 90.0f};
-    char anglePresetLabel[16];
-    std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f%s", rotateSnapDegrees_, "\xc2\xb0"); // UTF-8 degree sign
-    if (ImGui::BeginCombo("##angle_snap_preset", anglePresetLabel)) {
-        for (float preset : kAngleSnapPresets) {
-            char label[16];
-            std::snprintf(label, sizeof(label), "%.0f%s", preset, "\xc2\xb0");
-            bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
-            if (ImGui::Selectable(label, selected)) rotateSnapDegrees_ = preset;
-            if (selected) ImGui::SetItemDefaultFocus();
+        // Grid Snap and Angle Snap are independently toggleable and apply
+        // to Translate/Rotate respectively regardless of which is
+        // currently selected, so switching gizmo modes never silently
+        // changes what's snapping.
+        if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_, gridSnapEnabled_ ? "Grid Snap On" : "Grid Snap Off")) {
+            gridSnapEnabled_ = !gridSnapEnabled_;
         }
-        ImGui::EndCombo();
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("Angle Snap increment (degrees) -- how far Rotate turns per step while Angle Snap is on.");
-    }
+        ImGui::SetNextItemWidth(kIconButtonSize);
+        static constexpr float kGridSnapPresets[] = {0.25f, 1.0f, 5.0f};
+        char gridPresetLabel[16];
+        std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%.2fm", translateSnap_);
+        if (ImGui::BeginCombo("##grid_snap_preset", gridPresetLabel)) {
+            for (float preset : kGridSnapPresets) {
+                char label[16];
+                std::snprintf(label, sizeof(label), "%.2fm", preset);
+                bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
+                if (ImGui::Selectable(label, selected)) translateSnap_ = preset;
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Grid Snap increment (meters) -- how far Translate moves per step while Grid Snap is on.");
+        }
 
-    ImGui::SameLine();
-    ImGui::Dummy(ImVec2(6.0f, 0.0f));
-    ImGui::SameLine();
-    if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_, scaleSnapEnabled_ ? "Scale Snap On" : "Scale Snap Off")) {
-        scaleSnapEnabled_ = !scaleSnapEnabled_;
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(60.0f);
-    ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("Scale Snap increment -- how far Scale changes per step while Scale Snap is on. Drag to adjust.");
+        if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_, angleSnapEnabled_ ? "Angle Snap On" : "Angle Snap Off")) {
+            angleSnapEnabled_ = !angleSnapEnabled_;
+        }
+        ImGui::SetNextItemWidth(kIconButtonSize);
+        static constexpr float kAngleSnapPresets[] = {15.0f, 45.0f, 90.0f};
+        char anglePresetLabel[16];
+        std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f%s", rotateSnapDegrees_, "\xc2\xb0"); // UTF-8 degree sign
+        if (ImGui::BeginCombo("##angle_snap_preset", anglePresetLabel)) {
+            for (float preset : kAngleSnapPresets) {
+                char label[16];
+                std::snprintf(label, sizeof(label), "%.0f%s", preset, "\xc2\xb0");
+                bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
+                if (ImGui::Selectable(label, selected)) rotateSnapDegrees_ = preset;
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Angle Snap increment (degrees) -- how far Rotate turns per step while Angle Snap is on.");
+        }
+
+        if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_, scaleSnapEnabled_ ? "Scale Snap On" : "Scale Snap Off")) {
+            scaleSnapEnabled_ = !scaleSnapEnabled_;
+        }
+        ImGui::SetNextItemWidth(kIconButtonSize);
+        ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Scale Snap increment -- how far Scale changes per step while Scale Snap is on. Drag to adjust.");
+        }
     }
 
     // Kronos ("Clean Viewport & Mesh Import Pipeline"): real "Import 3D
     // Asset..."/"Add Primitive" controls -- see setAssetTools()'s own
     // header comment for exactly which modes enable this row at all.
     if (showAssetTools_) {
-        ImGui::SameLine();
-        ImGui::Dummy(ImVec2(6.0f, 0.0f));
-        ImGui::SameLine();
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
 
         if (modelImporterPlugin_ != nullptr) {
-            if (ImGui::Button("Import 3D Asset...")) {
+            if (iconButton("import_asset", Icon::Folder, iconSize, false, "Import 3D Asset...")) {
                 modelImporterPlugin_->setOpen(true);
                 modelImporterPlugin_->browseForFile();
             }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-                ImGui::SetTooltip("Opens the Model Importer panel -- loads a real glTF 2.0 (.gltf/.glb), Wavefront "
-                                   ".obj, or FBX (.fbx) file onto a \"ModelPreview\" entity in this scene.");
-            }
-            ImGui::SameLine();
         }
 
-        if (ImGui::BeginCombo("##add_primitive", "Add Primitive", ImGuiComboFlags_NoArrowButton)) {
+        if (ImGui::BeginCombo("##add_primitive", "+", ImGuiComboFlags_NoArrowButton)) {
             // Real, honest fallback spawn point: 4m in front of the
             // camera, never below the y=0 ground grid -- so a repeated
             // "Add Primitive" click doesn't keep stacking every new shape
@@ -1069,6 +1050,15 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
             ImGui::EndCombo();
         }
     }
+
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    if (ImGui::SmallButton(advancedMode_ ? "Adv" : "Beg")) advancedMode_ = !advancedMode_;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip(advancedMode_ ? "Advanced mode -- click for Beginner (hides gizmo space, snap, and "
+                                           "debug-overlay controls)"
+                                         : "Beginner mode -- click for Advanced (adds gizmo space, snap, and "
+                                           "debug-overlay controls)");
+    }
     ImGui::EndGroup();
 
     ImVec2 groupMin = ImGui::GetItemRectMin();
@@ -1081,26 +1071,20 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     drawList->AddRect(bgMin, bgMax, ImGui::GetColorU32(ImGuiCol_Border), rounding);
     splitter.Merge(drawList);
 
-    // Tracks the bottom Y of whichever toolbar row was drawn most
-    // recently -- explicit state, not an implicit re-query of
-    // ImGui::GetItemRectMax() across a block boundary (which would
-    // silently start reflecting the wrong row's rect the moment any
-    // ImGui call happens in between).
-    float lastToolbarRowBottomY = bgMax.y;
+    // Advanced-only rows now sit to the RIGHT of the vertical tool
+    // column (not stacked beneath it -- the column is tall, so "beneath"
+    // would push these rows far down or off-screen). Same top Y as the
+    // column's own start.
+    float rightColumnX = bgMax.x + 6.0f;
+    float lastToolbarRowBottomY = imageOrigin.y + 8.0f;
 
-    // Physics debug-draw toolbar (task category 4) -- a second row, same
-    // left-anchored-then-measure-background technique as the gizmo
-    // toolbar above (see its own comment), stacked directly beneath it
-    // rather than right-anchored: right-anchoring would need this group's
-    // width known *before* laying it out, which immediate-mode doesn't
-    // give for free the way a fixed left start position does.
-    if (physicsPreview != nullptr) {
+    if (advancedMode_ && physicsPreview != nullptr) {
         ImDrawListSplitter splitter2;
         splitter2.Split(drawList, 2);
         splitter2.SetCurrentChannel(drawList, 1);
 
-        float row2Y = bgMax.y + 6.0f;
-        ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 8.0f + kToolbarPadding, row2Y + kToolbarPadding));
+        float row2Y = lastToolbarRowBottomY;
+        ImGui::SetCursorScreenPos(ImVec2(rightColumnX + kToolbarPadding, row2Y + kToolbarPadding));
         ImGui::BeginGroup();
         ImGui::TextUnformatted("Physics Debug:");
         ImGui::SameLine();
@@ -1128,21 +1112,21 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         drawList->AddRectFilled(bg2Min, bg2Max, ImGui::GetColorU32(ImGuiCol_WindowBg, 0.92f), rounding);
         drawList->AddRect(bg2Min, bg2Max, ImGui::GetColorU32(ImGuiCol_Border), rounding);
         splitter2.Merge(drawList);
-        lastToolbarRowBottomY = bg2Max.y;
+        lastToolbarRowBottomY = bg2Max.y + 6.0f;
     }
 
-    // Sprint 8 debug-overlay toolbar (task category 2) -- a third row,
-    // same technique as the two above, stacked beneath whichever of them
-    // was drawn most recently. Kronos ("Modular Executable Targets"):
-    // gated on showEngineDebugOverlays -- see that parameter's own header
-    // comment.
-    if (showEngineDebugOverlays) {
+    // Sprint 8 debug-overlay toolbar (task category 2) -- same
+    // right-of-column technique as the physics row above, stacked
+    // beneath it if drawn. Kronos ("Modular Executable Targets"): gated
+    // on showEngineDebugOverlays -- see that parameter's own header
+    // comment -- and now also on advancedMode_.
+    if (advancedMode_ && showEngineDebugOverlays) {
         ImDrawListSplitter splitter3;
         splitter3.Split(drawList, 2);
         splitter3.SetCurrentChannel(drawList, 1);
 
-        float row3Y = lastToolbarRowBottomY + 6.0f;
-        ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 8.0f + kToolbarPadding, row3Y + kToolbarPadding));
+        float row3Y = lastToolbarRowBottomY;
+        ImGui::SetCursorScreenPos(ImVec2(rightColumnX + kToolbarPadding, row3Y + kToolbarPadding));
         ImGui::BeginGroup();
         ImGui::TextUnformatted("Debug Overlays:");
         ImGui::SameLine();
