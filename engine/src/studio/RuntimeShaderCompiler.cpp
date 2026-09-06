@@ -48,8 +48,9 @@ RuntimeShaderCompiler::Result RuntimeShaderCompiler::compile(const std::string& 
     // SPIR-V then couldn't rely on the real feature set of.
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
 
-    shaderc_shader_kind kind =
-        stage == ShaderStage::Fragment ? shaderc_glsl_fragment_shader : shaderc_glsl_vertex_shader;
+    shaderc_shader_kind kind = shaderc_glsl_vertex_shader;
+    if (stage == ShaderStage::Fragment) kind = shaderc_glsl_fragment_shader;
+    else if (stage == ShaderStage::Compute) kind = shaderc_glsl_compute_shader;
     shaderc::SpvCompilationResult compiled =
         impl_->compiler.CompileGlslToSpv(glslSource, kind, debugName.c_str(), options);
 
