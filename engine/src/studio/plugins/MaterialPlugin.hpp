@@ -114,6 +114,18 @@ private:
     // world-to-local transform before testing against previewPickMesh_'s
     // local-space vertices.
     void handleViewportPickPaint(core::Renderable& renderable);
+    // Floating Radius/Strength/Albedo-swatch overlay drawn over the
+    // preview image itself (see drawViewportWindow()) plus its own F/
+    // Shift+F hotkeys.
+    void drawPaintHud(core::Renderable& renderable);
+    // A screen-space ring at the cursor, sized off paintRadius_ -- see
+    // its own comment for why this is a real, honest approximation, not
+    // a pixel-exact brush footprint.
+    void drawBrushCursorRing();
+    // Real mesh edges (previewPickMesh_.allEdges()) projected through
+    // the preview camera -- the same data handleViewportPickPaint()
+    // already ray-tests against.
+    void drawWireframeOverlay();
 
     VmaAllocator allocator_;
     VkDevice device_;
@@ -167,6 +179,7 @@ private:
     glm::vec4 paintAlbedoColor_{1.0f, 1.0f, 1.0f, 1.0f};
     float paintRoughnessValue_ = 0.5f;
     float paintMetallicValue_ = 0.0f;
+    bool showWireframe_ = false;
 };
 
 } // namespace engine::studio::plugins

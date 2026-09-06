@@ -104,7 +104,24 @@ void PreviewScene::drawAndHandleOrbit() {
     ImVec2 imageSize = ImGui::GetItemRectSize();
 
     bool hovered = ImGui::IsItemHovered();
-    if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+    imageHovered_ = hovered;
+    imageOrigin_ = imageOrigin;
+    imageSize_ = imageSize;
+
+    ImGuiIO& io0 = ImGui::GetIO();
+    // Ctrl+left-drag is a paint stroke (see dragPaintRay()'s own comment),
+    // not orbit -- a plain left-drag (no Ctrl) still orbits exactly as
+    // every other real PreviewScene consumer already expects.
+    ctrlDragPaintActive_ = hovered && io0.KeyCtrl && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                           imageSize.x > 0.0f && imageSize.y > 0.0f;
+    if (ctrlDragPaintActive_) {
+        ImVec2 mousePos = io0.MousePos;
+        float ndcX = ((mousePos.x - imageOrigin.x) / imageSize.x) * 2.0f - 1.0f;
+        float ndcY = 1.0f - ((mousePos.y - imageOrigin.y) / imageSize.y) * 2.0f;
+        camera_.screenPointToRay(ndcX, ndcY, imageSize.x / imageSize.y, dragPaintOrigin_, dragPaintDirection_);
+    }
+
+    if (hovered && !io0.KeyCtrl && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         ImVec2 delta = ImGui::GetIO().MouseDelta;
         orbitYawDegrees_ += delta.x * 0.4f;
         orbitPitchDegrees_ = std::clamp(orbitPitchDegrees_ - delta.y * 0.4f, -85.0f, 85.0f);
@@ -142,6 +159,13 @@ bool PreviewScene::consumeClickRay(glm::vec3& outOrigin, glm::vec3& outDirection
     outOrigin = pendingClickOrigin_;
     outDirection = pendingClickDirection_;
     hasPendingClickRay_ = false;
+    return true;
+}
+
+bool PreviewScene::dragPaintRay(glm::vec3& outOrigin, glm::vec3& outDirection) const {
+    if (!ctrlDragPaintActive_) return false;
+    outOrigin = dragPaintOrigin_;
+    outDirection = dragPaintDirection_;
     return true;
 }
 
