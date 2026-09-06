@@ -991,7 +991,7 @@ void StudioApp::drawDockspace() {
             if (showInspector()) ImGui::MenuItem("Inspector", nullptr, true, false);
             if (show3DViewport()) ImGui::MenuItem("Viewport", nullptr, true, false);
             if (showScriptEditor()) ImGui::MenuItem("Script Editor", nullptr, true, false);
-            ImGui::MenuItem("Stats", nullptr, true, false);
+            if (showStats()) ImGui::MenuItem("Stats", nullptr, true, false);
             if (showSceneTree()) ImGui::MenuItem("Scene Search", nullptr, true, false);
             // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
             // Performance Profiler"): unlike the disabled placeholders
@@ -1126,13 +1126,21 @@ void StudioApp::drawDockspace() {
             ImGui::DockBuilderDockWindow("PBR Texture Inspector", rightId);
             ImGui::DockBuilderDockWindow("Brush & Stamp", bottomId);
             ImGui::DockBuilderDockWindow("Viewport", centerId);
+            // MaterialPlugin's own live-preview-sphere window (also
+            // literally titled "3D Viewport", see MaterialPlugin.hpp's
+            // class comment) tabs in alongside the real scene Viewport
+            // here instead of floating loose on top of it -- same
+            // centerId, two tabs, real scene selection and isolated
+            // material preview one click apart.
+            ImGui::DockBuilderDockWindow("3D Viewport", centerId);
         } else if (mode_ == StudioMode::MovieMaker) {
             // "Wide Sequencer Timeline track view" (the brief's own
-            // wording) -- a much taller bottom split than Full's 0.28,
-            // and it alone spans the full width rather than sharing the
-            // row with anything else.
-            ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.26f, nullptr, &centerId);
+            // wording): split Down off the *whole* dockspace first, so
+            // bottomId spans the full width -- centerId (and the Right
+            // column split from it next) only ever covers the remaining
+            // top area above it, not the other way around.
             ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.4f, nullptr, &centerId);
+            ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.26f, nullptr, &centerId);
             ImGuiID rightBottomId = ImGui::DockBuilderSplitNode(rightId, ImGuiDir_Down, 0.66f, nullptr, &rightId);
             ImGuiID rightBottommostId =
                 ImGui::DockBuilderSplitNode(rightBottomId, ImGuiDir_Down, 0.5f, nullptr, &rightBottomId);
@@ -2128,7 +2136,7 @@ void StudioApp::run() {
             profiler_.recordFrame(lastPerformanceMetrics_.frameTimeMs, nowSeconds);
             profiler_.recordSnapshot(lastPerformanceMetrics_, nowSeconds);
         }
-        statsPanel_.draw(lastPerformanceMetrics_);
+        if (showStats()) statsPanel_.draw(lastPerformanceMetrics_);
         performanceOverlay_.draw(lastPerformanceMetrics_, (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying())
                                                                 ? &physicsPreviewPlugin_->scripting()
                                                                 : nullptr);

@@ -162,6 +162,14 @@ private:
     // Inspector, ...) already covers what that app actually needs to
     // edit -- same "Full only" gate as showSceneTree() above.
     [[nodiscard]] bool showInspector() const { return mode_ == StudioMode::Full; }
+    // Kronos (same follow-up: "show strictly [4 named panels]"): Stats is
+    // a generic renderer/process perf HUD, not named in any narrow mode's
+    // list either -- same Full-only gate as showInspector() above.
+    // Without this it wasn't stripped, it was made *worse*: the narrow
+    // DockBuilder layouts don't dock it anywhere, so an ungated draw()
+    // left it floating loose on top of the workspace instead of docked
+    // to a bottom row the way Full still has it.
+    [[nodiscard]] bool showStats() const { return mode_ == StudioMode::Full; }
     [[nodiscard]] bool showScriptEditor() const { return mode_ == StudioMode::Full; }
     [[nodiscard]] bool showDebugConsole() const { return mode_ == StudioMode::Full; }
     [[nodiscard]] bool showNetworkBar() const { return mode_ == StudioMode::Full; }
