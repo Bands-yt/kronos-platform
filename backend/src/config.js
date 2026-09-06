@@ -200,6 +200,14 @@ export const config = {
   minidumpStackwalkPath: process.env.MINIDUMP_STACKWALK_PATH || '',
   minidumpSymbolsDir: process.env.MINIDUMP_SYMBOLS_DIR || '',
 
+  // Web Download portal: the creator-tool desktop apps (Studio, 3D
+  // Maker, Movie Maker, Audio) are all published together as one real
+  // release -- there is no per-app version tracking in this pass, just
+  // this one string applied uniformly (see catalog/downloads.js's own
+  // comment). Distinct from githubReleasesRepo/download.js above, which
+  // is the separate GitHub-Releases-backed game-client installer.
+  desktopAppsVersion: process.env.DESKTOP_APPS_VERSION || 'v0.4.0-beta',
+
   // The Windows installer's real home: KronosSetup.exe (see
   // installer/build_installer.iss and
   // .github/workflows/build-windows-installer.yml) is attached to

@@ -20,3 +20,16 @@ export function chunkObjectKey(sha256Hex) {
 export function minidumpObjectKey(sha256Hex) {
   return `minidumps/${sha256Hex}.dmp`;
 }
+
+// Web Download portal: unlike packages/chunks/minidumps, a desktop app
+// build is NOT content-addressed by this backend -- it is built and
+// placed here by an out-of-band release process (same "does not live in
+// this repo or on this server by default" convention download.js's own
+// GitHub-Releases-backed installer already follows), so the key is
+// deterministic (app/platform/version) rather than hash-derived. The
+// real sha256 served in the manifest is computed server-side from
+// whatever is actually sitting at this key (see catalog/downloads.js) --
+// never trusted from the key or filename alone.
+export function installerObjectKey(app, platform, version) {
+  return `installers/${app}/${platform}/${version}.bin`;
+}
