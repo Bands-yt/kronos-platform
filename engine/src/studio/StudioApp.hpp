@@ -141,6 +141,102 @@ public:
     [[nodiscard]] NotificationCenter& notifications() { return notifications_; }
 
 private:
+    // Kronos ("Modular Executable Targets" -- dedicated workspace
+    // layouts): the real gate behind every "strip out Scene Tree/Script
+    // Editor/REPL Console/Network overlays" line in the v0.4.0 brief --
+    // one predicate per built-in dockspace panel the brief actually names,
+    // checked at each panel's draw() call site in run()/drawDockspace()
+    // rather than scattering `mode_ == StudioMode::...` comparisons across
+    // every call site directly. Deliberately narrow: only the panels the
+    // brief explicitly calls out for stripping are gated here -- Inspector/
+    // Stats/Scene Search aren't named in any mode's "Strip out" list, so
+    // they stay unconditional (same as Full) rather than being pruned on
+    // an inference the brief never actually states.
+    [[nodiscard]] bool showSceneTree() const { return mode_ == StudioMode::Full; }
+    // Kronos (same feature, follow-up: "Show strictly [4 named panels]"
+    // per narrow mode): Inspector is a generic per-component ECS editor
+    // (Transform/RigidBody/ParticleEmitter/... -- add/remove any
+    // component), not named in any narrow mode's own dedicated panel
+    // list, and each narrow mode's own real editing surface (Material
+    // Editor's color/metallic/roughness, MovieModePlugin's Clip
+    // Inspector, ...) already covers what that app actually needs to
+    // edit -- same "Full only" gate as showSceneTree() above.
+    [[nodiscard]] bool showInspector() const { return mode_ == StudioMode::Full; }
+    [[nodiscard]] bool showScriptEditor() const { return mode_ == StudioMode::Full; }
+    [[nodiscard]] bool showDebugConsole() const { return mode_ == StudioMode::Full; }
+    [[nodiscard]] bool showNetworkBar() const { return mode_ == StudioMode::Full; }
+    // Kronos Audio is the one mode whose own "Render only" list has no 3D
+    // Viewport entry at all (and its "Strip out" line names it
+    // explicitly) -- every other mode (including the two narrow ones,
+    // 3D Maker/Movie Maker) still needs the real scene view: 3D Maker has
+    // no Scene Tree to select entities from, so clicking in this panel is
+    // the only way to pick what MaterialPlugin's Material Editor/Brush &
+    // Stamp/PBR Texture Inspector windows edit; Movie Maker's own 4
+    // windows have no built-in scene view of their own at all.
+    [[nodiscard]] bool show3DViewport() const { return mode_ != StudioMode::Audio; }
+    // Kronos (same feature, follow-up: "Strip ... physics/terrain debug
+    // overlays"): gates ViewportPanel::draw()'s own third toolbar row
+    // (Bounds/Terrain Streaming/CSM Cascades) -- generic engine
+    // instrumentation, not named in any narrow mode's dedicated panel
+    // list. physicsPreviewPlugin_/terrainEditorPlugin_ are already
+    // nullptr in every narrow mode (never registered outside
+    // StudioMode::Full, see initialize()'s own mode-gated registration
+    // branch), so ViewportPanel's *other* two physics/terrain-specific UI
+    // blocks (its own `if (physicsPreview != nullptr)` toolbar section,
+    // and `debugContext.terrain`-gated streaming overlay) are already
+    // real no-ops there -- this predicate only covers the one row that
+    // wasn't already null-gated by a missing plugin pointer.
+    [[nodiscard]] bool showEngineDebugOverlays() const { return mode_ == StudioMode::Full; }
+    // Kronos (same follow-up: "Strip ... 'Plugins > World' ... Replace
+    // the generic top bar menu with tools exclusive to the running
+    // executable"): PluginManager::drawMenu() groups every *registered*
+    // plugin under its own category() (see IStudioPlugin.hpp) -- for a
+    // narrow mode that's normally just the one or two plugins that ARE
+    // the app (e.g. 3D Maker's own "Utility > Material Editor"), except
+    // plugins::MovieModePlugin is force-registered in every mode (see
+    // StudioMode's own header comment on why) and surfaces its own
+    // unrelated "Cinematics > Movie Mode" entry there even in 3D Maker/
+    // Audio, which is exactly the real "generic clutter" leak this gates.
+    // Narrow modes don't need this menu at all -- their one dedicated
+    // plugin is already forced open (see initialize()'s own per-mode
+    // setOpen(true) block) and docked by drawDockspace()'s own per-mode
+    // DockBuilder layout, so there's nothing left for a menu toggle to do.
+    [[nodiscard]] bool showPluginsMenu() const { return mode_ == StudioMode::Full; }
+
+    // Kronos (same feature, task 2 "App Branding"): the one real string
+    // behind the OS window title (already set in initialize(), before
+    // this existed), the top-bar header text drawDockspace() draws inside
+    // its own menu bar, and the Help menu's "About <name>" item/panel
+    // title -- three separate call sites that all used to hardcode
+    // "Kronos Studio" regardless of mode_.
+    [[nodiscard]] const char* brandName() const {
+        switch (mode_) {
+            case StudioMode::ThreeDMaker: return "Kronos 3D Maker";
+            case StudioMode::MovieMaker: return "Kronos Movie Maker";
+            case StudioMode::Audio: return "Kronos Audio";
+            case StudioMode::Full: default: return "Kronos Studio";
+        }
+    }
+
+    // Kronos (same feature): every standalone app's own on-disk ImGui
+    // dock/window-position cache. ImGui defaults io.IniFilename to the
+    // fixed literal "imgui.ini" in the process's own CWD -- with all 4
+    // targets typically launched from the same install directory, that
+    // one file would be shared and clobbered across them, so e.g.
+    // launching 3D Maker and then Studio would make Studio silently
+    // inherit 3D Maker's narrow layout (DockBuilder's own first-launch
+    // rebuild in drawDockspace() only fires when DockBuilderGetNode()
+    // finds no existing node for its ID -- a stale, wrong-shaped layout
+    // loaded from another app's .ini still counts as "existing"). Kept as
+    // a real member (not a local/static in initImGuiVulkanBackend()) since
+    // ImGuiIO::IniFilename is a raw `const char*` ImGui holds onto for the
+    // rest of the context's lifetime -- it must point at storage that
+    // outlives that call. `studio`/`kronos_studio` (StudioMode::Full) keep
+    // the original bare "imgui.ini" name so nobody's existing saved layout
+    // from before this feature moves or resets.
+    std::string iniFilename_ = "imgui.ini";
+
+
     void beginFrame();
     void drawDockspace();
     void endFrame();

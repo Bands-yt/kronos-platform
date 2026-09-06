@@ -29,6 +29,20 @@ namespace engine::studio::plugins {
 // category Roblox Studio and various third-party plugins ship, not a
 // copy of either -- see AnimatorPlugin.hpp's header note on why that
 // distinction matters for this engine specifically.
+//
+// Kronos ("Modular Executable Targets" -- kronos_3d_maker's own dedicated
+// workspace): drawPanel() now Begin()/End()s 4 separate, independently
+// dockable ImGui windows instead of one -- "3D Viewport" (the live
+// preview scene, now full-size instead of a small embedded child),
+// "Material Editor" (the base PBR property sliders + presets --
+// deliberately not renamed to the v0.4.0 brief's own "Material & Layer
+// Stack": there is no real multi-layer texture compositing system in
+// this codebase, and calling this panel that without one would claim a
+// capability that doesn't exist), "PBR Texture Inspector" (the texture
+// slot list), and "Brush & Stamp" (the compute-paint controls). All 4
+// still toggle together under this one plugin's own isOpen() (the
+// Plugins menu has one "Material Editor" entry, not four) -- splitting
+// the *window*, not the plugin identity.
 class MaterialPlugin final : public IStudioPlugin {
 public:
     MaterialPlugin(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
@@ -52,6 +66,19 @@ private:
 
     void drawTextureSlot(Slot slot, const char* label, core::Renderable& renderable);
     void ensurePreviewEntity();
+    // The 4 real, independently dockable windows drawPanel() now Begin()/
+    // End()s -- see this class's own comment above for the mapping and
+    // why "Material Editor" isn't renamed to "Material & Layer Stack".
+    // Each takes `renderable` as a possibly-null pointer (null when
+    // nothing with a Renderable is selected) and draws its own
+    // "Select an entity..." placeholder in that case, rather than
+    // skipping Begin()/End() entirely -- so all 4 windows always exist
+    // for the dockspace to lay out, even before anything is selected.
+    void drawViewportWindow(core::Renderable* renderable);
+    void drawMaterialEditorWindow(core::ECS& ecs, core::EntityId selected,
+                                   const std::vector<core::EntityId>& selectedEntities, core::Renderable* renderable);
+    void drawTextureInspectorWindow(core::Renderable* renderable);
+    void drawBrushStampWindow(core::Renderable* renderable);
     // Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite): the
     // real "Compute Paint" section -- see core::ComputePbrPainter's own
     // class comment for why a real storage-capable texture is required

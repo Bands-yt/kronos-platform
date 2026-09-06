@@ -103,7 +103,16 @@ public:
               const ViewportDebugContext& debugContext = ViewportDebugContext{},
               // Draws the camera-rail gizmo when non-null -- see
               // drawCameraRailOverlay().
-              plugins::MovieModePlugin* movieMode = nullptr);
+              plugins::MovieModePlugin* movieMode = nullptr,
+              // Kronos ("Modular Executable Targets" -- dedicated
+              // workspace layouts): the third debug-overlay toolbar row
+              // (Bounds/Terrain Streaming/CSM Cascades -- Sprint 8 task
+              // category 2) is generic engine instrumentation, not part
+              // of any of the 3 narrow apps' own named panel list.
+              // Defaults true so Full/kronos_studio (and every existing
+              // caller that doesn't pass this) keeps the exact same
+              // toolbar it always has.
+              bool showEngineDebugOverlays = true);
 
     [[nodiscard]] core::Camera& camera() { return camera_; }
     [[nodiscard]] const core::Camera& camera() const { return camera_; }

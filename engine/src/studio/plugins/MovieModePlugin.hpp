@@ -37,6 +37,20 @@ namespace engine::studio::plugins {
 // reads this plugin's rail through the accessors below -- the same shape
 // ViewportPanel already uses for PhysicsPreviewPlugin's collider
 // overlays.
+//
+// Kronos ("Modular Executable Targets" -- kronos_movie_maker's own
+// dedicated workspace): drawPanel() now Begin()/End()s 4 separate,
+// independently dockable windows instead of one tabbed window --
+// "Sequencer Timeline" (drawTransport() + drawTimeline(), meant to dock
+// wide along the bottom), "Camera Rail" (drawRailEditor(), unchanged),
+// "Clip Inspector" (drawCurveEditor(), renamed: it edits the selected
+// track/clip's own keyframe curves, the closest real counterpart to a
+// "Clip Inspector" this plugin has), and "Render Export" (a new, real,
+// small panel showing the current export settings summary and the
+// "Render Movie Sequence..." button that used to live in drawTransport()
+// -- the actual settings form is still the existing drawExporterModal()
+// popup, unchanged, just triggered from here now). All 4 still toggle
+// together under this one plugin's own isOpen().
 class MovieModePlugin final : public IStudioPlugin {
 public:
     MovieModePlugin(core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary);
@@ -113,6 +127,13 @@ private:
     void drawCurveEditor();
     void drawExporterModal();
     void drawRailEditor();
+
+    // The 4 real, independently dockable windows drawPanel() now Begin()/
+    // End()s -- see this class's own comment above for the mapping.
+    void drawSequencerTimelineWindow();
+    void drawCameraRailWindow();
+    void drawClipInspectorWindow();
+    void drawRenderExportWindow();
 
     // Currently-selected channel, or nullptr when the selection is stale
     // (a track or channel removed since it was made).

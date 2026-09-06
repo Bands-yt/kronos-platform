@@ -142,11 +142,15 @@ bool StudioApp::initialize(StudioMode mode) {
     // Kronos ("Modular Executable Targets"): the 3 narrow modes get their
     // own real window title so a taskbar/alt-tab full of all 4 apps open
     // at once is actually distinguishable -- see StudioMode's own comment.
+    windowInfo.title = brandName();
+    // See iniFilename_'s own header comment for why each narrow mode gets
+    // its own real .ini name instead of sharing the one Full/kronos_studio
+    // already uses.
     switch (mode_) {
-        case StudioMode::ThreeDMaker: windowInfo.title = "Kronos 3D Maker"; break;
-        case StudioMode::MovieMaker: windowInfo.title = "Kronos Movie Maker"; break;
-        case StudioMode::Audio: windowInfo.title = "Kronos Audio"; break;
-        case StudioMode::Full: default: windowInfo.title = "Kronos Studio"; break;
+        case StudioMode::ThreeDMaker: iniFilename_ = "imgui_3d_maker.ini"; break;
+        case StudioMode::MovieMaker: iniFilename_ = "imgui_movie_maker.ini"; break;
+        case StudioMode::Audio: iniFilename_ = "imgui_audio.ini"; break;
+        case StudioMode::Full: default: iniFilename_ = "imgui.ini"; break;
     }
     windowInfo.width = 1600;
     windowInfo.height = 900;
@@ -764,6 +768,25 @@ bool StudioApp::initialize(StudioMode mode) {
         plugin->setOpen(false);
     }
 
+    // Kronos ("Modular Executable Targets" -- dedicated workspace
+    // layouts): the loop above closes literally everything uniformly,
+    // Full included -- correct for Full (~29 tools, nobody wants all of
+    // them cascading open), wrong for the 3 narrow modes, which register
+    // only the one or two plugins that *are* the app's entire reason to
+    // exist (see the mode-gated registration branch above). Without this,
+    // e.g. kronos_3d_maker would launch showing nothing but the bare
+    // dockspace -- MaterialPlugin exists and is registered, just closed,
+    // same as every other plugin. Re-opens exactly the plugin(s) each
+    // narrow mode's own "Render only" line names; Full is untouched (no
+    // branch below runs for it).
+    if (mode_ == StudioMode::ThreeDMaker) {
+        if (materialPlugin_ != nullptr) materialPlugin_->setOpen(true);
+    } else if (mode_ == StudioMode::MovieMaker) {
+        if (movieModePlugin_ != nullptr) movieModePlugin_->setOpen(true);
+    } else if (mode_ == StudioMode::Audio) {
+        if (audioPreviewPlugin_ != nullptr) audioPreviewPlugin_->setOpen(true);
+    }
+
     if (!debugConsolePanel_.initialize(ecs_, *movieModePlugin_, renderer_)) {
         std::fprintf(stderr, "StudioApp: DebugConsolePanel::initialize failed.\n");
         return false;
@@ -852,6 +875,10 @@ bool StudioApp::initImGuiVulkanBackend() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // docking branch -- see cmake/Dependencies.cmake
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // See iniFilename_'s own header comment -- must be set before the
+    // first ImGui::NewFrame()/dockspace read (this runs once, here, at
+    // context creation).
+    io.IniFilename = iniFilename_.c_str();
     ImGui::StyleColorsDark();
     applyStudioStyle(); // Studio's own palette/rounding on top of the stock dark theme -- see StudioStyle.hpp
     // Kronos ("UI/UX Revamp" -- "bold, thick, modern text"): must load
@@ -930,7 +957,10 @@ void StudioApp::drawDockspace() {
         // Kronos ("Branding + Release Prep"): real fix -- this read
         // "Bands Studio" (a stale pre-Kronos-rename label that never got
         // updated) up until now.
-        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "Kronos Studio");
+        // Kronos ("Modular Executable Targets" -- task 2 "App Branding"):
+        // real per-mode text now, via brandName() -- previously hardcoded
+        // "Kronos Studio" even inside the 3 narrow apps.
+        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "%s", brandName());
         ImGui::SameLine(0.0f, 12.0f);
         ImVec2 sepTop = ImGui::GetCursorScreenPos();
         float sepHeight = ImGui::GetFrameHeight();
@@ -950,12 +980,19 @@ void StudioApp::drawDockspace() {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Explorer", nullptr, true, false);
-            ImGui::MenuItem("Inspector", nullptr, true, false);
-            ImGui::MenuItem("Viewport", nullptr, true, false);
-            ImGui::MenuItem("Script Editor", nullptr, true, false);
+            // Kronos ("Modular Executable Targets"): these are permanent,
+            // always-disabled placeholders (no real per-panel toggle
+            // exists, see this block's own pre-existing comment below) --
+            // listing one for a panel a narrow mode's own "Strip out" line
+            // just removed would be a stale menu entry pointing at a
+            // window that can never appear, so each is gated by the same
+            // show*() predicate its own draw() call site in run() uses.
+            if (showSceneTree()) ImGui::MenuItem("Explorer", nullptr, true, false);
+            if (showInspector()) ImGui::MenuItem("Inspector", nullptr, true, false);
+            if (show3DViewport()) ImGui::MenuItem("Viewport", nullptr, true, false);
+            if (showScriptEditor()) ImGui::MenuItem("Script Editor", nullptr, true, false);
             ImGui::MenuItem("Stats", nullptr, true, false);
-            ImGui::MenuItem("Scene Search", nullptr, true, false);
+            if (showSceneTree()) ImGui::MenuItem("Scene Search", nullptr, true, false);
             // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
             // Performance Profiler"): unlike the disabled placeholders
             // above (permanent dock panels with no real toggle yet),
@@ -985,7 +1022,17 @@ void StudioApp::drawDockspace() {
             // IStudioPlugin-only). open()/close() are real, idempotent
             // GPU-resource transitions (see IKronosPlugin.hpp), not a
             // plain visibility flag.
-            if (meshCsgWindowPlugin_ != nullptr &&
+            // Kronos ("Modular Executable Targets" -- follow-up: "Show
+            // strictly Material Editor, PBR Texture Inspector, Brush &
+            // Stamp Palette, and 3D Viewport"): 3D Maker registers this
+            // plugin too (see initialize()'s own StudioMode::ThreeDMaker
+            // branch comment), but it isn't one of the 4 the brief names
+            // -- gated to Full only so the toggle to open it isn't
+            // reachable from 3D Maker's own menu. The plugin instance
+            // itself stays registered/untouched (a closed IKronosPlugin
+            // window costs nothing, see IKronosPlugin.hpp), only this menu
+            // entry is hidden.
+            if (mode_ == StudioMode::Full && meshCsgWindowPlugin_ != nullptr &&
                 ImGui::MenuItem(meshCsgWindowPlugin_->name(), nullptr, meshCsgWindowPlugin_->isOpen())) {
                 if (meshCsgWindowPlugin_->isOpen()) {
                     meshCsgWindowPlugin_->close(renderer_);
@@ -995,14 +1042,33 @@ void StudioApp::drawDockspace() {
             }
             ImGui::EndMenu();
         }
-        pluginManager_.drawMenu();
+        // Kronos ("Modular Executable Targets" -- follow-up: "Strip
+        // generic game-engine menu items ... e.g. 'Plugins > World' ...
+        // Replace the generic top bar menu with tools exclusive to the
+        // running executable"): see showPluginsMenu()'s own comment --
+        // plugins::MovieModePlugin's force-registered-in-every-mode
+        // "Cinematics > Movie Mode" entry was the real, concrete leak
+        // this closes for 3D Maker/Audio (Movie Maker's own menu already
+        // only ever listed its own real plugins, so this changes nothing
+        // visible there).
+        if (showPluginsMenu()) pluginManager_.drawMenu();
         // Kronos ("Branding + Release Prep" -- "About panel", "Version
         // number"): real, minimal Help menu.
         if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem("About Kronos Studio")) showAboutPanel_ = true;
+            std::string aboutLabel = std::string("About ") + brandName();
+            if (ImGui::MenuItem(aboutLabel.c_str())) showAboutPanel_ = true;
             ImGui::EndMenu();
         }
-        drawNetworkEmulationBar();
+        // Kronos ("Modular Executable Targets"): Full only -- the v0.4.0
+        // brief names this bar's own Host/Join/Stress-Test controls
+        // directly in every narrow mode's "Strip out" line ("Network
+        // overlays"). Real networkSession_ itself still exists and is
+        // still passed to plugins::NetworkOverlayPlugin/ModerationPanel
+        // in the Full branch of initialize() -- gated here only, not
+        // torn down, the same "hide the window, keep the object" shape
+        // showSceneTree()/showScriptEditor()/showDebugConsole() already
+        // use above.
+        if (showNetworkBar()) drawNetworkEmulationBar();
         ImGui::EndMenuBar();
     }
 
@@ -1040,17 +1106,64 @@ void StudioApp::drawDockspace() {
         ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
 
         ImGuiID centerId = dockspaceId;
-        ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.20f, nullptr, &centerId);
-        ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.23f, nullptr, &centerId);
-        ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.28f, nullptr, &centerId);
 
-        ImGui::DockBuilderDockWindow("Explorer", leftId);
-        ImGui::DockBuilderDockWindow("Scene Search", leftId);
-        ImGui::DockBuilderDockWindow("Inspector", rightId);
-        ImGui::DockBuilderDockWindow("Debug Console", bottomId);
-        ImGui::DockBuilderDockWindow("Stats", bottomId);
-        ImGui::DockBuilderDockWindow("Viewport", centerId);
-        ImGui::DockBuilderDockWindow("Script Editor", centerId);
+        // Kronos ("Modular Executable Targets"): each narrow mode gets its
+        // own real default layout built from its own dedicated windows
+        // (see the plugin-side Begin() calls in MaterialPlugin.cpp/
+        // MovieModePlugin.cpp/AudioPreviewPlugin.cpp) rather than reusing
+        // Full's own Explorer/Debug Console/Script Editor split, whose
+        // named windows never even Begin() in these modes (see show*()
+        // above) -- an unmatched DockBuilderDockWindow() target is a
+        // harmless no-op, but would waste a real split on empty space
+        // instead of laying out the windows that actually exist. Full
+        // keeps the exact pre-existing layout below, byte-identical.
+        if (mode_ == StudioMode::ThreeDMaker) {
+            ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.24f, nullptr, &centerId);
+            ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.24f, nullptr, &centerId);
+            ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.3f, nullptr, &centerId);
+
+            ImGui::DockBuilderDockWindow("Material Editor", leftId);
+            ImGui::DockBuilderDockWindow("PBR Texture Inspector", rightId);
+            ImGui::DockBuilderDockWindow("Brush & Stamp", bottomId);
+            ImGui::DockBuilderDockWindow("Viewport", centerId);
+        } else if (mode_ == StudioMode::MovieMaker) {
+            // "Wide Sequencer Timeline track view" (the brief's own
+            // wording) -- a much taller bottom split than Full's 0.28,
+            // and it alone spans the full width rather than sharing the
+            // row with anything else.
+            ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.26f, nullptr, &centerId);
+            ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.4f, nullptr, &centerId);
+            ImGuiID rightBottomId = ImGui::DockBuilderSplitNode(rightId, ImGuiDir_Down, 0.66f, nullptr, &rightId);
+            ImGuiID rightBottommostId =
+                ImGui::DockBuilderSplitNode(rightBottomId, ImGuiDir_Down, 0.5f, nullptr, &rightBottomId);
+
+            ImGui::DockBuilderDockWindow("Camera Rail", rightId);
+            ImGui::DockBuilderDockWindow("Clip Inspector", rightBottomId);
+            ImGui::DockBuilderDockWindow("Render Export", rightBottommostId);
+            ImGui::DockBuilderDockWindow("Sequencer Timeline", bottomId);
+            ImGui::DockBuilderDockWindow("Viewport", centerId);
+        } else if (mode_ == StudioMode::Audio) {
+            // No 3D Viewport at all in this mode (show3DViewport() is
+            // false only here) -- the DSP Node Graph takes the center
+            // that Viewport would otherwise occupy.
+            ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.35f, nullptr, &centerId);
+
+            ImGui::DockBuilderDockWindow("Audio Source", centerId);
+            ImGui::DockBuilderDockWindow("DSP Node Graph", centerId);
+            ImGui::DockBuilderDockWindow("Viseme Timeline", bottomId);
+        } else {
+            ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.20f, nullptr, &centerId);
+            ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.23f, nullptr, &centerId);
+            ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.28f, nullptr, &centerId);
+
+            ImGui::DockBuilderDockWindow("Explorer", leftId);
+            ImGui::DockBuilderDockWindow("Scene Search", leftId);
+            ImGui::DockBuilderDockWindow("Inspector", rightId);
+            ImGui::DockBuilderDockWindow("Debug Console", bottomId);
+            ImGui::DockBuilderDockWindow("Stats", bottomId);
+            ImGui::DockBuilderDockWindow("Viewport", centerId);
+            ImGui::DockBuilderDockWindow("Script Editor", centerId);
+        }
 
         ImGui::DockBuilderFinish(dockspaceId);
     }
@@ -1064,16 +1177,45 @@ void StudioApp::drawDockspace() {
 
 void StudioApp::drawAboutPanel() {
     if (!showAboutPanel_) return;
+    // Kronos ("Modular Executable Targets" -- task 2 "App Branding"):
+    // title, heading and blurb all now real per-mode text -- previously
+    // this whole panel hardcoded "Kronos Studio" even inside the 3 narrow
+    // apps, contradicting the Help menu item that opens it (already fixed
+    // above to say "About <brandName()>").
+    std::string aboutTitle = std::string("About ") + brandName();
     ImGui::SetNextWindowSize(ImVec2(380.0f, 0.0f), ImGuiCond_Appearing);
-    if (ImGui::Begin("About Kronos Studio", &showAboutPanel_, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "KRONOS STUDIO");
+    if (ImGui::Begin(aboutTitle.c_str(), &showAboutPanel_, ImGuiWindowFlags_NoCollapse)) {
+        std::string heading = brandName();
+        std::transform(heading.begin(), heading.end(), heading.begin(),
+                        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "%s", heading.c_str());
         ImGui::Text("Version %s", core::kKronosVersion);
         ImGui::TextDisabled("Built %s", core::kKronosBuildDate);
         ImGui::Separator();
-        ImGui::TextWrapped(
-            "Kronos Studio is the real-time 3D editor for the Kronos platform: scene editing, avatar "
-            "creation, marketplace publishing, moderation, and networked playtesting, all in one Alpha "
-            "build.");
+        const char* blurb = nullptr;
+        switch (mode_) {
+            case StudioMode::ThreeDMaker:
+                blurb = "Kronos 3D Maker is the dedicated PBR material/texture painting workspace of the Kronos "
+                        "platform: live viewport, Material Editor, PBR Texture Inspector, and Brush & Stamp "
+                        "compute-paint tools, all in one Alpha build.";
+                break;
+            case StudioMode::MovieMaker:
+                blurb = "Kronos Movie Maker is the dedicated cinematic authoring workspace of the Kronos platform: "
+                        "Sequencer Timeline, Camera Rail, Clip Inspector, and offline Render Export, all in one "
+                        "Alpha build.";
+                break;
+            case StudioMode::Audio:
+                blurb = "Kronos Audio is the dedicated sound-design workspace of the Kronos platform: DSP Node "
+                        "Graph and Viseme Timeline lip-sync authoring, all in one Alpha build.";
+                break;
+            case StudioMode::Full:
+            default:
+                blurb = "Kronos Studio is the real-time 3D editor for the Kronos platform: scene editing, avatar "
+                        "creation, marketplace publishing, moderation, and networked playtesting, all in one Alpha "
+                        "build.";
+                break;
+        }
+        ImGui::TextWrapped("%s", blurb);
         ImGui::Separator();
         ImGui::TextDisabled("Project: %s", currentProject_.name.c_str());
         if (ImGui::Button("Close")) showAboutPanel_ = false;
@@ -1638,16 +1780,62 @@ void StudioApp::drawRecoveryBanner() {
 void StudioApp::drawWelcomePanel() {
     if (!welcomePanelOpen_) return;
 
+    // Kronos ("Modular Executable Targets" -- follow-up: "Condition the
+    // startup welcome dialog on StudioMode ... tailored quickstart modal
+    // per app"): the original copy below (Full's own, unchanged) named
+    // "the Plugins menu" and "Plugins > World" (Block Builder/Creator
+    // Tools) -- neither exists in any narrow mode (that menu is hidden
+    // entirely there, see showPluginsMenu(), and neither plugin is ever
+    // registered outside StudioMode::Full), so reusing it verbatim would
+    // point a first-time 3D Maker/Movie Maker/Audio user at UI that isn't
+    // there. Each mode gets its own real title/body naming only its own
+    // actual dedicated windows; the "Open Default Project"/"View
+    // Quickstart" buttons stay the same real actions in every mode.
+    std::string title = std::string("Welcome to ") + brandName();
     ImGui::SetNextWindowSize(ImVec2(460.0f, 0.0f), ImGuiCond_Appearing);
-    if (ImGui::Begin("Welcome to Kronos Studio", &welcomePanelOpen_)) {
-        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "Welcome to Kronos Studio");
-        ImGui::TextWrapped(
-            "This is a real, working creator tool -- everything you click here does "
-            "something real. A few places to start:");
-        ImGui::Spacing();
-        ImGui::BulletText("The Plugins menu (top bar) lists every built-in tool, grouped by category.");
-        ImGui::BulletText("Block Builder (Plugins > World) places real primitives you can move/rotate/scale.");
-        ImGui::BulletText("Creator Tools (Plugins > World) places props, terrain, and lighting.");
+    if (ImGui::Begin(title.c_str(), &welcomePanelOpen_)) {
+        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "%s", title.c_str());
+        switch (mode_) {
+            case StudioMode::ThreeDMaker:
+                ImGui::TextWrapped(
+                    "This is a real, working PBR material/texture painting tool -- everything you click here "
+                    "does something real. A few places to start:");
+                ImGui::Spacing();
+                ImGui::BulletText("Click an object in the 3D Viewport to select it.");
+                ImGui::BulletText("Material Editor edits its base color/metallic/roughness and presets.");
+                ImGui::BulletText("PBR Texture Inspector loads albedo/normal/metallic/roughness/AO maps.");
+                ImGui::BulletText("Brush & Stamp paints directly onto its textures with the compute painter.");
+                break;
+            case StudioMode::MovieMaker:
+                ImGui::TextWrapped(
+                    "This is a real, working cinematic authoring tool -- everything you click here does "
+                    "something real. A few places to start:");
+                ImGui::Spacing();
+                ImGui::BulletText("Sequencer Timeline adds tracks/clips and drives the transport.");
+                ImGui::BulletText("Camera Rail shapes the Bezier path the cinematic camera flies along.");
+                ImGui::BulletText("Clip Inspector edits the selected track's own keyframe curves.");
+                ImGui::BulletText("Render Export renders the sequence to disk, unthrottled from real time.");
+                break;
+            case StudioMode::Audio:
+                ImGui::TextWrapped(
+                    "This is a real, working audio/lip-sync authoring tool -- everything you click here does "
+                    "something real. A few places to start:");
+                ImGui::Spacing();
+                ImGui::BulletText("Audio Source loads a file and plays it through Studio's own audio engine.");
+                ImGui::BulletText("DSP Node Graph builds a real node-based effects chain over the source.");
+                ImGui::BulletText("Viseme Timeline previews phoneme-driven lip-sync against the loaded clip.");
+                break;
+            case StudioMode::Full:
+            default:
+                ImGui::TextWrapped(
+                    "This is a real, working creator tool -- everything you click here does "
+                    "something real. A few places to start:");
+                ImGui::Spacing();
+                ImGui::BulletText("The Plugins menu (top bar) lists every built-in tool, grouped by category.");
+                ImGui::BulletText("Block Builder (Plugins > World) places real primitives you can move/rotate/scale.");
+                ImGui::BulletText("Creator Tools (Plugins > World) places props, terrain, and lighting.");
+                break;
+        }
         ImGui::Spacing();
         if (ImGui::Button("Open Default Project", ImVec2(200.0f, 0.0f))) {
             switchToScene("templates/project/default.scene");
@@ -1813,8 +2001,17 @@ void StudioApp::run() {
         // Solo session exists (see DebugConsolePanel.hpp's class comment).
         debugConsolePanel_.tick(deltaTime);
 
-        explorerPanel_.draw(ecs_);
-        inspectorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities(), undoStack_);
+        // Kronos ("Modular Executable Targets"): gated, not skipped --
+        // explorerPanel_ itself keeps existing and tracking selection
+        // regardless (ViewportPanel::draw() below calls setSelected()
+        // directly on click, and Inspector/Material Editor/etc. all read
+        // selectedEntity() every frame), only its own dockable *window*
+        // (the "Scene Tree" the brief names) stops appearing in modes that
+        // don't list it.
+        if (showSceneTree()) explorerPanel_.draw(ecs_);
+        if (showInspector()) {
+            inspectorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities(), undoStack_);
+        }
 
         // Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) -- checked once per frame,
         // not per-widget, so it works regardless of which panel has
@@ -1877,11 +2074,29 @@ void StudioApp::run() {
             viewportDebugContext.terrain = &terrainEditorPlugin_->terrain();
         }
         viewportDebugContext.renderer = &renderer_;
-        viewportPanel_.draw(deltaTime, viewportTarget_.imguiTextureId(), viewportTarget_.extent(), &ecs_,
-                             &meshLibrary_, explorerPanel_, physicsPreviewPlugin_, viewportDebugContext,
-                             movieModePlugin_);
-        scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
-        debugConsolePanel_.draw();
+        // Kronos ("Modular Executable Targets"): gated by show3DViewport()
+        // -- Kronos Audio is the one mode that skips this. Skipping the
+        // call itself (not just hiding the window after) is what keeps
+        // viewportPanel_.desiredExtent() at its default {0,0} for that
+        // mode, which is what makes the pre-pass callback's own
+        // `if (desired.width == 0 || desired.height == 0) return;` guard
+        // (see initialize()'s renderer_.setPrePassCallback lambda) turn
+        // into a real, permanent no-op instead of a one-frame startup
+        // race -- no offscreen target is ever sized, so there's no 0x0
+        // Vulkan resource to create.
+        if (show3DViewport()) {
+            viewportPanel_.draw(deltaTime, viewportTarget_.imguiTextureId(), viewportTarget_.extent(), &ecs_,
+                                 &meshLibrary_, explorerPanel_, physicsPreviewPlugin_, viewportDebugContext,
+                                 movieModePlugin_, showEngineDebugOverlays());
+        }
+        if (showScriptEditor()) scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
+        // debugConsolePanel_.tick() above still runs unconditionally in
+        // every mode (see its own call site comment) -- only draw() (the
+        // "REPL Console" window itself) is gated; DebugConsolePanel owns a
+        // live Scripting instance other real, always-registered state
+        // (e.g. plugins::MovieModePlugin's ScriptCinematicApi) depends on
+        // ticking regardless of whether its window is ever shown.
+        if (showDebugConsole()) debugConsolePanel_.draw();
         drawImportDialog();
 
         // Sprint 8 ("Performance Stats & Debug Tools"): compose this
@@ -1917,9 +2132,17 @@ void StudioApp::run() {
         performanceOverlay_.draw(lastPerformanceMetrics_, (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying())
                                                                 ? &physicsPreviewPlugin_->scripting()
                                                                 : nullptr);
-        if (core::EntityId searchClicked = sceneSearchPanel_.draw(ecs_, explorerPanel_.selectedEntity());
-            searchClicked != core::kNullEntity) {
-            explorerPanel_.setSelected(searchClicked);
+        // Kronos ("Modular Executable Targets" -- follow-up: "Scene
+        // Search filters for RigidBody/ParticleEmitter" named directly as
+        // clutter to strip): same showSceneTree() gate as the Explorer
+        // window itself -- this panel's entire purpose is jumping the
+        // Explorer's own selection to a search result, so it's the same
+        // "Scene Tree" surface the brief means, not a separate one.
+        if (showSceneTree()) {
+            if (core::EntityId searchClicked = sceneSearchPanel_.draw(ecs_, explorerPanel_.selectedEntity());
+                searchClicked != core::kNullEntity) {
+                explorerPanel_.setSelected(searchClicked);
+            }
         }
 
         // update() runs for every registered plugin regardless of whether
