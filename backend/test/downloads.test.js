@@ -79,13 +79,29 @@ test('the direct installer route 404s for an unknown app or platform, and stream
   const unknownPlatform = await fetch(`${baseUrl}/v1/downloads/installers/studio/not-a-real-platform`);
   assert.equal(unknownPlatform.status, 404);
 
-  const notPublishedYet = await fetch(`${baseUrl}/v1/downloads/installers/audio/linux_x86_64`);
-  assert.equal(notPublishedYet.status, 404, 'a real app/platform with no real build yet is a real 404, not an empty success');
-
   const bytes = Buffer.from(`a real Kronos Audio linux build -- ${crypto.randomBytes(24).toString('hex')}`);
   await placeLocalBuild(installerObjectKey('audio', 'linux_x86_64', config.desktopAppsVersion), bytes);
   const res = await fetch(`${baseUrl}/v1/downloads/installers/audio/linux_x86_64`);
   assert.equal(res.status, 200);
   const downloaded = Buffer.from(await res.arrayBuffer());
   assert.ok(downloaded.equals(bytes));
+});
+
+// Kronos ("GitHub Releases Binary Download Integration"): a real,
+// known app/platform with no build staged on THIS server host must
+// never just 404 -- release.yml (see .github/workflows/release.yml)
+// publishes every real combo to GitHub Releases on every tag push, so
+// this server always has a real fallback to point at. `redirect:
+// 'manual'` is deliberate: this test asserts on the Location header
+// this backend itself computed, and must never actually dial out to
+// github.com (no network access in CI, and nothing here needs GitHub to
+// really have that asset for this backend's own contract to be
+// verified).
+test('a real app/platform with no local build 302-redirects to the real GitHub Release artifact URL', async () => {
+  const res = await fetch(`${baseUrl}/v1/downloads/installers/movie-maker/win64`, { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.equal(
+    res.headers.get('location'),
+    `https://github.com/${config.githubReleasesRepo}/releases/latest/download/kronos_movie_maker_win64.zip`,
+  );
 });
