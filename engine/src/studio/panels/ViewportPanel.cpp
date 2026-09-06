@@ -724,7 +724,7 @@ void ViewportPanel::drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& 
 void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent2D sceneTextureExtent,
                           core::ECS* ecs, core::MeshLibrary* meshLibrary, ExplorerPanel& explorer,
                           plugins::PhysicsPreviewPlugin* physicsPreview, const ViewportDebugContext& debugContext,
-                          plugins::MovieModePlugin* movieMode) {
+                          plugins::MovieModePlugin* movieMode, bool showEngineDebugOverlays) {
     ImGuizmo::BeginFrame(); // once per ImGui frame -- see header comment
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -1014,8 +1014,10 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
 
     // Sprint 8 debug-overlay toolbar (task category 2) -- a third row,
     // same technique as the two above, stacked beneath whichever of them
-    // was drawn most recently.
-    {
+    // was drawn most recently. Kronos ("Modular Executable Targets"):
+    // gated on showEngineDebugOverlays -- see that parameter's own header
+    // comment.
+    if (showEngineDebugOverlays) {
         ImDrawListSplitter splitter3;
         splitter3.Split(drawList, 2);
         splitter3.SetCurrentChannel(drawList, 1);

@@ -44,7 +44,13 @@ void AudioPreviewPlugin::shutdown() { audio_.shutdown(); }
 
 void AudioPreviewPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*selected*/,
                                      const std::vector<core::EntityId>& /*selectedEntities*/) {
-    ImGui::Begin("Audio Previewer");
+    drawAudioSourceWindow();
+    drawDspGraphWindow();
+    drawVisemeTimelineWindow();
+}
+
+void AudioPreviewPlugin::drawAudioSourceWindow() {
+    ImGui::Begin("Audio Source");
 
     ImGui::TextWrapped("Load an audio file and play it back through Studio's own audio engine.");
     ImGui::SetNextItemWidth(320.0f);
@@ -85,9 +91,18 @@ void AudioPreviewPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*selected
         ImGui::Text("Channels: %u", lastMetadata_.channelCount);
     }
 
-    drawDspGraphSection();
-    drawLipSyncSection();
+    ImGui::End();
+}
 
+void AudioPreviewPlugin::drawDspGraphWindow() {
+    ImGui::Begin("DSP Node Graph");
+    drawDspGraphSection();
+    ImGui::End();
+}
+
+void AudioPreviewPlugin::drawVisemeTimelineWindow() {
+    ImGui::Begin("Viseme Timeline");
+    drawLipSyncSection();
     ImGui::End();
 }
 

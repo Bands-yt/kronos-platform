@@ -292,13 +292,10 @@ void MovieModePlugin::drawTransport() {
     ImGui::Checkbox("Snap", &snapToFrames_);
     helpMarker("Snaps dragged keys and the playhead to whole frames. Off lets a key sit between frames, which will not "
                "survive an export at this frame rate.");
-
-    ImGui::SameLine();
-    if (ImGui::Button("Render Movie Sequence...")) {
-        exportSettings_.frameRate = sequence_.frameRate();
-        exporterOpen_ = true;
-        ImGui::OpenPopup("Render Movie Sequence");
-    }
+    // Kronos ("Modular Executable Targets"): the "Render Movie Sequence..."
+    // button used to live here -- it's moved to its own "Render Export"
+    // window (drawRenderExportWindow()) so exporting doesn't require the
+    // Sequencer Timeline to be the window in focus.
 }
 
 void MovieModePlugin::drawTimeline() {
@@ -953,33 +950,20 @@ void MovieModePlugin::drawExporterModal() {
 }
 
 void MovieModePlugin::drawPanel(core::ECS&, core::EntityId, const std::vector<core::EntityId>&) {
-    ImGui::SetNextWindowSize(ImVec2(1020.0f, 620.0f), ImGuiCond_FirstUseEver);
-    ImGui::Begin(name());
+    drawSequencerTimelineWindow();
+    drawCameraRailWindow();
+    drawClipInspectorWindow();
+    drawRenderExportWindow();
+}
+
+void MovieModePlugin::drawSequencerTimelineWindow() {
+    ImGui::SetNextWindowSize(ImVec2(1020.0f, 340.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Sequencer Timeline");
     drawPluginHeader("Movie Mode");
 
     drawTransport();
     ImGui::Separator();
-
-    if (ImGui::BeginTabBar("##moviemode")) {
-        if (ImGui::BeginTabItem("Timeline")) {
-            drawTimeline();
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Curve Editor")) {
-            drawCurveEditor();
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Camera Rail")) {
-            drawRailEditor();
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
-
-    // The modal is opened from drawTransport()'s button but must be begun
-    // at this level: BeginPopupModal has to run every frame from the same
-    // window, not from inside a tab that may not be selected.
-    drawExporterModal();
+    drawTimeline();
 
     char footer[320];
     if (!exportStatus_.empty()) {
@@ -992,6 +976,43 @@ void MovieModePlugin::drawPanel(core::ECS&, core::EntityId, const std::vector<co
                       static_cast<double>(sequence_.durationSeconds()), static_cast<double>(view_.pixelsPerSecond));
     }
     drawPluginFooter(footer);
+    ImGui::End();
+}
+
+void MovieModePlugin::drawCameraRailWindow() {
+    ImGui::Begin("Camera Rail");
+    drawRailEditor();
+    ImGui::End();
+}
+
+void MovieModePlugin::drawClipInspectorWindow() {
+    ImGui::Begin("Clip Inspector");
+    drawCurveEditor();
+    ImGui::End();
+}
+
+void MovieModePlugin::drawRenderExportWindow() {
+    ImGui::Begin("Render Export");
+    ImGui::TextWrapped("Offline render -- runs unthrottled, decoupled from real time.");
+    ImGui::Separator();
+    ImGui::Text("Resolution: %ux%u", exportSettings_.resolution.width, exportSettings_.resolution.height);
+    const char* rateLabels[] = {"24 fps", "30 fps", "60 fps"};
+    int rateIndex = static_cast<int>(exportSettings_.frameRate);
+    ImGui::Text("Frame rate: %s", (rateIndex >= 0 && rateIndex < IM_ARRAYSIZE(rateLabels)) ? rateLabels[rateIndex] : "?");
+    ImGui::Text("Output: %s", exportSettings_.outputDirectory.c_str());
+    ImGui::Separator();
+    if (ImGui::Button("Render Movie Sequence...")) {
+        exportSettings_.frameRate = sequence_.frameRate();
+        exporterOpen_ = true;
+        ImGui::OpenPopup("Render Movie Sequence");
+    }
+    if (!exportStatus_.empty()) {
+        ImGui::TextDisabled("%s", exportStatus_.c_str());
+    }
+    // Must run every frame regardless of which window is focused (see
+    // this method's own header comment) -- this is now that one place,
+    // replacing drawPanel()'s own unconditional call.
+    drawExporterModal();
     ImGui::End();
 }
 

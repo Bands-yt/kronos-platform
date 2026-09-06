@@ -35,6 +35,19 @@ namespace engine::studio::plugins {
 // original file is never touched, and re-clicking Process after
 // changing a slider re-derives a fresh result rather than compounding
 // onto the previous one.
+//
+// Kronos ("Modular Executable Targets" -- kronos_audio's own dedicated
+// workspace): drawPanel() now Begin()/End()s 3 separate, independently
+// dockable windows -- "Audio Source" (load/play/metadata, previously the
+// unnamed top section of one "Audio Previewer" window), "DSP Node Graph"
+// (drawDspGraphSection(), unchanged), and "Viseme Timeline"
+// (drawLipSyncSection(), unchanged). The v0.4.0 brief's own 4-panel list
+// for this app also names a "Waveform Inspector" and an "Audio Track
+// Mixer" -- neither exists anywhere in this codebase (nothing renders an
+// actual waveform, and there is no multi-track volume/pan/mute mixer),
+// so neither is faked here by relabeling something unrelated; they are
+// real, net-new features out of scope for this layout/branding pass, not
+// delivered by this change.
 class AudioPreviewPlugin final : public IStudioPlugin {
 public:
     [[nodiscard]] bool initialize();
@@ -46,6 +59,9 @@ public:
     void drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) override;
 
 private:
+    void drawAudioSourceWindow();
+    void drawDspGraphWindow();
+    void drawVisemeTimelineWindow();
     void drawDspGraphSection();
     void drawLipSyncSection();
 

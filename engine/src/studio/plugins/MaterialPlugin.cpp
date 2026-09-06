@@ -190,10 +190,46 @@ void MaterialPlugin::drawComputePaintSection(core::Renderable& renderable) {
 }
 
 void MaterialPlugin::drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) {
+    auto* renderable = selected != core::kNullEntity ? ecs.tryGetComponent<core::Renderable>(selected) : nullptr;
+
+    drawViewportWindow(renderable);
+    drawMaterialEditorWindow(ecs, selected, selectedEntities, renderable);
+    drawTextureInspectorWindow(renderable);
+    drawBrushStampWindow(renderable);
+}
+
+void MaterialPlugin::drawViewportWindow(core::Renderable* renderable) {
+    ImGui::Begin("3D Viewport");
+    // Live preview sphere (Sprint 10 task category 1) -- copies the
+    // *current* edited values onto the preview scene's own sphere entity
+    // every single drawPanel() call, so orbiting it always shows exactly
+    // what's being edited right now, live, not a stale snapshot from
+    // whenever the panel was last interacted with. Runs even with nothing
+    // selected (renderable == nullptr) -- this window still shows
+    // whatever the preview sphere's own last-known material was, rather
+    // than going blank the moment selection is cleared.
+    ensurePreviewEntity();
+    if (renderable != nullptr) {
+        if (auto* previewRenderable = previewScene_.ecs().tryGetComponent<core::Renderable>(previewEntity_)) {
+            previewRenderable->baseColor = renderable->baseColor;
+            previewRenderable->metallic = renderable->metallic;
+            previewRenderable->roughness = renderable->roughness;
+            previewRenderable->normalIntensity = renderable->normalIntensity;
+            previewRenderable->emissiveColor = renderable->emissiveColor;
+            previewRenderable->emissiveIntensity = renderable->emissiveIntensity;
+        }
+    }
+    previewScene_.drawAndHandleOrbit();
+    if (renderable != nullptr) handleViewportPickPaint(*renderable);
+    ImGui::End();
+}
+
+void MaterialPlugin::drawMaterialEditorWindow(core::ECS& ecs, core::EntityId selected,
+                                               const std::vector<core::EntityId>& selectedEntities,
+                                               core::Renderable* renderable) {
     ImGui::Begin("Material Editor");
     drawPluginHeader("Material Editor");
 
-    auto* renderable = selected != core::kNullEntity ? ecs.tryGetComponent<core::Renderable>(selected) : nullptr;
     if (renderable == nullptr) {
         ImGui::TextDisabled("Select an entity with a Renderable component.");
         drawPluginFooter();
@@ -217,26 +253,6 @@ void MaterialPlugin::drawPanel(core::ECS& ecs, core::EntityId selected, const st
     ImGui::SameLine();
     ImGui::Checkbox("Casts Shadow", &renderable->castsShadow);
 
-    // Live preview sphere (Sprint 10 task category 1) -- copies the
-    // *current* edited values onto the preview scene's own sphere entity
-    // every single drawPanel() call, so orbiting it always shows exactly
-    // what's being edited right now, live, not a stale snapshot from
-    // whenever the panel was last interacted with.
-    ImGui::SeparatorText("Live Preview");
-    ensurePreviewEntity();
-    if (auto* previewRenderable = previewScene_.ecs().tryGetComponent<core::Renderable>(previewEntity_)) {
-        previewRenderable->baseColor = renderable->baseColor;
-        previewRenderable->metallic = renderable->metallic;
-        previewRenderable->roughness = renderable->roughness;
-        previewRenderable->normalIntensity = renderable->normalIntensity;
-        previewRenderable->emissiveColor = renderable->emissiveColor;
-        previewRenderable->emissiveIntensity = renderable->emissiveIntensity;
-    }
-    ImGui::BeginChild("##material_preview", ImVec2(0.0f, 220.0f), true);
-    previewScene_.drawAndHandleOrbit();
-    ImGui::EndChild();
-    handleViewportPickPaint(*renderable);
-
     ImGui::Separator();
     ImGui::TextUnformatted("Presets (sets color, metallic, roughness, and emissive)");
     for (const MaterialPresetInfo& preset : kMaterialPresets) {
@@ -250,16 +266,6 @@ void MaterialPlugin::drawPanel(core::ECS& ecs, core::EntityId selected, const st
         ImGui::SameLine();
     }
     ImGui::NewLine();
-
-    ImGui::SeparatorText("Texture Slots");
-    ImGui::TextDisabled("Type a file path, click Load. Empty slot = flat value above.");
-    drawTextureSlot(Slot::Albedo, "Albedo", *renderable);
-    drawTextureSlot(Slot::Normal, "Normal", *renderable);
-    drawTextureSlot(Slot::Metallic, "Metallic", *renderable);
-    drawTextureSlot(Slot::Roughness, "Roughness", *renderable);
-    drawTextureSlot(Slot::AO, "Ambient Occlusion", *renderable);
-
-    drawComputePaintSection(*renderable);
 
     ImGui::Separator();
     bool canApplyAll = selectedEntities.size() > 1;
@@ -288,6 +294,34 @@ void MaterialPlugin::drawPanel(core::ECS& ecs, core::EntityId selected, const st
     }
 
     drawPluginFooter();
+    ImGui::End();
+}
+
+void MaterialPlugin::drawTextureInspectorWindow(core::Renderable* renderable) {
+    ImGui::Begin("PBR Texture Inspector");
+    if (renderable == nullptr) {
+        ImGui::TextDisabled("Select an entity with a Renderable component.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextDisabled("Type a file path, click Load. Empty slot = flat value above.");
+    drawTextureSlot(Slot::Albedo, "Albedo", *renderable);
+    drawTextureSlot(Slot::Normal, "Normal", *renderable);
+    drawTextureSlot(Slot::Metallic, "Metallic", *renderable);
+    drawTextureSlot(Slot::Roughness, "Roughness", *renderable);
+    drawTextureSlot(Slot::AO, "Ambient Occlusion", *renderable);
+    ImGui::End();
+}
+
+void MaterialPlugin::drawBrushStampWindow(core::Renderable* renderable) {
+    ImGui::Begin("Brush & Stamp");
+    if (renderable == nullptr) {
+        ImGui::TextDisabled("Select an entity with a Renderable component.");
+        ImGui::End();
+        return;
+    }
+    drawComputePaintSection(*renderable);
     ImGui::End();
 }
 
