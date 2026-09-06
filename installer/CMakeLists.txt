@@ -125,3 +125,16 @@ if(WIN32)
 elseif(UNIX)
     target_link_libraries(kronos_installer PRIVATE dl)
 endif()
+
+# KronosBootstrapper -- the real kronos:// URI protocol handler target
+# (see src/BootstrapperMain.cpp's own header comment for why this is a
+# separate executable from kronos_installer). Deliberately zero
+# dependencies beyond the standard library + Win32/POSIX process APIs --
+# it only forwards argv to engine_runtime and exits.
+add_executable(kronos_bootstrapper src/BootstrapperMain.cpp)
+set_target_properties(kronos_bootstrapper PROPERTIES OUTPUT_NAME "KronosBootstrapper")
+
+# So `cmake --install --prefix dist` (see ../installer/build_installer.iss's
+# own header comment) actually stages both real executables from this
+# project into the same tree the Inno Setup script packages.
+install(TARGETS kronos_bootstrapper kronos_installer RUNTIME DESTINATION .)
