@@ -18,6 +18,7 @@ class Terrain;
 namespace engine::studio::plugins {
 class PhysicsPreviewPlugin;
 class MovieModePlugin;
+class ModelImporterPlugin;
 }
 
 namespace engine::studio::panels {
@@ -47,6 +48,24 @@ struct ViewportDebugContext {
 struct WorldPropSpawnMeshHandles {
     uint32_t boxMesh = 0;
     uint32_t capsuleMesh = 0;
+    // Kronos ("Clean Viewport & Mesh Import Pipeline" -- viewport "Add
+    // Primitive" menu): real mesh handles for the 3 shapes that menu
+    // offers beyond Cube (boxMesh, already above) -- Sphere/Torus/Cylinder
+    // -- registered once by StudioApp the same way boxMesh/capsuleMesh
+    // already are (see setPropSpawnMeshHandles()'s own comment). Cylinder
+    // deliberately spawns with NO MeshSource (see Mesh::createCylinder()'s
+    // own comment): it renders/moves/selects normally this session but
+    // won't survive a Save Scene reload, the same accepted limitation
+    // BlockBuilderPlugin's own Cylinder already has. Torus is a real
+    // MeshSourceKind (see that enum's own comment) and does survive a
+    // reload. sphereMesh is really a zero-half-height Capsule (radius,
+    // 0) -- the same real, already-round-tripping "sphere" convention
+    // BlockBuilderPlugin::spawnBlock() already established (MeshSourceKind
+    // ::Capsule, not a dedicated Sphere kind).
+    uint32_t sphereMesh = 0;
+    uint32_t torusMesh = 0;
+    uint32_t cylinderMesh = 0;
+    uint32_t planeMesh = 0;
 };
 
 // docs/ARCHITECTURE.md §4.2's Edit Viewport: "The editor camera is a
@@ -133,6 +152,23 @@ public:
     // identical real box/capsule mesh registration, so a dropped prop's
     // visual is never a stale/invalid handle.
     void setPropSpawnMeshHandles(WorldPropSpawnMeshHandles handles) { propSpawnMeshHandles_ = handles; }
+
+    // Kronos ("Clean Viewport & Mesh Import Pipeline"): real, deferred
+    // setter, same shape as setPropSpawnMeshHandles() above -- StudioApp
+    // calls this only for the modes the brief actually names ("Import 3D
+    // Asset..." buttons and Add Primitive menus... for 3D Maker and
+    // Studio"), so Movie Maker/Audio's own Viewport (Movie Maker's, since
+    // Audio has none) never grows this toolbar row at all. `modelImporter`
+    // may be nullptr (narrow modes that enable this still only register
+    // MaterialPlugin/MeshCsgWindowPlugin, not ModelImporterPlugin) -- the
+    // "Import 3D Asset..." button itself just doesn't draw in that case,
+    // same "real, honest, absent control beats a button that does
+    // nothing" precedent every other nullptr-gated control in this file
+    // already follows.
+    void setAssetTools(bool enabled, plugins::ModelImporterPlugin* modelImporter) {
+        showAssetTools_ = enabled;
+        modelImporterPlugin_ = modelImporter;
+    }
 
 private:
     void updateFreeFly(float deltaTime);
@@ -221,6 +257,17 @@ private:
     void drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& meshLibrary, const ViewportDebugContext& debugContext,
                                    ImVec2 imageOrigin, ImVec2 imageSize);
 
+    // Kronos ("Clean Viewport & Mesh Import Pipeline" -- "clean ground
+    // grid"): a real, always-on world-space grid of lines on the XZ plane
+    // at y=0, projected with the exact same worldToScreen() helper every
+    // other overlay above already uses -- not a texture/shader change,
+    // just screen-space lines drawn every frame the same way physics/
+    // terrain debug wireframes already are. Deliberately unconditional
+    // (no showX_ toggle): this is meant to always read as "an empty
+    // studio floor", the same permanent baseline a real 3D editor's
+    // viewport grid is, not an opt-in debug overlay.
+    void drawGroundGridOverlay(ImVec2 imageOrigin, ImVec2 imageSize);
+
     core::Camera camera_;
     bool dragging_ = false;
     VkExtent2D desiredExtent_{0, 0};
@@ -234,6 +281,9 @@ private:
     // origins; a real name collision is cosmetic, not a correctness bug
     // (core::ECS entity ids, not names, are the real identity).
     WorldPropSpawnMeshHandles propSpawnMeshHandles_;
+    // See setAssetTools()'s own comment.
+    bool showAssetTools_ = false;
+    plugins::ModelImporterPlugin* modelImporterPlugin_ = nullptr;
     int propSpawnCount_ = 0;
     // Kronos ("Developer Velocity Sprint" -- "Grid & Rotation Snapping"):
     // split from one combined toggle into two independent ones -- Grid

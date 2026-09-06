@@ -14484,6 +14484,79 @@ void testAudioDspGraphDetectsCycle() {
     check(result.errorMessage.find("cycle") != std::string::npos, "the real error message names the cycle");
 }
 
+void testComputeWaveformPeaksBucketsCoverWholeBuffer() {
+    using namespace engine::core;
+    // A real, exact 1000-sample ramp from -1 to +1 -- bucket boundaries
+    // are known in advance, so each bucket's real min/max can be checked
+    // exactly rather than just "is non-empty".
+    std::vector<float> samples(1000);
+    for (size_t i = 0; i < samples.size(); ++i) {
+        samples[i] = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(samples.size() - 1);
+    }
+
+    std::vector<std::pair<float, float>> peaks = computeWaveformPeaks(samples, 10);
+    check(peaks.size() == 10, "computeWaveformPeaks() returns exactly the requested bucket count");
+    check(nearlyEqual(peaks.front().first, -1.0f, 0.01f), "first bucket's real min is the ramp's real start value");
+    check(nearlyEqual(peaks.back().second, 1.0f, 0.01f), "last bucket's real max is the ramp's real end value");
+    for (const auto& [minV, maxV] : peaks) {
+        check(minV <= maxV, "every real bucket's min never exceeds its own max");
+    }
+
+    check(computeWaveformPeaks({}, 10).empty(), "an empty sample buffer real-returns an empty result, not a crash");
+    check(computeWaveformPeaks(samples, 0).empty(), "bucketCount==0 real-returns an empty result, not a divide-by-zero");
+
+    // Regression: N=1023 over the real 512-bucket count AudioPreviewPlugin
+    // actually requests does NOT divide evenly (1023/512 truncates to 1),
+    // which is exactly the case a fixed floor(N/bucketCount) stride gets
+    // wrong -- it'd give buckets 0..510 one sample each and dump the
+    // other 512 samples onto bucket 511 alone, collapsing half the real
+    // clip into one bar. Deriving each bucket's [start,end) from its own
+    // index instead spreads that remainder evenly, so no bucket should
+    // ever cover more than one extra sample beyond the floor.
+    std::vector<float> unevenRamp(1023);
+    for (size_t i = 0; i < unevenRamp.size(); ++i) {
+        unevenRamp[i] = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(unevenRamp.size() - 1);
+    }
+    std::vector<std::pair<float, float>> unevenPeaks = computeWaveformPeaks(unevenRamp, 512);
+    check(unevenPeaks.size() == 512, "computeWaveformPeaks() honors the requested bucket count even when it doesn't divide N evenly");
+    check(nearlyEqual(unevenPeaks.back().second, 1.0f, 0.01f), "last bucket's real max is still the ramp's real end value");
+    // The last bucket's real span (max - min) on a linear ramp is bounded
+    // by its own sample-index span times the ramp's per-sample step -- a
+    // collapsed-tail bug would instead give it roughly HALF the buffer's
+    // full amplitude range (~2.0), not a couple of samples' worth.
+    float lastBucketSpan = unevenPeaks.back().second - unevenPeaks.back().first;
+    check(lastBucketSpan < 0.02f, "the last bucket covers only its own fair share of samples, not half the buffer");
+}
+
+void testComputePeakAndRmsDbfsRealValues() {
+    using namespace engine::core;
+    // A full-scale square wave: every sample is exactly +-1.0, the real
+    // loudest a float sample can be -- both peak and RMS dBFS should
+    // read as real, exact 0 dB (20*log10(1.0) == 0.0).
+    std::vector<float> fullScale(1000);
+    for (size_t i = 0; i < fullScale.size(); ++i) fullScale[i] = (i % 2 == 0) ? 1.0f : -1.0f;
+    check(nearlyEqual(computePeakDbfs(fullScale), 0.0f, 0.01f), "a real full-scale signal reads as real 0 dBFS peak");
+    check(nearlyEqual(computeRmsDbfs(fullScale), 0.0f, 0.01f), "a real full-scale square wave reads as real 0 dBFS RMS too (constant amplitude)");
+
+    // Real -6 dBFS is linear amplitude 10^(-6/20) ~= 0.501.
+    std::vector<float> halfScale(1000, 0.501f);
+    check(nearlyEqual(computePeakDbfs(halfScale), -6.0f, 0.2f), "a real half-amplitude signal reads close to real -6 dBFS");
+
+    std::vector<float> silence(1000, 0.0f);
+    check(computePeakDbfs(silence) <= -99.0f, "real digital silence reads as the real, finite -100 dB floor, not -infinity");
+    check(computeRmsDbfs(silence) <= -99.0f, "same real floor for RMS on real silence");
+    check(computePeakDbfs({}) <= -99.0f, "an empty buffer real-hits the same silence floor rather than crashing");
+
+    // A real sine's RMS is its peak amplitude / sqrt(2) (~0.707), so its
+    // real RMS dBFS should read about 3 dB quieter than its real peak
+    // dBFS -- the well-known real crest factor of a sine wave.
+    std::vector<float> sine = makeSineWave(440.0f, 0.05f, 44100, 1.0f);
+    float peakDb = computePeakDbfs(sine);
+    float rmsDb = computeRmsDbfs(sine);
+    check(rmsDb < peakDb, "a real sine's RMS level reads real-quieter than its real peak level");
+    check(nearlyEqual(peakDb - rmsDb, 3.01f, 0.3f), "a real sine's real peak-to-RMS gap matches its known ~3.01 dB crest factor");
+}
+
 void testDetectSpeechSegmentsFindsKnownSilenceGaps() {
     using namespace engine::core;
     uint32_t sampleRate = 16000;
@@ -37695,6 +37768,8 @@ int main() {
     testAudioDspGraphRequiresExactlyOneOutput();
     testAudioDspGraphFailsOnUnconnectedInput();
     testAudioDspGraphDetectsCycle();
+    testComputeWaveformPeaksBucketsCoverWholeBuffer();
+    testComputePeakAndRmsDbfsRealValues();
     testDetectSpeechSegmentsFindsKnownSilenceGaps();
     testExtractVisemesFromTranscriptDistributesWordsProportionally();
     testExtractVisemesFromTranscriptHandlesEmptyInputsHonestly();

@@ -22,6 +22,7 @@ MeshSourceKind meshSourceKindFromIndex(int index) {
         case 4: return MeshSourceKind::Obj;
         case 5: return MeshSourceKind::Gltf;
         case 6: return MeshSourceKind::Fbx;
+        case 7: return MeshSourceKind::Torus;
         default: return MeshSourceKind::Box; // unrecognized on load -- fail soft, matching Prefab::loadFromFile
     }
 }

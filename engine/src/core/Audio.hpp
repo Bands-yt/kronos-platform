@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -46,6 +47,16 @@ public:
     // Fire-and-forget, non-positional playback (UI sounds, StarterGui click
     // feedback, etc).
     void playOneShot(SoundHandle handle);
+
+    // Kronos ("Audio Track Mixer" -- kronos_audio's own dedicated
+    // workspace): real, immediate per-sound volume (ma_sound_set_volume),
+    // for a plain loadSound()/playOneShot() handle -- distinct from
+    // AudioSource::volume (an ECS-driven, per-entity field mix() applies
+    // every frame; a preview sound played via playOneShot() has no
+    // AudioSource component at all). A real, honest no-op on an
+    // unloaded/invalid handle, same "range-check, don't assert" contract
+    // unloadSound()/playOneShot() above already use.
+    void setSoundVolume(SoundHandle handle, float volume01);
 
     // Per-frame mix: updates the listener (camera/character) and every
     // AudioSource-tagged entity's spatialization, matching whichever of
@@ -114,5 +125,37 @@ private:
 // honest failure, not a partial file.
 [[nodiscard]] bool encodeFloatMonoToWavFile(const std::string& path, const std::vector<float>& samples,
                                              uint32_t sampleRate);
+
+// Kronos ("Waveform Inspector" -- kronos_audio's own dedicated
+// workspace): one min/max pair per bucket, computed once over the whole
+// (potentially millions-of-samples-long) real decoded buffer -- real
+// PCM data, the same buffer decodeAudioFileToFloatMono() already
+// produces for the DSP graph, not a synthetic/placeholder waveform. A
+// pure, real, unit-testable function (no ImGui/miniaudio dependency)
+// specifically so studio::plugins::AudioPreviewPlugin can call this once
+// at Load time and cache the result, instead of re-reducing the raw
+// buffer every single frame it draws (a multi-minute clip is millions of
+// samples -- a per-frame reduction over that would visibly tank the
+// frame rate). Returns one entry per bucket regardless of `samples`'
+// length (the last bucket absorbs any remainder from an uneven split);
+// an empty `samples` or bucketCount==0 returns an empty result, a real,
+// honest "nothing to draw", not a divide-by-zero.
+[[nodiscard]] std::vector<std::pair<float, float>> computeWaveformPeaks(const std::vector<float>& samples,
+                                                                         size_t bucketCount);
+
+// Kronos ("Audio Track Mixer" -- kronos_audio's own dedicated
+// workspace): real peak/RMS level in dBFS (decibels relative to full
+// scale, 0 dB = the loudest a float sample can represent without
+// clipping) over a whole real decoded buffer -- the same real, honest
+// "static analysis of the actual clip" scope as computeWaveformPeaks()
+// above, not a live-updating VU needle (this engine's Audio API has no
+// per-frame playback-cursor readback to drive one, see
+// core::Audio::playOneShot()'s own comment on why one ma_sound instance
+// is reused rather than tracked frame-by-frame). Silence (every sample
+// exactly 0, including an empty buffer) returns a real, finite floor
+// (-100 dB) rather than -infinity, so the mixer's own meter bar math
+// never has to special-case it.
+[[nodiscard]] float computePeakDbfs(const std::vector<float>& samples);
+[[nodiscard]] float computeRmsDbfs(const std::vector<float>& samples);
 
 } // namespace engine::core

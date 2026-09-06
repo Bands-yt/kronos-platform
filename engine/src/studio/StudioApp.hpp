@@ -26,6 +26,7 @@
 #include "studio/Notification.hpp"
 #include "studio/OffscreenTarget.hpp"
 #include "studio/PluginManager.hpp"
+#include "studio/StudioStyle.hpp"
 #include "core/SceneManager.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "studio/UndoStack.hpp"
@@ -63,6 +64,7 @@ class MaterialPlugin;
 class ParticleEditorPlugin;
 class PublishingPanel;
 class TrailerPanel;
+class ModelImporterPlugin;
 }
 
 namespace engine::studio {
@@ -223,6 +225,22 @@ private:
             case StudioMode::MovieMaker: return "Kronos Movie Maker";
             case StudioMode::Audio: return "Kronos Audio";
             case StudioMode::Full: default: return "Kronos Studio";
+        }
+    }
+
+    // Kronos ("Modern Bespoke UI Theme"): the one real per-app accent
+    // color applyStudioStyle() (StudioStyle.hpp) tints every interactive
+    // element with -- same "one switch on mode_, right next to
+    // brandName()" shape as every other per-mode mapping in this class.
+    // Hex values straight from the brief: 3D Maker amber/gold #F59E0B,
+    // Movie Maker slate/indigo #6366F1, Audio cyan/teal #06B6D4, Studio
+    // electric violet #8B5CF6.
+    [[nodiscard]] StudioAccent accentColor() const {
+        switch (mode_) {
+            case StudioMode::ThreeDMaker: return {0.961f, 0.620f, 0.043f};
+            case StudioMode::MovieMaker: return {0.388f, 0.400f, 0.945f};
+            case StudioMode::Audio: return {0.024f, 0.714f, 0.831f};
+            case StudioMode::Full: default: return {0.545f, 0.361f, 0.965f};
         }
     }
 
@@ -510,6 +528,11 @@ private:
     // submitDroppedFile(), the real SDL_DROPFILE handling site (see
     // window_.setRawEventCallback()'s own call site in initialize()).
     plugins::CreatorAssetBrowserPlugin* creatorAssetBrowserPlugin_ = nullptr;
+    // Kronos ("Clean Viewport & Mesh Import Pipeline"): same "raw pointer
+    // into what pluginManager_ owns" pattern -- ViewportPanel's own
+    // "Import 3D Asset..." toolbar button (see viewportPanel_.setAssetTools()'s
+    // own call site) needs to reach this specific plugin's setOpen(true).
+    plugins::ModelImporterPlugin* modelImporterPlugin_ = nullptr;
     // Same "raw pointer into what pluginManager_ owns" pattern --
     // PublishingPanel's own studio::ThumbnailCameraRig (Sprint 13) needs
     // the same explicit per-frame renderPreview()/shutdown() calls every

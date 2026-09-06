@@ -504,6 +504,48 @@ Mesh Mesh::createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cm
     return mesh;
 }
 
+Mesh Mesh::createTorus(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                        float majorRadius, float minorRadius, uint32_t majorSegments, uint32_t minorSegments) {
+    majorSegments = std::max(3u, majorSegments);
+    minorSegments = std::max(3u, minorSegments);
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    const float twoPi = 6.28318530718f;
+    // Closed tube, no poles/caps to fold -- both directions wrap fully
+    // around, so both get the same "+1, last vertex duplicates the
+    // first" seam convention every other generator above uses.
+    const uint32_t verticesPerRing = minorSegments + 1;
+
+    for (uint32_t i = 0; i <= majorSegments; ++i) {
+        float theta = twoPi * static_cast<float>(i) / static_cast<float>(majorSegments);
+        float cosTheta = std::cos(theta), sinTheta = std::sin(theta);
+        for (uint32_t j = 0; j <= minorSegments; ++j) {
+            float phi = twoPi * static_cast<float>(j) / static_cast<float>(minorSegments);
+            float cosPhi = std::cos(phi), sinPhi = std::sin(phi);
+            float tubeRadius = majorRadius + minorRadius * cosPhi;
+            glm::vec3 pos(tubeRadius * cosTheta, minorRadius * sinPhi, tubeRadius * sinTheta);
+            glm::vec3 normal(cosPhi * cosTheta, sinPhi, cosPhi * sinTheta);
+            glm::vec2 uv(static_cast<float>(i) / static_cast<float>(majorSegments),
+                         static_cast<float>(j) / static_cast<float>(minorSegments));
+            vertices.push_back({pos, normal, uv});
+        }
+    }
+
+    for (uint32_t i = 0; i < majorSegments; ++i) {
+        uint32_t base = i * verticesPerRing;
+        uint32_t nextBase = (i + 1) * verticesPerRing;
+        for (uint32_t j = 0; j < minorSegments; ++j) {
+            indices.insert(indices.end(), {base + j, base + j + 1, nextBase + j,
+                                            base + j + 1, nextBase + j + 1, nextBase + j});
+        }
+    }
+
+    Mesh mesh;
+    (void)mesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices);
+    return mesh;
+}
+
 uint32_t MeshLibrary::registerMesh(Mesh mesh) {
     meshes_.push_back(std::move(mesh));
     return static_cast<uint32_t>(meshes_.size() - 1);

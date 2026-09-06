@@ -24,6 +24,8 @@ Mesh buildMeshFromSource(const MeshSource& source, VmaAllocator allocator, VkDev
             return Mesh::createCapsule(allocator, device, cmdPool, queue, source.params.x, source.params.y);
         case MeshSourceKind::Quad:
             return Mesh::createQuad(allocator, device, cmdPool, queue, source.params.x);
+        case MeshSourceKind::Torus:
+            return Mesh::createTorus(allocator, device, cmdPool, queue, source.params.x, source.params.y);
         case MeshSourceKind::Obj: {
             ObjLoadResult obj = loadObj(source.path);
             if (!obj.succeeded) {
