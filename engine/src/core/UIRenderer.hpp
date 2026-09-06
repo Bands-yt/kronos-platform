@@ -8,6 +8,7 @@
 #include <vk_mem_alloc.h>
 
 #include "core/Texture.hpp"
+#include "core/UILayout.hpp"
 
 namespace engine::core {
 
@@ -68,6 +69,29 @@ public:
     // Pure, real text extent -- monospace, so this is an exact real
     // computation, not a heuristic/estimate.
     [[nodiscard]] glm::vec2 measureText(const std::string& text, float scale) const;
+
+    // Kronos ("Native Vector UI Engine"): real render step for a
+    // core::UILayoutTree -- walks every node reachable from `rootId`
+    // (already laid out via UILayoutTree::computeLayout()) and issues
+    // the exact same drawRect()/drawText() calls a hand-written HUD
+    // panel would, just driven from the tree's own resolved
+    // position/size/color/text instead of inline pixel math. Caller
+    // still owns beginFrame()/draw() the normal way -- this only queues
+    // into the current frame's batch, same as every other draw*() call
+    // here. `screenOffset` places the tree's own root (0,0) at that
+    // screen position, the same "caller owns screen placement" role
+    // UILayoutTree::computeLayout()'s own `availableSize` doc comment
+    // describes.
+    void drawLayoutTree(const UILayoutTree& tree, int rootId, glm::vec2 screenOffset = glm::vec2(0.0f));
+
+    // The real TextMeasureFn UILayoutTree::computeLayout() needs to
+    // Auto-size a Text node -- a thin wrapper around measureText() with
+    // the signature UILayout.hpp's own TextMeasureFn expects. Exposed so
+    // callers don't have to hand-write the same lambda at every call
+    // site.
+    [[nodiscard]] TextMeasureFn textMeasureFn() const {
+        return [this](const std::string& text, float scale) { return measureText(text, scale); };
+    }
 
     // Real, one real draw call -- uploads this frame's own batched
     // vertex data into the current frame-in-flight's own buffer and

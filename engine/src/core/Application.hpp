@@ -33,6 +33,7 @@
 #include "safety/GeminiModerationClient.hpp"
 #include "core/ScriptNetworkApi.hpp"
 #include "core/ScriptUiApi.hpp"
+#include "core/ScriptUiLayoutApi.hpp"
 #include "core/ScriptWorldApi.hpp"
 #include "core/TrailerScriptApi.hpp"
 #include "tntwars/DestructibleGeometryVisual.hpp"
@@ -295,6 +296,13 @@ public:
     [[nodiscard]] ParticleSystem& particleSystem() { return particleSystem_; }
     [[nodiscard]] RuntimeAnimationPlayer& animationPlayer() { return animationPlayer_; }
     [[nodiscard]] ScriptUiApi& scriptUiApi() { return scriptUiApi_; }
+    // Kronos ("Native Vector UI Engine"): the declarative flexbox
+    // sibling of scriptUiApi() above -- see ScriptUiLayoutApi.hpp's own
+    // class comment. Constructed lazily in initialize() (needs
+    // scripting_ already alive to bind its watchdog-refresh calls
+    // against), same "unique_ptr, built in initialize()" shape
+    // scriptAvatarApi_ already uses.
+    [[nodiscard]] ScriptUiLayoutApi& scriptUiLayoutApi() { return *scriptUiLayoutApi_; }
 
     // Kronos ("Active Joining UI" -- engine_runtime ImGui + input
     // integration): real, non-owning access to the real GameLoop
@@ -741,6 +749,12 @@ private:
     // needs no deferred-construction seam the way scriptWorldApi_/
     // scriptNetworkApi_ do.
     ScriptUiApi scriptUiApi_;
+    // unique_ptr, not a plain member -- ScriptUiLayoutApi holds a real
+    // `Scripting&` (to refresh the watchdog deadline before invoking a
+    // bound Luau function, see its own header comment), so it needs
+    // scripting_ already constructed first; built in initialize(), same
+    // deferred-construction shape scriptAvatarApi_ above uses.
+    std::unique_ptr<ScriptUiLayoutApi> scriptUiLayoutApi_;
     // Edge-detection for the "Interact" input action (UnifiedInput only
     // exposes level state via isActionDown(), see its header) -- so
     // events.onInteract fires once per press, not once per tick while held.
