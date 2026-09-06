@@ -28,10 +28,13 @@ namespace {
 //
 // `xdg-mime default` is what actually writes the per-user association
 // in ~/.config/mimeapps.list; the .desktop file's own MimeType= line
-// (see createPlatformShortcut() above) declares that this app CAN
+// (see createComponentShortcut() below) declares that this app CAN
 // handle the scheme, but on several real desktop environments that
 // alone does not make it the DEFAULT handler without this step too.
-bool runXdgMimeDefault(std::string& outError) {
+// `desktopFileName` is the real, just-written .desktop's own filename
+// (e.g. "kronos.desktop") -- xdg-mime associates by filename, so this
+// must match exactly what createComponentShortcut() below wrote.
+bool runXdgMimeDefault(const std::string& desktopFileName, std::string& outError) {
     pid_t pid = fork();
     if (pid < 0) {
         outError = "fork() failed running xdg-mime";
@@ -40,7 +43,7 @@ bool runXdgMimeDefault(std::string& outError) {
     if (pid == 0) {
         // Child: exactly the fixed argv xdg-mime expects, no shell
         // involved, so nothing here is ever re-interpreted.
-        execlp("xdg-mime", "xdg-mime", "default", "kronos.desktop", "x-scheme-handler/kronos",
+        execlp("xdg-mime", "xdg-mime", "default", desktopFileName.c_str(), "x-scheme-handler/kronos",
                static_cast<char*>(nullptr));
         _exit(127); // execlp only returns on failure (e.g. xdg-mime not installed)
     }
@@ -51,9 +54,10 @@ bool runXdgMimeDefault(std::string& outError) {
         return false;
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        outError = "xdg-mime default kronos.desktop x-scheme-handler/kronos failed -- is xdg-utils installed? "
-                    "The .desktop file's own MimeType= line is still written either way, which some desktop "
-                    "environments pick up on their own.";
+        outError = "xdg-mime default " + desktopFileName +
+                   " x-scheme-handler/kronos failed -- is xdg-utils installed? "
+                   "The .desktop file's own MimeType= line is still written either way, which some desktop "
+                   "environments pick up on their own.";
         return false;
     }
     return true;
@@ -121,7 +125,18 @@ bool registerUrlProtocolHandler(const std::wstring& installedRuntimePathW, std::
 // note: this environment is Linux-only (see engine/src/core/
 // CredentialStoreWindows.cpp's own identical real precedent) -- written
 // carefully against the documented COM contract, never compiled here.
-bool createPlatformShortcut(const std::string& installedRuntimePath, std::string& outError) {
+//
+// Generalized (see PlatformIntegration.hpp's own comment) to write ANY
+// component's own .lnk (not just "Kronos.lnk" for the Player) --
+// `displayName` becomes both the shortcut's own filename and its
+// Description; `iconPath`, when non-empty, is set as the shortcut's
+// real icon location (a real, distinct per-app .ico for the 4 creator
+// tools). kronos:// protocol registration is real but conditional on
+// `registerKronosUri` -- see that parameter's own header comment for
+// why only Player ever passes true.
+bool createComponentShortcut(const std::string& installedExePath, const std::string& displayName,
+                              const std::string& /*desktopBasename*/, const std::string& iconPath,
+                              const std::string& /*categories*/, bool registerKronosUri, std::string& outError) {
     HRESULT comInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     bool weInitializedCom = SUCCEEDED(comInit);
 
@@ -134,12 +149,17 @@ bool createPlatformShortcut(const std::string& installedRuntimePath, std::string
         return false;
     }
 
-    std::wstring targetPath(installedRuntimePath.begin(), installedRuntimePath.end());
+    std::wstring targetPath(installedExePath.begin(), installedExePath.end());
     shellLink->SetPath(targetPath.c_str());
-    std::filesystem::path workingDir = std::filesystem::path(installedRuntimePath).parent_path();
+    std::filesystem::path workingDir = std::filesystem::path(installedExePath).parent_path();
     std::wstring workingDirW = workingDir.wstring();
     shellLink->SetWorkingDirectory(workingDirW.c_str());
-    shellLink->SetDescription(L"Kronos Platform");
+    std::wstring descriptionW(displayName.begin(), displayName.end());
+    shellLink->SetDescription(descriptionW.c_str());
+    if (!iconPath.empty()) {
+        std::wstring iconPathW(iconPath.begin(), iconPath.end());
+        shellLink->SetIconLocation(iconPathW.c_str(), 0);
+    }
 
     IPersistFile* persistFile = nullptr;
     hr = shellLink->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&persistFile));
@@ -147,7 +167,8 @@ bool createPlatformShortcut(const std::string& installedRuntimePath, std::string
     if (SUCCEEDED(hr)) {
         PWSTR desktopPath = nullptr;
         if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktopPath))) {
-            std::filesystem::path shortcutPath = std::filesystem::path(desktopPath) / L"Kronos.lnk";
+            std::wstring shortcutFileName(displayName.begin(), displayName.end());
+            std::filesystem::path shortcutPath = std::filesystem::path(desktopPath) / (shortcutFileName + L".lnk");
             CoTaskMemFree(desktopPath);
             hr = persistFile->Save(shortcutPath.wstring().c_str(), TRUE);
             ok = SUCCEEDED(hr);
@@ -162,6 +183,8 @@ bool createPlatformShortcut(const std::string& installedRuntimePath, std::string
 
     shellLink->Release();
     if (weInitializedCom) CoUninitialize();
+
+    if (!registerKronosUri) return ok;
 
     // Kronos ("kronos:// launch URI"): real, standard user-scope URL
     // protocol registration -- HKEY_CURRENT_USER rather than
@@ -187,16 +210,33 @@ bool createPlatformShortcut(const std::string& installedRuntimePath, std::string
     }
     return ok && protocolOk;
 }
+
+bool createPlatformShortcut(const std::string& installedRuntimePath, std::string& outError) {
+    return createComponentShortcut(installedRuntimePath, "Kronos", "kronos", "", "Game;",
+                                    /*registerKronosUri=*/true, outError);
+}
 #else
 // Kronos: real Linux post-install integration -- a real, freedesktop.org
-// Desktop Entry (~/.local/share/applications/kronos.desktop, the exact
-// same real format engine's own scripts/package_alpha.sh already
-// generates for the plain distributable package -- see that script's
-// own real kronos.desktop heredoc) plus a real symlink into
-// ~/.local/bin (a real, common modern-Linux "already on PATH"
-// location; honestly not guaranteed universal -- flagged in outError
-// if that specific step fails, not silently swallowed).
-bool createPlatformShortcut(const std::string& installedRuntimePath, std::string& outError) {
+// Desktop Entry (~/.local/share/applications/<desktopBasename>.desktop,
+// the exact same real format engine's own scripts/package_alpha.sh and
+// engine/assets/desktop/*.desktop already use for a manually-extracted
+// install) plus, for Player only, a real symlink into ~/.local/bin (a
+// real, common modern-Linux "already on PATH" location; honestly not
+// guaranteed universal -- flagged in outError if that specific step
+// fails, not silently swallowed).
+//
+// Generalized (see PlatformIntegration.hpp's own comment) to write ANY
+// component's own .desktop, not just the base Player's -- `displayName`
+// becomes Name=, `desktopBasename` the real .desktop filename,
+// `iconPath` (when non-empty) becomes Icon=, and `categories` the real
+// Categories= value. The kronos:// URL-scheme wiring (MimeType= line,
+// %u Exec argument, xdg-mime default, ~/.local/bin symlink) is real but
+// conditional on `registerKronosUri` -- see that parameter's own header
+// comment for why only Player ever passes true; the 4 creator tools get
+// a plain launcher with no URL-scheme handling and no symlink.
+bool createComponentShortcut(const std::string& installedExePath, const std::string& displayName,
+                              const std::string& desktopBasename, const std::string& iconPath,
+                              const std::string& categories, bool registerKronosUri, std::string& outError) {
     const char* home = std::getenv("HOME");
     if (home == nullptr) {
         outError = "$HOME is not set -- can't resolve a real per-user install location";
@@ -211,51 +251,58 @@ bool createPlatformShortcut(const std::string& installedRuntimePath, std::string
         return false;
     }
 
-    std::ofstream desktopFile(applicationsDir / "kronos.desktop", std::ios::trunc);
+    std::string desktopFileName = desktopBasename + ".desktop";
+    std::ofstream desktopFile(applicationsDir / desktopFileName, std::ios::trunc);
     if (!desktopFile.good()) {
         outError = "could not write the real .desktop file";
         return false;
     }
     desktopFile << "[Desktop Entry]\n"
                 << "Type=Application\n"
-                << "Name=Kronos\n"
-                << "Comment=Kronos Platform -- Game Catalogue and Home Screen\n"
-                // %u: the freedesktop.org Desktop Entry Specification's
-                // own field code for "substitute a single URL argument
-                // here", as its OWN space-delimited argv token -- NOT
-                // glued to a flag via "=". That distinction is not
-                // theoretical: an earlier version of this line read
-                // "--kronos-uri=%u", and real-world testing against this
-                // exact xdg-open/gio resolver on a live desktop (`xdg-open
-                // "kronos://launch?game=x"`, inspecting the real argv the
-                // launched process received) showed it does NOT
-                // substitute %u inside a larger token -- it leaves
-                // "--kronos-uri=%u" completely literal and appends the
-                // resolved URL as a separate trailing argument instead.
-                // main.cpp accordingly accepts a bare kronos:// argv
-                // token as well as the --kronos-uri= prefixed form Windows
-                // uses (see its argv loop and core::parseKronosLaunchUri()).
-                << "Exec=" << installedRuntimePath << " %u\n"
-                << "Terminal=false\n"
-                << "Categories=Game;\n"
-                // Kronos ("kronos:// launch URI"): the real, documented
-                // signal that this application handles the kronos: URL
-                // scheme -- what actually makes "Open in Kronos" on the
-                // web storefront able to launch this app at all. Without
-                // this line the .desktop entry above is a plain Start
-                // Menu launcher and nothing more, exactly what it was
-                // before this.
-                << "MimeType=x-scheme-handler/kronos;\n";
+                << "Name=" << displayName << "\n"
+                << "Comment=Kronos Platform -- " << displayName << "\n";
+    if (!iconPath.empty()) desktopFile << "Icon=" << iconPath << "\n";
+    if (registerKronosUri) {
+        // %u: the freedesktop.org Desktop Entry Specification's own
+        // field code for "substitute a single URL argument here", as
+        // its OWN space-delimited argv token -- NOT glued to a flag via
+        // "=". That distinction is not theoretical: an earlier version
+        // of this line read "--kronos-uri=%u", and real-world testing
+        // against this exact xdg-open/gio resolver on a live desktop
+        // (`xdg-open "kronos://launch?game=x"`, inspecting the real
+        // argv the launched process received) showed it does NOT
+        // substitute %u inside a larger token -- it leaves
+        // "--kronos-uri=%u" completely literal and appends the resolved
+        // URL as a separate trailing argument instead. main.cpp
+        // accordingly accepts a bare kronos:// argv token as well as
+        // the --kronos-uri= prefixed form Windows uses (see its argv
+        // loop and core::parseKronosLaunchUri()).
+        desktopFile << "Exec=" << installedExePath << " %u\n";
+    } else {
+        desktopFile << "Exec=" << installedExePath << "\n";
+    }
+    desktopFile << "Terminal=false\n" << "Categories=" << categories << "\n";
+    if (registerKronosUri) {
+        // Kronos ("kronos:// launch URI"): the real, documented signal
+        // that this application handles the kronos: URL scheme -- what
+        // actually makes "Open in Kronos" on the web storefront able to
+        // launch this app at all. Only Player ever sets this.
+        desktopFile << "MimeType=x-scheme-handler/kronos;\n";
+    }
     desktopFile.close();
 
+    if (!registerKronosUri) return true; // creator tools: a plain launcher is the whole job
+
     // Real "update the local path" -- a real symlink, not a copy, so a
-    // later real reinstall/update just re-targets it.
+    // later real reinstall/update just re-targets it. Player-only: the
+    // 4 creator tools have no real reason to occupy the bare `kronos`
+    // PATH command.
     std::filesystem::path localBin = std::filesystem::path(home) / ".local" / "bin";
     std::filesystem::create_directories(localBin, ec);
     std::filesystem::path linkPath = localBin / "kronos";
     std::error_code removeEc;
     std::filesystem::remove(linkPath, removeEc); // real, honest -- clears a stale symlink from a previous install first
-    std::filesystem::create_symlink(installedRuntimePath, linkPath, ec);
+    std::filesystem::create_symlink(installedExePath, linkPath, ec);
     if (ec) {
         outError = "wrote the real .desktop launcher, but could not symlink \"" + linkPath.string() +
                     "\" -- make sure ~/.local/bin exists and is writable if you want the `kronos` command on PATH";
@@ -266,12 +313,17 @@ bool createPlatformShortcut(const std::string& installedRuntimePath, std::string
     // symlink are already written and usable by this point, and a
     // missing xdg-mime binary has no bearing on either of those.
     std::string mimeError;
-    if (!runXdgMimeDefault(mimeError)) {
+    if (!runXdgMimeDefault(desktopFileName, mimeError)) {
         outError = "wrote the real .desktop launcher and symlink, but " + mimeError;
         return false;
     }
 
     return true;
+}
+
+bool createPlatformShortcut(const std::string& installedRuntimePath, std::string& outError) {
+    return createComponentShortcut(installedRuntimePath, "Kronos", "kronos", "", "Game;",
+                                    /*registerKronosUri=*/true, outError);
 }
 #endif
 
