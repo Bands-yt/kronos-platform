@@ -1,5 +1,6 @@
 #include "studio/plugins/AudioPreviewPlugin.hpp"
 
+#include <algorithm>
 #include <cstdio>
 
 #include <imgui.h>
@@ -47,6 +48,23 @@ void AudioPreviewPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*selected
     drawAudioSourceWindow();
     drawDspGraphWindow();
     drawVisemeTimelineWindow();
+    drawWaveformInspectorWindow();
+    drawTrackMixerWindow();
+
+    // Kronos ("Audio Track Mixer"): real, applied every frame (not just
+    // on slider release) so a drag mid-adjustment is heard immediately --
+    // mute wins over the fader's own gain value; solo (when any channel
+    // has it set) mutes every *other* non-soloed channel, the same
+    // "solo silences everything else" convention every real mixer uses.
+    // Master has no mute/solo of its own (see drawMixerChannelStrip()'s
+    // comment) -- it's a plain multiplier on top, applied via
+    // core::Audio::setMasterVolume() instead of per-sound.
+    bool anySoloed = sourceSoloed_ || processedSoloed_;
+    float sourceEffective = sourceMuted_ || (anySoloed && !sourceSoloed_) ? 0.0f : sourceGain_;
+    float processedEffective = processedMuted_ || (anySoloed && !processedSoloed_) ? 0.0f : processedGain_;
+    if (loadedSound_ != core::kInvalidSoundHandle) audio_.setSoundVolume(loadedSound_, sourceEffective);
+    if (processedSound_ != core::kInvalidSoundHandle) audio_.setSoundVolume(processedSound_, processedEffective);
+    audio_.setMasterVolume(masterGain_);
 }
 
 void AudioPreviewPlugin::drawAudioSourceWindow() {
@@ -69,6 +87,32 @@ void AudioPreviewPlugin::drawAudioSourceWindow() {
             }
             loadedSound_ = audio_.loadSound(path);
             statusMessage_ = loadedSound_ != core::kInvalidSoundHandle ? "Loaded." : "Decode failed.";
+
+            // Kronos ("Waveform Inspector" + "Audio Track Mixer"): a real,
+            // separate decode from the same real path -- ma_sound (above)
+            // never hands back a raw sample array (see
+            // decodeAudioFileToFloatMono()'s own header comment), so this
+            // is the one place a Load actually gets real PCM data to
+            // bucket into peaks and measure real dBFS from. Reduced once
+            // here into peaks/dBFS/duration -- see computeWaveformPeaks()'s
+            // own comment on why never per-frame -- and then this local
+            // buffer (tens of megabytes for a real multi-minute clip)
+            // simply falls out of scope rather than being kept as member
+            // state nothing reads again.
+            std::vector<float> decoded;
+            if (core::decodeAudioFileToFloatMono(path, decoded, sourceSampleRate_)) {
+                sourceWaveformPeaks_ = core::computeWaveformPeaks(decoded, 512);
+                sourcePeakDbfs_ = core::computePeakDbfs(decoded);
+                sourceRmsDbfs_ = core::computeRmsDbfs(decoded);
+                sourceDurationSeconds_ = sourceSampleRate_ > 0
+                    ? static_cast<float>(decoded.size()) / static_cast<float>(sourceSampleRate_)
+                    : 0.0f;
+            } else {
+                sourceWaveformPeaks_.clear();
+                sourcePeakDbfs_ = -100.0f;
+                sourceRmsDbfs_ = -100.0f;
+                sourceDurationSeconds_ = 0.0f;
+            }
         }
     }
 
@@ -103,6 +147,139 @@ void AudioPreviewPlugin::drawDspGraphWindow() {
 void AudioPreviewPlugin::drawVisemeTimelineWindow() {
     ImGui::Begin("Viseme Timeline");
     drawLipSyncSection();
+    ImGui::End();
+}
+
+void AudioPreviewPlugin::drawWaveformBars(const char* childId, const std::vector<std::pair<float, float>>& peaks,
+                                            float heightPx) {
+    if (peaks.empty()) {
+        ImGui::TextDisabled("No audio loaded yet.");
+        return;
+    }
+
+    ImGui::BeginChild(childId, ImVec2(0.0f, heightPx), true);
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImVec2 size = ImGui::GetContentRegionAvail();
+    if (size.x <= 0.0f) size.x = 1.0f;
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    float midY = origin.y + size.y * 0.5f;
+    constexpr ImU32 kWaveColor = IM_COL32(120, 200, 255, 220);
+    constexpr ImU32 kCenterLineColor = IM_COL32(255, 255, 255, 60);
+    drawList->AddLine(ImVec2(origin.x, midY), ImVec2(origin.x + size.x, midY), kCenterLineColor, 1.0f);
+
+    // One vertical bar per bucket, min-to-max around the real center
+    // line -- real PCM peaks (see computeWaveformPeaks()'s own comment),
+    // not a synthetic sine placeholder.
+    float barWidth = size.x / static_cast<float>(peaks.size());
+    for (size_t i = 0; i < peaks.size(); ++i) {
+        float x = origin.x + static_cast<float>(i) * barWidth;
+        float yTop = midY - peaks[i].second * size.y * 0.5f;
+        float yBottom = midY - peaks[i].first * size.y * 0.5f;
+        drawList->AddRectFilled(ImVec2(x, yTop), ImVec2(x + std::max(1.0f, barWidth - 0.5f), yBottom), kWaveColor);
+    }
+    ImGui::Dummy(size);
+    ImGui::EndChild();
+}
+
+void AudioPreviewPlugin::drawWaveformInspectorWindow() {
+    ImGui::Begin("Waveform Inspector");
+    ImGui::TextWrapped("Real PCM peaks from the actual decoded audio buffer -- one min/max bar per bucket, not a "
+                        "synthetic placeholder.");
+
+    ImGui::SeparatorText("Source");
+    drawWaveformBars("##waveform_source", sourceWaveformPeaks_, 140.0f);
+    if (!sourceWaveformPeaks_.empty()) {
+        ImGui::Text("Peak: %.1f dBFS  |  RMS: %.1f dBFS  |  %u Hz  |  %.2f s", sourcePeakDbfs_, sourceRmsDbfs_,
+                    sourceSampleRate_, sourceDurationSeconds_);
+    }
+
+    ImGui::SeparatorText("Processed (DSP Node Graph output)");
+    drawWaveformBars("##waveform_processed", processedWaveformPeaks_, 140.0f);
+    if (!processedWaveformPeaks_.empty()) {
+        ImGui::Text("Peak: %.1f dBFS  |  RMS: %.1f dBFS", processedPeakDbfs_, processedRmsDbfs_);
+    } else {
+        ImGui::TextDisabled("Click Process (DSP Node Graph) to generate this.");
+    }
+
+    ImGui::End();
+}
+
+void AudioPreviewPlugin::drawMixerChannelStrip(const char* label, float& gain, bool* muted, bool* soloed,
+                                                 float peakDbfs, float rmsDbfs) {
+    ImGui::BeginGroup();
+    ImGui::TextUnformatted(label);
+
+    // Real vertical fader -- 0..2x linear gain (matches the DSP graph's
+    // own Gain node range), the same real value setSoundVolume()/
+    // setMasterVolume() are called with every frame (see drawPanel()'s
+    // own comment).
+    char faderId[64];
+    std::snprintf(faderId, sizeof(faderId), "##fader_%s", label);
+    ImGui::VSliderFloat(faderId, ImVec2(36.0f, 140.0f), &gain, 0.0f, 2.0f, "%.2f");
+
+    // Real, static peak/RMS dBFS meter -- two stacked bars (RMS behind,
+    // peak in front, the same "RMS shows the sustained loudness, peak
+    // shows the real ceiling" convention every hardware/DAW meter uses),
+    // mapped from the real, finite -100..0 dB range this file's own
+    // computePeakDbfs()/computeRmsDbfs() always return.
+    constexpr float kFloorDb = -100.0f;
+    auto dbToFraction = [](float db) { return std::clamp((db - kFloorDb) / (0.0f - kFloorDb), 0.0f, 1.0f); };
+    ImGui::SameLine();
+    ImVec2 meterOrigin = ImGui::GetCursorScreenPos();
+    ImVec2 meterSize(14.0f, 140.0f);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(meterOrigin, ImVec2(meterOrigin.x + meterSize.x, meterOrigin.y + meterSize.y),
+                             IM_COL32(30, 30, 34, 255));
+    float rmsHeight = meterSize.y * dbToFraction(rmsDbfs);
+    drawList->AddRectFilled(ImVec2(meterOrigin.x, meterOrigin.y + meterSize.y - rmsHeight),
+                             ImVec2(meterOrigin.x + meterSize.x, meterOrigin.y + meterSize.y),
+                             IM_COL32(90, 200, 120, 220));
+    float peakY = meterOrigin.y + meterSize.y - meterSize.y * dbToFraction(peakDbfs);
+    drawList->AddLine(ImVec2(meterOrigin.x, peakY), ImVec2(meterOrigin.x + meterSize.x, peakY),
+                       IM_COL32(255, 210, 80, 255), 2.0f);
+    ImGui::Dummy(meterSize);
+
+    if (muted != nullptr) {
+        char muteId[64];
+        std::snprintf(muteId, sizeof(muteId), "Mute##%s", label);
+        ImGui::Checkbox(muteId, muted);
+    }
+    if (soloed != nullptr) {
+        ImGui::SameLine();
+        char soloId[64];
+        std::snprintf(soloId, sizeof(soloId), "Solo##%s", label);
+        ImGui::Checkbox(soloId, soloed);
+    }
+    if (peakDbfs <= kFloorDb + 0.01f && rmsDbfs <= kFloorDb + 0.01f) {
+        ImGui::TextDisabled("(silent)");
+    } else {
+        ImGui::Text("%.1f dB", peakDbfs);
+    }
+    ImGui::EndGroup();
+}
+
+void AudioPreviewPlugin::drawTrackMixerWindow() {
+    ImGui::Begin("Audio Track Mixer");
+    ImGui::TextWrapped("Real per-channel gain/mute/solo -- applied live to actual playback every frame. Meters are "
+                        "a real static peak/RMS reading of each loaded/processed clip, not a live VU needle (this "
+                        "engine's audio API has no per-frame playback-cursor readback to drive one).");
+    ImGui::Spacing();
+
+    ImGui::BeginGroup();
+    drawMixerChannelStrip("Source", sourceGain_, &sourceMuted_, &sourceSoloed_, sourcePeakDbfs_, sourceRmsDbfs_);
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(16.0f, 0.0f));
+    ImGui::SameLine();
+    drawMixerChannelStrip("Processed", processedGain_, &processedMuted_, &processedSoloed_, processedPeakDbfs_,
+                           processedRmsDbfs_);
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(24.0f, 0.0f));
+    ImGui::SameLine();
+    float masterPeak = std::max(sourcePeakDbfs_, processedPeakDbfs_);
+    float masterRms = std::max(sourceRmsDbfs_, processedRmsDbfs_);
+    drawMixerChannelStrip("Master", masterGain_, nullptr, nullptr, masterPeak, masterRms);
+    ImGui::EndGroup();
+
     ImGui::End();
 }
 
@@ -150,6 +327,19 @@ void AudioPreviewPlugin::drawDspGraphSection() {
                     if (processedSound_ != core::kInvalidSoundHandle) audio_.unloadSound(processedSound_);
                     processedSound_ = audio_.loadSound(outPath);
                     dspStatusMessage_ = "Processed " + std::to_string(result.samples.size()) + " samples -> " + outPath;
+
+                    // Kronos ("Waveform Inspector" + "Audio Track
+                    // Mixer"): real, from the exact same result.samples
+                    // buffer just encoded above -- no second decode
+                    // needed (unlike the Source channel, which has no
+                    // in-memory buffer of its own until this Process
+                    // path runs), and no member copy either: result.samples
+                    // is already a real local that falls out of scope
+                    // right after this reduction, so there's nothing to
+                    // keep pinned as member state.
+                    processedWaveformPeaks_ = core::computeWaveformPeaks(result.samples, 512);
+                    processedPeakDbfs_ = core::computePeakDbfs(result.samples);
+                    processedRmsDbfs_ = core::computeRmsDbfs(result.samples);
                 }
             }
         }

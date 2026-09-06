@@ -1,5 +1,6 @@
 #include "studio/panels/ViewportPanel.hpp"
 
+#include "studio/plugins/ModelImporterPlugin.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -617,6 +618,37 @@ void ViewportPanel::drawPhysicsDebugOverlay(core::ECS& ecs, plugins::PhysicsPrev
     }
 }
 
+void ViewportPanel::drawGroundGridOverlay(ImVec2 imageOrigin, ImVec2 imageSize) {
+    if (imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    float aspect = imageSize.x / imageSize.y;
+    glm::mat4 viewProj = camera_.projectionMatrix(aspect) * camera_.viewMatrix();
+
+    auto projectLine = [&](glm::vec3 a, glm::vec3 b, ImU32 color, float thickness) {
+        ImVec2 screenA, screenB;
+        if (!worldToScreen(viewProj, a, imageOrigin, imageSize, screenA)) return;
+        if (!worldToScreen(viewProj, b, imageOrigin, imageSize, screenB)) return;
+        drawList->AddLine(screenA, screenB, color, thickness);
+    };
+
+    // Matches buildBringUpScene()'s own 25x25 GroundPlane extent (halfWidth/
+    // halfDepth = 12.5) -- a grid line every 1m, so the two read as one
+    // consistent floor rather than the grid overshooting or undershooting
+    // the real ground mesh underneath it.
+    constexpr float kHalfExtent = 12.5f;
+    constexpr float kStep = 1.0f;
+    constexpr ImU32 kLineColor = IM_COL32(255, 255, 255, 35);
+    constexpr ImU32 kAxisColor = IM_COL32(255, 255, 255, 90);
+    int lineCount = static_cast<int>(kHalfExtent / kStep);
+    for (int i = -lineCount; i <= lineCount; ++i) {
+        float offset = static_cast<float>(i) * kStep;
+        ImU32 color = (i == 0) ? kAxisColor : kLineColor;
+        projectLine({-kHalfExtent, 0.0f, offset}, {kHalfExtent, 0.0f, offset}, color, (i == 0) ? 1.5f : 1.0f);
+        projectLine({offset, 0.0f, -kHalfExtent}, {offset, 0.0f, kHalfExtent}, color, (i == 0) ? 1.5f : 1.0f);
+    }
+}
+
 void ViewportPanel::drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& meshLibrary,
                                               const ViewportDebugContext& debugContext, ImVec2 imageOrigin,
                                               ImVec2 imageSize) {
@@ -748,6 +780,8 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         ImGui::Dummy(avail);
     }
     ImVec2 imageSize = ImGui::GetItemRectSize();
+
+    drawGroundGridOverlay(imageOrigin, imageSize);
 
     // Kronos ("Studio Asset Drag-and-Drop"): real drop target -- the
     // viewport image/dummy just submitted above is "the last item," so
@@ -949,6 +983,81 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
         ImGui::SetTooltip("Scale Snap increment -- how far Scale changes per step while Scale Snap is on. Drag to adjust.");
+    }
+
+    // Kronos ("Clean Viewport & Mesh Import Pipeline"): real "Import 3D
+    // Asset..."/"Add Primitive" controls -- see setAssetTools()'s own
+    // header comment for exactly which modes enable this row at all.
+    if (showAssetTools_) {
+        ImGui::SameLine();
+        ImGui::Dummy(ImVec2(6.0f, 0.0f));
+        ImGui::SameLine();
+
+        if (modelImporterPlugin_ != nullptr) {
+            if (ImGui::Button("Import 3D Asset...")) {
+                modelImporterPlugin_->setOpen(true);
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+                ImGui::SetTooltip("Opens the Model Importer panel -- loads a real glTF 2.0 (.gltf/.glb), Wavefront "
+                                   ".obj, or FBX (.fbx) file onto a \"ModelPreview\" entity in this scene.");
+            }
+            ImGui::SameLine();
+        }
+
+        if (ImGui::BeginCombo("##add_primitive", "Add Primitive", ImGuiComboFlags_NoArrowButton)) {
+            // Real, honest fallback spawn point: 4m in front of the
+            // camera, never below the y=0 ground grid -- so a repeated
+            // "Add Primitive" click doesn't keep stacking every new shape
+            // exactly on top of the last one at the world origin.
+            glm::vec3 spawnPos = camera_.position + camera_.forward() * 4.0f;
+            spawnPos.y = std::max(spawnPos.y, 0.5f);
+
+            auto spawnPrimitive = [&](const char* entityName, uint32_t meshHandle, core::MeshSourceKind kind,
+                                        glm::vec3 params, bool hasMeshSource) {
+                if (ecs == nullptr) return;
+                core::EntityId entity = ecs->createEntity(entityName);
+                if (auto* transform = ecs->tryGetComponent<core::Transform>(entity)) {
+                    transform->position = spawnPos;
+                }
+                auto& renderable = ecs->addComponent<core::Renderable>(entity);
+                renderable.meshHandle = meshHandle;
+                renderable.baseColor = {0.82f, 0.82f, 0.85f, 1.0f};
+                renderable.metallic = 0.1f;
+                renderable.roughness = 0.6f;
+                if (hasMeshSource) {
+                    auto& meshSource = ecs->addComponent<core::MeshSource>(entity);
+                    meshSource.kind = kind;
+                    meshSource.params = params;
+                }
+                explorer.setSelected(entity);
+            };
+
+            if (ImGui::Selectable("Sphere")) {
+                // See WorldPropSpawnMeshHandles::sphereMesh's own
+                // comment -- a real Capsule with halfHeight=0.
+                spawnPrimitive("Sphere", propSpawnMeshHandles_.sphereMesh, core::MeshSourceKind::Capsule,
+                                {0.5f, 0.0f, 0.0f}, true);
+            }
+            if (ImGui::Selectable("Cube")) {
+                spawnPrimitive("Cube", propSpawnMeshHandles_.boxMesh, core::MeshSourceKind::Box,
+                                {0.5f, 0.5f, 0.5f}, true);
+            }
+            if (ImGui::Selectable("Cylinder")) {
+                // No MeshSourceKind::Cylinder -- see
+                // Mesh::createCylinder()'s own comment.
+                spawnPrimitive("Cylinder", propSpawnMeshHandles_.cylinderMesh, core::MeshSourceKind::Box, {},
+                                false);
+            }
+            if (ImGui::Selectable("Plane")) {
+                spawnPrimitive("Plane", propSpawnMeshHandles_.planeMesh, core::MeshSourceKind::Plane,
+                                {2.0f, 0.0f, 2.0f}, true);
+            }
+            if (ImGui::Selectable("Torus")) {
+                spawnPrimitive("Torus", propSpawnMeshHandles_.torusMesh, core::MeshSourceKind::Torus,
+                                {1.0f, 0.35f, 0.0f}, true);
+            }
+            ImGui::EndCombo();
+        }
     }
     ImGui::EndGroup();
 

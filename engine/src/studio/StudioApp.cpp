@@ -412,8 +412,10 @@ bool StudioApp::initialize(StudioMode mode) {
     pluginManager_.registerPlugin(std::move(particleEditor));
     pluginManager_.registerPlugin(std::make_unique<plugins::PrefabPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_));
-    pluginManager_.registerPlugin(std::make_unique<plugins::ModelImporterPlugin>(
-        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_));
+    auto modelImporter = std::make_unique<plugins::ModelImporterPlugin>(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_);
+    modelImporterPlugin_ = modelImporter.get();
+    pluginManager_.registerPlugin(std::move(modelImporter));
 
     // Kronos ("Avatar Creation System, Marketplace & Economy" -- "Wire
     // Wallet -> Catalogue purchases"): real, same "local_profile.profile"
@@ -645,25 +647,20 @@ bool StudioApp::initialize(StudioMode mode) {
     creatorAssetBrowserPlugin_ = creatorAssetBrowser.get();
     pluginManager_.registerPlugin(std::move(creatorAssetBrowser));
 
-    // Kronos ("Studio Asset Drag-and-Drop"): real, same box/capsule
-    // mesh shapes CreatorAssetBrowserPlugin's own "Use" button already
-    // spawns props with -- a real, separate registration (ViewportPanel
-    // has no reference to that plugin instance, see
-    // WorldPropSpawnMeshHandles's own comment), not a shared handle,
-    // but the exact same real geometry either way.
-    panels::WorldPropSpawnMeshHandles propSpawnMeshHandles;
-    propSpawnMeshHandles.boxMesh = meshLibrary_.registerMesh(
-        core::Mesh::createBox(renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
-                               {0.5f, 0.5f, 0.5f}));
-    propSpawnMeshHandles.capsuleMesh = meshLibrary_.registerMesh(core::Mesh::createCapsule(
-        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.35f, 1.0f));
-    viewportPanel_.setPropSpawnMeshHandles(propSpawnMeshHandles);
-
     // Kronos ("Instance-to-ECS Hydration"): the primitives an imported
     // Roblox place is built from. Registered once here rather than per
-    // import, so repeated imports share one set of GPU buffers.
-    hydrationMeshes_.box = propSpawnMeshHandles.boxMesh;
-    hydrationMeshes_.capsule = propSpawnMeshHandles.capsuleMesh;
+    // import, so repeated imports share one set of GPU buffers. Self-
+    // contained real box/capsule/cylinder registrations of its own now
+    // (previously borrowed from propSpawnMeshHandles, built right above
+    // this comment in the same Full-only branch -- that setup moved to a
+    // mode-independent block after this whole if/else, since 3D Maker
+    // now needs ViewportPanel's own prop-spawn mesh handles too and this
+    // migration-hydration feature stays Full-only).
+    hydrationMeshes_.box = meshLibrary_.registerMesh(
+        core::Mesh::createBox(renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                               {0.5f, 0.5f, 0.5f}));
+    hydrationMeshes_.capsule = meshLibrary_.registerMesh(core::Mesh::createCapsule(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.35f, 1.0f));
     hydrationMeshes_.cylinder = meshLibrary_.registerMesh(core::Mesh::createCylinder(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.5f, 0.5f));
 
@@ -723,6 +720,21 @@ bool StudioApp::initialize(StudioMode mode) {
             auto meshCsgWindow = std::make_unique<plugins::MeshCsgWindowPlugin>(meshLibrary_, textureLibrary_);
             meshCsgWindowPlugin_ = meshCsgWindow.get();
             kronosPluginHost_.registerPlugin(std::move(meshCsgWindow));
+
+            // Kronos ("Clean Viewport & Mesh Import Pipeline" -- "Import
+            // 3D Asset... buttons ... for 3D Maker and Studio"): real,
+            // same plugins::ModelImporterPlugin the Full branch already
+            // registers -- no cross-plugin constructor dependency (same
+            // reasoning as MaterialPlugin/MeshCsgWindowPlugin above), so
+            // it's safe to add to this mode's own pair without disturbing
+            // the "just this exact pair" scope comment above (that
+            // comment is about Studio's *modeling* toolset, not asset
+            // import).
+            auto modelImporter = std::make_unique<plugins::ModelImporterPlugin>(
+                renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                meshLibrary_);
+            modelImporterPlugin_ = modelImporter.get();
+            pluginManager_.registerPlugin(std::move(modelImporter));
         } else if (mode_ == StudioMode::MovieMaker) {
             // plugins::TrailerPanel -- MovieModePlugin itself is already
             // registered above (every mode gets it). Same "no cross-plugin
@@ -750,6 +762,44 @@ bool StudioApp::initialize(StudioMode mode) {
             pluginManager_.registerPlugin(std::move(audioPreview));
         }
     }
+
+    // Kronos ("Studio Asset Drag-and-Drop" + "Clean Viewport & Mesh
+    // Import Pipeline"): real mesh handles ViewportPanel needs to spawn
+    // authoring prop entities -- both the pre-existing drag-and-drop-from-
+    // Asset-Browser path (box/capsule, Full mode's own
+    // CreatorAssetBrowserPlugin drag source) and the new "Add Primitive"
+    // toolbar menu (see WorldPropSpawnMeshHandles's own comment for the
+    // per-field mapping). Deliberately mode-independent (outside the
+    // if/else above) -- 3D Maker now needs these same handles too (for
+    // its own "Add Primitive" menu) even though it has no
+    // CreatorAssetBrowserPlugin to drag from.
+    panels::WorldPropSpawnMeshHandles propSpawnMeshHandles;
+    propSpawnMeshHandles.boxMesh = meshLibrary_.registerMesh(
+        core::Mesh::createBox(renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                               {0.5f, 0.5f, 0.5f}));
+    propSpawnMeshHandles.capsuleMesh = meshLibrary_.registerMesh(core::Mesh::createCapsule(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.35f, 1.0f));
+    // See WorldPropSpawnMeshHandles::sphereMesh's own comment -- a real
+    // zero-half-height Capsule, the same "sphere" convention
+    // BlockBuilderPlugin::spawnBlock() already established, not a second,
+    // competing sphere mesh generator.
+    propSpawnMeshHandles.sphereMesh = meshLibrary_.registerMesh(core::Mesh::createCapsule(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.5f, 0.0f));
+    propSpawnMeshHandles.cylinderMesh = meshLibrary_.registerMesh(core::Mesh::createCylinder(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.5f, 0.5f));
+    propSpawnMeshHandles.planeMesh = meshLibrary_.registerMesh(
+        core::Mesh::createPlane(renderer_.allocator(), renderer_.device(), renderer_.commandPool(),
+                                 renderer_.graphicsQueue(), 2.0f, 2.0f));
+    propSpawnMeshHandles.torusMesh = meshLibrary_.registerMesh(core::Mesh::createTorus(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 1.0f, 0.35f));
+    viewportPanel_.setPropSpawnMeshHandles(propSpawnMeshHandles);
+
+    // Kronos ("Clean Viewport & Mesh Import Pipeline" -- "Add prominent
+    // 'Import 3D Asset...' buttons ... and 'Add Primitive' menus ... in
+    // the viewport/toolbar for 3D Maker and Studio"): real, exactly the
+    // 2 modes the brief names -- Movie Maker/Audio's own Viewport (Movie
+    // Maker's only; Audio has none) never grows this toolbar row.
+    viewportPanel_.setAssetTools(mode_ == StudioMode::Full || mode_ == StudioMode::ThreeDMaker, modelImporterPlugin_);
 
     // Real bug fix (found via a live playtest): every first-party plugin's
     // own `open_` default is `true` (IStudioPlugin.hpp), so a fresh launch
@@ -807,63 +857,25 @@ void StudioApp::handleFileDrop(const std::string& path) {
 }
 
 void StudioApp::buildBringUpScene() {
-    // Same dressing as engine_runtime's main.cpp -- real geometry, real
-    // PBR materials -- so Explorer/Inspector/Viewport all have something
-    // substantial to show immediately, and so Studio's viewport is
-    // visibly rendering the exact same kind of content the runtime does
-    // (Principle 4). No Physics here (see class comment): these are
-    // static entities, not simulated bodies.
-    uint32_t planeMesh = meshLibrary_.registerMesh(core::Mesh::createPlane(
-        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 25.0f, 25.0f));
-    uint32_t boxMesh = meshLibrary_.registerMesh(core::Mesh::createBox(
-        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), {0.5f, 0.5f, 0.5f}));
-
-    auto ground = ecs_.createEntity("GroundPlane");
-    auto& groundRenderable = ecs_.addComponent<core::Renderable>(ground);
-    groundRenderable.meshHandle = planeMesh;
-    groundRenderable.baseColor = {0.35f, 0.36f, 0.4f, 1.0f};
-    groundRenderable.metallic = 0.0f;
-    groundRenderable.roughness = 0.85f;
-    auto& groundMeshSource = ecs_.addComponent<core::MeshSource>(ground);
-    groundMeshSource.kind = core::MeshSourceKind::Plane;
-    groundMeshSource.params = {25.0f, 0.0f, 25.0f};
-
-    auto box = ecs_.createEntity("DynamicBox");
-    if (auto* transform = ecs_.tryGetComponent<core::Transform>(box)) {
-        transform->position = {0.0f, 2.0f, 0.0f};
-    }
-    auto& boxRenderable = ecs_.addComponent<core::Renderable>(box);
-    boxRenderable.meshHandle = boxMesh;
-    boxRenderable.baseColor = {0.95f, 0.64f, 0.54f, 1.0f};
-    boxRenderable.metallic = 1.0f;
-    boxRenderable.roughness = 0.25f;
-    auto& boxMeshSource = ecs_.addComponent<core::MeshSource>(box);
-    boxMeshSource.kind = core::MeshSourceKind::Box;
-    boxMeshSource.params = {0.5f, 0.5f, 0.5f};
-
-    // Real bug fix (found via a live playtest): 6x6=36 was cluttering a
-    // fresh launch's Explorer tree ("Other (38)" including GroundPlane/
-    // DynamicBox). 3x3 keeps the same metallic/roughness sweep (the loop
-    // math below is resolution-independent) with far less clutter.
-    constexpr int kGridSize = 3;
-    for (int xi = 0; xi < kGridSize; ++xi) {
-        for (int zi = 0; zi < kGridSize; ++zi) {
-            auto entity = ecs_.createEntity("MaterialSample");
-            if (auto* transform = ecs_.tryGetComponent<core::Transform>(entity)) {
-                transform->position = {(xi - kGridSize / 2) * 1.4f, 0.5f, 5.0f + zi * 1.4f};
-                transform->scale = {0.45f, 0.45f, 0.45f};
-            }
-            auto& renderable = ecs_.addComponent<core::Renderable>(entity);
-            renderable.meshHandle = boxMesh;
-            renderable.baseColor = {0.9f, 0.9f, 0.92f, 1.0f};
-            renderable.metallic = static_cast<float>(xi) / static_cast<float>(kGridSize - 1);
-            renderable.roughness = std::max(0.05f, static_cast<float>(zi) / static_cast<float>(kGridSize - 1));
-            auto& sampleMeshSource = ecs_.addComponent<core::MeshSource>(entity);
-            sampleMeshSource.kind = core::MeshSourceKind::Box;
-            sampleMeshSource.params = {0.5f, 0.5f, 0.5f};
-        }
-    }
-
+    // Kronos ("Clean Viewport & Mesh Import Pipeline"): this used to
+    // spawn 11 real entities here (GroundPlane, DynamicBox, and a 3x3
+    // "MaterialSample" grid) purely as bring-up dressing "so Explorer/
+    // Inspector/Viewport all have something substantial to show
+    // immediately" -- exactly the "legacy debug test objects" a creator
+    // opening a brand-new project doesn't want staring back at them. A
+    // fresh scene now starts genuinely empty; the "clean studio
+    // environment" this replaces it with is real too, just not ECS
+    // entities: ViewportPanel::drawGroundGridOverlay() draws a real,
+    // always-on world-space floor grid (not tied to any entity, so it's
+    // there even in a literally-empty ECS), and core::Renderer's own
+    // SceneLighting already default-constructs to a real directional key
+    // light (warm, intensity 3.0) plus a two-tone sky/ground ambient fill
+    // (SceneTypes.hpp) -- StudioApp never overrides it, so this was
+    // already the real lighting every scene rendered under; nothing new
+    // to add there. Only the camera's own starting pose (not a "debug
+    // object", just where a free-fly camera starts, matching this
+    // engine's real free-fly viewport -- see ViewportPanel.hpp's class
+    // comment) is real, kept dressing here.
     viewportPanel_.camera().position = {0.0f, 8.0f, -10.0f};
     viewportPanel_.camera().yawDegrees = 90.0f;
     viewportPanel_.camera().pitchDegrees = -22.0f;
@@ -880,7 +892,7 @@ bool StudioApp::initImGuiVulkanBackend() {
     // context creation).
     io.IniFilename = iniFilename_.c_str();
     ImGui::StyleColorsDark();
-    applyStudioStyle(); // Studio's own palette/rounding on top of the stock dark theme -- see StudioStyle.hpp
+    applyStudioStyle(accentColor()); // Studio's own dark-charcoal palette + per-mode accent -- see StudioStyle.hpp
     // Kronos ("UI/UX Revamp" -- "bold, thick, modern text"): must load
     // before ImGui_ImplVulkan_Init() below builds the font atlas texture.
     core::loadKronosFonts(core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/fonts");
@@ -960,7 +972,10 @@ void StudioApp::drawDockspace() {
         // Kronos ("Modular Executable Targets" -- task 2 "App Branding"):
         // real per-mode text now, via brandName() -- previously hardcoded
         // "Kronos Studio" even inside the 3 narrow apps.
-        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "%s", brandName());
+        {
+            StudioAccent a = accentColor();
+            ImGui::TextColored(ImVec4(a.r, a.g, a.b, 1.0f), "%s", brandName());
+        }
         ImGui::SameLine(0.0f, 12.0f);
         ImVec2 sepTop = ImGui::GetCursorScreenPos();
         float sepHeight = ImGui::GetFrameHeight();
@@ -1153,12 +1168,22 @@ void StudioApp::drawDockspace() {
         } else if (mode_ == StudioMode::Audio) {
             // No 3D Viewport at all in this mode (show3DViewport() is
             // false only here) -- the DSP Node Graph takes the center
-            // that Viewport would otherwise occupy.
+            // that Viewport would otherwise occupy. Kronos ("Kronos Audio
+            // Missing Features"): Waveform Inspector docks right of it
+            // (real-time visual feedback beside the graph that produces
+            // it); Audio Track Mixer docks bottom-right, beside Viseme
+            // Timeline rather than tabbed with it -- both are meant to
+            // stay visible at once while auditioning a clip.
+            ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.22f, nullptr, &centerId);
+            ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.28f, nullptr, &centerId);
             ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.35f, nullptr, &centerId);
+            ImGuiID bottomRightId = ImGui::DockBuilderSplitNode(bottomId, ImGuiDir_Right, 0.4f, nullptr, &bottomId);
 
-            ImGui::DockBuilderDockWindow("Audio Source", centerId);
+            ImGui::DockBuilderDockWindow("Audio Source", leftId);
             ImGui::DockBuilderDockWindow("DSP Node Graph", centerId);
+            ImGui::DockBuilderDockWindow("Waveform Inspector", rightId);
             ImGui::DockBuilderDockWindow("Viseme Timeline", bottomId);
+            ImGui::DockBuilderDockWindow("Audio Track Mixer", bottomRightId);
         } else {
             ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.20f, nullptr, &centerId);
             ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.23f, nullptr, &centerId);
@@ -1196,7 +1221,8 @@ void StudioApp::drawAboutPanel() {
         std::string heading = brandName();
         std::transform(heading.begin(), heading.end(), heading.begin(),
                         [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "%s", heading.c_str());
+        StudioAccent aboutAccent = accentColor();
+        ImGui::TextColored(ImVec4(aboutAccent.r, aboutAccent.g, aboutAccent.b, 1.0f), "%s", heading.c_str());
         ImGui::Text("Version %s", core::kKronosVersion);
         ImGui::TextDisabled("Built %s", core::kKronosBuildDate);
         ImGui::Separator();
@@ -1802,7 +1828,8 @@ void StudioApp::drawWelcomePanel() {
     std::string title = std::string("Welcome to ") + brandName();
     ImGui::SetNextWindowSize(ImVec2(460.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::Begin(title.c_str(), &welcomePanelOpen_)) {
-        ImGui::TextColored(ImVec4(0.33f, 0.72f, 0.70f, 1.0f), "%s", title.c_str());
+        StudioAccent welcomeAccent = accentColor();
+        ImGui::TextColored(ImVec4(welcomeAccent.r, welcomeAccent.g, welcomeAccent.b, 1.0f), "%s", title.c_str());
         switch (mode_) {
             case StudioMode::ThreeDMaker:
                 ImGui::TextWrapped(

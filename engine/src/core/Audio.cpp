@@ -3,6 +3,8 @@
 
 #include "core/Audio.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace engine::core {
@@ -93,6 +95,11 @@ void Audio::playOneShot(SoundHandle handle) {
     ma_sound_start(sounds_[handle]);
 }
 
+void Audio::setSoundVolume(SoundHandle handle, float volume01) {
+    if (handle >= sounds_.size() || !sounds_[handle]) return;
+    ma_sound_set_volume(sounds_[handle], volume01);
+}
+
 void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward, glm::vec3 listenerUp) {
     if (!initialized_) return;
 
@@ -159,6 +166,59 @@ bool encodeFloatMonoToWavFile(const std::string& path, const std::vector<float>&
     ma_result result = ma_encoder_write_pcm_frames(&encoder, samples.data(), samples.size(), &framesWritten);
     ma_encoder_uninit(&encoder);
     return result == MA_SUCCESS && framesWritten == samples.size();
+}
+
+std::vector<std::pair<float, float>> computeWaveformPeaks(const std::vector<float>& samples, size_t bucketCount) {
+    std::vector<std::pair<float, float>> peaks;
+    if (samples.empty() || bucketCount == 0) return peaks;
+    peaks.resize(bucketCount);
+
+    // Each bucket's [start, end) is derived straight from its own index
+    // over samples.size()/bucketCount, not a fixed floor(N/bucketCount)
+    // stride -- a fixed stride under-covers every bucket by the same
+    // truncated remainder and then dumps the entire accumulated shortfall
+    // onto the last one (e.g. N=1023, bucketCount=512: stride=1, so
+    // buckets 0..510 get exactly 1 sample each while bucket 511 alone
+    // absorbs the other 512 -- half the clip collapses into one bar).
+    // Deriving start/end from `i` and `i+1` spreads that remainder evenly
+    // across buckets instead, and both ends are real sample indices, so
+    // there's no "ran out of samples" case left to special-case.
+    for (size_t i = 0; i < bucketCount; ++i) {
+        size_t start = i * samples.size() / bucketCount;
+        size_t end = (i + 1) * samples.size() / bucketCount;
+        if (end <= start) end = start + 1;
+        end = std::min(end, samples.size());
+        float minVal = samples[start];
+        float maxVal = samples[start];
+        for (size_t s = start; s < end; ++s) {
+            minVal = std::min(minVal, samples[s]);
+            maxVal = std::max(maxVal, samples[s]);
+        }
+        peaks[i] = {minVal, maxVal};
+    }
+    return peaks;
+}
+
+namespace {
+constexpr float kSilenceFloorDbfs = -100.0f;
+
+float linearToDbfs(float linear) {
+    return linear > 0.0f ? 20.0f * std::log10(linear) : kSilenceFloorDbfs;
+}
+} // namespace
+
+float computePeakDbfs(const std::vector<float>& samples) {
+    float peak = 0.0f;
+    for (float s : samples) peak = std::max(peak, std::fabs(s));
+    return std::max(kSilenceFloorDbfs, linearToDbfs(peak));
+}
+
+float computeRmsDbfs(const std::vector<float>& samples) {
+    if (samples.empty()) return kSilenceFloorDbfs;
+    double sumSquares = 0.0;
+    for (float s : samples) sumSquares += static_cast<double>(s) * static_cast<double>(s);
+    float rms = static_cast<float>(std::sqrt(sumSquares / static_cast<double>(samples.size())));
+    return std::max(kSilenceFloorDbfs, linearToDbfs(rms));
 }
 
 } // namespace engine::core

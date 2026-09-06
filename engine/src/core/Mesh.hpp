@@ -152,6 +152,19 @@ public:
     [[nodiscard]] static Mesh createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool,
                                            VkQueue queue, glm::vec3 halfExtents);
 
+    // A real torus -- a closed quad-grid tube (no poles/caps to fold, so
+    // every ring is a full closed loop in the same "verticesPerRing =
+    // segments+1 for a clean UV seam" convention as every other generator
+    // above) swept `minorRadius` around a circle of `majorRadius`. Unlike
+    // createCylinder()/createWedge() above, this DOES have a real
+    // MeshSourceKind (Torus) -- see that enum's own comment -- so a torus
+    // spawned from the viewport's Add Primitive menu survives a Save
+    // Scene round trip (its own "Sphere" entry needs no new
+    // MeshSourceKind at all -- see MeshSourceKind's own comment).
+    [[nodiscard]] static Mesh createTorus(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool,
+                                           VkQueue queue, float majorRadius, float minorRadius,
+                                           uint32_t majorSegments = 24, uint32_t minorSegments = 12);
+
 private:
     VkBuffer vertexBuffer_ = VK_NULL_HANDLE;
     VmaAllocation vertexAllocation_ = nullptr;

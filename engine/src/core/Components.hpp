@@ -269,7 +269,18 @@ struct Name {
 // SceneFile.cpp's own meshSourceKindToIndex()/FromIndex() persist stay
 // unchanged -- an old saved scene's real on-disk index values must
 // keep meaning what they always meant.
-enum class MeshSourceKind { Box, Plane, Capsule, Quad, Obj, Gltf, Fbx };
+// Kronos ("Clean Viewport & Mesh Import Pipeline" -- viewport "Add
+// Primitive" menu): Torus appended the same way, for the same reason
+// (=7) -- see Mesh::createTorus()'s own comment for why it gets a real
+// MeshSourceKind, unlike Mesh::createCylinder()/createWedge() (used by
+// BlockBuilderPlugin's palette), which deliberately don't -- see
+// createCylinder()'s own comment on that accepted, documented
+// "live-session only" limitation. The menu's own Sphere entry needs no
+// new value here at all -- it reuses BlockBuilderPlugin::spawnBlock()'s
+// own existing "zero-half-height Capsule" convention (MeshSourceKind::
+// Capsule, halfHeight param = 0), already a real, fully round-tripping
+// sphere.
+enum class MeshSourceKind { Box, Plane, Capsule, Quad, Obj, Gltf, Fbx, Torus };
 
 // Attached alongside Renderable on any entity whose mesh a scene save
 // needs to be able to rebuild later -- core::MeshLibrary handles are
@@ -278,9 +289,11 @@ enum class MeshSourceKind { Box, Plane, Capsule, Quad, Obj, Gltf, Fbx };
 // Renderable::meshHandle alone is not enough to reconstruct anything.
 // `params` follows Prefab::meshParams' per-kind convention (Box:
 // half-extents xyz, Plane: halfWidth=x/halfDepth=z, Capsule: radius=x/
-// halfHeight=y, Quad: halfSize=x) and is unused when kind == Obj, Gltf,
-// or Fbx, where `path` (a real filesystem path to the source .obj/
-// .gltf/.glb/.fbx) is used instead.
+// halfHeight=y (a real sphere is a Capsule with halfHeight=0 -- see
+// BlockBuilderPlugin::spawnBlock()'s own comment), Quad: halfSize=x,
+// Torus: majorRadius=x/minorRadius=y) and is unused when kind == Obj,
+// Gltf, or Fbx, where `path` (a real filesystem path to the source
+// .obj/.gltf/.glb/.fbx) is used instead.
 // An entity with Renderable but no MeshSource is legal (its mesh simply
 // won't survive a save/load round trip) -- see studio/SceneManager.hpp
 // for where that gap is surfaced rather than silently producing a
