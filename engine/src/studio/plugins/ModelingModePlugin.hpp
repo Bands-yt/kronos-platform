@@ -10,6 +10,7 @@
 #include <glm/glm.hpp>
 
 #include "core/Components.hpp"
+#include "core/ComputePbrPainter.hpp"
 #include "core/CsgMesh.hpp"
 #include "core/EditableMeshComponent.hpp"
 #include "core/Mesh.hpp"
@@ -122,6 +123,27 @@ public:
     void translateSubObjectSelection(core::EditableMeshComponent& component, core::Renderable& renderable,
                                       glm::vec3 localDelta);
 
+    // Kronos ("3D DCC Modeling Suite" -- true GPU sculpt brushes): a real
+    // dispatch of core::ComputePbrPainter::sculpt() over EVERY real
+    // vertex in `component.mesh`, brush-centered on the current
+    // sub-object selection's own real anchor (subObjectAnchorLocal()),
+    // then written back via EditableMesh::setVertexPosition() and
+    // re-uploaded -- the exact same "real GPU round trip, CPU stays
+    // authoritative" shape translateSubObjectSelection() already
+    // establishes, just driven by a compute shader instead of a plain
+    // add. Real, stated scope: this is a panel-button-driven stroke (one
+    // real dispatch per "Apply Sculpt" click), not a live click-drag
+    // gesture in the 3D viewport -- ViewportPanel's own interaction state
+    // machine (free-fly camera, whole-entity gizmo, sub-object gizmo,
+    // Ctrl+Click picking, drag-select-box) is already real and fairly
+    // involved; wiring a 5th, continuous drag gesture into it is real,
+    // separate scope deliberately not attempted here. `sculptBrushNormal`
+    // is only meaningful for Clay Strips; `sculptDragDelta` only for
+    // Grab; `sculptNeighborRadius` only for Smooth -- unused by the other
+    // 3 modes, matching sculpt()'s own real, honest no-op convention for
+    // its per-mode-only parameters.
+    void applySculptStroke(core::EditableMeshComponent& component, core::Renderable& renderable);
+
 private:
     // Kronos ("3D DCC Modeling Suite" -- real non-destructive modifier
     // stack): the panel section listing component.modifierStack's real
@@ -131,6 +153,12 @@ private:
     // non-destructive alternative to applyCsg() below, not a replacement
     // for it.
     void drawModifierStackSection(core::EditableMeshComponent& component, core::Renderable& renderable);
+
+    // Kronos ("3D DCC Modeling Suite" -- true GPU sculpt brushes): brush
+    // mode/radius/strength controls plus the "Apply Sculpt" button that
+    // calls applySculptStroke() -- see that method's own header comment
+    // for the real, stated panel-button-vs-live-drag scope cut.
+    void drawSculptSection(core::EditableMeshComponent& component, core::Renderable& renderable);
 
     // Rebuilds a real GPU core::Mesh from `component.mesh`'s current
     // vertices/indices and swaps it into `renderable.meshHandle` via
@@ -166,6 +194,19 @@ private:
     float insetAmount_ = 0.5f;
     float bevelAmount_ = 0.25f;
     float mergeThreshold_ = 0.01f;
+
+    // Kronos ("3D DCC Modeling Suite" -- true GPU sculpt brushes): lazily
+    // initialize()'d on first real "Apply Sculpt" click, same "no live
+    // compute pipeline needed until actually used" reasoning
+    // MaterialPlugin's own painter_ already establishes.
+    core::ComputePbrPainter sculptPainter_;
+    bool sculptPainterReady_ = false;
+    core::SculptBrushMode sculptBrushMode_ = core::SculptBrushMode::Grab;
+    float sculptRadius_ = 0.5f;
+    float sculptStrength_ = 0.5f;
+    glm::vec3 sculptDragDelta_{0.0f, 0.25f, 0.0f}; // Grab only
+    float sculptNeighborRadius_ = 0.25f;           // Smooth only
+    std::string sculptStatus_;
 
     // Kronos ("3D Model Maker" Phase 4 -- export/import).
     std::string exportPathBuffer_ = "exported_mesh";

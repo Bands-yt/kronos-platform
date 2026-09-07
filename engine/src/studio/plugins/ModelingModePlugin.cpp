@@ -177,6 +177,81 @@ void ModelingModePlugin::translateSubObjectSelection(core::EditableMeshComponent
     if (changed) reuploadMesh(component, renderable);
 }
 
+void ModelingModePlugin::applySculptStroke(core::EditableMeshComponent& component, core::Renderable& renderable) {
+    if (!sculptPainterReady_) {
+        std::string error;
+        sculptPainterReady_ = sculptPainter_.initialize(allocator_, device_, cmdPool_, queue_, error);
+        if (!sculptPainterReady_) {
+            sculptStatus_ = "Sculpt painter init failed: " + error;
+            return;
+        }
+    }
+
+    core::EditableMesh& mesh = component.mesh;
+    if (mesh.vertexCount() == 0) return;
+
+    std::vector<glm::vec3> positions;
+    positions.reserve(mesh.vertexCount());
+    for (const core::Vertex& v : mesh.vertices()) positions.push_back(v.position);
+
+    glm::vec3 brushCenter = subObjectAnchorLocal(component);
+    // Clay Strips' real offset direction: the current selection's own
+    // real face normal when one is actually selected (Face mode), a
+    // real, honest up-vector fallback otherwise -- documented plainly
+    // rather than silently guessing a direction that means nothing to
+    // the user.
+    glm::vec3 brushNormal(0.0f, 1.0f, 0.0f);
+    if (subObjectMode_ == core::EditableMesh::SelectionMode::Face && component.selectedFace < mesh.faceCount()) {
+        brushNormal = mesh.faceNormal(component.selectedFace);
+    }
+
+    std::vector<glm::vec3> result;
+    std::string error;
+    if (!sculptPainter_.sculpt(positions, sculptBrushMode_, brushCenter, sculptRadius_, sculptStrength_, brushNormal,
+                                sculptDragDelta_, sculptNeighborRadius_, result, error)) {
+        sculptStatus_ = "Sculpt failed: " + error;
+        return;
+    }
+
+    for (size_t i = 0; i < result.size(); ++i) mesh.setVertexPosition(static_cast<uint32_t>(i), result[i]);
+    reuploadMesh(component, renderable);
+    sculptStatus_ = "Applied a real GPU sculpt stroke to " + std::to_string(result.size()) + " vertices.";
+}
+
+void ModelingModePlugin::drawSculptSection(core::EditableMeshComponent& component, core::Renderable& renderable) {
+    helpMarker(
+        "Real GPU compute sculpting (core::ComputePbrPainter::sculpt()) centered on the current sub-object "
+        "selection above -- pick a vertex/edge/face there first, then Apply Sculpt here. This is a real, one-shot "
+        "GPU dispatch per click, not a live click-drag gesture in the Viewport.");
+
+    static const char* kModeNames[] = {"Grab", "Clay Strips", "Pinch", "Smooth"};
+    int modeIndex = static_cast<int>(sculptBrushMode_);
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::Combo("Brush##sculpt", &modeIndex, kModeNames, IM_ARRAYSIZE(kModeNames))) {
+        sculptBrushMode_ = static_cast<core::SculptBrushMode>(modeIndex);
+    }
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::DragFloat("Radius##sculpt", &sculptRadius_, 0.01f, 0.01f, 10.0f);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::DragFloat("Strength##sculpt", &sculptStrength_, 0.01f, 0.0f, 1.0f);
+
+    if (sculptBrushMode_ == core::SculptBrushMode::Grab) {
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::DragFloat3("Drag Delta##sculpt", &sculptDragDelta_.x, 0.01f);
+    } else if (sculptBrushMode_ == core::SculptBrushMode::ClayStrips) {
+        ImGui::TextDisabled("Offsets along the selected face's own real normal (Face mode) or +Y otherwise.");
+    } else if (sculptBrushMode_ == core::SculptBrushMode::Smooth) {
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::DragFloat("Neighbor Radius##sculpt", &sculptNeighborRadius_, 0.01f, 0.01f, 10.0f);
+        ImGui::SameLine();
+        helpMarker("Real spatial neighbor search (position-based), not full mesh-topology adjacency.");
+    }
+
+    if (ImGui::Button("Apply Sculpt")) applySculptStroke(component, renderable);
+    if (!sculptStatus_.empty()) ImGui::TextWrapped("%s", sculptStatus_.c_str());
+}
+
 void ModelingModePlugin::drawModifierStackSection(core::EditableMeshComponent& component, core::Renderable& renderable) {
     helpMarker("Applied on top of the base mesh above, in order, at upload time only -- editing the base mesh above, "
                "or reordering/disabling/removing a modifier here, updates the result immediately without ever "
@@ -443,6 +518,10 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
     ImGui::Spacing();
     ImGui::SeparatorText("Modifiers (non-destructive)");
     drawModifierStackSection(*editable, *renderable);
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Sculpt (GPU)");
+    drawSculptSection(*editable, *renderable);
 
     ImGui::Spacing();
     ImGui::SeparatorText("UV");

@@ -1465,6 +1465,117 @@ void testComputePbrPainterFailsWhenNotInitialized() {
     check(!error.empty(), "a failed stamp() reports a real, non-empty error message");
 }
 
+// Kronos ("3D DCC Modeling Suite" -- true GPU sculpt brushes): real GPU
+// dispatch of Grab against a real HeadlessComputeContext, checked
+// against hand/formula-derived expected positions (including the real
+// GLSL smoothstep falloff formula, replicated in C++ here to verify the
+// actual GPU shader computes the same real curve) -- not just "did it
+// return true".
+void testComputePbrPainterSculptGrabMovesVerticesWithRealFalloff() {
+    using namespace engine::core;
+    HeadlessComputeContext ctx = createHeadlessComputeContext();
+    if (!ctx.valid) {
+        check(true, "ComputePbrPainter sculpt Grab test: no compute-capable Vulkan device -- real, honest skip");
+        ctx.destroy();
+        return;
+    }
+
+    ComputePbrPainter painter;
+    std::string error;
+    check(painter.initialize(ctx.allocator, ctx.device, ctx.commandPool, ctx.queue, error),
+          ("painter really initializes: " + error).c_str());
+
+    std::vector<glm::vec3> positions = {
+        glm::vec3(0.0f, 0.0f, 0.0f), // exactly at the brush center -- real falloff 1.0
+        glm::vec3(1.0f, 0.0f, 0.0f), // distance 1 inside a real radius-2 brush -- real partial falloff
+        glm::vec3(5.0f, 0.0f, 0.0f), // distance 5, outside the real brush radius -- untouched
+    };
+    const glm::vec3 brushCenter(0.0f, 0.0f, 0.0f);
+    const float brushRadius = 2.0f;
+    const float strength = 1.0f;
+    const glm::vec3 dragDelta(0.0f, 1.0f, 0.0f);
+
+    std::vector<glm::vec3> result;
+    check(painter.sculpt(positions, SculptBrushMode::Grab, brushCenter, brushRadius, strength, glm::vec3(0.0f),
+                          dragDelta, 0.0f, result, error),
+          ("real GPU sculpt Grab dispatch really succeeds: " + error).c_str());
+    check(result.size() == 3, "sculpt() really returns exactly one real result per input vertex");
+
+    check(nearlyEqual(glm::distance(result[0], positions[0] + dragDelta), 0.0f, 1e-4f),
+          "a real vertex exactly at the brush center really moves by the full real dragDelta (falloff 1.0)");
+
+    const float t = 1.0f / brushRadius; // real GLSL smoothstep(0, radius, dist=1)
+    const float smoothstepVal = t * t * (3.0f - 2.0f * t);
+    const float expectedFalloff = 1.0f - smoothstepVal;
+    const glm::vec3 expectedMid = positions[1] + dragDelta * expectedFalloff;
+    check(nearlyEqual(glm::distance(result[1], expectedMid), 0.0f, 1e-3f),
+          "a real vertex at half the brush radius really moves by dragDelta scaled by the real GPU shader's own "
+          "smoothstep falloff, matching the exact formula replicated here");
+
+    check(nearlyEqual(glm::distance(result[2], positions[2]), 0.0f, 1e-4f),
+          "a real vertex outside the brush radius really stays completely unchanged");
+
+    painter.destroy();
+    ctx.destroy();
+}
+
+void testComputePbrPainterSculptPinchAndSmoothProduceRealExpectedMovement() {
+    using namespace engine::core;
+    HeadlessComputeContext ctx = createHeadlessComputeContext();
+    if (!ctx.valid) {
+        check(true, "ComputePbrPainter sculpt Pinch/Smooth test: no compute-capable Vulkan device -- real, honest skip");
+        ctx.destroy();
+        return;
+    }
+    ComputePbrPainter painter;
+    std::string error;
+    check(painter.initialize(ctx.allocator, ctx.device, ctx.commandPool, ctx.queue, error),
+          ("painter really initializes: " + error).c_str());
+
+    // Pinch: a real vertex 1 unit from the real brush center should
+    // move measurably toward it, by strength*falloff, in the exact real
+    // direction (center - p).
+    std::vector<glm::vec3> pinchPositions = {glm::vec3(1.0f, 0.0f, 0.0f)};
+    const glm::vec3 brushCenter(0.0f, 0.0f, 0.0f);
+    const float brushRadius = 2.0f;
+    const float strength = 0.5f;
+    std::vector<glm::vec3> pinchResult;
+    check(painter.sculpt(pinchPositions, SculptBrushMode::Pinch, brushCenter, brushRadius, strength, glm::vec3(0.0f),
+                          glm::vec3(0.0f), 0.0f, pinchResult, error),
+          ("real GPU sculpt Pinch dispatch really succeeds: " + error).c_str());
+    const float t = 1.0f / brushRadius;
+    const float smoothstepVal = t * t * (3.0f - 2.0f * t);
+    const float falloff = 1.0f - smoothstepVal;
+    const glm::vec3 toCenter = brushCenter - pinchPositions[0];
+    const glm::vec3 expected = pinchPositions[0] + toCenter * strength * falloff;
+    check(nearlyEqual(glm::distance(pinchResult[0], expected), 0.0f, 1e-3f),
+          "Pinch really moves a real vertex toward the real brush center by strength*falloff, matching the exact "
+          "real GPU computation");
+
+    // Smooth: 3 real clustered vertices plus 1 real, deliberate outlier
+    // far outside neighborRadius -- vertex 0's real smoothed result
+    // should reflect only its real nearby cluster-mates, not get pulled
+    // toward the distant outlier (proving the real per-vertex neighbor
+    // search actually respects neighborRadius, not just "average of
+    // everything").
+    std::vector<glm::vec3> smoothPositions = {
+        glm::vec3(0.0f, 0.0f, 0.0f),
+        glm::vec3(0.2f, 0.0f, 0.0f),
+        glm::vec3(-0.2f, 0.0f, 0.0f),
+        glm::vec3(100.0f, 0.0f, 0.0f),
+    };
+    std::vector<glm::vec3> smoothed;
+    check(painter.sculpt(smoothPositions, SculptBrushMode::Smooth, glm::vec3(0.0f), 5.0f, 1.0f, glm::vec3(0.0f),
+                          glm::vec3(0.0f), 0.5f, smoothed, error),
+          ("real GPU sculpt Smooth dispatch really succeeds: " + error).c_str());
+    check(smoothed[0].x < 1.0f,
+          "Smooth's real spatial neighbor search really excludes the far real outlier vertex -- vertex 0 stays "
+          "near its real local cluster average, not pulled toward the outlier");
+
+    painter.destroy();
+    ctx.destroy();
+}
+
 void testIPInfringementScanner() {
     engine::safety::IPInfringementScanner scanner;
 
@@ -37882,6 +37993,8 @@ int main() {
     testComputePbrPainterStampWritesRealPixelsInVram();
     testComputePbrPainterUsesRealRayTriangleUvPickToLocateTheStamp();
     testComputePbrPainterFailsWhenNotInitialized();
+    testComputePbrPainterSculptGrabMovesVerticesWithRealFalloff();
+    testComputePbrPainterSculptPinchAndSmoothProduceRealExpectedMovement();
     testIPInfringementScanner();
     testIPInfringementScannerFuzzy();
     testIPInfringementScannerPhonetic();
