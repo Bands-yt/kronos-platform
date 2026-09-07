@@ -5,7 +5,7 @@
 
 namespace engine::core {
 
-enum class AssetKind { Mesh, Texture, Audio, Unknown };
+enum class AssetKind { Mesh, Texture, Audio, Video, Unknown };
 
 [[nodiscard]] AssetKind detectAssetKind(const std::string& path);
 

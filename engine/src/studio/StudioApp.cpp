@@ -689,7 +689,7 @@ bool StudioApp::initialize(StudioMode mode) {
     // reference to that plugin's Sequence transport.
     pluginManager_.registerPlugin(std::make_unique<plugins::NleTimelinePlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), textureLibrary_,
-        *movieModePlugin_));
+        meshLibrary_, *movieModePlugin_));
 
     // Creator Asset Browser (Sprint 10 task category 4) -- needs
     // terrainEditorPlugin_ (already captured above) for its Terrain
@@ -803,7 +803,7 @@ bool StudioApp::initialize(StudioMode mode) {
 
             pluginManager_.registerPlugin(std::make_unique<plugins::NleTimelinePlugin>(
                 renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
-                textureLibrary_, *movieModePlugin_));
+                textureLibrary_, meshLibrary_, *movieModePlugin_));
         } else if (mode_ == StudioMode::Audio) {
             // The v0.4.0 brief's "Audio boots AudioPreviewPlugin/DSPGraph"
             // -- corrected: core::AudioDspGraph is a real member *inside*

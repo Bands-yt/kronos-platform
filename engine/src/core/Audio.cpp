@@ -100,6 +100,30 @@ void Audio::setSoundVolume(SoundHandle handle, float volume01) {
     ma_sound_set_volume(sounds_[handle], volume01);
 }
 
+void Audio::playFromOffset(SoundHandle handle, double offsetSeconds) {
+    if (handle >= sounds_.size() || !sounds_[handle]) return;
+    ma_format format;
+    ma_uint32 channels = 0;
+    ma_uint32 sampleRate = 0;
+    if (ma_sound_get_data_format(sounds_[handle], &format, &channels, &sampleRate, nullptr, 0) != MA_SUCCESS ||
+        sampleRate == 0) {
+        return;
+    }
+    ma_uint64 frame = static_cast<ma_uint64>(offsetSeconds * static_cast<double>(sampleRate));
+    ma_sound_seek_to_pcm_frame(sounds_[handle], frame);
+    ma_sound_start(sounds_[handle]);
+}
+
+void Audio::stopSound(SoundHandle handle) {
+    if (handle >= sounds_.size() || !sounds_[handle]) return;
+    ma_sound_stop(sounds_[handle]);
+}
+
+bool Audio::isSoundPlaying(SoundHandle handle) const {
+    if (handle >= sounds_.size() || !sounds_[handle]) return false;
+    return ma_sound_is_playing(sounds_[handle]) == MA_TRUE;
+}
+
 void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward, glm::vec3 listenerUp) {
     if (!initialized_) return;
 
