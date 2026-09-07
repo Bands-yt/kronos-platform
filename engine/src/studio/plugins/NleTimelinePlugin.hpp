@@ -76,9 +76,22 @@ private:
     void drawTimelineWindow();
     void drawTrackRow(size_t trackIndex, float rowTop, float rowHeight);
     void drawClip(size_t trackIndex, size_t clipIndex, float rowTop, float rowHeight);
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real waveform peak
+    // visualization): real per-bucket min/max amplitude (asset's own
+    // WaveformPeaks, computed once at import time) resampled to a fixed
+    // 128-column display, mapped through the CLIP's own trim window
+    // (sourceOffsetSeconds..+timelineDuration) so a trimmed clip shows
+    // only the waveform of what actually plays, not the whole source file.
+    void drawWaveform(ImDrawList* drawList, ImVec2 clipTopLeft, ImVec2 clipBottomRight, const cinematic::MediaClip& clip,
+                       const cinematic::MediaAsset& asset) const;
     void handleTimelineZoomAndPan();
     void handleMediaDrop(size_t trackIndex);
     void importFromDialog();
+
+    // Real, honest linear search (Media Bin sizes are small -- tens of
+    // imported assets, not thousands) by MediaClip::assetPath, shared by
+    // the playback driver and drawClip()'s own waveform lookup.
+    [[nodiscard]] const cinematic::MediaAsset* findMediaAsset(const std::string& path) const;
 
     void updatePlayback(core::ECS& ecs, float playheadSeconds);
     void updateVideoClipPlayback(core::ECS& ecs, uint64_t clipKey, const cinematic::MediaAsset& asset,
