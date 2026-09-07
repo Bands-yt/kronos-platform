@@ -109,3 +109,40 @@ instead of one real one. If this goes forward:
   language, given none of them hit Luau's numbers for free?
 - Does a shared script land in `CoreScript`/`StudioPlugin` trust tiers
   the same way, or does cross-language privilege need its own model?
+
+## Later: cohesion features, once more than one language actually exists
+
+Everything above is about getting a second (or third) language embedded
+at all. The five ideas below are a further phase on top of that — they
+only make sense once at least two real embeddings exist side by side,
+and none of them should be started before then. Recorded here (moved
+from an untracked `marketing/features.txt` note) so the idea isn't lost,
+not because any of it is designed yet.
+
+1. **Unified type mapping** — describe an ECS component struct once and
+   generate matching bindings for C++, and whichever of Luau/Python/
+   Java/Rust are actually embedded, instead of hand-writing the mapping
+   per language per component. This is the same "shared IDL" idea
+   flagged above, scoped specifically to component structs.
+2. **Cross-language debugging** — step from a Luau (or other embedded
+   language) call frame into the native C++ frame it calls into, in one
+   debugger session. Needs a real design: this is at minimum stitching
+   together two different debug-info formats and call-stack
+   representations, not a config flag.
+3. **Cross-language hot reload** — recompile and hot-swap a script or a
+   native system while the engine keeps running. Luau already reloads
+   scripts individually; extending that to a compiled-native system (C++
+   or a Rust plugin) means solving in-place code replacement for
+   compiled code, which Luau's own hot-reload story doesn't have to.
+4. **Polyglot package registry** — extend `kronos-pkg` so a single
+   package can bundle parts written in more than one embedded language
+   (e.g. a native system plus a Luau wrapper). Depends on the shared
+   binding/IDL layer above existing first; without it there's nothing
+   consistent to package.
+5. **Cross-language event bus** — let every embedded language fire and
+   receive the same engine events. The underlying event dispatch can
+   reuse whatever this engine's existing event system already does;
+   the new part is marshaling an event payload across each language's
+   own FFI boundary safely. Claims like "zero-allocation, lock-free"
+   are aspirational here, not a constraint anyone has validated yet —
+   any real design has to earn that, not assume it.
