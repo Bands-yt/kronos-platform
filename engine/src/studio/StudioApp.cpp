@@ -48,6 +48,7 @@
 #include "studio/PluginChrome.hpp"
 #include "migration/ProjectImporter.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
+#include "studio/plugins/NleTimelinePlugin.hpp"
 #include "studio/plugins/TimelineEditorPlugin.hpp"
 #include "studio/plugins/MaterialPlugin.hpp"
 #include "studio/plugins/ModelImporterPlugin.hpp"
@@ -645,6 +646,16 @@ bool StudioApp::initialize(StudioMode mode) {
     movieModePlugin_ = movieMode.get();
     pluginManager_.registerPlugin(std::move(movieMode));
 
+    // Kronos ("Movie Maker NLE" -- CapCut-style clip timeline): the
+    // Media Bin + clip-track editor layered alongside MovieModePlugin's
+    // own keyframe sequencer (see NleTimelinePlugin.hpp's own class
+    // comment for why they're separate plugins sharing one playhead).
+    // Constructed after movieModePlugin_ above, since it needs a live
+    // reference to that plugin's Sequence transport.
+    pluginManager_.registerPlugin(std::make_unique<plugins::NleTimelinePlugin>(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), textureLibrary_,
+        *movieModePlugin_));
+
     // Creator Asset Browser (Sprint 10 task category 4) -- needs
     // terrainEditorPlugin_ (already captured above) for its Terrain
     // preset entries, same reasoning as CreatorConsolePlugin above.
@@ -754,6 +765,10 @@ bool StudioApp::initialize(StudioMode mode) {
                 meshLibrary_, textureLibrary_, particleSystem_, networkSession_);
             trailerPanel_ = trailerPanel.get();
             pluginManager_.registerPlugin(std::move(trailerPanel));
+
+            pluginManager_.registerPlugin(std::make_unique<plugins::NleTimelinePlugin>(
+                renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                textureLibrary_, *movieModePlugin_));
         } else if (mode_ == StudioMode::Audio) {
             // The v0.4.0 brief's "Audio boots AudioPreviewPlugin/DSPGraph"
             // -- corrected: core::AudioDspGraph is a real member *inside*

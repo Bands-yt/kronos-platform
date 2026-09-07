@@ -146,6 +146,7 @@
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
 #include "cinematic/CameraRail.hpp"
+#include "cinematic/ClipTimeline.hpp"
 #include "cinematic/ExportRunner.hpp"
 #include "cinematic/OfflineExport.hpp"
 #include "cinematic/RailCamera.hpp"
@@ -21448,6 +21449,103 @@ void testSequenceAdvanceIsZeroHeapWithAReusedBuffer() {
     }
     check(scope.allocationsSinceStart() == 0,
           "real sequence playback really performs ZERO heap allocations across 240 real frames with a reused buffer");
+}
+
+void testClipTimelineSplitPreservesSourceOffsetAndOuterFades() {
+    engine::cinematic::ClipTimeline timeline;
+    size_t track = timeline.addTrack("Media 1", engine::cinematic::ClipTrackKind::Media);
+    size_t clipIndex = timeline.addClip(track, "clip.wav", 2.0f, 10.0f);
+    check(clipIndex == 0, "a real clip really got added at the front of an empty track");
+    timeline.setFade(track, clipIndex, 1.0f, 1.0f);
+
+    check(timeline.splitClip(track, clipIndex, 6.0f), "splitting strictly inside a clip really succeeds");
+    const std::vector<engine::cinematic::ClipTrack>& tracks = timeline.tracks();
+    check(tracks[track].clips.size() == 2, "a real split really produces two real clips");
+
+    const engine::cinematic::MediaClip& first = tracks[track].clips[0];
+    const engine::cinematic::MediaClip& second = tracks[track].clips[1];
+    check(std::fabs(first.timelineStart - 2.0f) < 0.001f, "the first half keeps the original start");
+    check(std::fabs(first.timelineDuration - 4.0f) < 0.001f, "the first half really ends exactly at the cut");
+    check(std::fabs(second.timelineStart - 6.0f) < 0.001f, "the second half really starts exactly at the cut");
+    check(std::fabs(second.timelineDuration - 6.0f) < 0.001f, "the second half really covers the remainder");
+    check(std::fabs(second.sourceOffsetSeconds - 4.0f) < 0.001f,
+          "the second half's source offset really continues where the first leaves off, so playback doesn't jump");
+
+    check(std::fabs(first.fadeInSeconds - 1.0f) < 0.001f, "the outer fade-in really survives on the first half");
+    check(first.fadeOutSeconds == 0.0f, "a razor cut really carries no fade of its own on the first half");
+    check(second.fadeInSeconds == 0.0f, "a razor cut really carries no fade of its own on the second half");
+    check(std::fabs(second.fadeOutSeconds - 1.0f) < 0.001f, "the outer fade-out really survives on the second half");
+}
+
+void testClipTimelineSplitRejectsExactBoundaries() {
+    engine::cinematic::ClipTimeline timeline;
+    size_t track = timeline.addTrack("Media 1", engine::cinematic::ClipTrackKind::Media);
+    size_t clipIndex = timeline.addClip(track, "clip.wav", 0.0f, 5.0f);
+
+    check(!timeline.splitClip(track, clipIndex, 0.0f), "splitting exactly on the start edge really is rejected");
+    check(!timeline.splitClip(track, clipIndex, 5.0f), "splitting exactly on the end edge really is rejected");
+    check(timeline.tracks()[track].clips.size() == 1, "a rejected split really leaves the clip untouched");
+}
+
+void testClipTimelineTrimStartClampsToPreviousNeighborAndShiftsSourceOffset() {
+    engine::cinematic::ClipTimeline timeline;
+    size_t track = timeline.addTrack("Media 1", engine::cinematic::ClipTrackKind::Media);
+    (void)timeline.addClip(track, "a.wav", 0.0f, 3.0f);
+    size_t second = timeline.addClip(track, "b.wav", 3.0f, 5.0f);
+
+    float applied = timeline.trimClipStart(track, second, 1.0f); // would overlap the first clip's [0,3)
+    check(std::fabs(applied - 3.0f) < 0.001f, "a trim dragged past the previous neighbor really clamps to its end");
+
+    const engine::cinematic::MediaClip& clip = timeline.tracks()[track].clips[second];
+    applied = timeline.trimClipStart(track, second, 4.0f);
+    check(std::fabs(applied - 4.0f) < 0.001f, "a real, in-range trim-start really applies exactly");
+    check(std::fabs(clip.sourceOffsetSeconds - 1.0f) < 0.001f,
+          "trimming the start really shifts sourceOffsetSeconds by the same delta, so the footage stays anchored");
+    check(std::fabs(clip.timelineDuration - 4.0f) < 0.001f, "the duration really shrinks by exactly the trim amount");
+}
+
+void testClipTimelineTrimEndClampsToNextNeighbor() {
+    engine::cinematic::ClipTimeline timeline;
+    size_t track = timeline.addTrack("Media 1", engine::cinematic::ClipTrackKind::Media);
+    size_t first = timeline.addClip(track, "a.wav", 0.0f, 3.0f);
+    (void)timeline.addClip(track, "b.wav", 5.0f, 2.0f);
+
+    float applied = timeline.trimClipEnd(track, first, 10.0f); // would overlap the second clip's [5,7)
+    check(std::fabs(applied - 5.0f) < 0.001f, "a trim dragged past the next neighbor really clamps to its start");
+    check(std::fabs(timeline.tracks()[track].clips[first].timelineDuration - 5.0f) < 0.001f,
+          "the clamped end really produces the expected real duration");
+}
+
+void testClipTimelineSetFadeScalesDownOverlappingHandles() {
+    engine::cinematic::ClipTimeline timeline;
+    size_t track = timeline.addTrack("Media 1", engine::cinematic::ClipTrackKind::Media);
+    size_t clipIndex = timeline.addClip(track, "a.wav", 0.0f, 4.0f);
+
+    timeline.setFade(track, clipIndex, 3.0f, 3.0f); // 3+3 > the clip's own 4s duration
+    const engine::cinematic::MediaClip& clip = timeline.tracks()[track].clips[clipIndex];
+    check(std::fabs(clip.fadeInSeconds - 2.0f) < 0.001f, "overlapping fade handles really scale down proportionally");
+    check(std::fabs(clip.fadeOutSeconds - 2.0f) < 0.001f, "overlapping fade handles really scale down proportionally");
+    check(std::fabs(clip.fadeInSeconds + clip.fadeOutSeconds - clip.timelineDuration) < 0.001f,
+          "the scaled-down pair really sums to exactly the clip's own duration, not less");
+}
+
+void testClipTimelineEnvelopeRampsAndClampsOutsideBounds() {
+    engine::cinematic::MediaClip clip;
+    clip.timelineStart = 10.0f;
+    clip.timelineDuration = 4.0f;
+    clip.fadeInSeconds = 1.0f;
+    clip.fadeOutSeconds = 1.0f;
+
+    check(engine::cinematic::ClipTimeline::envelopeValueAtTime(clip, 9.999f) == 0.0f,
+          "the real envelope really reads zero one tick before the clip starts");
+    check(std::fabs(engine::cinematic::ClipTimeline::envelopeValueAtTime(clip, 10.5f) - 0.5f) < 0.001f,
+          "the real envelope really ramps linearly across the fade-in");
+    check(std::fabs(engine::cinematic::ClipTimeline::envelopeValueAtTime(clip, 12.0f) - 1.0f) < 0.001f,
+          "the real envelope really reads full gain through the clip's own middle");
+    check(std::fabs(engine::cinematic::ClipTimeline::envelopeValueAtTime(clip, 13.5f) - 0.5f) < 0.001f,
+          "the real envelope really ramps back down across the fade-out");
+    check(engine::cinematic::ClipTimeline::envelopeValueAtTime(clip, 14.0f) == 0.0f,
+          "the real envelope really reads zero exactly at the clip's own end");
 }
 
 void testCurveSamplingHitsEveryKeyframeExactly() {
