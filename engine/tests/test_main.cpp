@@ -44,6 +44,7 @@
 #include "core/Camera.hpp"
 #include "core/CsgMesh.hpp"
 #include "core/EditableMesh.hpp"
+#include "core/ModifierStack.hpp"
 #include "core/EditableMeshComponent.hpp"
 #include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
@@ -34595,6 +34596,191 @@ void testModelingModePluginTranslateSubObjectSelectionMovesOnlyTheExpectedRealVe
     ctx.destroy();
 }
 
+void testModifierStackEvaluateNeverMutatesTheBaseMesh() {
+    using namespace engine::core;
+    EditableMesh base = EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    size_t baseVertsBefore = base.vertexCount(), baseFacesBefore = base.faceCount();
+
+    ModifierStack stack;
+    Modifier mirror;
+    mirror.type = ModifierType::Mirror;
+    mirror.mirror.axis = 0;
+    mirror.mirror.mergeAtCenter = false;
+    stack.addModifier(mirror);
+
+    EditableMesh result = stack.evaluate(base);
+    check(base.vertexCount() == baseVertsBefore && base.faceCount() == baseFacesBefore,
+          "evaluate() really never mutates the base mesh it was given");
+    check(result.vertexCount() == baseVertsBefore * 2, "a real Mirror modifier really doubles vertex count with merge off");
+    check(result.faceCount() == baseFacesBefore * 2, "a real Mirror modifier really doubles face count");
+
+    (void)stack.evaluate(base); // a second call
+    check(base.vertexCount() == baseVertsBefore, "a second evaluate() call still never mutates the base mesh");
+}
+
+void testModifierStackMirrorNegatesTheChosenAxisAndReversesWinding() {
+    using namespace engine::core;
+    std::vector<Vertex> vertices = {
+        {{1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+        {{2.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+        {{1.5f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.5f, 1.0f}},
+    };
+    EditableMesh base = EditableMesh::fromVertexData(vertices, {0, 1, 2});
+
+    ModifierStack stack;
+    Modifier mirror;
+    mirror.type = ModifierType::Mirror;
+    mirror.mirror.axis = 0;
+    mirror.mirror.mergeAtCenter = false;
+    stack.addModifier(mirror);
+    EditableMesh result = stack.evaluate(base);
+
+    check(result.vertexCount() == 6, "1 real triangle mirrored (no merge) really produces 6 real vertices");
+    check(nearlyEqual(result.vertices()[3].position.x, -1.0f, 1e-4f) &&
+              nearlyEqual(result.vertices()[4].position.x, -2.0f, 1e-4f) &&
+              nearlyEqual(result.vertices()[5].position.x, -1.5f, 1e-4f),
+          "the mirrored copy's own X really negates, Y/Z left alone");
+    check(nearlyEqual(result.vertices()[3].normal.x, -1.0f, 1e-4f),
+          "the mirrored copy's own normal really flips on the mirror axis too");
+    std::array<uint32_t, 3> mirroredFace = result.faceVertexIndices(1);
+    check(mirroredFace[0] == 3 && mirroredFace[1] == 5 && mirroredFace[2] == 4,
+          "the mirrored triangle's real winding is really reversed (a,c,b) so it doesn't face inward");
+}
+
+void testModifierStackArrayRepeatsWithRealPerCopyOffset() {
+    using namespace engine::core;
+    EditableMesh base = EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    size_t baseVerts = base.vertexCount(), baseFaces = base.faceCount();
+
+    ModifierStack stack;
+    Modifier array;
+    array.type = ModifierType::Array;
+    array.array.count = 3;
+    array.array.offset = glm::vec3(2.0f, 0.0f, 0.0f);
+    stack.addModifier(array);
+    EditableMesh result = stack.evaluate(base);
+
+    check(result.vertexCount() == baseVerts * 3, "a real Array modifier with count=3 really triples vertex count");
+    check(result.faceCount() == baseFaces * 3, "a real Array modifier with count=3 really triples face count");
+    // Copy 0 sits at the original position; copy 2 is shifted by offset*2.
+    check(nearlyEqual(result.vertices()[0].position.x, base.vertices()[0].position.x, 1e-4f),
+          "the first real copy sits exactly at the original, unshifted position");
+    check(nearlyEqual(result.vertices()[baseVerts * 2].position.x, base.vertices()[0].position.x + 4.0f, 1e-4f),
+          "the third real copy is really shifted by exactly offset * 2");
+}
+
+void testModifierStackSolidifyWallsOnlyRealOpenBoundaryEdges() {
+    using namespace engine::core;
+    // A single real triangle -- every one of its 3 edges is a real open
+    // boundary (used by exactly 1 face), so solidify should wall all 3.
+    std::vector<Vertex> triVerts = {
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+    };
+    EditableMesh triangle = EditableMesh::fromVertexData(triVerts, {0, 1, 2});
+
+    ModifierStack triStack;
+    Modifier solidifyTri;
+    solidifyTri.type = ModifierType::Solidify;
+    solidifyTri.solidify.thickness = 0.2f;
+    triStack.addModifier(solidifyTri);
+    EditableMesh triResult = triStack.evaluate(triangle);
+
+    check(triResult.vertexCount() == 6, "solidifying 1 real triangle really produces 3 original + 3 inner vertices");
+    check(triResult.faceCount() == 8,
+          "solidifying 1 real triangle really produces 1 original + 1 inner + 3 real walls (2 tris each) = 8 faces");
+
+    // A real 2-triangle quad sharing an interior diagonal BY REAL INDEX --
+    // the diagonal (0,2) should get no wall; the 4 real outer edges should.
+    std::vector<Vertex> quadVerts = {
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{1.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+        {{0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+    };
+    EditableMesh quad = EditableMesh::fromVertexData(quadVerts, {0, 1, 2, 0, 2, 3});
+
+    ModifierStack quadStack;
+    Modifier solidifyQuad;
+    solidifyQuad.type = ModifierType::Solidify;
+    solidifyQuad.solidify.thickness = 0.2f;
+    quadStack.addModifier(solidifyQuad);
+    EditableMesh quadResult = quadStack.evaluate(quad);
+
+    check(quadResult.vertexCount() == 4 + 6,
+          "solidifying the real shared-diagonal quad really produces 4 original + 6 inner (2 faces x 3, per-face "
+          "duplicated) vertices");
+    check(quadResult.faceCount() == 2 + 2 + 4 * 2,
+          "solidifying the real shared-diagonal quad really walls its 4 real outer edges but NOT the real shared "
+          "diagonal (2 original + 2 inner + 8 wall faces)");
+}
+
+void testModifierStackSubdivisionRefinesEveryFaceFlat() {
+    using namespace engine::core;
+    std::vector<Vertex> vertices = {
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+    };
+    EditableMesh triangle = EditableMesh::fromVertexData(vertices, {0, 1, 2});
+
+    ModifierStack stack;
+    Modifier subdivide;
+    subdivide.type = ModifierType::Subdivision;
+    subdivide.subdivision.levels = 2;
+    stack.addModifier(subdivide);
+    EditableMesh result = stack.evaluate(triangle);
+
+    check(result.faceCount() == 16, "2 real subdivision levels over 1 real triangle really produce 1*4*4 = 16 faces");
+}
+
+void testModifierStackBooleanReusesRealCsgBooleanOp() {
+    using namespace engine::core;
+    EditableMesh boxA = EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    glm::vec3 boxBOffset(0.5f, 0.2f, 0.1f);
+    glm::vec3 boxBHalfExtents(0.5f, 0.5f, 0.5f);
+    EditableMesh boxB = EditableMesh::createBox(boxBHalfExtents, boxBOffset);
+
+    ModifierStack stack;
+    Modifier booleanModifier;
+    booleanModifier.type = ModifierType::Boolean;
+    booleanModifier.boolean.operation = CsgOperation::Union;
+    booleanModifier.boolean.boxOffset = boxBOffset;
+    booleanModifier.boolean.boxHalfExtents = boxBHalfExtents;
+    stack.addModifier(booleanModifier);
+    EditableMesh result = stack.evaluate(boxA);
+
+    float unionVolume = std::fabs(signedVolume(result));
+    float directVolume = std::fabs(signedVolume(booleanOp(boxA, boxB, CsgOperation::Union)));
+    check(nearlyEqual(unionVolume, directVolume, 1e-3f),
+          "the Boolean modifier really calls the same real core::booleanOp() the destructive CSG panel button uses, "
+          "not a second, separate implementation");
+    check(unionVolume > 1.0f, "a real overlapping union really has more volume than either box alone (1.0 each)");
+}
+
+void testModifierStackDisabledModifierIsSkippedAndRemoveWorks() {
+    using namespace engine::core;
+    EditableMesh base = EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+
+    ModifierStack stack;
+    Modifier array;
+    array.type = ModifierType::Array;
+    array.array.count = 4;
+    array.enabled = false;
+    stack.addModifier(array);
+
+    EditableMesh result = stack.evaluate(base);
+    check(result.vertexCount() == base.vertexCount(), "a real disabled modifier is really skipped entirely");
+
+    stack.modifiers()[0].enabled = true;
+    result = stack.evaluate(base);
+    check(result.vertexCount() == base.vertexCount() * 4, "re-enabling the same real modifier really applies it again");
+
+    stack.removeModifier(0);
+    check(stack.modifiers().empty(), "removeModifier() really removes the real modifier at that index");
+}
+
 // A real EditableMesh::createBox() translated by `offset` -- createBox()
 // itself always centers at the origin, so CSG's own box-vs-box tests
 // (which need two overlapping-by-a-known-amount boxes) build theirs
@@ -39429,6 +39615,13 @@ int main() {
     testModelingModePluginPickSubObjectResolvesNearestElementPerMode();
     testModelingModePluginSubObjectAnchorLocalMatchesRealGeometry();
     testModelingModePluginTranslateSubObjectSelectionMovesOnlyTheExpectedRealVertices();
+    testModifierStackEvaluateNeverMutatesTheBaseMesh();
+    testModifierStackMirrorNegatesTheChosenAxisAndReversesWinding();
+    testModifierStackArrayRepeatsWithRealPerCopyOffset();
+    testModifierStackSolidifyWallsOnlyRealOpenBoundaryEdges();
+    testModifierStackSubdivisionRefinesEveryFaceFlat();
+    testModifierStackBooleanReusesRealCsgBooleanOp();
+    testModifierStackDisabledModifierIsSkippedAndRemoveWorks();
 
     testCsgUnionOfHalfOverlappingBoxesHasCombinedVolume();
     testCsgSubtractOfHalfOverlappingBoxesRemovesTheOverlap();

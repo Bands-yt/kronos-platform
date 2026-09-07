@@ -121,6 +121,7 @@ add_library(engine_core STATIC
     core/Mesh.cpp
     core/EditableMesh.cpp
     core/CsgMesh.cpp
+    core/ModifierStack.cpp
     core/UvTools.cpp
     core/KMeshFile.cpp
     core/CharacterController.cpp
