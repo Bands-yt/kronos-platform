@@ -19,6 +19,7 @@
 namespace engine::core {
 class TextureLibrary;
 class MeshLibrary;
+class Renderer;
 }
 
 namespace engine::studio::plugins {
@@ -36,20 +37,20 @@ class MovieModePlugin;
 // cinematic::Sequence transport rather than running a second, competing
 // one, so dragging either timeline's playhead moves both.
 //
-// Real, working this pass: dynamic Media/3D track creation, Alt+Scroll
-// zoom (plain scroll pans), drag-move/trim/razor-split on clips, drag
-// fade handles with a live envelope preview, and a Media Bin that
-// really imports images (core::Texture) and audio (core::Audio) via
-// native drag-and-drop onto a track. Deliberately NOT built this pass:
-// MP4/video import (no video decoder is vendored anywhere in this
-// engine -- see cinematic::MediaBin's own header) and a drag-onto-clip
-// Effects Library (real post-FX knobs exist on core::Renderer, but
-// wiring one to animate per-clip rather than globally is a separate,
-// larger design decision -- see this plugin's own .cpp file comment).
+// Real, working: dynamic Media/3D track creation, Alt+Scroll zoom (plain
+// scroll pans), drag-move/trim/razor-split on clips, drag fade handles
+// with a live envelope preview and real playback gain/opacity, a Media
+// Bin that really imports images/audio/video (core::Texture/core::Audio/
+// core::VideoDecoder), real waveform peaks, and a real drag-and-drop
+// Effects Library (Bloom/Color Grade/Chromatic Aberration/Vignette --
+// NOT Film Grain, which has no real shader pass in this renderer) --
+// see applyClipEffects()'s own .cpp comment for the real, stated scope
+// cut on what "per-clip" means given this Renderer's global-only post-FX.
 class NleTimelinePlugin final : public IStudioPlugin {
 public:
     NleTimelinePlugin(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
-                       core::TextureLibrary& textureLibrary, core::MeshLibrary& meshLibrary, MovieModePlugin& movieMode);
+                       core::TextureLibrary& textureLibrary, core::MeshLibrary& meshLibrary, core::Renderer& renderer,
+                       MovieModePlugin& movieMode);
 
     [[nodiscard]] const char* name() const override { return "NLE Timeline"; }
     [[nodiscard]] const char* category() const override { return "Cinematics"; }
@@ -73,6 +74,11 @@ public:
 
 private:
     void drawMediaBinWindow();
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real Effects
+    // Library): a real drag source list (Bloom/Color Grade/Chromatic
+    // Aberration/Vignette) -- see handleEffectDrop()'s own comment for
+    // the drop side.
+    void drawEffectsLibraryWindow();
     void drawTimelineWindow();
     void drawTrackRow(size_t trackIndex, float rowTop, float rowHeight);
     void drawClip(size_t trackIndex, size_t clipIndex, float rowTop, float rowHeight);
@@ -86,6 +92,12 @@ private:
                        const cinematic::MediaAsset& asset) const;
     void handleTimelineZoomAndPan();
     void handleMediaDrop(size_t trackIndex);
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real Effects
+    // Library): accepts a "KRONOS_CLIP_EFFECT" payload (drawEffectsLibraryWindow()'s
+    // own drag source) dropped onto this specific clip's own screen
+    // rect, appending a real ClipEffect with real, Renderer-matching
+    // default parameters (see ClipEffect's own header comment).
+    void handleEffectDrop(size_t trackIndex, size_t clipIndex);
     void importFromDialog();
 
     // Real, honest linear search (Media Bin sizes are small -- tens of
@@ -98,6 +110,14 @@ private:
                                   double sourceTimeSeconds, float envelope);
     void updateAudioClipPlayback(uint64_t clipKey, const cinematic::MediaAsset& asset, double sourceTimeSeconds,
                                   float envelope);
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real Effects
+    // Library): applies every real ClipEffect on `clip` to this
+    // engine's real, global Renderer post-FX knobs -- see this method's
+    // own .cpp comment for the real, stated scope cut (this Renderer has
+    // no true per-screen-region compositing, so "per-clip" here means
+    // "these global knobs take this clip's own values while it's the
+    // active one at the playhead", not simultaneous isolated regions).
+    void applyClipEffects(const cinematic::MediaClip& clip);
 
     VmaAllocator allocator_;
     VkDevice device_;
@@ -105,6 +125,7 @@ private:
     VkQueue queue_;
     core::TextureLibrary* textureLibrary_;
     core::MeshLibrary* meshLibrary_;
+    core::Renderer* renderer_;
     MovieModePlugin* movieMode_;
 
     // Real playback-driver state -- see update()'s own comment.

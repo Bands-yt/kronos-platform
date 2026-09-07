@@ -26,6 +26,27 @@ namespace engine::cinematic {
 // off-by-one edges, and none of it needs ImGui running to be tested.
 enum class ClipTrackKind : uint8_t { Media = 0, ThreeD = 1 };
 
+// Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real Effects Library):
+// the 4 real post-processing effects this engine's own Renderer already
+// supports as global, per-frame parameters (Renderer.hpp's
+// setBloomSettings/setColorGradingLutStrength/setSaturation/
+// setVignetteAndChromaticAberration) -- NOT Film Grain, which has no
+// real shader pass anywhere in this renderer and is deliberately not
+// listed here rather than added as a control that would do nothing.
+enum class ClipEffectType : uint8_t { Bloom, ColorGrade, ChromaticAberration, Vignette };
+
+struct ClipEffect {
+    ClipEffectType type = ClipEffectType::Bloom;
+    // Real, per-type parameters -- every one of the 4 real effect types
+    // above maps to exactly 1 or 2 real Renderer scalar knobs (see
+    // studio::plugins::NleTimelinePlugin's own applyClipEffects() for the
+    // exact mapping), so 2 generic floats cover all of them without a
+    // separate struct per type. Defaults match Renderer's own class
+    // defaults, not arbitrary numbers.
+    float param1 = 1.0f;
+    float param2 = 0.6f;
+};
+
 struct MediaClip {
     std::string assetPath;
     float timelineStart = 0.0f;
@@ -37,6 +58,17 @@ struct MediaClip {
     float sourceOffsetSeconds = 0.0f;
     float fadeInSeconds = 0.0f;
     float fadeOutSeconds = 0.0f;
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real Effects
+    // Library): real post-processing effects dragged onto this specific
+    // clip -- see studio::plugins::NleTimelinePlugin's own real
+    // drag-and-drop Effects Library panel and applyClipEffects(). Real,
+    // stated scope: this engine's Renderer has no true per-screen-region
+    // compositing (its post-FX are single global values applied to the
+    // whole frame, see Renderer.hpp's own bloomThreshold_/saturation_/
+    // etc.) -- so a clip's own effects apply to those same real global
+    // knobs only while THIS clip is the active one at the playhead, not
+    // as an isolated, simultaneously-composited region of the screen.
+    std::vector<ClipEffect> effects;
 };
 
 struct ClipTrack {
