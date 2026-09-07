@@ -22,9 +22,16 @@ ModelingModePlugin::ModelingModePlugin(VmaAllocator allocator, VkDevice device, 
     : allocator_(allocator), device_(device), cmdPool_(cmdPool), queue_(queue), meshLibrary_(&meshLibrary) {}
 
 void ModelingModePlugin::reuploadMesh(core::EditableMeshComponent& component, core::Renderable& renderable) {
+    // Kronos ("3D DCC Modeling Suite" -- real non-destructive modifier
+    // stack): every real call site below (extrude/bevel/CSG/sub-object
+    // translate/the script-driven update() sweep) already funnels through
+    // here, so evaluating component.modifierStack on top of component.mesh
+    // right at upload time is the one change that makes every one of them
+    // respect the stack -- component.mesh itself stays exactly what every
+    // topology operator/sub-object edit directly mutates.
+    core::EditableMesh evaluated = component.modifierStack.evaluate(component.mesh);
     core::Mesh newMesh;
-    (void)newMesh.uploadFromHost(allocator_, device_, cmdPool_, queue_, component.mesh.vertices(),
-                                  component.mesh.indices());
+    (void)newMesh.uploadFromHost(allocator_, device_, cmdPool_, queue_, evaluated.vertices(), evaluated.indices());
     meshLibrary_->replaceMesh(renderable.meshHandle, std::move(newMesh), allocator_);
 }
 
@@ -167,6 +174,125 @@ void ModelingModePlugin::translateSubObjectSelection(core::EditableMeshComponent
             }
             break;
     }
+    if (changed) reuploadMesh(component, renderable);
+}
+
+void ModelingModePlugin::drawModifierStackSection(core::EditableMeshComponent& component, core::Renderable& renderable) {
+    helpMarker("Applied on top of the base mesh above, in order, at upload time only -- editing the base mesh above, "
+               "or reordering/disabling/removing a modifier here, updates the result immediately without ever "
+               "touching the base mesh itself.");
+
+    std::vector<core::Modifier>& modifiers = component.modifierStack.modifiers();
+    int removeIndex = -1;
+    int swapWithNext = -1;
+    bool changed = false;
+
+    static const char* kTypeNames[] = {"Mirror", "Array", "Solidify", "Subdivision", "Boolean"};
+    static const char* kAxisNames[] = {"X", "Y", "Z"};
+    static const char* kOpNames[] = {"Union", "Subtract", "Intersect"};
+
+    for (size_t i = 0; i < modifiers.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        core::Modifier& mod = modifiers[i];
+
+        changed |= ImGui::Checkbox("##enabled", &mod.enabled);
+        ImGui::SameLine();
+        int typeIndex = static_cast<int>(mod.type);
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::Combo("##type", &typeIndex, kTypeNames, IM_ARRAYSIZE(kTypeNames))) {
+            mod.type = static_cast<core::ModifierType>(typeIndex);
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Up") && i > 0) swapWithNext = static_cast<int>(i) - 1;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Down") && i + 1 < modifiers.size()) swapWithNext = static_cast<int>(i);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("X##removemod")) removeIndex = static_cast<int>(i);
+
+        ImGui::Indent();
+        switch (mod.type) {
+            case core::ModifierType::Mirror: {
+                ImGui::SetNextItemWidth(70.0f);
+                changed |= ImGui::Combo("Axis##mirror", &mod.mirror.axis, kAxisNames, IM_ARRAYSIZE(kAxisNames));
+                ImGui::SameLine();
+                changed |= ImGui::Checkbox("Merge at center##mirror", &mod.mirror.mergeAtCenter);
+                if (mod.mirror.mergeAtCenter) {
+                    ImGui::SetNextItemWidth(120.0f);
+                    changed |= ImGui::DragFloat("Merge threshold##mirror", &mod.mirror.mergeThreshold, 0.001f, 0.0001f,
+                                                 1.0f, "%.4f");
+                }
+                break;
+            }
+            case core::ModifierType::Array: {
+                ImGui::SetNextItemWidth(80.0f);
+                changed |= ImGui::DragInt("Count##array", &mod.array.count, 1.0f, 1, 32);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(200.0f);
+                changed |= ImGui::DragFloat3("Offset##array", &mod.array.offset.x, 0.05f);
+                break;
+            }
+            case core::ModifierType::Solidify: {
+                ImGui::SetNextItemWidth(120.0f);
+                changed |= ImGui::DragFloat("Thickness##solidify", &mod.solidify.thickness, 0.01f, -2.0f, 2.0f);
+                ImGui::SameLine();
+                helpMarker("Walls only real open boundary edges (shared by exactly 1 face, by real vertex index) -- "
+                           "see SolidifyModifierParams's own comment on why an unwelded EditableMesh::createBox() "
+                           "gets walled on every outer edge, same as bevelEdge()'s own real per-index scope.");
+                break;
+            }
+            case core::ModifierType::Subdivision: {
+                ImGui::SetNextItemWidth(80.0f);
+                changed |= ImGui::DragInt("Levels##subdivision", &mod.subdivision.levels, 1.0f, 1, 4);
+                ImGui::SameLine();
+                helpMarker("Real flat (linear) 1-to-4 refinement per level -- not a true Catmull-Clark limit "
+                           "surface (no smoothing pass over vertex positions).");
+                break;
+            }
+            case core::ModifierType::Boolean: {
+                int opIndex = static_cast<int>(mod.boolean.operation);
+                ImGui::SetNextItemWidth(120.0f);
+                if (ImGui::Combo("Operation##boolean", &opIndex, kOpNames, IM_ARRAYSIZE(kOpNames))) {
+                    mod.boolean.operation = static_cast<core::CsgOperation>(opIndex);
+                    changed = true;
+                }
+                ImGui::SetNextItemWidth(200.0f);
+                changed |= ImGui::DragFloat3("Box Offset##boolean", &mod.boolean.boxOffset.x, 0.05f);
+                ImGui::SetNextItemWidth(200.0f);
+                changed |= ImGui::DragFloat3("Box Half-Extents##boolean", &mod.boolean.boxHalfExtents.x, 0.05f, 0.01f, 10.0f);
+                break;
+            }
+        }
+        ImGui::Unindent();
+        ImGui::Separator();
+        ImGui::PopID();
+    }
+
+    if (removeIndex >= 0) {
+        component.modifierStack.removeModifier(static_cast<size_t>(removeIndex));
+        changed = true;
+    }
+    if (swapWithNext >= 0) {
+        component.modifierStack.swapModifiers(static_cast<size_t>(swapWithNext), static_cast<size_t>(swapWithNext) + 1);
+        changed = true;
+    }
+
+    auto addModifier = [&](core::ModifierType type) {
+        core::Modifier m;
+        m.type = type;
+        component.modifierStack.addModifier(m);
+        changed = true;
+    };
+    if (ImGui::Button("Add Mirror##addmod")) addModifier(core::ModifierType::Mirror);
+    ImGui::SameLine();
+    if (ImGui::Button("Add Array##addmod")) addModifier(core::ModifierType::Array);
+    ImGui::SameLine();
+    if (ImGui::Button("Add Solidify##addmod")) addModifier(core::ModifierType::Solidify);
+    ImGui::SameLine();
+    if (ImGui::Button("Add Subdivision##addmod")) addModifier(core::ModifierType::Subdivision);
+    ImGui::SameLine();
+    if (ImGui::Button("Add Boolean##addmod")) addModifier(core::ModifierType::Boolean);
+
     if (changed) reuploadMesh(component, renderable);
 }
 
@@ -313,6 +439,10 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
     helpMarker("Combines the current mesh with a real box at the given offset/half-extents. Only correct for "
                "closed, manifold meshes with consistent winding -- see core::CsgMesh.hpp's own scope comment.");
     if (!csgStatus_.empty()) ImGui::TextWrapped("%s", csgStatus_.c_str());
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Modifiers (non-destructive)");
+    drawModifierStackSection(*editable, *renderable);
 
     ImGui::Spacing();
     ImGui::SeparatorText("UV");

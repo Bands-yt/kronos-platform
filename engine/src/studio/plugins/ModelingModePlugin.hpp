@@ -123,6 +123,15 @@ public:
                                       glm::vec3 localDelta);
 
 private:
+    // Kronos ("3D DCC Modeling Suite" -- real non-destructive modifier
+    // stack): the panel section listing component.modifierStack's real
+    // modifiers (enable/reorder/remove, and each one's own real
+    // parameters), plus "Add <Type>" buttons -- see
+    // core::ModifierStack.hpp's own class comment for why this is the
+    // non-destructive alternative to applyCsg() below, not a replacement
+    // for it.
+    void drawModifierStackSection(core::EditableMeshComponent& component, core::Renderable& renderable);
+
     // Rebuilds a real GPU core::Mesh from `component.mesh`'s current
     // vertices/indices and swaps it into `renderable.meshHandle` via
     // MeshLibrary::replaceMesh() -- the one real place a topology edit

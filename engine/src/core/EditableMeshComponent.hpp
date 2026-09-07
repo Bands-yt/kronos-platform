@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "core/EditableMesh.hpp"
+#include "core/ModifierStack.hpp"
 
 namespace engine::core {
 
@@ -12,7 +13,20 @@ namespace engine::core {
 // only studio::plugins::ModelingModePlugin actually needs; every other
 // consumer of Components.hpp doesn't pay for it.
 struct EditableMeshComponent {
+    // The real base mesh -- every topology operator (extrude, bevel,
+    // CSG, sub-object translate, ...) still edits this directly, exactly
+    // as before modifierStack existed below.
     EditableMesh mesh;
+    // Kronos ("3D DCC Modeling Suite" -- real non-destructive modifier
+    // stack): applied ON TOP of `mesh` at upload time only (see
+    // ModelingModePlugin::reuploadMesh()) -- `mesh` itself is never
+    // touched by a modifier, so editing the base (or reordering/
+    // disabling a modifier) always reflects immediately. Empty by
+    // default: ModifierStack::evaluate() over an empty stack is a real,
+    // honest identity copy, so every existing entity/test that never
+    // touches this field renders and reuploads exactly as before it
+    // existed.
+    ModifierStack modifierStack;
     // Real UI selection state -- which face/edge Modeling Mode's own
     // sidebar currently has picked, persisted here (not plugin-local)
     // so it survives switching the Explorer selection away and back.
