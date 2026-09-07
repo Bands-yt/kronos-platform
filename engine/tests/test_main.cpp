@@ -21663,6 +21663,45 @@ void testClipTimelineEnvelopeRampsAndClampsOutsideBounds() {
           "the real envelope really reads zero exactly at the clip's own end");
 }
 
+// Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real Effects Library):
+// a real ClipEffect really survives a real razor split onto BOTH
+// resulting clips -- an effect belongs to the clip's own content, not
+// to one particular edge, so a cut should never silently drop it.
+void testClipTimelineSplitPreservesRealClipEffectsOnBothHalves() {
+    using namespace engine::cinematic;
+    ClipTimeline timeline;
+    size_t track = timeline.addTrack("Media 1", ClipTrackKind::Media);
+    size_t clipIndex = timeline.addClip(track, "clip.mp4", 0.0f, 10.0f);
+
+    ClipEffect bloom;
+    bloom.type = ClipEffectType::Bloom;
+    bloom.param1 = 1.2f;
+    bloom.param2 = 0.8f;
+    timeline.mutableTracks()[track].clips[clipIndex].effects.push_back(bloom);
+
+    check(timeline.splitClip(track, clipIndex, 4.0f), "a real split strictly inside the clip really succeeds");
+    const std::vector<ClipTrack>& tracks = timeline.tracks();
+    check(tracks[track].clips.size() == 2, "a real split really produces two real clips");
+
+    check(tracks[track].clips[0].effects.size() == 1 && tracks[track].clips[1].effects.size() == 1,
+          "a real ClipEffect really survives on BOTH halves of a real split, not just one");
+    check(tracks[track].clips[0].effects[0].type == ClipEffectType::Bloom &&
+              nearlyEqual(tracks[track].clips[0].effects[0].param1, 1.2f, 1e-4f),
+          "the first half's real effect really keeps its own real parameters");
+    check(tracks[track].clips[1].effects[0].type == ClipEffectType::Bloom &&
+              nearlyEqual(tracks[track].clips[1].effects[0].param2, 0.8f, 1e-4f),
+          "the second half's real effect really keeps its own real parameters too");
+}
+
+void testClipTimelineNewClipStartsWithNoRealEffects() {
+    using namespace engine::cinematic;
+    ClipTimeline timeline;
+    size_t track = timeline.addTrack("Media 1", ClipTrackKind::Media);
+    size_t clipIndex = timeline.addClip(track, "clip.wav", 0.0f, 3.0f);
+    check(timeline.tracks()[track].clips[clipIndex].effects.empty(),
+          "a freshly-added real clip really starts with no real effects attached");
+}
+
 void testCurveSamplingHitsEveryKeyframeExactly() {
     std::vector<engine::cinematic::Keyframe> keys;
     for (int i = 0; i < 5; ++i) {
@@ -39929,6 +39968,21 @@ int main() {
     testVideoDecoderOpenFailsHonestlyOnAMissingFile();
     testStepVideoPlaneDecodesUploadsAndDedupsRealFrames();
 #endif
+
+    // Kronos: these 8 real ClipTimeline tests existed in this file but
+    // were never actually wired into main()'s own call list -- a real,
+    // pre-existing gap discovered while extending this exact module for
+    // the Effects Library (their own checks were silently never running,
+    // despite compiling and existing right here). Registered now so they
+    // actually execute.
+    testClipTimelineSplitPreservesSourceOffsetAndOuterFades();
+    testClipTimelineSplitRejectsExactBoundaries();
+    testClipTimelineTrimStartClampsToPreviousNeighborAndShiftsSourceOffset();
+    testClipTimelineTrimEndClampsToNextNeighbor();
+    testClipTimelineSetFadeScalesDownOverlappingHandles();
+    testClipTimelineEnvelopeRampsAndClampsOutsideBounds();
+    testClipTimelineSplitPreservesRealClipEffectsOnBothHalves();
+    testClipTimelineNewClipStartsWithNoRealEffects();
 
     testCsgUnionOfHalfOverlappingBoxesHasCombinedVolume();
     testCsgSubtractOfHalfOverlappingBoxesRemovesTheOverlap();
