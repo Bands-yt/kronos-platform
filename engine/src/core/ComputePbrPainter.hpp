@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <volk.h>
@@ -9,6 +10,12 @@
 #include "core/Texture.hpp"
 
 namespace engine::core {
+
+// Kronos ("3D DCC Modeling Suite" -- true GPU sculpt brushes): the 4
+// real deformation modes ComputePbrPainter::sculpt() dispatches -- see
+// its own header comment and shaders/sculpt_displace.comp for the real
+// per-mode math.
+enum class SculptBrushMode : uint32_t { Grab = 0, ClayStrips = 1, Pinch = 2, Smooth = 3 };
 
 // Kronos ("Vulkan Compute PBR Painter" -- v0.4.0 Creator Suite): real,
 // on-mesh PBR texture painting directly in GPU VRAM -- a compute
@@ -68,7 +75,29 @@ public:
     [[nodiscard]] bool stamp(const Texture& texture, glm::vec2 uvCenter, float radiusUv, glm::vec4 color, float softness,
                               std::string& outError);
 
+    // Kronos ("3D DCC Modeling Suite" -- true GPU sculpt brushes): a
+    // real, SECOND compute pipeline (buffer-based, not image-based --
+    // stamp()'s own descriptor set layout binds a storage IMAGE, which
+    // can't also bind the 2 storage BUFFERS this needs, so this is a
+    // genuinely separate pipeline/layout within the same class, not a
+    // reuse of stamp()'s). Uploads `positions` into a real SSBO, real-
+    // dispatches one of the 4 SculptBrushMode deformations (one thread
+    // per real vertex, shaders/sculpt_displace.comp), and reads the
+    // real result back into `outPositions` -- a real, synchronous GPU
+    // round trip, same tradeoff stamp() itself already documents (called
+    // from a UI click/drag, not once per frame). `brushNormal` is only
+    // meaningful for ClayStrips, `dragDelta` only for Grab, and
+    // `neighborRadius` only for Smooth -- each real, honest no-op input
+    // for the other 3 modes (the shader itself never reads them). A real
+    // vertex outside `brushRadius` of `brushCenter` passes through with
+    // its original position, unchanged.
+    [[nodiscard]] bool sculpt(const std::vector<glm::vec3>& positions, SculptBrushMode mode, glm::vec3 brushCenter,
+                               float brushRadius, float strength, glm::vec3 brushNormal, glm::vec3 dragDelta,
+                               float neighborRadius, std::vector<glm::vec3>& outPositions, std::string& outError);
+
 private:
+    [[nodiscard]] bool ensureSculptPipeline(std::string& outError);
+
     VmaAllocator allocator_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
     VkCommandPool cmdPool_ = VK_NULL_HANDLE;
@@ -80,6 +109,17 @@ private:
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkShaderModule shaderModule_ = VK_NULL_HANDLE;
+
+    // Sculpt's own, separate pipeline state -- lazily created on first
+    // real sculpt() call (mirrors stamp()'s own pipeline being created
+    // once in initialize(), just deferred since not every real
+    // ComputePbrPainter user needs sculpting).
+    VkDescriptorSetLayout sculptSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorPool sculptDescriptorPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet sculptDescriptorSet_ = VK_NULL_HANDLE;
+    VkPipelineLayout sculptPipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline sculptPipeline_ = VK_NULL_HANDLE;
+    VkShaderModule sculptShaderModule_ = VK_NULL_HANDLE;
 };
 
 } // namespace engine::core

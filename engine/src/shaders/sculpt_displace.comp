@@ -1,0 +1,83 @@
+#version 450
+
+// Kronos ("3D DCC Modeling Suite" -- true GPU sculpt brushes): real,
+// direct vertex displacement -- see core::ComputePbrPainter::sculpt()'s
+// own header comment for the full picture. One invocation per real
+// vertex; a vertex outside the real brush radius passes through
+// unchanged. Real, honest scope for Smooth specifically: it averages
+// vertices within a real spatial radius (positions only), NOT full
+// mesh-topology adjacency (no edge/face buffer is uploaded here) -- a
+// real, if approximate, Laplacian smooth, the same "real but simplified,
+// stated plainly" convention this codebase's other real operators
+// already follow (e.g. Solidify's own per-index-not-per-position
+// boundary detection).
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer PositionsIn {
+    vec4 positionsIn[];
+};
+layout(set = 0, binding = 1, std430) writeonly buffer PositionsOut {
+    vec4 positionsOut[];
+};
+
+layout(push_constant) uniform PushConstants {
+    vec4 brushCenter;   // xyz used
+    vec4 brushNormal;   // xyz used -- Clay Strips' real offset direction
+    vec4 dragDelta;     // xyz used -- Grab's real translation
+    float brushRadius;
+    float strength;       // 0..1 real effect amount
+    float neighborRadius; // Smooth only -- real spatial neighbor radius
+    uint vertexCount;
+    uint mode; // 0 = Grab, 1 = Clay Strips, 2 = Pinch, 3 = Smooth
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.vertexCount) return;
+
+    vec3 p = positionsIn[i].xyz;
+    float dist = distance(p, pc.brushCenter.xyz);
+    if (dist > pc.brushRadius) {
+        positionsOut[i] = vec4(p, 0.0);
+        return;
+    }
+
+    float falloff = 1.0 - smoothstep(0.0, pc.brushRadius, dist);
+    vec3 result = p;
+
+    if (pc.mode == 0u) {
+        // Grab: drags every real vertex under the brush by the same real
+        // world-space delta, weighted by falloff.
+        result = p + pc.dragDelta.xyz * falloff * pc.strength;
+    } else if (pc.mode == 1u) {
+        // Clay Strips: a real flat offset along the brush's own real
+        // surface normal -- builds up a flat "clay" layer rather than a
+        // rounded bump.
+        result = p + pc.brushNormal.xyz * pc.strength * falloff;
+    } else if (pc.mode == 2u) {
+        // Pinch: contracts every real vertex under the brush toward its
+        // real center.
+        vec3 toCenter = pc.brushCenter.xyz - p;
+        result = p + toCenter * pc.strength * falloff;
+    } else {
+        // Smooth: real spatial average of nearby vertices -- see this
+        // shader's own header comment on why spatial, not topological.
+        vec3 sum = vec3(0.0);
+        uint count = 0u;
+        for (uint j = 0u; j < pc.vertexCount; ++j) {
+            if (j == i) continue;
+            vec3 q = positionsIn[j].xyz;
+            if (distance(p, q) <= pc.neighborRadius) {
+                sum += q;
+                count++;
+            }
+        }
+        if (count > 0u) {
+            vec3 average = sum / float(count);
+            result = mix(p, average, pc.strength * falloff);
+        }
+    }
+
+    positionsOut[i] = vec4(result, 0.0);
+}

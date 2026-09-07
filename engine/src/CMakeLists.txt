@@ -32,6 +32,7 @@ set(ENGINE_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle_compute.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/stamp_texture.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sculpt_displace.comp
 )
 set(ENGINE_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${ENGINE_SHADER_OUTPUT_DIR})
