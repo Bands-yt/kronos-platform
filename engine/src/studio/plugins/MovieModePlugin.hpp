@@ -100,6 +100,9 @@ public:
     // Normalised rail parameter for the current playhead, so the viewport
     // can mark where the camera actually is in the shot.
     [[nodiscard]] float railParameterAtPlayhead() const;
+    // See drawRailEditor()'s "Preview through camera" checkbox and
+    // StudioApp.cpp's prePassCallback, the sole reader of this flag.
+    [[nodiscard]] bool previewThroughRailCamera() const { return previewThroughRailCamera_; }
 
     // True while a timeline gesture owns the transport -- a playhead
     // scrub or a loop-handle drag. update() checks this; see there.
@@ -196,6 +199,7 @@ private:
     bool showRailGizmo_ = true;
     bool showLookAtLines_ = true;
     int selectedRailPoint_ = -1;
+    bool previewThroughRailCamera_ = false;
     bool exporterOpen_ = false;
     std::vector<cinematic::ExportFrameJob> lastSchedule_;
     std::string exportStatus_;

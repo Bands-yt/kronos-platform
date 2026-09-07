@@ -143,8 +143,17 @@ public:
     // through this instead of camera_ directly, so they line up with the
     // displayed image instead of the one about to be rendered. Called
     // from StudioApp's pre-pass callback right where it hands camera_ to
-    // drawSceneInto().
-    void snapshotRenderCamera() { renderCamera_ = camera_; }
+    // drawSceneInto() -- takes whichever core::Camera was actually used
+    // for that call (see the parameter's own note below), not always
+    // camera_ directly.
+    //
+    // Kronos ("Cinema Rigs" -- live DoF preview): on a frame where
+    // StudioApp substitutes MovieModePlugin's rail camera for the
+    // free-fly camera_ (see that call site's own comment), the caller
+    // passes that substituted camera here instead, so every overlay
+    // above keeps projecting through the same pose as the displayed
+    // image rather than silently reverting to the free-fly camera's.
+    void snapshotRenderCamera(const core::Camera& usedForRender) { renderCamera_ = usedForRender; }
 
     // What size (in pixels) this panel's content region was at the end of
     // the most recent draw() call -- what StudioApp resizes the

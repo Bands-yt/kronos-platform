@@ -47,6 +47,9 @@
 #include "migration/InstanceHydrator.hpp"
 #include "studio/PluginChrome.hpp"
 #include "migration/ProjectImporter.hpp"
+#include "cinematic/CameraRail.hpp"
+#include "cinematic/RailCamera.hpp"
+#include "core/PhysicalCamera.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/NleTimelinePlugin.hpp"
 #include "studio/plugins/TimelineEditorPlugin.hpp"
@@ -272,16 +275,43 @@ bool StudioApp::initialize(StudioMode mode) {
                                     renderer_.depthFormat(), desired);
         if (!viewportTarget_.isValid()) return;
 
+        // Kronos ("Cinema Rigs" -- live DoF preview): MovieModePlugin's
+        // "Preview through camera" checkbox (see its drawRailEditor()'s
+        // own comment) opts the *live* viewport into rendering through
+        // the rail's actual core::PhysicalCamera instead of the free-fly
+        // camera_ -- same cinematic::cameraFromRailSample()/
+        // core::toRendererDofParams() real thin-lens math CaptureRig.cpp
+        // already uses for export, now also driving what's on screen
+        // while authoring. deltaSeconds=0 matches ViewportPanel's own
+        // rail-marker overlay sampling: a read-only snapshot at the
+        // current playhead, not a second, competing advance of the
+        // rail's stateful aim damping.
+        const core::Camera* sceneCamera = &viewportPanel_.camera();
+        core::Camera railPreviewCamera;
+        if (movieModePlugin_ != nullptr && movieModePlugin_->previewThroughRailCamera() &&
+            movieModePlugin_->rail().pointCount() >= 2) {
+            cinematic::RailSample sample =
+                movieModePlugin_->rail().sample(movieModePlugin_->railParameterAtPlayhead(), 0.0f);
+            railPreviewCamera = cinematic::cameraFromRailSample(sample, viewportPanel_.camera().nearPlane,
+                                                                 viewportPanel_.camera().farPlane);
+            sceneCamera = &railPreviewCamera;
+
+            core::RendererDofParams dof =
+                core::toRendererDofParams(sample.camera, static_cast<float>(viewportTarget_.extent().height));
+            renderer_.setDepthOfFieldEnabled(true);
+            renderer_.setDepthOfFieldParams(dof.focusDistance, dof.focusRange, dof.maxCoCRadiusPx);
+        }
+
         renderer_.drawSceneInto(cmd, viewportTarget_.colorImage(), viewportTarget_.colorView(),
                                  viewportTarget_.depthImage(), viewportTarget_.depthView(), viewportTarget_.extent(),
-                                 viewportPanel_.camera(), ecs_, meshLibrary_, particleSystem_, textureLibrary_);
+                                 *sceneCamera, ecs_, meshLibrary_, particleSystem_, textureLibrary_);
         // The texture this just rendered into is what viewportPanel_.draw()
         // displays starting *next* frame (OffscreenTarget.hpp's own
         // one-frame latency) -- snapshot the camera pose used for it now,
         // so next frame's overlays (gizmo/highlight/grid/picking) project
         // through the same pose the displayed image was actually rendered
         // with, instead of whatever camera_ has moved to by then.
-        viewportPanel_.snapshotRenderCamera();
+        viewportPanel_.snapshotRenderCamera(*sceneCamera);
         renderer_.transitionImage(cmd, viewportTarget_.colorImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                    VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
