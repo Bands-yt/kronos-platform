@@ -56,6 +56,7 @@ class UploadAnimationPlugin;
 class AvatarEditor;
 class PhysicsPreviewPlugin;
 class MovieModePlugin;
+class ModelingModePlugin;
 class ShopPlugin;
 class TerrainEditorPlugin;
 class CreatorAssetBrowserPlugin;
@@ -497,6 +498,10 @@ private:
     // camera-rail gizmo from the live rail. Same lifetime and same
     // borrowing shape as physicsPreviewPlugin_ above.
     plugins::MovieModePlugin* movieModePlugin_ = nullptr;
+    // Same borrowing shape as movieModePlugin_ above, so ViewportPanel can
+    // draw the real sub-object (vertex/edge/face) picking gizmo -- see
+    // ViewportPanel::drawSubObjectEditing().
+    plugins::ModelingModePlugin* modelingModePlugin_ = nullptr;
 
     // File > Import .rbxlx... -- see drawImportDialog().
     void drawImportDialog();

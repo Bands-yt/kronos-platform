@@ -18,6 +18,10 @@ struct EditableMeshComponent {
     // so it survives switching the Explorer selection away and back.
     size_t selectedFace = 0;
     std::pair<uint32_t, uint32_t> selectedEdge{0, 0};
+    // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast picking):
+    // same real, index-based selection convention as selectedFace/
+    // selectedEdge above, for the new Vertex sub-object mode.
+    size_t selectedVertex = 0;
     // Bumped by any mutator that changes `mesh` outside Studio's own
     // ImGui buttons -- today, only core::ScriptMeshApi's Luau bindings.
     // ModelingModePlugin::update() runs every frame regardless of panel

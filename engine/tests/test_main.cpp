@@ -272,6 +272,7 @@
 #include "migration/PropertyDecoder.hpp"
 #include "studio/IKronosPlugin.hpp"
 #include "studio/KronosPluginHost.hpp"
+#include "studio/plugins/ModelingModePlugin.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
@@ -34456,6 +34457,144 @@ void testEditableMeshInsetFaceShrinksTowardCentroidAndAddsSixFaces() {
           "an inset face's centroid stays put (shrinks symmetrically around the same center)");
 }
 
+// Kronos ("3D DCC Modeling Suite" -- real sub-object raycast picking):
+// ModelingModePlugin::pickSubObject()/subObjectAnchorLocal()/
+// translateSubObjectSelection() over a real unit box, matching exactly
+// what ViewportPanel::drawSubObjectEditing() feeds them (a local-space
+// ray already through the entity's inverse Transform). Vulkan handles
+// are VK_NULL_HANDLE/nullptr -- safe here because these 3 methods never
+// touch them directly; only translateSubObjectSelection()'s own
+// reuploadMesh() call does, which is why that one test below uses a real
+// HeadlessComputeContext instead.
+void testModelingModePluginPickSubObjectResolvesNearestElementPerMode() {
+    using namespace engine::core;
+    MeshLibrary meshLibrary;
+    engine::studio::plugins::ModelingModePlugin plugin(nullptr, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                                         meshLibrary);
+    EditableMeshComponent component;
+    component.mesh = EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+
+    // Straight down through the top face's center (y=+0.5) -- the same
+    // real ray-vs-triangle test core::pickTriangleUv() itself already
+    // proves end-to-end (testComputePbrPainterUsesRealRayTriangleUvPickToLocateTheStamp).
+    glm::vec3 origin(0.0f, 5.0f, 0.0f), direction(0.0f, -1.0f, 0.0f);
+
+    plugin.setSubObjectMode(EditableMesh::SelectionMode::Face);
+    check(plugin.pickSubObject(component, origin, direction, 10.0f), "a real ray straight down really hits the top face");
+    check(component.selectedFace < component.mesh.faceCount(), "Face mode really resolves to an in-range face index");
+    glm::vec3 faceCentroid = component.mesh.faceCentroid(component.selectedFace);
+    check(nearlyEqual(faceCentroid.y, 0.5f, 1e-3f), "the resolved face really is really on the top (y=+0.5) cap");
+
+    plugin.setSubObjectMode(EditableMesh::SelectionMode::Vertex);
+    check(plugin.pickSubObject(component, origin, direction, 10.0f), "the same real ray also resolves under Vertex mode");
+    check(component.selectedVertex < component.mesh.vertexCount(), "Vertex mode really resolves to an in-range vertex index");
+    check(nearlyEqual(component.mesh.vertices()[component.selectedVertex].position.y, 0.5f, 1e-3f),
+          "the resolved vertex is really one of the top cap's own corners, not a side/bottom one");
+
+    plugin.setSubObjectMode(EditableMesh::SelectionMode::Edge);
+    check(plugin.pickSubObject(component, origin, direction, 10.0f), "the same real ray also resolves under Edge mode");
+    uint32_t v0 = component.selectedEdge.first, v1 = component.selectedEdge.second;
+    check(v0 < component.mesh.vertexCount() && v1 < component.mesh.vertexCount(),
+          "Edge mode really resolves to two in-range vertex indices");
+    check(nearlyEqual(component.mesh.vertices()[v0].position.y, 0.5f, 1e-3f) &&
+              nearlyEqual(component.mesh.vertices()[v1].position.y, 0.5f, 1e-3f),
+          "the resolved edge's own two endpoints are really both on the top cap, not a vertical side edge");
+
+    check(!plugin.pickSubObject(component, glm::vec3(10.0f, 5.0f, 10.0f), direction, 10.0f),
+          "a real ray that misses the box entirely is a real, honest false, not a stale/default selection");
+}
+
+void testModelingModePluginSubObjectAnchorLocalMatchesRealGeometry() {
+    using namespace engine::core;
+    MeshLibrary meshLibrary;
+    engine::studio::plugins::ModelingModePlugin plugin(nullptr, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                                         meshLibrary);
+    EditableMeshComponent component;
+    component.mesh = EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+
+    plugin.setSubObjectMode(EditableMesh::SelectionMode::Vertex);
+    component.selectedVertex = 3;
+    check(plugin.subObjectAnchorLocal(component) == component.mesh.vertices()[3].position,
+          "Vertex mode's anchor is really exactly that vertex's own position, not an approximation");
+
+    plugin.setSubObjectMode(EditableMesh::SelectionMode::Edge);
+    auto edges = component.mesh.allEdges();
+    check(!edges.empty(), "a real box really has real edges to select");
+    component.selectedEdge = edges.front();
+    glm::vec3 expectedMidpoint =
+        (component.mesh.vertices()[edges.front().first].position + component.mesh.vertices()[edges.front().second].position) *
+        0.5f;
+    check(plugin.subObjectAnchorLocal(component) == expectedMidpoint, "Edge mode's anchor is really the edge's own real midpoint");
+
+    plugin.setSubObjectMode(EditableMesh::SelectionMode::Face);
+    component.selectedFace = 0;
+    check(plugin.subObjectAnchorLocal(component) == component.mesh.faceCentroid(0),
+          "Face mode's anchor is really EditableMesh::faceCentroid(), not a second, independent calculation");
+}
+
+void testModelingModePluginTranslateSubObjectSelectionMovesOnlyTheExpectedRealVertices() {
+    using namespace engine::core;
+    HeadlessComputeContext ctx = createHeadlessComputeContext();
+    if (!ctx.valid) {
+        check(true, "ModelingModePlugin translate test: no compute-capable Vulkan device -- real, honest skip");
+        ctx.destroy();
+        return;
+    }
+
+    MeshLibrary meshLibrary;
+    engine::studio::plugins::ModelingModePlugin plugin(ctx.allocator, ctx.device, ctx.commandPool, ctx.queue, meshLibrary);
+    EditableMeshComponent component;
+    component.mesh = EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+
+    Mesh gpuMesh;
+    check(gpuMesh.uploadFromHost(ctx.allocator, ctx.device, ctx.commandPool, ctx.queue, component.mesh.vertices(),
+                                  component.mesh.indices()),
+          "seed GPU mesh really uploads");
+    uint32_t handle = meshLibrary.registerMesh(std::move(gpuMesh));
+    Renderable renderable;
+    renderable.meshHandle = handle;
+
+    plugin.setSubObjectMode(EditableMesh::SelectionMode::Vertex);
+    component.selectedVertex = 5;
+    glm::vec3 before = component.mesh.vertices()[5].position;
+    glm::vec3 delta(0.25f, -0.1f, 0.0f);
+    plugin.translateSubObjectSelection(component, renderable, delta);
+    check(nearlyEqual(glm::distance(component.mesh.vertices()[5].position, before + delta), 0.0f, 1e-4f),
+          "Vertex mode's translate really moves exactly the one selected vertex by the real delta");
+
+    EditableMesh untouchedBox = EditableMesh::createBox({0.5f, 0.5f, 0.5f});
+    bool everyOtherVertexUnmoved = true;
+    for (size_t i = 0; i < component.mesh.vertexCount(); ++i) {
+        if (i == 5) continue;
+        if (!nearlyEqual(glm::distance(component.mesh.vertices()[i].position, untouchedBox.vertices()[i].position), 0.0f,
+                          1e-4f)) {
+            everyOtherVertexUnmoved = false;
+            break;
+        }
+    }
+    check(everyOtherVertexUnmoved,
+          "Vertex mode's translate really leaves every other real vertex exactly where the untouched box has it -- "
+          "including any vertex that happens to share vertex 5's position at a shared corner (see "
+          "translateSubObjectSelection()'s own header comment on this mesh's per-face vertex duplication)");
+
+    // Face mode: every one of the face's own 3 real vertices moves by the
+    // same delta -- not just the centroid.
+    plugin.setSubObjectMode(EditableMesh::SelectionMode::Face);
+    component.selectedFace = 1;
+    std::array<uint32_t, 3> faceVerts = component.mesh.faceVertexIndices(1);
+    std::array<glm::vec3, 3> beforeFace = {component.mesh.vertices()[faceVerts[0]].position,
+                                            component.mesh.vertices()[faceVerts[1]].position,
+                                            component.mesh.vertices()[faceVerts[2]].position};
+    plugin.translateSubObjectSelection(component, renderable, delta);
+    for (size_t i = 0; i < 3; ++i) {
+        check(nearlyEqual(glm::distance(component.mesh.vertices()[faceVerts[i]].position, beforeFace[i] + delta), 0.0f, 1e-4f),
+              "Face mode's translate really moves every one of the face's own 3 real vertices by the same delta");
+    }
+
+    meshLibrary.destroyAll(ctx.allocator);
+    ctx.destroy();
+}
+
 // A real EditableMesh::createBox() translated by `offset` -- createBox()
 // itself always centers at the origin, so CSG's own box-vs-box tests
 // (which need two overlapping-by-a-known-amount boxes) build theirs
@@ -39287,6 +39426,9 @@ int main() {
     testEditableMeshBevelEdgeReplacesASharedInteriorEdge();
     testEditableMeshBevelEdgeIsHonestNoOpOnANonSharedEdge();
     testEditableMeshInsetFaceShrinksTowardCentroidAndAddsSixFaces();
+    testModelingModePluginPickSubObjectResolvesNearestElementPerMode();
+    testModelingModePluginSubObjectAnchorLocalMatchesRealGeometry();
+    testModelingModePluginTranslateSubObjectSelectionMovesOnlyTheExpectedRealVertices();
 
     testCsgUnionOfHalfOverlappingBoxesHasCombinedVolume();
     testCsgSubtractOfHalfOverlappingBoxesRemovesTheOverlap();

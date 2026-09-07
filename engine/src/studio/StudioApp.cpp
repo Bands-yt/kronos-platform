@@ -429,8 +429,13 @@ bool StudioApp::initialize(StudioMode mode) {
 
     // Modeling Mode ("3D Model Maker" Phase 2) -- real vertex/edge/face
     // editing over whatever Block Builder (above) placed.
-    pluginManager_.registerPlugin(std::make_unique<plugins::ModelingModePlugin>(
-        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_));
+    auto modelingMode = std::make_unique<plugins::ModelingModePlugin>(
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_);
+    // Borrowed for ViewportPanel's real sub-object picking/gizmo -- same
+    // "raw pointer into what pluginManager_ owns" shape movieModePlugin_
+    // already establishes.
+    modelingModePlugin_ = modelingMode.get();
+    pluginManager_.registerPlugin(std::move(modelingMode));
 
     // 3D Mesh & CSG Editor ("windowed plugin module" -- Beta Roadmap
     // Phase 2): a real, standalone-window live viewport onto the same
@@ -2187,7 +2192,7 @@ void StudioApp::run() {
         if (show3DViewport()) {
             viewportPanel_.draw(deltaTime, viewportTarget_.imguiTextureId(), viewportTarget_.extent(), &ecs_,
                                  &meshLibrary_, explorerPanel_, physicsPreviewPlugin_, viewportDebugContext,
-                                 movieModePlugin_, showEngineDebugOverlays());
+                                 movieModePlugin_, showEngineDebugOverlays(), modelingModePlugin_);
         }
         if (showScriptEditor()) scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
         // debugConsolePanel_.tick() above still runs unconditionally in
