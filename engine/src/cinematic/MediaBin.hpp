@@ -26,6 +26,16 @@ struct MediaAsset {
     core::SoundHandle soundHandle = core::kInvalidSoundHandle; // Audio only
     int videoWidth = 0;  // Video only
     int videoHeight = 0; // Video only
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real waveform peak
+    // visualization): Audio only, real per-bucket (min, max) amplitude
+    // pairs computed once at import time via the existing real
+    // core::decodeAudioFileToFloatMono() + core::computeWaveformPeaks()
+    // pair ("Waveform Inspector", Audio.hpp) -- the same real function
+    // AudioPreviewPlugin's own Waveform Inspector already uses, not a
+    // second implementation. See studio::plugins::NleTimelinePlugin::
+    // drawWaveform() for the real consumer. Empty for every non-Audio
+    // asset.
+    std::vector<std::pair<float, float>> waveformPeaks;
 };
 
 // A creator's imported-media pool for the NLE timeline -- the "Media

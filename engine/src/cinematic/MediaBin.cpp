@@ -41,6 +41,19 @@ bool MediaBin::importAsset(const std::string& path, VmaAllocator allocator, VkDe
         asset.kind = MediaAssetKind::Audio;
         asset.soundHandle = handle;
         asset.durationSeconds = meta.durationSeconds;
+        // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real waveform peak
+        // visualization): reuses the existing real
+        // decodeAudioFileToFloatMono()/computeWaveformPeaks() pair
+        // AudioPreviewPlugin's own Waveform Inspector already uses (see
+        // this field's own header comment) -- not a second
+        // implementation. A real decode failure here is a real, honest
+        // empty result (doesn't fail the whole import -- the clip still
+        // plays back correctly, it just draws no waveform).
+        std::vector<float> samples;
+        uint32_t sampleRate = 0;
+        if (core::decodeAudioFileToFloatMono(path, samples, sampleRate)) {
+            asset.waveformPeaks = core::computeWaveformPeaks(samples, 256);
+        }
     } else if (meta.kind == core::AssetKind::Video) {
         // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real MP4 video
         // decoding): a real first-frame thumbnail, same real GPU-upload

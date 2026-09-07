@@ -82,15 +82,14 @@ void NleTimelinePlugin::update(float /*dt*/, core::ECS& ecs, core::EntityId, con
 //    later indices and can detach their spawned entity/sound tracking,
 //    the same "index-based, not content-addressed" real, accepted scope
 //    ModelingModePlugin's own selectedFace/selectedEdge already have.
-void NleTimelinePlugin::updatePlayback(core::ECS& ecs, float playheadSeconds) {
-    const std::vector<cinematic::MediaAsset>& assets = mediaBin_.assets();
-    auto findAsset = [&assets](const std::string& path) -> const cinematic::MediaAsset* {
-        for (const cinematic::MediaAsset& asset : assets) {
-            if (asset.path == path) return &asset;
-        }
-        return nullptr;
-    };
+const cinematic::MediaAsset* NleTimelinePlugin::findMediaAsset(const std::string& path) const {
+    for (const cinematic::MediaAsset& asset : mediaBin_.assets()) {
+        if (asset.path == path) return &asset;
+    }
+    return nullptr;
+}
 
+void NleTimelinePlugin::updatePlayback(core::ECS& ecs, float playheadSeconds) {
     std::unordered_map<uint64_t, bool> activeThisFrame;
     const std::vector<cinematic::ClipTrack>& tracks = clipTimeline_.tracks();
     for (size_t t = 0; t < tracks.size(); ++t) {
@@ -101,7 +100,7 @@ void NleTimelinePlugin::updatePlayback(core::ECS& ecs, float playheadSeconds) {
                 playheadSeconds >= clip.timelineStart && playheadSeconds < clip.timelineStart + clip.timelineDuration;
             if (!active) continue;
 
-            const cinematic::MediaAsset* asset = findAsset(clip.assetPath);
+            const cinematic::MediaAsset* asset = findMediaAsset(clip.assetPath);
             if (asset == nullptr) continue;
 
             uint64_t key = clipKey(t, c);
@@ -278,6 +277,38 @@ void NleTimelinePlugin::handleMediaDrop(size_t trackIndex) {
     ImGui::EndDragDropTarget();
 }
 
+void NleTimelinePlugin::drawWaveform(ImDrawList* drawList, ImVec2 clipTopLeft, ImVec2 clipBottomRight,
+                                      const cinematic::MediaClip& clip, const cinematic::MediaAsset& asset) const {
+    const std::vector<std::pair<float, float>>& peaks = asset.waveformPeaks;
+    if (peaks.empty() || asset.durationSeconds <= 0.0) return;
+
+    const float centerY = (clipTopLeft.y + clipBottomRight.y) * 0.5f;
+    const float halfHeight = (clipBottomRight.y - clipTopLeft.y) * 0.5f - 2.0f;
+    const float width = clipBottomRight.x - clipTopLeft.x;
+    if (width <= 1.0f || halfHeight <= 0.0f) return;
+
+    constexpr ImU32 kWaveColor = IM_COL32(230, 235, 245, 200);
+    // A real, fixed resolution independent of the clip's own current
+    // pixel width -- zooming the timeline redraws from the same real
+    // peak data rather than needing a live re-bucket.
+    constexpr int kColumns = 128;
+    for (int col = 0; col < kColumns; ++col) {
+        const float tNorm = static_cast<float>(col) / static_cast<float>(kColumns - 1);
+        const float x = clipTopLeft.x + tNorm * width;
+        // Maps through the CLIP's own trim window (sourceOffsetSeconds
+        // .. +timelineDuration), not the whole source file -- a trimmed
+        // clip's waveform shows only what actually plays.
+        const double sourceTime =
+            static_cast<double>(clip.sourceOffsetSeconds) + static_cast<double>(tNorm) * static_cast<double>(clip.timelineDuration);
+        size_t bucket = static_cast<size_t>((sourceTime / asset.durationSeconds) * static_cast<double>(peaks.size()));
+        if (bucket >= peaks.size()) bucket = peaks.size() - 1;
+
+        const float yTop = centerY - peaks[bucket].second * halfHeight;
+        const float yBottom = centerY - peaks[bucket].first * halfHeight;
+        drawList->AddLine(ImVec2(x, yTop), ImVec2(x, yBottom), kWaveColor, 1.0f);
+    }
+}
+
 void NleTimelinePlugin::drawClip(size_t trackIndex, size_t clipIndex, float rowTop, float rowHeight) {
     const cinematic::ClipTrack& track = clipTimeline_.tracks()[trackIndex];
     const cinematic::MediaClip& clip = track.clips[clipIndex];
@@ -298,6 +329,13 @@ void NleTimelinePlugin::drawClip(size_t trackIndex, size_t clipIndex, float rowT
     dl->AddRectFilled(tl, br, fill, 3.0f);
     dl->AddRect(tl, br, selected ? IM_COL32(255, 220, 90, 255) : IM_COL32(20, 20, 24, 200), 3.0f, 0,
                 selected ? 2.0f : 1.0f);
+
+    if (track.kind == cinematic::ClipTrackKind::Media) {
+        const cinematic::MediaAsset* asset = findMediaAsset(clip.assetPath);
+        if (asset != nullptr && asset->kind == cinematic::MediaAssetKind::Audio) {
+            drawWaveform(dl, tl, br, clip, *asset);
+        }
+    }
 
     // Fade envelope, drawn as the two triangles the gain ramp traces --
     // the same shape a CapCut/Premiere fade handle visualizes.
