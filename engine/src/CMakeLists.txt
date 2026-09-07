@@ -122,6 +122,7 @@ add_library(engine_core STATIC
     core/EditableMesh.cpp
     core/CsgMesh.cpp
     core/ModifierStack.cpp
+    core/VideoDecoder.cpp
     core/UvTools.cpp
     core/KMeshFile.cpp
     core/CharacterController.cpp
@@ -533,6 +534,18 @@ elseif(UNIX)
     # see cmake/Dependencies.cmake's own pkg_check_modules() call.
     target_link_libraries(engine_core PUBLIC ${LIBSECRET_LIBRARIES})
     target_include_directories(engine_core PUBLIC ${LIBSECRET_INCLUDE_DIRS})
+endif()
+
+if(UNIX)
+    # Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real MP4 video
+    # decoding): core::VideoDecoder (core/VideoDecoder.hpp/.cpp), see
+    # cmake/Dependencies.cmake's own pkg_check_modules(... IMPORTED_TARGET)
+    # call for why this is PUBLIC on engine_core (and therefore every
+    # target linking it -- engine_runtime, studio, and studio's own
+    # kronos_* standalone executables all get real MP4 import for free,
+    # matching this codebase's existing "engine_core is where shared
+    # capability lives" shape).
+    target_link_libraries(engine_core PUBLIC PkgConfig::LIBAV)
 endif()
 
 # ---------------------------------------------------------------------------

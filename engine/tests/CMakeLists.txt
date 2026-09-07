@@ -134,4 +134,10 @@ target_compile_features(hotreload_counter_module_v2 PRIVATE cxx_std_20)
 target_compile_definitions(engine_tests PRIVATE
     HOTRELOAD_MODULE_V1_PATH="$<TARGET_FILE:hotreload_counter_module_v1>"
     HOTRELOAD_MODULE_V2_PATH="$<TARGET_FILE:hotreload_counter_module_v2>"
+    # Real, checked-in, byte-exact-losslessly-encoded (libx264rgb, qp=0)
+    # 2-frame fixture (frame 0 = solid red @ t=0s, frame 1 = solid blue
+    # @ t=1s, 64x64) -- same "absolute source path baked in" convention
+    # as the HOTRELOAD_* paths above, for core::VideoDecoder's own real
+    # decode test.
+    VIDEO_DECODER_TEST_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/video_decoder_test.mp4"
 )

@@ -200,6 +200,74 @@ Texture Texture::createFromPixels(const uint8_t* rgba, int width, int height, bo
     return uploadPixels(rgba, width, height, srgb, allocator, device, cmdPool, queue);
 }
 
+bool Texture::updatePixels(const uint8_t* rgba, size_t rgbaBytes, VmaAllocator allocator, VkDevice device,
+                            VkCommandPool cmdPool, VkQueue queue) {
+    if (!isValid()) return false;
+    const size_t expectedBytes = static_cast<size_t>(width_) * static_cast<size_t>(height_) * 4;
+    if (rgbaBytes != expectedBytes) {
+        logError("Texture", "updatePixels: size mismatch (got %zu bytes, expected %zu for %dx%d) -- real, honest no-op.",
+                  rgbaBytes, expectedBytes, width_, height_);
+        return false;
+    }
+
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VmaAllocation stagingAllocation = nullptr;
+    if (!createBuffer(allocator, static_cast<VkDeviceSize>(rgbaBytes), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                       VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                       stagingBuffer, stagingAllocation)) {
+        logError("Texture", "updatePixels: staging buffer creation failed.");
+        return false;
+    }
+    VmaAllocationInfo stagingInfo{};
+    vmaGetAllocationInfo(allocator, stagingAllocation, &stagingInfo);
+    std::memcpy(stagingInfo.pMappedData, rgba, rgbaBytes);
+
+    VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmdAllocInfo.commandPool = cmdPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device, &cmdAllocInfo, &cmd) != VK_SUCCESS) {
+        logError("Texture", "updatePixels: vkAllocateCommandBuffers failed.");
+        vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
+        return false;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    // Real round trip: this image already carries content from a
+    // previous updatePixels()/uploadPixels() call and sits in
+    // SHADER_READ_ONLY_OPTIMAL (every Texture factory's own
+    // post-creation contract) -- transition out to receive the new
+    // frame, then back.
+    transitionImageLayout(cmd, image_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_ACCESS_2_SHADER_READ_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT);
+
+    VkBufferImageCopy copyRegion{};
+    copyRegion.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copyRegion.imageExtent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
+    vkCmdCopyBufferToImage(cmd, stagingBuffer, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+    transitionImageLayout(cmd, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(queue); // same synchronous tradeoff every other Texture upload path here makes
+
+    vkFreeCommandBuffers(device, cmdPool, 1, &cmd);
+    vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
+    return true;
+}
+
 Texture Texture::createStorageImage(int width, int height, glm::vec4 clearColor, VmaAllocator allocator, VkDevice device,
                                      VkCommandPool cmdPool, VkQueue queue) {
     Texture result;
