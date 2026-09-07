@@ -94,6 +94,7 @@
 #include "core/Navigation.hpp"
 #include "core/Texture.hpp"
 #include "core/VideoDecoder.hpp"
+#include "core/VideoPlaneComponent.hpp"
 #include "core/CubeLut.hpp"
 #include "core/Utf8.hpp"
 #include "core/Noise.hpp"
@@ -34827,6 +34828,48 @@ void testVideoDecoderOpenFailsHonestlyOnAMissingFile() {
     check(!error.empty(), "a failed real open really reports a non-empty error message");
     check(!decoder.isOpen(), "isOpen() really reflects the real failed open");
 }
+
+// Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real 3D-over-2D
+// compositing): stepVideoPlane() over the same real fixture, against a
+// real GPU (HeadlessComputeContext) -- proves the full real path from
+// "source time in seconds" to "an actual sampleable GPU texture showing
+// that real decoded frame's pixels", not just that VideoDecoder alone
+// works.
+void testStepVideoPlaneDecodesUploadsAndDedupsRealFrames() {
+    using namespace engine::core;
+    HeadlessComputeContext ctx = createHeadlessComputeContext();
+    if (!ctx.valid) {
+        check(true, "stepVideoPlane test: no compute-capable Vulkan device -- real, honest skip");
+        ctx.destroy();
+        return;
+    }
+
+    TextureLibrary textureLibrary;
+    VideoPlaneComponent plane;
+    plane.sourcePath = VIDEO_DECODER_TEST_FIXTURE_PATH;
+    std::string error;
+
+    check(stepVideoPlane(plane, 0.0, textureLibrary, ctx.allocator, ctx.device, ctx.commandPool, ctx.queue, error),
+          ("stepVideoPlane really succeeds decoding the real first frame: " + error).c_str());
+    check(plane.textureHandle != TextureLibrary::kInvalidHandle, "a real texture handle is really registered");
+    const Texture* texture = textureLibrary.get(plane.textureHandle);
+    check(texture != nullptr && texture->width() == 64 && texture->height() == 64,
+          "the real uploaded texture really matches the fixture's own 64x64 size");
+
+    uint32_t firstHandle = plane.textureHandle;
+    check(stepVideoPlane(plane, 0.001, textureLibrary, ctx.allocator, ctx.device, ctx.commandPool, ctx.queue, error),
+          "a real, near-identical source time really dedups instead of erroring");
+    check(plane.textureHandle == firstHandle, "a real dedup really reuses the same texture handle, no new registration");
+
+    check(stepVideoPlane(plane, 1.0, textureLibrary, ctx.allocator, ctx.device, ctx.commandPool, ctx.queue, error),
+          ("stepVideoPlane really succeeds decoding the real second (blue) frame: " + error).c_str());
+    check(plane.textureHandle == firstHandle,
+          "advancing to a real new source time really updates the SAME texture in place (Texture::updatePixels), "
+          "not a second registration -- a video plane keeps one stable handle for its whole life");
+
+    textureLibrary.destroyAll(ctx.allocator, ctx.device);
+    ctx.destroy();
+}
 #endif
 
 // A real EditableMesh::createBox() translated by `offset` -- createBox()
@@ -39673,6 +39716,7 @@ int main() {
 #ifdef VIDEO_DECODER_TEST_FIXTURE_PATH
     testVideoDecoderDecodesRealMp4FramesAtRequestedTimes();
     testVideoDecoderOpenFailsHonestlyOnAMissingFile();
+    testStepVideoPlaneDecodesUploadsAndDedupsRealFrames();
 #endif
 
     testCsgUnionOfHalfOverlappingBoxesHasCombinedVolume();

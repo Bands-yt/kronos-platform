@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <volk.h>
@@ -12,10 +13,12 @@
 #include "cinematic/MediaBin.hpp"
 #include "cinematic/TimelineLayout.hpp"
 #include "core/Audio.hpp"
+#include "core/ECS.hpp"
 #include "studio/IStudioPlugin.hpp"
 
 namespace engine::core {
 class TextureLibrary;
+class MeshLibrary;
 }
 
 namespace engine::studio::plugins {
@@ -46,10 +49,25 @@ class MovieModePlugin;
 class NleTimelinePlugin final : public IStudioPlugin {
 public:
     NleTimelinePlugin(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
-                       core::TextureLibrary& textureLibrary, MovieModePlugin& movieMode);
+                       core::TextureLibrary& textureLibrary, core::MeshLibrary& meshLibrary, MovieModePlugin& movieMode);
 
     [[nodiscard]] const char* name() const override { return "NLE Timeline"; }
     [[nodiscard]] const char* category() const override { return "Cinematics"; }
+
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real timeline
+    // playback): runs every frame regardless of panel visibility (same
+    // IStudioPlugin convention ModelingModePlugin/MovieModePlugin's own
+    // update() overrides already establish) -- drives every Media-track
+    // clip active at the shared playhead: a Video clip's real decoded
+    // frame (core::stepVideoPlane) onto a real, spawned-on-demand 3D
+    // plane entity, and an Audio clip's real playback position/gain
+    // (core::Audio::playFromOffset/setSoundVolume), both keyed off the
+    // exact same real cinematic::ClipTimeline::envelopeValueAtTime() this
+    // codebase's own audit found had zero consumers before this. See
+    // updatePlayback()'s own .cpp comment for the real, stated scope cut
+    // on video opacity (brightness fade, not true alpha blending -- this
+    // engine's scene pass has no transparency pass yet).
+    void update(float dt, core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) override;
 
     void drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) override;
 
@@ -62,12 +80,30 @@ private:
     void handleMediaDrop(size_t trackIndex);
     void importFromDialog();
 
+    void updatePlayback(core::ECS& ecs, float playheadSeconds);
+    void updateVideoClipPlayback(core::ECS& ecs, uint64_t clipKey, const cinematic::MediaAsset& asset,
+                                  double sourceTimeSeconds, float envelope);
+    void updateAudioClipPlayback(uint64_t clipKey, const cinematic::MediaAsset& asset, double sourceTimeSeconds,
+                                  float envelope);
+
     VmaAllocator allocator_;
     VkDevice device_;
     VkCommandPool cmdPool_;
     VkQueue queue_;
     core::TextureLibrary* textureLibrary_;
+    core::MeshLibrary* meshLibrary_;
     MovieModePlugin* movieMode_;
+
+    // Real playback-driver state -- see update()'s own comment.
+    // "~0u" (never a real registered mesh handle in practice) means "not
+    // created yet", same sentinel convention core::Renderable::
+    // kInvalidHandle already establishes.
+    uint32_t videoPlaneMeshHandle_ = ~0u;
+    // Keyed by (trackIndex << 32 | clipIndex) -- see updatePlayback()'s
+    // own .cpp comment for why a raw clip index, not a stable ID, is a
+    // real, accepted limitation here.
+    std::unordered_map<uint64_t, core::EntityId> videoPlaneEntities_;
+    std::unordered_map<uint64_t, core::SoundHandle> activeAudioClips_;
 
     core::Audio audio_;
     cinematic::MediaBin mediaBin_;

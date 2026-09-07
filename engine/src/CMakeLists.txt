@@ -123,6 +123,7 @@ add_library(engine_core STATIC
     core/CsgMesh.cpp
     core/ModifierStack.cpp
     core/VideoDecoder.cpp
+    core/VideoPlaneComponent.cpp
     core/UvTools.cpp
     core/KMeshFile.cpp
     core/CharacterController.cpp

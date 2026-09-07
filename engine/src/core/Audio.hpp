@@ -48,6 +48,31 @@ public:
     // feedback, etc).
     void playOneShot(SoundHandle handle);
 
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real ClipTimeline
+    // playback): seeks to `offsetSeconds` into the sound's own real
+    // decoded data (via the sound's own native sample rate --
+    // ma_sound_seek_to_pcm_frame operates in the data source's own frame
+    // count, not the shared engine output rate miniaudio resamples to on
+    // mix) and starts it -- what a trimmed clip (MediaClip::
+    // sourceOffsetSeconds > 0) needs to play the right part of its
+    // source file, instead of always restarting at 0:00 like
+    // playOneShot() does. A real, honest no-op on an invalid handle or a
+    // sound whose data format can't be queried.
+    void playFromOffset(SoundHandle handle, double offsetSeconds);
+
+    // Real, immediate stop (ma_sound_stop) -- the other half
+    // playFromOffset() needs: a clip's sound must stop the instant the
+    // playhead scrubs back out of its span, not keep playing to its own
+    // natural end. A real, honest no-op on an invalid/already-stopped
+    // handle.
+    void stopSound(SoundHandle handle);
+
+    // Real, honest read of whether this handle is currently playing
+    // (ma_sound_is_playing) -- lets a caller (NleTimelinePlugin's own
+    // playback driver) avoid calling playFromOffset() again every single
+    // frame the playhead sits inside the same clip.
+    [[nodiscard]] bool isSoundPlaying(SoundHandle handle) const;
+
     // Kronos ("Audio Track Mixer" -- kronos_audio's own dedicated
     // workspace): real, immediate per-sound volume (ma_sound_set_volume),
     // for a plain loadSound()/playOneShot() handle -- distinct from

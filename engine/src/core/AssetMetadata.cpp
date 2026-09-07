@@ -10,6 +10,7 @@
 #include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
 #include "core/ObjLoader.hpp"
+#include "core/VideoDecoder.hpp"
 
 namespace engine::core {
 
@@ -36,6 +37,11 @@ AssetKind detectAssetKind(const std::string& path) {
         return AssetKind::Texture;
     }
     if (ext == "wav" || ext == "mp3" || ext == "flac" || ext == "ogg") return AssetKind::Audio;
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real MP4 video
+    // decoding): core::VideoDecoder (libavformat) can open any container
+    // libav itself demuxes, but these 4 are the real, common NLE-import
+    // extensions this Media Bin actually advertises supporting.
+    if (ext == "mp4" || ext == "mov" || ext == "mkv" || ext == "webm") return AssetKind::Video;
     return AssetKind::Unknown;
 }
 
@@ -112,6 +118,15 @@ AssetMetadata extractAssetMetadata(const std::string& path) {
             meta.durationSeconds =
                 meta.sampleRate > 0 ? static_cast<double>(frameCount) / static_cast<double>(meta.sampleRate) : 0.0;
             ma_decoder_uninit(&decoder);
+            meta.succeeded = true;
+            break;
+        }
+        case AssetKind::Video: {
+            VideoDecoder decoder;
+            if (!decoder.open(path, meta.error)) return meta;
+            meta.width = decoder.width();
+            meta.height = decoder.height();
+            meta.durationSeconds = decoder.durationSeconds();
             meta.succeeded = true;
             break;
         }

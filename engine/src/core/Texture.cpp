@@ -375,6 +375,11 @@ const Texture* TextureLibrary::get(uint32_t handle) const {
     return &textures_[handle];
 }
 
+Texture* TextureLibrary::get(uint32_t handle) {
+    if (handle >= textures_.size()) return nullptr;
+    return &textures_[handle];
+}
+
 void TextureLibrary::destroyAll(VmaAllocator allocator, VkDevice device) {
     for (Texture& texture : textures_) {
         texture.destroy(allocator, device);

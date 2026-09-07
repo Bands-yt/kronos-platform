@@ -108,6 +108,13 @@ public:
 
     uint32_t registerTexture(Texture texture);
     [[nodiscard]] const Texture* get(uint32_t handle) const;
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real MP4 video
+    // playback): a real, mutable overload -- Texture::updatePixels() is a
+    // non-const instance method (it re-uploads into the existing VkImage
+    // in place), so a video plane re-fetching its own texture handle
+    // every frame needs a non-const pointer, not the const one every
+    // read-only sampler (scene.frag's own material bindings) uses.
+    [[nodiscard]] Texture* get(uint32_t handle);
     void destroyAll(VmaAllocator allocator, VkDevice device);
 
 private:
