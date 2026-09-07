@@ -197,6 +197,8 @@ add_library(engine_core STATIC
     cinematic/SequenceApplier.cpp
     cinematic/RailCamera.cpp
     cinematic/ExportRunner.cpp
+    cinematic/ClipTimeline.cpp
+    cinematic/MediaBin.cpp
     core/Texture.cpp
     core/ProceduralMaterials.cpp
     core/Prefab.cpp
@@ -673,6 +675,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/CreatorConsolePlugin.cpp
         studio/plugins/TimelineEditorPlugin.cpp
         studio/plugins/MovieModePlugin.cpp
+        studio/plugins/NleTimelinePlugin.cpp
         studio/plugins/CreatorAssetBrowserPlugin.cpp
         studio/plugins/TrailerPanel.cpp
         studio/plugins/LauncherPlugin.cpp
