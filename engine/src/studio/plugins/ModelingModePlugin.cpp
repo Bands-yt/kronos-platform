@@ -1,12 +1,16 @@
 #include "studio/plugins/ModelingModePlugin.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
+#include <limits>
 
 #include <imgui.h>
 
 #include <imgui_stdlib.h>
 
 #include "core/KMeshFile.hpp"
+#include "core/MeshUvPicking.hpp"
 #include "core/ObjLoader.hpp"
 #include "core/UvTools.hpp"
 #include "studio/PluginChrome.hpp"
@@ -56,6 +60,116 @@ void ModelingModePlugin::applyCsg(core::EditableMeshComponent& component, core::
     csgStatus_ = "CSG applied.";
 }
 
+bool ModelingModePlugin::pickSubObject(const core::EditableMeshComponent& component, glm::vec3 localOrigin,
+                                        glm::vec3 localDirection, float maxDistance) const {
+    core::MeshUvPickResult hit = core::pickTriangleUv(component.mesh, localOrigin, localDirection, maxDistance);
+    if (!hit.hit) return false;
+
+    // const_cast is safe and deliberate here: `component` is only const in
+    // this method's own signature (so callers reading a selection can pass
+    // a const& too), but every real caller (ViewportPanel) already holds a
+    // real, non-const EditableMeshComponent& from the ECS -- the selection
+    // fields themselves aren't part of what makes this method logically
+    // "const" (it reads the mesh, not the selection), just conveniently
+    // declared alongside it.
+    auto& mutableComponent = const_cast<core::EditableMeshComponent&>(component);
+    const std::array<uint32_t, 3> faceVerts = component.mesh.faceVertexIndices(hit.faceIndex);
+    const std::vector<core::Vertex>& vertices = component.mesh.vertices();
+
+    switch (subObjectMode_) {
+        case core::EditableMesh::SelectionMode::Face:
+            mutableComponent.selectedFace = hit.faceIndex;
+            break;
+        case core::EditableMesh::SelectionMode::Vertex: {
+            uint32_t closest = faceVerts[0];
+            float closestDistSq = std::numeric_limits<float>::max();
+            for (uint32_t idx : faceVerts) {
+                glm::vec3 diff = vertices[idx].position - hit.point;
+                float distSq = glm::dot(diff, diff);
+                if (distSq < closestDistSq) {
+                    closestDistSq = distSq;
+                    closest = idx;
+                }
+            }
+            mutableComponent.selectedVertex = closest;
+            break;
+        }
+        case core::EditableMesh::SelectionMode::Edge: {
+            std::pair<uint32_t, uint32_t> bestEdge{faceVerts[0], faceVerts[1]};
+            float bestDistSq = std::numeric_limits<float>::max();
+            for (int i = 0; i < 3; ++i) {
+                uint32_t a = faceVerts[static_cast<size_t>(i)];
+                uint32_t b = faceVerts[static_cast<size_t>((i + 1) % 3)];
+                glm::vec3 pa = vertices[a].position;
+                glm::vec3 ab = vertices[b].position - pa;
+                float abLenSq = glm::max(glm::dot(ab, ab), 1e-8f);
+                float t = glm::clamp(glm::dot(hit.point - pa, ab) / abLenSq, 0.0f, 1.0f);
+                glm::vec3 closestPoint = pa + ab * t;
+                glm::vec3 diff = closestPoint - hit.point;
+                float distSq = glm::dot(diff, diff);
+                if (distSq < bestDistSq) {
+                    bestDistSq = distSq;
+                    bestEdge = {std::min(a, b), std::max(a, b)};
+                }
+            }
+            mutableComponent.selectedEdge = bestEdge;
+            break;
+        }
+    }
+    return true;
+}
+
+glm::vec3 ModelingModePlugin::subObjectAnchorLocal(const core::EditableMeshComponent& component) const {
+    const core::EditableMesh& mesh = component.mesh;
+    switch (subObjectMode_) {
+        case core::EditableMesh::SelectionMode::Vertex:
+            return component.selectedVertex < mesh.vertexCount() ? mesh.vertices()[component.selectedVertex].position
+                                                                    : glm::vec3(0.0f);
+        case core::EditableMesh::SelectionMode::Edge: {
+            uint32_t v0 = component.selectedEdge.first, v1 = component.selectedEdge.second;
+            if (v0 >= mesh.vertexCount() || v1 >= mesh.vertexCount()) return glm::vec3(0.0f);
+            return (mesh.vertices()[v0].position + mesh.vertices()[v1].position) * 0.5f;
+        }
+        case core::EditableMesh::SelectionMode::Face:
+        default:
+            return component.selectedFace < mesh.faceCount() ? mesh.faceCentroid(component.selectedFace) : glm::vec3(0.0f);
+    }
+}
+
+void ModelingModePlugin::translateSubObjectSelection(core::EditableMeshComponent& component,
+                                                       core::Renderable& renderable, glm::vec3 localDelta) {
+    core::EditableMesh& mesh = component.mesh;
+    bool changed = false;
+    switch (subObjectMode_) {
+        case core::EditableMesh::SelectionMode::Vertex:
+            if (component.selectedVertex < mesh.vertexCount()) {
+                mesh.setVertexPosition(static_cast<uint32_t>(component.selectedVertex),
+                                        mesh.vertices()[component.selectedVertex].position + localDelta);
+                changed = true;
+            }
+            break;
+        case core::EditableMesh::SelectionMode::Edge: {
+            uint32_t v0 = component.selectedEdge.first, v1 = component.selectedEdge.second;
+            if (v0 < mesh.vertexCount() && v1 < mesh.vertexCount()) {
+                mesh.setVertexPosition(v0, mesh.vertices()[v0].position + localDelta);
+                mesh.setVertexPosition(v1, mesh.vertices()[v1].position + localDelta);
+                changed = true;
+            }
+            break;
+        }
+        case core::EditableMesh::SelectionMode::Face:
+        default:
+            if (component.selectedFace < mesh.faceCount()) {
+                for (uint32_t idx : mesh.faceVertexIndices(component.selectedFace)) {
+                    mesh.setVertexPosition(idx, mesh.vertices()[idx].position + localDelta);
+                }
+                changed = true;
+            }
+            break;
+    }
+    if (changed) reuploadMesh(component, renderable);
+}
+
 void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
                                     const std::vector<core::EntityId>& /*selectedEntities*/) {
     ImGui::Begin(name());
@@ -97,8 +211,43 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
     // (EditableMeshComponent is only ever added alongside one above).
     core::EditableMesh& mesh = editable->mesh;
     ImGui::Text("%zu vertices, %zu faces", mesh.vertexCount(), mesh.faceCount());
+
+    // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast picking):
+    // governs what a real viewport Ctrl+Click resolves to (see
+    // ViewportPanel::drawSubObjectEditing()) -- the 3 lists below (and
+    // their own click-to-select) work regardless of this mode, same as
+    // before this pass.
+    ImGui::Text("Viewport pick mode:");
+    ImGui::SameLine();
+    int mode = static_cast<int>(subObjectMode_);
+    if (ImGui::RadioButton("Vertex", mode == static_cast<int>(core::EditableMesh::SelectionMode::Vertex))) {
+        subObjectMode_ = core::EditableMesh::SelectionMode::Vertex;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Edge", mode == static_cast<int>(core::EditableMesh::SelectionMode::Edge))) {
+        subObjectMode_ = core::EditableMesh::SelectionMode::Edge;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Face", mode == static_cast<int>(core::EditableMesh::SelectionMode::Face))) {
+        subObjectMode_ = core::EditableMesh::SelectionMode::Face;
+    }
+    ImGui::SameLine();
+    helpMarker("Ctrl+Click a real vertex/edge/face on this entity in the Viewport to select it there instead of "
+               "from these lists -- both write the same real selectedVertex/selectedEdge/selectedFace this panel "
+               "already uses, and a translate gizmo appears on the current selection either way.");
     ImGui::Spacing();
 
+    ImGui::SeparatorText("Vertices");
+    ImGui::BeginChild("VertexList", ImVec2(0.0f, 100.0f), ImGuiChildFlags_Borders);
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        glm::vec3 p = mesh.vertices()[v].position;
+        char label[64];
+        std::snprintf(label, sizeof(label), "Vertex %zu  (%.2f, %.2f, %.2f)##vertex", v, p.x, p.y, p.z);
+        if (ImGui::Selectable(label, editable->selectedVertex == v)) editable->selectedVertex = v;
+    }
+    ImGui::EndChild();
+
+    ImGui::Spacing();
     ImGui::SeparatorText("Faces");
     ImGui::BeginChild("FaceList", ImVec2(0.0f, 100.0f), ImGuiChildFlags_Borders);
     for (size_t f = 0; f < mesh.faceCount(); ++f) {

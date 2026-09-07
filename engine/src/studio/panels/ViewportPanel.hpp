@@ -19,6 +19,7 @@ namespace engine::studio::plugins {
 class PhysicsPreviewPlugin;
 class MovieModePlugin;
 class ModelImporterPlugin;
+class ModelingModePlugin;
 }
 
 namespace engine::studio::panels {
@@ -131,7 +132,18 @@ public:
               // Defaults true so Full/kronos_studio (and every existing
               // caller that doesn't pass this) keeps the exact same
               // toolbar it always has.
-              bool showEngineDebugOverlays = true);
+              bool showEngineDebugOverlays = true,
+              // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast
+              // picking): when `selected` carries a real
+              // core::EditableMeshComponent, drawSubObjectEditing() takes
+              // over from drawGizmo() for that entity -- Ctrl+Click resolves
+              // a real vertex/edge/face per this plugin's own
+              // subObjectMode(), and a Translate-only gizmo manipulates the
+              // result. nullptr (every existing caller) means Modeling
+              // Mode's own sub-object picking/gizmo simply doesn't run,
+              // same "absent plugin, absent feature" precedent
+              // physicsPreview/movieMode above already establish.
+              plugins::ModelingModePlugin* modelingMode = nullptr);
 
     [[nodiscard]] core::Camera& camera() { return camera_; }
     [[nodiscard]] const core::Camera& camera() const { return camera_; }
@@ -260,6 +272,21 @@ private:
     void drawCameraRailOverlay(plugins::MovieModePlugin& movieMode, ImVec2 imageOrigin, ImVec2 imageSize);
     // Which rail control point a drag is moving; -1 when none is.
     int draggingRailPoint_ = -1;
+
+    // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast picking):
+    // real Ctrl+Click ray-vs-mesh picking (via `modelingMode`'s own
+    // pickSubObject(), same real core::pickTriangleUv() Moller-Trumbore
+    // test MaterialPlugin's viewport click-to-paint already proved),
+    // a real highlight (a screen-projected point/line/triangle over the
+    // actual selected vertex/edge/face) and a real Translate-only
+    // ImGuizmo anchored at subObjectAnchorLocal() -- transformed to world
+    // space by `selected`'s own Transform, mirroring drawGizmo()'s own
+    // view/proj/model setup. Draws INSTEAD of drawGizmo() for this entity
+    // (see draw()'s own call site) -- an Object-mode move gizmo and a
+    // sub-object one at a different anchor would otherwise overlap and
+    // fight for the same drag.
+    void drawSubObjectEditing(plugins::ModelingModePlugin& modelingMode, core::ECS& ecs, core::EntityId selected,
+                               ImVec2 imageOrigin, ImVec2 imageSize);
 
     // Sprint 8 ("Performance Stats & Debug Tools") task category 2:
     // bounding-box overlay (every Renderable+Transform+MeshSource entity's

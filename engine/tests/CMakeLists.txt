@@ -44,6 +44,7 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/ScriptedPlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/PhysicsPreviewPlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/MovieModePlugin.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/ModelingModePlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/PluginChrome.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UITheme.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/Notification.cpp

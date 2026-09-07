@@ -73,6 +73,55 @@ public:
 
     void drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) override;
 
+    // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast picking):
+    // what a viewport click resolves to. Reuses core::EditableMesh's own
+    // SelectionMode enum (declared but previously unused anywhere) rather
+    // than a second, duplicate mode enum.
+    [[nodiscard]] core::EditableMesh::SelectionMode subObjectMode() const { return subObjectMode_; }
+    void setSubObjectMode(core::EditableMesh::SelectionMode mode) { subObjectMode_ = mode; }
+
+    // Real ray-vs-mesh picking, closing the exact gap this class's own
+    // header comment used to document as out of scope ("building real
+    // ray-vs-triangle/ray-vs-edge picking for sub-mesh elements is real,
+    // separate scope"). Built on core::pickTriangleUv() (the same real
+    // Moller-Trumbore triangle test MaterialPlugin's viewport click-to-
+    // paint already proved end-to-end) to find the hit triangle, then
+    // resolves that hit to the nearest real vertex/edge/face of that
+    // triangle depending on subObjectMode(). `localOrigin`/`localDirection`
+    // are already in component.mesh's own local space -- same division of
+    // responsibility core::pickEntity()'s own AABB test uses; the caller
+    // (ViewportPanel) transforms the world-space mouse ray through the
+    // entity's inverse Transform matrix first. Returns true and updates
+    // component's own selectedVertex/selectedEdge/selectedFace on a real
+    // hit; a real, honest false (component left untouched) otherwise.
+    bool pickSubObject(const core::EditableMeshComponent& component, glm::vec3 localOrigin, glm::vec3 localDirection,
+                        float maxDistance) const;
+
+    // Where the sub-object gizmo belongs, in component.mesh's own local
+    // space, for whichever element subObjectMode() currently has selected
+    // -- a real vertex position, an edge's real midpoint, or
+    // EditableMesh::faceCentroid(), never an approximation. Returns the
+    // origin if the current selection index is out of range (e.g. right
+    // after a topology op shrank the mesh -- same "stale selection is a
+    // real, honest no-op" precedent applyCsg() already established for
+    // selectedFace/selectedEdge).
+    [[nodiscard]] glm::vec3 subObjectAnchorLocal(const core::EditableMeshComponent& component) const;
+
+    // Applies a real local-space translation to every real vertex the
+    // current selection resolves to (1 vertex, the 2 vertices of an edge,
+    // or the 3 vertices of a face) via EditableMesh::setVertexPosition(),
+    // then re-uploads. Real, honest scope: this mesh's flat-shaded-per-
+    // face storage gives each face its own private vertices even at a
+    // shared corner (see createBox()'s own "24-vertex" comment) --
+    // dragging one vertex/edge/face does NOT drag a position-coincident
+    // vertex belonging to a neighboring face along with it, opening a
+    // real seam, the same per-index (not per-position) scope bevelEdge()/
+    // allEdges() already have. A future pass could add an explicit
+    // "move all vertices at this position" toggle without changing
+    // anything below.
+    void translateSubObjectSelection(core::EditableMeshComponent& component, core::Renderable& renderable,
+                                      glm::vec3 localDelta);
+
 private:
     // Rebuilds a real GPU core::Mesh from `component.mesh`'s current
     // vertices/indices and swaps it into `renderable.meshHandle` via
@@ -99,6 +148,10 @@ private:
     VkCommandPool cmdPool_;
     VkQueue queue_;
     core::MeshLibrary* meshLibrary_;
+
+    // See subObjectMode()'s own comment. Face matches the pre-existing
+    // Faces list being the first/most-used section in drawPanel() below.
+    core::EditableMesh::SelectionMode subObjectMode_ = core::EditableMesh::SelectionMode::Face;
 
     float extrudeDistance_ = 0.5f;
     float insetAmount_ = 0.5f;

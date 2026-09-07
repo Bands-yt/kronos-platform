@@ -1,6 +1,7 @@
 #include "studio/panels/ViewportPanel.hpp"
 
 #include "studio/plugins/ModelImporterPlugin.hpp"
+#include "studio/plugins/ModelingModePlugin.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -762,10 +763,132 @@ void ViewportPanel::drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& 
     }
 }
 
+void ViewportPanel::drawSubObjectEditing(plugins::ModelingModePlugin& modelingMode, core::ECS& ecs,
+                                          core::EntityId selected, ImVec2 imageOrigin, ImVec2 imageSize) {
+    auto* transform = ecs.tryGetComponent<core::Transform>(selected);
+    auto* editable = ecs.tryGetComponent<core::EditableMeshComponent>(selected);
+    auto* renderable = ecs.tryGetComponent<core::Renderable>(selected);
+    if (transform == nullptr || editable == nullptr || renderable == nullptr) return;
+    if (imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
+
+    const glm::mat4 model = transform->matrix();
+    const glm::mat4 view = renderCamera_.viewMatrix();
+    const glm::mat4 proj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y);
+    const glm::mat4 viewProj = proj * view;
+    const core::EditableMesh& mesh = editable->mesh;
+
+    // --- highlight the current real selection -----------------------------
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    constexpr ImU32 kHighlightColor = IM_COL32(255, 200, 60, 255);
+    switch (modelingMode.subObjectMode()) {
+        case core::EditableMesh::SelectionMode::Vertex: {
+            if (editable->selectedVertex < mesh.vertexCount()) {
+                glm::vec3 worldPos = glm::vec3(model * glm::vec4(mesh.vertices()[editable->selectedVertex].position, 1.0f));
+                ImVec2 screen;
+                if (worldToScreen(viewProj, worldPos, imageOrigin, imageSize, screen)) {
+                    drawList->AddCircleFilled(screen, 6.0f, kHighlightColor);
+                    drawList->AddCircle(screen, 6.0f, IM_COL32(20, 20, 20, 220), 0, 1.5f);
+                }
+            }
+            break;
+        }
+        case core::EditableMesh::SelectionMode::Edge: {
+            uint32_t v0 = editable->selectedEdge.first;
+            uint32_t v1 = editable->selectedEdge.second;
+            if (v0 < mesh.vertexCount() && v1 < mesh.vertexCount()) {
+                glm::vec3 wp0 = glm::vec3(model * glm::vec4(mesh.vertices()[v0].position, 1.0f));
+                glm::vec3 wp1 = glm::vec3(model * glm::vec4(mesh.vertices()[v1].position, 1.0f));
+                ImVec2 s0, s1;
+                if (worldToScreen(viewProj, wp0, imageOrigin, imageSize, s0) &&
+                    worldToScreen(viewProj, wp1, imageOrigin, imageSize, s1)) {
+                    drawList->AddLine(s0, s1, kHighlightColor, 4.0f);
+                }
+            }
+            break;
+        }
+        case core::EditableMesh::SelectionMode::Face:
+        default: {
+            if (editable->selectedFace < mesh.faceCount()) {
+                std::array<uint32_t, 3> verts = mesh.faceVertexIndices(editable->selectedFace);
+                ImVec2 screenPts[3];
+                bool allVisible = true;
+                for (int i = 0; i < 3; ++i) {
+                    glm::vec3 wp =
+                        glm::vec3(model * glm::vec4(mesh.vertices()[verts[static_cast<size_t>(i)]].position, 1.0f));
+                    if (!worldToScreen(viewProj, wp, imageOrigin, imageSize, screenPts[i])) {
+                        allVisible = false;
+                        break;
+                    }
+                }
+                if (allVisible) {
+                    drawList->AddTriangleFilled(screenPts[0], screenPts[1], screenPts[2], IM_COL32(255, 200, 60, 70));
+                    drawList->AddTriangle(screenPts[0], screenPts[1], screenPts[2], kHighlightColor, 2.5f);
+                }
+            }
+            break;
+        }
+    }
+
+    // --- real Ctrl+Click ray-vs-mesh picking -------------------------------
+    // Ctrl, not a plain click, so this never steals handleSelection()'s own
+    // plain-click whole-entity picking/drag-select-box for this same
+    // window -- the same "Ctrl overloads left-click for a second, more
+    // specific action" convention studio::PreviewScene's own
+    // ctrlDragPaintActive_ already established.
+    ImGuiIO& io = ImGui::GetIO();
+    bool hovered = ImGui::IsWindowHovered();
+    bool overGizmo = ImGuizmo::IsOver() || ImGuizmo::IsUsing();
+    bool releasedWithoutDrag = ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                                io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] <
+                                    io.MouseDragThreshold * io.MouseDragThreshold;
+    if (hovered && !overGizmo && io.KeyCtrl && releasedWithoutDrag) {
+        constexpr float kMaxPickDistance = 1000.0f;
+        glm::vec3 worldOrigin, worldDirection;
+        computeMouseRay(io.MousePos, imageOrigin, imageSize, worldOrigin, worldDirection);
+        glm::mat4 invModel = glm::inverse(model);
+        glm::vec3 localOrigin = glm::vec3(invModel * glm::vec4(worldOrigin, 1.0f));
+        glm::vec3 localDirection = glm::normalize(glm::vec3(invModel * glm::vec4(worldDirection, 0.0f)));
+        modelingMode.pickSubObject(*editable, localOrigin, localDirection, kMaxPickDistance);
+    }
+
+    // --- real Translate-only gizmo on the current selection ----------------
+    glm::vec3 localAnchor = modelingMode.subObjectAnchorLocal(*editable);
+    glm::vec3 worldAnchor = glm::vec3(model * glm::vec4(localAnchor, 1.0f));
+
+    ImGuizmo::SetOrthographic(false);
+    ImGuizmo::SetDrawlist();
+    ImGuizmo::SetRect(imageOrigin.x, imageOrigin.y, imageSize.x, imageSize.y);
+
+    // A pure-translation matrix, not the entity's own model -- the
+    // sub-object gizmo always manipulates in world axes (ImGuizmo::WORLD
+    // below), unlike drawGizmo()'s object-mode gizmo which can follow the
+    // entity's own local orientation.
+    glm::mat4 gizmoModel(1.0f);
+    gizmoModel[3] = glm::vec4(worldAnchor, 1.0f);
+
+    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
+                          glm::value_ptr(gizmoModel));
+
+    if (ImGuizmo::IsUsing()) {
+        glm::vec3 newWorldAnchor = glm::vec3(gizmoModel[3]);
+        glm::vec3 worldDelta = newWorldAnchor - worldAnchor;
+        if (worldDelta != glm::vec3(0.0f)) {
+            // Maps the world-space drag delta back into the mesh's own
+            // local space, accounting for the entity's rotation and
+            // (possibly non-uniform) scale -- the exact inverse of how
+            // `model` above turns a local vertex position into `worldPos`.
+            glm::mat3 linear(model);
+            glm::vec3 localDelta = glm::inverse(linear) * worldDelta;
+            modelingMode.translateSubObjectSelection(*editable, *renderable, localDelta);
+        }
+    }
+}
+
 void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent2D sceneTextureExtent,
                           core::ECS* ecs, core::MeshLibrary* meshLibrary, ExplorerPanel& explorer,
                           plugins::PhysicsPreviewPlugin* physicsPreview, const ViewportDebugContext& debugContext,
-                          plugins::MovieModePlugin* movieMode, bool showEngineDebugOverlays) {
+                          plugins::MovieModePlugin* movieMode, bool showEngineDebugOverlays,
+                          plugins::ModelingModePlugin* modelingMode) {
     ImGuizmo::BeginFrame(); // once per ImGui frame -- see header comment
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -831,7 +954,17 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
 
     core::EntityId selected = explorer.selectedEntity();
     if (ecs != nullptr && selected != core::kNullEntity) {
-        drawGizmo(*ecs, selected, explorer.selectedEntities(), imageOrigin, imageSize);
+        // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast
+        // picking): a real core::EditableMeshComponent on the selection
+        // switches to Modeling Mode's own vertex/edge/face gizmo instead
+        // of the whole-entity Translate/Rotate/Scale one -- see
+        // drawSubObjectEditing()'s own comment on why never both at once.
+        auto* editable = ecs->tryGetComponent<core::EditableMeshComponent>(selected);
+        if (modelingMode != nullptr && editable != nullptr) {
+            drawSubObjectEditing(*modelingMode, *ecs, selected, imageOrigin, imageSize);
+        } else {
+            drawGizmo(*ecs, selected, explorer.selectedEntities(), imageOrigin, imageSize);
+        }
     }
     if (ecs != nullptr && meshLibrary != nullptr) {
         drawSelectionHighlight(*ecs, *meshLibrary, explorer.selectedEntities(), imageOrigin, imageSize);
