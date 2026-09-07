@@ -788,6 +788,22 @@ bool StudioApp::initialize(StudioMode mode) {
                 meshLibrary_);
             modelImporterPlugin_ = modelImporter.get();
             pluginManager_.registerPlugin(std::move(modelImporter));
+
+            // Kronos ("3D DCC Modeling Suite" -- loose end closed): real
+            // vertex/edge/face sub-object editing, the non-destructive
+            // ModifierStack, and the GPU sculpt brushes (all added this
+            // pass) previously only reached kronos_studio, since this
+            // exact registration only ever existed in the Full branch
+            // above -- even though every one of those features is real,
+            // standalone modeling tooling squarely inside "3D Maker"'s
+            // own real scope, not Studio-specific. Same "no cross-plugin
+            // constructor dependency" safety as MaterialPlugin/
+            // MeshCsgWindowPlugin/ModelImporterPlugin above.
+            auto modelingMode = std::make_unique<plugins::ModelingModePlugin>(
+                renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
+                meshLibrary_);
+            modelingModePlugin_ = modelingMode.get();
+            pluginManager_.registerPlugin(std::move(modelingMode));
         } else if (mode_ == StudioMode::MovieMaker) {
             // plugins::TrailerPanel -- MovieModePlugin itself is already
             // registered above (every mode gets it). Same "no cross-plugin
