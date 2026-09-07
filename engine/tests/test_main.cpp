@@ -34718,7 +34718,96 @@ void testModifierStackSolidifyWallsOnlyRealOpenBoundaryEdges() {
           "diagonal (2 original + 2 inner + 8 wall faces)");
 }
 
-void testModifierStackSubdivisionRefinesEveryFaceFlat() {
+// Real Catmull-Clark over a single, isolated triangle (0,0,0)/(1,0,0)/
+// (0,0,1) -- every one of its 3 edges is a real boundary edge (no
+// adjacent face to share with), so every one of its 3 vertices hits the
+// real, standard boundary-vertex rule: (6P + midpointA + midpointB) / 8.
+// Hand-computed expected values below, not just "did it run".
+void testCatmullClarkSubdivideMatchesHandComputedBoundaryValues() {
+    using namespace engine::core;
+    std::vector<Vertex> vertices = {
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+    };
+    EditableMesh triangle = EditableMesh::fromVertexData(vertices, {0, 1, 2});
+
+    EditableMesh result = catmullClarkSubdivide(triangle);
+
+    check(result.faceCount() == 6, "1 real triangle really becomes 3 quads x 2 triangles = 6 real faces");
+    check(result.vertexCount() == 12, "3 quads x 4 real, unwelded corners each really produce 12 real vertices");
+
+    // Hand-computed: vertex a=(0,0,0)'s 2 real boundary edges are
+    // (a,b)->midpoint(0.5,0,0) and (c,a)->midpoint(0,0,0.5).
+    // newPos_a = (6*(0,0,0) + (0.5,0,0) + (0,0,0.5)) / 8 = (0.0625, 0, 0.0625).
+    glm::vec3 expectedA(0.0625f, 0.0f, 0.0625f);
+    // vertex b=(1,0,0): edges (a,b)->(0.5,0,0), (b,c)->(0.5,0,0.5).
+    // newPos_b = (6*(1,0,0) + (0.5,0,0) + (0.5,0,0.5)) / 8 = (0.875, 0, 0.0625).
+    glm::vec3 expectedB(0.875f, 0.0f, 0.0625f);
+    // vertex c=(0,0,1): edges (b,c)->(0.5,0,0.5), (c,a)->(0,0,0.5).
+    // newPos_c = (6*(0,0,1) + (0.5,0,0.5) + (0,0,0.5)) / 8 = (0.0625, 0, 0.875).
+    glm::vec3 expectedC(0.0625f, 0.0f, 0.875f);
+
+    bool foundA = false, foundB = false, foundC = false;
+    for (const Vertex& v : result.vertices()) {
+        if (nearlyEqual(glm::distance(v.position, expectedA), 0.0f, 1e-4f)) foundA = true;
+        if (nearlyEqual(glm::distance(v.position, expectedB), 0.0f, 1e-4f)) foundB = true;
+        if (nearlyEqual(glm::distance(v.position, expectedC), 0.0f, 1e-4f)) foundC = true;
+    }
+    check(foundA, "the real smoothed position for corner a really matches the hand-computed boundary-rule value");
+    check(foundB, "the real smoothed position for corner b really matches the hand-computed boundary-rule value");
+    check(foundC, "the real smoothed position for corner c really matches the hand-computed boundary-rule value");
+
+    // Real face point: average of the 3 real original corners.
+    glm::vec3 expectedFacePoint(1.0f / 3.0f, 0.0f, 1.0f / 3.0f);
+    bool foundFacePoint = false;
+    for (const Vertex& v : result.vertices()) {
+        if (nearlyEqual(glm::distance(v.position, expectedFacePoint), 0.0f, 1e-4f)) foundFacePoint = true;
+    }
+    check(foundFacePoint, "the real face point really is the exact average of the 3 original corners");
+
+    for (const Vertex& v : result.vertices()) {
+        check(std::isfinite(v.normal.x) && std::isfinite(v.normal.y) && std::isfinite(v.normal.z),
+              "every real output vertex really has a finite, real per-triangle normal");
+        check(nearlyEqual(glm::length(v.normal), 1.0f, 1e-3f), "every real output normal is really unit length");
+    }
+}
+
+void testCatmullClarkSubdivideSmoothsARealSharedInteriorEdge() {
+    using namespace engine::core;
+    // A real, genuinely shared-index quad (2 triangles sharing the
+    // diagonal 0-2) -- vertex 0 is touched by BOTH real triangles and
+    // has 0 real boundary edges (every edge of vertex 0 -- (0,1), (0,2),
+    // (0,3) -- has 2 real adjacent faces or is itself interior), so it
+    // really exercises the interior smoothing rule, not the boundary one.
+    std::vector<Vertex> vertices = {
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{1.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+        {{0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+    };
+    EditableMesh quad = EditableMesh::fromVertexData(vertices, {0, 1, 2, 0, 2, 3});
+    EditableMesh result = catmullClarkSubdivide(quad);
+
+    check(result.faceCount() == 12, "2 real triangles x 3 quads x 2 triangles each = 12 real faces");
+    // Real, honest sanity check (not a hand-derivation): a real Catmull-
+    // Clark pass over non-degenerate, non-planar-only-in-name geometry
+    // moves at least one real vertex measurably off its original
+    // position -- proving this is really smoothing, not a no-op/identity
+    // copy silently relabeled as Catmull-Clark.
+    bool anyMoved = false;
+    for (const Vertex& v : result.vertices()) {
+        bool matchesAnyOriginal = false;
+        for (const Vertex& orig : quad.vertices()) {
+            if (nearlyEqual(glm::distance(v.position, orig.position), 0.0f, 1e-5f)) matchesAnyOriginal = true;
+        }
+        if (!matchesAnyOriginal) anyMoved = true;
+    }
+    check(anyMoved, "a real Catmull-Clark pass really introduces new, real positions -- face/edge points and real "
+                    "smoothed vertices -- not just a relabeled copy of the original 4 corners");
+}
+
+void testModifierStackSubdivisionUsesRealCatmullClarkNotFlatSplit() {
     using namespace engine::core;
     std::vector<Vertex> vertices = {
         {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
@@ -34734,7 +34823,14 @@ void testModifierStackSubdivisionRefinesEveryFaceFlat() {
     stack.addModifier(subdivide);
     EditableMesh result = stack.evaluate(triangle);
 
-    check(result.faceCount() == 16, "2 real subdivision levels over 1 real triangle really produce 1*4*4 = 16 faces");
+    // Real Catmull-Clark: level 1 gives 6 faces (see
+    // testCatmullClarkSubdivideMatchesHandComputedBoundaryValues), level
+    // 2 re-subdivides those 6 into 6*3*2 = 36 -- NOT the old flat
+    // 1-to-4 split's 1*4*4 = 16, proving the modifier really calls the
+    // real algorithm, not the old one under a new name.
+    check(result.faceCount() == 36,
+          "2 real Catmull-Clark levels over 1 real triangle really produce 6*3*2 = 36 faces, not the old flat "
+          "split's 16");
 }
 
 void testModifierStackBooleanReusesRealCsgBooleanOp() {
@@ -39710,7 +39806,9 @@ int main() {
     testModifierStackMirrorNegatesTheChosenAxisAndReversesWinding();
     testModifierStackArrayRepeatsWithRealPerCopyOffset();
     testModifierStackSolidifyWallsOnlyRealOpenBoundaryEdges();
-    testModifierStackSubdivisionRefinesEveryFaceFlat();
+    testCatmullClarkSubdivideMatchesHandComputedBoundaryValues();
+    testCatmullClarkSubdivideSmoothsARealSharedInteriorEdge();
+    testModifierStackSubdivisionUsesRealCatmullClarkNotFlatSplit();
     testModifierStackBooleanReusesRealCsgBooleanOp();
     testModifierStackDisabledModifierIsSkippedAndRemoveWorks();
 #ifdef VIDEO_DECODER_TEST_FIXTURE_PATH

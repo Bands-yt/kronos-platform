@@ -73,13 +73,13 @@ struct SolidifyModifierParams {
 };
 
 struct SubdivisionModifierParams {
-    // Real, honest scope: repeats EditableMesh::subdivideFace() across
-    // every existing face, `levels` times -- real 1-to-4 triangle
-    // refinement that genuinely adds geometric detail, but is FLAT/
-    // linear, not a true Catmull-Clark limit surface (no averaging/
-    // smoothing pass over vertex positions). This type is deliberately
-    // named `Subdivision`, not `CatmullClark` -- same distinction
-    // subdivideFace()'s own header comment already draws.
+    // Real Catmull-Clark limit-surface smoothing (core::
+    // catmullClarkSubdivide(), EditableMesh.hpp) applied `levels` times --
+    // real face/edge points and the standard interior/boundary vertex
+    // smoothing rules, not a flat/linear split. See
+    // catmullClarkSubdivide()'s own header comment for its real, stated
+    // scope limits (per-index, not per-position, adjacency -- the same
+    // rule bevelEdge()/allEdges() already use).
     int levels = 1;
 };
 

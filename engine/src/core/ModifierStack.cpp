@@ -131,17 +131,13 @@ EditableMesh applySolidify(const EditableMesh& mesh, const SolidifyModifierParam
 }
 
 EditableMesh applySubdivision(const EditableMesh& mesh, const SubdivisionModifierParams& params) {
+    // Kronos ("3D DCC Modeling Suite" -- true Catmull-Clark limit-surface
+    // smoothing): each level is one real catmullClarkSubdivide() pass --
+    // see that function's own header comment for the real algorithm and
+    // its stated, honest scope limits (per-index adjacency, non-manifold
+    // junction vertices left unmoved, linear rather than smoothed UVs).
     EditableMesh result = mesh;
-    for (int level = 0; level < params.levels; ++level) {
-        // subdivideFace() replaces the target face IN PLACE and appends
-        // its other 3 new faces at the END of the list (see its own
-        // implementation comment: "Face count: +3") -- capturing
-        // faceCount() once, before this level's loop, and iterating that
-        // fixed range still reaches every one of this level's starting
-        // faces exactly once as the mesh grows underneath the loop.
-        const size_t facesBefore = result.faceCount();
-        for (size_t f = 0; f < facesBefore; ++f) result.subdivideFace(f);
-    }
+    for (int level = 0; level < params.levels; ++level) result = catmullClarkSubdivide(result);
     return result;
 }
 

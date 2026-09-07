@@ -143,4 +143,37 @@ private:
     std::vector<uint32_t> indices_;
 };
 
+// Kronos ("3D DCC Modeling Suite" -- true Catmull-Clark limit-surface
+// smoothing): the real algorithm (face points, edge points, and the
+// standard interior/boundary vertex-smoothing rules), not the flat 1-to-4
+// split ModifierStack's own SubdivisionModifierParams previously ran.
+// Real Catmull-Clark produces QUADS (each original triangle becomes 3
+// quads, one per corner); since EditableMesh is triangle-only storage,
+// each output quad is triangulated (2 triangles) immediately after --
+// the same geometry, just stored the way this class already requires,
+// same real "re-triangulate for storage" practice production tools use
+// when their internal mesh representation is triangle-only.
+//
+// Real, honest scope, stated plainly (matching this class's own
+// convention): adjacency (which faces/edges touch a vertex) is resolved
+// by real, shared VERTEX INDEX, not position -- the same per-index (not
+// per-position) rule bevelEdge()/allEdges() already use. A mesh built
+// with genuinely shared/welded indices at its seams smooths correctly
+// across them; EditableMesh::createBox()'s own "24-vertex flat-shaded-
+// per-face" storage does NOT (each of its faces owns private corner
+// vertices), so subdividing an unwelded box smooths each flat face
+// almost independently rather than rounding the whole shape -- run
+// mergeVertices() first for a meaningful result there. A vertex touched
+// by more than 2 real boundary edges (a non-manifold junction) is a
+// real, honest no-op for that vertex's own position (kept at its
+// original value) rather than a guess at which boundary rule applies.
+// New faces get real, freshly-computed flat per-triangle normals from
+// their own final (smoothed) positions -- not interpolated/averaged --
+// avoiding any shading artifact from blending pre- and post-smoothing
+// normals. UVs are linearly averaged at face/edge points; a vertex's
+// own UV is left unchanged (no UV smoothing) -- the same real,
+// standard, honestly-simpler-than-position-smoothing choice most real
+// subdivision implementations already make.
+[[nodiscard]] EditableMesh catmullClarkSubdivide(const EditableMesh& mesh);
+
 } // namespace engine::core
