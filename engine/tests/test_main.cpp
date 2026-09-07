@@ -93,6 +93,7 @@
 #include "core/Mesh.hpp"
 #include "core/Navigation.hpp"
 #include "core/Texture.hpp"
+#include "core/VideoDecoder.hpp"
 #include "core/CubeLut.hpp"
 #include "core/Utf8.hpp"
 #include "core/Noise.hpp"
@@ -34781,6 +34782,53 @@ void testModifierStackDisabledModifierIsSkippedAndRemoveWorks() {
     check(stack.modifiers().empty(), "removeModifier() really removes the real modifier at that index");
 }
 
+#ifdef VIDEO_DECODER_TEST_FIXTURE_PATH
+// Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real MP4 video decoding):
+// decodes a real, checked-in, byte-exact-losslessly-encoded (libx264rgb,
+// qp=0) 2-frame MP4 fixture (engine/tests/fixtures/video_decoder_test.mp4
+// -- frame 0 solid red @ t=0s, frame 1 solid blue @ t=1s, 64x64, 1fps)
+// through the real libavformat/libavcodec/libswscale pipeline end to
+// end, and checks the decoded RGBA pixels against the known real source
+// colors -- not just that decodeFrameAt() returned true.
+void testVideoDecoderDecodesRealMp4FramesAtRequestedTimes() {
+    using namespace engine::core;
+    VideoDecoder decoder;
+    std::string error;
+    check(decoder.open(VIDEO_DECODER_TEST_FIXTURE_PATH, error), ("a real MP4 fixture really opens: " + error).c_str());
+    check(decoder.isOpen(), "isOpen() really reflects a real successful open");
+    check(decoder.width() == 64 && decoder.height() == 64, "the decoder really reports the fixture's own real 64x64 size");
+    check(decoder.durationSeconds() > 1.5, "the decoder really reports the fixture's own real ~2s duration");
+
+    std::vector<uint8_t> frame0;
+    check(decoder.decodeFrameAt(0.0, frame0, error), ("decoding the real frame at t=0 really succeeds: " + error).c_str());
+    check(frame0.size() == 64u * 64u * 4u, "the decoded frame is really exactly width*height*4 bytes");
+    check(frame0[0] > 200 && frame0[1] < 40 && frame0[2] < 40,
+          "the real frame at t=0 really decodes as solid red, matching the fixture's own known first frame");
+
+    std::vector<uint8_t> frame1;
+    check(decoder.decodeFrameAt(1.0, frame1, error), ("decoding the real frame at t=1 really succeeds: " + error).c_str());
+    check(frame1[0] < 40 && frame1[1] < 40 && frame1[2] > 200,
+          "the real frame at t=1 really decodes as solid blue, matching the fixture's own known second frame");
+
+    // Real re-seek backward: decoding t=0 again after already having
+    // advanced to t=1 really re-seeks rather than only ever decoding
+    // forward from wherever the internal read cursor last was.
+    std::vector<uint8_t> frame0Again;
+    check(decoder.decodeFrameAt(0.0, frame0Again, error), "re-seeking back to t=0 after decoding t=1 really succeeds");
+    check(frame0Again[0] > 200 && frame0Again[2] < 40, "the real re-seek really lands back on the red frame, not blue");
+}
+
+void testVideoDecoderOpenFailsHonestlyOnAMissingFile() {
+    using namespace engine::core;
+    VideoDecoder decoder;
+    std::string error;
+    check(!decoder.open("/nonexistent/path/really-not-a-file.mp4", error),
+          "opening a real nonexistent file really fails, not a silent empty-but-'open' decoder");
+    check(!error.empty(), "a failed real open really reports a non-empty error message");
+    check(!decoder.isOpen(), "isOpen() really reflects the real failed open");
+}
+#endif
+
 // A real EditableMesh::createBox() translated by `offset` -- createBox()
 // itself always centers at the origin, so CSG's own box-vs-box tests
 // (which need two overlapping-by-a-known-amount boxes) build theirs
@@ -39622,6 +39670,10 @@ int main() {
     testModifierStackSubdivisionRefinesEveryFaceFlat();
     testModifierStackBooleanReusesRealCsgBooleanOp();
     testModifierStackDisabledModifierIsSkippedAndRemoveWorks();
+#ifdef VIDEO_DECODER_TEST_FIXTURE_PATH
+    testVideoDecoderDecodesRealMp4FramesAtRequestedTimes();
+    testVideoDecoderOpenFailsHonestlyOnAMissingFile();
+#endif
 
     testCsgUnionOfHalfOverlappingBoxesHasCombinedVolume();
     testCsgSubtractOfHalfOverlappingBoxesRemovesTheOverlap();

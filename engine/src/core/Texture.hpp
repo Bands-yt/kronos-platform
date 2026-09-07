@@ -64,6 +64,21 @@ public:
     [[nodiscard]] static Texture createStorageImage(int width, int height, glm::vec4 clearColor, VmaAllocator allocator,
                                                       VkDevice device, VkCommandPool cmdPool, VkQueue queue);
 
+    // Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real MP4 video
+    // playback): re-uploads new pixel data into THIS texture's existing
+    // VkImage/allocation rather than creating a new one -- what a video
+    // plane needs to show a new decoded frame every playhead tick without
+    // reallocating a whole GPU image each time. `rgba` must be exactly
+    // width()*height()*4 bytes; a size mismatch (e.g. a decoder that
+    // changed resolution mid-stream) is a real, honest no-op (returns
+    // false), not a silent out-of-bounds copy. Real staging-buffer
+    // upload, same SHADER_READ_ONLY_OPTIMAL -> TRANSFER_DST_OPTIMAL ->
+    // back round trip uploadPixels() itself already does for the very
+    // first upload -- this is that same transition applied to an image
+    // that already has real content instead of VK_IMAGE_LAYOUT_UNDEFINED.
+    [[nodiscard]] bool updatePixels(const uint8_t* rgba, size_t rgbaBytes, VmaAllocator allocator, VkDevice device,
+                                     VkCommandPool cmdPool, VkQueue queue);
+
     void destroy(VmaAllocator allocator, VkDevice device);
 
     [[nodiscard]] bool isValid() const { return image_ != VK_NULL_HANDLE; }

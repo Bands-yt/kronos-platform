@@ -55,6 +55,28 @@ if(UNIX AND NOT APPLE)
     pkg_check_modules(LIBSECRET REQUIRED libsecret-1)
 endif()
 
+# --- libav / FFmpeg (system) -- Kronos ("CapCut/DaVinci Hybrid NLE
+#     Suite" -- real MP4 video decoding): core::VideoDecoder wraps these
+#     to give MediaBin's Media Bin real video import instead of the
+#     explicit "no video decoder vendored" rejection it shipped with
+#     before (see MediaBin.cpp/.hpp's own history). Same "don't reinvent/
+#     vendor a real codec stack" reasoning as SDL2/zlib/libcurl above --
+#     hand-rolling H.264/HEVC/AV1 decoding is not a reasonable scope for
+#     this engine to take on itself. No upstream CMake config-file
+#     package exists for these libraries; pkg-config is the real,
+#     standard mechanism distros expose them through, same one libsecret
+#     above already uses. IMPORTED_TARGET gives a single PkgConfig::LIBAV
+#     target covering all 4 libraries' own include dirs/link flags.
+#     Verified against this repo's own Linux dev environment only --
+#     Windows/macOS builds need their own package manager's ffmpeg-dev
+#     (e.g. vcpkg's `ffmpeg` port, which does ship real CMake config
+#     files) before this REQUIRED call would succeed there; not attempted
+#     here since no Windows/macOS CI runs against this repo yet.
+if(UNIX)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
+endif()
+
 # --- EnTT (ECS) ---------------------------------------------------------------
 FetchContent_Declare(
     entt
