@@ -706,6 +706,20 @@ void MovieModePlugin::drawRailEditor() {
     helpMarker("Draws a line from each sampled camera position to what it is aiming at, so a rack focus or a "
                "look-at target is visible in the viewport rather than only in numbers.");
 
+    // Kronos ("Cinema Rigs" -- live DoF preview): StudioApp's pre-pass
+    // callback reads this flag every frame and, when true, swaps the live
+    // viewport's render camera for cinematic::cameraFromRailSample() at
+    // the current playhead and derives real depth-of-field params from
+    // that same sample's core::PhysicalCamera via core::toRendererDofParams()
+    // -- the exact math export already used (CaptureRig.cpp), now also
+    // driving what's on screen while authoring instead of only the
+    // rendered-out sequence. See StudioApp.cpp's prePassCallback for the
+    // actual camera/DoF swap this flag gates.
+    ImGui::Checkbox("Preview through camera", &previewThroughRailCamera_);
+    ImGui::SameLine();
+    helpMarker("Live viewport renders through this rail's actual lens (focal length, aperture, depth of field) at "
+               "the current playhead position instead of the free-fly camera. Turn off to fly around freely again.");
+
     CameraRailSettings settings = rail_.settings();
     bool changed = false;
 
