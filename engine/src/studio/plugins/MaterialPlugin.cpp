@@ -128,16 +128,30 @@ void MaterialPlugin::handleViewportPickPaint(core::Renderable& renderable) {
                          renderable.roughnessTexture != core::Renderable::kInvalidHandle ||
                          renderable.metallicTexture != core::Renderable::kInvalidHandle;
     // Zero-Friction Painting: the first real click/drag on a selected
-    // entity with no paintable texture yet creates a real 2K Albedo one
-    // instead of silently doing nothing -- 2048x2048 specifically (not
-    // the manual "New Paintable Texture" button's own 512x512) since a
-    // click implies "just start painting", not "I chose a resolution".
+    // entity with no paintable texture yet creates a REAL, COMPLETE 2K
+    // PBR set -- Albedo, Normal, Roughness, Metallic -- not just Albedo
+    // alone (a real, previously-audited gap: stampAllSlots() silently
+    // no-ops on any slot that's still core::Renderable::kInvalidHandle,
+    // so a click used to "paint" only one of the four real channels
+    // core::ComputePbrPainter.hpp's own header comment promises).
+    // 2048x2048 specifically (not the manual "New Paintable Texture"
+    // button's own 512x512) since a click implies "just start painting",
+    // not "I chose a resolution". Clear colors match that same manual
+    // button's own per-slot defaults (white albedo, flat-up normal,
+    // mid-gray roughness, non-metallic black) exactly.
     if (!anyPaintable) {
-        core::Texture texture = core::Texture::createStorageImage(2048, 2048, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
-                                                                    allocator_, device_, cmdPool_, queue_);
-        if (!texture.isValid()) return;
-        renderable.albedoTexture = textureLibrary_->registerTexture(std::move(texture));
-        paintStatusMessage_ = "Auto-created a 2K paintable Albedo texture -- painting now.";
+        auto createSlot = [&](uint32_t& handle, glm::vec4 clearColor) {
+            core::Texture texture =
+                core::Texture::createStorageImage(2048, 2048, clearColor, allocator_, device_, cmdPool_, queue_);
+            if (texture.isValid()) handle = textureLibrary_->registerTexture(std::move(texture));
+        };
+        createSlot(renderable.albedoTexture, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+        createSlot(renderable.normalTexture, glm::vec4(0.5f, 0.5f, 1.0f, 1.0f));
+        createSlot(renderable.roughnessTexture, glm::vec4(0.5f, 0.5f, 0.5f, 1.0f));
+        createSlot(renderable.metallicTexture, glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+        paintStatusMessage_ = renderable.albedoTexture != core::Renderable::kInvalidHandle
+                                  ? "Auto-created a complete 2K PBR set (Albedo/Normal/Roughness/Metallic) -- painting now."
+                                  : "Failed to auto-create the 2K PBR set.";
     }
 
     constexpr float kMaxPickDistance = 100.0f;

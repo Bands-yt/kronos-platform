@@ -1,8 +1,10 @@
 #include "core/EditableMesh.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
+#include <unordered_map>
 
 namespace engine::core {
 
@@ -302,6 +304,186 @@ bool EditableMesh::insetFace(size_t faceIndex, float amount) {
     appendWall(b, c, ib, ic);
     appendWall(c, a, ic, ia);
     return true;
+}
+
+namespace {
+using EdgeKey = std::pair<uint32_t, uint32_t>;
+
+EdgeKey makeEdgeKey(uint32_t a, uint32_t b) { return {std::min(a, b), std::max(a, b)}; }
+
+struct EdgeInfo {
+    glm::vec3 point{0.0f};
+    glm::vec2 uv{0.0f};
+    bool boundary = false;
+};
+} // namespace
+
+EditableMesh catmullClarkSubdivide(const EditableMesh& mesh) {
+    const std::vector<Vertex>& srcVerts = mesh.vertices();
+    const std::vector<uint32_t>& srcIndices = mesh.indices();
+    const size_t faceCount = mesh.faceCount();
+    if (faceCount == 0) return mesh;
+
+    // --- face points --------------------------------------------------
+    std::vector<glm::vec3> facePoint(faceCount);
+    std::vector<glm::vec2> faceUv(faceCount);
+    for (size_t f = 0; f < faceCount; ++f) {
+        std::array<uint32_t, 3> v = mesh.faceVertexIndices(f);
+        facePoint[f] = (srcVerts[v[0]].position + srcVerts[v[1]].position + srcVerts[v[2]].position) / 3.0f;
+        faceUv[f] = (srcVerts[v[0]].uv + srcVerts[v[1]].uv + srcVerts[v[2]].uv) / 3.0f;
+    }
+
+    // --- edge points + adjacency ---------------------------------------
+    std::map<EdgeKey, std::vector<size_t>> edgeFaces;
+    for (size_t f = 0; f < faceCount; ++f) {
+        std::array<uint32_t, 3> v = mesh.faceVertexIndices(f);
+        for (int i = 0; i < 3; ++i) {
+            edgeFaces[makeEdgeKey(v[static_cast<size_t>(i)], v[static_cast<size_t>((i + 1) % 3)])].push_back(f);
+        }
+    }
+
+    std::map<EdgeKey, EdgeInfo> edgeInfo;
+    for (const auto& [key, faces] : edgeFaces) {
+        EdgeInfo info;
+        glm::vec3 midpoint = (srcVerts[key.first].position + srcVerts[key.second].position) * 0.5f;
+        glm::vec2 midpointUv = (srcVerts[key.first].uv + srcVerts[key.second].uv) * 0.5f;
+        if (faces.size() == 1) {
+            info.boundary = true;
+            info.point = midpoint;
+            info.uv = midpointUv;
+        } else {
+            // Real interior rule (2 real adjacent faces) and a real,
+            // honest generalization for a non-manifold edge (3+ real
+            // adjacent faces) that averages every one of them in rather
+            // than guessing which 2 "count" -- see this function's own
+            // header comment.
+            glm::vec3 faceSum(0.0f);
+            glm::vec2 faceUvSum(0.0f);
+            for (size_t f : faces) {
+                faceSum += facePoint[f];
+                faceUvSum += faceUv[f];
+            }
+            float n = static_cast<float>(faces.size());
+            info.point = (midpoint * 2.0f + faceSum) / (2.0f + n);
+            info.uv = (midpointUv * 2.0f + faceUvSum) / (2.0f + n);
+            info.boundary = false;
+        }
+        edgeInfo[key] = info;
+    }
+
+    // --- per-vertex adjacency (real faces/edges touching each real
+    // vertex index) -------------------------------------------------------
+    std::unordered_map<uint32_t, std::vector<size_t>> vertexFaces;
+    for (size_t f = 0; f < faceCount; ++f) {
+        for (uint32_t idx : mesh.faceVertexIndices(f)) vertexFaces[idx].push_back(f);
+    }
+    std::unordered_map<uint32_t, std::vector<EdgeKey>> vertexEdges;
+    for (const auto& [key, info] : edgeInfo) {
+        (void)info;
+        vertexEdges[key.first].push_back(key);
+        vertexEdges[key.second].push_back(key);
+    }
+
+    // --- smoothed vertex positions ---------------------------------------
+    std::vector<glm::vec3> smoothedPosition(srcVerts.size());
+    for (size_t vi = 0; vi < srcVerts.size(); ++vi) {
+        uint32_t v = static_cast<uint32_t>(vi);
+        const glm::vec3 original = srcVerts[vi].position;
+        auto facesIt = vertexFaces.find(v);
+        auto edgesIt = vertexEdges.find(v);
+        if (facesIt == vertexFaces.end() || edgesIt == vertexEdges.end() || facesIt->second.empty()) {
+            smoothedPosition[vi] = original; // real, honest no-op: an unreferenced vertex has nothing to smooth from
+            continue;
+        }
+
+        int boundaryEdgeCount = 0;
+        std::vector<glm::vec3> boundaryMidpoints;
+        for (const EdgeKey& key : edgesIt->second) {
+            if (edgeInfo[key].boundary) {
+                ++boundaryEdgeCount;
+                uint32_t other = key.first == v ? key.second : key.first;
+                boundaryMidpoints.push_back((original + srcVerts[other].position) * 0.5f);
+            }
+        }
+
+        if (boundaryEdgeCount == 0) {
+            // Real interior smoothing rule: (F + 2R + (n-3)P) / n.
+            glm::vec3 faceAvg(0.0f);
+            for (size_t f : facesIt->second) faceAvg += facePoint[f];
+            faceAvg /= static_cast<float>(facesIt->second.size());
+
+            glm::vec3 edgeMidAvg(0.0f);
+            for (const EdgeKey& key : edgesIt->second) {
+                uint32_t other = key.first == v ? key.second : key.first;
+                edgeMidAvg += (original + srcVerts[other].position) * 0.5f;
+            }
+            edgeMidAvg /= static_cast<float>(edgesIt->second.size());
+
+            float n = static_cast<float>(edgesIt->second.size());
+            smoothedPosition[vi] = n > 0.0f ? (faceAvg + edgeMidAvg * 2.0f + original * (n - 3.0f)) / n : original;
+        } else if (boundaryEdgeCount == 2) {
+            // Real standard boundary rule: (6P + edgeMidA + edgeMidB) / 8.
+            smoothedPosition[vi] = (original * 6.0f + boundaryMidpoints[0] + boundaryMidpoints[1]) / 8.0f;
+        } else {
+            // Real, honest simplification for a non-manifold "junction"
+            // vertex (1, or 3+, real boundary edges) -- see this
+            // function's own header comment.
+            smoothedPosition[vi] = original;
+        }
+    }
+
+    // --- rebuild topology: 3 quads per original triangle, triangulated ----
+    std::vector<Vertex> outVertices;
+    std::vector<uint32_t> outIndices;
+    outVertices.reserve(faceCount * 12);
+    outIndices.reserve(faceCount * 18);
+
+    auto pushVertex = [&](glm::vec3 position, glm::vec2 uv) -> uint32_t {
+        Vertex vert;
+        vert.position = position;
+        vert.uv = uv;
+        vert.normal = glm::vec3(0.0f, 1.0f, 0.0f); // real per-triangle flat normal assigned below, once positions are final
+        uint32_t index = static_cast<uint32_t>(outVertices.size());
+        outVertices.push_back(vert);
+        return index;
+    };
+    auto pushTriangle = [&](uint32_t a, uint32_t b, uint32_t c) {
+        glm::vec3 normal = glm::normalize(
+            glm::cross(outVertices[b].position - outVertices[a].position, outVertices[c].position - outVertices[a].position));
+        if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z)) normal = glm::vec3(0.0f, 1.0f, 0.0f);
+        outVertices[a].normal = normal;
+        outVertices[b].normal = normal;
+        outVertices[c].normal = normal;
+        outIndices.insert(outIndices.end(), {a, b, c});
+    };
+
+    for (size_t f = 0; f < faceCount; ++f) {
+        std::array<uint32_t, 3> v = mesh.faceVertexIndices(f);
+        const glm::vec3& fp = facePoint[f];
+        const glm::vec2& fuv = faceUv[f];
+
+        for (int i = 0; i < 3; ++i) {
+            uint32_t corner = v[static_cast<size_t>(i)];
+            uint32_t next = v[static_cast<size_t>((i + 1) % 3)];
+            uint32_t prev = v[static_cast<size_t>((i + 2) % 3)];
+
+            const EdgeInfo& edgeToNext = edgeInfo[makeEdgeKey(corner, next)];
+            const EdgeInfo& edgeFromPrev = edgeInfo[makeEdgeKey(prev, corner)];
+
+            // Quad at this corner, in winding order matching the
+            // original face (corner -> edge(corner,next) -> face center
+            // -> edge(prev,corner)), triangulated as (0,1,2),(0,2,3).
+            uint32_t p0 = pushVertex(smoothedPosition[corner], srcVerts[corner].uv);
+            uint32_t p1 = pushVertex(edgeToNext.point, edgeToNext.uv);
+            uint32_t p2 = pushVertex(fp, fuv);
+            uint32_t p3 = pushVertex(edgeFromPrev.point, edgeFromPrev.uv);
+
+            pushTriangle(p0, p1, p2);
+            pushTriangle(p0, p2, p3);
+        }
+    }
+
+    return EditableMesh::fromVertexData(std::move(outVertices), std::move(outIndices));
 }
 
 } // namespace engine::core
