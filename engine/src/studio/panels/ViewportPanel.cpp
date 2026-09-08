@@ -882,6 +882,45 @@ void ViewportPanel::drawSubObjectEditing(plugins::ModelingModePlugin& modelingMo
             modelingMode.translateSubObjectSelection(*editable, *renderable, localDelta);
         }
     }
+
+    // --- PBR paint brush ring: a real preview of where/how large the
+    // next "Apply Sculpt" stroke will land -- centered on the exact same
+    // subObjectAnchorLocal() applySculptStroke() itself brushes around,
+    // sized to the exact current sculptRadius() slider value. Gated on a
+    // real (in-range) selection, same condition the highlight switch
+    // above already checks, since subObjectAnchorLocal() falls back to
+    // the entity origin otherwise (see its own doc comment) and drawing
+    // a ring there would be misleading, not a real preview. This is a
+    // static preview of the *next* stroke, not a live mouse-drag brush --
+    // see applySculptStroke()'s own header comment for why no continuous
+    // drag gesture exists here to follow.
+    bool hasValidSubObjectSelection = false;
+    switch (modelingMode.subObjectMode()) {
+        case core::EditableMesh::SelectionMode::Vertex:
+            hasValidSubObjectSelection = editable->selectedVertex < mesh.vertexCount();
+            break;
+        case core::EditableMesh::SelectionMode::Edge:
+            hasValidSubObjectSelection = editable->selectedEdge.first < mesh.vertexCount() &&
+                                          editable->selectedEdge.second < mesh.vertexCount();
+            break;
+        case core::EditableMesh::SelectionMode::Face:
+        default:
+            hasValidSubObjectSelection = editable->selectedFace < mesh.faceCount();
+            break;
+    }
+    if (hasValidSubObjectSelection) {
+        glm::vec3 camRight = glm::normalize(glm::cross(renderCamera_.forward(), glm::vec3(0.0f, 1.0f, 0.0f)));
+        ImVec2 screenCenter, screenRim;
+        if (worldToScreen(viewProj, worldAnchor, imageOrigin, imageSize, screenCenter) &&
+            worldToScreen(viewProj, worldAnchor + camRight * modelingMode.sculptRadius(), imageOrigin, imageSize,
+                          screenRim)) {
+            float screenRadius = std::sqrt((screenRim.x - screenCenter.x) * (screenRim.x - screenCenter.x) +
+                                            (screenRim.y - screenCenter.y) * (screenRim.y - screenCenter.y));
+            constexpr ImU32 kBrushRingColor = IM_COL32(80, 220, 255, 220);
+            drawList->AddCircle(screenCenter, screenRadius, kBrushRingColor, 48, 2.0f);
+            drawList->AddCircleFilled(screenCenter, 3.0f, kBrushRingColor);
+        }
+    }
 }
 
 void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent2D sceneTextureExtent,
@@ -995,6 +1034,30 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     std::snprintf(overlay, sizeof(overlay), "Camera pos (%.1f, %.1f, %.1f)  yaw %.0f  pitch %.0f  |  Right-drag + WASD/QE to fly",
                   camera_.position.x, camera_.position.y, camera_.position.z, camera_.yawDegrees, camera_.pitchDegrees);
     drawList->AddText(ImVec2(imageOrigin.x + 10, imageOrigin.y + imageSize.y - 22), IM_COL32(210, 212, 218, 220), overlay);
+
+    if (movieMode != nullptr) {
+        // Kronos (viewport error audit -- Movie Maker active camera
+        // switcher overlay): the only real "which camera is currently
+        // live" state that exists today is previewThroughRailCamera() --
+        // MovieModePlugin owns a single CameraRail, not a multi-camera
+        // list, so a real switcher can only ever be a readout of this one
+        // boolean, not a fabricated multi-entry picker. Drawn whenever
+        // movieMode is active at all, NOT gated on showRailGizmo() /
+        // showLookAtLines(), since this reports which camera renders the
+        // scene -- independent of whether the rail's own gizmo/lines are
+        // currently toggled visible.
+        const char* activeCameraLabel =
+            movieMode->previewThroughRailCamera() ? "Active Camera: Rail" : "Active Camera: Free-fly";
+        ImVec2 textSize = ImGui::CalcTextSize(activeCameraLabel);
+        ImVec2 badgeOrigin(imageOrigin.x + imageSize.x - textSize.x - 22.0f, imageOrigin.y + imageSize.y - 26.0f);
+        drawList->AddRectFilled(ImVec2(badgeOrigin.x - 6.0f, badgeOrigin.y - 4.0f),
+                                 ImVec2(badgeOrigin.x + textSize.x + 6.0f, badgeOrigin.y + textSize.y + 4.0f),
+                                 IM_COL32(20, 20, 26, 200), 4.0f);
+        drawList->AddText(badgeOrigin,
+                           movieMode->previewThroughRailCamera() ? IM_COL32(120, 220, 255, 255)
+                                                                  : IM_COL32(210, 212, 218, 255),
+                           activeCameraLabel);
+    }
 
     // Gizmo mode toolbar -- W/E/R matches the near-universal DCC/game-editor
     // convention (Roblox Studio included) for translate/rotate/scale.

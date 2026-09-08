@@ -193,6 +193,27 @@ void OffscreenTarget::destroyRetired(VmaAllocator allocator, VkDevice device) {
 void OffscreenTarget::destroy(VmaAllocator allocator, VkDevice device) {
     destroyRetired(allocator, device);
 
+    // Real bug (found via validation layers -- vkFreeDescriptorSets/
+    // vkDestroyImage "in use by VkCommandBuffer" at shutdown, repeated
+    // once per open preview panel): destroyRetired() above only waits
+    // idle when a *previous resize* left something in the retired slot.
+    // A target that was never resized during its lifetime (the common
+    // case for a PreviewScene/ThumbnailCameraRig whose panel was open at
+    // one stable size all along) has nothing retired, so that wait was
+    // skipped entirely and the live colorImage_/depthImage_/
+    // imguiDescriptorSet_ below got destroyed while the last-rendered
+    // frame's command buffer could still be in flight referencing them.
+    // StudioApp::shutdown() happens to wait right before calling this
+    // for viewportTarget_ itself, but every other real owner (every
+    // PreviewScene-owning plugin's own shutdown(), ThumbnailCameraRig)
+    // called this directly with no such guard. Waiting here
+    // unconditionally closes the gap for all of them at once, and is the
+    // same "rare, human-interactive-adjacent, a full stall is
+    // imperceptible" tradeoff destroyRetired()'s own wait already makes.
+    if (colorImage_ != VK_NULL_HANDLE || imguiDescriptorSet_ != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device);
+    }
+
     if (imguiDescriptorSet_ != VK_NULL_HANDLE) {
         ImGui_ImplVulkan_RemoveTexture(imguiDescriptorSet_);
         imguiDescriptorSet_ = VK_NULL_HANDLE;
