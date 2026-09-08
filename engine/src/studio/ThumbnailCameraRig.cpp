@@ -43,6 +43,11 @@ bool ThumbnailCameraRig::captureToFile(core::Renderer& renderer, const std::stri
 
 void ThumbnailCameraRig::destroy(core::Renderer& renderer, VmaAllocator allocator, VkDevice device) {
     target_.destroy(allocator, device);
+    // Same one-shot-teardown reasoning as PreviewScene::destroy() -- this
+    // rig isn't resized-then-reused after this call, so there's no later
+    // resize to amortize the persistent sampler across; not destroying
+    // it here leaked it at process exit.
+    target_.destroySampler(device);
     if (auxiliaryScene_ != core::Renderer::kInvalidAuxiliaryScene) {
         renderer.destroyAuxiliaryScene(auxiliaryScene_);
         auxiliaryScene_ = core::Renderer::kInvalidAuxiliaryScene;

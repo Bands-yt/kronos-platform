@@ -179,6 +179,14 @@ void PreviewScene::reset() {
 
 void PreviewScene::destroy(core::Renderer& renderer, VmaAllocator allocator, VkDevice device) {
     target_.destroy(allocator, device);
+    // Unlike StudioApp's own viewportTarget_, a PreviewScene is never
+    // resized-then-reused after this call -- it's each owning plugin's
+    // one-shot final teardown (see this method's own doc comment) -- so
+    // there's no later resize to amortize the sampler across. Not
+    // calling this left every PreviewScene's persistent sampler leaked
+    // at process exit (the real "1 leaked object: VkSampler" the
+    // validation layer reports at vkDestroyDevice()).
+    target_.destroySampler(device);
     if (auxiliaryScene_ != core::Renderer::kInvalidAuxiliaryScene) {
         renderer.destroyAuxiliaryScene(auxiliaryScene_);
         auxiliaryScene_ = core::Renderer::kInvalidAuxiliaryScene;

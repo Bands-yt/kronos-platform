@@ -144,6 +144,15 @@ public:
     // its per-mode-only parameters.
     void applySculptStroke(core::EditableMeshComponent& component, core::Renderable& renderable);
 
+    // Kronos (viewport error audit -- PBR paint brush ring): real,
+    // current sculpt-brush radius (drawSculptSection()'s own "Radius"
+    // slider), exposed so ViewportPanel can draw a real preview ring at
+    // subObjectAnchorLocal() sized to what applySculptStroke() will
+    // actually affect if clicked right now -- see that method's own
+    // comment for why this is a static preview of the next stroke, not a
+    // live mouse-drag brush (no continuous drag gesture exists here).
+    [[nodiscard]] float sculptRadius() const { return sculptRadius_; }
+
 private:
     // Kronos ("3D DCC Modeling Suite" -- real non-destructive modifier
     // stack): the panel section listing component.modifierStack's real
