@@ -8,6 +8,7 @@
 #include "core/GltfLoader.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/ObjLoader.hpp"
+#include "core/SceneHistory.hpp"
 
 namespace engine::core {
 
@@ -74,12 +75,27 @@ Mesh buildMeshFromSource(const MeshSource& source, VmaAllocator allocator, VkDev
 
 } // namespace
 
-SceneFile SceneManager::captureScene(ECS& ecs, const Camera& camera) const {
+SceneFile SceneManager::captureScene(ECS& ecs, const Camera& camera, const cinematic::CameraRail* rail,
+                                      const cinematic::Sequence* sequence) const {
     SceneFile file;
     file.cameraPosition = camera.position;
     file.cameraYawDegrees = camera.yawDegrees;
     file.cameraPitchDegrees = camera.pitchDegrees;
     file.cameraFovDegrees = camera.verticalFovDegrees;
+
+    if (rail != nullptr) {
+        file.hasCameraRail = true;
+        file.railPoints = rail->points();
+        file.railSettings = rail->settings();
+    }
+
+    if (sequence != nullptr) {
+        file.hasSequence = true;
+        file.sequenceFrameRate = sequence->frameRate();
+        file.sequenceLoopStart = sequence->loopStart();
+        file.sequenceLoopEnd = sequence->loopEnd();
+        file.sequenceTracks = sequence->tracks();
+    }
 
     for (auto entity : ecs.view<Transform>()) {
         const Name* name = ecs.tryGetComponent<Name>(entity);
@@ -172,8 +188,9 @@ SceneFile SceneManager::captureScene(ECS& ecs, const Camera& camera) const {
     return file;
 }
 
-bool SceneManager::saveScene(const std::string& path, ECS& ecs, const Camera& camera) {
-    SceneFile file = captureScene(ecs, camera);
+bool SceneManager::saveScene(const std::string& path, ECS& ecs, const Camera& camera, const cinematic::CameraRail* rail,
+                              const cinematic::Sequence* sequence) {
+    SceneFile file = captureScene(ecs, camera, rail, sequence);
     if (!file.saveToFile(path)) return false;
 
     // A deliberate save supersedes any pending autosave recovery for this
@@ -192,7 +209,7 @@ bool SceneManager::saveScene(const std::string& path, ECS& ecs, const Camera& ca
 
 bool SceneManager::loadScene(const std::string& path, ECS& ecs, MeshLibrary& meshLibrary, VmaAllocator allocator,
                               VkDevice device, VkCommandPool cmdPool, VkQueue queue, Camera& camera,
-                              Physics* physics) {
+                              Physics* physics, cinematic::CameraRail* rail, cinematic::Sequence* sequence) {
     SceneFile file;
     if (!file.loadFromFile(path)) return false;
 
@@ -320,6 +337,25 @@ bool SceneManager::loadScene(const std::string& path, ECS& ecs, MeshLibrary& mes
     camera.pitchDegrees = file.cameraPitchDegrees;
     camera.verticalFovDegrees = file.cameraFovDegrees;
 
+    // Real, full replace -- same "load supersedes whatever was live before"
+    // contract as the ECS clear() above. A file with nothing saved
+    // (hasCameraRail/hasSequence false) leaves `rail`/`sequence` untouched,
+    // matching `physics`'s own "absent means don't touch" shape.
+    if (file.hasCameraRail && rail != nullptr) {
+        rail->clear();
+        for (const auto& p : file.railPoints) rail->addPoint(p);
+        rail->setSettings(file.railSettings);
+        rail->resetDamping();
+    }
+
+    if (file.hasSequence && sequence != nullptr) {
+        sequence->mutableTracks() = file.sequenceTracks;
+        sequence->setFrameRate(file.sequenceFrameRate);
+        sequence->setLoopRegion(file.sequenceLoopStart, file.sequenceLoopEnd);
+        sequence->pause();
+        sequence->setPlayhead(0.0f);
+    }
+
     currentScenePath_ = path;
     dirty_ = false;
     lastSeenEntityCount_ = ecs.entityCount();
@@ -335,7 +371,8 @@ void SceneManager::newScene(ECS& ecs) {
     lastSeenEntityCount_ = ecs.entityCount();
 }
 
-void SceneManager::tickAutosave(float dt, ECS& ecs, const Camera& camera) {
+void SceneManager::tickAutosave(float dt, ECS& ecs, const Camera& camera, const cinematic::CameraRail* rail,
+                                 const cinematic::Sequence* sequence) {
     size_t currentEntityCount = ecs.entityCount();
     bool majorEdit = false;
     if (currentEntityCount != lastSeenEntityCount_) {
@@ -359,7 +396,7 @@ void SceneManager::tickAutosave(float dt, ECS& ecs, const Camera& camera) {
     autosaveTimer_ = 0.0f;
     sinceLastMajorEditSnapshot_ = 0.0f;
 
-    SceneFile file = captureScene(ecs, camera);
+    SceneFile file = captureScene(ecs, camera, rail, sequence);
     if (!file.saveToFile(recoveryPathFor(currentScenePath_))) {
         std::fprintf(stderr, "SceneManager: autosave to \"%s\" failed\n", recoveryPathFor(currentScenePath_).c_str());
     }

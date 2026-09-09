@@ -21,6 +21,7 @@
 #include "core/ProjectReadmeGenerator.hpp"
 #include "core/QualityScore.hpp"
 #include "core/ResourcePaths.hpp"
+#include "core/SceneHistory.hpp"
 #include "core/UITheme.hpp"
 #include "publishing/PackageArchive.hpp"
 #include "publishing/PublishValidation.hpp"
@@ -677,7 +678,7 @@ bool StudioApp::initialize(StudioMode mode) {
     // pointer as well as registered, because ViewportPanel draws its
     // camera-rail gizmo and needs to read the live rail -- the same shape
     // physicsPreviewPlugin_ already uses for its collider overlays.
-    auto movieMode = std::make_unique<plugins::MovieModePlugin>(meshLibrary_, textureLibrary_);
+    auto movieMode = std::make_unique<plugins::MovieModePlugin>(meshLibrary_, textureLibrary_, studioEntitlementManager_);
     movieModePlugin_ = movieMode.get();
     pluginManager_.registerPlugin(std::move(movieMode));
 
@@ -751,7 +752,7 @@ bool StudioApp::initialize(StudioMode mode) {
         // safely leave unregistered. It's cheap (meshLibrary_/textureLibrary_
         // only, no GPU allocation of its own) and simply won't be the
         // plugin a 3D Maker or Audio user actually opens.
-        auto movieMode = std::make_unique<plugins::MovieModePlugin>(meshLibrary_, textureLibrary_);
+        auto movieMode = std::make_unique<plugins::MovieModePlugin>(meshLibrary_, textureLibrary_, studioEntitlementManager_);
         movieModePlugin_ = movieMode.get();
         pluginManager_.registerPlugin(std::move(movieMode));
 
@@ -1219,13 +1220,19 @@ void StudioApp::drawDockspace() {
         // instead of laying out the windows that actually exist. Full
         // keeps the exact pre-existing layout below, byte-identical.
         if (mode_ == StudioMode::ThreeDMaker) {
+            // Tool/Brush panels left, Explorer/Inspector right, Viewport
+            // centered -- Explorer/Inspector now genuinely show in this
+            // mode (see showSceneTree()/showInspector() above), so this
+            // mirrors Full's own "primary editing surfaces flank a
+            // centered viewport" shape instead of leaving them undocked.
             ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.24f, nullptr, &centerId);
             ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.24f, nullptr, &centerId);
-            ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.3f, nullptr, &centerId);
 
             ImGui::DockBuilderDockWindow("Material Editor", leftId);
+            ImGui::DockBuilderDockWindow("Brush & Stamp", leftId);
+            ImGui::DockBuilderDockWindow("Explorer", rightId);
+            ImGui::DockBuilderDockWindow("Inspector", rightId);
             ImGui::DockBuilderDockWindow("PBR Texture Inspector", rightId);
-            ImGui::DockBuilderDockWindow("Brush & Stamp", bottomId);
             ImGui::DockBuilderDockWindow("Viewport", centerId);
             // MaterialPlugin's own live-preview-sphere window (also
             // literally titled "3D Viewport", see MaterialPlugin.hpp's
@@ -1490,7 +1497,8 @@ void StudioApp::drawFileMenu() {
 
     if (ImGui::MenuItem("New Scene")) {
         if (!sceneManager_.currentScenePath().empty()) {
-            (void)sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera());
+            (void)sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
+                                            &movieModePlugin_->rail(), &movieModePlugin_->sequence());
         }
         sceneManager_.newScene(ecs_);
         explorerPanel_.setSelected(core::kNullEntity);
@@ -1498,7 +1506,8 @@ void StudioApp::drawFileMenu() {
 
     bool canSaveDirect = !sceneManager_.currentScenePath().empty();
     if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, canSaveDirect)) {
-        bool saveOk = sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera());
+        bool saveOk = sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
+                                                &movieModePlugin_->rail(), &movieModePlugin_->sequence());
         fileActionStatus_ = saveOk ? "Saved " + sceneManager_.currentScenePath() : "Save failed: " + sceneManager_.currentScenePath();
         notifications_.push(fileActionStatus_, saveOk ? NotificationSeverity::Success : NotificationSeverity::Error);
     }
@@ -1594,7 +1603,10 @@ void StudioApp::drawPendingFileActionPopup() {
             switch (pendingFileAction_) {
                 case PendingFileAction::SaveScene:
                     fileActionStatus_ =
-                        sceneManager_.saveScene(path, ecs_, viewportPanel_.camera()) ? "Saved " + path : "Save failed: " + path;
+                        sceneManager_.saveScene(path, ecs_, viewportPanel_.camera(), &movieModePlugin_->rail(),
+                                                  &movieModePlugin_->sequence())
+                            ? "Saved " + path
+                            : "Save failed: " + path;
                     if (fileActionStatus_.rfind("Saved", 0) == 0) {
                         auto& tabs = sceneManager_.openScenePaths();
                         if (std::find(tabs.begin(), tabs.end(), path) == tabs.end()) tabs.push_back(path);
@@ -1800,12 +1812,14 @@ void StudioApp::drawRecoveryBanner() {
         std::string recoveryPath = core::SceneManager::recoveryPathFor(recoveryOfferPath_);
         std::string originalPath = recoveryOfferPath_;
         if (sceneManager_.loadScene(recoveryPath, ecs_, meshLibrary_, renderer_.allocator(), renderer_.device(),
-                                     renderer_.commandPool(), renderer_.graphicsQueue(), viewportPanel_.camera())) {
+                                     renderer_.commandPool(), renderer_.graphicsQueue(), viewportPanel_.camera(),
+                                     nullptr, &movieModePlugin_->rail(), &movieModePlugin_->sequence())) {
             // Commits the recovered content back to the real scene path
             // (not the .autosave file) -- also correctly resets
             // currentScenePath_/dirty_ and deletes the now-consumed
             // recovery file (see saveScene()'s comment).
-            (void)sceneManager_.saveScene(originalPath, ecs_, viewportPanel_.camera());
+            (void)sceneManager_.saveScene(originalPath, ecs_, viewportPanel_.camera(), &movieModePlugin_->rail(),
+                                            &movieModePlugin_->sequence());
             explorerPanel_.setSelected(core::kNullEntity);
             fileActionStatus_ = "Recovered " + originalPath;
             notifications_.push(fileActionStatus_, NotificationSeverity::Success);
@@ -1848,8 +1862,10 @@ void StudioApp::drawRecoveryBanner() {
                             sceneManager_.loadScene(core::SceneManager::recoveryPathFor(recoveryOfferPath_), ecs_,
                                                      meshLibrary_, renderer_.allocator(), renderer_.device(),
                                                      renderer_.commandPool(), renderer_.graphicsQueue(),
-                                                     viewportPanel_.camera())) {
-                            (void)sceneManager_.saveScene(recoveryOfferPath_, ecs_, viewportPanel_.camera());
+                                                     viewportPanel_.camera(), nullptr, &movieModePlugin_->rail(),
+                                                     &movieModePlugin_->sequence())) {
+                            (void)sceneManager_.saveScene(recoveryOfferPath_, ecs_, viewportPanel_.camera(),
+                                                            &movieModePlugin_->rail(), &movieModePlugin_->sequence());
                             explorerPanel_.setSelected(core::kNullEntity);
                             fileActionStatus_ = "Restored snapshot from " + std::string(buf);
                             notifications_.push(fileActionStatus_, NotificationSeverity::Success);
@@ -1972,11 +1988,13 @@ void StudioApp::drawWelcomePanel() {
 
 void StudioApp::switchToScene(const std::string& path) {
     if (!sceneManager_.currentScenePath().empty() && sceneManager_.currentScenePath() != path) {
-        (void)sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera());
+        (void)sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
+                                        &movieModePlugin_->rail(), &movieModePlugin_->sequence());
     }
 
     if (!sceneManager_.loadScene(path, ecs_, meshLibrary_, renderer_.allocator(), renderer_.device(),
-                                  renderer_.commandPool(), renderer_.graphicsQueue(), viewportPanel_.camera())) {
+                                  renderer_.commandPool(), renderer_.graphicsQueue(), viewportPanel_.camera(),
+                                  nullptr, &movieModePlugin_->rail(), &movieModePlugin_->sequence())) {
         fileActionStatus_ = "Load failed: " + path;
         notifications_.push(fileActionStatus_, NotificationSeverity::Error);
         return;
@@ -2152,7 +2170,8 @@ void StudioApp::run() {
             } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
                 undoStack_.redo();
             } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && !sceneManager_.currentScenePath().empty()) {
-                bool saveOk = sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera());
+                bool saveOk = sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
+                                                        &movieModePlugin_->rail(), &movieModePlugin_->sequence());
                 fileActionStatus_ = saveOk ? "Saved " + sceneManager_.currentScenePath() : "Save failed: " + sceneManager_.currentScenePath();
                 notifications_.push(fileActionStatus_, saveOk ? NotificationSeverity::Success : NotificationSeverity::Error);
             } else if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_K, false) || ImGui::IsKeyPressed(ImGuiKey_P, false))) {
@@ -2187,7 +2206,8 @@ void StudioApp::run() {
             sceneManager_.markDirty();
             lastSeenUndoCount_ = undoCount;
         }
-        sceneManager_.tickAutosave(deltaTime, ecs_, viewportPanel_.camera());
+        sceneManager_.tickAutosave(deltaTime, ecs_, viewportPanel_.camera(), &movieModePlugin_->rail(),
+                                    &movieModePlugin_->sequence());
         tickProjectAutosave(deltaTime);
 
         panels::ViewportDebugContext viewportDebugContext;

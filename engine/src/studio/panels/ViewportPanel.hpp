@@ -359,6 +359,10 @@ private:
     // the click-vs-drag disambiguation (a small pixel-movement threshold).
     bool dragSelectActive_ = false;
     ImVec2 dragSelectStart_{0.0f, 0.0f};
+    // Previous frame's IsWindowFocused() -- lets handleSelection() detect
+    // the exact frame the viewport acquires focus, see its own comment on
+    // why that frame needs different click handling than every other one.
+    bool viewportWasFocused_ = false;
 
     // Sprint 8 debug overlay toggles -- default off, same "opt-in, not
     // drawn by default" convention the physics debug toggles use.

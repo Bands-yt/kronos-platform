@@ -51,6 +51,16 @@ const char* signalName(int sig) {
 }
 
 void crashHandler(int sig) {
+    // stdout is fully-buffered (not line-buffered) once redirected to a
+    // file, so Logger::log()'s fprintf(stdout, ...) lines for Debug/Info
+    // entries can still be sitting in libc's buffer, unwritten, when this
+    // handler runs -- exactly the entries most useful right before a
+    // crash. fflush() isn't on POSIX's async-signal-safe list either
+    // (same accepted trade-off as Logger::recentEntries() below), but
+    // skipping it trades a rare handler-reentrancy risk for routinely
+    // losing the log tail on every crash.
+    std::fflush(nullptr);
+
     if (g_crashFileFd >= 0) {
         writeRaw(g_crashFileFd, "=== Kronos crash report ===\n");
         writeRaw(g_crashFileFd, "Signal: ");
@@ -78,6 +88,11 @@ void crashHandler(int sig) {
         writeRaw(g_crashFileFd, "\n=== end of report ===\n");
 
         fsync(g_crashFileFd);
+        // close() is on POSIX's async-signal-safe list (unlike fflush()
+        // above) -- safe to call here so the report is fully closed out
+        // on disk before we re-raise below.
+        close(g_crashFileFd);
+        g_crashFileFd = -1;
     }
 
     // Real chaining: restore and re-raise so the OS's own default

@@ -37,9 +37,24 @@ matchmakingRouter.post(
   '/games/:slug/tickets',
   requireAuth,
   asyncRoute(async (req, res) => {
-    const { rows: games } = await query(`SELECT id, slug, title FROM games WHERE slug = $1 AND published = TRUE`, [req.params.slug]);
+    const { rows: games } = await query(
+      `SELECT id, slug, title, mature FROM games WHERE slug = $1 AND published = TRUE`,
+      [req.params.slug],
+    );
     if (games.length === 0) throw notFound('No such published game.');
     const game = games[0];
+
+    // Same real age-gate sessions/routes.js's own /allocate applies,
+    // checked here too: a ticket queued for a mature game bypasses that
+    // check entirely if this route doesn't also apply it, since queued
+    // tickets are later allocated straight through allocatePlayerToGame
+    // with no second look at who's asking.
+    if (game.mature) {
+      const { rows: verified } = await query(`SELECT age_verified FROM users WHERE id = $1`, [req.user.id]);
+      if (verified.length === 0 || !verified[0].age_verified) {
+        throw forbidden('This game is age-restricted and your account is not age-verified.');
+      }
+    }
 
     const partySize = Math.min(Math.max(Number(req.body?.party_size) || 1, 1), 16);
     const region = String(req.body?.region || 'default').trim().slice(0, 40) || 'default';

@@ -9,6 +9,7 @@
 #include "cinematic/OfflineExport.hpp"
 #include "cinematic/Sequencer.hpp"
 #include "cinematic/TimelineLayout.hpp"
+#include "entitlement/EntitlementManager.hpp"
 #include "studio/IStudioPlugin.hpp"
 #include "trailer/CaptureRig.hpp"
 
@@ -53,7 +54,8 @@ namespace engine::studio::plugins {
 // together under this one plugin's own isOpen().
 class MovieModePlugin final : public IStudioPlugin {
 public:
-    MovieModePlugin(core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary);
+    MovieModePlugin(core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary,
+                     entitlement::EntitlementManager& entitlements);
 
     [[nodiscard]] const char* name() const override { return "Movie Mode"; }
     [[nodiscard]] const char* category() const override { return "Cinematics"; }
@@ -158,6 +160,7 @@ private:
     // --- real Offline Export GPU state -------------------------------------
     core::MeshLibrary* meshLibrary_;
     core::TextureLibrary* textureLibrary_;
+    entitlement::EntitlementManager* entitlements_;
     trailer::CaptureRig captureRig_;
     bool captureRigInitialized_ = false;
     // Set by renderPreview(), read by update() -- see TrailerPanel's own

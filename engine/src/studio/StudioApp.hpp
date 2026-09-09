@@ -18,6 +18,7 @@
 #include "core/RiggedMesh.hpp"
 #include "core/Texture.hpp"
 #include "core/Window.hpp"
+#include "entitlement/EntitlementManager.hpp"
 #include "marketplace/TransactionLog.hpp"
 #include "net/NetworkSession.hpp"
 #include "safety/TrustSafetyService.hpp"
@@ -155,7 +156,16 @@ private:
     // Stats/Scene Search aren't named in any mode's "Strip out" list, so
     // they stay unconditional (same as Full) rather than being pruned on
     // an inference the brief never actually states.
-    [[nodiscard]] bool showSceneTree() const { return mode_ == StudioMode::Full; }
+    // Kronos ("Bring-Up Bug Bash"): 3D Maker has no other reliable way to
+    // select an entity -- viewport click-to-select is real (see
+    // ViewportPanel::handleSelection()) but a live playtest showed users
+    // bouncing off it (docked next to the Material Editor's own "3D
+    // Viewport" preview tab, easy to be on the wrong tab and think
+    // nothing is selectable). Explorer gives 3D Maker a second, always-
+    // working selection path so Material Editor/Brush & Stamp/PBR
+    // Texture Inspector's "Select an entity..." placeholder is never a
+    // dead end.
+    [[nodiscard]] bool showSceneTree() const { return mode_ == StudioMode::Full || mode_ == StudioMode::ThreeDMaker; }
     // Kronos (same feature, follow-up: "Show strictly [4 named panels]"
     // per narrow mode): Inspector is a generic per-component ECS editor
     // (Transform/RigidBody/ParticleEmitter/... -- add/remove any
@@ -164,7 +174,13 @@ private:
     // Editor's color/metallic/roughness, MovieModePlugin's Clip
     // Inspector, ...) already covers what that app actually needs to
     // edit -- same "Full only" gate as showSceneTree() above.
-    [[nodiscard]] bool showInspector() const { return mode_ == StudioMode::Full; }
+    // Kronos ("Bring-Up Bug Bash"): 3D Maker's own editing surfaces cover
+    // material, not the Transform (position/rotation/scale) a freshly
+    // spawned/imported entity needs moved into place -- ViewportPanel's
+    // gizmo covers that live, but a real numeric Inspector is the only
+    // way to type an exact value or confirm what's actually selected --
+    // same reasoning as showSceneTree() above.
+    [[nodiscard]] bool showInspector() const { return mode_ == StudioMode::Full || mode_ == StudioMode::ThreeDMaker; }
     // Kronos (same follow-up: "show strictly [4 named panels]"): Stats is
     // a generic renderer/process perf HUD, not named in any narrow mode's
     // list either -- same Full-only gate as showInspector() above.
@@ -463,6 +479,12 @@ private:
     // zero real callers anywhere in this codebase; this is that real
     // caller's real home.
     safety::TrustSafetyService studioTrustSafetyService_;
+    // Every tier unlocked for now -- see EntitlementManager::limits()'s
+    // own comment. Passed by reference to plugins that gate a real
+    // feature against it (MovieModePlugin's render export resolution),
+    // so turning gating on later is a Studio-side config change, not a
+    // rewire of every call site.
+    entitlement::EntitlementManager studioEntitlementManager_;
     std::string catalogueDatabasePath_ = "catalogue.json";
     std::string localAvatarLoadoutPath_ = "local_avatar_loadout.loadout";
 

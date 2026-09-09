@@ -4147,6 +4147,26 @@ bool Renderer::ensureParticleDepthDescriptor(FrameSync& frame, VkImageView depth
 }
 
 void Renderer::destroyPostProcessTargets(FrameSync& frame) {
+    // Real bug (found via validation layers -- vkFreeDescriptorSets/
+    // vkDestroyImage "in use by VkCommandBuffer"): this used to free/destroy
+    // every post-process descriptor set and image below with no GPU wait at
+    // all. ensurePostProcessTargets() calls this synchronously on a live
+    // viewport resize, so a previous frame's command buffer could still be
+    // executing against frame.hdrView/frame.particleDepthDescriptorSet/etc.
+    // when they got torn down -- same class of bug OffscreenTarget::destroy()
+    // already had fixed for its own resources, just not for this unrelated
+    // per-FrameSync resource set. shutdown() already waits idle once before
+    // its own destroyPostProcessTargets() loop, so this is a harmless no-op
+    // there; for the resize path and every destroyAuxiliaryScene() caller
+    // (PreviewScene/ThumbnailCameraRig/SecondaryViewport/CaptureRig teardown,
+    // none of which waited either), this is the actual fix.
+    if (frame.particleDepthDescriptorSet != VK_NULL_HANDLE || frame.luminanceDescriptorSet != VK_NULL_HANDLE ||
+        frame.cinematicDescriptorSet != VK_NULL_HANDLE || frame.fogInputDescriptorSet != VK_NULL_HANDLE ||
+        frame.ssrInputDescriptorSet != VK_NULL_HANDLE || frame.bloomExtractDescriptorSet != VK_NULL_HANDLE ||
+        frame.compositeDescriptorSet != VK_NULL_HANDLE || frame.hdrImage != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
+    }
+
     if (frame.particleDepthDescriptorSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(device_, postProcessDescriptorPool_, 1, &frame.particleDepthDescriptorSet);
         frame.particleDepthDescriptorSet = VK_NULL_HANDLE;

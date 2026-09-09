@@ -23,6 +23,7 @@ class BinaryWriter {
 public:
     void writeU8(uint8_t v);
     void writeU32(uint32_t v);
+    void writeU64(uint64_t v);
     void writeFloat(float v);
     void writeBool(bool v) { writeU8(v ? 1 : 0); }
     void writeVec3(const glm::vec3& v);
@@ -49,6 +50,7 @@ public:
 
     [[nodiscard]] uint8_t readU8();
     [[nodiscard]] uint32_t readU32();
+    [[nodiscard]] uint64_t readU64();
     [[nodiscard]] float readFloat();
     [[nodiscard]] bool readBool() { return readU8() != 0; }
     [[nodiscard]] glm::vec3 readVec3();

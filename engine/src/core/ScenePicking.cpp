@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "core/Components.hpp"
+#include "core/Hierarchy.hpp"
 #include "core/Mesh.hpp"
 
 namespace engine::core {
@@ -47,8 +48,14 @@ ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin,
         const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
         if (mesh == nullptr) continue;
 
-        auto& transform = view.get<Transform>(entity);
-        glm::mat4 invModel = glm::inverse(transform.matrix());
+        // Real world matrix, not the entity's own local Transform::matrix()
+        // -- an entity parented under another (Hierarchy::parent set, e.g.
+        // via ExplorerPanel's drag-to-parent) renders at
+        // hierarchy::computeWorldMatrix()'s result (Renderer.cpp's
+        // push.model), so picking against the raw local matrix alone would
+        // test against the wrong space for any parented entity, byte-
+        // identical to transform.matrix() for the common unparented case.
+        glm::mat4 invModel = glm::inverse(hierarchy::computeWorldMatrix(ecs, entity));
         glm::vec3 localOrigin = glm::vec3(invModel * glm::vec4(origin, 1.0f));
         glm::vec3 localEnd = glm::vec3(invModel * glm::vec4(worldEnd, 1.0f));
 

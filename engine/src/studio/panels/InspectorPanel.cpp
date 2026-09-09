@@ -87,18 +87,38 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
             ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "Invalid position (NaN/Inf) -- likely a bad gizmo drag.");
             if (ImGui::Button("Reset Position to Origin")) transform->position = glm::vec3(0.0f);
         }
-        if (ImGui::IsItemActivated()) positionBeforeEdit_ = transform->position;
+        if (ImGui::IsItemActivated()) {
+            positionBeforeEdit_ = transform->position;
+            positionGroupBeforeEdit_.clear();
+            for (core::EntityId other : selectedEntities) {
+                if (auto* otherTransform = ecs.tryGetComponent<core::Transform>(other)) {
+                    positionGroupBeforeEdit_.emplace_back(other, otherTransform->position);
+                }
+            }
+        }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             glm::vec3 before = positionBeforeEdit_;
             glm::vec3 after = transform->position;
             applyPositionDeltaToGroup(before, after);
-            core::EntityId entity = selected;
+            // Snapshot every group member's *after* position too (not just
+            // delta + before), so undo/redo restores the whole group exactly
+            // -- not just the primary selection -- matching what
+            // applyPositionDeltaToGroup() actually just did live.
+            std::vector<std::pair<core::EntityId, glm::vec3>> groupAfter;
+            for (const auto& [entity, beforePos] : positionGroupBeforeEdit_) {
+                if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) groupAfter.emplace_back(entity, t->position);
+            }
+            std::vector<std::pair<core::EntityId, glm::vec3>> groupBefore = positionGroupBeforeEdit_;
             undoStack.push({"Move Entity",
-                             [&ecs, entity, before]() {
-                                 if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->position = before;
+                             [&ecs, groupBefore]() {
+                                 for (const auto& [entity, pos] : groupBefore) {
+                                     if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->position = pos;
+                                 }
                              },
-                             [&ecs, entity, after]() {
-                                 if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->position = after;
+                             [&ecs, groupAfter]() {
+                                 for (const auto& [entity, pos] : groupAfter) {
+                                     if (auto* t = ecs.tryGetComponent<core::Transform>(entity)) t->position = pos;
+                                 }
                              }});
         }
         {
@@ -209,15 +229,92 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
         // fixed [0,1] track has no "drag past the end" case to begin with.
         ImGui::Separator();
         ImGui::TextUnformatted("Material");
+        // Same "snapshot on activate, push on deactivate" undo integration
+        // as the Transform fields above -- these had none at all before,
+        // so a material edit couldn't be undone (Ctrl+Z would silently do
+        // nothing, or undo an unrelated earlier transform edit instead).
+        core::EntityId materialEntity = selected;
         ImGui::ColorEdit4("Base Color", &renderable->baseColor.x);
+        if (ImGui::IsItemActivated()) baseColorBeforeEdit_ = renderable->baseColor;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            glm::vec4 before = baseColorBeforeEdit_;
+            glm::vec4 after = renderable->baseColor;
+            undoStack.push({"Edit Base Color",
+                             [&ecs, materialEntity, before]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->baseColor = before;
+                             },
+                             [&ecs, materialEntity, after]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->baseColor = after;
+                             }});
+        }
         ImGui::SliderFloat("Metallic", &renderable->metallic, 0.0f, 1.0f);
+        if (ImGui::IsItemActivated()) metallicBeforeEdit_ = renderable->metallic;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            float before = metallicBeforeEdit_;
+            float after = renderable->metallic;
+            undoStack.push({"Edit Metallic",
+                             [&ecs, materialEntity, before]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->metallic = before;
+                             },
+                             [&ecs, materialEntity, after]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->metallic = after;
+                             }});
+        }
         ImGui::SliderFloat("Roughness", &renderable->roughness, 0.0f, 1.0f);
+        if (ImGui::IsItemActivated()) roughnessBeforeEdit_ = renderable->roughness;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            float before = roughnessBeforeEdit_;
+            float after = renderable->roughness;
+            undoStack.push({"Edit Roughness",
+                             [&ecs, materialEntity, before]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->roughness = before;
+                             },
+                             [&ecs, materialEntity, after]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->roughness = after;
+                             }});
+        }
         ImGui::SliderFloat("Normal Intensity", &renderable->normalIntensity, 0.0f, 2.0f);
+        if (ImGui::IsItemActivated()) normalIntensityBeforeEdit_ = renderable->normalIntensity;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            float before = normalIntensityBeforeEdit_;
+            float after = renderable->normalIntensity;
+            undoStack.push({"Edit Normal Intensity",
+                             [&ecs, materialEntity, before]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->normalIntensity = before;
+                             },
+                             [&ecs, materialEntity, after]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->normalIntensity = after;
+                             }});
+        }
 
         ImGui::Spacing();
         ImGui::TextUnformatted("Emissive");
         ImGui::ColorEdit3("Emissive Color", &renderable->emissiveColor.x);
+        if (ImGui::IsItemActivated()) emissiveColorBeforeEdit_ = renderable->emissiveColor;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            glm::vec3 before = emissiveColorBeforeEdit_;
+            glm::vec3 after = renderable->emissiveColor;
+            undoStack.push({"Edit Emissive Color",
+                             [&ecs, materialEntity, before]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->emissiveColor = before;
+                             },
+                             [&ecs, materialEntity, after]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->emissiveColor = after;
+                             }});
+        }
         ImGui::SliderFloat("Emissive Intensity", &renderable->emissiveIntensity, 0.0f, 10.0f);
+        if (ImGui::IsItemActivated()) emissiveIntensityBeforeEdit_ = renderable->emissiveIntensity;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            float before = emissiveIntensityBeforeEdit_;
+            float after = renderable->emissiveIntensity;
+            undoStack.push({"Edit Emissive Intensity",
+                             [&ecs, materialEntity, before]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->emissiveIntensity = before;
+                             },
+                             [&ecs, materialEntity, after]() {
+                                 if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->emissiveIntensity = after;
+                             }});
+        }
         // A quick preview swatch of the actual glow color*intensity would
         // clip at white for anything past ~1.0 in a plain ColorEdit, so a
         // small separate preview block (raw, un-tonemapped) shows what's
@@ -450,7 +547,7 @@ void InspectorPanel::drawOreNodeSection(core::ECS& ecs, core::EntityId selected)
 
     ImGui::TextDisabled("Sell value: %d coins/unit -- Drop: %d-%d units", info.baseSellValue, info.minDrop,
                          info.maxDrop);
-    ImGui::TextDisabled("Read-only -- ore stats come from OreType, not per-entity fields (see OreNode.hpp).");
+    ImGui::TextDisabled("Read-only -- ore stats are shared per ore type, not editable per-entity.");
 }
 
 void InspectorPanel::drawLightSection(core::ECS& ecs, core::EntityId selected) {

@@ -18,6 +18,8 @@
 #include <ImGuizmo.h>
 
 #include "core/Components.hpp"
+#include "core/EditableMeshComponent.hpp"
+#include "core/Hierarchy.hpp"
 #include "core/Mesh.hpp"
 #include "core/Renderer.hpp"
 #include "core/ScenePicking.hpp"
@@ -28,6 +30,21 @@
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 
 namespace engine::studio::panels {
+
+namespace {
+// The world matrix of `entity`'s *parent* (identity if it has none) --
+// every caller below needs this to convert an ImGuizmo-edited world
+// matrix back into the entity's own local Transform, since
+// core::hierarchy::setParent() (e.g. via ExplorerPanel's drag-to-parent,
+// now reachable in 3D Maker too) makes a parented entity's Transform mean
+// local space, not world space -- see Components.hpp's Hierarchy comment.
+glm::mat4 parentWorldMatrix(core::ECS& ecs, core::EntityId entity) {
+    auto* hierarchy = ecs.tryGetComponent<core::Hierarchy>(entity);
+    core::EntityId parent = hierarchy ? hierarchy->parent : core::kNullEntity;
+    if (parent == core::kNullEntity) return glm::mat4(1.0f);
+    return core::hierarchy::computeWorldMatrix(ecs, parent);
+}
+} // namespace
 
 void ViewportPanel::updateFreeFly(float deltaTime) {
     bool hovered = ImGui::IsWindowHovered();
@@ -79,7 +96,16 @@ void ViewportPanel::drawGizmo(core::ECS& ecs, core::EntityId selected, const std
 
     glm::mat4 view = renderCamera_.viewMatrix();
     glm::mat4 proj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y);
-    glm::mat4 model = transform->matrix();
+    // Real world matrix, not transform->matrix() alone -- Renderer.cpp
+    // renders this entity at hierarchy::computeWorldMatrix()'s result
+    // (push.model), so a parented entity's gizmo must be built and
+    // manipulated in that same world space or its handles land wherever
+    // the entity's *local* transform alone would put it -- offset from
+    // the actual rendered mesh by exactly its parent's world transform.
+    // Byte-identical to transform->matrix() for the common unparented
+    // case (parentWorld below is then identity).
+    glm::mat4 parentWorld = parentWorldMatrix(ecs, selected);
+    glm::mat4 model = parentWorld * transform->matrix();
 
     ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
     switch (gizmoOperation_) {
@@ -112,10 +138,18 @@ void ViewportPanel::drawGizmo(core::ECS& ecs, core::EntityId selected, const std
                           snapEnabledForThisOp ? snapValues : nullptr);
 
     if (ImGuizmo::IsUsing()) {
+        // ImGuizmo::Manipulate() edited `model` (the WORLD matrix) in
+        // place -- convert back to the entity's own LOCAL space before
+        // decomposing into transform->position/rotation/scale (that
+        // struct's fields are always local-space once parented, see
+        // Components.hpp's Hierarchy comment). Identity parentWorld (the
+        // unparented case) makes this a no-op inverse, so decomposedLocal
+        // == model exactly as before this fix.
+        glm::mat4 decomposedLocal = glm::inverse(parentWorld) * model;
         glm::vec3 translation, scale, skew;
         glm::vec4 perspective;
         glm::quat rotation;
-        if (glm::decompose(model, scale, rotation, translation, skew, perspective)) {
+        if (glm::decompose(decomposedLocal, scale, rotation, translation, skew, perspective)) {
             // Real gizmo-stability fix: glm::decompose() can return a
             // near-zero or negative scale component while a scale drag is
             // passing through/near the origin (the gizmo doesn't clamp
@@ -199,7 +233,11 @@ void ViewportPanel::drawSelectionHighlight(core::ECS& ecs, core::MeshLibrary& me
 
         glm::vec3 lo = mesh->localBoundsMin();
         glm::vec3 hi = mesh->localBoundsMax();
-        glm::mat4 model = transform->matrix();
+        // Real world matrix -- see parentWorldMatrix()'s own comment above
+        // (drawGizmo() uses the identical fix for the identical reason);
+        // a parented entity's highlight box must match where it actually
+        // renders, not just its own local transform.
+        glm::mat4 model = core::hierarchy::computeWorldMatrix(ecs, entity);
 
         // The 8 real corners of the local AABB, each transformed to
         // world space by this entity's own real model matrix -- a
@@ -290,7 +328,24 @@ void ViewportPanel::handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibra
     bool hovered = ImGui::IsWindowHovered();
     bool overGizmo = ImGuizmo::IsOver() || ImGuizmo::IsUsing();
 
-    if (hovered && !overGizmo && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    // The exact click that brings an unfocused viewport to focus is the
+    // one IsMouseClicked() can miss: a click-to-focus window manager (or
+    // ImGui's own docking focus handling) can consume that press as a
+    // pure focus/z-order event before ImGui's edge-detected "clicked"
+    // state is ever set for this window, so on that specific frame
+    // io.MouseDown[Left] can already read true with no preceding
+    // "clicked" edge for IsMouseClicked() to report -- and by the same
+    // logic, the later release has no matching press edge either, so the
+    // IsMouseReleased() fallback below can't catch this case (it only
+    // catches the window-hover-order-lag case, a different failure mode).
+    // Detecting the focus-acquired transition directly and treating an
+    // already-down button as "the click just started" closes that gap:
+    // real focus-changed edge, not a fragile timing/frame-count guess.
+    bool focusedNow = ImGui::IsWindowFocused();
+    bool justFocusedWithMouseDown = focusedNow && !viewportWasFocused_ && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    viewportWasFocused_ = focusedNow;
+
+    if (hovered && !overGizmo && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || justFocusedWithMouseDown)) {
         dragSelectActive_ = true;
         dragSelectStart_ = io.MousePos;
     }
@@ -308,6 +363,36 @@ void ViewportPanel::handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibra
             drawList->AddRectFilled(rectMin, rectMax, IM_COL32(90, 150, 255, 40));
             drawList->AddRect(rectMin, rectMax, IM_COL32(120, 180, 255, 200));
         }
+    }
+
+    // Raycast-pick whatever's closest under the cursor (core::pickEntity(),
+    // a physics-independent ray-vs-mesh-bounds query -- see its header for
+    // why this isn't Physics::raycast()).
+    auto pickAtCursor = [&]() {
+        glm::vec3 rayOrigin, rayDir;
+        computeMouseRay(io.MousePos, imageOrigin, imageSize, rayOrigin, rayDir);
+        core::ScenePickResult result = core::pickEntity(ecs, meshLibrary, rayOrigin, rayDir, kMaxPickDistance);
+
+        if (result.hit) {
+            if (io.KeyCtrl) {
+                explorer.toggleSelection(result.entity);
+            } else {
+                explorer.setSelected(result.entity);
+            }
+        } else if (!io.KeyCtrl) {
+            // Clicked empty space -- clears selection, matching every
+            // other editor's viewport. Ctrl-clicking empty space
+            // deliberately leaves the selection alone (there's
+            // nothing to toggle).
+            explorer.setSelected(core::kNullEntity);
+        }
+    };
+
+    if (!dragSelectActive_ && hovered && !overGizmo && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        // The mouse-down edge was missed (e.g. this same click just gave
+        // the panel focus, so IsMouseClicked() never fired above) --
+        // treat the release as a plain click instead of dropping it.
+        pickAtCursor();
     }
 
     if (dragSelectActive_ && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -332,8 +417,13 @@ void ViewportPanel::handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibra
             std::vector<core::EntityId> picked;
             auto view2 = ecs.view<core::Transform>();
             for (auto entity : view2) {
-                auto& transform = view2.get<core::Transform>(entity);
-                glm::vec4 clip = viewProj * glm::vec4(transform.position, 1.0f);
+                // Real world position -- see parentWorldMatrix()'s own
+                // comment; transform.position alone is local-space once an
+                // entity is parented, so a parented prop's marquee-select
+                // hit point would silently drift away from its own real
+                // rendered position by its parent's world offset.
+                glm::vec3 worldPosition = glm::vec3(core::hierarchy::computeWorldMatrix(ecs, entity)[3]);
+                glm::vec4 clip = viewProj * glm::vec4(worldPosition, 1.0f);
                 if (clip.w <= 0.0f) continue; // behind the camera
                 glm::vec3 ndc = glm::vec3(clip) / clip.w;
                 float screenX = imageOrigin.x + (ndc.x * 0.5f + 0.5f) * imageSize.x;
@@ -344,27 +434,8 @@ void ViewportPanel::handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibra
             }
             explorer.setSelectedMultiple(std::move(picked));
         } else {
-            // Not a drag -- a plain click. Raycast-pick whatever's
-            // closest under the cursor (core::pickEntity(), a physics-
-            // independent ray-vs-mesh-bounds query -- see its header for
-            // why this isn't Physics::raycast()).
-            glm::vec3 rayOrigin, rayDir;
-            computeMouseRay(io.MousePos, imageOrigin, imageSize, rayOrigin, rayDir);
-            core::ScenePickResult result = core::pickEntity(ecs, meshLibrary, rayOrigin, rayDir, kMaxPickDistance);
-
-            if (result.hit) {
-                if (io.KeyCtrl) {
-                    explorer.toggleSelection(result.entity);
-                } else {
-                    explorer.setSelected(result.entity);
-                }
-            } else if (!io.KeyCtrl) {
-                // Clicked empty space -- clears selection, matching every
-                // other editor's viewport. Ctrl-clicking empty space
-                // deliberately leaves the selection alone (there's
-                // nothing to toggle).
-                explorer.setSelected(core::kNullEntity);
-            }
+            // Not a drag -- a plain click.
+            pickAtCursor();
         }
     }
 }
@@ -699,7 +770,12 @@ void ViewportPanel::drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& 
             glm::vec3 center = (boundsMin + boundsMax) * 0.5f;
             glm::vec3 halfExtent = (boundsMax - boundsMin) * 0.5f;
             auto corners = boxCorners(halfExtent);
-            glm::mat4 model = transform.matrix();
+            // hierarchy::computeWorldMatrix(), not transform.matrix() alone --
+            // otherwise a parented entity's bounds wireframe is drawn at its
+            // local-space position instead of where it's actually rendered
+            // (same class of offset-drift bug already fixed for picking/
+            // gizmo/render -- see ScenePicking.cpp's own comment).
+            glm::mat4 model = core::hierarchy::computeWorldMatrix(ecs, entity);
             for (auto& c : corners) c = glm::vec3(model * glm::vec4(center + c, 1.0f));
             for (auto& edge : kBoxEdges) projectLine(corners[edge[0]], corners[edge[1]], kBoundsColor, 1.0f);
         }
@@ -771,7 +847,12 @@ void ViewportPanel::drawSubObjectEditing(plugins::ModelingModePlugin& modelingMo
     if (transform == nullptr || editable == nullptr || renderable == nullptr) return;
     if (imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
 
-    const glm::mat4 model = transform->matrix();
+    // hierarchy::computeWorldMatrix(), not transform->matrix() alone --
+    // otherwise vertex/edge/face highlights land at a parented mesh
+    // entity's local-space position instead of its real rendered position
+    // (same class of offset-drift bug already fixed for picking/gizmo/
+    // render -- see ScenePicking.cpp's own comment).
+    const glm::mat4 model = core::hierarchy::computeWorldMatrix(ecs, selected);
     const glm::mat4 view = renderCamera_.viewMatrix();
     const glm::mat4 proj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y);
     const glm::mat4 viewProj = proj * view;
@@ -1240,6 +1321,25 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                     auto& meshSource = ecs->addComponent<core::MeshSource>(entity);
                     meshSource.kind = kind;
                     meshSource.params = params;
+                }
+                // Sphere/Cube attach a real EditableMeshComponent up front
+                // (createBox()/createCapsule() -- the exact same
+                // topology+UV generators the GPU mesh above was built
+                // from, see EditableMesh.cpp) rather than requiring the
+                // "Start Editing" convert-on-demand step ModelingModePlugin
+                // otherwise makes every entity go through: a freshly
+                // spawned primitive should already have valid vertex
+                // topology for brush/stamp sculpting and valid UVs for PBR
+                // textures, not just a render-only GPU mesh handle.
+                // ModelingModePlugin's own convert-on-demand path stays as
+                // the fallback for entities that predate this (or that
+                // came from Cylinder/Plane/Torus, still unsupported).
+                if (kind == core::MeshSourceKind::Box) {
+                    auto& editable = ecs->addComponent<core::EditableMeshComponent>(entity);
+                    editable.mesh = core::EditableMesh::createBox(params);
+                } else if (kind == core::MeshSourceKind::Capsule) {
+                    auto& editable = ecs->addComponent<core::EditableMeshComponent>(entity);
+                    editable.mesh = core::EditableMesh::createCapsule(params.x, params.y);
                 }
                 explorer.setSelected(entity);
             };

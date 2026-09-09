@@ -6,12 +6,13 @@
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
+#include "cinematic/CameraRail.hpp"
+#include "cinematic/Sequencer.hpp"
 #include "core/Camera.hpp"
 #include "core/ECS.hpp"
 #include "core/Mesh.hpp"
 #include "core/Physics.hpp"
 #include "core/SceneFile.hpp"
-#include "core/SceneHistory.hpp"
 
 namespace engine::core {
 
@@ -60,7 +61,15 @@ public:
     // comment on why an unnamed entity can't round-trip) into a
     // core::SceneFile and writes it to `path`. On success, `path` becomes
     // currentScenePath() and the dirty flag clears.
-    [[nodiscard]] bool saveScene(const std::string& path, ECS& ecs, const Camera& camera);
+    // `rail`/`sequence` (Kronos "Scene Save/Load Serialization" -- Tier 1)
+    // are optional and default to nullptr -- every existing call site
+    // keeps compiling and behaving identically. When non-null (Studio's
+    // real call, threading through studio::plugins::MovieModePlugin's own
+    // rail()/sequence()), the current authored rail/timeline state is
+    // captured into the saved file alongside the objects/camera above.
+    [[nodiscard]] bool saveScene(const std::string& path, ECS& ecs, const Camera& camera,
+                                  const cinematic::CameraRail* rail = nullptr,
+                                  const cinematic::Sequence* sequence = nullptr);
 
     // Destroys every entity currently in `ecs` and rebuilds from `path`:
     // regenerates each entity's mesh (procedural regeneration via
@@ -84,9 +93,18 @@ public:
     // Physics::attachBodyToEntity(), keyed off its saved ColliderShape --
     // this is what makes a runtime::GameLoader-loaded game genuinely
     // playable, not just a static diorama.
+    // `rail`/`sequence` mirror saveScene()'s own new parameters: non-null
+    // means "also restore the file's authored rail/timeline into this
+    // live cinematic::CameraRail/Sequence," replacing whatever it held
+    // before (a load is a full replace here too, same as the ECS itself).
+    // A file with no saved rail/sequence (hasCameraRail/hasSequence
+    // false) leaves the passed-in rail/sequence untouched rather than
+    // clearing it -- same "absent means don't touch" contract `physics`
+    // already has for hasRigidBody above.
     [[nodiscard]] bool loadScene(const std::string& path, ECS& ecs, MeshLibrary& meshLibrary, VmaAllocator allocator,
                                   VkDevice device, VkCommandPool cmdPool, VkQueue queue, Camera& camera,
-                                  Physics* physics = nullptr);
+                                  Physics* physics = nullptr, cinematic::CameraRail* rail = nullptr,
+                                  cinematic::Sequence* sequence = nullptr);
 
     // Clears `ecs` and resets bookkeeping to "new, unsaved scene".
     void newScene(ECS& ecs);
@@ -122,7 +140,8 @@ public:
     // kMinMajorEditSnapshotIntervalSeconds so a rapid multi-entity
     // create/delete burst doesn't hammer disk I/O with one snapshot per
     // frame.
-    void tickAutosave(float dt, ECS& ecs, const Camera& camera);
+    void tickAutosave(float dt, ECS& ecs, const Camera& camera, const cinematic::CameraRail* rail = nullptr,
+                       const cinematic::Sequence* sequence = nullptr);
 
     [[nodiscard]] static std::string recoveryPathFor(const std::string& scenePath);
     [[nodiscard]] static bool hasRecoveryFile(const std::string& scenePath);
@@ -135,7 +154,8 @@ public:
     // caller: studio::plugins::PublishingPanel needs a real, in-memory
     // core::SceneFile to bundle into a publishing::WorldPackage without
     // round-tripping through a temp file on disk first.
-    [[nodiscard]] SceneFile captureScene(ECS& ecs, const Camera& camera) const;
+    [[nodiscard]] SceneFile captureScene(ECS& ecs, const Camera& camera, const cinematic::CameraRail* rail = nullptr,
+                                          const cinematic::Sequence* sequence = nullptr) const;
 
 private:
     std::string currentScenePath_;

@@ -51,10 +51,24 @@ catalogRouter.get(
     const cursor = Number(req.query.cursor) || 0;
     const search = (req.query.q || '').toString().trim();
 
+    // First, cheap defense-in-depth layer for age-gating -- the real
+    // enforcement is at the allocate/matchmaking-ticket entry points
+    // (sessions/routes.js, matchmaking/routes.js), which a client
+    // already holding a slug could hit directly regardless of what this
+    // listing shows. This just keeps a mature game from being
+    // advertised by title/thumbnail to a browsing caller who isn't
+    // verified in the first place.
+    let isAdultVerified = false;
+    if (req.user) {
+      const { rows } = await query(`SELECT age_verified FROM users WHERE id = $1`, [req.user.id]);
+      isAdultVerified = rows.length > 0 && rows[0].age_verified === true;
+    }
+
     // Keyset pagination on id, not OFFSET: stable under concurrent
     // publishes and does not degrade on deep pages.
     const params = [limit + 1];
     let where = 'g.published = TRUE';
+    if (!isAdultVerified) where += ' AND g.mature = FALSE';
     if (cursor > 0) {
       params.push(cursor);
       where += ` AND g.id < $${params.length}`;
@@ -102,7 +116,7 @@ catalogRouter.get(
   optionalAuth,
   asyncRoute(async (req, res) => {
     const { rows } = await query(
-      `SELECT g.id, g.slug, g.title, g.description, g.thumbnail_url, g.created_at,
+      `SELECT g.id, g.slug, g.title, g.description, g.thumbnail_url, g.created_at, g.mature,
               u.display_name AS creator_name, u.id AS creator_id
          FROM games g JOIN users u ON u.id = g.creator_id
         WHERE g.slug = $1 AND g.published = TRUE`,
@@ -110,6 +124,20 @@ catalogRouter.get(
     );
     if (rows.length === 0) throw notFound('No such published game.');
     const g = rows[0];
+
+    if (g.mature) {
+      // Same real live-lookup as the /games list above. Reported as a
+      // plain 404 rather than 403: a caller who isn't verified gets no
+      // signal that a restricted game exists at this slug at all, same
+      // as an unpublished one.
+      let isAdultVerified = false;
+      if (req.user) {
+        const verified = await query(`SELECT age_verified FROM users WHERE id = $1`, [req.user.id]);
+        isAdultVerified = verified.rows.length > 0 && verified.rows[0].age_verified === true;
+      }
+      if (!isAdultVerified) throw notFound('No such published game.');
+    }
+
     const counts = await livePlayerCounts([g.id]);
     res.json({
       game: {
@@ -118,6 +146,7 @@ catalogRouter.get(
         title: g.title,
         description: g.description,
         thumbnail_url: g.thumbnail_url,
+        mature: g.mature,
         creator: { id: String(g.creator_id), display_name: g.creator_name },
         active_players: counts ? counts.get(String(g.id)) : null,
       },
@@ -148,6 +177,11 @@ catalogRouter.post(
     const description = String(req.body?.description || '').trim();
     const thumbnailUrl = String(req.body?.thumbnail_url || '').trim();
     const sceneHash = String(req.body?.scene_sha256 || '').trim();
+    // Self-reported, same trust level as title/description -- see
+    // games.mature's own migration comment. An ops override of a
+    // creator's own claim (e.g. flagging an under-labeled game) is a
+    // moderation_actions-audited admin decision, not exposed here.
+    const mature = req.body?.mature === true;
 
     if (!/^[a-z0-9][a-z0-9-]{2,63}$/.test(slug)) {
       throw badRequest('Slug must be 3-64 characters: lowercase letters, numbers and hyphens.');
@@ -202,21 +236,22 @@ catalogRouter.post(
                 scene_sha256 = COALESCE($6, scene_sha256),
                 package_object_key = COALESCE($7, package_object_key),
                 package_size_bytes = COALESCE($8, package_size_bytes),
-                package_uploaded_at = CASE WHEN $6::text IS NOT NULL THEN NOW() ELSE package_uploaded_at END
+                package_uploaded_at = CASE WHEN $6::text IS NOT NULL THEN NOW() ELSE package_uploaded_at END,
+                mature = $9
           WHERE id = $1 AND creator_id = $5
           RETURNING id, slug`,
         [existing.rows[0].id, title, description, thumbnailUrl, req.user.id,
-         sceneHash || null, packageObjectKeyForSlug, packageSizeBytes],
+         sceneHash || null, packageObjectKeyForSlug, packageSizeBytes, mature],
       );
       return res.json({ status: 'updated', game: { id: String(updated.rows[0].id), slug: updated.rows[0].slug } });
     }
 
     const inserted = await query(
       `INSERT INTO games (slug, title, description, creator_id, thumbnail_url, published,
-                           scene_sha256, package_object_key, package_size_bytes, package_uploaded_at)
-       VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, $8, CASE WHEN $6::text IS NOT NULL THEN NOW() ELSE NULL END)
+                           scene_sha256, package_object_key, package_size_bytes, package_uploaded_at, mature)
+       VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, $8, CASE WHEN $6::text IS NOT NULL THEN NOW() ELSE NULL END, $9)
        RETURNING id, slug`,
-      [slug, title, description, req.user.id, thumbnailUrl, sceneHash || null, packageObjectKeyForSlug, packageSizeBytes],
+      [slug, title, description, req.user.id, thumbnailUrl, sceneHash || null, packageObjectKeyForSlug, packageSizeBytes, mature],
     );
     res.status(201).json({ status: 'published', game: { id: String(inserted.rows[0].id), slug: inserted.rows[0].slug } });
   }),
