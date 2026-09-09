@@ -189,6 +189,7 @@ add_library(engine_core STATIC
     core/Interactable.cpp
     core/SceneTypes.cpp
     core/Terrain.cpp
+    core/TerrainGenerator.cpp
     core/TerrainLod.cpp
     core/AllocationTracker.cpp
     core/BindlessTextureTable.cpp
@@ -208,6 +209,7 @@ add_library(engine_core STATIC
     core/Prefab.cpp
     core/ECS.cpp
     core/Hierarchy.cpp
+    core/PluginRegistry.cpp
     core/Physics.cpp
     core/PhysicsMaterial.cpp
     core/CollisionLayers.cpp
@@ -302,6 +304,8 @@ add_library(engine_core STATIC
     safety/ImageClassifierStub.cpp
     safety/PolicyEngine.cpp
     safety/GeminiModerationClient.cpp
+
+    entitlement/EntitlementManager.cpp
 
     anticheat/DeviceFingerprint.cpp
     anticheat/ExploitSignatureDB.cpp

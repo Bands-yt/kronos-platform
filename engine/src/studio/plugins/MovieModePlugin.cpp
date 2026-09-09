@@ -65,8 +65,9 @@ void drawDiamond(ImDrawList* dl, ImVec2 c, float r, ImU32 fill, ImU32 border) {
 
 } // namespace
 
-MovieModePlugin::MovieModePlugin(core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary)
-    : meshLibrary_(&meshLibrary), textureLibrary_(&textureLibrary) {
+MovieModePlugin::MovieModePlugin(core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary,
+                                  entitlement::EntitlementManager& entitlements)
+    : meshLibrary_(&meshLibrary), textureLibrary_(&textureLibrary), entitlements_(&entitlements) {
     seedDefaultSequence();
 
     // A rail with real points, not an empty one: an empty rail draws
@@ -211,6 +212,14 @@ float MovieModePlugin::railParameterAtPlayhead() const {
 
 bool MovieModePlugin::buildExport(std::string& outError) {
     if (!validateExportSettings(exportSettings_, outError)) {
+        lastSchedule_.clear();
+        return false;
+    }
+    if (!entitlements_->isRenderExportResolutionAllowed(exportSettings_.resolution.width,
+                                                         exportSettings_.resolution.height)) {
+        outError = "This tier's render export resolution cap does not cover " +
+                    std::to_string(exportSettings_.resolution.width) + "x" +
+                    std::to_string(exportSettings_.resolution.height) + ".";
         lastSchedule_.clear();
         return false;
     }
@@ -916,7 +925,14 @@ void MovieModePlugin::drawExporterModal() {
     // --- the cost, before committing to it ---------------------------------
     ImGui::Separator();
     std::string validationError;
-    const bool valid = validateExportSettings(exportSettings_, validationError);
+    bool valid = validateExportSettings(exportSettings_, validationError);
+    if (valid && !entitlements_->isRenderExportResolutionAllowed(exportSettings_.resolution.width,
+                                                                  exportSettings_.resolution.height)) {
+        valid = false;
+        validationError = "This tier's render export resolution cap does not cover " +
+                           std::to_string(exportSettings_.resolution.width) + "x" +
+                           std::to_string(exportSettings_.resolution.height) + ".";
+    }
     if (valid) {
         const int frames = exportFrameCount(exportSettings_, sequence_.durationSeconds());
         const uint64_t perFrame = estimatedBytesPerFrame(exportSettings_);

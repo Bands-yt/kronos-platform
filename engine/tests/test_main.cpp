@@ -157,6 +157,7 @@
 #include "cinematic/SequenceApplier.hpp"
 #include "cinematic/TimelineLayout.hpp"
 #include "cinematic/CurveInterpolation.hpp"
+#include "entitlement/EntitlementManager.hpp"
 #include "core/AllocationTracker.hpp"
 #include "core/BindlessTextureTable.hpp"
 #include "core/TerrainLod.hpp"
@@ -243,6 +244,7 @@
 #include "studio/Notification.hpp"
 #include "studio/LocalPluginDirectory.hpp"
 #include "studio/PluginManifest.hpp"
+#include "core/SceneHistory.hpp"
 #include "core/SceneManager.hpp"
 #include "studio/ScriptCinematicApi.hpp"
 #include "studio/ScriptPhysicsPreviewApi.hpp"
@@ -5632,6 +5634,221 @@ void testSceneFileBinaryMatchesTextFormatData() {
 
     std::remove(textPath);
     std::remove(binaryPath);
+}
+
+// Kronos ("Scene Save/Load Serialization" -- Tier 1): real coverage of the
+// camera rail + sequencer fields added to SceneFile, through both formats
+// and cross-checked against each other -- every prior SceneFile round-trip
+// test above only ever exercises hasCameraRail/hasSequence at their
+// default (false) value, so this is the first real proof either format's
+// rail/sequence (de)serialization code actually runs correctly rather than
+// merely compiling. Deliberately uses non-default enum indices throughout
+// (a bug in an xxxToIndex/xxxFromIndex pair fails silently on index 0) and
+// track/event names/payloads with embedded spaces (proving the trailing-
+// string text convention and length-prefixed binary strings both hold).
+void testSceneFileCinematicRoundTrip() {
+    engine::core::SceneFile file;
+
+    file.hasCameraRail = true;
+    auto& settings = file.railSettings;
+    settings.splineType = engine::cinematic::RailSplineType::Bezier; // non-default (CatmullRom = 0)
+    settings.aimMode = engine::cinematic::RailAimMode::LookAtTarget; // non-default (FollowPath = 0)
+    settings.lookAtTarget = {1.0f, 2.0f, 3.0f};
+    settings.aimDampingSeconds = 0.5f;
+    settings.rollDegrees = 15.0f;
+    settings.autoFocusOnTarget = false; // non-default (true)
+    settings.worldUp = {0.0f, 0.0f, 1.0f}; // non-default ({0,1,0})
+
+    engine::cinematic::RailPoint pointA;
+    pointA.position = {0.0f, 1.0f, 0.0f};
+    pointA.inTangent = {-2.0f, 0.5f, 0.0f};
+    pointA.outTangent = {2.0f, -0.5f, 0.0f};
+    pointA.focalLengthMm = 24.0f;
+    pointA.aperture = 1.4f;
+    file.railPoints.push_back(pointA);
+
+    engine::cinematic::RailPoint pointB;
+    pointB.position = {10.0f, 2.0f, 5.0f};
+    pointB.focalLengthMm = 85.0f;
+    pointB.aperture = 4.0f;
+    file.railPoints.push_back(pointB);
+
+    file.hasSequence = true;
+    file.sequenceFrameRate = engine::cinematic::SequenceFrameRate::Fps60; // non-default (Fps24 = 0)
+    file.sequenceLoopStart = 1.0f;
+    file.sequenceLoopEnd = 5.5f;
+
+    engine::cinematic::SequencerTrack trackA;
+    trackA.name = "Camera Rail"; // space on purpose -- exercises the trailing-string parse path
+    trackA.kind = engine::cinematic::TrackKind::LightIntensity; // non-default (Transform = 2)
+    trackA.targetId = 12345;
+    trackA.muted = true; // non-default (false)
+
+    engine::cinematic::TrackChannel channelX;
+    channelX.name = "posX";
+    engine::cinematic::Keyframe keyA;
+    keyA.timeSeconds = 0.0f;
+    keyA.value = 1.0f;
+    keyA.mode = engine::cinematic::InterpolationMode::Bezier; // non-default (Cubic = 2)
+    keyA.inHandle = {-0.2f, 0.1f};
+    keyA.outHandle = {0.3f, -0.1f};
+    channelX.keys.push_back(keyA);
+    engine::cinematic::Keyframe keyB;
+    keyB.timeSeconds = 2.5f;
+    keyB.value = 4.5f;
+    keyB.mode = engine::cinematic::InterpolationMode::Stepped; // non-default (Cubic = 2), and non-zero-vs-default handles
+    keyB.inHandle = {0.0f, 0.0f};
+    keyB.outHandle = {0.0f, 0.0f};
+    channelX.keys.push_back(keyB);
+    trackA.channels.push_back(channelX);
+
+    engine::cinematic::TrackChannel channelY;
+    channelY.name = "posY";
+    engine::cinematic::Keyframe keyC;
+    keyC.timeSeconds = 1.0f;
+    keyC.value = -3.0f;
+    channelY.keys.push_back(keyC);
+    trackA.channels.push_back(channelY);
+
+    engine::cinematic::TrackEvent eventA;
+    eventA.timeSeconds = 3.0f;
+    eventA.payload = "fire trigger now"; // spaces on purpose
+    trackA.events.push_back(eventA);
+    file.sequenceTracks.push_back(trackA);
+
+    engine::cinematic::SequencerTrack trackB;
+    trackB.name = "Script Track";
+    trackB.kind = engine::cinematic::TrackKind::ScriptTrigger; // non-default
+    trackB.targetId = 999;
+    trackB.muted = false;
+    engine::cinematic::TrackEvent eventB;
+    eventB.timeSeconds = 0.5f;
+    eventB.payload = "onLevelStart cue";
+    trackB.events.push_back(eventB);
+    engine::cinematic::TrackEvent eventC;
+    eventC.timeSeconds = 4.0f;
+    eventC.payload = "onLevelEnd cue";
+    trackB.events.push_back(eventC);
+    file.sequenceTracks.push_back(trackB);
+
+    auto checkPopulated = [](const engine::core::SceneFile& loaded, const char* formatLabel) {
+        auto label = [formatLabel](const char* base) { return std::string(base) + formatLabel + ")"; };
+        check(loaded.hasCameraRail, label("hasCameraRail round-trips true (").c_str());
+        check(loaded.railSettings.splineType == engine::cinematic::RailSplineType::Bezier,
+              label("non-default rail spline type round-trips (").c_str());
+        check(loaded.railSettings.aimMode == engine::cinematic::RailAimMode::LookAtTarget,
+              label("non-default rail aim mode round-trips (").c_str());
+        check(nearlyEqual(loaded.railSettings.lookAtTarget.y, 2.0f) &&
+                  nearlyEqual(loaded.railSettings.rollDegrees, 15.0f),
+              label("rail settings scalar/vector fields round-trip (").c_str());
+        check(!loaded.railSettings.autoFocusOnTarget, label("non-default autoFocusOnTarget=false round-trips (").c_str());
+        check(nearlyEqual(loaded.railSettings.worldUp.z, 1.0f), label("non-default worldUp round-trips (").c_str());
+        check(loaded.railPoints.size() == 2, label("both rail points round-trip (").c_str());
+        if (loaded.railPoints.size() == 2) {
+            check(nearlyEqual(loaded.railPoints[0].inTangent.x, -2.0f) &&
+                      nearlyEqual(loaded.railPoints[0].focalLengthMm, 24.0f) &&
+                      nearlyEqual(loaded.railPoints[0].aperture, 1.4f),
+                  label("rail point A's tangent/lens fields round-trip (").c_str());
+            check(nearlyEqual(loaded.railPoints[1].position.x, 10.0f) &&
+                      nearlyEqual(loaded.railPoints[1].focalLengthMm, 85.0f),
+                  label("rail point B's position/lens fields round-trip (").c_str());
+        }
+
+        check(loaded.hasSequence, label("hasSequence round-trips true (").c_str());
+        check(loaded.sequenceFrameRate == engine::cinematic::SequenceFrameRate::Fps60,
+              label("non-default sequence frame rate round-trips (").c_str());
+        check(nearlyEqual(loaded.sequenceLoopStart, 1.0f) && nearlyEqual(loaded.sequenceLoopEnd, 5.5f),
+              label("sequence loop region round-trips (").c_str());
+        check(loaded.sequenceTracks.size() == 2, label("both tracks round-trip (").c_str());
+        if (loaded.sequenceTracks.size() == 2) {
+            const auto& t0 = loaded.sequenceTracks[0];
+            check(t0.name == "Camera Rail", label("track name with embedded space round-trips (").c_str());
+            check(t0.kind == engine::cinematic::TrackKind::LightIntensity && t0.targetId == 12345 && t0.muted,
+                  label("track kind/targetId/muted round-trip (").c_str());
+            check(t0.channels.size() == 2, label("both channels on track A round-trip (").c_str());
+            if (t0.channels.size() == 2) {
+                check(t0.channels[0].name == "posX" && t0.channels[0].keys.size() == 2,
+                      label("channel posX and its two keyframes round-trip (").c_str());
+                if (t0.channels[0].keys.size() == 2) {
+                    check(t0.channels[0].keys[0].mode == engine::cinematic::InterpolationMode::Bezier &&
+                              nearlyEqual(t0.channels[0].keys[0].inHandle.x, -0.2f) &&
+                              nearlyEqual(t0.channels[0].keys[0].outHandle.y, -0.1f),
+                          label("non-default bezier keyframe handles round-trip (").c_str());
+                    check(t0.channels[0].keys[1].mode == engine::cinematic::InterpolationMode::Stepped &&
+                              nearlyEqual(t0.channels[0].keys[1].value, 4.5f),
+                          label("second keyframe's mode/value round-trip (").c_str());
+                }
+                check(t0.channels[1].name == "posY" && t0.channels[1].keys.size() == 1,
+                      label("channel posY round-trips (").c_str());
+            }
+            check(t0.events.size() == 1 && t0.events[0].payload == "fire trigger now",
+                  label("track event payload with embedded spaces round-trips (").c_str());
+
+            const auto& t1 = loaded.sequenceTracks[1];
+            check(t1.name == "Script Track" && t1.kind == engine::cinematic::TrackKind::ScriptTrigger &&
+                      t1.targetId == 999 && !t1.muted,
+                  label("second track's fields round-trip (").c_str());
+            check(t1.events.size() == 2 && t1.events[0].payload == "onLevelStart cue" &&
+                      t1.events[1].payload == "onLevelEnd cue",
+                  label("second track's two events round-trip in order (").c_str());
+        }
+    };
+
+    const char* textPath = "test_scene_cinematic.scene";
+    const char* binaryPath = "test_scene_cinematic.kronos";
+    check(file.saveToFile(textPath), "text-format save with rail+sequence data real-succeeds");
+    check(file.saveToFile(binaryPath), "binary-format save with rail+sequence data real-succeeds");
+
+    engine::core::SceneFile loadedText;
+    engine::core::SceneFile loadedBinary;
+    check(loadedText.loadFromFile(textPath), "text-format load with rail+sequence data real-succeeds");
+    check(loadedBinary.loadFromFile(binaryPath), "binary-format load with rail+sequence data real-succeeds");
+
+    checkPopulated(loadedText, "text");
+    checkPopulated(loadedBinary, "binary");
+
+    std::remove(textPath);
+    std::remove(binaryPath);
+}
+
+// Kronos ("Scene Save/Load Serialization" -- Tier 1): proves
+// SceneManager::captureScene() actually threads a live CameraRail/Sequence
+// into the SceneFile it produces -- every other SceneManager test above
+// calls captureScene()/saveScene() with the rail/sequence params left at
+// their nullptr default, so this is the first real coverage of the
+// non-null path StudioApp.cpp's real call sites all use.
+void testSceneManagerCaptureIncludesRailAndSequence() {
+    engine::core::ECS ecs;
+    (void)ecs.createEntity("Fixture");
+    engine::core::Camera camera;
+
+    engine::cinematic::CameraRail rail;
+    engine::cinematic::RailPoint point;
+    point.position = {1.0f, 2.0f, 3.0f};
+    rail.addPoint(point);
+    rail.mutableSettings().rollDegrees = 9.0f;
+
+    engine::cinematic::Sequence sequence;
+    sequence.setFrameRate(engine::cinematic::SequenceFrameRate::Fps30);
+    auto& track = sequence.addTrack("Test Track", engine::cinematic::TrackKind::Audio);
+    track.targetId = 42;
+
+    engine::core::SceneManager sceneManager;
+    engine::core::SceneFile captured = sceneManager.captureScene(ecs, camera, &rail, &sequence);
+
+    check(captured.hasCameraRail && captured.railPoints.size() == 1,
+          "captureScene() with a non-null rail captures hasCameraRail + its points");
+    check(nearlyEqual(captured.railSettings.rollDegrees, 9.0f), "captureScene() captures live rail settings");
+    check(captured.hasSequence && captured.sequenceTracks.size() == 1,
+          "captureScene() with a non-null sequence captures hasSequence + its tracks");
+    check(captured.sequenceFrameRate == engine::cinematic::SequenceFrameRate::Fps30,
+          "captureScene() captures the live sequence's frame rate");
+    check(captured.sequenceTracks[0].name == "Test Track" && captured.sequenceTracks[0].targetId == 42,
+          "captureScene() captures the live sequence's track data");
+
+    engine::core::SceneFile withoutCinematic = sceneManager.captureScene(ecs, camera);
+    check(!withoutCinematic.hasCameraRail && !withoutCinematic.hasSequence,
+          "captureScene() with nullptr rail/sequence (every pre-existing call site) leaves both flags false");
 }
 
 // Real safety coverage: a corrupted/truncated/foreign .kronos file must
@@ -37525,7 +37742,8 @@ void testMovieModeScrubbingAndKeyDrag() {
     // --- scrubbing owns the transport ------------------------------------
     engine::core::MeshLibrary scrubMeshLibrary;
     engine::core::TextureLibrary scrubTextureLibrary;
-    engine::studio::plugins::MovieModePlugin plugin(scrubMeshLibrary, scrubTextureLibrary);
+    engine::entitlement::EntitlementManager scrubEntitlements;
+    engine::studio::plugins::MovieModePlugin plugin(scrubMeshLibrary, scrubTextureLibrary, scrubEntitlements);
     engine::core::ECS scrubEcs;
     plugin.sequence().setPlayhead(0.0f);
     plugin.sequence().play();
@@ -37549,10 +37767,47 @@ void testMovieModeScrubbingAndKeyDrag() {
     check(plugin.sequence().playheadSeconds() > held, "releasing the scrub resumes the transport");
 }
 
+void testEntitlementManager() {
+    using engine::entitlement::EntitlementManager;
+    using engine::entitlement::Tier;
+
+    // Real, distinct per-tier ceilings exist even though nothing enforces
+    // them yet -- this is the seam gating switches on later.
+    const auto free = engine::entitlement::tierLimits(Tier::Free);
+    const auto studio = engine::entitlement::tierLimits(Tier::Studio);
+    check(free.maxRenderExportWidth < studio.maxRenderExportWidth,
+          "tierLimits() gives Studio a real, higher resolution ceiling than Free");
+    check(!free.advancedPhysicsSimulation && studio.advancedPhysicsSimulation,
+          "tierLimits() reserves advanced physics simulation above Free");
+    check(!free.cloudRenderQueueAccess && studio.cloudRenderQueueAccess,
+          "tierLimits() reserves cloud render queue access above Free");
+
+    // But every tier currently resolves to unlocked -- the actual,
+    // deliberate state of the world today.
+    for (Tier tier : {Tier::Free, Tier::Plus, Tier::Pro, Tier::Studio}) {
+        EntitlementManager manager(tier);
+        check(manager.isRenderExportResolutionAllowed(7680, 4320),
+              "every tier currently allows 8K render export");
+        check(manager.isAdvancedPhysicsSimulationAllowed(),
+              "every tier currently allows advanced physics simulation");
+        check(manager.isCloudRenderQueueAccessAllowed(), "every tier currently allows cloud render queue access");
+    }
+}
+
 void testMovieModePlugin() {
     engine::core::MeshLibrary meshLibrary;
     engine::core::TextureLibrary textureLibrary;
-    engine::studio::plugins::MovieModePlugin plugin(meshLibrary, textureLibrary);
+    engine::entitlement::EntitlementManager entitlements;
+    engine::studio::plugins::MovieModePlugin plugin(meshLibrary, textureLibrary, entitlements);
+
+    // buildExport() consults entitlements_ before scheduling -- unlocked
+    // today, so an 8K export is not refused on entitlement grounds.
+    plugin.exportSettings().resolution = {7680, 4320};
+    plugin.exportSettings().startSeconds = 0.0f;
+    plugin.exportSettings().endSeconds = 0.1f;
+    std::string exportError;
+    check(plugin.buildExport(exportError), "MovieModePlugin::buildExport allows an 8K export under the unlocked tier");
+    check(exportError.empty(), "a successful buildExport leaves outError empty");
 
     // One track per TrackKind -- the six the sequencer models.
     const auto& tracks = plugin.sequence().tracks();
@@ -37999,6 +38254,7 @@ int main() {
     testRequirePathsAndCycles();
     testLuauApiCompatibilityScan();
     testProjectImportPipeline();
+    testEntitlementManager();
     testMovieModeScrubbingAndKeyDrag();
     testMovieModePlugin();
     testScriptCinematicApiTrackAuthoringTransportAndSampling();
@@ -38143,6 +38399,7 @@ int main() {
     testSceneFileRigidBodyColliderRoundTrip();
     testSceneFileBinaryRoundTrip();
     testSceneFileBinaryMatchesTextFormatData();
+    testSceneFileCinematicRoundTrip();
     testSceneFileBinaryRejectsCorruptedInput();
     testSceneFileRoundTripsThroughVirtualFileSystem();
     testPackageManagerLoadsFromDirectoryAndResolves();
@@ -38223,6 +38480,7 @@ int main() {
     testSceneFileRoundTripsScriptComponent();
     testSceneManagerCaptureAndLoadRoundTripScriptComponent();
     testSceneManagerCapture();
+    testSceneManagerCaptureIncludesRailAndSequence();
     testSceneManagerTickAutosaveMajorEditTriggersImmediateSnapshot();
     testSceneHistoryRecordSnapshotRejectsEmptyScenePath();
     testSceneHistoryRecordAndListSnapshots();

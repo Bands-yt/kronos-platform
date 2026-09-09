@@ -462,3 +462,26 @@ authRouter.post(
     res.json({ username: result.username });
   }),
 );
+
+// Self-reported, one-way (never returned or editable back down to
+// nothing once set): the input a future real verification flow would
+// check against, not itself the "age_verified" flag age-gating actually
+// checks (see games.mature's own migration comment, and
+// moderation/routes.js's /admin/users/:userId/age-verify) -- an
+// unverified self-report is not what a mature-content gate should trust.
+const BIRTHDATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+authRouter.post(
+  '/birthdate',
+  requireAuth,
+  rateLimit({ bucket: 'birthdate', limit: 5, windowSeconds: 86400 }),
+  asyncRoute(async (req, res) => {
+    const birthdate = String(req.body?.birthdate || '');
+    if (!BIRTHDATE_RE.test(birthdate) || Number.isNaN(Date.parse(birthdate))) {
+      throw badRequest('birthdate must be a real date in YYYY-MM-DD form.');
+    }
+    if (Date.parse(birthdate) > Date.now()) throw badRequest('birthdate cannot be in the future.');
+
+    await query(`UPDATE users SET birthdate = $2 WHERE id = $1`, [req.user.id, birthdate]);
+    res.json({ status: 'saved' });
+  }),
+);

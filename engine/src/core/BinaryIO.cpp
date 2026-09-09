@@ -21,6 +21,11 @@ void BinaryWriter::writeU32(uint32_t v) {
     buffer_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
 }
 
+void BinaryWriter::writeU64(uint64_t v) {
+    writeU32(static_cast<uint32_t>(v & 0xFFFFFFFFu));
+    writeU32(static_cast<uint32_t>((v >> 32) & 0xFFFFFFFFu));
+}
+
 void BinaryWriter::writeFloat(float v) {
     uint32_t bits;
     std::memcpy(&bits, &v, sizeof(bits));
@@ -74,6 +79,12 @@ uint32_t BinaryReader::readU32() {
                  (static_cast<uint32_t>(data_[offset_ + 2]) << 16) | (static_cast<uint32_t>(data_[offset_ + 3]) << 24);
     offset_ += 4;
     return v;
+}
+
+uint64_t BinaryReader::readU64() {
+    uint64_t lo = readU32();
+    uint64_t hi = readU32();
+    return lo | (hi << 32);
 }
 
 float BinaryReader::readFloat() {

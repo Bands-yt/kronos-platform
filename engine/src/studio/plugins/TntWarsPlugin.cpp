@@ -86,8 +86,8 @@ void TntWarsPlugin::drawMapEditingSection(core::ECS& ecs) {
     if (!ImGui::CollapsingHeader("Map Editing", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     ImGui::Combo("Map##edit", &mapIndex_, kMapNames, IM_ARRAYSIZE(kMapNames));
-    ImGui::TextDisabled("Builds real, procedural static level geometry (ground/bases/cover/hazard markers)");
-    ImGui::TextDisabled("into the live scene -- see MapLayout.hpp for the real per-map layout data.");
+    ImGui::TextDisabled("Builds procedural static level geometry (ground/bases/cover/hazard markers)");
+    ImGui::TextDisabled("into the live scene.");
 
     if (ImGui::Button("Build Map Geometry")) buildMapGeometry(ecs);
     ImGui::SameLine();

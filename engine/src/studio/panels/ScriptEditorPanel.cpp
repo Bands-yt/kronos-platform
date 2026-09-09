@@ -277,7 +277,12 @@ void ScriptEditorPanel::draw(core::ECS& ecs, core::EntityId selectedEntity, Noti
         loadFromEntity(ecs, selectedEntity);
     }
 
+    // Zero outer padding, same as ViewportPanel's own "Viewport" window --
+    // lets the text editor fill the central dockspace edge-to-edge
+    // instead of sitting inset behind a frame.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin("Script Editor");
+    ImGui::PopStyleVar();
 
     if (selectedEntity == core::kNullEntity) {
         ImGui::TextDisabled("Select an entity to view or edit its script.");
@@ -298,9 +303,7 @@ void ScriptEditorPanel::draw(core::ECS& ecs, core::EntityId selectedEntity, Noti
         return;
     }
 
-    ImGui::TextDisabled("Backend: %s", backend_->backendName());
-    ImGui::SameLine();
-    ImGui::TextDisabled("| Ctrl+S to save (real hot-reload while Playing)");
+    ImGui::TextDisabled("Ctrl+S to save (real hot-reload while Playing)");
     ImGui::Separator();
     backend_->draw();
 

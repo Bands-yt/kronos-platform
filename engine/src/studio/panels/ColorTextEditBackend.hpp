@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "studio/panels/ScriptEditorPanel.hpp"
 
@@ -54,12 +55,33 @@ public:
 private:
     void reanalyze();
 
+    // Ctrl+Space triggered (not per-keystroke) since Luau::autocomplete() re-typechecks the whole buffer.
+    // Fixed strip below the editor, not a caret-tracked popup: ImGuiColorTextEdit exposes no public API
+    // for caret pixel position or child-window scroll offset.
+    void updateCompletions();
+    // Re-filters completionRawEntries_ locally (no re-typecheck); dismisses the strip if the caret has
+    // drifted off completionAnchorLine_/Column_ since the last frame (e.g. a mouse click).
+    void refreshCompletionFilter();
+    void insertCompletion(const std::string& text);
+
+public:
+    // Pulled out for direct test coverage, same as InspectorPanel::hasInvalidComponents.
+    [[nodiscard]] static int identifierPrefixStart(const std::string& lineText, int column);
+    [[nodiscard]] static bool completionAnchorValid(int anchorLine, int anchorColumn, int cursorLine, int cursorColumn,
+                                                     const std::string& cursorLineText);
+
+private:
     std::unique_ptr<TextEditor> editor_;
     std::unique_ptr<LuauLiveAnalyzer> analyzer_;
-    // TextEditor::GetText() returns by value; source() must return a
-    // stable const& per IScriptEditorBackend's contract, hence this cache
-    // (refreshed on every real call, not a stale snapshot).
+    // source() must return a stable const&; TextEditor::GetText() returns by value.
     mutable std::string sourceCache_;
+
+    bool showCompletions_ = false;
+    std::vector<std::string> completionRawEntries_; // unfiltered result of the last updateCompletions() fetch
+    std::vector<std::string> completionEntries_;
+    int completionSelected_ = 0;
+    int completionAnchorLine_ = 0;
+    int completionAnchorColumn_ = 0;
 };
 
 } // namespace engine::studio::panels

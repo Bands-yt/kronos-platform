@@ -53,6 +53,68 @@ ColliderShapeKind colliderShapeKindFromIndex(int index) {
     }
 }
 
+// Kronos ("Scene Save/Load Serialization" -- Tier 1) -- same index-based
+// per-kind convention as the mesh/rigidbody/collider helpers above,
+// applied to the cinematic rail/sequence enums.
+int railSplineTypeToIndex(cinematic::RailSplineType type) { return static_cast<int>(type); }
+
+cinematic::RailSplineType railSplineTypeFromIndex(int index) {
+    switch (index) {
+        case 0: return cinematic::RailSplineType::CatmullRom;
+        case 1: return cinematic::RailSplineType::Bezier;
+        case 2: return cinematic::RailSplineType::Linear;
+        default: return cinematic::RailSplineType::CatmullRom; // unrecognized on load -- fail soft
+    }
+}
+
+int railAimModeToIndex(cinematic::RailAimMode mode) { return static_cast<int>(mode); }
+
+cinematic::RailAimMode railAimModeFromIndex(int index) {
+    switch (index) {
+        case 0: return cinematic::RailAimMode::FollowPath;
+        case 1: return cinematic::RailAimMode::LookAtPoint;
+        case 2: return cinematic::RailAimMode::LookAtTarget;
+        default: return cinematic::RailAimMode::FollowPath; // unrecognized on load -- fail soft
+    }
+}
+
+int trackKindToIndex(cinematic::TrackKind kind) { return static_cast<int>(kind); }
+
+cinematic::TrackKind trackKindFromIndex(int index) {
+    switch (index) {
+        case 0: return cinematic::TrackKind::Camera;
+        case 1: return cinematic::TrackKind::SkeletalAnimation;
+        case 2: return cinematic::TrackKind::Transform;
+        case 3: return cinematic::TrackKind::LightIntensity;
+        case 4: return cinematic::TrackKind::Audio;
+        case 5: return cinematic::TrackKind::ScriptTrigger;
+        default: return cinematic::TrackKind::Transform; // unrecognized on load -- fail soft
+    }
+}
+
+int interpolationModeToIndex(cinematic::InterpolationMode mode) { return static_cast<int>(mode); }
+
+cinematic::InterpolationMode interpolationModeFromIndex(int index) {
+    switch (index) {
+        case 0: return cinematic::InterpolationMode::Stepped;
+        case 1: return cinematic::InterpolationMode::Linear;
+        case 2: return cinematic::InterpolationMode::Cubic;
+        case 3: return cinematic::InterpolationMode::Bezier;
+        default: return cinematic::InterpolationMode::Cubic; // unrecognized on load -- fail soft
+    }
+}
+
+int sequenceFrameRateToIndex(cinematic::SequenceFrameRate rate) { return static_cast<int>(rate); }
+
+cinematic::SequenceFrameRate sequenceFrameRateFromIndex(int index) {
+    switch (index) {
+        case 0: return cinematic::SequenceFrameRate::Fps24;
+        case 1: return cinematic::SequenceFrameRate::Fps30;
+        case 2: return cinematic::SequenceFrameRate::Fps60;
+        default: return cinematic::SequenceFrameRate::Fps24; // unrecognized on load -- fail soft
+    }
+}
+
 // Small, real, local base64 codec -- SCRIPT is the one field in this
 // whole line-oriented text format that can legitimately contain embedded
 // newlines (a script's own source), which every other field's plain
@@ -138,6 +200,42 @@ bool SceneFile::saveToFile(const std::string& path, const polyglot::VirtualFileS
     out << "CAMERA " << cameraPosition.x << ' ' << cameraPosition.y << ' ' << cameraPosition.z << ' '
         << cameraYawDegrees << ' ' << cameraPitchDegrees << ' ' << cameraFovDegrees << "\n";
 
+    if (hasCameraRail) {
+        const auto& s = railSettings;
+        out << "RAIL_SETTINGS " << railSplineTypeToIndex(s.splineType) << ' ' << railAimModeToIndex(s.aimMode) << ' '
+            << s.lookAtTarget.x << ' ' << s.lookAtTarget.y << ' ' << s.lookAtTarget.z << ' ' << s.aimDampingSeconds
+            << ' ' << s.rollDegrees << ' ' << (s.autoFocusOnTarget ? 1 : 0) << ' ' << s.worldUp.x << ' '
+            << s.worldUp.y << ' ' << s.worldUp.z << "\n";
+        for (const auto& p : railPoints) {
+            out << "RAIL_POINT " << p.position.x << ' ' << p.position.y << ' ' << p.position.z << ' '
+                << p.inTangent.x << ' ' << p.inTangent.y << ' ' << p.inTangent.z << ' ' << p.outTangent.x << ' '
+                << p.outTangent.y << ' ' << p.outTangent.z << ' ' << p.focalLengthMm << ' ' << p.aperture << "\n";
+        }
+    }
+
+    if (hasSequence) {
+        out << "SEQUENCE " << sequenceFrameRateToIndex(sequenceFrameRate) << ' ' << sequenceLoopStart << ' '
+            << sequenceLoopEnd << "\n";
+        for (const auto& track : sequenceTracks) {
+            // Same trailing-string convention as MESHSOURCE/COLLIDER above
+            // -- name is last on the line so a real track name with
+            // spaces (e.g. "Camera Rail" itself) round-trips correctly.
+            out << "TRACK " << trackKindToIndex(track.kind) << ' ' << track.targetId << ' '
+                << (track.muted ? 1 : 0) << ' ' << track.name << "\n";
+            for (const auto& channel : track.channels) {
+                out << "CHANNEL " << channel.name << "\n";
+                for (const auto& key : channel.keys) {
+                    out << "KEY " << key.timeSeconds << ' ' << key.value << ' '
+                        << interpolationModeToIndex(key.mode) << ' ' << key.inHandle.x << ' ' << key.inHandle.y
+                        << ' ' << key.outHandle.x << ' ' << key.outHandle.y << "\n";
+                }
+            }
+            for (const auto& event : track.events) {
+                out << "EVENT " << event.timeSeconds << ' ' << event.payload << "\n";
+            }
+        }
+    }
+
     for (const auto& e : entities) {
         out << "ENTITY " << e.name << "\n";
         // Only emitted for a real, non-root entity -- an absent PARENT
@@ -220,12 +318,73 @@ bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFil
 
     SceneFile loaded;
     SceneEntityRecord* current = nullptr;
+    cinematic::SequencerTrack* currentTrack = nullptr;
+    cinematic::TrackChannel* currentChannel = nullptr;
     std::string line;
     while (std::getline(in, line)) {
         if (line.rfind("CAMERA ", 0) == 0) {
             std::istringstream iss(line.substr(7));
             iss >> loaded.cameraPosition.x >> loaded.cameraPosition.y >> loaded.cameraPosition.z >>
                 loaded.cameraYawDegrees >> loaded.cameraPitchDegrees >> loaded.cameraFovDegrees;
+        } else if (line.rfind("RAIL_SETTINGS ", 0) == 0) {
+            loaded.hasCameraRail = true;
+            auto& s = loaded.railSettings;
+            std::istringstream iss(line.substr(14));
+            int splineIndex = 0;
+            int aimIndex = 0;
+            int autoFocusInt = 1;
+            iss >> splineIndex >> aimIndex >> s.lookAtTarget.x >> s.lookAtTarget.y >> s.lookAtTarget.z >>
+                s.aimDampingSeconds >> s.rollDegrees >> autoFocusInt >> s.worldUp.x >> s.worldUp.y >> s.worldUp.z;
+            s.splineType = railSplineTypeFromIndex(splineIndex);
+            s.aimMode = railAimModeFromIndex(aimIndex);
+            s.autoFocusOnTarget = autoFocusInt != 0;
+        } else if (line.rfind("RAIL_POINT ", 0) == 0) {
+            cinematic::RailPoint p;
+            std::istringstream iss(line.substr(11));
+            iss >> p.position.x >> p.position.y >> p.position.z >> p.inTangent.x >> p.inTangent.y >>
+                p.inTangent.z >> p.outTangent.x >> p.outTangent.y >> p.outTangent.z >> p.focalLengthMm >> p.aperture;
+            loaded.railPoints.push_back(p);
+        } else if (line.rfind("SEQUENCE ", 0) == 0) {
+            loaded.hasSequence = true;
+            std::istringstream iss(line.substr(9));
+            int frameRateIndex = 0;
+            iss >> frameRateIndex >> loaded.sequenceLoopStart >> loaded.sequenceLoopEnd;
+            loaded.sequenceFrameRate = sequenceFrameRateFromIndex(frameRateIndex);
+        } else if (line.rfind("TRACK ", 0) == 0) {
+            loaded.sequenceTracks.emplace_back();
+            currentTrack = &loaded.sequenceTracks.back();
+            currentChannel = nullptr; // refreshed here, never held across a later emplace_back
+            std::istringstream iss(line.substr(6));
+            int kindIndex = 0;
+            int mutedInt = 0;
+            iss >> kindIndex >> currentTrack->targetId >> mutedInt;
+            currentTrack->kind = trackKindFromIndex(kindIndex);
+            currentTrack->muted = mutedInt != 0;
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
+            currentTrack->name = rest;
+        } else if (line.rfind("CHANNEL ", 0) == 0 && currentTrack != nullptr) {
+            currentTrack->channels.emplace_back();
+            currentChannel = &currentTrack->channels.back();
+            currentChannel->name = line.substr(8);
+        } else if (line.rfind("KEY ", 0) == 0 && currentChannel != nullptr) {
+            cinematic::Keyframe key;
+            std::istringstream iss(line.substr(4));
+            int modeIndex = 0;
+            iss >> key.timeSeconds >> key.value >> modeIndex >> key.inHandle.x >> key.inHandle.y >>
+                key.outHandle.x >> key.outHandle.y;
+            key.mode = interpolationModeFromIndex(modeIndex);
+            currentChannel->keys.push_back(key);
+        } else if (line.rfind("EVENT ", 0) == 0 && currentTrack != nullptr) {
+            cinematic::TrackEvent event;
+            std::istringstream iss(line.substr(6));
+            iss >> event.timeSeconds;
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
+            event.payload = rest;
+            currentTrack->events.push_back(event);
         } else if (line.rfind("ENTITY ", 0) == 0) {
             loaded.entities.emplace_back();
             loaded.entities.back().name = line.substr(7);
@@ -334,6 +493,63 @@ bool SceneFile::saveToBinaryFile(const std::string& path) const {
     w.writeFloat(cameraPitchDegrees);
     w.writeFloat(cameraFovDegrees);
 
+    w.writeBool(hasCameraRail);
+    if (hasCameraRail) {
+        const auto& s = railSettings;
+        w.writeU8(static_cast<uint8_t>(railSplineTypeToIndex(s.splineType)));
+        w.writeU8(static_cast<uint8_t>(railAimModeToIndex(s.aimMode)));
+        w.writeVec3(s.lookAtTarget);
+        w.writeFloat(s.aimDampingSeconds);
+        w.writeFloat(s.rollDegrees);
+        w.writeBool(s.autoFocusOnTarget);
+        w.writeVec3(s.worldUp);
+
+        w.writeU32(static_cast<uint32_t>(railPoints.size()));
+        for (const auto& p : railPoints) {
+            w.writeVec3(p.position);
+            w.writeVec3(p.inTangent);
+            w.writeVec3(p.outTangent);
+            w.writeFloat(p.focalLengthMm);
+            w.writeFloat(p.aperture);
+        }
+    }
+
+    w.writeBool(hasSequence);
+    if (hasSequence) {
+        w.writeU8(static_cast<uint8_t>(sequenceFrameRateToIndex(sequenceFrameRate)));
+        w.writeFloat(sequenceLoopStart);
+        w.writeFloat(sequenceLoopEnd);
+
+        w.writeU32(static_cast<uint32_t>(sequenceTracks.size()));
+        for (const auto& track : sequenceTracks) {
+            w.writeString(track.name);
+            w.writeU8(static_cast<uint8_t>(trackKindToIndex(track.kind)));
+            w.writeU64(track.targetId);
+            w.writeBool(track.muted);
+
+            w.writeU32(static_cast<uint32_t>(track.channels.size()));
+            for (const auto& channel : track.channels) {
+                w.writeString(channel.name);
+                w.writeU32(static_cast<uint32_t>(channel.keys.size()));
+                for (const auto& key : channel.keys) {
+                    w.writeFloat(key.timeSeconds);
+                    w.writeFloat(key.value);
+                    w.writeU8(static_cast<uint8_t>(interpolationModeToIndex(key.mode)));
+                    w.writeFloat(key.inHandle.x);
+                    w.writeFloat(key.inHandle.y);
+                    w.writeFloat(key.outHandle.x);
+                    w.writeFloat(key.outHandle.y);
+                }
+            }
+
+            w.writeU32(static_cast<uint32_t>(track.events.size()));
+            for (const auto& event : track.events) {
+                w.writeFloat(event.timeSeconds);
+                w.writeString(event.payload);
+            }
+        }
+    }
+
     w.writeU32(static_cast<uint32_t>(entities.size()));
     for (const auto& e : entities) {
         w.writeString(e.name);
@@ -430,6 +646,92 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
     loaded.cameraYawDegrees = r.readFloat();
     loaded.cameraPitchDegrees = r.readFloat();
     loaded.cameraFovDegrees = r.readFloat();
+
+    // Real, honest sanity caps -- same reasoning as kMaxReasonableEntityCount
+    // below: a corrupted/truncated file could read back an absurd count
+    // from garbage bytes before ever hitting hasError() on the reads
+    // themselves.
+    constexpr uint32_t kMaxReasonableRailPoints = 1'000'000;
+    constexpr uint32_t kMaxReasonableTracks = 1'000'000;
+    constexpr uint32_t kMaxReasonableChannelsOrEvents = 1'000'000;
+
+    loaded.hasCameraRail = r.readBool();
+    if (loaded.hasCameraRail) {
+        auto& s = loaded.railSettings;
+        s.splineType = railSplineTypeFromIndex(r.readU8());
+        s.aimMode = railAimModeFromIndex(r.readU8());
+        s.lookAtTarget = r.readVec3();
+        s.aimDampingSeconds = r.readFloat();
+        s.rollDegrees = r.readFloat();
+        s.autoFocusOnTarget = r.readBool();
+        s.worldUp = r.readVec3();
+
+        uint32_t pointCount = r.readU32();
+        if (pointCount > kMaxReasonableRailPoints) return false;
+        loaded.railPoints.reserve(pointCount);
+        for (uint32_t i = 0; i < pointCount && !r.hasError(); ++i) {
+            cinematic::RailPoint p;
+            p.position = r.readVec3();
+            p.inTangent = r.readVec3();
+            p.outTangent = r.readVec3();
+            p.focalLengthMm = r.readFloat();
+            p.aperture = r.readFloat();
+            loaded.railPoints.push_back(p);
+        }
+    }
+
+    loaded.hasSequence = r.readBool();
+    if (loaded.hasSequence) {
+        loaded.sequenceFrameRate = sequenceFrameRateFromIndex(r.readU8());
+        loaded.sequenceLoopStart = r.readFloat();
+        loaded.sequenceLoopEnd = r.readFloat();
+
+        uint32_t trackCount = r.readU32();
+        if (trackCount > kMaxReasonableTracks) return false;
+        loaded.sequenceTracks.reserve(trackCount);
+        for (uint32_t t = 0; t < trackCount && !r.hasError(); ++t) {
+            cinematic::SequencerTrack track;
+            track.name = r.readString();
+            track.kind = trackKindFromIndex(r.readU8());
+            track.targetId = r.readU64();
+            track.muted = r.readBool();
+
+            uint32_t channelCount = r.readU32();
+            if (channelCount > kMaxReasonableChannelsOrEvents) return false;
+            track.channels.reserve(channelCount);
+            for (uint32_t c = 0; c < channelCount && !r.hasError(); ++c) {
+                cinematic::TrackChannel channel;
+                channel.name = r.readString();
+                uint32_t keyCount = r.readU32();
+                if (keyCount > kMaxReasonableChannelsOrEvents) return false;
+                channel.keys.reserve(keyCount);
+                for (uint32_t k = 0; k < keyCount && !r.hasError(); ++k) {
+                    cinematic::Keyframe key;
+                    key.timeSeconds = r.readFloat();
+                    key.value = r.readFloat();
+                    key.mode = interpolationModeFromIndex(r.readU8());
+                    key.inHandle.x = r.readFloat();
+                    key.inHandle.y = r.readFloat();
+                    key.outHandle.x = r.readFloat();
+                    key.outHandle.y = r.readFloat();
+                    channel.keys.push_back(key);
+                }
+                track.channels.push_back(std::move(channel));
+            }
+
+            uint32_t eventCount = r.readU32();
+            if (eventCount > kMaxReasonableChannelsOrEvents) return false;
+            track.events.reserve(eventCount);
+            for (uint32_t e = 0; e < eventCount && !r.hasError(); ++e) {
+                cinematic::TrackEvent event;
+                event.timeSeconds = r.readFloat();
+                event.payload = r.readString();
+                track.events.push_back(std::move(event));
+            }
+
+            loaded.sequenceTracks.push_back(std::move(track));
+        }
+    }
 
     uint32_t entityCount = r.readU32();
     // Real, honest sanity cap -- a corrupted/truncated file could read

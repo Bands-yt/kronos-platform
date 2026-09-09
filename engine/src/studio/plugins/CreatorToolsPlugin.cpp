@@ -135,7 +135,7 @@ void CreatorToolsPlugin::drawNavMarkerSection(core::ECS& ecs) {
         spawnNavMarkerAuthoring(ecs, effectiveSpawnPosition(), selectedNavMarkerKind_, navMarkerLabelBuffer_,
                                  navMarkerSpawnCount_);
     }
-    ImGui::TextDisabled("A real, invisible location tag -- no physical presence, matching the Spawn/Shop markers main.cpp itself creates.");
+    ImGui::TextDisabled("An invisible location tag -- no physical presence, same as the built-in Spawn/Shop markers.");
 }
 
 void CreatorToolsPlugin::drawPointLightSection(core::ECS& ecs) {

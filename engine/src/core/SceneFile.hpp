@@ -6,6 +6,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "cinematic/CameraRail.hpp"
+#include "cinematic/Sequencer.hpp"
 #include "core/Components.hpp"
 #include "core/ParticleSystem.hpp"
 #include "polyglot/VirtualFileSystem.hpp"
@@ -115,6 +117,15 @@ struct SceneEntityRecord {
 // core::AudioSource isn't included either: no audio-source authoring UI
 // exists anywhere yet, so there is nothing yet to round-trip.
 //
+// cinematic::CameraRail and cinematic::Sequence (the authored rail path
+// and keyframe timeline behind studio::plugins::MovieModePlugin) ARE now
+// covered below, scene-level like the camera pose above. The separate
+// clip-based NLE project (studio::plugins::NleTimelinePlugin/MediaBin) is
+// deliberately NOT covered -- that is video-editing project data (source
+// clips, cut points), a different real thing from an authored in-scene
+// camera move, and deserves its own project file rather than living on
+// core::SceneFile.
+//
 // core::Script IS now covered (Kronos "Developer Velocity Sprint") --
 // this used to be a stated gap ("Studio's scripting surfaces are Debug
 // Console/plugin-scoped, not scene-authored content"), but that's no
@@ -139,6 +150,29 @@ struct SceneFile {
     float cameraYawDegrees = -90.0f;
     float cameraPitchDegrees = -10.0f;
     float cameraFovDegrees = 60.0f;
+
+    // Kronos ("Scene Save/Load Serialization" -- Tier 1): the authored
+    // cinematic::CameraRail, scene-level like the camera pose above (one
+    // rail per scene, matching studio::plugins::MovieModePlugin's own
+    // single rail_ member). hasCameraRail false means no rail was ever
+    // authored, not "an empty rail" -- same has-flag convention as
+    // hasRenderable/hasLight above.
+    bool hasCameraRail = false;
+    std::vector<cinematic::RailPoint> railPoints;
+    cinematic::CameraRailSettings railSettings;
+
+    // The authored cinematic::Sequence -- tracks, channels, keyframes and
+    // events, plus frame rate and loop region. Deliberately does NOT
+    // persist playhead position or play/pause state: a loaded scene
+    // starting mid-playback (or scrubbed to wherever it happened to be
+    // saved) is a bug, not a restored authoring state, so every load
+    // starts a fresh, paused sequence at time 0 regardless of what this
+    // file carries.
+    bool hasSequence = false;
+    cinematic::SequenceFrameRate sequenceFrameRate = cinematic::SequenceFrameRate::Fps24;
+    float sequenceLoopStart = 0.0f;
+    float sequenceLoopEnd = 0.0f;
+    std::vector<cinematic::SequencerTrack> sequenceTracks;
 
     // Kronos ("Binary Scene Serialization"): dispatches on `path`'s own
     // extension -- ".kronos" real-uses the binary format below, anything

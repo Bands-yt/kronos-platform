@@ -1,5 +1,7 @@
 #include "studio/panels/ColorTextEditBackend.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <optional>
@@ -9,6 +11,7 @@
 #include <imgui.h>
 #include <TextEditor.h>
 
+#include "Luau/Autocomplete.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Frontend.h"
 #include "Luau/TypeArena.h"
@@ -184,6 +187,36 @@ struct LuauLiveAnalyzer {
         }
         return diagnostics;
     }
+
+    // Real Luau.Analysis autocomplete, mirroring the exact
+    // "FrontendOptions{forAutocomplete=true, retainFullTypeGraphs=true};
+    // frontend.check(name, opts); Luau::autocomplete(...)" sequence
+    // Luau's own test fixture (Analysis/tests/Autocomplete.test.cpp's
+    // ACFixtureImpl) uses -- forAutocomplete runs stricter internal
+    // typechecking so member/argument suggestions carry real inferred
+    // types, not just "check() already ran for diagnostics so reuse
+    // that" (that check used default, non-autocomplete options).
+    // line/column are 0-based, matching TextEditor::Coordinates directly.
+    Luau::AutocompleteResult complete(const std::string& source, int line, int column) {
+        fileResolver.source = source;
+        frontend.markDirty(kBufferModuleName);
+
+        Luau::FrontendOptions options;
+        options.forAutocomplete = true;
+        options.retainFullTypeGraphs = true;
+        frontend.check(kBufferModuleName, options);
+
+        // No `require("...")` string-literal completion in this
+        // single-buffer editor (see BufferFileResolver's own comment on
+        // why resolveModule() stays a no-op) -- every real call site
+        // this callback would matter for already resolves to nothing.
+        auto noStringCompletions = [](const std::string&, std::optional<const Luau::ExternType*>,
+                                       std::optional<std::string>) -> std::optional<Luau::AutocompleteEntryMap> {
+            return std::nullopt;
+        };
+        return Luau::autocomplete(frontend, kBufferModuleName, Luau::Position{static_cast<unsigned>(line), static_cast<unsigned>(column)},
+                                   noStringCompletions);
+    }
 };
 
 ColorTextEditBackend::ColorTextEditBackend() = default;
@@ -221,13 +254,150 @@ void ColorTextEditBackend::reanalyze() {
 }
 
 void ColorTextEditBackend::draw() {
-    editor_->Render("##luau_source", ImGui::GetContentRegionAvail());
+    ImGuiIO& io = ImGui::GetIO();
+    // ImGuiFocusedFlags_ChildWindows: at this point in the frame the
+    // editor's own child window (created inside Render() below) hasn't
+    // been (re-)entered yet, so this reads back last frame's focus state
+    // -- the standard way to gate a shortcut to "this panel's text area
+    // has focus" without needing Render() to have run first.
+    const bool editorFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
+    const bool triggerKey = editorFocused && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space, false);
+    const bool acceptKey =
+        showCompletions_ && !completionEntries_.empty() &&
+        (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Tab, false));
+    const bool dismissKey = showCompletions_ && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    const bool navUp = showCompletions_ && ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+    const bool navDown = showCompletions_ && ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+
+    // Suppress the editor's own handling of exactly these keys for the
+    // one frame they're pressed -- HandleKeyboardInputs() (called inside
+    // Render()) has no "someone else already consumed this" concept, so
+    // without this an accepted Enter would also insert a newline and an
+    // Up/Down nav would also move the real text cursor underneath the
+    // popup. Ordinary typing (including narrowing the completion filter
+    // further) is unaffected and still reaches the editor normally.
+    const bool suppressThisFrame = triggerKey || acceptKey || dismissKey || navUp || navDown;
+    editor_->SetHandleKeyboardInputs(!suppressThisFrame);
+
+    constexpr float kCompletionStripHeight = 110.0f;
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const bool stripVisible = showCompletions_ && !completionEntries_.empty();
+    const ImVec2 editorSize =
+        stripVisible ? ImVec2(avail.x, std::max(0.0f, avail.y - kCompletionStripHeight)) : avail;
+    editor_->Render("##luau_source", editorSize);
+    editor_->SetHandleKeyboardInputs(true); // only ever suppressed for the Render() call just above
+
     // Render() resets its own internal "changed this frame" flag at
     // entry and sets it if an edit happened during the call just above
     // (TextEditor.cpp's own Render()/HandleKeyboardInputs() flow) -- so
     // checking it immediately after, rather than polling every frame
     // regardless, only re-typechecks on a real edit.
-    if (editor_->IsTextChanged()) reanalyze();
+    if (editor_->IsTextChanged()) {
+        reanalyze();
+    }
+    // Runs every frame the strip is visible (not just on text change) so a mouse click that
+    // moves the caret without editing text still gets caught before insertCompletion() could act on it.
+    if (showCompletions_) refreshCompletionFilter();
+
+    if (triggerKey) {
+        updateCompletions();
+    } else if (dismissKey) {
+        showCompletions_ = false;
+    } else if (acceptKey) {
+        insertCompletion(completionEntries_[completionSelected_]);
+    } else if (navUp) {
+        completionSelected_ = std::max(0, completionSelected_ - 1);
+    } else if (navDown) {
+        completionSelected_ = std::min(static_cast<int>(completionEntries_.size()) - 1, completionSelected_ + 1);
+    }
+
+    if (showCompletions_ && !completionEntries_.empty()) {
+        ImGui::TextDisabled("Ctrl+Space suggestions -- Enter/Tab to insert, Esc to dismiss");
+        ImGui::BeginChild("##luau_completions", ImVec2(avail.x, kCompletionStripHeight - ImGui::GetFrameHeightWithSpacing()),
+                            true);
+        for (int i = 0; i < static_cast<int>(completionEntries_.size()); ++i) {
+            const bool selected = (i == completionSelected_);
+            if (ImGui::Selectable(completionEntries_[i].c_str(), selected)) {
+                insertCompletion(completionEntries_[i]);
+            }
+            if (selected) ImGui::SetScrollHereY();
+        }
+        ImGui::EndChild();
+    }
+}
+
+int ColorTextEditBackend::identifierPrefixStart(const std::string& lineText, int column) {
+    int prefixStart = std::min<int>(column, static_cast<int>(lineText.size()));
+    while (prefixStart > 0 &&
+           (std::isalnum(static_cast<unsigned char>(lineText[prefixStart - 1])) || lineText[prefixStart - 1] == '_')) {
+        --prefixStart;
+    }
+    return prefixStart;
+}
+
+bool ColorTextEditBackend::completionAnchorValid(int anchorLine, int anchorColumn, int cursorLine, int cursorColumn,
+                                                  const std::string& cursorLineText) {
+    if (cursorLine != anchorLine) return false;
+    if (cursorColumn < anchorColumn) return false;
+    return identifierPrefixStart(cursorLineText, cursorColumn) == anchorColumn;
+}
+
+void ColorTextEditBackend::updateCompletions() {
+    const TextEditor::Coordinates cursor = editor_->GetCursorPosition();
+    const Luau::AutocompleteResult result = analyzer_->complete(editor_->GetText(), cursor.mLine, cursor.mColumn);
+
+    completionRawEntries_.clear();
+    for (const auto& [name, entry] : result.entryMap) {
+        (void)entry;
+        completionRawEntries_.push_back(name);
+    }
+    std::sort(completionRawEntries_.begin(), completionRawEntries_.end());
+
+    completionAnchorLine_ = cursor.mLine;
+    completionAnchorColumn_ = identifierPrefixStart(editor_->GetCurrentLineText(), cursor.mColumn);
+    showCompletions_ = true;
+    refreshCompletionFilter();
+}
+
+void ColorTextEditBackend::refreshCompletionFilter() {
+    const TextEditor::Coordinates cursor = editor_->GetCursorPosition();
+    const std::string line = editor_->GetCurrentLineText();
+    if (!completionAnchorValid(completionAnchorLine_, completionAnchorColumn_, cursor.mLine, cursor.mColumn, line)) {
+        showCompletions_ = false;
+        return;
+    }
+
+    const std::string prefix = line.substr(completionAnchorColumn_, cursor.mColumn - completionAnchorColumn_);
+    completionEntries_.clear();
+    for (const std::string& name : completionRawEntries_) {
+        if (name.compare(0, prefix.size(), prefix) != 0) continue;
+        completionEntries_.push_back(name);
+    }
+    constexpr size_t kMaxCompletionEntries = 50;
+    if (completionEntries_.size() > kMaxCompletionEntries) completionEntries_.resize(kMaxCompletionEntries);
+
+    completionSelected_ = std::clamp(completionSelected_, 0, std::max(0, static_cast<int>(completionEntries_.size()) - 1));
+    showCompletions_ = !completionEntries_.empty();
+}
+
+void ColorTextEditBackend::insertCompletion(const std::string& text) {
+    const TextEditor::Coordinates cursor = editor_->GetCursorPosition();
+    if (!completionAnchorValid(completionAnchorLine_, completionAnchorColumn_, cursor.mLine, cursor.mColumn,
+                                editor_->GetCurrentLineText())) {
+        showCompletions_ = false;
+        return;
+    }
+
+    if (completionAnchorColumn_ != cursor.mColumn) {
+        const TextEditor::Coordinates anchor(completionAnchorLine_, completionAnchorColumn_);
+        editor_->SetSelection(anchor, cursor);
+        editor_->Delete();
+    }
+    // anchor == cursor means an empty prefix (e.g. right after "foo.");
+    // Delete() with no selection deletes the char AFTER the cursor instead, so skip it.
+    editor_->InsertText(text);
+    showCompletions_ = false;
+    reanalyze();
 }
 
 } // namespace engine::studio::panels

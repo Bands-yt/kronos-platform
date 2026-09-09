@@ -82,6 +82,18 @@ private:
     glm::vec3 positionBeforeEdit_{0.0f};
     glm::quat rotationBeforeEdit_{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec3 scaleBeforeEdit_{1.0f};
+    // Position's "before" snapshot for every selected entity, not just the
+    // primary -- applyPositionDeltaToGroup() moves the whole group live, so
+    // the undo/redo command built from this must restore/reapply the whole
+    // group too, or undo silently leaves followers stranded at their moved
+    // position. Captured alongside positionBeforeEdit_ on IsItemActivated().
+    std::vector<std::pair<core::EntityId, glm::vec3>> positionGroupBeforeEdit_;
+    glm::vec4 baseColorBeforeEdit_{1.0f};
+    float metallicBeforeEdit_{0.0f};
+    float roughnessBeforeEdit_{1.0f};
+    float normalIntensityBeforeEdit_{1.0f};
+    glm::vec3 emissiveColorBeforeEdit_{0.0f};
+    float emissiveIntensityBeforeEdit_{0.0f};
 
     // Real, per-field popup state -- see Vec3MathExpressionPopup's own
     // class comment.

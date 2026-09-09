@@ -2,7 +2,7 @@ import express from 'express';
 
 import { config } from '../config.js';
 import { query } from '../db.js';
-import { asyncRoute, badRequest, notFound, serviceUnavailable } from '../errors.js';
+import { asyncRoute, badRequest, forbidden, notFound, serviceUnavailable } from '../errors.js';
 import { redis, keys } from '../redis.js';
 import { requireAuth } from '../middleware/auth.js';
 import { issueJoinTicket, verifyJoinTicket } from '../auth/tokens.js';
@@ -148,8 +148,24 @@ sessionRouter.post(
     const slug = (req.body?.game_slug || '').toString().trim();
     if (!slug) throw badRequest('game_slug is required.');
 
-    const { rows: games } = await query(`SELECT id, slug, title FROM games WHERE slug = $1 AND published = TRUE`, [slug]);
+    const { rows: games } = await query(
+      `SELECT id, slug, title, mature FROM games WHERE slug = $1 AND published = TRUE`,
+      [slug],
+    );
     if (games.length === 0) throw notFound('No such published game.');
+
+    // The real access-control point for age-gating, not just the
+    // catalogue listing: hiding a mature game from /catalog/games does
+    // nothing against a client that already knows the slug. Same real,
+    // live-lookup-on-every-check reasoning requireAdmin() already uses
+    // for role -- a verification flag that was cleared (or never set)
+    // must block the very next allocation, not wait out a stale claim.
+    if (games[0].mature) {
+      const { rows: verified } = await query(`SELECT age_verified FROM users WHERE id = $1`, [req.user.id]);
+      if (verified.length === 0 || !verified[0].age_verified) {
+        throw forbidden('This game is age-restricted and your account is not age-verified.');
+      }
+    }
 
     res.json(await allocatePlayerToGame(games[0], req.user.id));
   }),
