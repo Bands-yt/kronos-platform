@@ -1,8 +1,11 @@
 #include "core/CppHotReloadHost.hpp"
 
+#include <algorithm>
 #include <filesystem>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <dlfcn.h>
 #endif
 
@@ -12,15 +15,27 @@ namespace engine::core {
 
 namespace {
 namespace fs = std::filesystem;
+
+#if defined(_WIN32)
+// GetLastError() only, formatted -- mirrors dlerror()'s "the last
+// failure as a human-readable string" shape on the POSIX side below.
+std::string lastWin32Error() {
+    DWORD err = GetLastError();
+    if (err == 0) return "unknown error";
+    LPSTR buffer = nullptr;
+    DWORD size = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                     FORMAT_MESSAGE_IGNORE_INSERTS,
+                                 nullptr, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                 reinterpret_cast<LPSTR>(&buffer), 0, nullptr);
+    std::string message = (size > 0 && buffer != nullptr) ? std::string(buffer, size) : "unknown error";
+    if (buffer != nullptr) LocalFree(buffer);
+    while (!message.empty() && (message.back() == '\n' || message.back() == '\r')) message.pop_back();
+    return message;
 }
+#endif
+} // namespace
 
 bool CppHotReloadHost::loadInto(const std::string& sharedLibraryPath, LoadedLibrary& out, std::string& outError) {
-#if defined(_WIN32)
-    (void)sharedLibraryPath;
-    (void)out;
-    outError = "CppHotReloadHost: Windows is not implemented (POSIX dlopen only) -- see this class's own header comment";
-    return false;
-#else
     std::error_code ec;
     if (!fs::exists(sharedLibraryPath, ec)) {
         outError = "CppHotReloadHost: shared library not found: " + sharedLibraryPath;
@@ -28,8 +43,9 @@ bool CppHotReloadHost::loadInto(const std::string& sharedLibraryPath, LoadedLibr
     }
 
     // A fresh, never-before-seen path every call -- see this class's own
-    // header comment on why dlopen()'s per-path cache otherwise makes a
-    // second load() of the *same* built .so silently return stale code.
+    // header comment on why the platform loader's per-path cache
+    // otherwise makes a second load() of the *same* built shared
+    // library silently return stale code.
     std::string tempPath = sharedLibraryPath + ".hotreload_" + std::to_string(nextTempSuffix_++);
     fs::copy_file(sharedLibraryPath, tempPath, fs::copy_options::overwrite_existing, ec);
     if (ec) {
@@ -37,6 +53,44 @@ bool CppHotReloadHost::loadInto(const std::string& sharedLibraryPath, LoadedLibr
         return false;
     }
 
+#if defined(_WIN32)
+    HMODULE handle = LoadLibraryA(tempPath.c_str());
+    if (handle == nullptr) {
+        outError = "CppHotReloadHost: LoadLibraryA() failed: " + lastWin32Error();
+        fs::remove(tempPath, ec);
+        return false;
+    }
+
+    auto abiVersionFn = reinterpret_cast<HotReloadAbiVersionFn>(GetProcAddress(handle, kHotReloadAbiVersionSymbol));
+    auto createFn = reinterpret_cast<HotReloadCreateModuleFn>(GetProcAddress(handle, kHotReloadCreateModuleSymbol));
+    auto destroyFn = reinterpret_cast<HotReloadDestroyModuleFn>(GetProcAddress(handle, kHotReloadDestroyModuleSymbol));
+    if (!abiVersionFn || !createFn || !destroyFn) {
+        outError = std::string("CppHotReloadHost: module is missing one or more required exported symbols (") +
+                   kHotReloadAbiVersionSymbol + "/" + kHotReloadCreateModuleSymbol + "/" + kHotReloadDestroyModuleSymbol + ")";
+        FreeLibrary(handle);
+        fs::remove(tempPath, ec);
+        return false;
+    }
+
+    int moduleAbiVersion = abiVersionFn();
+    if (moduleAbiVersion != kHotReloadModuleAbiVersion) {
+        outError = "CppHotReloadHost: ABI version mismatch (module=" + std::to_string(moduleAbiVersion) +
+                   ", host=" + std::to_string(kHotReloadModuleAbiVersion) + ")";
+        FreeLibrary(handle);
+        fs::remove(tempPath, ec);
+        return false;
+    }
+
+    IHotReloadableModule* module = createFn();
+    if (!module) {
+        outError = "CppHotReloadHost: module's create function returned nullptr";
+        FreeLibrary(handle);
+        fs::remove(tempPath, ec);
+        return false;
+    }
+
+    out.handle = reinterpret_cast<void*>(handle);
+#else
     void* handle = dlopen(tempPath.c_str(), RTLD_NOW);
     if (!handle) {
         outError = std::string("CppHotReloadHost: dlopen() failed: ") + dlerror();
@@ -73,11 +127,11 @@ bool CppHotReloadHost::loadInto(const std::string& sharedLibraryPath, LoadedLibr
     }
 
     out.handle = handle;
+#endif
     out.module = module;
     out.destroyFn = destroyFn;
     out.tempPath = tempPath;
     return true;
-#endif
 }
 
 void CppHotReloadHost::unload(LoadedLibrary& lib) {
@@ -86,9 +140,12 @@ void CppHotReloadHost::unload(LoadedLibrary& lib) {
         if (lib.destroyFn) lib.destroyFn(lib.module);
         lib.module = nullptr;
     }
-#if !defined(_WIN32)
     if (lib.handle) {
+#if defined(_WIN32)
+        FreeLibrary(reinterpret_cast<HMODULE>(lib.handle));
+#else
         dlclose(lib.handle);
+#endif
         lib.handle = nullptr;
     }
     if (!lib.tempPath.empty()) {
@@ -96,24 +153,56 @@ void CppHotReloadHost::unload(LoadedLibrary& lib) {
         fs::remove(lib.tempPath, ec);
         lib.tempPath.clear();
     }
-#endif
     lib.destroyFn = nullptr;
 }
 
-bool CppHotReloadHost::load(const std::string& sharedLibraryPath, ECS& ecs, std::string& outError) {
+CppHotReloadHost::LoadedLibrary* CppHotReloadHost::findSlot(const std::string& slot) {
+    auto it = std::find_if(slots_.begin(), slots_.end(), [&](const auto& entry) { return entry.first == slot; });
+    return it != slots_.end() ? &it->second : nullptr;
+}
+
+const CppHotReloadHost::LoadedLibrary* CppHotReloadHost::findSlot(const std::string& slot) const {
+    auto it = std::find_if(slots_.begin(), slots_.end(), [&](const auto& entry) { return entry.first == slot; });
+    return it != slots_.end() ? &it->second : nullptr;
+}
+
+bool CppHotReloadHost::load(const std::string& slot, const std::string& sharedLibraryPath, ECS& ecs,
+                             std::string& outError) {
     LoadedLibrary fresh;
     if (!loadInto(sharedLibraryPath, fresh, outError)) return false;
 
-    unload(current_); // real teardown of whatever was loaded before, if anything -- a no-op the first time
-    current_ = fresh;
-    current_.module->onLoad(ecs);
+    LoadedLibrary* existing = findSlot(slot);
+    if (existing != nullptr) {
+        unload(*existing); // real teardown of this slot's previous module -- every other slot is untouched
+        *existing = std::move(fresh);
+        existing->module->onLoad(ecs);
+    } else {
+        slots_.emplace_back(slot, std::move(fresh));
+        slots_.back().second.module->onLoad(ecs);
+    }
     return true;
 }
 
-void CppHotReloadHost::tick(float dt, ECS& ecs) {
-    if (current_.module) current_.module->tick(dt, ecs);
+void CppHotReloadHost::unloadSlot(const std::string& slot) {
+    auto it = std::find_if(slots_.begin(), slots_.end(), [&](const auto& entry) { return entry.first == slot; });
+    if (it == slots_.end()) return;
+    unload(it->second);
+    slots_.erase(it);
 }
 
-CppHotReloadHost::~CppHotReloadHost() { unload(current_); }
+void CppHotReloadHost::tick(float dt, ECS& ecs) {
+    for (auto& [name, lib] : slots_) {
+        if (lib.module) lib.module->tick(dt, ecs);
+    }
+}
+
+bool CppHotReloadHost::hasModuleLoaded(const std::string& slot) const {
+    const LoadedLibrary* lib = findSlot(slot);
+    return lib != nullptr && lib->module != nullptr;
+}
+
+CppHotReloadHost::~CppHotReloadHost() {
+    for (auto& [name, lib] : slots_) unload(lib);
+}
 
 } // namespace engine::core

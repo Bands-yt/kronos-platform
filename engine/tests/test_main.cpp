@@ -25880,15 +25880,16 @@ void testCppHotReloadHostSwapsCodeWhileEcsStatePersists() {
 
     engine::core::CppHotReloadHost host;
     std::string error;
-    check(host.load(HOTRELOAD_MODULE_V1_PATH, ecs, error), ("hot-reload host real-loads a fresh .so: " + error).c_str());
-    check(host.hasModuleLoaded(), "host reports a module loaded after a successful load()");
+    check(host.load("gameplay", HOTRELOAD_MODULE_V1_PATH, ecs, error),
+          ("hot-reload host real-loads a fresh .so: " + error).c_str());
+    check(host.hasModuleLoaded("gameplay"), "host reports a module loaded in the named slot after a successful load()");
 
     for (int i = 0; i < 5; ++i) host.tick(1.0f / 60.0f, ecs);
     check(counter.value == 5, "V1's real code ran 5 times against the real ECS component (+1 each)");
 
     engine::core::EntityId counterEntityBeforeReload = entity;
-    check(host.load(HOTRELOAD_MODULE_V2_PATH, ecs, error),
-          ("hot-reload host real-swaps to a different .so: " + error).c_str());
+    check(host.load("gameplay", HOTRELOAD_MODULE_V2_PATH, ecs, error),
+          ("hot-reload host real-swaps to a different .so in the same slot: " + error).c_str());
     check(entity == counterEntityBeforeReload, "the ECS entity itself is untouched by a code hot-swap");
     check(counter.value == 5,
           "the ECS component's real data survives the hot-swap unchanged -- state lives in the ECS, not the module");
@@ -25905,12 +25906,60 @@ void testCppHotReloadHostSwapsCodeWhileEcsStatePersists() {
     // doesn't exist), so this instead proves the honest "file not
     // found" failure path leaves the previously-loaded V2 module
     // running rather than leaving the host in a half-swapped state.
-    check(!host.load("/nonexistent/not_a_real_module.so", ecs, error),
+    check(!host.load("gameplay", "/nonexistent/not_a_real_module.so", ecs, error),
           "load() real-fails closed on a missing file instead of silently no-op-succeeding");
     check(!error.empty(), "a failed load() reports a real, non-empty error message");
     host.tick(1.0f / 60.0f, ecs);
     check(counter.value == 5 + 300 + 100,
           "a failed load() leaves the PREVIOUSLY loaded module (V2) running untouched, not half-torn-down");
+}
+
+void testCppHotReloadHostSlotsAreIndependent() {
+    // The N-slot generalization's own real proof: two DIFFERENT modules
+    // loaded into two DIFFERENT named slots at once, both ticking every
+    // frame against the SAME shared ECS (tick(dt, ecs) runs every loaded
+    // slot against whatever `ecs` that one call is given -- the "one
+    // world, N plugins" model a PluginManager needs, not per-slot
+    // isolated worlds), and reloading/unloading one slot never disturbs
+    // the other's module. Independence is proven by each module's own
+    // distinct per-tick increment (+1 for V1, +100 for V2) showing up
+    // (or not) in the shared counter's total after each step.
+    engine::core::ECS ecs;
+    auto entity = ecs.createEntity("Counter");
+    auto& counter = ecs.addComponent<CounterComponent>(entity);
+
+    engine::core::CppHotReloadHost host;
+    std::string error;
+    check(host.load("slotA", HOTRELOAD_MODULE_V1_PATH, ecs, error),
+          ("multi-slot host real-loads slotA: " + error).c_str());
+    check(host.load("slotB", HOTRELOAD_MODULE_V1_PATH, ecs, error),
+          ("multi-slot host real-loads slotB independently of slotA: " + error).c_str());
+    check(host.loadedSlotCount() == 2, "both real, independent slots are tracked at once");
+    check(host.hasModuleLoaded("slotA") && host.hasModuleLoaded("slotB"), "both slots report a module loaded");
+
+    host.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 2, "one tick() call runs BOTH loaded slots' V1 modules against the shared ecs (+1 each)");
+
+    // Reload ONLY slotA to V2 (+100/tick) -- slotB must keep running its
+    // original V1 module (+1/tick) completely undisturbed.
+    check(host.load("slotA", HOTRELOAD_MODULE_V2_PATH, ecs, error),
+          ("multi-slot host real-reloads slotA alone: " + error).c_str());
+    check(host.hasModuleLoaded("slotB"), "reloading slotA leaves slotB's own module loaded and untouched");
+
+    host.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 2 + 101,
+          "post-reload tick is slotA's new V2 (+100) plus slotB's still-original V1 (+1) -- slotB's own reload "
+          "never happened, proven by its contribution staying +1 instead of jumping to +100 too");
+
+    host.unloadSlot("slotA");
+    check(!host.hasModuleLoaded("slotA"), "unloadSlot() real-tears down just the named slot");
+    check(host.hasModuleLoaded("slotB"), "unloading slotA leaves slotB running, untouched");
+    check(host.loadedSlotCount() == 1, "the host's own slot count reflects the real remaining slot");
+
+    host.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 2 + 101 + 1,
+          "after unloadSlot(\"slotA\"), only slotB's own +1 lands -- slotA's teardown real-stopped its "
+          "contribution without disturbing slotB's");
 }
 
 // --- WorldPackage --------------------------------------------------------------
@@ -39423,6 +39472,7 @@ int main() {
     testTickScriptHotReloadSkipsWhenAutoRunFalse();
     testTickScriptHotReloadPreservesEcsAndPhysicsState();
     testCppHotReloadHostSwapsCodeWhileEcsStatePersists();
+    testCppHotReloadHostSlotsAreIndependent();
     testWorldPackagePathHelpersUseRealFixedNames();
     testWorldPackageSaveToDirectoryCreatesRealFiles();
     testWorldPackageSaveLoadRoundTrip();
