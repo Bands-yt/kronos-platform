@@ -941,7 +941,13 @@ void StudioApp::buildBringUpScene() {
     // templates/project/default.scene), not the old 11-entity debug
     // dressing. Falls back to the empty-but-lit/gridded scene on
     // failure rather than crashing Studio over a missing template file.
-    switchToScene("templates/project/default.scene");
+    // Real bug fix: this used to be the bare cwd-relative literal
+    // "templates/project/default.scene", which only resolved when
+    // Studio happened to be launched from the repo root -- every other
+    // resource path here (assets/shaders/games) already goes through
+    // resolveResourceDir()/ENGINE_TEMPLATES_DIR precisely to avoid that.
+    switchToScene(core::resolveResourceDir(core::executableDirectory(), "templates", ENGINE_TEMPLATES_DIR) +
+                  "/project/default.scene");
     core::logEcsStats(ecs_);
 }
 
@@ -1978,7 +1984,8 @@ void StudioApp::drawWelcomePanel() {
         }
         ImGui::Spacing();
         if (ImGui::Button("Open Default Project", ImVec2(200.0f, 0.0f))) {
-            switchToScene("templates/project/default.scene");
+            switchToScene(core::resolveResourceDir(core::executableDirectory(), "templates", ENGINE_TEMPLATES_DIR) +
+                          "/project/default.scene");
             welcomePanelOpen_ = false;
         }
         ImGui::SameLine();

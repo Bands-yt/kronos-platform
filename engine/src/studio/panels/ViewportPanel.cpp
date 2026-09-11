@@ -134,7 +134,15 @@ void ViewportPanel::drawGizmo(core::ECS& ecs, core::EntityId selected, const std
         snapEnabledForThisOp = scaleSnapEnabled_;
     }
 
-    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, mode, glm::value_ptr(model), nullptr,
+    // ImGuizmo's own worldToPos() applies an OpenGL-convention "1.0f - t"
+    // Y flip internally, expecting an unflipped (world-up -> ndc.y=+1)
+    // projection -- handing it renderCamera_'s Vulkan-flipped projection
+    // (see Camera.hpp) double-flips it, mirroring the gizmo vertically.
+    // Un-flip just for this call; `proj` itself stays Vulkan-correct for
+    // every other use in this function.
+    glm::mat4 gizmoProj = proj;
+    gizmoProj[1][1] *= -1.0f;
+    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(gizmoProj), op, mode, glm::value_ptr(model), nullptr,
                           snapEnabledForThisOp ? snapValues : nullptr);
 
     if (ImGuizmo::IsUsing()) {
@@ -220,7 +228,11 @@ void ViewportPanel::drawSelectionHighlight(core::ECS& ecs, core::MeshLibrary& me
         if (clip.w <= 0.0001f) return false;
         glm::vec3 ndc = glm::vec3(clip) / clip.w;
         outScreen.x = imageOrigin.x + ((ndc.x + 1.0f) * 0.5f) * imageSize.x;
-        outScreen.y = imageOrigin.y + ((1.0f - ndc.y) * 0.5f) * imageSize.y;
+        // renderCamera_.projectionMatrix() already applies Vulkan's Y flip
+        // (see Camera.hpp), so ndc.y == -1 is the TOP of the viewport here,
+        // not the bottom -- an extra "1.0f - ndc.y" on top of that flip was
+        // mirroring every projected point about the horizontal centerline.
+        outScreen.y = imageOrigin.y + ((ndc.y + 1.0f) * 0.5f) * imageSize.y;
         return true;
     };
 
@@ -271,7 +283,11 @@ void ViewportPanel::drawSelectionHighlight(core::ECS& ecs, core::MeshLibrary& me
 void ViewportPanel::computeMouseRay(ImVec2 mousePos, ImVec2 imageOrigin, ImVec2 imageSize, glm::vec3& outOrigin,
                                      glm::vec3& outDirection) const {
     float ndcX = ((mousePos.x - imageOrigin.x) / imageSize.x) * 2.0f - 1.0f;
-    float ndcY = 1.0f - ((mousePos.y - imageOrigin.y) / imageSize.y) * 2.0f; // screen Y-down -> NDC Y-up
+    // renderCamera_.projectionMatrix()'s Vulkan Y flip means ndc.y == -1 is
+    // the TOP of the viewport (see Camera.hpp / projectToScreen()'s own
+    // comment above) -- this must be the exact inverse of that mapping, not
+    // the OpenGL-convention "1.0f - t" flip it used to have.
+    float ndcY = ((mousePos.y - imageOrigin.y) / imageSize.y) * 2.0f - 1.0f;
 
     glm::mat4 proj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y);
     glm::mat4 view = renderCamera_.viewMatrix();
@@ -427,7 +443,10 @@ void ViewportPanel::handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibra
                 if (clip.w <= 0.0f) continue; // behind the camera
                 glm::vec3 ndc = glm::vec3(clip) / clip.w;
                 float screenX = imageOrigin.x + (ndc.x * 0.5f + 0.5f) * imageSize.x;
-                float screenY = imageOrigin.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * imageSize.y;
+                // See worldToScreen()'s comment: renderCamera_'s Vulkan Y
+                // flip already puts ndc.y == -1 at the viewport top, so no
+                // extra "1.0f - t" flip belongs here.
+                float screenY = imageOrigin.y + (ndc.y * 0.5f + 0.5f) * imageSize.y;
                 if (screenX >= rectMin.x && screenX <= rectMax.x && screenY >= rectMin.y && screenY <= rectMax.y) {
                     picked.push_back(entity);
                 }
@@ -446,7 +465,12 @@ bool ViewportPanel::worldToScreen(const glm::mat4& viewProj, glm::vec3 worldPos,
     if (clip.w <= 0.001f) return false; // behind (or at) the camera -- see handleSelection()'s identical guard
     glm::vec3 ndc = glm::vec3(clip) / clip.w;
     outScreen.x = imageOrigin.x + (ndc.x * 0.5f + 0.5f) * imageSize.x;
-    outScreen.y = imageOrigin.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * imageSize.y;
+    // renderCamera_.projectionMatrix() already applies Vulkan's Y flip (see
+    // Camera.hpp), so ndc.y == -1 is the viewport TOP here -- stacking an
+    // OpenGL-style "1.0f - t" flip on top of that mirrored every caller of
+    // this function (grid overlay, camera rail, physics debug draws, sculpt
+    // brush ring, ...) about the horizontal centerline.
+    outScreen.y = imageOrigin.y + (ndc.y * 0.5f + 0.5f) * imageSize.y;
     return true;
 }
 
@@ -947,7 +971,11 @@ void ViewportPanel::drawSubObjectEditing(plugins::ModelingModePlugin& modelingMo
     glm::mat4 gizmoModel(1.0f);
     gizmoModel[3] = glm::vec4(worldAnchor, 1.0f);
 
-    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
+    // See drawGizmo()'s identical fix/comment: ImGuizmo needs an unflipped
+    // (OpenGL-convention) projection, not renderCamera_'s Vulkan-flipped one.
+    glm::mat4 gizmoProj = proj;
+    gizmoProj[1][1] *= -1.0f;
+    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(gizmoProj), ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
                           glm::value_ptr(gizmoModel));
 
     if (ImGuizmo::IsUsing()) {
@@ -1304,6 +1332,23 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
             // exactly on top of the last one at the world origin.
             glm::vec3 spawnPos = camera_.position + camera_.forward() * 4.0f;
             spawnPos.y = std::max(spawnPos.y, 0.5f);
+            // Prefer landing on the actual y=0 ground plane the camera is
+            // looking at -- the fixed 4m-forward point above lands wherever
+            // that happens to be relative to the camera's current pitch,
+            // which is often well above the visible ground when looking
+            // down a long shot (e.g. framing a camera rail), leaving a new
+            // primitive's selection box floating with nothing visibly under
+            // it. Only used when the camera is actually looking down at the
+            // ground steeply enough for the hit point to be sane (not
+            // absurdly far away, not behind the camera).
+            const glm::vec3 forward = camera_.forward();
+            constexpr float kMaxGroundSpawnDistance = 40.0f;
+            if (forward.y < -0.05f) {
+                const float t = -camera_.position.y / forward.y;
+                if (t > 0.0f && t <= kMaxGroundSpawnDistance) {
+                    spawnPos = camera_.position + forward * t;
+                }
+            }
 
             auto spawnPrimitive = [&](const char* entityName, uint32_t meshHandle, core::MeshSourceKind kind,
                                         glm::vec3 params, bool hasMeshSource) {
@@ -1322,25 +1367,15 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                     meshSource.kind = kind;
                     meshSource.params = params;
                 }
-                // Sphere/Cube attach a real EditableMeshComponent up front
-                // (createBox()/createCapsule() -- the exact same
-                // topology+UV generators the GPU mesh above was built
-                // from, see EditableMesh.cpp) rather than requiring the
-                // "Start Editing" convert-on-demand step ModelingModePlugin
-                // otherwise makes every entity go through: a freshly
-                // spawned primitive should already have valid vertex
-                // topology for brush/stamp sculpting and valid UVs for PBR
-                // textures, not just a render-only GPU mesh handle.
-                // ModelingModePlugin's own convert-on-demand path stays as
-                // the fallback for entities that predate this (or that
-                // came from Cylinder/Plane/Torus, still unsupported).
-                if (kind == core::MeshSourceKind::Box) {
-                    auto& editable = ecs->addComponent<core::EditableMeshComponent>(entity);
-                    editable.mesh = core::EditableMesh::createBox(params);
-                } else if (kind == core::MeshSourceKind::Capsule) {
-                    auto& editable = ecs->addComponent<core::EditableMeshComponent>(entity);
-                    editable.mesh = core::EditableMesh::createCapsule(params.x, params.y);
-                }
+                // Deliberately render-only on spawn -- no auto-attached
+                // EditableMeshComponent. Sub-object edit tools (Ctrl+Click
+                // vertex/edge/face pick + gizmo drag, sculpt brushes,
+                // Modeling Mode's extrude/inset/bevel/CSG) key off that
+                // component, so a plain "Add Primitive" shape stays a
+                // normal primitive until the user deliberately opts it into
+                // real 3D modeling via ModelingModePlugin's own "Start
+                // Editing" button -- see that plugin's header comment for
+                // why Box is the one shape it seeds identically today.
                 explorer.setSelected(entity);
             };
 
@@ -1355,10 +1390,11 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                                 {0.5f, 0.5f, 0.5f}, true);
             }
             if (ImGui::Selectable("Cylinder")) {
-                // No MeshSourceKind::Cylinder -- see
-                // Mesh::createCylinder()'s own comment.
-                spawnPrimitive("Cylinder", propSpawnMeshHandles_.cylinderMesh, core::MeshSourceKind::Box, {},
-                                false);
+                // No MeshSourceKind::Cylinder -- see Mesh::createCylinder()'s
+                // own comment. radius=0.5, halfHeight=0.5, matching the GPU
+                // mesh built in StudioApp.cpp for propSpawnMeshHandles_.cylinderMesh.
+                spawnPrimitive("Cylinder", propSpawnMeshHandles_.cylinderMesh, core::MeshSourceKind::Box,
+                                {0.5f, 0.5f, 0.0f}, false);
             }
             if (ImGui::Selectable("Plane")) {
                 spawnPrimitive("Plane", propSpawnMeshHandles_.planeMesh, core::MeshSourceKind::Plane,
