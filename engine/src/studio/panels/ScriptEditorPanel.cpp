@@ -1,7 +1,12 @@
 #include "studio/panels/ScriptEditorPanel.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <unordered_set>
 #include <vector>
 
@@ -9,6 +14,7 @@
 #include <imgui_stdlib.h>
 
 #include "core/Components.hpp"
+#include "core/NativeFileDialog.hpp"
 #include "studio/Notification.hpp"
 #include "studio/panels/ColorTextEditBackend.hpp"
 
@@ -135,6 +141,20 @@ std::vector<Token> tokenizeLine(const std::string& line, bool& inBlockComment) {
 
     return tokens;
 }
+
+// Kronos ("Script Editor QoL" -- actionable empty state): real collision
+// check against every live entity's core::Name -- without this, "Create
+// New Script" clicked twice in a row would silently produce two
+// same-named entities, which would break DebugConsolePanel's own
+// findEntityByName() (first-match-wins) for click-to-jump on whichever
+// one comes second.
+bool entityNameTaken(core::ECS& ecs, const std::string& candidate) {
+    for (auto entity : ecs.view<core::Name>()) {
+        const auto* nameComp = ecs.tryGetComponent<core::Name>(entity);
+        if (nameComp != nullptr && nameComp->value == candidate) return true;
+    }
+    return false;
+}
 } // namespace
 
 void ImGuiFallbackEditor::draw() {
@@ -219,62 +239,272 @@ bool MonacoWebViewEditor::initialize() {
     return false;
 }
 
-ScriptEditorPanel::ScriptEditorPanel() {
+std::unique_ptr<IScriptEditorBackend> ScriptEditorPanel::createBackend() {
     // Kronos ("Studio Revamp" -- "Native Syntax-Highlighting Editor"):
     // real preference order, tried in this sequence --
     //  1. Monaco/webview (never succeeds today; MonacoWebViewEditor::
     //     initialize() always returns false until Ultralight/CEF is
     //     actually wired in, see that class's own comment).
-    //  2. ColorTextEditBackend -- the new real default: native
+    //  2. ColorTextEditBackend -- the real default: native
     //     ImGuiColorTextEdit widget + live Luau.Analysis error markers,
     //     no embedded webview needed at all.
     //  3. ImGuiFallbackEditor -- kept as the last-resort backend so a
     //     Studio build never silently ends up with no editor, same
     //     contract IScriptEditorBackend's own class comment already
     //     establishes.
+    // Kronos ("Script Editor QoL" -- multi-tab document model): each tab
+    // gets its OWN backend instance from this factory (rather than
+    // sharing one), so one tab's undo history/cursor/completion state
+    // never leaks into another's.
     auto monaco = std::make_unique<MonacoWebViewEditor>();
     if (monaco->initialize()) {
-        backend_ = std::move(monaco); // never reached today -- see MonacoWebViewEditor::initialize()
-        return;
+        return monaco; // never reached today -- see MonacoWebViewEditor::initialize()
     }
 
     auto colorTextEdit = std::make_unique<ColorTextEditBackend>();
     if (colorTextEdit->initialize()) {
-        backend_ = std::move(colorTextEdit);
-        return;
+        return colorTextEdit;
     }
 
-    backend_ = std::make_unique<ImGuiFallbackEditor>();
-    if (!backend_->initialize()) {
+    auto fallback = std::make_unique<ImGuiFallbackEditor>();
+    if (!fallback->initialize()) {
         std::fprintf(stderr, "ScriptEditorPanel: ImGuiFallbackEditor::initialize() unexpectedly failed.\n");
     }
+    return fallback;
 }
 
-void ScriptEditorPanel::loadFromEntity(core::ECS& ecs, core::EntityId entity) {
-    targetEntity_ = entity;
+int ScriptEditorPanel::findTabIndex(core::EntityId entity) const {
+    for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
+        if (tabs_[i].entity == entity) return i;
+    }
+    return -1;
+}
+
+int ScriptEditorPanel::openOrFocusTab(core::ECS& ecs, core::EntityId entity) {
+    int existing = findTabIndex(entity);
+    if (existing >= 0) {
+        activeTab_ = existing;
+        return existing;
+    }
+
+    ScriptEditorTab tab;
+    tab.entity = entity;
+    tab.backend = createBackend();
     if (const core::Script* script = ecs.tryGetComponent<core::Script>(entity)) {
-        targetHasScript_ = true;
-        backend_->setSource(script->source);
+        tab.backend->setSource(script->source);
+        tab.savedSource = script->source;
     } else {
-        targetHasScript_ = false;
-        backend_->setSource("");
+        tab.backend->setSource("");
+        tab.savedSource.clear();
+    }
+    tabs_.push_back(std::move(tab));
+    activeTab_ = static_cast<int>(tabs_.size()) - 1;
+    return activeTab_;
+}
+
+void ScriptEditorPanel::closeTab(int index) {
+    if (index < 0 || index >= static_cast<int>(tabs_.size())) return;
+    tabs_.erase(tabs_.begin() + index);
+    if (tabs_.empty()) {
+        activeTab_ = -1;
+    } else if (activeTab_ >= static_cast<int>(tabs_.size())) {
+        activeTab_ = static_cast<int>(tabs_.size()) - 1;
+    } else if (activeTab_ > index) {
+        --activeTab_;
     }
 }
 
-void ScriptEditorPanel::saveToEntity(core::ECS& ecs, NotificationCenter& notifications) {
-    core::Script* script = ecs.tryGetComponent<core::Script>(targetEntity_);
+void ScriptEditorPanel::saveTab(ScriptEditorTab& tab, core::ECS& ecs, NotificationCenter& notifications) {
+    core::Script* script = ecs.tryGetComponent<core::Script>(tab.entity);
     if (script == nullptr) return;
     // Deliberately only `source` -- `loadedSource` stays whatever it was
     // so core::tickScriptHotReload() sees a real mismatch and does the
     // real (re)load, instead of this save silently marking itself
     // "already loaded" and skipping that step.
-    script->source = backend_->source();
+    script->source = tab.backend->source();
+    tab.savedSource = tab.backend->source();
     notifications.push("Script saved -- will hot-reload on next tick", NotificationSeverity::Success);
 }
 
+int ScriptEditorPanel::newScriptTab(core::ECS& ecs) {
+    std::string candidate = "Script";
+    for (int suffix = 2; entityNameTaken(ecs, candidate); ++suffix) {
+        candidate = "Script" + std::to_string(suffix);
+    }
+    core::EntityId entity = ecs.createEntity(candidate);
+    ecs.addComponent<core::Script>(entity);
+    int index = openOrFocusTab(ecs, entity);
+    forceFocusActiveTab_ = true;
+    // Keeps draw()'s own outer-selection edge trigger in sync, same
+    // reasoning as openAndJumpToLine()'s own trailing assignment -- an
+    // Explorer selection landing on this same new entity later this
+    // frame or next shouldn't redundantly re-run openOrFocusTab().
+    lastOuterSelection_ = entity;
+    return index;
+}
+
+void ScriptEditorPanel::openScriptFromFile(core::ECS& ecs, NotificationCenter& notifications) {
+    std::optional<std::string> path = core::openFileDialog("Open Script", {"*.luau", "*.lua"});
+    if (!path) return; // real cancel, not an error
+
+    std::ifstream file(*path, std::ios::binary);
+    if (!file) {
+        notifications.push("Could not open \"" + *path + "\"", NotificationSeverity::Error);
+        return;
+    }
+    std::ostringstream contents;
+    contents << file.rdbuf();
+
+    // Kronos ("Script Editor QoL" -- actionable empty state): this
+    // engine has no filesystem-backed core::Script persistence (source
+    // lives in the ECS component, not re-read from `*path` later -- see
+    // ScriptEditorTab's own class comment), so "Open File" honestly
+    // means "import this file's text into a new script entity", not
+    // "open this file in place". The entity's name comes from the
+    // file's own stem so the new tab reads as "the file you picked",
+    // same std::filesystem::path(...).stem() idiom StudioApp.cpp's own
+    // world-id derivation already uses.
+    std::string base = std::filesystem::path(*path).stem().string();
+    if (base.empty()) base = "Script";
+    std::string candidate = base;
+    for (int suffix = 2; entityNameTaken(ecs, candidate); ++suffix) {
+        candidate = base + std::to_string(suffix);
+    }
+
+    core::EntityId entity = ecs.createEntity(candidate);
+    core::Script& script = ecs.addComponent<core::Script>(entity);
+    script.source = contents.str();
+
+    openOrFocusTab(ecs, entity);
+    forceFocusActiveTab_ = true;
+    lastOuterSelection_ = entity;
+    notifications.push("Imported \"" + *path + "\"", NotificationSeverity::Success);
+}
+
+void ScriptEditorPanel::drawTabBar(core::ECS& ecs, NotificationCenter& notifications) {
+    if (!ImGui::BeginTabBar("##script_editor_tabs", ImGuiTabBarFlags_Reorderable)) return;
+
+    // Kronos ("Script Editor QoL" -- persistent tab bar): a real
+    // ImGuiTabItemFlags_Trailing button, submitted before the regular
+    // tabs below -- same order-doesn't-matter idiom imgui_demo.cpp's own
+    // "TabItemButton & Leading/Trailing flags" section uses -- so it
+    // always renders pinned to the tab bar's right edge regardless of
+    // how many real tabs are open, including zero.
+    const bool addTabClicked = ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("New script");
+    if (addTabClicked) newScriptTab(ecs);
+
+    for (int i = 0; i < static_cast<int>(tabs_.size());) {
+        ScriptEditorTab& tab = tabs_[i];
+        const core::Name* name = ecs.tryGetComponent<core::Name>(tab.entity);
+        const std::string title = (name != nullptr && !name->value.empty()) ? name->value : "(unnamed)";
+        const bool dirty = tab.backend->source() != tab.savedSource;
+        // "###" splits display label from ImGui id -- the id is the
+        // stable entity id, so a tab keeps its identity (selection,
+        // reorder position) across a dirty-indicator label change or an
+        // entity rename.
+        const std::string label =
+            title + (dirty ? " *" : "") + "###tab" + std::to_string(static_cast<uint32_t>(tab.entity));
+
+        ImGuiTabItemFlags flags = ImGuiTabItemFlags_None;
+        if (i == activeTab_ && forceFocusActiveTab_) flags |= ImGuiTabItemFlags_SetSelected;
+
+        bool open = true;
+        if (ImGui::BeginTabItem(label.c_str(), &open, flags)) {
+            activeTab_ = i;
+            ImGui::EndTabItem();
+        }
+        if (!open) {
+            closeTab(i);
+            continue; // next tab has shifted into slot i -- don't advance
+        }
+        ++i;
+    }
+
+    forceFocusActiveTab_ = false;
+    ImGui::EndTabBar();
+}
+
+void ScriptEditorPanel::drawEmptyState(core::ECS& ecs, NotificationCenter& notifications) {
+    // Kronos ("Script Editor QoL" -- actionable empty state): replaces
+    // the old dead-end "Select an entity..." label with two real,
+    // working actions -- centered in whatever space is left below the
+    // (now-persistent) tab bar, rather than pinned to the window's
+    // top-left like a plain label would be.
+    // GetContentRegionAvail() measures from the *current cursor*
+    // (already below the tab bar drawn just above), but SetCursorPos()
+    // below places things in window-local coordinates measured from the
+    // window's content origin -- so `start` has to be folded back in, or
+    // the block would center against the whole window and sit too high,
+    // overlapping the tab bar.
+    const ImVec2 start = ImGui::GetCursorPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const char* heading = "No scripts open";
+    const char* subheading = "Create a new script or import an existing .luau/.lua file.";
+    const ImVec2 buttonSize(190.0f, 36.0f);
+    constexpr float kSpacing = 10.0f;
+
+    const float headingWidth = ImGui::CalcTextSize(heading).x;
+    const float subheadingWidth = ImGui::CalcTextSize(subheading).x;
+    const float buttonsWidth = buttonSize.x * 2.0f + kSpacing;
+    const float blockWidth = std::max({headingWidth, subheadingWidth, buttonsWidth});
+    const float lineSpacing = ImGui::GetStyle().ItemSpacing.y;
+    const float blockHeight =
+        ImGui::GetTextLineHeight() * 2.0f + lineSpacing * 2.0f + kSpacing + buttonSize.y;
+
+    // `origin` is the block's fixed top-left in window-local coordinates
+    // -- every line below centers itself against `origin.x + blockWidth`
+    // rather than against wherever the cursor happened to land after the
+    // previous item, since ImGui resets CursorPos.x back to the current
+    // line/group's own indent (not to a prior SetCursorPosX() call) after
+    // every item.
+    const ImVec2 origin(start.x + std::max(0.0f, (avail.x - blockWidth) * 0.5f),
+                         start.y + std::max(0.0f, (avail.y - blockHeight) * 0.5f));
+
+    ImGui::SetCursorPos(origin);
+    ImGui::BeginGroup();
+    {
+        ImGui::SetCursorPosX(origin.x + std::max(0.0f, (blockWidth - headingWidth) * 0.5f));
+        ImGui::TextUnformatted(heading);
+
+        ImGui::SetCursorPosX(origin.x + std::max(0.0f, (blockWidth - subheadingWidth) * 0.5f));
+        ImGui::TextDisabled("%s", subheading);
+
+        ImGui::Dummy(ImVec2(1.0f, kSpacing));
+
+        ImGui::SetCursorPosX(origin.x + std::max(0.0f, (blockWidth - buttonsWidth) * 0.5f));
+        if (ImGui::Button("Create New Script", buttonSize)) {
+            newScriptTab(ecs);
+        }
+        ImGui::SameLine(0.0f, kSpacing);
+        if (ImGui::Button("Open File", buttonSize)) {
+            openScriptFromFile(ecs, notifications);
+        }
+    }
+    ImGui::EndGroup();
+}
+
+void ScriptEditorPanel::openAndJumpToLine(core::ECS& ecs, core::EntityId entity, int oneBasedLine) {
+    // Real, honest no-op if there's no script here to jump into -- see
+    // this method's own header comment.
+    if (entity == core::kNullEntity || ecs.tryGetComponent<core::Script>(entity) == nullptr) return;
+
+    int index = openOrFocusTab(ecs, entity);
+    forceFocusActiveTab_ = true;
+    tabs_[index].backend->moveCaretToLine(oneBasedLine);
+    // Keeps draw()'s own outer-selection edge trigger in sync so it
+    // doesn't redundantly re-open this same tab the instant the Explorer
+    // selection also lands on `entity` this frame or next.
+    lastOuterSelection_ = entity;
+}
+
 void ScriptEditorPanel::draw(core::ECS& ecs, core::EntityId selectedEntity, NotificationCenter& notifications) {
-    if (selectedEntity != targetEntity_) {
-        loadFromEntity(ecs, selectedEntity);
+    if (selectedEntity != lastOuterSelection_) {
+        lastOuterSelection_ = selectedEntity;
+        if (selectedEntity != core::kNullEntity) {
+            openOrFocusTab(ecs, selectedEntity);
+            forceFocusActiveTab_ = true;
+        }
     }
 
     // Zero outer padding, same as ViewportPanel's own "Viewport" window --
@@ -284,36 +514,68 @@ void ScriptEditorPanel::draw(core::ECS& ecs, core::EntityId selectedEntity, Noti
     ImGui::Begin("Script Editor");
     ImGui::PopStyleVar();
 
-    if (selectedEntity == core::kNullEntity) {
-        ImGui::TextDisabled("Select an entity to view or edit its script.");
+    // Kronos ("Script Editor QoL" -- persistent tab bar): drawn
+    // unconditionally now, even with zero tabs open -- see
+    // drawTabBar()'s own trailing "+" button.
+    drawTabBar(ecs, notifications);
+
+    if (tabs_.empty()) {
+        drawEmptyState(ecs, notifications);
         ImGui::End();
         return;
     }
 
-    const core::Name* name = ecs.tryGetComponent<core::Name>(selectedEntity);
+    if (activeTab_ < 0 || activeTab_ >= static_cast<int>(tabs_.size())) {
+        ImGui::End();
+        return;
+    }
+    ScriptEditorTab& tab = tabs_[activeTab_];
+
+    const core::Name* name = ecs.tryGetComponent<core::Name>(tab.entity);
     ImGui::TextDisabled("Entity: %s", (name != nullptr && !name->value.empty()) ? name->value.c_str() : "(unnamed)");
 
-    if (!targetHasScript_) {
+    core::Script* script = ecs.tryGetComponent<core::Script>(tab.entity);
+    if (script == nullptr) {
         ImGui::TextWrapped("This entity has no Script component yet.");
         if (ImGui::Button("Add Script Component")) {
-            ecs.addComponent<core::Script>(selectedEntity);
-            loadFromEntity(ecs, selectedEntity);
+            ecs.addComponent<core::Script>(tab.entity);
+            tab.backend->setSource("");
+            tab.savedSource.clear();
         }
         ImGui::End();
         return;
     }
 
-    ImGui::TextDisabled("Ctrl+S to save (real hot-reload while Playing)");
+    ImGui::TextDisabled("Ctrl+S save * Ctrl+W close tab (real hot-reload while Playing)");
     ImGui::Separator();
-    backend_->draw();
+    // Kronos ("Script Editor QoL" -- editor background contrast): a real
+    // ImGuiCol_ChildBg push, VS Code's own #1E1E1E editor background --
+    // gives the actual editing surface visible depth against the
+    // surrounding panel chrome (Ctrl+S/Ctrl+W hint line, tab bar) above
+    // it. Harmless, not redundant, for ColorTextEditBackend specifically:
+    // TextEditor::Render() pushes its own ImGuiCol_ChildBg from its
+    // palette right before its BeginChild() (already close to this same
+    // color by default) and pops it before returning, so this outer
+    // push/pop only ever affects backends -- like ImGuiFallbackEditor's
+    // plain BeginChild() calls -- that don't already override it
+    // themselves; the two pushes nest and unwind cleanly either way.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(0x1E, 0x1E, 0x1E, 255));
+    tab.backend->draw();
+    ImGui::PopStyleColor();
 
     // Checked here, not StudioApp's own global per-frame keybind block,
-    // so this only fires while the Script Editor window genuinely has
-    // keyboard focus -- Ctrl+S elsewhere in Studio still means "save
-    // scene" (StudioApp::run()'s own existing binding), unchanged.
-    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && ImGui::GetIO().KeyCtrl &&
-        ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-        saveToEntity(ecs, notifications);
+    // so these only fire while the Script Editor window genuinely has
+    // keyboard focus -- Ctrl+S/Ctrl+W elsewhere in Studio keep their own
+    // existing meanings (save scene / close active dock, respectively),
+    // unchanged.
+    const bool windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
+    if (windowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+        saveTab(tab, ecs, notifications);
+    }
+    if (windowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_W, false)) {
+        closeTab(activeTab_);
+        ImGui::End();
+        return;
     }
 
     ImGui::End();

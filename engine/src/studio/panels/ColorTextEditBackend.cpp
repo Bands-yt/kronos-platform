@@ -245,6 +245,13 @@ const std::string& ColorTextEditBackend::source() const {
     return sourceCache_;
 }
 
+void ColorTextEditBackend::moveCaretToLine(int oneBasedLine) {
+    const int zeroBasedLine = std::max(0, oneBasedLine - 1);
+    const TextEditor::Coordinates target(zeroBasedLine, 0);
+    editor_->SetCursorPosition(target);
+    editor_->SetSelection(target, target);
+}
+
 void ColorTextEditBackend::reanalyze() {
     TextEditor::ErrorMarkers markers;
     for (const LuauLiveAnalyzer::Diagnostic& diagnostic : analyzer_->analyze(editor_->GetText())) {
@@ -294,6 +301,76 @@ void ColorTextEditBackend::draw() {
     // regardless, only re-typechecks on a real edit.
     if (editor_->IsTextChanged()) {
         reanalyze();
+        // Auto-open the same Ctrl+Space suggestion list right after '.' or
+        // ':' -- member/method access is worth reflowing on every
+        // keystroke for (Luau::autocomplete() naturally returns a narrow,
+        // high-value list there: a table/class's own fields), unlike a
+        // bare letter mid-identifier, which would retypecheck the whole
+        // buffer on every keystroke for little benefit -- see
+        // updateCompletions()'s own Ctrl+Space framing.
+        const TextEditor::Coordinates cursor = editor_->GetCursorPosition();
+        const std::string line = editor_->GetCurrentLineText();
+        // Gate the whole chain below (auto-close pairing/skip-over and the
+        // '.'/':'  completion trigger) on "exactly one character was typed
+        // this frame" -- IsTextChanged() alone also fires for paste, Undo/
+        // Redo, and insertCompletion()'s own InsertText(), none of which
+        // should be mistaken for a fresh keystroke (a skip-over match on
+        // pasted text would silently eat a pasted character; Undo/Redo
+        // mutating the buffer here would desync the editor's own undo
+        // stack).
+        const bool singleCharTyped = io.InputQueueCharacters.Size == 1;
+        if (singleCharTyped && cursor.mColumn > 0 && cursor.mColumn <= static_cast<int>(line.size())) {
+            const char lastTyped = line[cursor.mColumn - 1];
+            const char nextChar = cursor.mColumn < static_cast<int>(line.size()) ? line[cursor.mColumn] : '\0';
+
+            // Kronos ("Script Editor QoL" -- auto-closing brackets/
+            // quotes): real, minimal pair-insertion -- ImGuiColorTextEdit
+            // itself has no built-in support for this (see TextEditor.h's
+            // own public API surface), so this watches the same
+            // IsTextChanged()-plus-last-typed-character shape the '.'/':'
+            // trigger above already uses. Typing a closer (or a quote,
+            // whose opener==closer) that's immediately followed by that
+            // same character steps over it instead of inserting a
+            // duplicate -- the standard "typing through your own
+            // auto-close" case; any other opener/quote gets its matching
+            // closer inserted right after, with the caret left between
+            // the pair.
+            const bool isQuote = (lastTyped == '"' || lastTyped == '\'');
+            const bool isCloser = (lastTyped == ')' || lastTyped == ']' || lastTyped == '}');
+            if ((isQuote || isCloser) && nextChar == lastTyped) {
+                const TextEditor::Coordinates typedStart(cursor.mLine, cursor.mColumn - 1);
+                editor_->SetSelection(typedStart, cursor);
+                editor_->Delete();
+                // SetCursorPosition() alone doesn't clear the selection
+                // range Delete() just consumed (mSelectionStart/End are
+                // separate state) -- left stale, the very next EnterCharacter()
+                // would see HasSelection() still true and delete a character
+                // out from under the next keystroke.
+                const TextEditor::Coordinates target(cursor.mLine, cursor.mColumn);
+                editor_->SetCursorPosition(target);
+                editor_->SetSelection(target, target);
+                reanalyze();
+            } else if (isQuote || lastTyped == '(' || lastTyped == '[' || lastTyped == '{') {
+                char closer = '\0';
+                switch (lastTyped) {
+                    case '(': closer = ')'; break;
+                    case '[': closer = ']'; break;
+                    case '{': closer = '}'; break;
+                    case '"': closer = '"'; break;
+                    case '\'': closer = '\''; break;
+                    default: break;
+                }
+                editor_->InsertText(std::string(1, closer));
+                // step back between the just-inserted pair; InsertText() also
+                // leaves no stray selection, but set one explicitly anyway so
+                // this doesn't depend on that implementation detail.
+                editor_->SetCursorPosition(cursor);
+                editor_->SetSelection(cursor, cursor);
+                reanalyze();
+            } else if (lastTyped == '.' || lastTyped == ':') {
+                updateCompletions();
+            }
+        }
     }
     // Runs every frame the strip is visible (not just on text change) so a mouse click that
     // moves the caret without editing text still gets caught before insertCompletion() could act on it.

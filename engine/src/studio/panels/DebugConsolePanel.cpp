@@ -1,8 +1,14 @@
 #include "studio/panels/DebugConsolePanel.hpp"
 
+#include <cctype>
+#include <cstdio>
+#include <optional>
+#include <string>
+
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
+#include "core/Components.hpp"
 #include "core/Logger.hpp"
 #include "studio/StudioEcsScriptApi.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
@@ -18,6 +24,59 @@ ImVec4 logLevelColor(core::LogLevel level) {
         case core::LogLevel::Error: return ImVec4(0.90f, 0.30f, 0.30f, 1.0f);
     }
     return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+// Same linear-scan-by-Name pattern RuntimeAnimationPlayer.cpp's own
+// findEntityByName() already uses -- small enough (one loop) that
+// duplicating it here beats sharing a header across two otherwise-
+// unrelated files for it.
+core::EntityId findEntityByName(core::ECS& ecs, const std::string& targetName) {
+    for (auto entity : ecs.view<core::Name>()) {
+        const auto* nameComp = ecs.tryGetComponent<core::Name>(entity);
+        if (nameComp != nullptr && nameComp->value == targetName) return entity;
+    }
+    return core::kNullEntity;
+}
+
+struct ScriptErrorRef {
+    std::string entityName;
+    int oneBasedLine = 1;
+};
+
+// Kronos ("Script Editor QoL" -- Engine Console click-to-jump): parses
+// core::Scripting::loadAndRun()'s own real error message shape
+// (Scripting.cpp) -- `compile error in "<chunkName>": <lua error>` or
+// `runtime error in "<chunkName>": <lua error>`, where `<lua error>` is
+// `lua_tostring()`'s own standard Lua/Luau convention,
+// `<chunkname>:<line>: <message>`. Searches for `"<chunkName>:"`
+// specifically (not just the first digit-colon pattern in the string)
+// so a chunk name that itself contains a colon-digit sequence doesn't
+// false-match. Returns std::nullopt for any log line that isn't one of
+// these two exact prefixes, or whose inner Lua error doesn't carry a
+// parseable line number -- an honest "nothing to jump to", not a guess.
+std::optional<ScriptErrorRef> parseScriptErrorRef(const std::string& message) {
+    const bool isCompileError = message.rfind("compile error in \"", 0) == 0;
+    const bool isRuntimeError = message.rfind("runtime error in \"", 0) == 0;
+    if (!isCompileError && !isRuntimeError) return std::nullopt;
+
+    const size_t nameStart = message.find('"') + 1;
+    const size_t nameEnd = message.find('"', nameStart);
+    if (nameEnd == std::string::npos) return std::nullopt;
+    const std::string entityName = message.substr(nameStart, nameEnd - nameStart);
+
+    const std::string marker = entityName + ":";
+    const size_t markerPos = message.find(marker, nameEnd);
+    if (markerPos == std::string::npos) return std::nullopt;
+
+    const size_t digitsStart = markerPos + marker.size();
+    size_t digitsEnd = digitsStart;
+    while (digitsEnd < message.size() && std::isdigit(static_cast<unsigned char>(message[digitsEnd]))) ++digitsEnd;
+    if (digitsEnd == digitsStart) return std::nullopt;
+
+    ScriptErrorRef ref;
+    ref.entityName = entityName;
+    ref.oneBasedLine = std::stoi(message.substr(digitsStart, digitsEnd - digitsStart));
+    return ref;
 }
 } // namespace
 
@@ -123,15 +182,49 @@ void DebugConsolePanel::drawEngineLogTab() {
     // (same "re-run fresh every frame" convention
     // CreatorConsolePlugin::drawPanel() already uses for its own scan).
     std::vector<core::LogEntry> entries = logger.recentEntries();
-    for (const auto& entry : entries) {
+    for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+        const core::LogEntry& entry = entries[i];
         if (entry.level == core::LogLevel::Debug && !showDebugLogs_) continue;
         if (entry.level == core::LogLevel::Info && !showInfoLogs_) continue;
         if (entry.level == core::LogLevel::Warn && !showWarnLogs_) continue;
         if (entry.level == core::LogLevel::Error && !showErrorLogs_) continue;
-        ImGui::TextColored(logLevelColor(entry.level), "[%.2fs] [%s] [%s] %s", entry.timestampSeconds,
-                            core::logLevelName(entry.level), entry.category.c_str(), entry.message.c_str());
+
+        char text[1024];
+        std::snprintf(text, sizeof(text), "[%.2fs] [%s] [%s] %s", entry.timestampSeconds,
+                      core::logLevelName(entry.level), entry.category.c_str(), entry.message.c_str());
+
+        // Kronos ("Script Editor QoL" -- Engine Console click-to-jump):
+        // a script compile/runtime error line whose chunk name resolves
+        // back to a live entity becomes a real, clickable Selectable
+        // instead of plain, inert text; every other log line (including
+        // a script error whose entity has since been deleted/renamed)
+        // keeps rendering exactly as before.
+        std::optional<ScriptErrorRef> ref = ecs_ != nullptr ? parseScriptErrorRef(entry.message) : std::nullopt;
+        core::EntityId jumpEntity = ref ? findEntityByName(*ecs_, ref->entityName) : core::kNullEntity;
+        if (ref && jumpEntity != core::kNullEntity) {
+            ImGui::PushID(i);
+            ImGui::PushStyleColor(ImGuiCol_Text, logLevelColor(entry.level));
+            const bool clicked = ImGui::Selectable(text);
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Click to open \"%s\" at line %d", ref->entityName.c_str(), ref->oneBasedLine);
+            }
+            if (clicked) {
+                pendingScriptJump_ = PendingScriptJump{jumpEntity, ref->oneBasedLine};
+            }
+            ImGui::PopID();
+        } else {
+            ImGui::TextColored(logLevelColor(entry.level), "%s", text);
+        }
     }
     ImGui::EndChild();
+}
+
+std::optional<PendingScriptJump> DebugConsolePanel::takePendingScriptJump() {
+    if (!pendingScriptJump_) return std::nullopt;
+    PendingScriptJump jump = *pendingScriptJump_;
+    pendingScriptJump_.reset();
+    return jump;
 }
 
 void DebugConsolePanel::draw() {

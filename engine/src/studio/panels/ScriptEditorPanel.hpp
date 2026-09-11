@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "core/ECS.hpp"
 
@@ -31,6 +32,13 @@ public:
 
     virtual void draw() = 0; // draws itself into the current ImGui window
     [[nodiscard]] virtual const char* backendName() const = 0;
+
+    // Kronos ("Script Editor QoL" -- Engine Console click-to-jump): real
+    // caret placement for a real (1-based) source line. A no-op default
+    // is the honest choice for a backend with no addressable cursor API
+    // of its own (ImGuiFallbackEditor's plain InputTextMultiline exposes
+    // none) rather than forcing every backend to implement it.
+    virtual void moveCaretToLine(int /*oneBasedLine*/) {}
 };
 
 // The only backend that actually works today: a plain ImGui multiline
@@ -49,6 +57,12 @@ public:
 
     void draw() override;
     [[nodiscard]] const char* backendName() const override { return "ImGui text box (fallback, Luau syntax coloring)"; }
+
+    // Real, honest partial support: InputTextMultiline exposes no cursor-
+    // placement API, so this can only swap into edit mode, not seek to
+    // the real line -- the click-to-jump caller still gets a real,
+    // visible, editable buffer, just not a real caret position.
+    void moveCaretToLine(int /*oneBasedLine*/) override { wasFocused_ = true; }
 
 private:
     std::string buffer_;
@@ -87,33 +101,91 @@ private:
     std::string pendingSource_;
 };
 
-// Kronos ("Studio QoL Sprint" -- "Instant Lua Script Hot-Reload"): real
-// wiring to a live entity's core::Script component -- previously this
-// panel was a genuinely functional text box with nothing on either end
-// of it (StudioApp.cpp called draw() with no arguments at all, and
+// Kronos ("Script Editor QoL" -- multi-tab document model): one open
+// tab == one entity's core::Script component, each with its own,
+// independent backend instance -- own undo history, own live
+// Luau.Analysis frontend, own cursor/scroll/completion state -- so
+// switching tabs never disturbs another tab's in-progress edit. `dirty`
+// is derived by comparing the live backend->source() against
+// `savedSource` (the snapshot taken at the last load/save) rather than
+// needing IScriptEditorBackend to track its own "changed since save"
+// flag.
+struct ScriptEditorTab {
+    core::EntityId entity = core::kNullEntity;
+    std::unique_ptr<IScriptEditorBackend> backend;
+    std::string savedSource;
+};
+
+// Kronos ("Studio QoL Sprint" -- "Instant Lua Script Hot-Reload", extended
+// by "Script Editor QoL" -- multi-tab + Engine Console click-to-jump):
+// real wiring to live entities' core::Script components -- previously
+// this panel was a genuinely functional text box with nothing on either
+// end of it (StudioApp.cpp called draw() with no arguments at all, and
 // nothing anywhere in Studio ever called addComponent<core::Script>()).
-// Selecting an entity with a Script component loads its `source`; Ctrl+S
-// while this window has keyboard focus writes the edited buffer back
-// into `Script::source` (leaving `loadedSource` alone) -- exactly the
-// change core::tickScriptHotReload() (core/ScriptHotReload.hpp) watches
-// for, whether that's engine_runtime's own Application::tick() or
-// Studio's own PhysicsPreviewPlugin while Playing.
+// Selecting an entity with a Script component opens (or focuses) a real
+// tab for it; Ctrl+S while this window has keyboard focus writes the
+// active tab's edited buffer back into `Script::source` (leaving
+// `loadedSource` alone) -- exactly the change
+// core::tickScriptHotReload() (core/ScriptHotReload.hpp) watches for,
+// whether that's engine_runtime's own Application::tick() or Studio's
+// own PhysicsPreviewPlugin while Playing. Ctrl+W closes the active tab.
 class ScriptEditorPanel {
 public:
-    ScriptEditorPanel();
+    ScriptEditorPanel() = default;
 
     void draw(core::ECS& ecs, core::EntityId selectedEntity, NotificationCenter& notifications);
 
-    void loadSource(const std::string& source) { backend_->setSource(source); }
-    [[nodiscard]] const std::string& source() const { return backend_->source(); }
+    // Kronos ("Script Editor QoL" -- Engine Console click-to-jump): opens
+    // (or focuses, if already open) `entity`'s tab and moves the caret to
+    // `oneBasedLine`. A real, honest no-op if `entity` has no
+    // core::Script component to show. Called by StudioApp after
+    // resolving a clicked Engine Log entry's chunk name back to an
+    // entity (see DebugConsolePanel::takePendingScriptJump()).
+    void openAndJumpToLine(core::ECS& ecs, core::EntityId entity, int oneBasedLine);
 
 private:
-    void loadFromEntity(core::ECS& ecs, core::EntityId entity);
-    void saveToEntity(core::ECS& ecs, NotificationCenter& notifications);
+    static std::unique_ptr<IScriptEditorBackend> createBackend();
+    [[nodiscard]] int findTabIndex(core::EntityId entity) const;
+    int openOrFocusTab(core::ECS& ecs, core::EntityId entity);
+    void closeTab(int index);
+    void saveTab(ScriptEditorTab& tab, core::ECS& ecs, NotificationCenter& notifications);
+    void drawTabBar(core::ECS& ecs, NotificationCenter& notifications);
+    // Kronos ("Script Editor QoL" -- actionable empty state): creates a
+    // real new entity (Name + core::Script, both real ECS components --
+    // no placeholder/unbacked "buffer" concept exists in this engine's
+    // script model, see ScriptEditorTab's own class comment) with a
+    // real, collision-checked unique name, and opens it as the active
+    // tab. Shared by the persistent tab bar's trailing "+" button and
+    // the empty state's "Create New Script" button so both take the
+    // exact same real path.
+    int newScriptTab(core::ECS& ecs);
+    // Kronos ("Script Editor QoL" -- actionable empty state): real
+    // native "Open File" dialog (core::openFileDialog, the same one
+    // ModelImporterPlugin already uses) filtered to *.luau/*.lua, reads
+    // the picked file's real bytes from disk, and opens them as a new
+    // script entity's source -- an honest "import this file's text into
+    // a real script entity" (this engine has no filesystem-backed
+    // core::Script persistence to instead "open" the file in place; see
+    // ScriptEditorTab's own class comment). No-ops on cancel or read
+    // failure, with a real notification either way.
+    void openScriptFromFile(core::ECS& ecs, NotificationCenter& notifications);
+    void drawEmptyState(core::ECS& ecs, NotificationCenter& notifications);
 
-    std::unique_ptr<IScriptEditorBackend> backend_;
-    core::EntityId targetEntity_ = core::kNullEntity;
-    bool targetHasScript_ = false;
+    std::vector<ScriptEditorTab> tabs_;
+    int activeTab_ = -1;
+    // Real, honest "only auto-open a tab the instant outer selection
+    // lands on a new entity" edge trigger -- without this, every frame
+    // the same entity stays selected would re-run openOrFocusTab()'s
+    // "already open" check for no reason (harmless, just wasted work),
+    // and worse, would fight a user who deliberately switched to a
+    // *different* already-open tab while that same outer entity was
+    // still selected in the Explorer.
+    core::EntityId lastOuterSelection_ = core::kNullEntity;
+    // Forces the tab bar to visually select `activeTab_` this frame
+    // (ImGuiTabItemFlags_SetSelected) -- set whenever code, not a user
+    // click on a tab header, decided which tab should be in front (a
+    // fresh Explorer selection, or a click-to-jump request).
+    bool forceFocusActiveTab_ = false;
 };
 
 } // namespace engine::studio::panels
