@@ -401,6 +401,13 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
         if (ImGui::Button("Start Editing", ImVec2(160.0f, 0.0f))) {
             auto& component = ecs.addComponent<core::EditableMeshComponent>(selected);
             component.mesh = core::EditableMesh::createBox(meshSource->params);
+            // renderable->meshHandle right now points at the shared library
+            // entry every stock box-sourced primitive (Add Primitive > Cube,
+            // Block Builder cube, ...) uses -- reuploadMesh() replaces
+            // whatever mesh lives at that handle in place, so editing this
+            // one entity without first giving it its own handle would
+            // silently deform every other entity still sharing it.
+            renderable->meshHandle = meshLibrary_->registerMesh(core::Mesh{});
             reuploadMesh(component, *renderable);
         }
         drawPluginFooter();
