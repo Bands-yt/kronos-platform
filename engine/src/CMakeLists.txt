@@ -116,6 +116,7 @@ add_library(engine_core STATIC
     core/GpuParticleCompute.cpp
     core/ComputePbrPainter.cpp
     core/CppHotReloadHost.cpp
+    core/NativePluginManager.cpp
     core/MeshUvPicking.cpp
     core/RayTracingScene.cpp
     core/VmaImpl.cpp
@@ -473,6 +474,16 @@ target_compile_definitions(engine_core PUBLIC
     # project.project/*.scene/Scripts/) live, scanned by
     # core::scanLocalGameDirectory().
     ENGINE_GAMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../games"
+    # Same real "packaged sibling dir, else fall back to this compile-time
+    # source path" resolution as ENGINE_ASSET_DIR/ENGINE_GAMES_DIR -- where
+    # NativePluginManager::discover() looks for real, separately compiled
+    # native (.so/.dll) engine plugins. Deliberately a distinct directory
+    # from the top-level plugins/ folder, which already belongs to the
+    # unrelated Lua/manifest studio::scanLocalPluginDirectory() system.
+    # Not required to exist -- discover() returns a real, honest empty
+    # result if it doesn't (see ResourcePaths.hpp's own resolveResourceDir()
+    # comment on why compileTimeFallback isn't existence-checked here).
+    ENGINE_NATIVE_PLUGIN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../native_plugins"
     # Without this, glm::perspective()/glm::ortho() default to OpenGL's
     # clip-space Z range ([-1,1]) -- Vulkan requires [0,1] (its clip
     # volume is defined by 0<=z<=w, not -w<=z<=w). Depth *testing* still

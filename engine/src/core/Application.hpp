@@ -17,6 +17,7 @@
 #include "core/EmoteSystem.hpp"
 #include "core/Interactable.hpp"
 #include "core/Mesh.hpp"
+#include "core/NativePluginManager.hpp"
 #include "core/Navigation.hpp"
 #include "core/ParticleSystem.hpp"
 #include "core/PerformanceDiagnostics.hpp"
@@ -121,6 +122,12 @@ public:
     [[nodiscard]] Physics& physics() { return physics_; }
     [[nodiscard]] Audio& audio() { return audio_; }
     [[nodiscard]] Scripting& scripting() { return scripting_; }
+    // Kronos ("Native Plugin Architecture"): real, currently loaded
+    // native (.so/.dll) engine plugins -- discovered once from the
+    // packaged/dev "plugins" directory in initialize() and ticked
+    // every frame alongside tickScriptHotReload() below. See
+    // NativePluginManager.hpp's own class comment for the full contract.
+    [[nodiscard]] NativePluginManager& nativePlugins() { return nativePlugins_; }
     [[nodiscard]] MeshLibrary& meshLibrary() { return meshLibrary_; }
     [[nodiscard]] TextureLibrary& textureLibrary() { return textureLibrary_; }
     [[nodiscard]] Camera& camera() { return camera_; }
@@ -687,6 +694,7 @@ private:
     Physics physics_;
     Audio audio_;
     Scripting scripting_;
+    NativePluginManager nativePlugins_;
     MeshLibrary meshLibrary_;
     TextureLibrary textureLibrary_;
     Camera camera_;

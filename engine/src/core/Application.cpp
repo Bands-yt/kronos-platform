@@ -658,6 +658,12 @@ bool Application::initialize(const CreateInfo& info) {
         // hand-copied second version.
         core::tickScriptHotReload(ecs_, scripting_);
 
+        // Kronos ("Native Plugin Architecture"): real per-tick forward to
+        // every currently loaded native plugin -- see
+        // NativePluginManager::tick()'s own comment. An honest no-op when
+        // nativePlugins_ has nothing loaded (today's default).
+        nativePlugins_.tick(dt, ecs_);
+
         totalSimTime_ += dt;
 
         // Kronos ("Environmental Detail" world-building): real, general,
@@ -2268,6 +2274,24 @@ bool Application::initialize(const CreateInfo& info) {
                          static_cast<double>(lastPerformanceMetrics_.processCpuPercent), profiler_.events().size());
         }
     });
+
+    // Kronos ("Native Plugin Architecture"): real, one-time discovery and
+    // load of every native (.so/.dll) engine plugin sitting in the
+    // packaged/dev "native_plugins" directory (see NativePluginManager.hpp's
+    // own class comment) -- an honest no-op today on every existing dev
+    // and packaged build, since no such directory is checked in yet, same
+    // as ENGINE_GAMES_DIR before the first real bundled game shipped. A
+    // plugin that fails to load (missing symbols, ABI mismatch) is
+    // skipped with a real, specific stderr diagnosis rather than aborting
+    // startup -- one bad plugin shouldn't take down the whole engine.
+    for (const auto& found : NativePluginManager::discover(
+             resolveResourceDir(executableDirectory(), "native_plugins", ENGINE_NATIVE_PLUGIN_DIR))) {
+        std::string pluginError;
+        if (!nativePlugins_.loadPlugin(found.name, found.libraryPath, ecs_, pluginError)) {
+            std::fprintf(stderr, "Application: failed to load native plugin '%s': %s\n", found.name.c_str(),
+                         pluginError.c_str());
+        }
+    }
 
     headless_ = info.headless;
     initialized_ = true;

@@ -143,6 +143,7 @@
 #include "core/MeshUvPicking.hpp"
 #include "core/UILayout.hpp"
 #include "core/CppHotReloadHost.hpp"
+#include "core/NativePluginManager.hpp"
 #include "core/ScriptHotReload.hpp"
 #include "hotreload_fixtures/CounterComponent.hpp"
 #include "core/ScriptNetworkApi.hpp"
@@ -25962,6 +25963,66 @@ void testCppHotReloadHostSlotsAreIndependent() {
           "contribution without disturbing slotB's");
 }
 
+void testNativePluginManagerDiscoversLoadsAndUnloadsRealPlugins() {
+    // NativePluginManager wraps CppHotReloadHost with plugin-shaped
+    // bookkeeping: real directory discovery, and tracking each loaded
+    // plugin's own source path for listLoadedPlugins(). This proves both
+    // halves against the SAME real fixture .so files the CppHotReloadHost
+    // tests above use -- a "plugin" and a "hot-reloadable module" are the
+    // same real ABI shape (see NativePluginManager.hpp's own class
+    // comment), just discovered and tracked differently.
+    std::filesystem::path fixtureDir = std::filesystem::path(HOTRELOAD_MODULE_V1_PATH).parent_path();
+    std::vector<engine::core::NativePluginManager::DiscoveredPlugin> discovered =
+        engine::core::NativePluginManager::discover(fixtureDir.string());
+    check(!discovered.empty(), "discover() finds real shared libraries in the fixture build directory");
+
+    std::string v1Stem = std::filesystem::path(HOTRELOAD_MODULE_V1_PATH).stem().string();
+    bool foundV1 = false;
+    for (const auto& plugin : discovered) {
+        if (plugin.name == v1Stem) {
+            foundV1 = true;
+            check(plugin.libraryPath == std::string(HOTRELOAD_MODULE_V1_PATH),
+                  "discover() reports the real, exact build-tree path for a real match");
+        }
+    }
+    check(foundV1, "discover() finds the real V1 fixture module by its own filename stem");
+
+    check(engine::core::NativePluginManager::discover("/nonexistent/not_a_real_directory").empty(),
+          "discover() on a missing directory is a real, honest empty result, not an error");
+
+    engine::core::ECS ecs;
+    auto entity = ecs.createEntity("Counter");
+    auto& counter = ecs.addComponent<CounterComponent>(entity);
+
+    engine::core::NativePluginManager manager;
+    std::string error;
+    check(manager.loadPlugin("terrainTool", HOTRELOAD_MODULE_V1_PATH, ecs, error),
+          ("NativePluginManager real-loads a plugin: " + error).c_str());
+    check(manager.isPluginLoaded("terrainTool"), "manager reports the real plugin loaded");
+    check(manager.pluginCount() == 1, "manager tracks exactly the one real loaded plugin");
+    check(manager.listLoadedPlugins()[0].libraryPath == std::string(HOTRELOAD_MODULE_V1_PATH),
+          "manager's own bookkeeping records the real source path a plugin was loaded from");
+
+    manager.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 1, "ticking the manager real-ticks the loaded plugin's module against the shared ecs");
+
+    check(manager.loadPlugin("terrainTool", HOTRELOAD_MODULE_V2_PATH, ecs, error),
+          ("NativePluginManager real-swaps a plugin's own code: " + error).c_str());
+    check(manager.pluginCount() == 1, "hot-swapping an already-loaded plugin name doesn't grow the tracked count");
+    check(manager.listLoadedPlugins()[0].libraryPath == std::string(HOTRELOAD_MODULE_V2_PATH),
+          "manager's bookkeeping reflects the real, newly loaded source path after a swap");
+
+    manager.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 1 + 100, "post-swap tick runs the plugin's real, different V2 code (+100)");
+
+    manager.unloadPlugin("terrainTool");
+    check(!manager.isPluginLoaded("terrainTool"), "unloadPlugin() real-tears down the named plugin");
+    check(manager.pluginCount() == 0, "manager's own bookkeeping drops the unloaded plugin");
+
+    manager.tick(1.0f / 60.0f, ecs);
+    check(counter.value == 1 + 100, "ticking after unload is a real no-op -- no plugin left to run");
+}
+
 // --- WorldPackage --------------------------------------------------------------
 
 void testWorldPackagePathHelpersUseRealFixedNames() {
@@ -39473,6 +39534,7 @@ int main() {
     testTickScriptHotReloadPreservesEcsAndPhysicsState();
     testCppHotReloadHostSwapsCodeWhileEcsStatePersists();
     testCppHotReloadHostSlotsAreIndependent();
+    testNativePluginManagerDiscoversLoadsAndUnloadsRealPlugins();
     testWorldPackagePathHelpersUseRealFixedNames();
     testWorldPackageSaveToDirectoryCreatesRealFiles();
     testWorldPackageSaveLoadRoundTrip();
