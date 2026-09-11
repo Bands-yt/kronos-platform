@@ -3,6 +3,7 @@
 #include <imgui.h>
 
 #include "core/Components.hpp"
+#include "core/Logger.hpp"
 #include "core/ScriptHotReload.hpp"
 
 namespace engine::studio::plugins {
@@ -65,6 +66,21 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
         // script can pause/resume/step this simulation.
         scriptPhysicsPreviewApi_ = std::make_unique<ScriptPhysicsPreviewApi>(*this, ecs);
         scripting_.setBindingsHook([this](lua_State* L) { scriptPhysicsPreviewApi_->registerInto(L); });
+        // Kronos ("Script Editor QoL" -- Engine Console click-to-jump):
+        // without this, loadAndRun()'s compile/runtime error messages
+        // (which embed the entity's own Name as chunkName -- see
+        // core::tickScriptHotReload()) only ever reached stderr, so a
+        // real entity script error never showed up in the Engine Log tab
+        // at all. Same compile/runtime-vs-everything-else classification
+        // DebugConsolePanel::appendLine() already uses for its own REPL
+        // output, so both sources land in the Engine Log tab consistently.
+        scripting_.setOutputCallback([](const std::string& line) {
+            if (line.rfind("compile error", 0) == 0 || line.rfind("runtime error", 0) == 0) {
+                core::logError("Script", "%s", line.c_str());
+            } else {
+                core::logInfo("Script", "%s", line.c_str());
+            }
+        });
     }
 
     playing_ = true;

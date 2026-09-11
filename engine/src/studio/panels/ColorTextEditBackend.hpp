@@ -52,6 +52,14 @@ public:
         return "Native editor (ImGuiColorTextEdit + Luau.Analysis)";
     }
 
+    // Kronos ("Script Editor QoL" -- Engine Console click-to-jump): real
+    // caret placement via TextEditor::SetCursorPosition, unlike
+    // ImGuiFallbackEditor's plain InputTextMultiline (no addressable
+    // cursor API) -- this backend can seek to the exact line.
+    // SetCursorPosition() calls the editor's own EnsureCursorVisible()
+    // internally, so the jump also scrolls the target line into view.
+    void moveCaretToLine(int oneBasedLine) override;
+
 private:
     void reanalyze();
 

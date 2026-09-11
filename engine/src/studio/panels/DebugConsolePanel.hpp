@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,21 @@ class MovieModePlugin;
 }
 
 namespace engine::studio::panels {
+
+// Kronos ("Script Editor QoL" -- Engine Console click-to-jump): a
+// resolved click on a script-error Engine Log line -- StudioApp polls
+// DebugConsolePanel::takePendingScriptJump() once per frame right after
+// draw() and, if set, relays it to ExplorerPanel::setSelected(entity)
+// plus ScriptEditorPanel::openAndJumpToLine(entity, oneBasedLine). The
+// entity is resolved (by Name, same linear-scan pattern
+// RuntimeAnimationPlayer.cpp's own findEntityByName() already uses) at
+// click time, inside this panel -- not deferred as a raw string -- so a
+// stale/renamed chunk name simply produces no pending jump at all,
+// rather than StudioApp having to re-derive "no such entity" itself.
+struct PendingScriptJump {
+    core::EntityId entity = core::kNullEntity;
+    int oneBasedLine = 1;
+};
 
 // A real Luau REPL-style console docked in Studio -- type a snippet, hit
 // Run, see what it printed. Owns its own core::Scripting instance (the
@@ -76,6 +92,12 @@ public:
 
     void draw();
 
+    // Kronos ("Script Editor QoL" -- Engine Console click-to-jump): see
+    // PendingScriptJump's own comment above. Pop semantics -- returns
+    // and clears whatever the last click set, so StudioApp consuming it
+    // once per frame doesn't need to also clear it back out here itself.
+    [[nodiscard]] std::optional<PendingScriptJump> takePendingScriptJump();
+
 private:
     void appendLine(const std::string& line);
     void drawReplTab();
@@ -103,6 +125,8 @@ private:
     bool showInfoLogs_ = true;
     bool showWarnLogs_ = true;
     bool showErrorLogs_ = true;
+
+    std::optional<PendingScriptJump> pendingScriptJump_;
 };
 
 } // namespace engine::studio::panels

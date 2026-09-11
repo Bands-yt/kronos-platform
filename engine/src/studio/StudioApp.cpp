@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "core/Baseplate.hpp"
 #include "core/Components.hpp"
 #include "core/GameCatalogueAggregate.hpp"
 #include "core/GameManifest.hpp"
@@ -1501,6 +1502,8 @@ void StudioApp::drawFileMenu() {
                                             &movieModePlugin_->rail(), &movieModePlugin_->sequence());
         }
         sceneManager_.newScene(ecs_);
+        (void)core::spawnDefaultBaseplate(ecs_, meshLibrary_, textureLibrary_, renderer_.allocator(),
+                                           renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue());
         explorerPanel_.setSelected(core::kNullEntity);
     }
 
@@ -2238,6 +2241,19 @@ void StudioApp::run() {
         // (e.g. plugins::MovieModePlugin's ScriptCinematicApi) depends on
         // ticking regardless of whether its window is ever shown.
         if (showDebugConsole()) debugConsolePanel_.draw();
+        // Kronos ("Script Editor QoL" -- Engine Console click-to-jump):
+        // relay a resolved click from the Engine Log tab to both the
+        // Explorer (the clicked entity becomes the real selection, same
+        // as clicking it in the tree) and the Script Editor (its tab
+        // opens/focuses with the caret on the error line). Polled here,
+        // not inside DebugConsolePanel::draw() itself, so
+        // DebugConsolePanel stays independent of ExplorerPanel/
+        // ScriptEditorPanel -- it only ever hands back a resolved
+        // EntityId + line, never touches those panels directly.
+        if (auto jump = debugConsolePanel_.takePendingScriptJump()) {
+            explorerPanel_.setSelected(jump->entity);
+            scriptEditorPanel_.openAndJumpToLine(ecs_, jump->entity, jump->oneBasedLine);
+        }
         drawImportDialog();
 
         // Sprint 8 ("Performance Stats & Debug Tools"): compose this
