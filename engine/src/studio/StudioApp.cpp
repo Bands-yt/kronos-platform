@@ -2238,7 +2238,8 @@ void StudioApp::run() {
         if (show3DViewport()) {
             viewportPanel_.draw(deltaTime, viewportTarget_.imguiTextureId(), viewportTarget_.extent(), &ecs_,
                                  &meshLibrary_, explorerPanel_, physicsPreviewPlugin_, viewportDebugContext,
-                                 movieModePlugin_, showEngineDebugOverlays(), modelingModePlugin_);
+                                 movieModePlugin_, showEngineDebugOverlays(), modelingModePlugin_,
+                                 terrainEditorPlugin_);
         }
         if (showScriptEditor()) scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
         // debugConsolePanel_.tick() above still runs unconditionally in

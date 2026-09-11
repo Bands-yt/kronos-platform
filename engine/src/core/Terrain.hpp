@@ -148,6 +148,24 @@ public:
     [[nodiscard]] bool isValid() const { return !chunks_.empty(); }
     [[nodiscard]] const CreateInfo& info() const { return info_; }
 
+    // Real ray-vs-heightfield intersection -- march along the ray inside
+    // the terrain's own XZ footprint (an exact 2D slab test against
+    // [origin, origin + (gridResolution-1)*cellSize)^2, so a ray that
+    // never crosses the terrain's real extent can't produce a false hit
+    // off heightAt()'s own edge-clamping behavior), then bisect the first
+    // step where the ray crosses from above the surface to below it.
+    // Used by TerrainEditorPlugin for click-to-sculpt: this is the
+    // "mouse-ray-to-terrain picking" this class never had (see
+    // TerrainEditorPlugin.hpp's own header comment on that gap) --
+    // deliberately analytic, not a Physics::raycast(), since Studio runs
+    // no live core::Physics instance by default (see create()'s own
+    // `physics` parameter comment) and this needs to work with or
+    // without one. Returns false (outHitPoint left untouched) if the ray
+    // never enters the terrain's XZ footprint within maxDistance, or
+    // never crosses the surface within it.
+    [[nodiscard]] bool raycast(const glm::vec3& rayOrigin, const glm::vec3& rayDirection, float maxDistance,
+                                glm::vec3& outHitPoint) const;
+
     // --- Whole-terrain generation (task category 1: "noise-based
     // generation" + "heightmaps") -------------------------------------
 

@@ -20,6 +20,7 @@ class PhysicsPreviewPlugin;
 class MovieModePlugin;
 class ModelImporterPlugin;
 class ModelingModePlugin;
+class TerrainEditorPlugin;
 }
 
 namespace engine::studio::panels {
@@ -143,7 +144,18 @@ public:
               // Mode's own sub-object picking/gizmo simply doesn't run,
               // same "absent plugin, absent feature" precedent
               // physicsPreview/movieMode above already establish.
-              plugins::ModelingModePlugin* modelingMode = nullptr);
+              plugins::ModelingModePlugin* modelingMode = nullptr,
+              // Kronos (terrain live-sculpt gap): when non-null and
+              // liveSculptEnabled(), drawTerrainSculpt() raycasts the mouse
+              // against the plugin's own core::Terrain::raycast() every
+              // frame and drives a click-drag-release stroke through
+              // beginLiveStroke()/applyLiveBrush()/endLiveStroke() -- see
+              // that method's own comment. Also gates off handleSelection()
+              // while active, the same "one interaction owns the mouse at a
+              // time" precedent drawSubObjectEditing()'s Ctrl+Click already
+              // establishes for a different plugin. nullptr (every existing
+              // caller besides Studio) means this simply doesn't run.
+              plugins::TerrainEditorPlugin* terrainEditor = nullptr);
 
     [[nodiscard]] core::Camera& camera() { return camera_; }
     [[nodiscard]] const core::Camera& camera() const { return camera_; }
@@ -287,6 +299,17 @@ private:
     // fight for the same drag.
     void drawSubObjectEditing(plugins::ModelingModePlugin& modelingMode, core::ECS& ecs, core::EntityId selected,
                                ImVec2 imageOrigin, ImVec2 imageSize);
+
+    // Kronos (terrain live-sculpt gap): raycasts the mouse against
+    // terrainEditor's core::Terrain every frame (analytic heightfield
+    // raycast -- see Terrain::raycast()'s own comment on why, not
+    // core::pickEntity()'s mesh-AABB test), draws a brush-ring preview at
+    // the hit point, and drives beginLiveStroke()/applyLiveBrush()/
+    // endLiveStroke() off the left mouse button's click/hold/release --
+    // no whole-entity selection needed, unlike drawSubObjectEditing()'s
+    // Ctrl+Click, since sculpting isn't per-entity.
+    void drawTerrainSculpt(plugins::TerrainEditorPlugin& terrainEditor, core::ECS& ecs, ImVec2 imageOrigin,
+                            ImVec2 imageSize, float deltaTime);
 
     // Sprint 8 ("Performance Stats & Debug Tools") task category 2:
     // bounding-box overlay (every Renderable+Transform+MeshSource entity's

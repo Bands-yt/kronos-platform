@@ -449,6 +449,85 @@ float Terrain::heightAt(float worldX, float worldZ) const {
     return glm::mix(hx0, hx1, fz);
 }
 
+bool Terrain::raycast(const glm::vec3& rayOrigin, const glm::vec3& rayDirection, float maxDistance,
+                       glm::vec3& outHitPoint) const {
+    if (heights_.empty() || maxDistance <= 0.0f) return false;
+
+    float dirLen = glm::length(rayDirection);
+    if (dirLen < 1e-8f) return false;
+    glm::vec3 dir = rayDirection / dirLen;
+
+    // Exact 2D slab test against the terrain's real XZ footprint, so a
+    // ray that never crosses the terrain can't produce a false hit off
+    // heightAt()'s own out-of-bounds edge-clamping.
+    float minX = info_.origin.x;
+    float maxX = info_.origin.x + static_cast<float>(info_.gridResolution - 1) * info_.cellSize;
+    float minZ = info_.origin.z;
+    float maxZ = info_.origin.z + static_cast<float>(info_.gridResolution - 1) * info_.cellSize;
+
+    float tMin = 0.0f;
+    float tMax = maxDistance;
+
+    auto clipAxis = [&](float originAxis, float dirAxis, float lo, float hi) -> bool {
+        if (std::abs(dirAxis) < 1e-8f) return originAxis >= lo && originAxis <= hi;
+        float t0 = (lo - originAxis) / dirAxis;
+        float t1 = (hi - originAxis) / dirAxis;
+        if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+        tMin = std::max(tMin, t0);
+        tMax = std::min(tMax, t1);
+        return tMin <= tMax;
+    };
+
+    if (!clipAxis(rayOrigin.x, dir.x, minX, maxX)) return false;
+    if (!clipAxis(rayOrigin.z, dir.z, minZ, maxZ)) return false;
+    if (tMax < 0.0f) return false;
+    tMin = std::max(tMin, 0.0f);
+    if (tMin > tMax) return false;
+
+    // March the clipped range in fixed steps looking for the first step
+    // where the ray crosses from above the surface to below it, then
+    // bisect that step down to a precise hit point.
+    auto heightDiffAt = [&](float t) -> float {
+        glm::vec3 p = rayOrigin + dir * t;
+        return p.y - heightAt(p.x, p.z);
+    };
+
+    constexpr float kStepSize = 0.5f;
+    float span = tMax - tMin;
+    int numSteps = std::max(1, static_cast<int>(std::ceil(span / kStepSize)));
+    float step = span / static_cast<float>(numSteps);
+
+    float prevT = tMin;
+    float prevDiff = heightDiffAt(prevT);
+
+    for (int i = 1; i <= numSteps; ++i) {
+        float t = tMin + step * static_cast<float>(i);
+        float diff = heightDiffAt(t);
+
+        if (prevDiff >= 0.0f && diff < 0.0f) {
+            float lo = prevT, hi = t;
+            float loDiff = prevDiff;
+            for (int iter = 0; iter < 24; ++iter) {
+                float mid = 0.5f * (lo + hi);
+                float midDiff = heightDiffAt(mid);
+                if ((loDiff >= 0.0f) == (midDiff >= 0.0f)) {
+                    lo = mid;
+                    loDiff = midDiff;
+                } else {
+                    hi = mid;
+                }
+            }
+            outHitPoint = rayOrigin + dir * (0.5f * (lo + hi));
+            return true;
+        }
+
+        prevT = t;
+        prevDiff = diff;
+    }
+
+    return false;
+}
+
 void Terrain::regenerateAllChunks() {
     for (Chunk& chunk : chunks_) regenerateChunk(chunk);
 }

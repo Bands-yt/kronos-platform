@@ -28,6 +28,7 @@
 #include "studio/CreatorToolsSpawning.hpp"
 #include "studio/StudioIcons.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
+#include "studio/plugins/TerrainEditorPlugin.hpp"
 
 namespace engine::studio::panels {
 
@@ -1032,11 +1033,78 @@ void ViewportPanel::drawSubObjectEditing(plugins::ModelingModePlugin& modelingMo
     }
 }
 
+void ViewportPanel::drawTerrainSculpt(plugins::TerrainEditorPlugin& terrainEditor, core::ECS& ecs,
+                                       ImVec2 imageOrigin, ImVec2 imageSize, float deltaTime) {
+    // endLiveStroke() must run before any early-return below: if a stroke
+    // is active and this frame happens to fail hasTerrain()/imageSize (a
+    // terrain deleted mid-drag, a viewport briefly collapsed to zero
+    // size), skipping the release check would leave strokeActive_ stuck
+    // true forever -- beginLiveStroke() no-ops against that, so every
+    // future stroke would silently stop recording undo, and the stale
+    // strokeBeforeSnapshot_ could even be the wrong size for a
+    // recreated terrain.
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        terrainEditor.endLiveStroke();
+    }
+
+    if (!terrainEditor.hasTerrain() || imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    bool hovered = ImGui::IsWindowHovered();
+    bool overGizmo = ImGuizmo::IsOver() || ImGuizmo::IsUsing();
+
+    glm::vec3 rayOrigin, rayDirection;
+    computeMouseRay(io.MousePos, imageOrigin, imageSize, rayOrigin, rayDirection);
+
+    glm::vec3 hitPoint(0.0f);
+    bool hasHit = hovered && !overGizmo && terrainEditor.raycastFromMouse(rayOrigin, rayDirection, hitPoint);
+
+    // Click/hold drives one stroke -- see beginLiveStroke()'s own comment
+    // on why this lands one UndoStack::Command per drag instead of per
+    // frame. A stroke that starts on the terrain and drags off it still
+    // closes out correctly: applyLiveBrush() simply isn't called on
+    // off-terrain frames, and the release check above already fired
+    // before this function could return early for any reason.
+    if (hasHit && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        terrainEditor.beginLiveStroke();
+    }
+    if (hasHit && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        terrainEditor.applyLiveBrush(hitPoint.x, hitPoint.z, ecs, deltaTime);
+    }
+
+    if (!hasHit) return;
+
+    // Brush-ring preview -- same worldToScreen()+camRight-offset radius
+    // computation drawSubObjectEditing()'s own sculpt ring uses, just
+    // centered on a live raycast hit instead of a static sub-object
+    // anchor. forward() can be near-parallel to world-up (camera looking
+    // straight down, the single most common pose for a terrain tool),
+    // which sends the un-guarded cross product to a near-zero vector and
+    // normalize() to NaN -- fall back to world +X, which is never
+    // parallel to a forward vector that's near vertical.
+    const glm::mat4 view = renderCamera_.viewMatrix();
+    const glm::mat4 proj = renderCamera_.projectionMatrix(imageSize.x / imageSize.y);
+    const glm::mat4 viewProj = proj * view;
+    glm::vec3 camRight = glm::cross(renderCamera_.forward(), glm::vec3(0.0f, 1.0f, 0.0f));
+    camRight = glm::length(camRight) > 1e-4f ? glm::normalize(camRight) : glm::vec3(1.0f, 0.0f, 0.0f);
+    ImVec2 screenCenter, screenRim;
+    if (worldToScreen(viewProj, hitPoint, imageOrigin, imageSize, screenCenter) &&
+        worldToScreen(viewProj, hitPoint + camRight * terrainEditor.brushRadius(), imageOrigin, imageSize,
+                      screenRim)) {
+        float screenRadius = std::sqrt((screenRim.x - screenCenter.x) * (screenRim.x - screenCenter.x) +
+                                        (screenRim.y - screenCenter.y) * (screenRim.y - screenCenter.y));
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        constexpr ImU32 kBrushRingColor = IM_COL32(120, 255, 140, 220);
+        drawList->AddCircle(screenCenter, screenRadius, kBrushRingColor, 48, 2.0f);
+        drawList->AddCircleFilled(screenCenter, 3.0f, kBrushRingColor);
+    }
+}
+
 void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent2D sceneTextureExtent,
                           core::ECS* ecs, core::MeshLibrary* meshLibrary, ExplorerPanel& explorer,
                           plugins::PhysicsPreviewPlugin* physicsPreview, const ViewportDebugContext& debugContext,
                           plugins::MovieModePlugin* movieMode, bool showEngineDebugOverlays,
-                          plugins::ModelingModePlugin* modelingMode) {
+                          plugins::ModelingModePlugin* modelingMode, plugins::TerrainEditorPlugin* terrainEditor) {
     ImGuizmo::BeginFrame(); // once per ImGui frame -- see header comment
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -1100,8 +1168,17 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         ImGui::EndDragDropTarget();
     }
 
+    // Live Sculpt claims plain left-click for terrain sculpting, so it
+    // must be the only thing responding to it -- the whole-entity gizmo,
+    // click-to-select, and drag-select-box all defer to it while it's on
+    // (same "one interaction owns the mouse at a time" precedent
+    // drawSubObjectEditing()'s Ctrl+Click already sets for a different
+    // plugin, just full deferral instead of modifier-disambiguation since
+    // Live Sculpt doesn't use a modifier).
+    bool liveSculptActive = terrainEditor != nullptr && terrainEditor->liveSculptEnabled();
+
     core::EntityId selected = explorer.selectedEntity();
-    if (ecs != nullptr && selected != core::kNullEntity) {
+    if (ecs != nullptr && selected != core::kNullEntity && !liveSculptActive) {
         // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast
         // picking): a real core::EditableMeshComponent on the selection
         // switches to Modeling Mode's own vertex/edge/face gizmo instead
@@ -1119,10 +1196,13 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     }
 
     // Click-to-select / drag-select-box -- only while free-flying isn't
-    // consuming the mouse (right-drag) and there's an ECS+MeshLibrary to
-    // pick against.
-    if (ecs != nullptr && meshLibrary != nullptr && !dragging_) {
+    // consuming the mouse (right-drag), there's an ECS+MeshLibrary to pick
+    // against, and Live Sculpt isn't claiming left-click instead.
+    if (ecs != nullptr && meshLibrary != nullptr && !dragging_ && !liveSculptActive) {
         handleSelection(*ecs, *meshLibrary, explorer, imageOrigin, imageSize);
+    }
+    if (ecs != nullptr && !dragging_ && liveSculptActive) {
+        drawTerrainSculpt(*terrainEditor, *ecs, imageOrigin, imageSize, deltaTime);
     }
 
     if (ecs != nullptr && physicsPreview != nullptr) {
