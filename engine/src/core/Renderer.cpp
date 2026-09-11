@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <set>
 #include <unordered_map>
@@ -141,6 +142,14 @@ bool Renderer::initialize(const CreateInfo& info) {
             return false;
         }
     }
+    // Needs physicalDevice_/device_ only, and must precede every
+    // createXPipeline() call below -- each one now passes pipelineCache_
+    // instead of VK_NULL_HANDLE. A failure here is not fatal: pipelineCache_
+    // stays VK_NULL_HANDLE, which vkCreateGraphicsPipelines already treats
+    // identically to today's existing behavior.
+    if (!createPipelineCache()) {
+        std::fprintf(stderr, "Renderer: pipeline cache setup failed -- continuing without one.\n");
+    }
     if (!createMaterialResources()) return false;          // also not per-frame-sized -- must exist before createScenePipeline()'s 2-set layout
     // Needs defaultWhiteTexture_ (createMaterialResources) for its
     // pre-fill, and must precede createScenePipeline() which consumes the
@@ -221,6 +230,79 @@ bool Renderer::createInstance() {
 bool Renderer::createSurface() {
     surface_ = window_->createSurface(instance_);
     return surface_ != VK_NULL_HANDLE;
+}
+
+bool Renderer::createPipelineCache() {
+    std::string exeDir = executableDirectory();
+    pipelineCacheFilePath_ = (exeDir.empty() ? std::string(".") : exeDir) + "/.kronos_pipeline_cache.bin";
+
+    VkPhysicalDeviceProperties deviceProps{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProps);
+
+    std::vector<char> cacheData;
+    std::ifstream file(pipelineCacheFilePath_, std::ios::binary | std::ios::ate);
+    if (file.is_open()) {
+        std::streamsize size = file.tellg();
+        if (size >= static_cast<std::streamsize>(sizeof(VkPipelineCacheHeaderVersionOne))) {
+            file.seekg(0, std::ios::beg);
+            cacheData.resize(static_cast<size_t>(size));
+            if (!file.read(cacheData.data(), size)) {
+                cacheData.clear();
+            }
+        }
+    }
+
+    // A cache blob is only valid for the exact GPU/driver that produced it
+    // -- vendorID/deviceID/pipelineCacheUUID all have to match, or
+    // vkCreatePipelineCache is allowed to (and some drivers will) reject
+    // the whole blob outright. Checking this ourselves means a stale blob
+    // (GPU swap, driver update) is silently discarded here rather than
+    // surfacing as a vkCreatePipelineCache failure.
+    if (!cacheData.empty()) {
+        VkPipelineCacheHeaderVersionOne header{};
+        std::memcpy(&header, cacheData.data(), sizeof(header));
+        bool matches = header.headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
+                       header.vendorID == deviceProps.vendorID &&
+                       header.deviceID == deviceProps.deviceID &&
+                       std::memcmp(header.pipelineCacheUUID, deviceProps.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+        if (!matches) {
+            cacheData.clear();
+        }
+    }
+
+    VkPipelineCacheCreateInfo createInfo{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    createInfo.initialDataSize = cacheData.size();
+    createInfo.pInitialData = cacheData.empty() ? nullptr : cacheData.data();
+
+    if (vkCreatePipelineCache(device_, &createInfo, nullptr, &pipelineCache_) != VK_SUCCESS) {
+        pipelineCache_ = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
+}
+
+void Renderer::savePipelineCacheToDisk() {
+    if (pipelineCache_ == VK_NULL_HANDLE || pipelineCacheFilePath_.empty()) return;
+
+    size_t dataSize = 0;
+    if (vkGetPipelineCacheData(device_, pipelineCache_, &dataSize, nullptr) != VK_SUCCESS || dataSize == 0) {
+        return;
+    }
+    std::vector<char> data(dataSize);
+    if (vkGetPipelineCacheData(device_, pipelineCache_, &dataSize, data.data()) != VK_SUCCESS) {
+        return;
+    }
+
+    std::ofstream file(pipelineCacheFilePath_, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) return;
+    file.write(data.data(), static_cast<std::streamsize>(dataSize));
+}
+
+void Renderer::destroyPipelineCache() {
+    if (pipelineCache_ != VK_NULL_HANDLE) {
+        vkDestroyPipelineCache(device_, pipelineCache_, nullptr);
+        pipelineCache_ = VK_NULL_HANDLE;
+    }
 }
 
 Renderer::QueueFamilyIndices Renderer::findQueueFamilies(VkPhysicalDevice device) const {
@@ -879,7 +961,7 @@ bool Renderer::createShadowPipeline() {
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = shadowPipelineLayout_;
 
-    VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadowPipeline_);
+    VkResult result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &shadowPipeline_);
     vkDestroyShaderModule(device_, vertModule, nullptr);
 
     if (result != VK_SUCCESS) {
@@ -1969,7 +2051,7 @@ bool Renderer::createScenePipeline() {
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = scenePipelineLayout_;
 
-    VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &scenePipeline_);
+    VkResult result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &scenePipeline_);
 
     vkDestroyShaderModule(device_, vertModule, nullptr);
     vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -2108,7 +2190,7 @@ bool Renderer::createGlassPipeline() {
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = glassPipelineLayout_;
 
-    VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &glassPipeline_);
+    VkResult result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &glassPipeline_);
 
     vkDestroyShaderModule(device_, vertModule, nullptr);
     vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -2263,7 +2345,7 @@ bool Renderer::createSkinnedScenePipeline() {
     pipelineInfo.layout = skinnedScenePipelineLayout_;
 
     VkResult result =
-        vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &skinnedScenePipeline_);
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &skinnedScenePipeline_);
 
     vkDestroyShaderModule(device_, vertModule, nullptr);
     vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -2398,7 +2480,7 @@ bool Renderer::createInstancedScenePipeline() {
     pipelineInfo.layout = scenePipelineLayout_;
 
     VkResult result =
-        vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &instancedScenePipeline_);
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &instancedScenePipeline_);
 
     vkDestroyShaderModule(device_, vertModule, nullptr);
     vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -2547,7 +2629,7 @@ bool Renderer::createParticlePipeline() {
     }
     pipelineInfo.layout = particlePipelineLayout_;
 
-    VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &particlePipeline_);
+    VkResult result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &particlePipeline_);
 
     vkDestroyShaderModule(device_, vertModule, nullptr);
     vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -3101,7 +3183,7 @@ bool Renderer::createPostProcessPipelines() {
                 pipelineInfo.pDynamicState = &dynamicState;
                 pipelineInfo.layout = bloomExtractPipelineLayout_;
 
-                ok = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &bloomExtractPipeline_) ==
+                ok = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &bloomExtractPipeline_) ==
                      VK_SUCCESS;
             }
             vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -3165,7 +3247,7 @@ bool Renderer::createPostProcessPipelines() {
                 pipelineInfo.pDynamicState = &dynamicState;
                 pipelineInfo.layout = compositePipelineLayout_;
 
-                ok = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &compositePipeline_) ==
+                ok = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &compositePipeline_) ==
                      VK_SUCCESS;
             }
             vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -3230,7 +3312,7 @@ bool Renderer::createPostProcessPipelines() {
                 pipelineInfo.pDynamicState = &dynamicState;
                 pipelineInfo.layout = cinematicPipelineLayout_;
 
-                ok = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &cinematicPipeline_) ==
+                ok = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &cinematicPipeline_) ==
                      VK_SUCCESS;
             }
             vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -3299,7 +3381,7 @@ bool Renderer::createPostProcessPipelines() {
                 pipelineInfo.pDynamicState = &dynamicState;
                 pipelineInfo.layout = volumetricFogPipelineLayout_;
 
-                ok = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                ok = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr,
                                                 &volumetricFogPipeline_) == VK_SUCCESS;
             }
             vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -3368,7 +3450,7 @@ bool Renderer::createPostProcessPipelines() {
                 pipelineInfo.pDynamicState = &dynamicState;
                 pipelineInfo.layout = ssrPipelineLayout_;
 
-                ok = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &ssrPipeline_) ==
+                ok = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &ssrPipeline_) ==
                      VK_SUCCESS;
             }
             vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -3428,7 +3510,7 @@ bool Renderer::createPostProcessPipelines() {
                 pipelineInfo.pDynamicState = &dynamicState;
                 pipelineInfo.layout = luminancePipelineLayout_;
 
-                ok = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &luminancePipeline_) ==
+                ok = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &luminancePipeline_) ==
                      VK_SUCCESS;
             }
             vkDestroyShaderModule(device_, fragModule, nullptr);
@@ -3534,7 +3616,7 @@ bool Renderer::createSkyPipeline() {
         pipelineInfo.pDynamicState = &dynamicState;
         pipelineInfo.layout = skyPipelineLayout_;
 
-        ok = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &skyPipeline_) == VK_SUCCESS;
+        ok = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &skyPipeline_) == VK_SUCCESS;
     }
 
     vkDestroyShaderModule(device_, vertModule, nullptr);
@@ -5721,6 +5803,15 @@ void Renderer::shutdown() {
     destroySkinnedScenePipeline();
     destroyGlassPipeline();
     destroyScenePipeline();
+
+    // Persist whatever every createXPipeline() call above just compiled
+    // into pipelineCache_ back to disk, so the next process launch's
+    // createPipelineCache() starts from it instead of an empty cache.
+    // Must run after the pipelines are destroyed (pipelineCache_ itself
+    // stays valid either way, but this keeps the "tear down what this
+    // sprint added" block self-contained) and before vkDestroyDevice below.
+    savePipelineCacheToDisk();
+    destroyPipelineCache();
 
     // Safety net: any studio::PreviewScene that didn't call
     // destroyAuxiliaryScene() itself before this (it should have --

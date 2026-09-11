@@ -1472,6 +1472,24 @@ private:
     [[nodiscard]] bool isDeviceSuitable(VkPhysicalDevice device) const;
     [[nodiscard]] int scoreDevice(VkPhysicalDevice device) const;
 
+    // Loads engine-fpc.bin (an on-disk VkPipelineCache blob, see .cpp) next
+    // to the running executable if one exists and its header matches this
+    // physical device exactly (vendorID/deviceID/pipelineCacheUUID -- a
+    // stale blob from a different GPU or driver is silently discarded, not
+    // an error), then creates pipelineCache_ from whatever data survived
+    // that check (empty is fine -- an empty-initialized VkPipelineCache is
+    // exactly as valid as VK_NULL_HANDLE was everywhere it now replaces
+    // it, just one that accumulates and can be saved back out).
+    [[nodiscard]] bool createPipelineCache();
+    // vkGetPipelineCacheData() + write to pipelineCacheFilePath_. Called
+    // from shutdown() after every vkCreateGraphicsPipelines call site this
+    // sprint switched from VK_NULL_HANDLE to pipelineCache_ -- so the next
+    // process launch's createPipelineCache() has every pipeline compiled
+    // this run already resident, and only genuinely new/changed pipelines
+    // pay a real compile cost.
+    void savePipelineCacheToDisk();
+    void destroyPipelineCache();
+
     Window* window_ = nullptr;
     std::string appName_;
     bool validationEnabled_ = false;
@@ -1486,6 +1504,15 @@ private:
     VkQueue graphicsQueue_ = VK_NULL_HANDLE;
     VkQueue presentQueue_ = VK_NULL_HANDLE;
     VmaAllocator allocator_ = nullptr;
+
+    // Sprint ("Cold-Boot Shader Compile Latency"): real, persistent across
+    // process launches -- see createPipelineCache()/savePipelineCacheToDisk()
+    // above. Every vkCreateGraphicsPipelines call in this file passed
+    // VK_NULL_HANDLE here before this sprint, meaning every cold boot
+    // recompiled all ~13 pipelines from scratch regardless of whether the
+    // driver had already compiled them on a previous run.
+    VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
+    std::string pipelineCacheFilePath_;
 
     // Sprint 14 ("RTX Upgrade" Phase 2) -- see isRayTracingSupported()/
     // setRayTracedShadowsEnabled()'s own public comment.
