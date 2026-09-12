@@ -105,17 +105,23 @@ layout(set = 0, binding = 1) uniform sampler2DArray shadowMapArray;
 // renderer picks the bindless variant only on a device that supports
 // descriptor indexing, so a device without it keeps exactly the path
 // that shipped before.
-#ifdef KRONOS_BINDLESS
-layout(set = 2, binding = 0) uniform sampler2D bindlessTextures[];
-
 // Texture indices arrive as a flat varying rather than a push constant:
 // three different vertex shaders with three different pipeline layouts
 // feed this fragment shader, so a push_constant block here would be tied
-// to only one of them.
+// to only one of them. Declared unconditionally (not just under
+// KRONOS_BINDLESS) because .w (the unlitSilhouette flag -- see
+// Components.hpp's Renderable::unlitSilhouette and SceneTypes.hpp's own
+// field comment) has to keep working on non-bindless devices too; every
+// real vertex shader that feeds this fragment shader (scene.vert,
+// scene_instanced.vert) writes this varying unconditionally already.
 //   x = albedo | (normal    << 16)
 //   y = metallic | (roughness << 16)
 //   z = ao
+//   w = unlitSilhouette flag (0/1)
 layout(location = 8) in flat uvec4 inTextureIndices;
+
+#ifdef KRONOS_BINDLESS
+layout(set = 2, binding = 0) uniform sampler2D bindlessTextures[];
 
 // nonuniformEXT is required, not decorative: fragments within one draw
 // can index different slots, and without it the index is treated as
@@ -572,6 +578,19 @@ vec3 triplanarWorldNormal(sampler2D tex, vec3 worldPos, vec3 geometricNormal, ve
 }
 
 void main() {
+    // Kronos ("VHS / Analog Bodycam" -- unlit volumetric dark
+    // silhouettes): real, early exit -- skips the entire BRDF/shadow/
+    // ambient/fog pipeline below rather than driving albedo/emissive
+    // toward black, so this stays a true flat silhouette (no specular
+    // highlight, no rim light, no fog tint) against whatever's behind it.
+    // Depth is still written normally (this is a real fragment write, not
+    // a discard), so it occludes and gets occluded exactly like any other
+    // opaque object -- see Components.hpp's Renderable::unlitSilhouette.
+    if (inTextureIndices.w != 0u) {
+        outColor = vec4(0.0, 0.0, 0.0, inBaseColor.a);
+        return;
+    }
+
     // Real, per-object opt-in (inMetallicRoughness.w, real, confirmed-
     // unused padding before this -- see SceneTypes.hpp's own
     // ObjectPushConstants comment): only Terrain chunks set this (see

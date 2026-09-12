@@ -52,6 +52,13 @@
 #include "core/ObjLoader.hpp"
 #include "core/UvTools.hpp"
 #include "housedemo/HouseLayout.hpp"
+#include "despair/FPSPlayerController.hpp"
+#include "despair/HorrorAIManager.hpp"
+#include "despair/FacilityLayout.hpp"
+#include "despair/InteractionSystem.hpp"
+#include "despair/SanitySystem.hpp"
+#include "despair/EscapeGameLoop.hpp"
+#include "despair/VhsBodycamEffects.hpp"
 
 #include "core/Animation.hpp"
 #include "core/AnimationDatabase.hpp"
@@ -21168,6 +21175,148 @@ void testBindlessTableAcquireIsZeroHeapOnceWarm() {
           "re-acquiring real resident textures really performs ZERO heap allocations across 60 real frames");
 }
 
+// VHS / Analog Bodycam static burst, PROJECT: DESPAIR's own facility
+// escape loop, and its layout invariants -- the pure/headless functions
+// this window's VHS pipeline and the pre-existing escape mechanics both
+// rely on, exercised the same "pure function, no ECS/Vulkan" way
+// BindlessTextureTable's own tests above do.
+
+void testVhsStaticNoiseIntensityHasNoBurstWithNoThreat() {
+    check(engine::despair::computeVhsStaticNoiseIntensity(-1.0f) == 0.0f,
+          "the real 'no Hunting threat this tick' sentinel really produces zero static");
+}
+
+void testVhsStaticNoiseIntensityIsFullBurstInsideBurstRadius() {
+    check(engine::despair::computeVhsStaticNoiseIntensity(0.0f) == 1.0f,
+          "a real threat right on top of the player really produces a full static burst");
+    check(engine::despair::computeVhsStaticNoiseIntensity(4.0f) == 1.0f,
+          "a real threat exactly at the burst radius really still produces a full burst");
+}
+
+void testVhsStaticNoiseIntensityFadesBetweenBurstAndFadeRadius() {
+    const float mid = engine::despair::computeVhsStaticNoiseIntensity(7.0f); // halfway between 4 and 10
+    check(std::fabs(mid - 0.5f) < 0.001f, "a real threat halfway through the fade zone really produces half-intensity static");
+
+    const float nearer = engine::despair::computeVhsStaticNoiseIntensity(5.0f);
+    const float farther = engine::despair::computeVhsStaticNoiseIntensity(9.0f);
+    check(nearer > farther, "a real closer threat really produces more static than a real farther one");
+}
+
+void testVhsStaticNoiseIntensityIsZeroBeyondFadeRadius() {
+    check(engine::despair::computeVhsStaticNoiseIntensity(10.0f) == 0.0f,
+          "a real threat exactly at the fade radius really produces zero static");
+    check(engine::despair::computeVhsStaticNoiseIntensity(50.0f) == 0.0f,
+          "a real distant threat really produces zero static");
+}
+
+void testVhsStaticNoiseIntensityRespectsCustomRadii() {
+    check(engine::despair::computeVhsStaticNoiseIntensity(2.0f, 1.0f, 3.0f) < 1.0f,
+          "a real custom burst radius really is honored instead of the default");
+    check(engine::despair::computeVhsStaticNoiseIntensity(1.0f, 1.0f, 3.0f) == 1.0f,
+          "a real distance exactly at a real custom burst radius really still bursts full");
+}
+
+void testToggleBreakerFlipsState() {
+    engine::despair::PowerBreaker breaker;
+    check(!breaker.activated, "a real fresh breaker really starts off");
+    check(engine::despair::toggleBreaker(breaker) == true, "toggling really returns the real new state");
+    check(breaker.activated, "and really flips the real breaker on");
+    check(engine::despair::toggleBreaker(breaker) == false, "toggling again really flips it back off");
+    check(!breaker.activated, "leaving the real breaker off");
+}
+
+void testIsPlayerCaughtUsesRealCatchRadius() {
+    const glm::vec3 player{0.0f, 0.0f, 0.0f};
+    check(engine::despair::isPlayerCaught(player, glm::vec3(1.0f, 0.0f, 0.0f)),
+          "a real threat within the real default catch radius really counts as caught");
+    check(!engine::despair::isPlayerCaught(player, glm::vec3(5.0f, 0.0f, 0.0f)),
+          "a real threat far outside the real default catch radius really does not count as caught");
+    check(!engine::despair::isPlayerCaught(player, glm::vec3(2.0f, 0.0f, 0.0f), 1.2f),
+          "a real threat beyond a real explicit catch radius really does not count as caught");
+    check(engine::despair::isPlayerCaught(player, glm::vec3(2.0f, 0.0f, 0.0f), 3.0f),
+          "the real same threat really does count as caught once a real wider radius is given");
+}
+
+void testTryEscapeThroughBlastDoorRequiresBothKeycardAndPower() {
+    engine::despair::LockedDoor blastDoor;
+    blastDoor.requiredTier = engine::despair::KeycardTier::Gold;
+    engine::despair::KeycardInventory inventory;
+    engine::despair::PowerBreaker breaker;
+
+    check(engine::despair::tryEscapeThroughBlastDoor(blastDoor, inventory, breaker) ==
+              engine::despair::DoorUnlockResult::DeniedMissingKeycard,
+          "no real Master Keycard and no real power really denies escape");
+
+    engine::despair::addKeycardTier(inventory, engine::despair::KeycardTier::Gold);
+    check(engine::despair::tryEscapeThroughBlastDoor(blastDoor, inventory, breaker) ==
+              engine::despair::DoorUnlockResult::DeniedMissingKeycard,
+          "a real Master Keycard with the real power still off really is still denied");
+
+    breaker.activated = true;
+    check(engine::despair::tryEscapeThroughBlastDoor(blastDoor, inventory, breaker) ==
+              engine::despair::DoorUnlockResult::Unlocked,
+          "a real Master Keycard AND real power really unlocks the real blast door");
+}
+
+void testTryEscapeThroughBlastDoorReportsAlreadyUnlocked() {
+    engine::despair::LockedDoor blastDoor;
+    blastDoor.locked = false;
+    engine::despair::KeycardInventory inventory;
+    engine::despair::PowerBreaker breaker;
+    check(engine::despair::tryEscapeThroughBlastDoor(blastDoor, inventory, breaker) ==
+              engine::despair::DoorUnlockResult::NotLocked,
+          "a real already-unlocked blast door really reports NotLocked regardless of keycard/power");
+}
+
+void testUpdateEscapeGameStateLatchesFirstOutcome() {
+    engine::despair::EscapeGameState state;
+    engine::despair::updateEscapeGameState(state, false, false, false);
+    check(state.outcome == engine::despair::EscapeOutcome::InProgress,
+          "no real trigger this tick really leaves the real state InProgress");
+
+    engine::despair::updateEscapeGameState(state, true, false, false);
+    check(state.outcome == engine::despair::EscapeOutcome::LostToMadness,
+          "a real depleted sanity really resolves to LostToMadness");
+
+    // Once resolved, further calls must be a real honest no-op -- the
+    // same one-way-latch precedent DespairCullerAIState already sets.
+    engine::despair::updateEscapeGameState(state, false, true, true);
+    check(state.outcome == engine::despair::EscapeOutcome::LostToMadness,
+          "a real already-resolved outcome really never re-triggers on a later tick");
+}
+
+void testUpdateEscapeGameStateResolvesCaughtAndVictory() {
+    engine::despair::EscapeGameState caught;
+    engine::despair::updateEscapeGameState(caught, false, true, false);
+    check(caught.outcome == engine::despair::EscapeOutcome::CaughtByHunter,
+          "a real Hunting threat catching the player really resolves to CaughtByHunter");
+
+    engine::despair::EscapeGameState victory;
+    engine::despair::updateEscapeGameState(victory, false, false, true);
+    check(victory.outcome == engine::despair::EscapeOutcome::Victory,
+          "a real successful blast-door escape really resolves to Victory");
+}
+
+void testFacilityLayoutHasBothBlastDoorGateConditions() {
+    const engine::despair::FacilityLayout layout = engine::despair::computeFacilityLayout();
+    check(!layout.breakers.empty(), "a real facility layout really places at least one power breaker");
+    check(layout.blastDoor.requiredTier == engine::despair::KeycardTier::Gold,
+          "the real blast door really requires the real Gold Master Keycard tier");
+
+    // The Gold Master Keycard is a container's LootDrop (the duffel bag),
+    // not a directly-placed FacilityKeycardSpec -- only the EntryHall Red
+    // keycard is placed that way (see FacilityLayout.cpp).
+    bool hasGoldMasterKeycardDrop = false;
+    for (const auto& container : layout.containers) {
+        if (container.loot.kind == engine::despair::LootKind::Keycard &&
+            container.loot.keycardTier == engine::despair::KeycardTier::Gold) {
+            hasGoldMasterKeycardDrop = true;
+        }
+    }
+    check(hasGoldMasterKeycardDrop,
+          "a real facility layout really places a real Gold Master Keycard drop for its own blast door gate");
+}
+
 void testTimelineTimeAndPixelRoundTrip() {
     engine::cinematic::TimelineView view;
     view.scrollSeconds = 2.0f;
@@ -34826,6 +34975,29 @@ engine::core::EditableMesh makeWeldedQuad() {
     return engine::core::EditableMesh::fromVertexData(std::move(vertices), std::move(indices));
 }
 
+// Real, fully-welded unit box -- 8 shared corner vertices, 12 triangles,
+// each of the 4 side faces sharing its 2 vertical edges with its
+// neighbors -- unlike EditableMesh::createBox() (flat-shaded, no vertex
+// sharing across faces), this is what sliceByPlane()'s own cap-fill
+// needs a real, closed cross-section boundary loop to chain correctly.
+engine::core::EditableMesh makeWeldedBox(glm::vec3 h) {
+    std::vector<engine::core::Vertex> vertices = {
+        {{-h.x, -h.y, -h.z}, {0, 0, 0}, {0, 0}}, {{h.x, -h.y, -h.z}, {0, 0, 0}, {0, 0}},
+        {{h.x, h.y, -h.z}, {0, 0, 0}, {0, 0}},   {{-h.x, h.y, -h.z}, {0, 0, 0}, {0, 0}},
+        {{-h.x, -h.y, h.z}, {0, 0, 0}, {0, 0}},  {{h.x, -h.y, h.z}, {0, 0, 0}, {0, 0}},
+        {{h.x, h.y, h.z}, {0, 0, 0}, {0, 0}},    {{-h.x, h.y, h.z}, {0, 0, 0}, {0, 0}},
+    };
+    std::vector<uint32_t> indices = {
+        0, 2, 1, 0, 3, 2, // back (-z)
+        4, 5, 6, 4, 6, 7, // front (+z)
+        0, 4, 7, 0, 7, 3, // left (-x)
+        1, 2, 6, 1, 6, 5, // right (+x)
+        0, 1, 5, 0, 5, 4, // bottom (-y)
+        3, 7, 6, 3, 6, 2, // top (+y)
+    };
+    return engine::core::EditableMesh::fromVertexData(std::move(vertices), std::move(indices));
+}
+
 void testEditableMeshCreateBoxHasRealBoxTopology() {
     auto box = engine::core::EditableMesh::createBox({0.5f, 0.5f, 0.5f});
     check(box.vertexCount() == 24, "box has 24 vertices (4 per face x 6 faces, flat-shaded)");
@@ -34935,6 +35107,85 @@ void testEditableMeshInsetFaceShrinksTowardCentroidAndAddsSixFaces() {
     glm::vec3 centroidAfter = box.faceCentroid(0);
     check(nearlyEqual(glm::distance(centroidBefore, centroidAfter), 0.0f, 1e-3f),
           "an inset face's centroid stays put (shrinks symmetrically around the same center)");
+}
+
+void testEditableMeshSliceByPlaneKeepsOnlyTheRequestedSideAndCapsTheCut() {
+    // Real, fully-welded unit box (half-extents 0.5, so corners at
+    // y = +-0.5) sliced exactly through its own center by the XZ plane --
+    // no vertex lands exactly on the plane, so every one of the 4 side
+    // faces' 2 triangles is a real mixed (1-kept or 2-kept) clip case,
+    // and the top/bottom faces are each entirely kept/discarded.
+    auto box = makeWeldedBox({0.5f, 0.5f, 0.5f});
+    auto sliced =
+        engine::core::sliceByPlane(box, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f), /*keepPositiveSide=*/true,
+                                    /*fillCap=*/true);
+
+    fprintf(stderr, "[DEBUG] faceCount=%zu vertexCount=%zu\n", sliced.faceCount(), sliced.vertexCount());
+    for (size_t f = 0; f < sliced.faceCount(); ++f) {
+        glm::vec3 n = sliced.faceNormal(f);
+        fprintf(stderr, "[DEBUG] face %zu normal = (%f, %f, %f)\n", f, n.x, n.y, n.z);
+    }
+    check(sliced.faceCount() == 16,
+          "12 side/top wall triangles from clipping (4 side faces x 3 each) + 2 kept top-face triangles + 2 real "
+          "cap triangles from the new 4-vertex boundary loop");
+    check(sliced.vertexCount() == 8,
+          "4 real, surviving top-half original vertices + 4 new cut vertices + 1 real cap centroid vertex, with "
+          "every discarded-side original vertex actually dropped (not left dangling unreferenced)");
+
+    glm::vec3 minB = sliced.boundsMin();
+    glm::vec3 maxB = sliced.boundsMax();
+    check(minB.y > -1e-4f, "every surviving vertex is on the requested (+Y) kept side of the plane");
+    check(maxB.y > 0.49f, "the kept half still reaches the original box's own top face");
+
+    bool foundCorrectlyWoundCapFace = false;
+    for (size_t f = 0; f < sliced.faceCount(); ++f) {
+        // faceNormal() derives the normal from real triangle winding
+        // (position cross product), independent of the cap vertices' own
+        // stored `normal` field -- a real check that the cap's fan
+        // triangulation is actually wound to face into the removed (-Y)
+        // void, not just labeled that way.
+        if (glm::dot(sliced.faceNormal(f), glm::vec3(0.0f, -1.0f, 0.0f)) > 0.99f) {
+            foundCorrectlyWoundCapFace = true;
+            break;
+        }
+    }
+    check(foundCorrectlyWoundCapFace,
+          "fillCap's new cap triangles are wound so their real geometric normal points into the discarded "
+          "(-effectiveNormal) side, not back into the kept solid");
+}
+
+void testEditableMeshSliceByPlaneKeepingTheOppositeSideMirrorsTheResult() {
+    auto box = makeWeldedBox({0.5f, 0.5f, 0.5f});
+    auto sliced =
+        engine::core::sliceByPlane(box, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f), /*keepPositiveSide=*/false,
+                                    /*fillCap=*/true);
+
+    glm::vec3 minB = sliced.boundsMin();
+    glm::vec3 maxB = sliced.boundsMax();
+    check(maxB.y < 1e-4f, "keepPositiveSide=false keeps the opposite (-Y) side of the exact same plane");
+    check(minB.y < -0.49f, "the kept half still reaches the original box's own bottom face");
+    check(sliced.faceCount() == 16, "keeping the other side is a real mirror of the same clip -- same face count");
+}
+
+void testEditableMeshSliceByPlaneWithoutFillCapLeavesAnOpenShell() {
+    auto box = makeWeldedBox({0.5f, 0.5f, 0.5f});
+    auto sliced = engine::core::sliceByPlane(box, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+                                              /*keepPositiveSide=*/true, /*fillCap=*/false);
+    check(sliced.faceCount() == 14, "fillCap=false skips the 2 real cap triangles, leaving the cut shell open");
+}
+
+void testEditableMeshSliceByPlaneOutsideTheMeshEitherKeepsOrDiscardsEverything() {
+    auto box = makeWeldedBox({0.5f, 0.5f, 0.5f});
+    auto allKept = engine::core::sliceByPlane(box, glm::vec3(0.0f, -10.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+                                               /*keepPositiveSide=*/true, /*fillCap=*/true);
+    check(allKept.faceCount() == box.faceCount() && allKept.vertexCount() == box.vertexCount(),
+          "a plane entirely below the mesh, kept side up, is a real, honest no-op -- everything survives untouched");
+
+    auto allDiscarded = engine::core::sliceByPlane(box, glm::vec3(0.0f, -10.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+                                                    /*keepPositiveSide=*/false, /*fillCap=*/true);
+    check(allDiscarded.faceCount() == 0 && allDiscarded.vertexCount() == 0,
+          "flipping which side survives for that same below-the-mesh plane discards everything, with no dangling "
+          "cap fan attempted (no boundary edges exist to close)");
 }
 
 // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast picking):
@@ -35778,6 +36029,1048 @@ void testHouseLayoutDoorGapIsOpenInFrontWall() {
     check(!gapBlocked, "no front-wall part blocks the door gap at ground level");
 }
 
+// PROJECT: DESPAIR -- SanitySystem, the first engine-agnostic system in
+// the vertical slice. Deliberately exercised with hand-placed Transform/
+// Light/SanityHazard entities (no FPSPlayerController, no AI classes --
+// neither exists yet), matching SanitySystem.hpp's own header comment on
+// why it depends on nothing but core ECS components.
+void testSanitySystemDrainsInDarknessWithNoLightSources() {
+    engine::core::ECS ecs;
+    auto player = ecs.createEntity("Player");
+    ecs.addComponent<engine::despair::SanityState>(player);
+
+    engine::despair::SanitySystem sanity;
+    sanity.update(1.0f, ecs);
+
+    auto* state = ecs.tryGetComponent<engine::despair::SanityState>(player);
+    check(state != nullptr && nearlyEqual(state->current, 100.0f - engine::despair::SanitySystem::kDarknessDrainPerSecond, 0.01f),
+          "with zero light sources, one second of darkness drains exactly kDarknessDrainPerSecond");
+}
+
+void testSanitySystemNearbyLightPreventsDarknessDrain() {
+    engine::core::ECS ecs;
+    auto player = ecs.createEntity("Player");
+    ecs.addComponent<engine::despair::SanityState>(player);
+
+    auto lightEntity = ecs.createEntity("Light");
+    auto& light = ecs.addComponent<engine::core::Light>(lightEntity);
+    light.intensity = 10.0f;
+    light.radius = 10.0f;
+
+    engine::despair::SanitySystem sanity;
+    check(sanity.computeIlluminationAt(ecs, glm::vec3(0.0f)) > engine::despair::SanitySystem::kDarknessThreshold,
+          "a bright light at the player's own position reads well above the darkness threshold");
+
+    sanity.update(1.0f, ecs);
+    auto* state = ecs.tryGetComponent<engine::despair::SanityState>(player);
+    check(state != nullptr && nearlyEqual(state->current, 100.0f, 0.01f),
+          "a lit spot with no hazards nearby drains no sanity at all");
+}
+
+void testSanitySystemHazardProximityDrainsRegardlessOfGaze() {
+    engine::core::ECS ecs;
+    auto player = ecs.createEntity("Player");
+    ecs.addComponent<engine::despair::SanityState>(player);
+
+    // Cancel darkness drain so this test isolates hazard proximity drain.
+    auto lightEntity = ecs.createEntity("Light");
+    auto& light = ecs.addComponent<engine::core::Light>(lightEntity);
+    light.intensity = 10.0f;
+    light.radius = 10.0f;
+
+    // Directly behind the player's forward vector (-Z) -- within radius
+    // but well outside the gaze cone, so only proximityDrainPerSecond
+    // should apply, none of gazeDrainPerSecond.
+    auto hazardEntity = ecs.createEntity("Hazard");
+    auto* hazardTransform = ecs.tryGetComponent<engine::core::Transform>(hazardEntity);
+    hazardTransform->position = glm::vec3(0.0f, 0.0f, 5.0f);
+    ecs.addComponent<engine::despair::SanityHazard>(hazardEntity);
+
+    engine::despair::SanitySystem sanity;
+    sanity.update(1.0f, ecs);
+
+    auto* state = ecs.tryGetComponent<engine::despair::SanityState>(player);
+    check(state != nullptr && nearlyEqual(state->current, 100.0f - 3.0f, 0.01f),
+          "an un-gazed hazard within radius drains only its flat proximityDrainPerSecond (3.0 default)");
+}
+
+void testSanitySystemGazeAddsExponentiallyGrowingExtraDrain() {
+    engine::core::ECS ecs;
+    auto player = ecs.createEntity("Player");
+    ecs.addComponent<engine::despair::SanityState>(player);
+
+    auto lightEntity = ecs.createEntity("Light");
+    auto& light = ecs.addComponent<engine::core::Light>(lightEntity);
+    light.intensity = 10.0f;
+    light.radius = 10.0f;
+
+    // Directly along the player's own forward vector (-Z, identity
+    // rotation) -- a dead-on gaze, dot product == 1.0.
+    auto hazardEntity = ecs.createEntity("Hazard");
+    auto* hazardTransform = ecs.tryGetComponent<engine::core::Transform>(hazardEntity);
+    hazardTransform->position = glm::vec3(0.0f, 0.0f, -3.0f);
+    auto& hazard = ecs.addComponent<engine::despair::SanityHazard>(hazardEntity);
+    hazard.gazeExponential = true;
+
+    engine::despair::SanitySystem sanity;
+    sanity.update(1.0f, ecs);
+    auto* state = ecs.tryGetComponent<engine::despair::SanityState>(player);
+    float afterFirstTick = state->current;
+    check(nearlyEqual(afterFirstTick, 100.0f - (3.0f + 6.0f), 0.01f),
+          "first second of a dead-on gaze: proximity (3.0) + gazeDrainPerSecond at zero accumulated stare (6.0)");
+
+    sanity.update(1.0f, ecs);
+    float afterSecondTick = state->current;
+    float firstTickDrop = 100.0f - afterFirstTick;
+    float secondTickDrop = afterFirstTick - afterSecondTick;
+    check(secondTickDrop > firstTickDrop,
+          "a second, uninterrupted second of gaze drains MORE than the first -- real exponential growth, not a flat rate");
+}
+
+void testSanitySystemGazeForwardVectorRespectsPlayerRotation() {
+    // Every other gaze test leaves the player at identity rotation, which
+    // pins only the *rest* direction (-Z) and would pass even if
+    // SanitySystem::update() ignored Transform::rotation entirely. This
+    // test yaws the player 180 degrees and checks gaze flips accordingly
+    // -- the only real proof playerForward is actually
+    // rotation * (0,0,-1), not just a hardcoded constant.
+    engine::core::ECS ecs;
+    auto player = ecs.createEntity("Player");
+    ecs.addComponent<engine::despair::SanityState>(player);
+    auto* playerTransform = ecs.tryGetComponent<engine::core::Transform>(player);
+    playerTransform->rotation = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    // Cancels out kDarknessDrainPerSecond so the checked value below
+    // isolates the gaze-direction contribution, same reason every other
+    // exact-arithmetic gaze test in this file lights the scene.
+    auto lightEntity = ecs.createEntity("Light");
+    auto& light = ecs.addComponent<engine::core::Light>(lightEntity);
+    light.intensity = 10.0f;
+    light.radius = 10.0f;
+
+    // Behind the identity-forward direction, so now dead ahead of the
+    // yawed-180 player.
+    auto aheadEntity = ecs.createEntity("Ahead");
+    auto* aheadTransform = ecs.tryGetComponent<engine::core::Transform>(aheadEntity);
+    aheadTransform->position = glm::vec3(0.0f, 0.0f, 5.0f);
+    auto& aheadHazard = ecs.addComponent<engine::despair::SanityHazard>(aheadEntity);
+    aheadHazard.gazeDrainPerSecond = 20.0f;
+    aheadHazard.proximityDrainPerSecond = 0.0f;
+
+    // Where identity-forward WOULD point -- now behind the yawed player.
+    auto behindEntity = ecs.createEntity("Behind");
+    auto* behindTransform = ecs.tryGetComponent<engine::core::Transform>(behindEntity);
+    behindTransform->position = glm::vec3(0.0f, 0.0f, -3.0f);
+    auto& behindHazard = ecs.addComponent<engine::despair::SanityHazard>(behindEntity);
+    // Deliberately different from aheadHazard's 20.0 -- if the two used
+    // the same rate, a completely wrong/hardcoded forward vector that
+    // gazes the wrong hazard would drain the same total and this test
+    // would pass either way. This value is chosen so "gazed the wrong
+    // one" (100-5=95) and "gazed both" (100-25=75) are both
+    // distinguishable from the real, expected 100-20=80.
+    behindHazard.gazeDrainPerSecond = 5.0f;
+    behindHazard.proximityDrainPerSecond = 0.0f;
+
+    engine::despair::SanitySystem sanity;
+    sanity.update(1.0f, ecs);
+    auto* state = ecs.tryGetComponent<engine::despair::SanityState>(player);
+    check(nearlyEqual(state->current, 100.0f - 20.0f, 0.01f),
+          "180-degree-yawed player gazes at the hazard now in front of them (+Z), not the one behind (-Z) -- "
+          "playerForward really is rotation * (0,0,-1), not a hardcoded constant");
+}
+
+void testSanitySystemApplyInstantDeltaClampsToValidRange() {
+    engine::core::ECS ecs;
+    auto player = ecs.createEntity("Player");
+    auto& state = ecs.addComponent<engine::despair::SanityState>(player);
+    state.current = 90.0f;
+
+    engine::despair::SanitySystem sanity;
+    sanity.applyInstantDelta(ecs, player, 50.0f);
+    check(nearlyEqual(state.current, 100.0f, 0.01f), "an Injector-sized +50 clamps at max, doesn't overshoot to 140");
+
+    sanity.applyInstantDelta(ecs, player, -150.0f);
+    check(nearlyEqual(state.current, 0.0f, 0.01f), "a large negative delta clamps at 0, doesn't go negative");
+}
+
+void testSanitySystemHallucinationCallbackFiresExactlyOnceOnEachCrossing() {
+    engine::core::ECS ecs;
+    auto player = ecs.createEntity("Player");
+    auto& state = ecs.addComponent<engine::despair::SanityState>(player);
+    state.current = 25.0f; // above kHallucinationThreshold (20)
+
+    int crossCount = 0;
+    engine::despair::SanitySystem sanity;
+    sanity.setOnHallucinationThresholdCrossed([&](engine::core::EntityId, float) { ++crossCount; });
+
+    sanity.applyInstantDelta(ecs, player, -10.0f); // 25 -> 15, crosses below 20
+    check(crossCount == 1, "crossing below the hallucination threshold fires the callback once");
+    check(sanity.isHallucinating(ecs, player), "isHallucinating() reflects the now-below-threshold state");
+
+    sanity.applyInstantDelta(ecs, player, -5.0f); // 15 -> 10, still below
+    check(crossCount == 1, "staying below threshold does not re-fire the callback every call");
+
+    sanity.applyInstantDelta(ecs, player, 20.0f); // 10 -> 30, recovers above threshold
+    check(crossCount == 1, "recovering back above threshold does not fire the (downward-crossing-only) callback");
+    check(!sanity.isHallucinating(ecs, player), "isHallucinating() clears once sanity recovers above threshold");
+
+    sanity.applyInstantDelta(ecs, player, -15.0f); // 30 -> 15, crosses below again
+    check(crossCount == 2, "re-crossing below threshold after recovery fires the callback again");
+}
+
+// PROJECT: DESPAIR -- HorrorAIManager's pure state-machine functions,
+// tested the same way miningsim::tickMobBehaviorState already is: plain
+// vec3s/bools, no ECS, no live Jolt instance. The raycast/gaze-cone glue
+// that resolves those bools from a real scene is covered separately below
+// by the two HorrorAIManager integration tests, since that glue (not this
+// transition logic) is where a real bug would actually hide.
+
+void testStalkerStateFreezesWhenPlayerLooksAtItRegardlessOfDistance() {
+    engine::despair::StalkerAIState stalker;
+    check(stalker.detectionRadius == 20.0f, "test assumes the default detectionRadius");
+    // 40 units is well outside the default 20-unit detectionRadius -- proves
+    // the freeze branch really does bypass distance/detectionRadius
+    // entirely (as tickStalkerState's own code does: it checks
+    // playerLooksAtStalker before touching distance at all), not just that
+    // it happens to also be true within range.
+    engine::despair::tickStalkerState(stalker, glm::vec3(0.0f, 0.0f, -40.0f), glm::vec3(0.0f, 0.0f, 0.0f),
+                                       /*hasLineOfSight=*/true, /*playerLooksAtStalker=*/true);
+    check(stalker.behavior == engine::despair::StalkerBehaviorState::Frozen,
+          "being looked at wins even far outside detectionRadius, with a clear line of sight back");
+
+    glm::vec3 pos = engine::despair::stalkerMovementStep(stalker, glm::vec3(0.0f, 0.0f, -40.0f), 1.0f);
+    check(nearlyEqual(pos.z, -40.0f, 0.001f), "a frozen stalker is a real, honest no-op -- it does not move at all");
+}
+
+void testStalkerStateStalksTowardLastKnownPositionThenGivesUp() {
+    engine::despair::StalkerAIState stalker;
+    stalker.detectionRadius = 20.0f;
+    glm::vec3 stalkerPos(0.0f, 0.0f, -10.0f);
+    glm::vec3 playerPos(0.0f, 0.0f, 0.0f);
+
+    engine::despair::tickStalkerState(stalker, stalkerPos, playerPos, /*hasLineOfSight=*/true,
+                                       /*playerLooksAtStalker=*/false);
+    check(stalker.behavior == engine::despair::StalkerBehaviorState::Stalking,
+          "clear LOS within detectionRadius, unseen by the player -> Stalking");
+
+    stalkerPos = engine::despair::stalkerMovementStep(stalker, stalkerPos, 1.0f);
+    check(nearlyEqual(stalkerPos.z, -8.5f, 0.001f), "moves moveSpeed*dt (1.5) straight toward the last known position");
+
+    // Line of sight is lost now, but it should keep creeping toward
+    // lastKnownPlayerPos rather than snapping back to Dormant immediately.
+    engine::despair::tickStalkerState(stalker, stalkerPos, playerPos, /*hasLineOfSight=*/false,
+                                       /*playerLooksAtStalker=*/false);
+    check(stalker.behavior == engine::despair::StalkerBehaviorState::Stalking,
+          "losing sight doesn't reset it -- it still remembers where the player was");
+
+    // Force it to (within kArrivalEpsilon of) the last known position and
+    // tick once more: it should give up and go Dormant.
+    stalkerPos = stalker.lastKnownPlayerPos;
+    engine::despair::tickStalkerState(stalker, stalkerPos, glm::vec3(999.0f), /*hasLineOfSight=*/false,
+                                       /*playerLooksAtStalker=*/false);
+    check(stalker.behavior == engine::despair::StalkerBehaviorState::Dormant,
+          "arriving at the last known position with nothing else to go on gives up");
+}
+
+void testTormentorStateHuntsOnSightThenInvestigatesLastKnownPosition() {
+    engine::despair::TormentorAIState tormentor;
+    glm::vec3 tormentorPos(0.0f, 0.0f, 0.0f);
+    glm::vec3 playerPos(0.0f, 0.0f, 10.0f);
+
+    engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, playerPos, /*playerNoiseLevel=*/0.0f,
+                                         /*hasLineOfSight=*/true);
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Hunting,
+          "direct, unobstructed sight within visionRadius is enough to hunt even with zero noise");
+
+    // Sight is lost -- should downgrade to Investigating the last place it
+    // was actually seen, not drop straight to Idle.
+    engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, playerPos, /*playerNoiseLevel=*/0.0f,
+                                         /*hasLineOfSight=*/false);
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Investigating,
+          "losing sight downgrades to Investigating rather than resetting to Idle immediately");
+
+    // Run the loseInterest clock out with nothing else happening.
+    for (int i = 0; i < 6; ++i) {
+        engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, playerPos, /*playerNoiseLevel=*/0.0f,
+                                             /*hasLineOfSight=*/false);
+    }
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Idle,
+          "kLoseInterestSeconds (5s) of nothing -- no sight, no noise -- gives up back to Idle");
+}
+
+void testTormentorStateHearsLoudPlayerButNotSilentOne() {
+    engine::despair::TormentorAIState tormentor;
+    tormentor.hearingRadiusAtFullNoise = 25.0f;
+    glm::vec3 tormentorPos(0.0f);
+    glm::vec3 playerPos(0.0f, 0.0f, 20.0f); // 20 units away, no LOS
+
+    // A silent player (noise == 0) is never heard, no matter how close --
+    // the whole point of PlayerNoiseLevel existing as a real seam, not a
+    // fixed "always audible within radius" proximity check.
+    engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, playerPos, /*playerNoiseLevel=*/0.0f,
+                                         /*hasLineOfSight=*/false);
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Idle,
+          "zero noise level means zero effective hearing radius, regardless of distance");
+
+    // Half noise -> effective hearing radius is 12.5, still short of the
+    // real 20-unit distance -- should still not hear.
+    engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, playerPos, /*playerNoiseLevel=*/0.5f,
+                                         /*hasLineOfSight=*/false);
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Idle,
+          "half noise level's effective hearing radius (12.5) doesn't reach a real 20-unit distance");
+
+    // Full noise -> effective hearing radius is the full 25, which does
+    // reach -> Investigating.
+    engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, playerPos, /*playerNoiseLevel=*/1.0f,
+                                         /*hasLineOfSight=*/false);
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Investigating,
+          "full noise level's effective hearing radius (25) reaches the real 20-unit distance");
+}
+
+void testTormentorStateNoiseInvestigateTargetIsSnapshotNotLiveHoming() {
+    engine::despair::TormentorAIState tormentor;
+    tormentor.hearingRadiusAtFullNoise = 25.0f;
+    glm::vec3 tormentorPos(0.0f);
+    glm::vec3 firstNoisePos(0.0f, 0.0f, 5.0f);
+
+    engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, firstNoisePos, /*playerNoiseLevel=*/1.0f,
+                                         /*hasLineOfSight=*/false);
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Investigating,
+          "full-noise player within hearing radius -> Investigating");
+    check(nearlyEqual(tormentor.investigateTarget.z, 5.0f, 0.001f), "snapshots the noise's real origin");
+
+    // The player keeps moving and making noise on every following tick.
+    // investigateTarget must stay pinned to firstNoisePos -- a real "go
+    // check out where that sound was," not live homing on the player's
+    // current position (that would just be Hunting with extra steps and
+    // defeat the whole "silent player is never heard" stealth seam).
+    glm::vec3 secondNoisePos(0.0f, 0.0f, 8.0f);
+    engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, secondNoisePos, /*playerNoiseLevel=*/1.0f,
+                                         /*hasLineOfSight=*/false);
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Investigating,
+          "still investigating -- still within hearing radius of the new position too");
+    check(nearlyEqual(tormentor.investigateTarget.z, 5.0f, 0.001f),
+          "investigateTarget stayed pinned to the FIRST noise's real position, not re-snapped to the live player");
+
+    // The lose-interest clock must also keep advancing while this
+    // continuous noise holds it in Investigating -- otherwise a
+    // perpetually-noisy player in range could never be given up on, which
+    // would make kLoseInterestSeconds's own real, honest 5-second promise a
+    // dead letter.
+    for (int i = 0; i < 4; ++i) {
+        engine::despair::tickTormentorState(tormentor, 1.0f, tormentorPos, secondNoisePos, /*playerNoiseLevel=*/1.0f,
+                                             /*hasLineOfSight=*/false);
+    }
+    check(tormentor.behavior == engine::despair::TormentorBehaviorState::Idle,
+          "kLoseInterestSeconds (5s) elapsed while still hearing noise -- real timer, not stalled by re-triggering");
+}
+
+void testCullerHuntsOnceSetAndMovesDirectlyTowardTarget() {
+    engine::despair::DespairCullerAIState culler;
+    check(culler.behavior == engine::despair::CullerBehaviorState::Dormant, "starts Dormant, not pre-armed");
+
+    glm::vec3 cullerPos(0.0f, 0.0f, 0.0f);
+    glm::vec3 huntTarget(10.0f, 0.0f, 0.0f);
+    glm::vec3 unmoved = engine::despair::cullerMovementStep(culler, cullerPos, huntTarget, 1.0f);
+    check(nearlyEqual(unmoved.x, 0.0f, 0.001f), "a Dormant culler is a real, honest no-op -- it does not chase yet");
+
+    engine::despair::setCullerHunting(culler);
+    check(culler.behavior == engine::despair::CullerBehaviorState::Hunting, "setCullerHunting arms it");
+
+    cullerPos = engine::despair::cullerMovementStep(culler, cullerPos, huntTarget, 1.0f);
+    check(nearlyEqual(cullerPos.x, 6.0f, 0.001f), "moves moveSpeed*dt (6.0) straight toward the real hunt target");
+}
+
+// PROJECT: DESPAIR -- HorrorAIManager integration coverage: the real
+// raycast + gaze-cone glue in HorrorAIManager::update() itself, using a
+// real core::Physics instance exactly like testScriptWorldApiRaycast()
+// above. This is where a real bug (the wrong LOS entity-vs-distance
+// comparison, an unnormalized gaze direction, forgetting to apply the
+// world matrix) would actually show up -- the pure state-machine tests
+// above can't catch any of that since they're handed pre-resolved bools.
+
+void testHorrorAIManagerStalkerBlockedByWallStaysDormant() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "HorrorAIManager wall test: real Physics initializes headlessly");
+
+    auto player = ecs.createEntity("Player");
+    ecs.addComponent<engine::despair::SanityState>(player);
+
+    auto stalker = ecs.createEntity("Stalker");
+    auto& stalkerState = ecs.addComponent<engine::despair::StalkerAIState>(stalker);
+    stalkerState.detectionRadius = 50.0f;
+    auto* stalkerTransform = ecs.tryGetComponent<engine::core::Transform>(stalker);
+    stalkerTransform->position = glm::vec3(0.0f, 0.0f, -10.0f);
+
+    // A real static wall sitting directly between them.
+    physics.createStaticBox(ecs, glm::vec3(0.0f, 0.0f, -5.0f), glm::vec3(5.0f, 5.0f, 0.5f));
+
+    engine::despair::SanitySystem sanity;
+    engine::despair::HorrorAIManager aiManager(sanity);
+    aiManager.update(1.0f, ecs, physics);
+
+    auto* resultState = ecs.tryGetComponent<engine::despair::StalkerAIState>(stalker);
+    check(resultState->behavior == engine::despair::StalkerBehaviorState::Dormant,
+          "a real wall blocks the raycast, so HorrorAIManager correctly reports no line of sight");
+    check(nearlyEqual(ecs.tryGetComponent<engine::core::Transform>(stalker)->position.z, -10.0f, 0.001f),
+          "Dormant means it never moved from its start position");
+}
+
+void testHorrorAIManagerStalkerNoticesPlayerWithClearLineOfSight() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "HorrorAIManager clear-LOS test: real Physics initializes headlessly");
+
+    // A real floor spanning the whole gap between stalker and player, top
+    // face exactly at y=0 -- both entities' Transform::position below is
+    // feet-level (y=0), the same convention every ground-standing entity in
+    // this engine uses. Without hasLineOfSight's eye-height offset, the
+    // perception ray would run exactly tangent along this floor's top face
+    // for its entire length -- exact tangency isn't something to bet a
+    // stalker's perception on, and this floor is what makes that a real,
+    // checked failure mode instead of an untested one.
+    physics.createStaticBox(ecs, glm::vec3(0.0f, -0.5f, -5.0f), glm::vec3(10.0f, 0.5f, 10.0f));
+
+    // A real collider on the player entity itself (not just a bare
+    // Transform), so the raycast below actually has something to hit and
+    // exercises hasLineOfSight's `hit.entity == toEntity` branch -- the
+    // branch every real frame in Application takes (the player is always a
+    // createCharacterCapsule body there), which no prior test executed.
+    auto player = physics.createStaticBox(ecs, glm::vec3(0.0f, 0.9f, 0.0f), glm::vec3(0.4f, 0.9f, 0.4f));
+    ecs.addComponent<engine::despair::SanityState>(player);
+    auto* playerTransform = ecs.tryGetComponent<engine::core::Transform>(player);
+    playerTransform->position = glm::vec3(0.0f, 0.0f, 0.0f);
+    // Facing away from the stalker (which sits on -Z) so this test isolates
+    // the "clear LOS but unseen" path -- see
+    // testSanitySystemGazeForwardVectorRespectsPlayerRotation's own note on
+    // why identity rotation here would accidentally also satisfy
+    // playerLooksAtStalker and force Frozen instead of Stalking.
+    playerTransform->rotation = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    auto stalker = ecs.createEntity("Stalker");
+    auto& stalkerState = ecs.addComponent<engine::despair::StalkerAIState>(stalker);
+    stalkerState.detectionRadius = 50.0f;
+    auto* stalkerTransform = ecs.tryGetComponent<engine::core::Transform>(stalker);
+    stalkerTransform->position = glm::vec3(0.0f, 0.0f, -10.0f);
+
+    // No wall between them -- only the floor above and the player's own
+    // collider at the far end.
+    engine::despair::SanitySystem sanity;
+    engine::despair::HorrorAIManager aiManager(sanity);
+    aiManager.update(1.0f, ecs, physics);
+
+    auto* resultState = ecs.tryGetComponent<engine::despair::StalkerAIState>(stalker);
+    check(resultState->behavior == engine::despair::StalkerBehaviorState::Stalking,
+          "clear real raycast + player not looking at it -> Stalking, not Frozen");
+    check(nearlyEqual(ecs.tryGetComponent<engine::core::Transform>(stalker)->position.z, -8.5f, 0.001f),
+          "advanced moveSpeed*dt (1.5) straight toward the player's real world position");
+}
+
+void testHorrorAIManagerCullerArmsOnHallucinationAndHuntsThatPlayer() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "HorrorAIManager culler test: real Physics initializes headlessly");
+
+    auto player = ecs.createEntity("Player");
+    auto& playerSanity = ecs.addComponent<engine::despair::SanityState>(player);
+    playerSanity.current = 25.0f; // just above kHallucinationThreshold (20)
+    auto* playerTransform = ecs.tryGetComponent<engine::core::Transform>(player);
+    playerTransform->position = glm::vec3(20.0f, 0.0f, 0.0f);
+
+    auto culler = ecs.createEntity("Culler");
+    ecs.addComponent<engine::despair::DespairCullerAIState>(culler);
+
+    engine::despair::SanitySystem sanity;
+    engine::despair::HorrorAIManager aiManager(sanity);
+
+    // Before any threshold crossing, the culler must stay Dormant -- this
+    // is the "hook, don't poll" contract SanitySystem::
+    // setOnHallucinationThresholdCrossed's own header comment promises.
+    aiManager.update(1.0f, ecs, physics);
+    check(ecs.tryGetComponent<engine::despair::DespairCullerAIState>(culler)->behavior ==
+              engine::despair::CullerBehaviorState::Dormant,
+          "no hallucination crossing yet -- the culler has no reason to be hunting");
+
+    sanity.applyInstantDelta(ecs, player, -10.0f); // 25 -> 15, crosses below 20, fires the real callback
+    aiManager.update(1.0f, ecs, physics);
+
+    auto* cullerState = ecs.tryGetComponent<engine::despair::DespairCullerAIState>(culler);
+    check(cullerState->behavior == engine::despair::CullerBehaviorState::Hunting,
+          "the real hallucination-crossed callback armed the culler, exactly once, not by polling");
+    auto* cullerTransform = ecs.tryGetComponent<engine::core::Transform>(culler);
+    check(cullerTransform->position.x > 0.0f,
+          "an armed culler moves toward the real entity that triggered it, straight-line, at its own top speed");
+
+    sanity.applyInstantDelta(ecs, player, 20.0f); // 15 -> 35, recovers back above threshold
+    aiManager.update(1.0f, ecs, physics);
+    check(ecs.tryGetComponent<engine::despair::DespairCullerAIState>(culler)->behavior ==
+              engine::despair::CullerBehaviorState::Hunting,
+          "recovering sanity does not stand a culler back down -- see this file's own comment on why that's a "
+          "deliberate one-way latch");
+}
+
+// ---------------------------------------------------------------------
+// PROJECT: DESPAIR -- InteractionSystem (raycast container searching,
+// duffel-bag hold-to-search, keycard inventory, door unlocking, hiding-spot
+// entry/exit).
+
+void testTickContainerSearchProgressCompletesOnlyOnceAfterHeldDuration() {
+    engine::despair::LootContainer container;
+    container.searchDurationSeconds = 3.0f;
+
+    check(!engine::despair::tickContainerSearchProgress(container, /*holding=*/true, 1.0f),
+          "1 of 3 seconds held -- not done yet");
+    check(!container.searched, "not marked searched yet");
+
+    check(!engine::despair::tickContainerSearchProgress(container, /*holding=*/true, 1.9f),
+          "2.9 of 3 seconds held -- still not quite done");
+
+    check(engine::despair::tickContainerSearchProgress(container, /*holding=*/true, 0.2f),
+          "crossed searchDurationSeconds on this exact tick -- reports true exactly once");
+    check(container.searched, "searched flag flips true on completion");
+
+    check(!engine::despair::tickContainerSearchProgress(container, /*holding=*/true, 1.0f),
+          "an already-searched container never re-fires, even while still held");
+}
+
+void testTickContainerSearchProgressResetsWhenInterrupted() {
+    engine::despair::LootContainer container;
+    container.searchDurationSeconds = 3.0f;
+
+    check(!engine::despair::tickContainerSearchProgress(container, /*holding=*/true, 2.5f), "2.5 of 3 seconds -- not done yet");
+    check(nearlyEqual(container.searchProgressSeconds, 2.5f, 0.001f), "2.5 of 3 seconds banked so far");
+
+    check(!engine::despair::tickContainerSearchProgress(container, /*holding=*/false, 0.5f),
+          "released (or looked away) before completion -- not done");
+    check(nearlyEqual(container.searchProgressSeconds, 0.0f, 0.001f),
+          "progress resets to 0 the instant holding stops, so a released search can't bank partial progress "
+          "toward a later, separate attempt");
+}
+
+void testTickContainerSearchesOnlyAdvancesTheOneLookedAtAndResetsTheRest() {
+    engine::core::ECS ecs;
+
+    auto heldContainer = ecs.createEntity("Held");
+    auto& held = ecs.addComponent<engine::despair::LootContainer>(heldContainer);
+    held.searchDurationSeconds = 2.0f;
+
+    auto ignoredContainer = ecs.createEntity("Ignored");
+    auto& ignored = ecs.addComponent<engine::despair::LootContainer>(ignoredContainer);
+    ignored.searchDurationSeconds = 2.0f;
+    ignored.searchProgressSeconds = 1.0f; // pretend it had partial progress from a previous, since-interrupted look
+
+    auto justSearched =
+        engine::despair::tickContainerSearches(1.0f, ecs, /*interactDown=*/true, /*lookAtTarget=*/heldContainer);
+
+    check(justSearched.empty(), "1 of 2 seconds -- not complete yet");
+    check(nearlyEqual(ecs.tryGetComponent<engine::despair::LootContainer>(heldContainer)->searchProgressSeconds, 1.0f,
+                       0.001f),
+          "the looked-at, held container advanced");
+    check(nearlyEqual(ecs.tryGetComponent<engine::despair::LootContainer>(ignoredContainer)->searchProgressSeconds,
+                       0.0f, 0.001f),
+          "a container that is not this tick's lookAtTarget is reset back to 0, not left stale -- the real "
+          "no-banking guarantee at the ECS-scan level, not just the pure-function level");
+
+    justSearched =
+        engine::despair::tickContainerSearches(1.0f, ecs, /*interactDown=*/true, /*lookAtTarget=*/heldContainer);
+    check(justSearched.size() == 1 && justSearched.front() == heldContainer,
+          "second full second of continuous hold completes the search and reports the completed entity");
+}
+
+void testAddKeycardTierHasSetSemanticsNotDuplicateEntries() {
+    engine::despair::KeycardInventory inventory;
+
+    check(engine::despair::addKeycardTier(inventory, engine::despair::KeycardTier::Red),
+          "first Red keycard is newly added");
+    check(!engine::despair::addKeycardTier(inventory, engine::despair::KeycardTier::Red),
+          "a second Red keycard (or re-resolving an already-collected one, per resolveInteractionTarget()'s own "
+          "permissive fallback for entities with no Interactable) is a harmless no-op, not a duplicate entry");
+    check(inventory.heldTiers.size() == 1, "still exactly one Red entry, not two");
+
+    check(engine::despair::addKeycardTier(inventory, engine::despair::KeycardTier::Blue),
+          "a genuinely different tier is still newly added");
+    check(engine::despair::hasKeycardTier(inventory, engine::despair::KeycardTier::Red), "still has Red");
+    check(engine::despair::hasKeycardTier(inventory, engine::despair::KeycardTier::Blue), "now also has Blue");
+    check(!engine::despair::hasKeycardTier(inventory, engine::despair::KeycardTier::Gold), "never had Gold");
+}
+
+void testTryUnlockDoorRequiresTheCorrectTierAndStaysUnlocked() {
+    engine::despair::LockedDoor door;
+    door.requiredTier = engine::despair::KeycardTier::Blue;
+
+    engine::despair::KeycardInventory emptyInventory;
+    check(engine::despair::tryUnlockDoor(door, emptyInventory) == engine::despair::DoorUnlockResult::DeniedMissingKeycard,
+          "no keycards at all -- denied");
+    check(door.locked, "still locked after a denied attempt");
+
+    engine::despair::KeycardInventory wrongTier;
+    engine::despair::addKeycardTier(wrongTier, engine::despair::KeycardTier::Red);
+    check(engine::despair::tryUnlockDoor(door, wrongTier) == engine::despair::DoorUnlockResult::DeniedMissingKeycard,
+          "holding the wrong tier is still denied -- a Red keycard doesn't open a Blue-gated door");
+
+    engine::despair::KeycardInventory rightTier;
+    engine::despair::addKeycardTier(rightTier, engine::despair::KeycardTier::Blue);
+    check(engine::despair::tryUnlockDoor(door, rightTier) == engine::despair::DoorUnlockResult::Unlocked,
+          "the correct tier unlocks it");
+    check(!door.locked, "locked flips false");
+
+    check(engine::despair::tryUnlockDoor(door, emptyInventory) == engine::despair::DoorUnlockResult::NotLocked,
+          "once unlocked, it stays unlocked forever -- a real facility keycard reader, not a re-lockable puzzle, "
+          "so even an empty inventory now reports NotLocked rather than re-denying");
+}
+
+void testTryToggleHidingEntryExitAndDeniedWhenAlreadyOccupied() {
+    engine::despair::HidingSpot spot;
+    engine::core::EntityId spotEntity = engine::core::EntityId{1};
+
+    engine::despair::PlayerHidingState playerA;
+    glm::vec3 playerAStartPos(3.0f, 0.0f, 4.0f);
+    check(engine::despair::tryToggleHiding(spot, spotEntity, playerA, playerAStartPos) ==
+              engine::despair::HidingTransition::Entered,
+          "an empty spot is entered");
+    check(spot.occupied, "spot is now marked occupied");
+    check(playerA.currentSpot == spotEntity, "playerA's own state now points at this spot");
+    check(nearlyEqual(playerA.positionBeforeHiding.x, 3.0f, 0.001f) &&
+              nearlyEqual(playerA.positionBeforeHiding.z, 4.0f, 0.001f),
+          "playerA's real pre-hide position is snapshotted for the eventual exit");
+
+    engine::despair::PlayerHidingState playerB;
+    check(engine::despair::tryToggleHiding(spot, spotEntity, playerB, glm::vec3(0.0f)) ==
+              engine::despair::HidingTransition::Denied,
+          "a second player can't also cram into the same already-occupied spot");
+    check(playerB.currentSpot == engine::core::kNullEntity, "playerB's own state is untouched by the denial");
+
+    check(engine::despair::tryToggleHiding(spot, spotEntity, playerA, glm::vec3(999.0f)) ==
+              engine::despair::HidingTransition::Exited,
+          "playerA interacting with the same spot again (regardless of whatever position is passed this time) "
+          "exits");
+    check(!spot.occupied, "spot is free again after playerA leaves");
+    check(playerA.currentSpot == engine::core::kNullEntity, "playerA is no longer marked as hiding anywhere");
+
+    check(engine::despair::tryToggleHiding(spot, spotEntity, playerB, glm::vec3(0.0f)) ==
+              engine::despair::HidingTransition::Entered,
+          "now that playerA left, playerB can enter the same spot");
+}
+
+void testHidingSpotEntryPositionSurvivesARealPhysicsStep() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "hiding-spot physics test: real Physics initializes headlessly");
+
+    // The same real, dynamic RigidBody-backed capsule the real player
+    // character is (see Physics::createCharacterCapsule()'s own comment) --
+    // not a bare Transform. A raw `transform.position = ...` write here
+    // would get silently overwritten the moment physics.step() below runs
+    // (Physics::syncTransforms() pulls Transform::position FROM the real,
+    // unmoved Jolt body every step) -- exactly the trap
+    // core::TeleportPad's own handling falls into. Application.cpp's real
+    // hiding-spot entry/exit wiring uses physics.setPosition() specifically
+    // to avoid that trap; this test is what proves that choice actually
+    // survives a real step, not just compiles.
+    auto player = physics.createCharacterCapsule(ecs, glm::vec3(0.0f, 1.0f, 0.0f), 0.4f, 0.9f, 80.0f);
+
+    auto spotEntity = ecs.createEntity("Locker");
+    auto& spot = ecs.addComponent<engine::despair::HidingSpot>(spotEntity);
+    spot.interiorPosition = glm::vec3(5.0f, 1.0f, 5.0f);
+
+    auto& hidingState = ecs.addComponent<engine::despair::PlayerHidingState>(player);
+    glm::vec3 playerPosBeforeHiding = ecs.tryGetComponent<engine::core::Transform>(player)->position;
+
+    check(engine::despair::tryToggleHiding(spot, spotEntity, hidingState, playerPosBeforeHiding) ==
+              engine::despair::HidingTransition::Entered,
+          "entry succeeds");
+
+    physics.setPosition(player, ecs, spot.interiorPosition);
+    physics.setHorizontalVelocity(player, ecs, glm::vec2(0.0f, 0.0f));
+    physics.setVerticalVelocity(player, ecs, 0.0f);
+    physics.step(1.0f / 60.0f, ecs);
+
+    auto* transformAfterEntry = ecs.tryGetComponent<engine::core::Transform>(player);
+    check(nearlyEqual(transformAfterEntry->position.x, 5.0f, 0.05f) &&
+              nearlyEqual(transformAfterEntry->position.z, 5.0f, 0.05f),
+          "physics.setPosition (not a raw Transform write) really does survive a real physics.step() -- "
+          "syncTransforms() reads the actually-moved Jolt body back, not a pre-teleport position");
+
+    check(engine::despair::tryToggleHiding(spot, spotEntity, hidingState, glm::vec3(0.0f)) ==
+              engine::despair::HidingTransition::Exited,
+          "exit succeeds");
+    physics.setPosition(player, ecs, hidingState.positionBeforeHiding);
+    physics.step(1.0f / 60.0f, ecs);
+
+    auto* transformAfterExit = ecs.tryGetComponent<engine::core::Transform>(player);
+    check(nearlyEqual(transformAfterExit->position.x, playerPosBeforeHiding.x, 0.05f) &&
+              nearlyEqual(transformAfterExit->position.z, playerPosBeforeHiding.z, 0.05f),
+          "exiting restores the real pre-hide position, and that restore also survives a real physics.step()");
+}
+
+void testHorrorAIManagerHiddenPlayerIsInvisibleToStalkerAndTormentorLineOfSight() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "hiding-vs-LOS test: real Physics initializes headlessly");
+
+    // Same clear-LOS setup as
+    // testHorrorAIManagerStalkerNoticesPlayerWithClearLineOfSight (a real
+    // floor, a real player collider, no wall in between) -- if hiding
+    // didn't gate hasLineOfSight, this exact setup would put the Stalker
+    // into Stalking, same as that test asserts. It must not, here.
+    physics.createStaticBox(ecs, glm::vec3(0.0f, -0.5f, -5.0f), glm::vec3(10.0f, 0.5f, 10.0f));
+
+    auto player = physics.createStaticBox(ecs, glm::vec3(0.0f, 0.9f, 0.0f), glm::vec3(0.4f, 0.9f, 0.4f));
+    ecs.addComponent<engine::despair::SanityState>(player);
+    auto* playerTransform = ecs.tryGetComponent<engine::core::Transform>(player);
+    playerTransform->position = glm::vec3(0.0f, 0.0f, 0.0f);
+    playerTransform->rotation = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    // A real, honest "currently hiding" state -- currentSpot just needs to
+    // be non-null, matching isPlayerHidden()'s own check; the spot entity
+    // itself doesn't need to exist for this perception-only test.
+    auto& hidingState = ecs.addComponent<engine::despair::PlayerHidingState>(player);
+    hidingState.currentSpot = engine::core::EntityId{777};
+
+    auto stalker = ecs.createEntity("Stalker");
+    auto& stalkerState = ecs.addComponent<engine::despair::StalkerAIState>(stalker);
+    stalkerState.detectionRadius = 50.0f;
+    ecs.tryGetComponent<engine::core::Transform>(stalker)->position = glm::vec3(0.0f, 0.0f, -10.0f);
+
+    auto tormentor = ecs.createEntity("Tormentor");
+    auto& tormentorState = ecs.addComponent<engine::despair::TormentorAIState>(tormentor);
+    tormentorState.visionRadius = 50.0f;
+    ecs.tryGetComponent<engine::core::Transform>(tormentor)->position = glm::vec3(0.0f, 0.0f, -3.0f);
+
+    engine::despair::SanitySystem sanity;
+    engine::despair::HorrorAIManager aiManager(sanity);
+    aiManager.update(1.0f, ecs, physics);
+
+    check(ecs.tryGetComponent<engine::despair::StalkerAIState>(stalker)->behavior ==
+              engine::despair::StalkerBehaviorState::Dormant,
+          "a hidden player is invisible to the Stalker's LOS check even though nothing physically blocks the ray");
+    check(ecs.tryGetComponent<engine::despair::TormentorAIState>(tormentor)->behavior ==
+              engine::despair::TormentorBehaviorState::Idle,
+          "same for the Tormentor's LOS-driven Hunting/Investigating branch");
+}
+
+// PROJECT: DESPAIR -- FPSPlayerController. computeLookRotation() is the one
+// piece this whole vertical slice depends on for gaze detection
+// (SanitySystem's hazard drain, StalkerAI's playerLooksAtStalker) to line
+// up with what the player's camera actually sees -- see that function's
+// own comment on why it's built from glm::quatLookAt() rather than
+// hand-rolled trig. Both tests below check the real invariant
+// (rotation * (0,0,-1) == camera.forward()), not a hand-picked angle, and
+// the second one specifically includes nonzero pitch so a regression that
+// silently drops pitch (e.g. reintroducing the old yaw-only
+// Physics::setRotationY() approach) would fail it.
+void testComputeLookRotationMatchesCameraForwardAtDefaultAngles() {
+    engine::core::Camera camera; // default yaw=-90, pitch=-10
+    glm::quat rotation = engine::despair::computeLookRotation(camera);
+    glm::vec3 rotatedForward = rotation * glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 cameraForward = camera.forward();
+    check(nearlyEqual(rotatedForward.x, cameraForward.x, 0.001f) &&
+              nearlyEqual(rotatedForward.y, cameraForward.y, 0.001f) &&
+              nearlyEqual(rotatedForward.z, cameraForward.z, 0.001f),
+          "computeLookRotation()'s quat, applied to (0,0,-1), matches Camera::forward() at the camera's own defaults");
+}
+
+void testComputeLookRotationMatchesCameraForwardWithNonzeroPitch() {
+    engine::core::Camera camera;
+    camera.yawDegrees = 35.0f;
+    camera.pitchDegrees = -55.0f; // looking sharply down -- the case a dropped-pitch bug would get wrong
+    glm::quat rotation = engine::despair::computeLookRotation(camera);
+    glm::vec3 rotatedForward = rotation * glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 cameraForward = camera.forward();
+    check(nearlyEqual(rotatedForward.x, cameraForward.x, 0.001f) &&
+              nearlyEqual(rotatedForward.y, cameraForward.y, 0.001f) &&
+              nearlyEqual(rotatedForward.z, cameraForward.z, 0.001f),
+          "computeLookRotation() still matches Camera::forward() with real pitch -- a yaw-only rotation would fail "
+          "this (rotatedForward.y would be ~0 instead of matching the real, steep downward pitch)");
+}
+
+void testComputeNoiseLevelRampsPiecewiseLinearFromSilentThroughWalkToRun() {
+    engine::despair::FPSPlayerSettings settings;
+    float walkSpeed = 8.0f;
+    float runSpeed = 16.0f;
+
+    check(nearlyEqual(engine::despair::computeNoiseLevel(settings, 0.0f, walkSpeed, runSpeed, false), 0.0f, 0.001f),
+          "standing perfectly still (speed 0) is silent, not flat walkNoiseLevel");
+    check(nearlyEqual(engine::despair::computeNoiseLevel(settings, walkSpeed * 0.5f, walkSpeed, runSpeed, false),
+                       settings.walkNoiseLevel * 0.5f, 0.001f),
+          "half walkSpeed is halfway between silent and walkNoiseLevel");
+    check(nearlyEqual(engine::despair::computeNoiseLevel(settings, walkSpeed, walkSpeed, runSpeed, false),
+                       settings.walkNoiseLevel, 0.001f),
+          "exactly walkSpeed is exactly walkNoiseLevel");
+    check(nearlyEqual(engine::despair::computeNoiseLevel(settings, (walkSpeed + runSpeed) * 0.5f, walkSpeed, runSpeed,
+                                                           false),
+                       (settings.walkNoiseLevel + settings.runNoiseLevel) * 0.5f, 0.001f),
+          "midway between walkSpeed and runSpeed is midway between walkNoiseLevel and runNoiseLevel");
+    check(nearlyEqual(engine::despair::computeNoiseLevel(settings, runSpeed, walkSpeed, runSpeed, false),
+                       settings.runNoiseLevel, 0.001f),
+          "exactly runSpeed is exactly runNoiseLevel");
+    check(nearlyEqual(engine::despair::computeNoiseLevel(settings, runSpeed * 2.0f, walkSpeed, runSpeed, false),
+                       settings.runNoiseLevel, 0.001f),
+          "faster than runSpeed (e.g. a real momentum overshoot) clamps at runNoiseLevel, never exceeds it");
+}
+
+void testComputeNoiseLevelCrouchingOverridesSpeedRegardlessOfVelocity() {
+    engine::despair::FPSPlayerSettings settings;
+    float walkSpeed = 8.0f;
+    float runSpeed = 16.0f;
+    check(nearlyEqual(engine::despair::computeNoiseLevel(settings, runSpeed * 2.0f, walkSpeed, runSpeed, true),
+                       settings.crouchNoiseLevel, 0.001f),
+          "crouching forces crouchNoiseLevel even at a speed that would otherwise read as loud running -- "
+          "e.g. a crouched slide down a slope stays quiet, matching PlayerNoiseLevel's own 'crouch = silent' intent");
+}
+
+void testConfigureFirstPersonCameraZeroesOrbitDistanceAndSmoothing() {
+    engine::core::CharacterController controller; // real, default third-person Settings
+    check(controller.settings().cameraDistance > 0.0f && controller.settings().cameraPositionSmoothing > 0.0f,
+          "sanity: the default Settings really are third-person before this call");
+
+    engine::despair::configureFirstPersonCamera(controller);
+
+    check(nearlyEqual(controller.settings().cameraDistance, 0.0f, 0.001f),
+          "first-person camera sits exactly at the focus point, no orbit distance");
+    // Settings::cameraHeight is added to Transform::position, which for the
+    // physics capsule is the body's *center*, not the feet -- so the
+    // real claim isn't cameraHeight == kPlayerEyeHeight, it's that the
+    // resulting eye sits kPlayerEyeHeight above the feet once the
+    // center-to-feet offset (capsuleHalfHeight + capsuleRadius) is added
+    // back in.
+    float centerToFeet = controller.settings().capsuleHalfHeight + controller.settings().capsuleRadius;
+    check(nearlyEqual(controller.settings().cameraHeight + centerToFeet, engine::despair::kPlayerEyeHeight, 0.001f),
+          "first-person eye height, measured from the feet, matches HorrorAIManager's own LOS eye height -- what "
+          "the AI can raycast to and what the player camera sees from must agree");
+    check(nearlyEqual(controller.settings().cameraPositionSmoothing, 0.0f, 0.001f),
+          "zero smoothing -- any lag on eye position would feel like motion sickness in first person");
+}
+
+void testUpdateFirstPersonPlayerIsANoOpWithoutFPSPlayerSettings() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "FPS controller no-op test: real Physics initializes headlessly");
+
+    auto character = physics.createCharacterCapsule(ecs, glm::vec3(0.0f, 1.0f, 0.0f), 0.4f, 0.9f, 80.0f);
+    glm::quat rotationBefore = ecs.tryGetComponent<engine::core::Transform>(character)->rotation;
+
+    engine::core::Camera camera;
+    camera.pitchDegrees = -40.0f;
+    engine::core::CharacterController::Settings settings;
+    engine::despair::updateFirstPersonPlayer(ecs, physics, character, camera, settings, false);
+
+    check(ecs.tryGetComponent<engine::despair::SanityState>(character) == nullptr,
+          "no FPSPlayerSettings on the character -- real, honest no-op, same as every other DESPAIR system in "
+          "Application.cpp -- SanityState is never attached");
+    check(ecs.tryGetComponent<engine::despair::PlayerNoiseLevel>(character) == nullptr,
+          "same no-op for PlayerNoiseLevel");
+    glm::quat rotationAfter = ecs.tryGetComponent<engine::core::Transform>(character)->rotation;
+    check(nearlyEqual(rotationAfter.w, rotationBefore.w, 0.0001f) && nearlyEqual(rotationAfter.x, rotationBefore.x, 0.0001f) &&
+              nearlyEqual(rotationAfter.y, rotationBefore.y, 0.0001f) && nearlyEqual(rotationAfter.z, rotationBefore.z, 0.0001f),
+          "Transform::rotation is untouched -- a non-DESPAIR scene's character must never get this overlay write");
+}
+
+void testUpdateFirstPersonPlayerWritesRotationAndNoiseThenPhysicsStepClobbersRotation() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "FPS controller integration test: real Physics initializes headlessly");
+
+    auto character = physics.createCharacterCapsule(ecs, glm::vec3(0.0f, 1.0f, 0.0f), 0.4f, 0.9f, 80.0f);
+    ecs.addComponent<engine::despair::FPSPlayerSettings>(character);
+
+    engine::core::CharacterController::Settings controllerSettings; // walkSpeed=8, runSpeed=16 defaults
+    physics.setHorizontalVelocity(character, ecs, glm::vec2(controllerSettings.runSpeed, 0.0f));
+
+    engine::core::Camera camera;
+    camera.yawDegrees = 20.0f;
+    camera.pitchDegrees = -45.0f; // real, nonzero pitch -- the case the capsule's own yaw-only body can never encode
+    glm::vec3 lookedAtForward = camera.forward();
+
+    // Real physics step first (as GameLoop's setPostPhysicsHook ordering
+    // actually runs) -- syncTransforms() resets Transform::rotation to
+    // whatever the pitch/roll-locked Jolt body holds (yaw-only, close to
+    // identity here) before updateFirstPersonPlayer gets a chance to
+    // overlay the real full-pitch look direction on top of it.
+    physics.step(1.0f / 60.0f, ecs);
+    engine::despair::updateFirstPersonPlayer(ecs, physics, character, camera, controllerSettings, false);
+
+    auto* transform = ecs.tryGetComponent<engine::core::Transform>(character);
+    glm::vec3 rotatedForward = transform->rotation * glm::vec3(0.0f, 0.0f, -1.0f);
+    check(nearlyEqual(rotatedForward.x, lookedAtForward.x, 0.01f) &&
+              nearlyEqual(rotatedForward.y, lookedAtForward.y, 0.01f) &&
+              nearlyEqual(rotatedForward.z, lookedAtForward.z, 0.01f),
+          "updateFirstPersonPlayer's overlay write really lands in the real ECS Transform after a real "
+          "physics.step(), with real pitch intact -- not just correct in isolation");
+
+    check(ecs.tryGetComponent<engine::despair::SanityState>(character) != nullptr,
+          "FPSPlayerSettings present -- SanityState gets lazily attached, same convention as KeycardInventory/"
+          "PlayerHidingState");
+    auto* noise = ecs.tryGetComponent<engine::despair::PlayerNoiseLevel>(character);
+    check(noise != nullptr && nearlyEqual(noise->current, engine::despair::FPSPlayerSettings{}.runNoiseLevel, 0.01f),
+          "real resolved velocity (set to runSpeed) reads back through Physics::getLinearVelocity() into "
+          "PlayerNoiseLevel::current as runNoiseLevel");
+
+    // Now prove the ordering is load-bearing, not incidental: a *second*
+    // real physics.step() -- standing in for the next tick's syncTransforms(),
+    // running before that tick's own updateFirstPersonPlayer() call gets a
+    // chance to re-overlay it -- really does clobber the pitch this test
+    // just proved got written. If this ever stopped clobbering it, the
+    // ordering comment above the real call site in Application.cpp would
+    // no longer be load-bearing, and this test would need to be revisited.
+    physics.step(1.0f / 60.0f, ecs);
+    glm::vec3 forwardAfterSecondStep = transform->rotation * glm::vec3(0.0f, 0.0f, -1.0f);
+    // Assert the real claim (forward is horizontal again -- a yaw-only quat's
+    // forward always has y == 0), not just "the y component changed" -- the
+    // capsule is also falling/sliding this step, so yaw could drift too and
+    // a looser != check would pass for the wrong reason.
+    check(nearlyEqual(forwardAfterSecondStep.y, 0.0f, 0.01f),
+          "a real physics.step() with no intervening updateFirstPersonPlayer() call really does erase the pitch "
+          "component (the pitch/roll-locked capsule body has no pitch to sync back) -- proving "
+          "updateFirstPersonPlayer() must run every tick after step(), not just once");
+}
+
+void testFirstPersonEyeHeightRaycastSelfHitsWithoutOriginOffset() {
+    // configureFirstPersonCamera() puts the eye at feet + kPlayerEyeHeight
+    // (1.6m), which is *inside* the 1.8m-tall capsule (2 * (capsuleHalfHeight
+    // + capsuleRadius)), not outside it like a third-person orbit cam. A
+    // naive raycast straight from that eye position self-hits the character's
+    // own capsule -- CastRay only returns the single closest hit, so the real
+    // target past it is never even tested. This is the exact bug
+    // Application.cpp's origin-offset fix (see that call site's own comment)
+    // exists to avoid; this test pins the underlying Jolt behavior so a
+    // future engine/Jolt upgrade that silently changes it gets caught.
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "self-hit probe: real Physics initializes headlessly");
+
+    // Sourced from Settings{}'s own defaults, not re-typed literals -- if
+    // capsuleRadius/capsuleHalfHeight ever change, this test's geometry
+    // moves with them instead of silently drifting out of sync with what
+    // configureFirstPersonCamera() actually uses at runtime.
+    engine::core::CharacterController::Settings defaultSettings;
+    float radius = defaultSettings.capsuleRadius;
+    float halfHeight = defaultSettings.capsuleHalfHeight;
+    auto character = physics.createCharacterCapsule(ecs, glm::vec3(0.0f, 1.0f, 0.0f), radius, halfHeight, 70.0f);
+
+    float feetY = 1.0f - halfHeight - radius;
+    // yawDegrees=-90, pitchDegrees=0 -> Camera::forward() == (0,0,-1), a
+    // pure horizontal look, matching this probe's original hand-rolled ray.
+    engine::core::Camera camera;
+    camera.position = glm::vec3(0.0f, feetY + engine::despair::kPlayerEyeHeight, 0.0f);
+    camera.yawDegrees = -90.0f;
+    camera.pitchDegrees = 0.0f;
+    // Box sits at eye height so a purely horizontal ray from camera.position
+    // actually clips it -- placing it at capsule-center height instead
+    // would fly clean over its top face and give a false "no hit" that
+    // has nothing to do with the self-hit bug this test exists to catch.
+    auto box = physics.createStaticBox(ecs, glm::vec3(0.0f, camera.position.y, -5.0f), glm::vec3(0.5f, 0.5f, 0.5f));
+    auto naiveHit = physics.raycast(camera.position, camera.forward(), 20.0f);
+    check(!(naiveHit.hit && naiveHit.entity == box),
+          "sanity: casting straight from the in-capsule eye position really does fail to reach the box (self-hit or "
+          "no hit) -- if this ever starts passing, the origin-offset fix below may no longer be necessary, but "
+          "removing it should be a deliberate decision, not a silent drift");
+
+    // The real fix, via the same despair::computeInteractionRayOrigin()
+    // Application.cpp's interaction raycast calls -- one source of truth
+    // for this geometry instead of a second hand-rolled copy here.
+    float originOffset = radius + engine::despair::kInteractionRayOriginSkin;
+    glm::vec3 offsetOrigin = engine::despair::computeInteractionRayOrigin(camera, radius);
+    auto fixedHit = physics.raycast(offsetOrigin, camera.forward(), 20.0f - originOffset);
+    check(fixedHit.hit && fixedHit.entity == box,
+          "with the origin nudged outside the capsule along the view direction, the same raycast reaches the real "
+          "world target instead of self-hitting -- this is what keeps every DESPAIR interaction (container search, "
+          "keycard pickup, door unlock, hiding entry) working once the first-person camera is active");
+}
+
+// PROJECT: DESPAIR -- FacilityLayout, the pure/headless half of the
+// vertical slice's facility level, split the same way
+// housedemo::computeHouseLayout() already is from HouseDemoScene.cpp (see
+// testHouseLayoutHasExactlyOneFloorAndTwoRoofWedges() above for the same
+// pattern on that precedent).
+void testFacilityLayoutHasOneLockedDoorGatingOneKeycardOfTheSameTier() {
+    auto layout = engine::despair::computeFacilityLayout();
+    check(layout.doors.size() == 1, "exactly one door gate in this vertical slice's facility");
+    if (layout.doors.empty()) return;
+
+    const auto& door = layout.doors.front();
+    check(door.locked, "the corridor door starts locked -- the whole point of the keycard gate");
+
+    bool hasMatchingKeycard = false;
+    for (const auto& keycard : layout.keycards) {
+        if (keycard.tier == door.requiredTier) hasMatchingKeycard = true;
+    }
+    check(hasMatchingKeycard, "a real keycard of the door's own required tier actually exists somewhere in the "
+                              "layout -- a locked door with no matching keycard placed anywhere would be an "
+                              "unsolvable gate");
+}
+
+void testFacilityLayoutSpawnsExactlyOneOfEachAiTier() {
+    // HorrorAIManager's tick*() functions scan ecs.view<>() for each tier's
+    // own state component and never spawn one lazily (see
+    // FacilityAiSpawnSpec's own comment) -- if this layout ever stopped
+    // placing all three, that tier would simply never do anything at
+    // runtime with no error anywhere to catch it.
+    auto layout = engine::despair::computeFacilityLayout();
+    int stalkerCount = 0, tormentorCount = 0, cullerCount = 0;
+    for (const auto& spawn : layout.aiSpawns) {
+        if (spawn.tier == engine::despair::FacilityAiTier::Stalker) ++stalkerCount;
+        if (spawn.tier == engine::despair::FacilityAiTier::Tormentor) ++tormentorCount;
+        if (spawn.tier == engine::despair::FacilityAiTier::Culler) ++cullerCount;
+    }
+    check(stalkerCount == 1, "exactly one Stalker spawn");
+    check(tormentorCount == 1, "exactly one Tormentor spawn");
+    check(cullerCount == 1, "exactly one dormant Culler spawn, ready to be armed on hallucination");
+}
+
+void testFacilityLayoutDuffelBagSearchesLongerThanAFootlocker() {
+    // "A duffel bag is just a LootContainer with a longer
+    // searchDurationSeconds" -- InteractionSystem.hpp's own comment. This
+    // pins that the layout actually places one of each, not two identical
+    // quick footlockers.
+    auto layout = engine::despair::computeFacilityLayout();
+    check(layout.containers.size() >= 2, "at least a quick footlocker and a slower duffel bag");
+    if (layout.containers.size() < 2) return;
+
+    float minDuration = layout.containers.front().searchDurationSeconds;
+    float maxDuration = minDuration;
+    for (const auto& container : layout.containers) {
+        minDuration = std::min(minDuration, container.searchDurationSeconds);
+        maxDuration = std::max(maxDuration, container.searchDurationSeconds);
+    }
+    check(maxDuration > minDuration, "at least one container (the duffel bag) takes real, meaningfully longer to "
+                                      "search than another (the footlocker)");
+}
+
+void testFacilityLayoutCorridorDoorFrameGapIsOpenAtFloorLevel() {
+    // Real, direct check mirroring testHouseLayoutDoorGapIsOpenInFrontWall()
+    // above -- no Wall part's box may actually cover the corridor door's
+    // own 1.2m gap (z in [-0.6, 0.6] at x=5, below the lintel at y=2.2), or
+    // the real door leaf FacilityMapBuilder spawns there would be sealed
+    // behind solid geometry.
+    auto layout = engine::despair::computeFacilityLayout();
+    check(layout.doors.size() == 1, "exactly one door to check the frame gap against");
+    if (layout.doors.empty()) return;
+
+    float doorX = layout.doors.front().localPosition.x;
+    bool gapBlocked = false;
+    for (const auto& part : layout.geometry) {
+        if (part.kind != engine::despair::FacilityWallKind::Wall) continue;
+        bool touchesDoorX = std::fabs(part.localPosition.x - doorX) < 0.15f;
+        if (!touchesDoorX) continue;
+        bool overlapsDoorGapZ = (part.localPosition.z - part.halfExtents.z < 0.0f) &&
+                                 (part.localPosition.z + part.halfExtents.z > 0.0f) && part.localPosition.y < 2.2f;
+        if (overlapsDoorGapZ) gapBlocked = true;
+    }
+    check(!gapBlocked, "no wall part at the door's own X blocks its Z gap below the lintel");
+}
+
+void testFacilityLayoutPlayerSpawnsInsideEntryHallAboveTheFloor() {
+    // playerSpawn is capsule-CENTER (see FacilityLayout.hpp's own comment
+    // on why that differs from aiSpawns' feet-level convention) -- pin it
+    // above y=0 (the floor) and within EntryHall's own x[-3,3] z[-3,3]
+    // footprint, not accidentally left inside a wall or the corridor.
+    auto layout = engine::despair::computeFacilityLayout();
+    check(layout.playerSpawn.y > 0.0f, "player spawn sits above the y=0 floor, not on/under it");
+    check(layout.playerSpawn.x > -3.0f && layout.playerSpawn.x < 3.0f, "player spawn is within EntryHall's own X span");
+    check(layout.playerSpawn.z > -3.0f && layout.playerSpawn.z < 3.0f, "player spawn is within EntryHall's own Z span");
+}
 
 // Kronos ("Studio Movie Mode"): the plugin's non-ImGui behaviour -- what
 // it seeds, what it exposes to the viewport gizmo, and the export path
@@ -39304,6 +40597,18 @@ int main() {
     testBindlessTableTracksPendingDescriptorWrites();
     testBindlessTableClearResetsEverything();
     testBindlessTableAcquireIsZeroHeapOnceWarm();
+    testVhsStaticNoiseIntensityHasNoBurstWithNoThreat();
+    testVhsStaticNoiseIntensityIsFullBurstInsideBurstRadius();
+    testVhsStaticNoiseIntensityFadesBetweenBurstAndFadeRadius();
+    testVhsStaticNoiseIntensityIsZeroBeyondFadeRadius();
+    testVhsStaticNoiseIntensityRespectsCustomRadii();
+    testToggleBreakerFlipsState();
+    testIsPlayerCaughtUsesRealCatchRadius();
+    testTryEscapeThroughBlastDoorRequiresBothKeycardAndPower();
+    testTryEscapeThroughBlastDoorReportsAlreadyUnlocked();
+    testUpdateEscapeGameStateLatchesFirstOutcome();
+    testUpdateEscapeGameStateResolvesCaughtAndVictory();
+    testFacilityLayoutHasBothBlastDoorGateConditions();
     testTimelineTimeAndPixelRoundTrip();
     testTimelineZoomIsClampedAgainstDivisionByZero();
     testTimelineVisibilityCulling();
@@ -40321,6 +41626,10 @@ int main() {
     testEditableMeshBevelEdgeReplacesASharedInteriorEdge();
     testEditableMeshBevelEdgeIsHonestNoOpOnANonSharedEdge();
     testEditableMeshInsetFaceShrinksTowardCentroidAndAddsSixFaces();
+    testEditableMeshSliceByPlaneKeepsOnlyTheRequestedSideAndCapsTheCut();
+    testEditableMeshSliceByPlaneKeepingTheOppositeSideMirrorsTheResult();
+    testEditableMeshSliceByPlaneWithoutFillCapLeavesAnOpenShell();
+    testEditableMeshSliceByPlaneOutsideTheMeshEitherKeepsOrDiscardsEverything();
     testModelingModePluginPickSubObjectResolvesNearestElementPerMode();
     testModelingModePluginSubObjectAnchorLocalMatchesRealGeometry();
     testModelingModePluginTranslateSubObjectSelectionMovesOnlyTheExpectedRealVertices();
@@ -40374,6 +41683,45 @@ int main() {
     testHouseLayoutHasExactlyOneFloorAndTwoRoofWedges();
     testHouseLayoutRoofWedgesMeetAtRidge();
     testHouseLayoutDoorGapIsOpenInFrontWall();
+
+    testSanitySystemDrainsInDarknessWithNoLightSources();
+    testSanitySystemNearbyLightPreventsDarknessDrain();
+    testSanitySystemHazardProximityDrainsRegardlessOfGaze();
+    testSanitySystemGazeAddsExponentiallyGrowingExtraDrain();
+    testSanitySystemGazeForwardVectorRespectsPlayerRotation();
+    testSanitySystemApplyInstantDeltaClampsToValidRange();
+    testSanitySystemHallucinationCallbackFiresExactlyOnceOnEachCrossing();
+    testStalkerStateFreezesWhenPlayerLooksAtItRegardlessOfDistance();
+    testStalkerStateStalksTowardLastKnownPositionThenGivesUp();
+    testTormentorStateHuntsOnSightThenInvestigatesLastKnownPosition();
+    testTormentorStateHearsLoudPlayerButNotSilentOne();
+    testTormentorStateNoiseInvestigateTargetIsSnapshotNotLiveHoming();
+    testCullerHuntsOnceSetAndMovesDirectlyTowardTarget();
+    testHorrorAIManagerStalkerBlockedByWallStaysDormant();
+    testHorrorAIManagerStalkerNoticesPlayerWithClearLineOfSight();
+    testHorrorAIManagerCullerArmsOnHallucinationAndHuntsThatPlayer();
+    testTickContainerSearchProgressCompletesOnlyOnceAfterHeldDuration();
+    testTickContainerSearchProgressResetsWhenInterrupted();
+    testTickContainerSearchesOnlyAdvancesTheOneLookedAtAndResetsTheRest();
+    testAddKeycardTierHasSetSemanticsNotDuplicateEntries();
+    testTryUnlockDoorRequiresTheCorrectTierAndStaysUnlocked();
+    testTryToggleHidingEntryExitAndDeniedWhenAlreadyOccupied();
+    testHidingSpotEntryPositionSurvivesARealPhysicsStep();
+    testHorrorAIManagerHiddenPlayerIsInvisibleToStalkerAndTormentorLineOfSight();
+    testComputeLookRotationMatchesCameraForwardAtDefaultAngles();
+    testComputeLookRotationMatchesCameraForwardWithNonzeroPitch();
+    testComputeNoiseLevelRampsPiecewiseLinearFromSilentThroughWalkToRun();
+    testComputeNoiseLevelCrouchingOverridesSpeedRegardlessOfVelocity();
+    testConfigureFirstPersonCameraZeroesOrbitDistanceAndSmoothing();
+    testUpdateFirstPersonPlayerIsANoOpWithoutFPSPlayerSettings();
+    testUpdateFirstPersonPlayerWritesRotationAndNoiseThenPhysicsStepClobbersRotation();
+    testFirstPersonEyeHeightRaycastSelfHitsWithoutOriginOffset();
+
+    testFacilityLayoutHasOneLockedDoorGatingOneKeycardOfTheSameTier();
+    testFacilityLayoutSpawnsExactlyOneOfEachAiTier();
+    testFacilityLayoutDuffelBagSearchesLongerThanAFootlocker();
+    testFacilityLayoutCorridorDoorFrameGapIsOpenAtFloorLevel();
+    testFacilityLayoutPlayerSpawnsInsideEntryHallAboveTheFloor();
 
     std::fprintf(stdout, "%d/%d checks passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;

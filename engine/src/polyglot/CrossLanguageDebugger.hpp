@@ -4,8 +4,14 @@
 // See polyglot/README.md.
 //
 // Goal: one breakpoint/step session that can move from a Luau script
-// frame into native C++ (or a future WASM/TS frame) and back, instead of
-// each language runtime owning a completely separate debugger.
+// frame into native C++ and back, instead of each language runtime
+// owning a completely separate debugger. Scoped to exactly these two
+// runtimes -- see polyglot/README.md's "Why these two stay stubs" for
+// why: this engine's actual multi-language surface is Luau only
+// (core/Scripting.hpp, core/Script*Api.hpp); there is no TypeScript or
+// WASM/Rust/Zig host runtime in this codebase to debug, so no
+// RuntimeKind is scaffolded for one. Add one back only once a real
+// second scripting host actually exists to design the adapter against.
 
 #include <cstdint>
 #include <optional>
@@ -17,8 +23,6 @@ namespace engine::polyglot {
 enum class RuntimeKind : uint8_t {
     NativeCpp,
     Luau,
-    TypeScript, // no host runtime exists yet -- see README
-    WasmRustOrZig,
 };
 
 struct StackFrame {

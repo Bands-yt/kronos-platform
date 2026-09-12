@@ -43,7 +43,12 @@ struct ObjectPushConstants {
     //   x = albedo | (normal   << 16)
     //   y = metallic | (roughness << 16)
     //   z = ao
-    //   w = reserved
+    //   w = unlitSilhouette flag (0/1) -- see Components.hpp's
+    //       Renderable::unlitSilhouette. Set directly by the draw loop,
+    //       not by packTextureIndices() (which returns an all-zero uvec4
+    //       whenever bindless isn't initialised, since none of its other
+    //       three fields mean anything without it) -- this flag has to
+    //       keep working on non-bindless devices too.
     glm::uvec4 textureIndices{0u, 0u, 0u, 0u};
 };
 
@@ -167,6 +172,27 @@ struct CompositePushConstants {
     // real 3D LUT color grading): see Renderer::setColorGradingLutStrength()'s
     // own comment. Also a plain float, consistent with every other field.
     float lutStrength = 1.0f;
+
+    // Kronos ("VHS / Analog Bodycam"): PROJECT: DESPAIR's found-footage
+    // look -- see shaders/composite.frag's own header comment for why
+    // these three ride at the very end of this already-existing lens/
+    // film-artifact push-constant block rather than a second pass.
+    // Applied unconditionally (not gated behind cinematicModeEnabled_ like
+    // vignette/CA/god-rays above): this is DESPAIR's own visual identity,
+    // not a graphics-quality toggle, and stays at its real zero-effect
+    // default for every scene that never calls
+    // Renderer::setVhsBodycamSettings()/setVhsStaticNoiseIntensity().
+    float fisheyeStrength = 0.0f;
+    float scanlineIntensity = 0.0f;
+    // Real, honest proximity-driven burst -- see
+    // despair::computeVhsStaticNoiseIntensity()'s own header comment for
+    // the pure distance-to-threat mapping that feeds this every tick.
+    float staticNoiseIntensity = 0.0f;
+    // Real elapsed seconds (Renderer::totalElapsedTimeSeconds_), the same
+    // clock shaders/scene.frag's heat-shimmer already scrolls by -- scrolls
+    // the scanline roll and reseeds the static-noise hash so both actually
+    // animate instead of being a fixed per-pixel pattern.
+    float time = 0.0f;
 };
 
 // Must exactly match the `push_constant` block in shaders/cinematic.frag.

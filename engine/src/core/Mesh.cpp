@@ -383,12 +383,14 @@ Mesh Mesh::createCapsule(VmaAllocator allocator, VkDevice device, VkCommandPool 
     return mesh;
 }
 
-Mesh Mesh::createCylinder(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue, float radius,
-                           float halfHeight, uint32_t radialSegments) {
+void generateCylinderGeometry(float radius, float halfHeight, uint32_t radialSegments,
+                               std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices) {
     radialSegments = std::max(3u, radialSegments);
 
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
+    std::vector<Vertex>& vertices = outVertices;
+    std::vector<uint32_t>& indices = outIndices;
+    vertices.clear();
+    indices.clear();
     const float twoPi = 6.28318530718f;
 
     // Side wall: top ring then bottom ring, radial normals, same
@@ -444,6 +446,13 @@ Mesh Mesh::createCylinder(VmaAllocator allocator, VkDevice device, VkCommandPool
     for (uint32_t s = 0; s < radialSegments; ++s) {
         indices.insert(indices.end(), {bottomCapCenter, bottomCapRimStart + s + 1, bottomCapRimStart + s});
     }
+}
+
+Mesh Mesh::createCylinder(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue, float radius,
+                           float halfHeight, uint32_t radialSegments) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    generateCylinderGeometry(radius, halfHeight, radialSegments, vertices, indices);
 
     Mesh mesh;
     (void)mesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices);
@@ -504,13 +513,15 @@ Mesh Mesh::createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cm
     return mesh;
 }
 
-Mesh Mesh::createTorus(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
-                        float majorRadius, float minorRadius, uint32_t majorSegments, uint32_t minorSegments) {
+void generateTorusGeometry(float majorRadius, float minorRadius, uint32_t majorSegments, uint32_t minorSegments,
+                            std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices) {
     majorSegments = std::max(3u, majorSegments);
     minorSegments = std::max(3u, minorSegments);
 
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
+    std::vector<Vertex>& vertices = outVertices;
+    std::vector<uint32_t>& indices = outIndices;
+    vertices.clear();
+    indices.clear();
     const float twoPi = 6.28318530718f;
     // Closed tube, no poles/caps to fold -- both directions wrap fully
     // around, so both get the same "+1, last vertex duplicates the
@@ -540,6 +551,13 @@ Mesh Mesh::createTorus(VmaAllocator allocator, VkDevice device, VkCommandPool cm
                                             base + j + 1, nextBase + j + 1, nextBase + j});
         }
     }
+}
+
+Mesh Mesh::createTorus(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                        float majorRadius, float minorRadius, uint32_t majorSegments, uint32_t minorSegments) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    generateTorusGeometry(majorRadius, minorRadius, majorSegments, minorSegments, vertices, indices);
 
     Mesh mesh;
     (void)mesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices);

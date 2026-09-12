@@ -27,6 +27,7 @@
 #include "publishing/PackageArchive.hpp"
 #include "publishing/PublishValidation.hpp"
 #include "publishing/ThumbnailCapture.hpp"
+#include "studio/NativePluginAdapter.hpp"
 #include "studio/plugins/AlignPlugin.hpp"
 #include "studio/plugins/AnimatorPlugin.hpp"
 #include "studio/plugins/AudioPreviewPlugin.hpp"
@@ -835,6 +836,27 @@ bool StudioApp::initialize(StudioMode mode) {
             }
             audioPreviewPlugin_ = audioPreview.get();
             pluginManager_.registerPlugin(std::move(audioPreview));
+        }
+    }
+
+    // Kronos ("Native Plugin Architecture" -- Studio editor extensibility):
+    // real, one-time discovery and load of every native (.so/.dll) engine
+    // plugin, same ENGINE_NATIVE_PLUGIN_DIR convention core::Application
+    // uses for engine_runtime -- an honest no-op today since no such
+    // directory is checked in yet. Any plugin that also implements
+    // studio::IStudioNativePluginExtension (queried via
+    // core::NativePluginManager::queryExtension()) gets a real
+    // NativePluginAdapter registered into pluginManager_ so its panel/menu
+    // entry shows up exactly like a first-party plugin's.
+    for (const auto& found :
+         core::NativePluginManager::discover(core::resolveResourceDir(core::executableDirectory(), "native_plugins",
+                                                                        ENGINE_NATIVE_PLUGIN_DIR))) {
+        std::string pluginError;
+        if (nativePlugins_.loadPlugin(found.name, found.libraryPath, ecs_, pluginError)) {
+            registerNativePluginAdapterIfNeeded(found.name);
+        } else {
+            std::fprintf(stderr, "StudioApp: failed to load native plugin '%s': %s\n", found.name.c_str(),
+                         pluginError.c_str());
         }
     }
 
@@ -1778,6 +1800,18 @@ void StudioApp::drawSceneTabsBar() {
     ImGui::EndChild();
 }
 
+void StudioApp::registerNativePluginAdapterIfNeeded(const std::string& name) {
+    if (std::find(nativePluginsWithAdapter_.begin(), nativePluginsWithAdapter_.end(), name) !=
+        nativePluginsWithAdapter_.end()) {
+        return; // already bridged into pluginManager_ -- see that member's own comment
+    }
+    if (nativePlugins_.queryExtension(name, studio::IStudioNativePluginExtension::kInterfaceId) == nullptr) {
+        return; // this plugin doesn't implement the Studio extension -- nothing to bridge
+    }
+    nativePluginsWithAdapter_.push_back(name);
+    pluginManager_.registerPlugin(std::make_unique<NativePluginAdapter>(name, nativePlugins_, renderer_));
+}
+
 void StudioApp::tickProjectAutosave(float dt) {
     // A real, honest no-op until a project has actually been saved or
     // opened at least once -- matches SceneManager::tickAutosave()'s own
@@ -2316,6 +2350,15 @@ void StudioApp::run() {
         // drawPanel() only runs for the ones currently toggled open.
         pluginManager_.update(deltaTime, ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
         pluginManager_.drawPanels(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
+
+        // Kronos ("Native Plugin Architecture"): real per-tick forward to
+        // every currently loaded native plugin's own IHotReloadableModule
+        // -- pluginManager_'s update()/drawPanels() above already cover
+        // any native plugin's Studio-facing IStudioNativePluginExtension
+        // via its NativePluginAdapter; this is the separate, plain
+        // gameplay tick() every native plugin also gets, same as
+        // core::Application's own tick loop.
+        nativePlugins_.tick(deltaTime, ecs_);
 
         // IKronosPlugin sibling of the two calls above -- see
         // KronosPluginHost.hpp's own comment for why this only ticks/

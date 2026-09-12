@@ -94,6 +94,17 @@ public:
     [[nodiscard]] bool hasModuleLoaded(const std::string& slot) const;
     [[nodiscard]] size_t loadedSlotCount() const { return slots_.size(); }
 
+    // Real forward to the named slot's own module's
+    // IHotReloadableModule::queryExtension() (see that method's own
+    // comment) -- nullptr if `slot` has nothing loaded, or if the loaded
+    // module doesn't implement `interfaceId`. Deliberately does NOT expose
+    // the raw IHotReloadableModule* itself: a caller that cached that
+    // pointer across a hot-swap would be holding a dangling pointer into a
+    // real-destroyed module the moment this slot reloads, whereas
+    // re-querying by slot name here is always safe to call again after a
+    // swap.
+    [[nodiscard]] void* queryExtension(const std::string& slot, const char* interfaceId) const;
+
 private:
     struct LoadedLibrary {
         void* handle = nullptr;

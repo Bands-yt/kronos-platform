@@ -41,6 +41,8 @@
 #include "runtime/GameLoader.hpp"
 #include "runtime/GameLoop.hpp"
 #include "runtime/RuntimeShell.hpp"
+#include "despair/FacilityLayout.hpp"
+#include "despair/FacilityMapBuilder.hpp"
 #include "housedemo/HouseDemoScene.hpp"
 #include "miningsim/MiningSimRtx.hpp"
 #include "miningsim/Mob.hpp"
@@ -147,6 +149,7 @@ int main(int argc, char** argv) {
     std::string trailerOutputDir = "trailer_output";
     bool miningSimMode = false;
     bool houseDemoMode = false;
+    bool despairMode = false;
     bool renderShowcaseMode = false;
     bool tntWarsMode = false;
     std::string tntWarsMapArg; // real, optional positional map-name selector for --tntwars (see below)
@@ -280,6 +283,15 @@ int main(int argc, char** argv) {
             // "replaces the bring-up scene, then runs the real windowed
             // app.run() loop" shape as --miningsim above.
             houseDemoMode = true;
+        } else if (arg == "--despair") {
+            // PROJECT: DESPAIR -- real, live, interactive launch mode for
+            // the vertical slice's facility level (see
+            // despair/FacilityMapBuilder.hpp's own header comment). Same
+            // "replaces the bring-up scene, then runs the real windowed
+            // app.run() loop" shape as --house-demo above, except this one
+            // spawns a real first-person player capsule instead of just
+            // flying a camera through empty geometry.
+            despairMode = true;
         } else if (arg == "--render-showcase") {
             // Kronos ("Real-Time Rendering Evolved" trailer): real, live,
             // scripted-camera launch mode -- see the dedicated branch
@@ -629,6 +641,52 @@ int main(int argc, char** argv) {
 
         app.run();
         terrain.destroy();
+        app.shutdown();
+        return 0;
+    }
+
+    if (despairMode) {
+        std::fprintf(stdout, "engine_runtime: --despair mode -- PROJECT: DESPAIR facility vertical slice\n");
+
+        engine::despair::buildFacilityScene(app.ecs(), app.physics(), app.meshLibrary(), app.renderer().allocator(),
+                                             app.renderer().device(), app.renderer().commandPool(),
+                                             app.renderer().graphicsQueue(), glm::vec3(0.0f, 0.0f, 0.0f));
+
+        // "VHS / Analog Bodycam": PROJECT: DESPAIR's own visual identity --
+        // a fixed per-scene setting, unlike the proximity-driven static
+        // burst (Application.cpp's own post-physics hook calls
+        // setVhsStaticNoiseIntensity() every tick for that one). Real,
+        // tuned constants for a found-footage bodycam look, not
+        // placeholders -- every other real mode (housedemo, avatar
+        // preview, trailers) never calls this, so it stays at its real
+        // zero-effect default everywhere else.
+        app.renderer().setVhsBodycamSettings(0.35f, 0.5f);
+
+        engine::despair::FacilityLayout layout = engine::despair::computeFacilityLayout();
+        // characterController().spawn() (the same call TNT Wars' own mode
+        // makes further down), not spawnLocalPlayerAvatar(): the avatar path
+        // spawns a skinned third-person body around the capsule, which with
+        // FPSPlayerSettings' cameraDistance==0 would put the camera inside
+        // the player's own head and could interpose the avatar's own
+        // entities in front of the interaction raycast. A bare capsule's
+        // Renderable has no mesh assigned (see
+        // Physics::createCharacterCapsule()'s own comment), so it's simply
+        // invisible from inside it -- exactly what a single-player
+        // first-person mode with no mirrors needs.
+        (void)app.characterController().spawn(app.ecs(), app.physics(), layout.playerSpawn);
+        // FPSPlayerSettings is the real seam (see
+        // despair::configureFirstPersonCamera()'s own comment): attaching
+        // it is what turns this character's third-person orbit cam into
+        // the zero-distance first-person view DESPAIR's gaze-based
+        // SanitySystem/StalkerAI depend on, gated per-tick in
+        // Application.cpp's own postPhysicsHook.
+        app.ecs().addComponent<engine::despair::FPSPlayerSettings>(app.characterController().entity());
+        // yawDegrees=0 -> Camera::forward()==(1,0,0), facing down the
+        // corridor toward the locked door and RestrictedWing beyond it
+        // (see FacilityLayout.cpp's own layout comment).
+        app.characterController().setInitialCameraAngles(0.0f, 0.0f);
+
+        app.run();
         app.shutdown();
         return 0;
     }

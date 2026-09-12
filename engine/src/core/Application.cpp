@@ -258,6 +258,15 @@ bool Application::initialize(const CreateInfo& info) {
     // concern rather than a character-movement one.
     input_.bindAction("Interact", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
                                                                     SDL_SCANCODE_E});
+    // PROJECT: DESPAIR -- not part of CharacterController's own bindings
+    // either, same reasoning as "Interact" just above: despair::
+    // FPSPlayerSettings-gated stealth (see despair::computeNoiseLevel())
+    // is a DESPAIR-specific concern, not a generic character-movement one.
+    // Bound generically here regardless of scene, same as every other
+    // action -- a real, honest no-op read (isActionDown() just returns
+    // false) for any scene that never checks it.
+    input_.bindAction("Crouch", platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey,
+                                                                  SDL_SCANCODE_LCTRL});
     // Kronos ("Active Joining UI"): the real Escape-to-leave binding
     // runtime::RuntimeShell polls while InGame (see that class's own
     // tick()) -- bound generically here, same as every other action,
@@ -518,6 +527,17 @@ bool Application::initialize(const CreateInfo& info) {
             wasNetworkedClient_ = isNetworkedClientNow;
         }
 
+        // PROJECT: DESPAIR -- first-person camera. Idempotent settings
+        // mutation (see configureFirstPersonCamera()'s own comment), gated
+        // on FPSPlayerSettings -- the same "component is the seam"
+        // convention every other DESPAIR system in this file uses -- so
+        // every non-DESPAIR scene's third-person orbit cam is completely
+        // untouched. Must run before tick() below, which reads these
+        // settings this same frame.
+        if (ecs_.tryGetComponent<despair::FPSPlayerSettings>(characterController_.entity()) != nullptr) {
+            despair::configureFirstPersonCamera(characterController_);
+        }
+
         if (!cameraShowcaseModeEnabled_ && !movementInputSuspended_ && !isNetworkedClientNow) {
             characterController_.tick(dt, ecs_, physics_, input_, camera_, avatarController_.get(),
                                        avatarController_ ? &skinnedAvatarEntities_ : nullptr);
@@ -633,6 +653,11 @@ bool Application::initialize(const CreateInfo& info) {
 
         particleSystem_.update(dt, ecs_);
         animationPlayer_.tick(dt, ecs_);
+        // PROJECT: DESPAIR -- unconditional, same as the two systems right
+        // above: a no-op real early-exit (empty view) in any scene with no
+        // SanityState-bearing entity, so this is safe to run regardless of
+        // which game/scene is loaded.
+        despairSanitySystem_.update(dt, ecs_);
 
         // Kronos (Alpha Roadmap Phase 3, "Component system", extended in
         // Phase 7 "Lua hot-reload"): real, entity-attached gameplay
@@ -1979,11 +2004,27 @@ bool Application::initialize(const CreateInfo& info) {
         // entirely (an entity with no Interactable component is still a
         // valid raycast target, matching this trigger's pre-existing
         // permissive behavior -- see Interactable.hpp's own comment).
-        // Self-hits (the ray clipping the character's own capsule --
-        // possible at some third-person camera angles/distances) are
-        // filtered out.
+        //
+        // In first-person (see despair::configureFirstPersonCamera()),
+        // camera_.position sits at eye height *inside* the character's own
+        // capsule, not outside it like a third-person orbit cam -- a ray
+        // cast from inside a convex shape reports an immediate self-hit at
+        // fraction 0 rather than passing through to whatever is actually
+        // being looked at. The `rayHit.entity != character` filter alone
+        // can't recover from that: CastRay only returns the single closest
+        // hit, so once the self-hit wins, the real target past it is never
+        // even tested. Fixed via despair::computeInteractionRayOrigin (same
+        // "start the ray outside the capsule's own collision volume"
+        // convention CharacterController::tryStepUp() already uses, and the
+        // one place that geometry is now spelled out -- see its own
+        // comment). Harmless in third-person too: it just shrinks the ray's
+        // dead zone by the same amount, right in front of the already-
+        // distant orbit camera.
         constexpr float kInteractDistance = 6.0f;
-        Physics::RaycastHit rayHit = physics_.raycast(camera_.position, camera_.forward(), kInteractDistance);
+        float capsuleRadius = characterController_.settings().capsuleRadius;
+        float originOffset = capsuleRadius + despair::kInteractionRayOriginSkin;
+        glm::vec3 rayOrigin = despair::computeInteractionRayOrigin(camera_, capsuleRadius);
+        Physics::RaycastHit rayHit = physics_.raycast(rayOrigin, camera_.forward(), kInteractDistance - originOffset);
         EntityId lookAtTarget = (rayHit.hit && rayHit.entity != character) ? rayHit.entity : kNullEntity;
 
         // Real proximity targets: every Interactable within its own
@@ -2025,7 +2066,50 @@ bool Application::initialize(const CreateInfo& info) {
         // for why the edge-detection happens here rather than relying on
         // isActionDown() alone.
         bool interactDown = input_.isActionDown("Interact");
+
+        // PROJECT: DESPAIR -- raycast container searching / duffel-bag
+        // hold-to-search (despair::LootContainer). Deliberately ticked
+        // here, every tick, BEFORE the rising-edge gate just below: a
+        // hold-to-search mechanic needs to observe Interact held down
+        // continuously across many ticks, which the edge-triggered
+        // dispatch (one call per fresh press) can never see. See
+        // tickContainerSearches()'s own header comment for why this
+        // needs no stored "current hold target" state of its own.
+        for (EntityId searchedContainer : despair::tickContainerSearches(dt, ecs_, interactDown, lookAtTarget)) {
+            scripting_.fireInteract(static_cast<uint32_t>(searchedContainer), static_cast<uint32_t>(character));
+            // PROJECT: DESPAIR -- despair::LootSystem reconciliation:
+            // granting whatever this container's own LootDrop says it
+            // holds (a keycard, an Anti-Psychotic Injector) is exactly
+            // the "hooked off the completion this mechanic reports" step
+            // LootContainer's own header comment always deferred to
+            // LootSystem. A container with no LootDrop (or
+            // LootKind::None) is a real, honest "found nothing" -- an
+            // empty description, not an error.
+            std::string lootDescription = despair::grantContainerLoot(ecs_, searchedContainer, character, despairSanitySystem_);
+            std::fprintf(stdout, "[floating text] %s\n", lootDescription.empty() ? "Searched. Nothing here." : lootDescription.c_str());
+        }
+
         if (interactDown && !interactKeyWasDown_) {
+            // PROJECT: DESPAIR -- hiding-spot exit. Checked first and
+            // unconditionally on every fresh Interact press: while hidden,
+            // a press always means "get out," regardless of whatever the
+            // raycast happens to resolve to from inside a locker (see
+            // despair::tryToggleHiding()'s own comment) -- entry (below,
+            // in the normal target cascade) and exit are deliberately not
+            // symmetric through the same resolveInteractionTarget() path.
+            auto* hidingState = ecs_.tryGetComponent<despair::PlayerHidingState>(character);
+            if (hidingState != nullptr && hidingState->currentSpot != kNullEntity) {
+                if (auto* spot = ecs_.tryGetComponent<despair::HidingSpot>(hidingState->currentSpot)) {
+                    if (despair::tryToggleHiding(*spot, hidingState->currentSpot, *hidingState, characterPos) ==
+                        despair::HidingTransition::Exited) {
+                        physics_.setPosition(character, ecs_, hidingState->positionBeforeHiding);
+                        std::fprintf(stdout, "[floating text] Left hiding spot.\n");
+                    }
+                }
+                interactKeyWasDown_ = interactDown;
+                return;
+            }
+
             EntityId target = resolveInteractionTarget(lookAtTarget, nearestProximityTarget, ecs_, totalSimTime_);
             if (target != kNullEntity) {
                 scripting_.fireInteract(static_cast<uint32_t>(target), static_cast<uint32_t>(character));
@@ -2038,10 +2122,100 @@ bool Application::initialize(const CreateInfo& info) {
                 // can still layer its own reaction (a sound, a UI toast)
                 // on the same interaction.
                 if (auto* door = ecs_.tryGetComponent<Door>(target)) {
-                    if (auto* transform = ecs_.tryGetComponent<Transform>(target)) toggleDoor(*door, *transform);
+                    // PROJECT: DESPAIR -- door unlocking (despair::LockedDoor)
+                    // layered directly on top of this existing generic Door,
+                    // not a parallel door type (see LockedDoor's own header
+                    // comment). A locked door with a missing keycard never
+                    // reaches toggleDoor() at all -- the whole point of the
+                    // gate -- while an already-unlocked or just-now-unlocked
+                    // door falls straight through to the exact same toggle
+                    // every other Door already gets.
+                    bool canToggle = true;
+                    if (auto* lockedDoor = ecs_.tryGetComponent<despair::LockedDoor>(target)) {
+                        auto* keycardInventory = ecs_.tryGetComponent<despair::KeycardInventory>(character);
+                        despair::KeycardInventory emptyInventory;
+                        const despair::KeycardInventory& inventory =
+                            keycardInventory != nullptr ? *keycardInventory : emptyInventory;
+
+                        // PROJECT: DESPAIR -- the blastDoor is the one
+                        // LockedDoor in this facility that needs a second
+                        // precondition (the facility breaker) alongside
+                        // the keycard tier, so it's routed through
+                        // tryEscapeThroughBlastDoor() instead of plain
+                        // tryUnlockDoor() -- see BlastDoorTag's own
+                        // comment for why a tag, not a second door type,
+                        // is what distinguishes it. Only one PowerBreaker
+                        // exists in this vertical slice, so scanning for
+                        // it here (rather than threading a reference
+                        // through the whole interaction cascade) is the
+                        // simplest honest way to find "the" breaker.
+                        despair::DoorUnlockResult unlockResult;
+                        if (ecs_.hasComponent<despair::BlastDoorTag>(target)) {
+                            despair::PowerBreaker fallbackBreaker;
+                            auto breakerView = ecs_.view<despair::PowerBreaker>();
+                            const despair::PowerBreaker* breaker = &fallbackBreaker;
+                            for (auto breakerEntity : breakerView) {
+                                breaker = &breakerView.get<despair::PowerBreaker>(breakerEntity);
+                                break;
+                            }
+                            unlockResult = despair::tryEscapeThroughBlastDoor(*lockedDoor, inventory, *breaker);
+                        } else {
+                            unlockResult = despair::tryUnlockDoor(*lockedDoor, inventory);
+                        }
+                        if (unlockResult == despair::DoorUnlockResult::Unlocked) {
+                            // Real gate removal, not cosmetic: the door's own
+                            // build-time collider (see FacilityMapBuilder.cpp's
+                            // own comment on the locked-door static box) is what
+                            // actually blocked movement/line-of-sight up to this
+                            // point -- detach it now so the very same "swipe
+                            // card, door opens" press that follows this (below)
+                            // isn't just opening a door the player was already
+                            // walking through.
+                            physics_.detachBody(target, ecs_);
+                            std::fprintf(stdout, "[floating text] Unlocked.\n");
+                        } else if (unlockResult == despair::DoorUnlockResult::DeniedMissingKeycard) {
+                            canToggle = false;
+                            std::fprintf(stdout, "[floating text] Locked -- requires %s keycard.\n",
+                                         despair::keycardTierName(lockedDoor->requiredTier));
+                        }
+                    }
+                    if (canToggle) {
+                        if (auto* transform = ecs_.tryGetComponent<Transform>(target)) toggleDoor(*door, *transform);
+                    }
                 }
                 if (ecs_.hasComponent<Pickup>(target)) {
                     collectPickup(target, ecs_);
+                }
+                // PROJECT: DESPAIR -- keycard inventory. Pairs with
+                // core::Pickup on the same entity (handled just above) for
+                // the actual "it's gone from the world" mechanics; this only
+                // adds the tier to the player's real, honest set-semantics
+                // inventory (see addKeycardTier()'s own comment on why a
+                // duplicate tier is a harmless no-op, not an error).
+                if (auto* keycard = ecs_.tryGetComponent<despair::Keycard>(target)) {
+                    auto* keycardInventory = ecs_.tryGetComponent<despair::KeycardInventory>(character);
+                    if (keycardInventory == nullptr) keycardInventory = &ecs_.addComponent<despair::KeycardInventory>(character);
+                    if (despair::addKeycardTier(*keycardInventory, keycard->tier)) {
+                        std::fprintf(stdout, "[floating text] Picked up %s keycard.\n", despair::keycardTierName(keycard->tier));
+                    }
+                }
+                // PROJECT: DESPAIR -- hiding-spot entry. Exit is handled
+                // separately, above, before resolveInteractionTarget() even
+                // runs (see that block's own comment) -- reaching here means
+                // the player wasn't already hiding, so tryToggleHiding() can
+                // only ever report Entered or Denied for this call site.
+                if (auto* spot = ecs_.tryGetComponent<despair::HidingSpot>(target)) {
+                    auto* hidingState = ecs_.tryGetComponent<despair::PlayerHidingState>(character);
+                    if (hidingState == nullptr) hidingState = &ecs_.addComponent<despair::PlayerHidingState>(character);
+                    despair::HidingTransition result = despair::tryToggleHiding(*spot, target, *hidingState, characterPos);
+                    if (result == despair::HidingTransition::Entered) {
+                        physics_.setPosition(character, ecs_, spot->interiorPosition);
+                        physics_.setHorizontalVelocity(character, ecs_, {0.0f, 0.0f});
+                        physics_.setVerticalVelocity(character, ecs_, 0.0f);
+                        std::fprintf(stdout, "[floating text] Hiding...\n");
+                    } else if (result == despair::HidingTransition::Denied) {
+                        std::fprintf(stdout, "[floating text] Already occupied.\n");
+                    }
                 }
                 // Sprint 6 ("World Systems & Environment"): a real, working
                 // world-prop interaction -- toggling a Lamp on/off, the
@@ -2050,6 +2224,18 @@ bool Application::initialize(const CreateInfo& info) {
                 if (auto* lamp = ecs_.tryGetComponent<LampState>(target)) {
                     float newIntensity = toggleLamp(*lamp);
                     if (auto* renderable = ecs_.tryGetComponent<Renderable>(target)) renderable->emissiveIntensity = newIntensity;
+                }
+                // PROJECT: DESPAIR -- the facility breaker, the blastDoor
+                // gate's second precondition (see EscapeGameLoop.hpp's
+                // own comment on tryEscapeThroughBlastDoor()). Same
+                // pure-toggle/caller-writes-the-Renderable split as
+                // toggleLamp() just above.
+                if (auto* breaker = ecs_.tryGetComponent<despair::PowerBreaker>(target)) {
+                    bool activated = despair::toggleBreaker(*breaker);
+                    if (auto* renderable = ecs_.tryGetComponent<Renderable>(target)) {
+                        renderable->baseColor = activated ? glm::vec4(0.15f, 0.75f, 0.15f, 1.0f) : glm::vec4(0.75f, 0.15f, 0.10f, 1.0f);
+                    }
+                    std::fprintf(stdout, "[floating text] %s\n", activated ? "Breaker activated." : "Breaker deactivated.");
                 }
                 // Sprint 10 ("Creator Tools Phase 2") task category 3:
                 // the real "toggle" animation event hook -- interacting
@@ -2213,9 +2399,118 @@ bool Application::initialize(const CreateInfo& info) {
     // contacts during step(); this hook (runs right after step(), see
     // GameLoop::setPostPhysicsHook's doc comment) drains and forwards them
     // to events.onCollision.
-    gameLoop_->setPostPhysicsHook([this](float) {
+    gameLoop_->setPostPhysicsHook([this](float dt) {
         for (const auto& event : physics_.drainCollisionEvents()) {
             scripting_.fireCollision(static_cast<uint32_t>(event.first), static_cast<uint32_t>(event.second));
+        }
+        // PROJECT: DESPAIR -- first-person look-rotation + noise-level
+        // write. Must run here, after Physics::step()'s syncTransforms()
+        // reset this tick's Transform::rotation to yaw-only, and before
+        // despairAiManager_.update() just below reads it (see
+        // despair::updateFirstPersonPlayer()'s own comment on why this
+        // ordering is load-bearing). Real, honest no-op for any scene that
+        // never attaches despair::FPSPlayerSettings to the character.
+        despair::updateFirstPersonPlayer(ecs_, physics_, characterController_.entity(), camera_,
+                                          characterController_.settings(), input_.isActionDown("Crouch"));
+
+        // PROJECT: DESPAIR -- runs here, not in the pre-tick hook
+        // despairSanitySystem_ uses, because HorrorAIManager's perception
+        // raycasts and direct-line movement need this tick's real,
+        // post-step Transform/collision state, not the previous tick's.
+        // Real, honest no-op (empty views) in any scene with no Stalker/
+        // Tormentor/Culler entities, same "safe regardless of loaded
+        // scene" property as every other generic system ticked in this
+        // file.
+        despairAiManager_.update(dt, ecs_, physics_);
+
+        // PROJECT: DESPAIR -- EscapeGameLoop win/lose resolution. Runs
+        // here, after despairAiManager_.update() just above, so
+        // Stalker/Tormentor/Culler behavior state reflects this tick's
+        // real perception result, not the previous tick's. Real, honest
+        // no-op for any scene that never attaches despair::
+        // FPSPlayerSettings (updateFirstPersonPlayer() above is the only
+        // place EscapeGameState gets lazily attached, same convention as
+        // SanityState/PlayerNoiseLevel -- see that function's own
+        // comment).
+        EntityId despairCharacter = characterController_.entity();
+        if (auto* escapeState = ecs_.tryGetComponent<despair::EscapeGameState>(despairCharacter)) {
+            glm::vec3 despairPlayerPos(0.0f);
+            if (auto* transform = ecs_.tryGetComponent<Transform>(despairCharacter)) despairPlayerPos = transform->position;
+
+            auto* sanity = ecs_.tryGetComponent<despair::SanityState>(despairCharacter);
+            bool sanityDepleted = sanity != nullptr && sanity->current <= 0.0f;
+
+            // Only a Hunting Tormentor or an armed (Hunting) Culler is a
+            // real threat -- see isPlayerCaught()'s own header comment --
+            // never a Dormant/Idle/Investigating one, and never the
+            // Stalker (it freezes when spotted, it doesn't chase/catch;
+            // see StalkerBehaviorState's own comment).
+            bool caughtByThreat = false;
+            // VHS/Analog Bodycam static burst (see despair::
+            // computeVhsStaticNoiseIntensity()'s own comment): the same
+            // Hunting-only threat scan below already visits every
+            // candidate position, so tracking the nearest one here is
+            // free -- a real, negative sentinel (no Hunting threat this
+            // tick) rather than leaving it at some arbitrary large value.
+            float nearestThreatDistance = -1.0f;
+            auto tormentorView = ecs_.view<Transform, despair::TormentorAIState>();
+            for (auto entity : tormentorView) {
+                auto& tormentor = tormentorView.get<despair::TormentorAIState>(entity);
+                if (tormentor.behavior != despair::TormentorBehaviorState::Hunting) continue;
+                glm::vec3 threatPos = tormentorView.get<Transform>(entity).position;
+                float distance = glm::distance(despairPlayerPos, threatPos);
+                if (nearestThreatDistance < 0.0f || distance < nearestThreatDistance) nearestThreatDistance = distance;
+                if (despair::isPlayerCaught(despairPlayerPos, threatPos)) {
+                    caughtByThreat = true;
+                    break;
+                }
+            }
+            if (!caughtByThreat) {
+                auto cullerView = ecs_.view<Transform, despair::DespairCullerAIState>();
+                for (auto entity : cullerView) {
+                    auto& culler = cullerView.get<despair::DespairCullerAIState>(entity);
+                    if (culler.behavior != despair::CullerBehaviorState::Hunting) continue;
+                    glm::vec3 threatPos = cullerView.get<Transform>(entity).position;
+                    float distance = glm::distance(despairPlayerPos, threatPos);
+                    if (nearestThreatDistance < 0.0f || distance < nearestThreatDistance) nearestThreatDistance = distance;
+                    if (despair::isPlayerCaught(despairPlayerPos, threatPos)) {
+                        caughtByThreat = true;
+                        break;
+                    }
+                }
+            }
+            renderer_.setVhsStaticNoiseIntensity(despair::computeVhsStaticNoiseIntensity(nearestThreatDistance));
+
+            // The blastDoor's own LockedDoor::locked latches false the
+            // instant tryEscapeThroughBlastDoor() succeeds (see
+            // Application.cpp's own door-unlock cascade above) and never
+            // re-locks, so reading it here is a real, honest "did the
+            // player already escape," not a one-shot event that could be
+            // missed on a slow tick.
+            bool escapedThroughBlastDoor = false;
+            auto blastDoorView = ecs_.view<despair::BlastDoorTag, despair::LockedDoor>();
+            for (auto entity : blastDoorView) {
+                escapedThroughBlastDoor = !blastDoorView.get<despair::LockedDoor>(entity).locked;
+                break;
+            }
+
+            despair::EscapeOutcome previousOutcome = escapeState->outcome;
+            despair::updateEscapeGameState(*escapeState, sanityDepleted, caughtByThreat, escapedThroughBlastDoor);
+            if (escapeState->outcome != previousOutcome) {
+                switch (escapeState->outcome) {
+                    case despair::EscapeOutcome::Victory:
+                        std::fprintf(stdout, "[floating text] You escaped the facility. VICTORY.\n");
+                        break;
+                    case despair::EscapeOutcome::CaughtByHunter:
+                        std::fprintf(stdout, "[floating text] Something caught you. GAME OVER.\n");
+                        break;
+                    case despair::EscapeOutcome::LostToMadness:
+                        std::fprintf(stdout, "[floating text] Your mind is gone. GAME OVER.\n");
+                        break;
+                    case despair::EscapeOutcome::InProgress:
+                        break;
+                }
+            }
         }
     });
 

@@ -43,6 +43,15 @@ public:
     virtual void drawPanel(core::ECS& ecs, core::EntityId selected,
                             const std::vector<core::EntityId>& selectedEntities) = 0;
 
+    // Called by PluginManager::drawMenu() right after this plugin's own
+    // open/close MenuItem, still inside the "Plugins" menu -- for a
+    // plugin that wants its own extra menu bar entries (a submenu, a
+    // one-off action) beyond the automatic panel toggle every plugin
+    // already gets. Default no-op; only studio::NativePluginAdapter
+    // overrides this today, to forward into a native plugin's own optional
+    // IStudioNativePluginExtension::drawMenuItems().
+    virtual void drawExtraMenuItems() {}
+
     [[nodiscard]] bool isOpen() const { return open_; }
     void setOpen(bool open) { open_ = open; }
     void toggleOpen() { open_ = !open_; }

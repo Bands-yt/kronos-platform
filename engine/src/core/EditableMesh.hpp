@@ -60,6 +60,16 @@ public:
     // exactly.
     [[nodiscard]] static EditableMesh createCapsule(float radius, float halfHeight, uint32_t radialSegments = 16,
                                                      uint32_t capRings = 8);
+    // Same "shared generateXGeometry() with the GPU-only Mesh class" real,
+    // non-drift-prone pattern createCapsule() above uses -- see
+    // Mesh.hpp's generateCylinderGeometry()/generateTorusGeometry() own
+    // comments. Lets Cylinder/Plane/Torus primitives spawned from the
+    // viewport attach a real editable mesh on spawn, matching Sphere/Cube
+    // (see ViewportPanel.cpp's spawnPrimitive lambda).
+    [[nodiscard]] static EditableMesh createCylinder(float radius, float halfHeight, uint32_t radialSegments = 16);
+    [[nodiscard]] static EditableMesh createPlane(float halfWidth, float halfDepth);
+    [[nodiscard]] static EditableMesh createTorus(float majorRadius, float minorRadius, uint32_t majorSegments = 24,
+                                                   uint32_t minorSegments = 12);
 
     [[nodiscard]] const std::vector<Vertex>& vertices() const { return vertices_; }
     [[nodiscard]] const std::vector<uint32_t>& indices() const { return indices_; }
@@ -175,5 +185,46 @@ private:
 // standard, honestly-simpler-than-position-smoothing choice most real
 // subdivision implementations already make.
 [[nodiscard]] EditableMesh catmullClarkSubdivide(const EditableMesh& mesh);
+
+// Kronos ("3D DCC Modeling Suite" -- real plane slice): cuts `mesh`
+// against the real plane through `planePoint` with normal `planeNormal`,
+// keeping only the side the caller asks for and discarding the rest --
+// the same "whole mesh in, new whole mesh out" shape catmullClarkSubdivide()
+// and core::booleanOp() (CsgMesh.hpp) already use, rather than mutating
+// `mesh` in place.
+//
+// `keepPositiveSide` picks which side survives: true keeps the side
+// `planeNormal` points toward, false keeps the opposite side -- so
+// `effectiveNormal` (the internal, always-"toward the kept side" normal
+// this uses for every signed-distance test) is `planeNormal` or its
+// negation accordingly, and a vertex is kept exactly when its signed
+// distance from the plane along `effectiveNormal` is >= 0.
+//
+// Every triangle is classified all-kept / all-discarded / mixed; a mixed
+// triangle is clipped via a real, standard single-plane Sutherland-
+// Hodgman polygon clip (producing a 3- or 4-vertex kept polygon, fan-
+// triangulated from its own first vertex -- the same "no separate
+// general polygon triangulator" convention insetFace()/extrudeFace()
+// already use), with each original crossed EDGE (not triangle) caching
+// its own single new cut vertex the first time any triangle crosses it,
+// so two triangles sharing that edge produce the exact same new vertex
+// -- a real, watertight cut, not two independently-computed near-
+// duplicates.
+//
+// `fillCap`: when true, the new cut cross-section's own boundary loop(s)
+// (chained from each clipped triangle's own 2 new cut vertices, in the
+// order that triangle's original a->b->c winding crossed them) are each
+// fan-triangulated from their own centroid, with cap normal
+// `-effectiveNormal` (the newly-exposed face looks into the void where
+// the discarded material used to be, not toward the kept solid). Real,
+// honest scope: a boundary chain that doesn't close back on its own
+// start (a non-manifold slice, or a mesh with a pre-existing hole
+// crossing the cut) is left uncapped for that one loop rather than
+// guessing how to close it -- the same "real, honest no-op over a
+// guess" convention bevelEdge()/catmullClarkSubdivide() already use.
+// `fillCap=false` leaves the cut as an open shell, e.g. for a caller
+// that immediately re-slices the result again.
+[[nodiscard]] EditableMesh sliceByPlane(const EditableMesh& mesh, glm::vec3 planePoint, glm::vec3 planeNormal,
+                                         bool keepPositiveSide, bool fillCap);
 
 } // namespace engine::core

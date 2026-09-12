@@ -593,6 +593,25 @@ public:
     void setSaturation(float saturation) { saturation_ = saturation; }
     void setGodRayStrength(float strength) { godRayStrength_ = strength; }
 
+    // Kronos ("VHS / Analog Bodycam"): PROJECT: DESPAIR's found-footage
+    // look -- a fixed per-scene setting (main.cpp's despair mode calls this
+    // once, right after buildFacilityScene()), unlike the proximity-driven
+    // static burst below, which changes every tick. See
+    // shaders/composite.frag's own header comment for the fisheye-then-CA
+    // ordering this strength feeds.
+    void setVhsBodycamSettings(float fisheyeStrength, float scanlineIntensity) {
+        fisheyeStrength_ = std::clamp(fisheyeStrength, 0.0f, 1.0f);
+        scanlineIntensity_ = std::clamp(scanlineIntensity, 0.0f, 1.0f);
+    }
+    // Real, honest per-tick value -- Application.cpp's own post-physics
+    // hook recomputes this every tick from despair::
+    // computeVhsStaticNoiseIntensity() against the nearest Hunting
+    // Tormentor/Culler, the same "only a real Hunting threat counts"
+    // convention despair::isPlayerCaught()'s callers already established.
+    // 0 (the default) is a real, exact no-op in composite.frag, not just a
+    // visually-small value.
+    void setVhsStaticNoiseIntensity(float intensity) { staticNoiseIntensity_ = std::clamp(intensity, 0.0f, 1.0f); }
+
     // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline"):
     // real, selectable final tonemap curve -- see
     // shaders/composite.frag's own acesFilm()/agxTonemap() comments.
@@ -790,6 +809,45 @@ public:
     // second, separate renderer.
     using OverlayCallback = std::function<void(VkCommandBuffer cmd, VkImageView targetView, VkExtent2D extent)>;
     void setOverlayCallback(OverlayCallback callback) { overlayCallback_ = std::move(callback); }
+
+    // Kronos ("Native Plugin Architecture" -- Studio editor extensibility):
+    // an ADDITIVE, named list of extra overlay draws, run after
+    // overlayCallback_ above in the very same LOAD-op pass -- deliberately
+    // NOT reusing overlayCallback_'s own single slot, which Studio's core
+    // rendering integration already owns for compositing its own ImGui
+    // frame. This is how a dynamically loaded native plugin "registers a
+    // callback against the Renderer" (see
+    // studio::IStudioNativePluginExtension) without displacing Studio's
+    // own overlay. Registering under a name already present replaces that
+    // entry (same hot-reload-safe convention as NativePluginManager's own
+    // "same name = swap" loadPlugin()); removePluginOverlayCallback() is a
+    // real no-op if `name` isn't registered.
+    // Defined inline (not in Renderer.cpp): a native plugin's own .so calls
+    // this directly, and it is a plain non-virtual member function, so its
+    // compiled code must live in the CALLER's object code, not be pulled in
+    // as an unresolved cross-DSO symbol against engine_core -- there is no
+    // portable dlopen/LoadLibrary-equivalent of "resolve against the host
+    // executable's exports" this ABI can rely on (see
+    // studio::IStudioNativePluginExtension's own doc comment on why every
+    // other cross-DSO call in this ABI goes through a virtual vtable slot
+    // instead). Safe to inline: only touches pluginOverlayCallbacks_, a
+    // private member, from within the class itself.
+    void addPluginOverlayCallback(std::string name, OverlayCallback callback) {
+        for (auto& [existingName, existingCallback] : pluginOverlayCallbacks_) {
+            if (existingName == name) {
+                existingCallback = std::move(callback);
+                return;
+            }
+        }
+        pluginOverlayCallbacks_.emplace_back(std::move(name), std::move(callback));
+    }
+
+    void removePluginOverlayCallback(const std::string& name) {
+        pluginOverlayCallbacks_.erase(
+            std::remove_if(pluginOverlayCallbacks_.begin(), pluginOverlayCallbacks_.end(),
+                            [&](const auto& entry) { return entry.first == name; }),
+            pluginOverlayCallbacks_.end());
+    }
 
     // Public (unlike the rest of Renderer's Vulkan plumbing) because
     // Studio's offscreen viewport target -- owned by studio/, not core/ --
@@ -1726,6 +1784,12 @@ private:
     float chromaticAberrationStrength_ = 0.0015f;
     float saturation_ = 1.05f;
     float godRayStrength_ = 0.15f;
+    // Kronos ("VHS / Analog Bodycam"): all real zero-effect defaults --
+    // see setVhsBodycamSettings()/setVhsStaticNoiseIntensity()'s own
+    // comments on who sets these and when.
+    float fisheyeStrength_ = 0.0f;
+    float scanlineIntensity_ = 0.0f;
+    float staticNoiseIntensity_ = 0.0f;
     TonemapOperator tonemapOperator_ = TonemapOperator::AcesFilm;
 
     // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
@@ -1908,6 +1972,11 @@ private:
 
     PrePassCallback prePassCallback_;
     OverlayCallback overlayCallback_;
+    // Insertion-ordered so plugin overlays draw in a deterministic order
+    // across a session even as individual plugins hot-reload in between --
+    // same convention as CppHotReloadHost::slots_. Real expected count is a
+    // handful of plugins, not enough to need a hash map.
+    std::vector<std::pair<std::string, OverlayCallback>> pluginOverlayCallbacks_;
 };
 
 } // namespace engine::core

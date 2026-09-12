@@ -4759,6 +4759,14 @@ void Renderer::drawBloomAndComposite(VkCommandBuffer cmd, FrameSync& frame, VkIm
     // transform every frame needs, not a cinematic-only effect.
     compositePush.tonemapOperator = tonemapOperator_ == TonemapOperator::AgX ? 1.0f : 0.0f;
     compositePush.lutStrength = lutStrength_;
+    // Kronos ("VHS / Analog Bodycam"): also applies regardless of
+    // Cinematic Mode -- see setVhsBodycamSettings()'s own comment on why
+    // this is DESPAIR's visual identity, not a graphics-quality knob, and
+    // every other scene leaves all three at their real zero-effect default.
+    compositePush.fisheyeStrength = fisheyeStrength_;
+    compositePush.scanlineIntensity = scanlineIntensity_;
+    compositePush.staticNoiseIntensity = staticNoiseIntensity_;
+    compositePush.time = totalElapsedTimeSeconds_;
     vkCmdPushConstants(cmd, compositePipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(compositePush),
                         &compositePush);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -5104,6 +5112,10 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
                                             renderable.useTriplanarProjection ? 1.0f : 0.0f);
         push.emissive = glm::vec4(renderable.emissiveColor, renderable.emissiveIntensity);
         push.textureIndices = packTextureIndices(renderable, textureLibrary);
+        // Set after packTextureIndices(), which returns an all-zero uvec4
+        // whenever bindless isn't initialised -- see SceneTypes.hpp's own
+        // comment on why this flag can't ride inside that helper.
+        push.textureIndices.w = renderable.unlitSilhouette ? 1u : 0u;
         vkCmdPushConstants(cmd, scenePipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                             0, sizeof(push), &push);
 
@@ -5423,6 +5435,7 @@ void Renderer::drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& 
                                             renderable->useTriplanarProjection ? 1.0f : 0.0f);
         data.emissive = glm::vec4(renderable->emissiveColor, renderable->emissiveIntensity);
         data.textureIndices = packTextureIndices(*renderable, textureLibrary);
+        data.textureIndices.w = renderable->unlitSilhouette ? 1u : 0u;
         buckets[renderable->meshHandle].push_back(data);
     }
 
@@ -5691,7 +5704,7 @@ bool Renderer::renderFrame() {
         vkCmdEndRendering(cmd);
     }
 
-    if (overlayCallback_) {
+    if (overlayCallback_ || !pluginOverlayCallbacks_.empty()) {
         VkRenderingAttachmentInfo overlayAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         overlayAttachment.imageView = swapchainImageViews_[imageIndex];
         overlayAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -5705,7 +5718,16 @@ bool Renderer::renderFrame() {
         overlayInfo.pColorAttachments = &overlayAttachment;
 
         vkCmdBeginRendering(cmd, &overlayInfo);
-        overlayCallback_(cmd, swapchainImageViews_[imageIndex], swapchainExtent_);
+        if (overlayCallback_) overlayCallback_(cmd, swapchainImageViews_[imageIndex], swapchainExtent_);
+        // Plugin overlay hooks run AFTER Studio's own overlayCallback_ (its
+        // ImGui composite), in the same LOAD-op pass, so a plugin draws on
+        // top of the already-composited editor frame instead of racing it
+        // for the first draw. See Renderer.hpp's own comment on why this is
+        // an additive list rather than reusing overlayCallback_'s single
+        // slot, which Studio's core rendering integration already owns.
+        for (const auto& [name, callback] : pluginOverlayCallbacks_) {
+            callback(cmd, swapchainImageViews_[imageIndex], swapchainExtent_);
+        }
         vkCmdEndRendering(cmd);
     }
 

@@ -121,6 +121,7 @@ add_library(engine_core STATIC
     core/RayTracingScene.cpp
     core/VmaImpl.cpp
     core/Mesh.cpp
+    core/Baseplate.cpp
     core/EditableMesh.cpp
     core/CsgMesh.cpp
     core/ModifierStack.cpp
@@ -411,6 +412,16 @@ add_library(engine_core STATIC
     housedemo/HouseLayout.cpp
     housedemo/HouseDemoScene.cpp
 
+    despair/SanitySystem.cpp
+    despair/HorrorAIManager.cpp
+    despair/InteractionSystem.cpp
+    despair/FPSPlayerController.cpp
+    despair/FacilityLayout.cpp
+    despair/FacilityMapBuilder.cpp
+    despair/LootSystem.cpp
+    despair/EscapeGameLoop.cpp
+    despair/VhsBodycamEffects.cpp
+
     platform_adapters/UnifiedInput.cpp
     platform_adapters/adapters/WindowsAdapter.cpp
     platform_adapters/adapters/LinuxAdapter.cpp
@@ -635,6 +646,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/StudioApp.cpp
         studio/OffscreenTarget.cpp
         studio/PluginManager.cpp
+        studio/NativePluginAdapter.cpp
         studio/StudioEcsScriptApi.cpp
         studio/ScriptCinematicApi.cpp
         studio/ScriptRenderApi.cpp
@@ -778,6 +790,44 @@ if(ENGINE_BUILD_STUDIO)
             set_target_properties(${_kronos_studio_target} PROPERTIES WIN32_EXECUTABLE TRUE)
         endif()
     endforeach()
+
+    # Kronos ("Native Plugin Architecture" -- Studio editor extensibility):
+    # native_plugins/SampleStudioToolPlugin.cpp, built as a real, separately
+    # compiled .so -- see that file's own header comment for what it proves
+    # (dynamic load + hot-reload of a Studio-integrated
+    # core::IHotReloadableModule / studio::IStudioNativePluginExtension).
+    # Links imgui::imgui_pic (NOT imgui::imgui, which isn't PIC -- see that
+    # target's own comment) plus the same Vulkan/ECS/math deps
+    # Renderer.hpp/ECS.hpp pull in transitively, since this plugin includes
+    # core/Renderer.hpp in full (its registerRendererCallbacks() override
+    # calls a real inline Renderer method).
+    add_library(sample_studio_tool_plugin SHARED
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../native_plugins/SampleStudioToolPlugin.cpp)
+    target_include_directories(sample_studio_tool_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(sample_studio_tool_plugin PRIVATE
+        imgui::imgui_pic
+        SDL2::SDL2
+        Vulkan::Headers
+        volk
+        vma::vma
+        EnTT::EnTT
+        glm::glm
+    )
+    target_compile_features(sample_studio_tool_plugin PRIVATE cxx_std_20)
+    target_compile_definitions(sample_studio_tool_plugin PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE)
+    # PREFIX ""/OUTPUT_NAME so the built file is exactly
+    # "SampleStudioToolPlugin.so" -- NativePluginManager::discover() uses
+    # the file's stem verbatim as the plugin name, with no "lib" stripping.
+    # LIBRARY_OUTPUT_DIRECTORY points straight at the checked-in
+    # native_plugins/ source dir (the same path ENGINE_NATIVE_PLUGIN_DIR
+    # falls back to above), so a normal build is real-discoverable with no
+    # manual copy step.
+    set_target_properties(sample_studio_tool_plugin PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "SampleStudioToolPlugin"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../native_plugins"
+        POSITION_INDEPENDENT_CODE ON
+    )
 endif()
 
 # ---------------------------------------------------------------------------

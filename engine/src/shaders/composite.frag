@@ -25,6 +25,18 @@
 // (params.saturation) still real-applies *after* the LUT blend, as an
 // independent fine-tune knob studio::plugins::LightingToolsPlugin's own
 // live slider already drives -- loading a real LUT doesn't remove it.
+//
+// Kronos ("VHS / Analog Bodycam"): PROJECT: DESPAIR's found-footage look,
+// three real additions split across two different categories of
+// artifact. Fisheye (fisheyeWarp() below) is a real *lens* artifact, so
+// it warps `uv` before anything else in main() samples hdrColor/bloomColor
+// with it -- chromatic aberration's own per-channel offset rides on the
+// already-warped uv, exactly like a real lens stacks CA on top of its own
+// barrel distortion rather than the other way round. Scanlines and the
+// proximity-driven static burst are *signal* artifacts (a CRT/tape
+// reproduction flaw, not a property of the light passing through a lens),
+// so they apply last, after tonemap/LUT/vignette have already produced
+// the "clean" graded frame -- see main()'s own comments at each site.
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
@@ -66,6 +78,13 @@ layout(push_constant) uniform CompositePushConstants {
     // unblended output. See Renderer::setColorGradingLutStrength()'s
     // own comment.
     float lutStrength;
+    // See this file's header comment and fisheyeWarp()/the scanline+
+    // static block in main() below. All three are a real, exact no-op at
+    // their default of 0.0.
+    float fisheyeStrength;
+    float scanlineIntensity;
+    float staticNoiseIntensity;
+    float time;
 } params;
 
 // Kronos ("Settings Panel v2 + Input Remapping + Accessibility Layer" --
@@ -172,8 +191,35 @@ vec3 sampleGodRays(vec2 uv) {
     return (sum / max(totalWeight, 1e-4)) * params.godRayStrength;
 }
 
+// Real barrel distortion: pushes samples radially outward from screen
+// center by an amount that grows with the square of the distance from
+// center (the standard fisheye/GoPro-lens falloff -- ~zero at dead
+// center, strongest at the corners). `strength == 0.0` collapses this to
+// the exact identity (`warped == uv`), a real, exact no-op rather than a
+// visually-small distortion.
+vec2 fisheyeWarp(vec2 uv, float strength) {
+    vec2 centerOffset = uv - 0.5;
+    float distortion = 1.0 + strength * dot(centerOffset, centerOffset);
+    return centerOffset * distortion + 0.5;
+}
+
+// Cheap per-pixel pseudo-random hash -- same "poor man's" real-time
+// tradeoff sampleGodRays()/acesFilm() above already make; a real texture-
+// free noise source is all a flickering static burst needs.
+float staticHash(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453123);
+}
+
 void main() {
-    vec2 uv = inUV;
+    // Fisheye first -- a real lens artifact, so every later sample of
+    // hdrColor/bloomColor (including chromatic aberration's own offset
+    // sampling right below) reads through the warped uv, not the raw
+    // screen uv. Clamped into [0,1] the same way sampleGodRays() already
+    // clamps its own march samples -- an unclamped uv outside that range
+    // would smear the LINEAR-filtered edge texel across the frame border
+    // instead of a clean, real "the lens pushed this off-frame" result.
+    vec2 uv = params.fisheyeStrength > 0.0 ? clamp(fisheyeWarp(inUV, params.fisheyeStrength), vec2(0.0), vec2(1.0))
+                                            : inUV;
     vec2 centerOffset = uv - 0.5;
 
     // Chromatic aberration: sample each color channel at a slightly
@@ -229,6 +275,27 @@ void main() {
     // near the middle and a faster one at the corners).
     float vignette = 1.0 - params.vignetteStrength * dot(centerOffset, centerOffset) * 2.0;
     mapped *= clamp(vignette, 0.0, 1.0);
+
+    // Scanlines -- a real signal artifact (the tape/CRT reproduction, not
+    // the light itself), so it applies to the already-graded frame rather
+    // than riding alongside chromatic aberration above. `uv.y` (not a
+    // resolution-dependent pixel coordinate) drives the line frequency --
+    // the same "real, honestly simpler than resolution-exact" tradeoff
+    // sampleGodRays()'s march already makes -- and params.time scrolls
+    // them so they roll like a real tape's own vertical hold, rather than
+    // sitting as a fixed per-pixel pattern. 0 strength is a real, exact
+    // `scanline == 1.0` no-op.
+    float scanline = mix(1.0, 0.5 + 0.5 * sin(uv.y * 800.0 + params.time * 10.0), params.scanlineIntensity);
+    mapped *= scanline;
+
+    // Static noise burst -- driven per-tick from proximity to a real
+    // Hunting threat (see despair::computeVhsStaticNoiseIntensity() and
+    // Renderer::setVhsStaticNoiseIntensity()), not a constant. Reseeded by
+    // params.time every frame so it actually flickers instead of showing
+    // a fixed grain pattern. 0 intensity is a real, exact pass-through
+    // (mix() with t=0 returns `mapped` unchanged).
+    float staticNoise = staticHash(uv * vec2(800.0, 600.0) + params.time * 60.0);
+    mapped = mix(mapped, vec3(staticNoise), params.staticNoiseIntensity);
 
     mapped = applyColorblindTint(mapped, int(params.colorblindMode + 0.5));
 

@@ -89,6 +89,19 @@ public:
     [[nodiscard]] const std::vector<LoadedPluginInfo>& listLoadedPlugins() const { return loaded_; }
     [[nodiscard]] size_t pluginCount() const { return loaded_.size(); }
 
+    // Real forward to the named plugin's own
+    // IHotReloadableModule::queryExtension() -- see
+    // CppHotReloadHost::queryExtension()'s own comment on why this is
+    // always safe to call again after a hot-swap, unlike caching a raw
+    // module pointer would be. nullptr if `name` isn't loaded or doesn't
+    // implement `interfaceId`. This is the one seam studio::
+    // NativePluginAdapter uses to reach a native plugin's optional
+    // IStudioNativePluginExtension without engine_core ever needing to
+    // know that interface exists.
+    [[nodiscard]] void* queryExtension(const std::string& name, const char* interfaceId) const {
+        return host_.queryExtension(name, interfaceId);
+    }
+
 private:
     CppHotReloadHost host_;
     // Insertion-ordered bookkeeping of what's currently loaded, kept in

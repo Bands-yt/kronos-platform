@@ -12,10 +12,11 @@
 
 namespace engine::studio::plugins {
 
-// A real model importer -- Load reads an actual .obj file
-// (core::loadObj(), ObjLoader.hpp) off disk, uploads it to the GPU
-// (core::Mesh::uploadFromHost(), the same call every procedural generator
-// uses), and registers it into Studio's shared MeshLibrary. Deliberately
+// A real model importer -- Load dispatches on extension to the matching
+// real loader (core::loadObj()/ObjLoader.hpp, core::loadFbx()/FbxLoader.hpp,
+// or core::loadGltf()/GltfLoader.hpp for .gltf/.glb), uploads the result to
+// the GPU (core::Mesh::uploadFromHost(), the same call every procedural
+// generator uses), and registers it into Studio's shared MeshLibrary. Deliberately
 // does NOT own a second offscreen render target/camera for an isolated
 // preview: the loaded mesh is spawned as a real entity (named
 // "ModelPreview", reused/updated on subsequent loads rather than

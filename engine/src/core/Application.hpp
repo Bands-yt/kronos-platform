@@ -37,6 +37,13 @@
 #include "core/ScriptUiLayoutApi.hpp"
 #include "core/ScriptWorldApi.hpp"
 #include "core/TrailerScriptApi.hpp"
+#include "despair/EscapeGameLoop.hpp"
+#include "despair/FPSPlayerController.hpp"
+#include "despair/HorrorAIManager.hpp"
+#include "despair/InteractionSystem.hpp"
+#include "despair/LootSystem.hpp"
+#include "despair/SanitySystem.hpp"
+#include "despair/VhsBodycamEffects.hpp"
 #include "tntwars/DestructibleGeometryVisual.hpp"
 #include "tntwars/ScavengeNodeVisual.hpp"
 #include "tntwars/TraversalChallenge.hpp"
@@ -717,6 +724,18 @@ private:
     std::vector<EntityId> skinnedAvatarEntities_;
     ParticleSystem particleSystem_;
     RuntimeAnimationPlayer animationPlayer_;
+    // PROJECT: DESPAIR -- real, live-ticked here (not just constructed in
+    // tests) so any SanityState-bearing entity actually drains, same
+    // per-tick wiring particleSystem_/animationPlayer_ get right above.
+    despair::SanitySystem despairSanitySystem_;
+    // In-class initializer (not a ctor-initializer-list entry -- Application's
+    // own ctor is `= default`) so this binds despairSanitySystem_ right
+    // above, which NSDMIs run in declaration order just like a real
+    // constructor-initializer-list would. HorrorAIManager only needs the
+    // reference during its own constructor (to register the hallucination
+    // hook) and keeps no reference afterward, so member declaration order
+    // here is the only real requirement.
+    despair::HorrorAIManager despairAiManager_{despairSanitySystem_};
     // unique_ptr, not a plain member: ScriptWorldApi holds references to
     // ecs_/physics_/animationPlayer_ bound at construction, and those must
     // already be fully constructed first -- constructed in initialize()

@@ -20,6 +20,7 @@ void PluginManager::drawMenu() {
         if (ImGui::MenuItem(plugin->name(), nullptr, open)) {
             plugin->setOpen(!open);
         }
+        plugin->drawExtraMenuItems();
     }
     ImGui::EndMenu();
 }

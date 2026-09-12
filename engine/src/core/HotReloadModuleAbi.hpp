@@ -53,6 +53,23 @@ public:
         (void)dt;
         (void)ecs;
     }
+
+    // Optional extension query -- lets a module expose a second interface
+    // beyond onLoad/onUnload/tick without engine_core itself knowing what
+    // that interface is. `interfaceId` is a string constant the caller and
+    // the module both agree on out of band (e.g.
+    // studio::IStudioNativePluginExtension::kInterfaceId); a module that
+    // doesn't implement that interface returns nullptr, which is the
+    // default here so every existing module (which never overrides this)
+    // is unaffected. This is deliberately the ONLY hook engine_core adds
+    // for Studio-editor extensibility (custom ImGui panels, menu actions)
+    // -- see NativePluginManager.hpp's own comment -- because engine_core
+    // links into engine_runtime too, which has no ImGui/Studio concept at
+    // all; the actual extension interface lives in studio/, not here.
+    [[nodiscard]] virtual void* queryExtension(const char* interfaceId) {
+        (void)interfaceId;
+        return nullptr;
+    }
 };
 
 // Real ABI version this header defines -- bump it any time
@@ -65,7 +82,10 @@ public:
 // symbol, called BEFORE the module is ever touched as a real
 // IHotReloadableModule*) and refuses to load on a mismatch -- see that
 // class's own header comment for the exact sequencing.
-inline constexpr int kHotReloadModuleAbiVersion = 1;
+//
+// v2: added IHotReloadableModule::queryExtension() -- a real vtable shape
+// change, so a v1-built module must not be trusted against a v2 host.
+inline constexpr int kHotReloadModuleAbiVersion = 2;
 
 // Kronos: every real hot-reloadable module's .cpp defines these three
 // functions under `extern "C"` -- unmangled, literal symbol names

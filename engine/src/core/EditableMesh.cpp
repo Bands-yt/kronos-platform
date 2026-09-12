@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -51,6 +52,34 @@ EditableMesh EditableMesh::createCapsule(float radius, float halfHeight, uint32_
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     generateCapsuleGeometry(radius, halfHeight, radialSegments, capRings, vertices, indices);
+    return fromVertexData(std::move(vertices), std::move(indices));
+}
+
+EditableMesh EditableMesh::createCylinder(float radius, float halfHeight, uint32_t radialSegments) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    generateCylinderGeometry(radius, halfHeight, radialSegments, vertices, indices);
+    return fromVertexData(std::move(vertices), std::move(indices));
+}
+
+EditableMesh EditableMesh::createPlane(float halfWidth, float halfDepth) {
+    // Same 4-vertex quad Mesh::createPlane() uploads -- see that
+    // function for the identical vertex list this mirrors.
+    std::vector<Vertex> vertices = {
+        {{-halfWidth, 0, -halfDepth}, {0, 1, 0}, {0, 0}},
+        {{halfWidth, 0, -halfDepth}, {0, 1, 0}, {1, 0}},
+        {{halfWidth, 0, halfDepth}, {0, 1, 0}, {1, 1}},
+        {{-halfWidth, 0, halfDepth}, {0, 1, 0}, {0, 1}},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2, 0, 2, 3};
+    return fromVertexData(std::move(vertices), std::move(indices));
+}
+
+EditableMesh EditableMesh::createTorus(float majorRadius, float minorRadius, uint32_t majorSegments,
+                                        uint32_t minorSegments) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    generateTorusGeometry(majorRadius, minorRadius, majorSegments, minorSegments, vertices, indices);
     return fromVertexData(std::move(vertices), std::move(indices));
 }
 
@@ -480,6 +509,148 @@ EditableMesh catmullClarkSubdivide(const EditableMesh& mesh) {
 
             pushTriangle(p0, p1, p2);
             pushTriangle(p0, p2, p3);
+        }
+    }
+
+    return EditableMesh::fromVertexData(std::move(outVertices), std::move(outIndices));
+}
+
+EditableMesh sliceByPlane(const EditableMesh& mesh, glm::vec3 planePoint, glm::vec3 planeNormal,
+                           bool keepPositiveSide, bool fillCap) {
+    glm::vec3 effectiveNormal = keepPositiveSide ? glm::normalize(planeNormal) : -glm::normalize(planeNormal);
+    const std::vector<Vertex>& srcVertices = mesh.vertices();
+    const size_t vertCount = srcVertices.size();
+
+    std::vector<float> dist(vertCount);
+    for (size_t i = 0; i < vertCount; ++i) {
+        dist[i] = glm::dot(srcVertices[i].position - planePoint, effectiveNormal);
+    }
+    auto isKept = [&](uint32_t idx) { return dist[idx] >= 0.0f; };
+
+    // Only real KEPT original vertices survive into the output, remapped
+    // to their new index -- the same "a vertex no longer referenced is
+    // dropped" convention mergeVertices() already uses, rather than
+    // silently carrying every discarded-side vertex along unreferenced.
+    std::vector<uint32_t> remap(vertCount, UINT32_MAX);
+    std::vector<Vertex> outVertices;
+    outVertices.reserve(vertCount);
+    for (size_t i = 0; i < vertCount; ++i) {
+        if (isKept(static_cast<uint32_t>(i))) {
+            remap[i] = static_cast<uint32_t>(outVertices.size());
+            outVertices.push_back(srcVertices[i]);
+        }
+    }
+    std::vector<uint32_t> outIndices;
+    outIndices.reserve(mesh.indices().size());
+
+    // One cached new vertex per real ORIGINAL edge (canonical (lo, hi) key,
+    // same convention allEdges() uses), so two triangles sharing a crossed
+    // edge produce the exact same cut vertex -- a real, watertight cut.
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> cutCache;
+    auto cutEdge = [&](uint32_t a, uint32_t b) -> uint32_t {
+        uint32_t lo = std::min(a, b), hi = std::max(a, b);
+        auto key = std::make_pair(lo, hi);
+        auto it = cutCache.find(key);
+        if (it != cutCache.end()) return it->second;
+        float dLo = dist[lo], dHi = dist[hi];
+        float t = dLo / (dLo - dHi);
+        Vertex nv;
+        nv.position = glm::mix(srcVertices[lo].position, srcVertices[hi].position, t);
+        glm::vec3 n = glm::mix(srcVertices[lo].normal, srcVertices[hi].normal, t);
+        float nlen = glm::length(n);
+        nv.normal = nlen > 1e-8f ? n / nlen : srcVertices[lo].normal;
+        nv.uv = glm::mix(srcVertices[lo].uv, srcVertices[hi].uv, t);
+        uint32_t newIndex = static_cast<uint32_t>(outVertices.size());
+        outVertices.push_back(nv);
+        cutCache[key] = newIndex;
+        return newIndex;
+    };
+
+    // Each mixed triangle's own 2 new cut vertices, in the order its
+    // original a->b->c winding crossed them -- a real, correctly-wound
+    // boundary segment of the new cut cross-section, chained into closed
+    // loops below for fillCap.
+    std::vector<std::pair<uint32_t, uint32_t>> boundaryEdges;
+
+    for (size_t f = 0; f < mesh.faceCount(); ++f) {
+        auto [a, b, c] = mesh.faceVertexIndices(f);
+        uint32_t verts[3] = {a, b, c};
+        bool kept[3] = {isKept(a), isKept(b), isKept(c)};
+        int keptCount = (kept[0] ? 1 : 0) + (kept[1] ? 1 : 0) + (kept[2] ? 1 : 0);
+
+        if (keptCount == 3) {
+            outIndices.insert(outIndices.end(), {remap[a], remap[b], remap[c]});
+            continue;
+        }
+        if (keptCount == 0) continue;
+
+        // Real, standard single-plane Sutherland-Hodgman clip, walking the
+        // original a->b->c winding -- produces a 3- or 4-vertex kept
+        // polygon (fan-triangulated below, same "no separate general
+        // polygon triangulator" convention insetFace()/extrudeFace() use).
+        std::vector<uint32_t> polygon;
+        std::vector<uint32_t> crossings;
+        for (int i = 0; i < 3; ++i) {
+            uint32_t curr = verts[i];
+            uint32_t next = verts[(i + 1) % 3];
+            bool currKept = kept[i];
+            bool nextKept = kept[(i + 1) % 3];
+            if (currKept) polygon.push_back(remap[curr]);
+            if (currKept != nextKept) {
+                uint32_t cut = cutEdge(curr, next);
+                polygon.push_back(cut);
+                crossings.push_back(cut);
+            }
+        }
+        for (size_t i = 1; i + 1 < polygon.size(); ++i) {
+            outIndices.insert(outIndices.end(), {polygon[0], polygon[i], polygon[i + 1]});
+        }
+        if (crossings.size() == 2) {
+            boundaryEdges.push_back({crossings[0], crossings[1]});
+        }
+    }
+
+    fprintf(stderr, "[SLICE-DEBUG] boundaryEdges.size()=%zu\n", boundaryEdges.size());
+    for (auto& e : boundaryEdges) fprintf(stderr, "[SLICE-DEBUG]   edge %u -> %u\n", e.first, e.second);
+    if (fillCap && !boundaryEdges.empty()) {
+        std::unordered_map<uint32_t, uint32_t> nextInLoop;
+        for (const auto& e : boundaryEdges) nextInLoop[e.first] = e.second;
+
+        std::set<uint32_t> visited;
+        for (const auto& startEdge : boundaryEdges) {
+            uint32_t start = startEdge.first;
+            if (visited.count(start)) continue;
+            std::vector<uint32_t> loop;
+            uint32_t curr = start;
+            while (!visited.count(curr)) {
+                visited.insert(curr);
+                loop.push_back(curr);
+                auto it = nextInLoop.find(curr);
+                if (it == nextInLoop.end()) break;
+                curr = it->second;
+            }
+            // A real, honest no-op for a chain that doesn't close back on
+            // its own start -- see this function's own header comment.
+            fprintf(stderr, "[SLICE-DEBUG] loop size=%zu closed=%d: ", loop.size(), curr == start);
+            for (uint32_t idx : loop) fprintf(stderr, "%u ", idx);
+            fprintf(stderr, "\n");
+            if (loop.size() < 3 || curr != start) continue;
+
+            glm::vec3 centroid(0.0f);
+            for (uint32_t idx : loop) centroid += outVertices[idx].position;
+            centroid /= static_cast<float>(loop.size());
+            uint32_t centroidIdx = static_cast<uint32_t>(outVertices.size());
+            Vertex cv;
+            cv.position = centroid;
+            cv.normal = -effectiveNormal;
+            cv.uv = glm::vec2(0.5f, 0.5f);
+            outVertices.push_back(cv);
+
+            for (size_t i = 0; i < loop.size(); ++i) {
+                uint32_t v0 = loop[i];
+                uint32_t v1 = loop[(i + 1) % loop.size()];
+                outIndices.insert(outIndices.end(), {centroidIdx, v1, v0});
+            }
         }
     }
 

@@ -67,6 +67,17 @@ void computeTangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>&
 void generateCapsuleGeometry(float radius, float halfHeight, uint32_t radialSegments, uint32_t capRings,
                               std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices);
 
+// Same factoring as generateCapsuleGeometry() above, for Mesh::createCylinder()
+// / core::EditableMesh::createCylinder() -- flat +-Y-normal caps plus a
+// smooth radial-normal side wall.
+void generateCylinderGeometry(float radius, float halfHeight, uint32_t radialSegments,
+                               std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices);
+
+// Same factoring as generateCapsuleGeometry() above, for Mesh::createTorus()
+// / core::EditableMesh::createTorus().
+void generateTorusGeometry(float majorRadius, float minorRadius, uint32_t majorSegments, uint32_t minorSegments,
+                            std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices);
+
 // A GPU-resident mesh: VMA-allocated, device-local vertex + index buffers,
 // uploaded once via a staging buffer. Procedurally generated here
 // (createBox/createPlane) -- real asset loading is

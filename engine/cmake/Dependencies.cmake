@@ -366,6 +366,38 @@ target_link_libraries(imgui PUBLIC SDL2::SDL2 Vulkan::Headers volk)
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_VULKAN_USE_VOLK)
 add_library(imgui::imgui ALIAS imgui)
 
+# Kronos ("Native Plugin Architecture" -- Studio editor extensibility): a
+# second imgui target, built from the exact same sources, with
+# POSITION_INDEPENDENT_CODE ON -- `imgui` above is deliberately NOT PIC
+# (matching engine_core's own non-PIC build), so a dlopen()'d plugin .so
+# (which needs -fPIC on every object it statically links) cannot link
+# `imgui` directly; it must link this variant instead. A plugin that
+# draws ImGui still adopts the HOST's live GImGui context/allocators at
+# runtime (see studio::IStudioNativePluginExtension::attachToEditor()'s
+# own comment) -- this target only supplies the symbols the plugin's own
+# object code needs to resolve at link time, same as any other DSO that
+# statically links a copy of a library it also expects to behave like a
+# shared one at runtime via explicit context adoption.
+add_library(imgui_pic STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
+)
+target_include_directories(imgui_pic PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+    ${imgui_SOURCE_DIR}/misc/cpp
+)
+target_link_libraries(imgui_pic PUBLIC SDL2::SDL2 Vulkan::Headers volk)
+target_compile_definitions(imgui_pic PUBLIC IMGUI_IMPL_VULKAN_USE_VOLK)
+set_target_properties(imgui_pic PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(imgui::imgui_pic ALIAS imgui_pic)
+
 # ImGuiColorTextEdit ships no CMakeLists.txt of its own either -- same
 # treatment as ImGui above, a two-file static target.
 add_library(imguicolortextedit STATIC

@@ -96,10 +96,13 @@ layout(set = 0, binding = 3) readonly buffer InstanceMaterials {
 
 // Kronos ("Bindless Descriptors"): identical to the block in scene.frag
 // -- see that file for the full rationale. Kept byte-for-byte in step
-// with it, exactly as the rest of this file is.
+// with it, exactly as the rest of this file is. inTextureIndices itself
+// is declared unconditionally, outside this #ifdef -- see scene.frag's
+// own comment on why .w (the unlitSilhouette flag) has to keep working
+// on non-bindless devices too.
+layout(location = 8) in flat uvec4 inTextureIndices;
 #ifdef KRONOS_BINDLESS
 layout(set = 2, binding = 0) uniform sampler2D bindlessTextures[];
-layout(location = 8) in flat uvec4 inTextureIndices;
 #define ALBEDO_TEX    bindlessTextures[nonuniformEXT(inTextureIndices.x & 0xFFFFu)]
 #define NORMAL_TEX    bindlessTextures[nonuniformEXT(inTextureIndices.x >> 16)]
 #define METALLIC_TEX  bindlessTextures[nonuniformEXT(inTextureIndices.y & 0xFFFFu)]
@@ -582,6 +585,14 @@ vec3 triplanarWorldNormal(sampler2D tex, vec3 worldPos, vec3 geometricNormal, ve
 }
 
 void main() {
+    // Kronos ("VHS / Analog Bodycam" -- unlit volumetric dark
+    // silhouettes): identical to scene.frag's own early exit -- see that
+    // file for the full rationale.
+    if (inTextureIndices.w != 0u) {
+        outColor = vec4(0.0, 0.0, 0.0, inBaseColor.a);
+        return;
+    }
+
     bool useTriplanar = inMetallicRoughness.w > 0.5;
     vec3 triWeights = useTriplanar ? triplanarWeights(normalize(inWorldNormal)) : vec3(0.0);
     const float kTriplanarScale = 0.12;

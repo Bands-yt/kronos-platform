@@ -201,6 +201,12 @@ bool CppHotReloadHost::hasModuleLoaded(const std::string& slot) const {
     return lib != nullptr && lib->module != nullptr;
 }
 
+void* CppHotReloadHost::queryExtension(const std::string& slot, const char* interfaceId) const {
+    const LoadedLibrary* lib = findSlot(slot);
+    if (lib == nullptr || lib->module == nullptr) return nullptr;
+    return lib->module->queryExtension(interfaceId);
+}
+
 CppHotReloadHost::~CppHotReloadHost() {
     for (auto& [name, lib] : slots_) unload(lib);
 }

@@ -83,6 +83,20 @@ struct Renderable {
     // engine defaults to false and keeps sampling by inUV unchanged.
     bool useTriplanarProjection = false;
 
+    // Kronos ("VHS / Analog Bodycam"): forces this entity to render as a
+    // flat, fully unlit black silhouette -- skips the whole lighting/BRDF
+    // path in scene.frag/scene_rt.frag entirely rather than driving
+    // emissive/baseColor toward black, so it stays a true silhouette
+    // (no specular, no ambient, no normal-mapped highlight) against
+    // whatever's behind it, while still writing real depth so it occludes
+    // and gets occluded like anything else. Packed into the otherwise-
+    // unused ObjectPushConstants/InstanceData textureIndices.w (see
+    // SceneTypes.hpp's own "w = reserved" comment) rather than growing
+    // either struct, the same convention normalIntensity/
+    // useTriplanarProjection already established for their own packed
+    // fields above.
+    bool unlitSilhouette = false;
+
     // Adds a flat, unlit-in-the-BRDF-sense glow term on top of the normal
     // lit result -- crystals, neon signage, glowing runes. `emissiveColor`
     // is a plain RGB tint (not HDR-graded here; the post pipeline's bloom

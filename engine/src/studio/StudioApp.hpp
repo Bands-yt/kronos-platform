@@ -9,6 +9,7 @@
 #include "core/ECS.hpp"
 #include "core/LocalProfile.hpp"
 #include "core/Mesh.hpp"
+#include "core/NativePluginManager.hpp"
 #include "core/ParticleSystem.hpp"
 #include "core/PerformanceDiagnostics.hpp"
 #include "core/ProcessStats.hpp"
@@ -328,6 +329,15 @@ private:
     // Kronos (Alpha Completion Checklist, "Project System Finalization" --
     // "auto-backup"): see projectAutosaveTimer_'s own comment.
     void tickProjectAutosave(float dt);
+    // Real, idempotent registration of a NativePluginAdapter for `name`
+    // into pluginManager_ -- a no-op if one is already registered for this
+    // name (see nativePluginsWithAdapter_'s own comment on why). Called
+    // once right after a fresh native plugin load in initialize(), and
+    // again after every real hot-swap (harmless -- the adapter itself
+    // re-resolves the plugin by name on every call, so a second
+    // registration attempt for an already-known name is the only thing
+    // this guards against).
+    void registerNativePluginAdapterIfNeeded(const std::string& name);
     // Saves whatever scene is currently open (if any path is set) before
     // loading `path` -- the "switch" half of scene tabs (see
     // SceneManager.hpp's class comment on what "tabs" means here) and
@@ -408,6 +418,25 @@ private:
     // ...) are registered here in initialize() -- see PluginManager.hpp's
     // header comment for what "plugin" does and doesn't mean yet.
     PluginManager pluginManager_;
+
+    // Kronos ("Native Plugin Architecture" -- Studio editor extensibility):
+    // real, dynamically loaded (.so/.dll) engine plugins -- see
+    // core::NativePluginManager's own class comment. Discovered/loaded
+    // once in initialize() from the same ENGINE_NATIVE_PLUGIN_DIR
+    // convention core::Application uses, and real per-tick forwarded
+    // alongside pluginManager_'s own update(). Deliberately a distinct
+    // member from pluginManager_ -- see NativePluginManager.hpp's own
+    // comment on why these are two separate systems -- with
+    // NativePluginAdapter (see that class's own comment) bridging any
+    // native plugin that implements IStudioNativePluginExtension into
+    // pluginManager_'s existing menu/panel UI.
+    core::NativePluginManager nativePlugins_;
+    // Names of native plugins a NativePluginAdapter has already been
+    // registered for -- checked on every native-plugin load so a real
+    // hot-swap of an already-known plugin (same name, new library) never
+    // registers a second adapter into pluginManager_, which has no
+    // removal path (see PluginManager.hpp's own comment).
+    std::vector<std::string> nativePluginsWithAdapter_;
 
     // Kronos ("3D Mesh & CSG Editor" -- Beta Roadmap Phase 2, "windowed
     // plugin module"): the IKronosPlugin sibling of pluginManager_ above
