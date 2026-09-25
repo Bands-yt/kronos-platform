@@ -116,6 +116,7 @@ SceneFile SceneManager::captureScene(ECS& ecs, const Camera& camera, const cinem
             record.metallic = renderable->metallic;
             record.roughness = renderable->roughness;
             record.normalIntensity = renderable->normalIntensity;
+            record.layers = renderable->layers;
             record.emissiveColor = renderable->emissiveColor;
             record.emissiveIntensity = renderable->emissiveIntensity;
             record.castsShadow = renderable->castsShadow;
@@ -237,6 +238,7 @@ bool SceneManager::loadScene(const std::string& path, ECS& ecs, MeshLibrary& mes
             renderable.metallic = record.metallic;
             renderable.roughness = record.roughness;
             renderable.normalIntensity = record.normalIntensity;
+            renderable.layers = record.layers;
             renderable.emissiveColor = record.emissiveColor;
             renderable.emissiveIntensity = record.emissiveIntensity;
             renderable.castsShadow = record.castsShadow;

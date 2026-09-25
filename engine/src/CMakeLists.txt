@@ -33,7 +33,15 @@ set(ENGINE_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle_compute.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/stamp_texture.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sculpt_displace.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/dfg_lut.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ibl_capture.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ibl_prefilter.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ibl_sh.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cluster_build.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/taa_resolve.comp
 )
+# Shared shader library (#include'd); any change recompiles every shader.
+file(GLOB ENGINE_SHADER_LIBRARY CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/kronos/*.glsl)
 set(ENGINE_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${ENGINE_SHADER_OUTPUT_DIR})
 
@@ -50,7 +58,7 @@ foreach(shader_source ${ENGINE_SHADER_SOURCES})
         # the newer target; this is a strict superset, not a behavior
         # change for anything not using newer features.
         COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${shader_source} -o ${shader_output}
-        DEPENDS ${shader_source}
+        DEPENDS ${shader_source} ${ENGINE_SHADER_LIBRARY}
         COMMENT "Compiling shader ${shader_name} -> SPIR-V"
         VERBATIM
     )
@@ -68,23 +76,20 @@ add_custom_command(
     OUTPUT ${ENGINE_BINDLESS_FRAG}
     COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DKRONOS_BINDLESS
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag -o ${ENGINE_BINDLESS_FRAG}
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag ${ENGINE_SHADER_LIBRARY}
     COMMENT "Compiling shader scene.frag [KRONOS_BINDLESS] -> SPIR-V"
     VERBATIM
 )
 list(APPEND ENGINE_COMPILED_SHADERS ${ENGINE_BINDLESS_FRAG})
 
-# scene_rt.frag is a full duplicate of scene.frag for ray-query-capable
-# devices (see its header), and createScenePipeline() prefers it whenever
-# the device supports ray tracing -- so without its own bindless variant
-# the main opaque pipeline would silently keep the non-bindless path on
-# exactly the hardware most likely to support bindless.
+# scene_rt.frag is the ray-query variant of scene.frag and is preferred
+# whenever the device supports ray tracing, so it needs a bindless variant too.
 set(ENGINE_BINDLESS_RT_FRAG ${ENGINE_SHADER_OUTPUT_DIR}/scene_rt_bindless.frag.spv)
 add_custom_command(
     OUTPUT ${ENGINE_BINDLESS_RT_FRAG}
     COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DKRONOS_BINDLESS
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag -o ${ENGINE_BINDLESS_RT_FRAG}
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag ${ENGINE_SHADER_LIBRARY}
     COMMENT "Compiling shader scene_rt.frag [KRONOS_BINDLESS] -> SPIR-V"
     VERBATIM
 )
@@ -105,6 +110,11 @@ add_library(engine_core STATIC
     core/Application.cpp
     core/Window.cpp
     core/Renderer.cpp
+    core/render/GpuHelpers.cpp
+    core/render/ShadowCascades.cpp
+    core/render/ClusteredLighting.cpp
+    core/render/ImageBasedLighting.cpp
+    core/render/TemporalAA.cpp
     core/SwapchainSelection.cpp
     core/CubeLut.cpp
     core/Utf8.cpp
@@ -621,6 +631,14 @@ if(ENGINE_BUILD_RUNTIME)
         # real `main` symbol to resolve (LNK2001/LNK1120). SDL2::SDL2main
         # (provided by the same vcpkg SDL2 package as SDL2::SDL2) supplies it.
         target_link_libraries(engine_runtime PRIVATE SDL2::SDL2main)
+    endif()
+
+    # Offscreen look-development captures (material grid, CSM, many-lights
+    # scenes) for before/after comparison of renderer changes.
+    add_executable(kronos_lookdev lookdev/LookdevMain.cpp)
+    target_link_libraries(kronos_lookdev PRIVATE engine_core)
+    if(WIN32)
+        target_link_libraries(kronos_lookdev PRIVATE SDL2::SDL2main)
     endif()
 endif()
 

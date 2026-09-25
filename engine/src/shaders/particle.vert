@@ -20,22 +20,7 @@ layout(location = 5) in vec4 inInstanceColor;
 layout(location = 0) out vec2 outUV;
 layout(location = 1) out vec4 outColor;
 
-layout(set = 0, binding = 0) uniform SceneUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 lightViewProj[3];
-    mat4 invViewProj; // only shaders/sky.frag reads this
-    vec4 cascadeSplitsView;
-    vec4 cascadeBiasScale;
-    vec4 lightDirectionWS;
-    vec4 lightColorIntensity;
-    vec4 viewPositionWS;
-    vec4 ambientColor;
-    vec4 ambientGroundColor;
-    vec4 fogColorDensity; // only shaders/scene.frag reads this
-    vec4 skyZenithColor;  // only shaders/sky.frag reads this
-    vec4 skyHorizonColor; // only shaders/sky.frag reads this
-} scene;
+#include "kronos/scene_ubo.glsl"
 
 void main() {
     // Camera-facing billboard: a pure-rotation view matrix's inverse is

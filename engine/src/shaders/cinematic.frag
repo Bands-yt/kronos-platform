@@ -33,17 +33,7 @@ layout(location = 0) out vec4 outColor;
 // precedent and SceneTypes.hpp's SceneUBO comment for why a prefix match
 // is enough under std140 (trailing, undeclared members don't need to
 // appear here at all).
-layout(set = 0, binding = 0) uniform SceneUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 lightViewProj[3];
-    mat4 invViewProj;
-    vec4 cascadeSplitsView;
-    vec4 cascadeBiasScale;
-    vec4 lightDirectionWS;
-    vec4 lightColorIntensity;
-    vec4 viewPositionWS;
-} scene;
+#include "kronos/scene_ubo.glsl"
 
 layout(set = 1, binding = 0) uniform sampler2D hdrColor;
 layout(set = 1, binding = 1) uniform sampler2D sceneDepth;

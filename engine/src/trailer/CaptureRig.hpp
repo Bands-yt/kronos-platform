@@ -50,7 +50,7 @@ public:
     // (logged) on any real failure.
     [[nodiscard]] bool captureFrame(core::Renderer& renderer, core::ECS& ecs, core::MeshLibrary& meshLibrary,
                                      core::TextureLibrary& textureLibrary, const core::Camera& camera,
-                                     const std::string& outputDirectory, int frameIndex);
+                                     const std::string& outputDirectory, int frameIndex, bool fullSceneLook = false);
 
     // Real end-to-end Offline Export: walks `sequence`/`rail`'s real
     // schedule (cinematic::runExportSchedule(), built from `settings` via

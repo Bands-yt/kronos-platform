@@ -1,0 +1,105 @@
+#version 450
+
+// Clustered light assignment: one thread per froxel cluster tests every
+// light's range sphere against the cluster's view-space AABB. Lights are
+// staged through shared memory in batches so each is fetched once per
+// workgroup. Output layout is fixed-capacity (clusterDims.w slots per
+// cluster), which removes the need for a global atomic counter.
+
+#include "kronos/scene_ubo.glsl"
+
+layout(local_size_x = 128) in;
+
+struct GpuLight {
+    vec4 positionRange;
+    vec4 colorIntensity;
+    vec4 directionType;
+    vec4 spotParams;
+};
+
+layout(std430, set = 0, binding = 8) readonly buffer LightBuffer {
+    GpuLight lights[];
+} lightBuffer;
+
+layout(std430, set = 0, binding = 9) writeonly buffer ClusterCounts {
+    uint counts[];
+} clusterCounts;
+
+layout(std430, set = 0, binding = 10) writeonly buffer ClusterLightIndices {
+    uint indices[];
+} clusterIndices;
+
+shared vec4 sharedLights[128]; // view-space centre, range
+
+float sliceDepth(float slice) {
+    return exp((slice + scene.clusterParams.y) / scene.clusterParams.x);
+}
+
+// View-space point on the ray through `ndc` at positive depth d (the
+// camera looks down -Z). Works for off-centre (jittered) projections.
+vec3 viewPointAt(vec2 ndc, float d) {
+    return vec3(d * (ndc.x + scene.proj[2][0]) / scene.proj[0][0],
+                d * (ndc.y + scene.proj[2][1]) / scene.proj[1][1], -d);
+}
+
+float sphereAabbDistanceSq(vec3 c, vec3 lo, vec3 hi) {
+    vec3 d = max(lo - c, vec3(0.0)) + max(c - hi, vec3(0.0));
+    return dot(d, d);
+}
+
+void main() {
+    uvec3 dims = scene.clusterDims.xyz;
+    uint clusterCount = dims.x * dims.y * dims.z;
+    uint cluster = gl_GlobalInvocationID.x;
+    bool inRange = cluster < clusterCount;
+
+    uint tileX = cluster % dims.x;
+    uint tileY = (cluster / dims.x) % dims.y;
+    uint slice = cluster / (dims.x * dims.y);
+
+    float tile = scene.clusterParams.z;
+    vec2 pxMin = vec2(tileX, tileY) * tile;
+    vec2 pxMax = min(pxMin + tile, scene.screenSize.xy);
+    vec2 ndcMin = pxMin * scene.screenSize.zw * 2.0 - 1.0;
+    vec2 ndcMax = pxMax * scene.screenSize.zw * 2.0 - 1.0;
+    // Slice 0 reaches the camera and the last slice is unbounded, matching
+    // the clamp in clusterSlice().
+    float dNear = slice == 0u ? 0.0 : sliceDepth(float(slice));
+    float dFar = slice + 1u >= dims.z ? 1e5 : sliceDepth(float(slice + 1u));
+
+    vec3 lo = vec3(1e30);
+    vec3 hi = vec3(-1e30);
+    for (int i = 0; i < 4; ++i) {
+        vec2 ndc = vec2((i & 1) != 0 ? ndcMax.x : ndcMin.x, (i & 2) != 0 ? ndcMax.y : ndcMin.y);
+        vec3 pn = viewPointAt(ndc, dNear);
+        vec3 pf = viewPointAt(ndc, dFar);
+        lo = min(lo, min(pn, pf));
+        hi = max(hi, max(pn, pf));
+    }
+
+    uint lightCount = uint(scene.clusterParams.w);
+    uint capacity = scene.clusterDims.w;
+    uint base = cluster * capacity;
+    uint count = 0u;
+
+    for (uint batch = 0u; batch < lightCount; batch += 128u) {
+        uint li = batch + gl_LocalInvocationID.x;
+        if (li < lightCount) {
+            vec4 pr = lightBuffer.lights[li].positionRange;
+            sharedLights[gl_LocalInvocationID.x] = vec4((scene.view * vec4(pr.xyz, 1.0)).xyz, pr.w);
+        }
+        barrier();
+        uint batchCount = min(128u, lightCount - batch);
+        if (inRange) {
+            for (uint j = 0u; j < batchCount && count < capacity; ++j) {
+                vec4 l = sharedLights[j];
+                if (sphereAabbDistanceSq(l.xyz, lo, hi) <= l.w * l.w) {
+                    clusterIndices.indices[base + count] = batch + j;
+                    ++count;
+                }
+            }
+        }
+        barrier();
+    }
+    if (inRange) clusterCounts.counts[cluster] = count;
+}

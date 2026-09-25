@@ -111,7 +111,7 @@ bool CaptureRig::initialize(core::Renderer& renderer, VkExtent2D extent) {
     colorInfo.format = colorFormat_;
     colorInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     colorInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    colorInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     colorInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     colorInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -179,7 +179,7 @@ bool CaptureRig::initialize(core::Renderer& renderer, VkExtent2D extent) {
 
 bool CaptureRig::captureFrame(core::Renderer& renderer, core::ECS& ecs, core::MeshLibrary& meshLibrary,
                                core::TextureLibrary& textureLibrary, const core::Camera& camera,
-                               const std::string& outputDirectory, int frameIndex) {
+                               const std::string& outputDirectory, int frameIndex, bool fullSceneLook) {
     if (!isValid()) {
         std::fprintf(stderr, "CaptureRig::captureFrame: not initialized.\n");
         return false;
@@ -209,7 +209,10 @@ bool CaptureRig::captureFrame(core::Renderer& renderer, core::ECS& ecs, core::Me
     vkBeginCommandBuffer(cmd, &beginInfo);
 
     renderer.drawSceneInto(auxiliaryScene_, cmd, colorImage_, colorImageView_, depthImage_, depthImageView_, extent_,
-                            camera, ecs, meshLibrary, captureParticleSystem_, textureLibrary);
+                            camera, ecs, meshLibrary, captureParticleSystem_, textureLibrary,
+                            /*riggedMeshLibrary=*/nullptr, /*applyWeatherEffects=*/fullSceneLook,
+                            /*applyBloom=*/fullSceneLook, /*suppressSunDisk=*/!fullSceneLook,
+                            /*useFlatBackground=*/!fullSceneLook);
     // drawSceneInto() leaves colorImage_ in COLOR_ATTACHMENT_OPTIMAL (see
     // that method's own doc comment) -- transition to
     // TRANSFER_SRC_OPTIMAL directly (skipping the SHADER_READ_ONLY_OPTIMAL

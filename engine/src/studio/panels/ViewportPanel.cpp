@@ -844,7 +844,8 @@ void ViewportPanel::drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& 
     // along the view axis it sits at, is real).
     if (showCascades_ && debugContext.renderer != nullptr) {
         constexpr ImU32 kCascadeColors[core::Renderer::kCascadeCount] = {
-            IM_COL32(255, 210, 90, 220), IM_COL32(255, 140, 90, 220), IM_COL32(255, 90, 90, 220)};
+            IM_COL32(255, 210, 90, 220), IM_COL32(255, 140, 90, 220), IM_COL32(255, 90, 90, 220),
+            IM_COL32(200, 90, 255, 220)};
         std::array<float, core::Renderer::kCascadeCount> splitDepths =
             debugContext.renderer->debugCascadeSplitDepths(camera_, aspect);
         glm::vec3 forward = camera_.forward();

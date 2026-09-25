@@ -48,23 +48,11 @@ layout(location = 6) out vec4 outWorldTangent;
 // exists), so this is always the real, honest white default here -- a
 // real no-op multiply in scene.frag, not a fabricated feature.
 layout(location = 7) out vec4 outVertexColor;
+layout(location = 9) out vec4 outClipPos;
+layout(location = 10) out vec4 outPrevClipPos;
 
-layout(set = 0, binding = 0) uniform SceneUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 lightViewProj[3];
-    mat4 invViewProj; // only shaders/sky.frag reads this
-    vec4 cascadeSplitsView;
-    vec4 cascadeBiasScale;
-    vec4 lightDirectionWS;
-    vec4 lightColorIntensity;
-    vec4 viewPositionWS;
-    vec4 ambientColor;
-    vec4 ambientGroundColor;
-    vec4 fogColorDensity; // only shaders/scene.frag reads this
-    vec4 skyZenithColor;  // only shaders/sky.frag reads this
-    vec4 skyHorizonColor; // only shaders/sky.frag reads this
-} scene;
+#include "kronos/scene_ubo.glsl"
+#include "kronos/object_records.glsl"
 
 void main() {
     vec4 worldPos = inInstanceModel * vec4(inPosition, 1.0);
@@ -85,4 +73,6 @@ void main() {
     outTextureIndices = inInstanceTextureIndices;
     outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
+    outClipPos = scene.viewProjNoJitter * worldPos;
+    outPrevClipPos = scene.prevViewProjNoJitter * previousWorldPosition(objectRecordIndex(inInstanceTextureIndices), vec4(inPosition, 1.0), worldPos);
 }

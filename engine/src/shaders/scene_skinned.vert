@@ -34,23 +34,11 @@ layout(location = 6) out vec4 outWorldTangent;
 // Kronos ("Avatar Visual Silhouette Pass" -- real per-vertex color): not
 // flat -- see scene.vert's own comment on outVertexColor.
 layout(location = 7) out vec4 outVertexColor;
+layout(location = 9) out vec4 outClipPos;
+layout(location = 10) out vec4 outPrevClipPos;
 
-layout(set = 0, binding = 0) uniform SceneUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 lightViewProj[3];
-    mat4 invViewProj; // only shaders/sky.frag reads this
-    vec4 cascadeSplitsView;
-    vec4 cascadeBiasScale;
-    vec4 lightDirectionWS;
-    vec4 lightColorIntensity;
-    vec4 viewPositionWS;
-    vec4 ambientColor;
-    vec4 ambientGroundColor;
-    vec4 fogColorDensity; // only shaders/scene.frag reads this
-    vec4 skyZenithColor;  // only shaders/sky.frag reads this
-    vec4 skyHorizonColor; // only shaders/sky.frag reads this
-} scene;
+#include "kronos/scene_ubo.glsl"
+#include "kronos/object_records.glsl"
 
 layout(push_constant) uniform ObjectPushConstants {
     mat4 model;
@@ -103,4 +91,8 @@ void main() {
     outTextureIndices = object.textureIndices;
     outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
+    outClipPos = scene.viewProjNoJitter * worldPos;
+    // Extension point: previous-frame bone matrices would add skinned
+    // deformation motion; for now only the object transform contributes.
+    outPrevClipPos = scene.prevViewProjNoJitter * previousWorldPosition(objectRecordIndex(object.textureIndices), skinnedLocalPos, worldPos);
 }

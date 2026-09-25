@@ -94,6 +94,7 @@ private:
     float normalIntensityBeforeEdit_{1.0f};
     glm::vec3 emissiveColorBeforeEdit_{0.0f};
     float emissiveIntensityBeforeEdit_{0.0f};
+    core::MaterialLayers layersBeforeEdit_{};
 
     // Real, per-field popup state -- see Vec3MathExpressionPopup's own
     // class comment.

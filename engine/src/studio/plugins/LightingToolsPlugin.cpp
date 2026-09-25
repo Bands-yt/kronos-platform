@@ -126,10 +126,9 @@ void LightingToolsPlugin::drawCascadedShadowMapSection() {
                 core::Renderer::kShadowMapResolution, core::Renderer::kShadowMapResolution);
     ImGui::Text("Covers camera near plane to %.0f units", core::Renderer::kShadowMaxDistance);
     ImGui::TextWrapped(
-        "3x3 PCF, receiver-plane depth bias (derived per-fragment from an analytic tangent-plane basis around "
-        "the geometric normal, projected through the light's own view-proj -- camera-independent, not a "
-        "screen-space derivative -- with a small flat N.L floor as a backstop) -- see shaders/scene.frag's "
-        "sampleCascadeShadow().");
+        "Stable (bounding-sphere, texel-snapped) cascades with blended transitions. PCSS contact-hardening "
+        "filter sized from the sun's angular radius, hardware depth-compare taps, receiver-plane depth bias. "
+        "Performance Mode drops to plain PCF. See shaders/kronos/shadows.glsl.");
     ImGui::SameLine();
     helpMarker(
         "Compile-time constants, not live-editable here: the shadow map is a fixed-size VkImage array sized "
@@ -146,12 +145,15 @@ void LightingToolsPlugin::drawCascadedShadowMapSection() {
     }
     ImGui::SameLine();
     helpMarker(
-        "Multiplies ALL shadow depth bias (receiver-plane term + the flat N.L floor) by this amount. Set to 0 "
-        "first: that's a true zero-bias shader. If shadows still show a detached gap at 0, depth bias is not "
-        "the cause -- the bug is in the cascade/matrix/uv lookup instead, not fixable by raising this. If 0 "
-        "removes the detachment (heavy acne is expected there), raise this incrementally to find the lowest "
-        "value that stays attached. 1 is the shader's own as-authored strength. Live -- takes effect next "
-        "frame, no rebuild.");
+        "Scales the receiver-plane depth bias (the texel-scaled normal offset is separate). 0 is a zero-depth-bias "
+        "shader; 1 is the authored strength. Live -- takes effect next frame.");
+
+    float sunRadius = renderer_->sunAngularRadiusDegrees();
+    if (ImGui::SliderFloat("Sun Angular Radius", &sunRadius, 0.0f, 3.0f, "%.2f deg")) {
+        renderer_->setSunAngularRadiusDegrees(sunRadius);
+    }
+    ImGui::SameLine();
+    helpMarker("Drives PCSS penumbra width. The real sun is ~0.27 deg; larger values read as hazy or overcast.");
 }
 
 void LightingToolsPlugin::drawRenderingModeSection() {
@@ -176,8 +178,15 @@ void LightingToolsPlugin::drawRenderingModeSection() {
     }
     ImGui::SameLine();
     helpMarker(
-        "Single-tap CSM shadow sampling, bloom extract skipped, particle draw count capped -- and forces ray-traced "
+        "PCF instead of PCSS shadow filtering, bloom extract skipped, particle draw count capped -- and forces ray-traced "
         "shadows off. Same real F7 toggle engine_runtime exposes.");
+
+    bool taaEnabled = renderer_->isTemporalAAEnabled();
+    if (ImGui::Checkbox("Temporal Anti-Aliasing", &taaEnabled)) {
+        renderer_->setTemporalAAEnabled(taaEnabled);
+    }
+    ImGui::SameLine();
+    helpMarker("Sub-pixel jitter + motion-vector reprojection with YCoCg variance clipping. Off removes the jitter too.");
 
     bool cinematicEnabled = renderer_->isCinematicModeEnabled();
     if (ImGui::Checkbox("Cinematic Mode", &cinematicEnabled)) {

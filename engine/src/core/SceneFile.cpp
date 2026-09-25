@@ -175,7 +175,8 @@ std::string base64Decode(const std::string& input) {
 }
 
 constexpr uint32_t kBinaryMagic = 0x4E435343; // "KSCN" as a little-endian u32 (bytes 'K','S','C','N')
-constexpr uint32_t kBinaryVersion = 1;
+// v2 adds MaterialLayers after the renderable block and spot fields after the light block.
+constexpr uint32_t kBinaryVersion = 2;
 
 bool hasKronosExtension(const std::string& path) {
     constexpr std::string_view kExt = ".kronos";
@@ -252,6 +253,12 @@ bool SceneFile::saveToFile(const std::string& path, const polyglot::VirtualFileS
                 << e.baseColor.w << ' ' << e.metallic << ' ' << e.roughness << ' ' << e.normalIntensity << ' '
                 << e.emissiveColor.x << ' ' << e.emissiveColor.y << ' ' << e.emissiveColor.z << ' '
                 << e.emissiveIntensity << ' ' << (e.castsShadow ? 1 : 0) << ' ' << (e.instanced ? 1 : 0) << "\n";
+            if (!e.layers.isDefault()) {
+                const auto& m = e.layers;
+                out << "MATERIALEXT " << m.clearcoat << ' ' << m.clearcoatRoughness << ' ' << m.anisotropy << ' '
+                    << m.anisotropyRotation << ' ' << m.sheenColor.x << ' ' << m.sheenColor.y << ' ' << m.sheenColor.z
+                    << ' ' << m.sheenRoughness << ' ' << m.specular << "\n";
+            }
 
             if (e.hasMeshSource) {
                 // path is last on the line (never quoted -- loadFromFile
@@ -278,7 +285,8 @@ bool SceneFile::saveToFile(const std::string& path, const polyglot::VirtualFileS
         if (e.hasLight) {
             const auto& l = e.light;
             out << "LIGHT " << (l.enabled ? 1 : 0) << ' ' << l.color.x << ' ' << l.color.y << ' ' << l.color.z
-                << ' ' << l.intensity << ' ' << l.radius << "\n";
+                << ' ' << l.intensity << ' ' << l.radius << ' ' << static_cast<int>(l.type) << ' '
+                << l.innerConeDegrees << ' ' << l.outerConeDegrees << "\n";
         }
 
         if (e.hasRigidBody) {
@@ -407,6 +415,13 @@ bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFil
                 castsShadowInt >> instancedInt;
             current->castsShadow = castsShadowInt != 0;
             current->instanced = instancedInt != 0;
+        } else if (line.rfind("MATERIALEXT ", 0) == 0 && current != nullptr) {
+            std::istringstream iss(line.substr(12));
+            MaterialLayers m;
+            if (iss >> m.clearcoat >> m.clearcoatRoughness >> m.anisotropy >> m.anisotropyRotation >> m.sheenColor.x >>
+                m.sheenColor.y >> m.sheenColor.z >> m.sheenRoughness >> m.specular) {
+                current->layers = m;
+            }
         } else if (line.rfind("MESHSOURCE ", 0) == 0 && current != nullptr) {
             current->hasMeshSource = true;
             std::istringstream iss(line.substr(11));
@@ -438,6 +453,14 @@ bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFil
             iss >> enabledInt >> current->light.color.x >> current->light.color.y >> current->light.color.z >>
                 current->light.intensity >> current->light.radius;
             current->light.enabled = enabledInt != 0;
+            int typeInt = 0;
+            float inner = 0.0f;
+            float outer = 0.0f;
+            if (iss >> typeInt >> inner >> outer) {
+                current->light.type = typeInt == 1 ? LightType::Spot : LightType::Point;
+                current->light.innerConeDegrees = inner;
+                current->light.outerConeDegrees = outer;
+            }
         } else if (line.rfind("RIGIDBODY ", 0) == 0 && current != nullptr) {
             current->hasRigidBody = true;
             std::istringstream iss(line.substr(10));
@@ -568,6 +591,13 @@ bool SceneFile::saveToBinaryFile(const std::string& path) const {
             w.writeFloat(e.emissiveIntensity);
             w.writeBool(e.castsShadow);
             w.writeBool(e.instanced);
+            w.writeFloat(e.layers.clearcoat);
+            w.writeFloat(e.layers.clearcoatRoughness);
+            w.writeFloat(e.layers.anisotropy);
+            w.writeFloat(e.layers.anisotropyRotation);
+            w.writeVec3(e.layers.sheenColor);
+            w.writeFloat(e.layers.sheenRoughness);
+            w.writeFloat(e.layers.specular);
 
             w.writeBool(e.hasMeshSource);
             if (e.hasMeshSource) {
@@ -600,6 +630,9 @@ bool SceneFile::saveToBinaryFile(const std::string& path) const {
             w.writeVec3(e.light.color);
             w.writeFloat(e.light.intensity);
             w.writeFloat(e.light.radius);
+            w.writeU8(static_cast<uint8_t>(e.light.type));
+            w.writeFloat(e.light.innerConeDegrees);
+            w.writeFloat(e.light.outerConeDegrees);
         }
 
         w.writeBool(e.hasRigidBody);
@@ -639,7 +672,7 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
     BinaryReader r(bytes.data(), bytes.size());
     if (r.readU32() != kBinaryMagic) return false; // not a real .kronos file at all
     uint32_t version = r.readU32();
-    if (version != kBinaryVersion) return false; // real, honest refusal -- no older version to migrate from yet
+    if (version < 1 || version > kBinaryVersion) return false;
 
     SceneFile loaded;
     loaded.cameraPosition = r.readVec3();
@@ -760,6 +793,15 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
             e.emissiveIntensity = r.readFloat();
             e.castsShadow = r.readBool();
             e.instanced = r.readBool();
+            if (version >= 2) {
+                e.layers.clearcoat = r.readFloat();
+                e.layers.clearcoatRoughness = r.readFloat();
+                e.layers.anisotropy = r.readFloat();
+                e.layers.anisotropyRotation = r.readFloat();
+                e.layers.sheenColor = r.readVec3();
+                e.layers.sheenRoughness = r.readFloat();
+                e.layers.specular = r.readFloat();
+            }
 
             e.hasMeshSource = r.readBool();
             if (e.hasMeshSource) {
@@ -792,6 +834,11 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
             e.light.color = r.readVec3();
             e.light.intensity = r.readFloat();
             e.light.radius = r.readFloat();
+            if (version >= 2) {
+                e.light.type = r.readU8() == 1 ? LightType::Spot : LightType::Point;
+                e.light.innerConeDegrees = r.readFloat();
+                e.light.outerConeDegrees = r.readFloat();
+            }
         }
 
         e.hasRigidBody = r.readBool();

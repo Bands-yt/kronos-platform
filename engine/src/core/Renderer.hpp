@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -28,6 +29,10 @@
 #include "core/Texture.hpp"
 #include "core/Weather.hpp"
 #include "core/Window.hpp"
+#include "core/render/ClusteredLighting.hpp"
+#include "core/render/ImageBasedLighting.hpp"
+#include "core/render/ShadowCascades.hpp"
+#include "core/render/TemporalAA.hpp"
 
 namespace engine::core {
 
@@ -162,12 +167,8 @@ public:
     [[nodiscard]] WeatherKind targetWeatherKind() const { return weatherState_.toKind; }
     [[nodiscard]] WeatherProfile currentWeatherProfile() const { return currentBlendedProfile(weatherState_); }
 
-    // Real cascade count -- public (moved up from the private section
-    // below, where it's still used to size CascadeData/FrameSync's own
-    // arrays) specifically so Sprint 8's CSM cascade debug overlay
-    // (ViewportPanel.cpp) can size its own per-cascade color array
-    // against the real value instead of a second, could-drift constant.
-    static constexpr uint32_t kCascadeCount = 3;
+    // Public so the Studio cascade overlay can size its arrays against it.
+    static constexpr uint32_t kCascadeCount = kShadowCascadeCount;
     // Kronos ("Studio Revamp" -- "Professional Lighting Inspector"): same
     // "move it up next to kCascadeCount" treatment, for the same reason --
     // LightingToolsPlugin's real CSM info section reads these directly
@@ -219,8 +220,30 @@ public:
     // view axis, not how the shadow maps are actually built from it.
     [[nodiscard]] std::array<float, kCascadeCount> debugCascadeSplitDepths(const Camera& camera,
                                                                             float aspectRatio) const {
-        return computeCascades(camera, aspectRatio).splitDepths;
+        std::array<float, kCascadeCount> splits{};
+        render::CascadeFits fits = computeCascades(camera, aspectRatio);
+        for (uint32_t i = 0; i < kCascadeCount; ++i) splits[i] = fits[i].splitFar;
+        return splits;
     }
+
+    // Temporal anti-aliasing (jittered projection + motion-vector resolve).
+    // On by default for every view; turning it off also removes the jitter.
+    void setTemporalAAEnabled(bool enabled) { temporalAAEnabled_ = enabled; }
+    [[nodiscard]] bool isTemporalAAEnabled() const { return temporalAAEnabled_; }
+    // Weight of the current frame once history has converged (lower is
+    // smoother but slower to respond).
+    void setTemporalAAFeedback(float feedback) { taaFeedback_ = std::clamp(feedback, 0.02f, 1.0f); }
+
+    // Image-based lighting: specular intensity and how strongly captured
+    // sky reflections are normalised to the preset's hemisphere ambient.
+    void setEnvironmentSpecularIntensity(float v) { iblSpecularIntensity_ = std::max(v, 0.0f); }
+    void setReflectionNormalization(float v) { iblReflectionNormalization_ = std::clamp(v, 0.0f, 1.0f); }
+
+    // Sun angular radius used for PCSS contact-hardening penumbrae. The
+    // real sun is ~0.27 degrees; larger values read as softer, overcast
+    // shadows.
+    void setSunAngularRadiusDegrees(float degrees) { sunAngularRadiusDegrees_ = std::clamp(degrees, 0.0f, 5.0f); }
+    [[nodiscard]] float sunAngularRadiusDegrees() const { return sunAngularRadiusDegrees_; }
 
     // Post-process tuning knobs -- see the members' declaration comment.
     void setExposure(float exposure) { exposure_ = exposure; }
@@ -905,11 +928,6 @@ private:
 
     // One light-view-proj matrix + far-split depth + light-space depth
     // range per cascade -- see computeCascades().
-    struct CascadeData {
-        std::array<glm::mat4, kCascadeCount> lightViewProj{};
-        std::array<float, kCascadeCount> splitDepths{};  // view-space far distance of each cascade
-        std::array<float, kCascadeCount> depthRanges{};  // light-space (orthoFar - orthoNear) of each cascade -- see scene.frag's bias scaling
-    };
 
     struct FrameSync {
         VkSemaphore imageAvailable = VK_NULL_HANDLE;
@@ -1120,23 +1138,22 @@ private:
         void* luminanceReadbackMapped = nullptr; // persistently mapped, 1 float
         // Temporally-adapted exposure value this slot's own auto-exposure
         // has converged to -- per-slot (not Renderer-wide) for the same
-        // reason previousViewProj above is: the main viewport and each
+        // reason ViewHistory is: the main viewport and each
         // Studio preview scene light entirely different content and must
         // never share one adapted value.
         float autoExposureValue = 1.0f;
 
-        // Previous frame's view-projection matrix, for the cinematic
-        // pass's camera-based motion blur (shaders/cinematic.frag) --
-        // per-FrameSync-slot (not one Renderer-wide value) since distinct
-        // logical camera streams (the main swapchain frames_[] slots vs.
-        // each auxiliaryScenes_[] Studio-preview slot) must never mix each
-        // other's camera history. With framesInFlight_ > 1 this is "N
-        // frames back", not literally "1 frame back" -- a real, honest,
-        // minor imprecision (slightly stronger blur than a single-buffered
-        // renderer would show under fast camera motion), not a
-        // correctness bug -- see drawSceneIntoImpl()'s own comment.
-        glm::mat4 previousViewProj{1.0f};
-        bool hasPreviousViewProj = false;
+
+        // Forward+ light list and per-cluster indices (set 0 bindings 8-10).
+        render::ClusteredLighting::FrameResources clusterResources;
+        // Per-draw extended material + previous transform (set 0 binding 11).
+        render::GpuBuffer objectRecords;
+        uint32_t objectRecordCount = 0;
+        // RG16F screen-space motion, written by the opaque pass.
+        render::GpuImage velocity;
+        render::TaaBinding taaBinding;
+        // Shared by every FrameSync that renders the same view.
+        std::shared_ptr<render::ViewHistory> viewHistory;
     };
 
     bool createInstance();
@@ -1425,28 +1442,12 @@ private:
     bool createShadowPipeline();   // owns shadowPipelineLayout_ -- see its .cpp comment for why not scenePipelineLayout_
     void destroyShadowPipeline();
 
-    // Real cascaded shadow maps: splits [camera.nearPlane, kShadowMaxDistance]
-    // into kCascadeCount sub-frusta via a practical (log/uniform blend)
-    // split scheme, fits a tight camera-following ortho volume to each
-    // sub-frustum's corners in light space, and snaps that volume's X/Y
-    // origin to whole shadow-texel increments ("stable splits" -- without
-    // this, panning the camera by a fraction of a texel shifts the whole
-    // cascade by a fraction of a texel too, which reads as shadow edges
-    // shimmering/crawling even though nothing moved). Recomputed every
-    // frame rather than cached -- cheap relative to the shadow draw calls
-    // it feeds, and correctness (always matching the current camera)
-    // matters more here than the CPU cost of ~24 matrix multiplies.
-    //
-    // Deliberate simplifications, stated plainly: no cross-cascade blend
-    // band (a fragment right at a split boundary hard-switches cascades,
-    // which can show as a faint seam -- real engines often blend the last
-    // few percent of each cascade into the next); cascades cover
-    // [nearPlane, kShadowMaxDistance], not the camera's full farPlane (500
-    // world units) -- shadows fading out before the draw distance is a
-    // standard, accepted trade, not an oversight.
-    [[nodiscard]] CascadeData computeCascades(const Camera& camera, float aspectRatio) const;
+    // Stable sphere-fitted cascades over [nearPlane, kShadowMaxDistance];
+    // see core/render/ShadowCascades.hpp.
+    [[nodiscard]] render::CascadeFits computeCascades(const Camera& camera, float aspectRatio) const;
 
-    void drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary);
+    void drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
+                        const render::CascadeFits& cascades);
 
     // Call immediately after every vkCmdDrawIndexed/vkCmdDraw -- tallies
     // into frameDrawCalls_/frameTriangles_ for this frame's metrics()
@@ -1754,6 +1755,7 @@ private:
     // drawBloomAndComposite()'s comment for the pass structure and
     // FrameSync's comment for why the intermediate targets are per-frame.
     static constexpr VkFormat kHDRFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    static constexpr VkFormat kVelocityFormat = VK_FORMAT_R16G16_SFLOAT; // UV-space motion, HDR pass attachment 1
     static constexpr float kBloomDownsampleFactor = 0.5f;
 
     // Tunable post-process parameters -- no Studio UI exposes these yet
@@ -1926,20 +1928,33 @@ private:
     // shows up in that cascade's depth pass instead of being clipped away
     // ("peter-panning" if omitted).
     static constexpr float kShadowDepthPadding = 20.0f;
-    // computeShadow()'s shader-side bias constants were picked against
-    // this depth range (the old single-cascade system's far-near =
-    // 60-1 = 59). Each cascade now has its own, different light-space
-    // depth range (a near cascade covering a small area has a small
-    // range; a far cascade covering a lot of ground has a large one) --
-    // scene.frag scales the bias by (thisCascade'sRange / kReferenceShadowDepthRange)
-    // so the same *world-space* bias applies consistently across cascades
-    // instead of one fixed shader constant being right for only one of
-    // them (too little bias => shadow acne, too much => peter-panning --
-    // both are exactly the kind of "looks wrong from some angles/distances"
-    // symptom a per-cascade mismatch here would cause, since which
-    // cascade is active depends on distance from the camera).
-    static constexpr float kReferenceShadowDepthRange = 59.0f;
     VkSampler shadowSampler_ = VK_NULL_HANDLE; // shared across every frame's shadow image (sampler != image)
+    // Hardware depth-compare sampler for filtered PCF taps (binding 4).
+    VkSampler shadowCompareSampler_ = VK_NULL_HANDLE;
+    // Lets casters behind the cascade's near plane clamp onto it
+    // ("pancaking") instead of being clipped, so the ortho depth range can
+    // stay tight around the view slice.
+    bool depthClampSupported_ = false;
+    float sunAngularRadiusDegrees_ = 0.27f;
+
+    render::GpuContext gpuContext() const;
+    bool initRenderModules();
+    void shutdownRenderModules();
+    bool initFrameRenderResources(FrameSync& frame, bool mainView);
+    void destroyFrameRenderResources(FrameSync& frame);
+    void writeSceneModuleDescriptors(FrameSync& frame);
+    // Returns the ObjectRecords index to pack into textureIndices.z's high 16 bits (0 = default record).
+    uint32_t pushObjectRecord(FrameSync& frame, EntityId entity, const MaterialLayers& layers, const glm::mat4& model);
+
+    render::ImageBasedLighting ibl_;
+    render::ClusteredLighting clusteredLighting_;
+    render::TemporalAA temporalAA_;
+    std::shared_ptr<render::ViewHistory> mainViewHistory_;
+    std::vector<GpuLight> gatheredLights_;
+    bool temporalAAEnabled_ = true;
+    float taaFeedback_ = 0.1f;
+    float iblSpecularIntensity_ = 1.0f;
+    float iblReflectionNormalization_ = 1.0f;
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout_ = VK_NULL_HANDLE; // ShadowPushConstants -- see SceneTypes.hpp, not scenePipelineLayout_
 

@@ -24,22 +24,9 @@ layout(location = 0) out vec4 outColor;
 // Partial SceneUBO -- see shaders/cinematic.frag's identical partial-
 // declaration precedent. This pass needs the shadow cascades and fog
 // color/density in addition to what cinematic.frag itself reads.
-layout(set = 0, binding = 0) uniform SceneUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 lightViewProj[3];
-    mat4 invViewProj;
-    vec4 cascadeSplitsView;
-    vec4 cascadeBiasScale;
-    vec4 lightDirectionWS;
-    vec4 lightColorIntensity;
-    vec4 viewPositionWS;
-    vec4 ambientColor;
-    vec4 ambientGroundColor;
-    vec4 fogColorDensity;
-} scene;
+#include "kronos/scene_ubo.glsl"
 
-layout(set = 0, binding = 1) uniform sampler2DArray shadowMapArray;
+layout(set = 0, binding = 4) uniform sampler2DArrayShadow shadowMapCompare;
 
 layout(set = 1, binding = 0) uniform sampler2D hdrColor;
 layout(set = 1, binding = 1) uniform sampler2D sceneDepth;
@@ -66,65 +53,22 @@ vec3 worldPosFromDepth(vec2 uv, float depth) {
 }
 
 int selectCascade(float viewDepth) {
-    if (viewDepth < scene.cascadeSplitsView.x) return 0;
-    if (viewDepth < scene.cascadeSplitsView.y) return 1;
-    return 2;
+    for (int i = 0; i < KRONOS_CASCADE_COUNT - 1; ++i) {
+        if (viewDepth < scene.cascadeSplitsView[i]) return i;
+    }
+    return KRONOS_CASCADE_COUNT - 1;
 }
 
-// Real, deliberately simplified twin of scene.frag's own
-// sampleCascadeShadow() -- see this file's own header comment on why no
-// slope-scaled bias applies here. Always the full 3x3 PCF tap (this pass
-// already skips entirely when volumetric fog is off, see
-// Renderer::drawVolumetricFogPass()'s own real bypass, so it doesn't need
-// its own Performance-Mode single-tap fallback the way scene.frag's
-// always-runs shadow sampling does).
-// See sampleFogShadow()'s own comment -- the real base bias, before the
-// per-cascade scale that was previously missing entirely.
-//
-// Kronos ("Shadow Bias / Peter-Panning Fix"): bumped from 0.0015 --
-// Renderer.cpp's shadow-pass pipeline depth bias (depthBiasConstantFactor/
-// SlopeFactor) was cut roughly in half-to-a-third (it was double-stacking
-// with scene.frag's own shader-side bias, which is what actually caused
-// the peter-panning this pass fixed) to stop over-biasing *surface*
-// shading. But this constant is the *only* defense sampleFogShadow() has
-// -- a raymarch sample has no normal and no coherent screen-space
-// derivative to build a receiver-plane term from the way scene.frag now
-// does, so it can't pick up any of that fix's actual precision. It was
-// implicitly relying on some of that now-reduced pipeline bias as shared
-// margin, on exactly the grazing-angle-avatar-geometry case its own
-// header comment already documents a real prior bug for. Raised to
-// compensate for that lost margin rather than risk reopening it --
-// unverified on real hardware in this pass (no GPU available); if a
-// fog-shadow acne artifact reappears on avatar edges, this is the first
-// constant to look at.
-const float kFogShadowBaseBias = 0.0035;
-
+// One hardware-filtered compare per step: the march itself integrates
+// the result, so a filtered kernel buys nothing here.
 float sampleFogShadow(vec3 worldPos, float viewDepth) {
+    if (viewDepth > scene.cascadeSplitsView[KRONOS_CASCADE_COUNT - 1]) return 1.0;
     int cascade = selectCascade(viewDepth);
     vec4 lightSpacePos = scene.lightViewProj[cascade] * vec4(worldPos, 1.0);
     vec3 projected = lightSpacePos.xyz / lightSpacePos.w;
     vec2 uv = projected.xy * 0.5 + 0.5;
-    float currentDepth = projected.z;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || currentDepth > 1.0) return 1.0;
-    // Kronos ("Fix Avatar Scattering Darkening Artifact"): the original
-    // fix here multiplied by scene.cascadeBiasScale[cascade] to stop the
-    // nearest cascade's under-scaled bias from causing acne along a close
-    // avatar's body. That reasoning for the *near* cascade still holds,
-    // but the multiplication itself was the same bug scene.frag's own
-    // minBias had (see sampleCascadeShadow()'s comment): cascadeBiasScale
-    // is proportional to a cascade's own light-space depth range, and so
-    // is the implicit normalized-depth -> world-space conversion this
-    // bias undergoes once compared against real geometry -- multiplying
-    // by it made the *far* cascade's world-space bias grow with
-    // depthRange^2, badly over-biasing it (the peter-panning this whole
-    // fix chain was chasing). Dropped to a flat constant instead: for the
-    // near cascade specifically, depthRange/kReferenceShadowDepthRange
-    // is close to 1.0 already (the reference range was chosen to roughly
-    // match it), so this barely changes the near-cascade behavior the
-    // avatar fix depends on, while fixing the far-cascade blowup.
-    float bias = kFogShadowBaseBias;
-    float sampledDepth = texture(shadowMapArray, vec3(uv, float(cascade))).r;
-    return (currentDepth - bias > sampledDepth) ? 0.0 : 1.0;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 1.0;
+    return texture(shadowMapCompare, vec4(uv, float(cascade), min(projected.z, 1.0) - 1e-4));
 }
 
 void main() {

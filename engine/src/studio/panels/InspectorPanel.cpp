@@ -324,6 +324,40 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
         glm::vec3 previewColor = glm::min(renderable->emissiveColor * renderable->emissiveIntensity, glm::vec3(1.0f));
         ImGui::ColorButton("##emissive_preview", ImVec4(previewColor.x, previewColor.y, previewColor.z, 1.0f),
                             ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, swatchSize);
+
+        ImGui::Spacing();
+        if (ImGui::TreeNode("Material Layers")) {
+            core::MaterialLayers& m = renderable->layers;
+            auto trackUndo = [&](const char* label) {
+                if (ImGui::IsItemActivated()) layersBeforeEdit_ = m;
+                if (!ImGui::IsItemDeactivatedAfterEdit()) return;
+                core::MaterialLayers before = layersBeforeEdit_;
+                core::MaterialLayers after = m;
+                undoStack.push({label,
+                                 [&ecs, materialEntity, before]() {
+                                     if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->layers = before;
+                                 },
+                                 [&ecs, materialEntity, after]() {
+                                     if (auto* r = ecs.tryGetComponent<core::Renderable>(materialEntity)) r->layers = after;
+                                 }});
+            };
+            ImGui::SliderFloat("Specular", &m.specular, 0.0f, 1.0f);
+            trackUndo("Edit Specular");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Dielectric reflectance: F0 = 0.16 * specular^2 (0.5 = 4%%).");
+            ImGui::SliderFloat("Clearcoat", &m.clearcoat, 0.0f, 1.0f);
+            trackUndo("Edit Clearcoat");
+            ImGui::SliderFloat("Clearcoat Roughness", &m.clearcoatRoughness, 0.0f, 1.0f);
+            trackUndo("Edit Clearcoat Roughness");
+            ImGui::ColorEdit3("Sheen Color", &m.sheenColor.x);
+            trackUndo("Edit Sheen Color");
+            ImGui::SliderFloat("Sheen Roughness", &m.sheenRoughness, 0.0f, 1.0f);
+            trackUndo("Edit Sheen Roughness");
+            ImGui::SliderFloat("Anisotropy", &m.anisotropy, -1.0f, 1.0f);
+            trackUndo("Edit Anisotropy");
+            ImGui::SliderAngle("Anisotropy Rotation", &m.anisotropyRotation, -180.0f, 180.0f);
+            trackUndo("Edit Anisotropy Rotation");
+            ImGui::TreePop();
+        }
     }
 
     drawPhysicsSection(ecs, selected);
@@ -560,9 +594,19 @@ void InspectorPanel::drawLightSection(core::ECS& ecs, core::EntityId selected) {
     ImGui::ColorEdit3("Color", &light->color.x);
     ImGui::DragFloat("Intensity", &light->intensity, 0.05f, 0.0f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::DragFloat("Radius", &light->radius, 0.1f, 0.1f, 100.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    int type = static_cast<int>(light->type);
+    const char* types[] = {"Point", "Spot"};
+    if (ImGui::Combo("Type", &type, types, IM_ARRAYSIZE(types))) light->type = static_cast<core::LightType>(type);
+    if (light->type == core::LightType::Spot) {
+        ImGui::DragFloat("Inner Cone", &light->innerConeDegrees, 0.25f, 0.0f, 89.0f, "%.1f deg",
+                         ImGuiSliderFlags_AlwaysClamp);
+        ImGui::DragFloat("Outer Cone", &light->outerConeDegrees, 0.25f, 0.0f, 89.0f, "%.1f deg",
+                         ImGuiSliderFlags_AlwaysClamp);
+        light->innerConeDegrees = std::min(light->innerConeDegrees, light->outerConeDegrees);
+    }
     ImGui::TextDisabled(
-        "A real, entity-driven point light -- Renderer.cpp real-combines up to kMaxPointLights=4 of these (plus "
-        "any scene-wide ones from Lighting Tools) each frame.");
+        "Shaded through the clustered light list, so there is no per-scene light cap. Spots aim down the entity's "
+        "-Z axis.");
 }
 
 } // namespace engine::studio::panels

@@ -36,22 +36,7 @@
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
-layout(set = 0, binding = 0) uniform SceneUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 lightViewProj[3];
-    mat4 invViewProj;
-    vec4 cascadeSplitsView;
-    vec4 cascadeBiasScale;
-    vec4 lightDirectionWS;
-    vec4 lightColorIntensity;
-    vec4 viewPositionWS;
-    vec4 ambientColor;
-    vec4 ambientGroundColor;
-    vec4 fogColorDensity;
-    vec4 skyZenithColor;
-    vec4 skyHorizonColor;
-} scene;
+#include "kronos/scene_ubo.glsl"
 
 // set=1: reused cinematicDescriptorSetLayout_ shape (hdrColor + sceneDepth),
 // same real "2-binding, no bespoke layout" convention

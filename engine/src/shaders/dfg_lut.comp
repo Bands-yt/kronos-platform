@@ -1,0 +1,65 @@
+#version 450
+
+// Precomputed directional albedo for the split-sum approximation, indexed
+// by (NoV, perceptualRoughness) at texel centres:
+//   R, G: Karis' scale/bias with the height-correlated Smith term, so
+//         F0 * R + G is the single-scatter specular albedo Ess
+//         (used for IBL, multiscatter energy compensation and layering);
+//   B:    Charlie sheen directional albedo (Estevez & Kulla).
+
+#include "kronos/brdf.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D dfgOut;
+
+const uint kSamples = 1024u;
+
+vec2 integrateSpecular(float NoV, float a) {
+    vec3 V = vec3(sqrt(1.0 - NoV * NoV), 0.0, NoV);
+    vec2 r = vec2(0.0);
+    for (uint i = 0u; i < kSamples; ++i) {
+        vec3 H = importanceSampleGGX(hammersley(i, kSamples), a);
+        vec3 L = 2.0 * dot(V, H) * H - V;
+        float VoH = saturate(dot(V, H));
+        float NoL = saturate(L.z);
+        float NoH = saturate(H.z);
+        if (NoL > 0.0) {
+            // pdf(L) = D * NoH / (4 VoH); the D cancels against the BRDF.
+            float Gv = V_SmithGGXCorrelated(NoV, NoL, a) * 4.0 * NoL * VoH / NoH;
+            float Fc = pow5(1.0 - VoH);
+            r += vec2((1.0 - Fc) * Gv, Fc * Gv);
+        }
+    }
+    return r / float(kSamples);
+}
+
+float integrateSheen(float NoV, float a) {
+    vec3 V = vec3(sqrt(1.0 - NoV * NoV), 0.0, NoV);
+    float r = 0.0;
+    for (uint i = 0u; i < kSamples; ++i) {
+        vec2 u = hammersley(i, kSamples);
+        // Uniform hemisphere H: pdf(L) = 1 / (8 PI VoH).
+        float phi = 2.0 * PI * u.x;
+        float cosTheta = 1.0 - u.y;
+        float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+        vec3 H = vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
+        vec3 L = 2.0 * dot(V, H) * H - V;
+        float VoH = saturate(dot(V, H));
+        float NoL = saturate(L.z);
+        if (NoL > 0.0) {
+            r += D_Charlie(a, saturate(H.z)) * V_Neubelt(NoV, NoL) * NoL * VoH;
+        }
+    }
+    return r * 8.0 * PI / float(kSamples);
+}
+
+void main() {
+    ivec2 size = imageSize(dfgOut);
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, size))) return;
+    vec2 uv = (vec2(texel) + 0.5) / vec2(size);
+    float NoV = max(uv.x, 1e-3);
+    float perceptualRoughness = max(uv.y, kMinPerceptualRoughness);
+    float a = perceptualRoughness * perceptualRoughness;
+    imageStore(dfgOut, texel, vec4(integrateSpecular(NoV, a), integrateSheen(NoV, a), 1.0));
+}

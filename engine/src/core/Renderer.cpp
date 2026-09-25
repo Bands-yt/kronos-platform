@@ -150,6 +150,7 @@ bool Renderer::initialize(const CreateInfo& info) {
     if (!createPipelineCache()) {
         std::fprintf(stderr, "Renderer: pipeline cache setup failed -- continuing without one.\n");
     }
+    if (!initRenderModules()) return false;
     if (!createMaterialResources()) return false;          // also not per-frame-sized -- must exist before createScenePipeline()'s 2-set layout
     // Needs defaultWhiteTexture_ (createMaterialResources) for its
     // pre-fill, and must precede createScenePipeline() which consumes the
@@ -499,6 +500,16 @@ bool Renderer::createLogicalDevice() {
 
     VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     features2.pNext = &features13;
+    VkPhysicalDeviceFeatures supportedFeatures{};
+    vkGetPhysicalDeviceFeatures(physicalDevice_, &supportedFeatures);
+    depthClampSupported_ = supportedFeatures.depthClamp == VK_TRUE;
+    features2.features.depthClamp = supportedFeatures.depthClamp;
+    // The HDR pass writes velocity to attachment 1 with a different write mask (glass masks it off).
+    if (!supportedFeatures.independentBlend) {
+        std::fprintf(stderr, "Renderer: independentBlend is required for the velocity attachment.\n");
+        return false;
+    }
+    features2.features.independentBlend = VK_TRUE;
 
     std::vector<const char*> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
@@ -827,6 +838,14 @@ bool Renderer::createShadowResources() {
         std::fprintf(stderr, "Renderer: vkCreateSampler (shadow) failed.\n");
         return false;
     }
+    // Hardware PCF: each tap returns the bilinearly-weighted fraction of
+    // the 2x2 footprint that passes, so the soft filter needs far fewer taps.
+    samplerInfo.compareEnable = VK_TRUE;
+    samplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    if (vkCreateSampler(device_, &samplerInfo, nullptr, &shadowCompareSampler_) != VK_SUCCESS) {
+        std::fprintf(stderr, "Renderer: vkCreateSampler (shadow compare) failed.\n");
+        return false;
+    }
 
     for (auto& frame : frames_) {
         if (!initShadowResourcesFor(frame)) return false;
@@ -844,6 +863,10 @@ void Renderer::destroyShadowResources() {
     if (shadowSampler_ != VK_NULL_HANDLE) {
         vkDestroySampler(device_, shadowSampler_, nullptr);
         shadowSampler_ = VK_NULL_HANDLE;
+    }
+    if (shadowCompareSampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device_, shadowCompareSampler_, nullptr);
+        shadowCompareSampler_ = VK_NULL_HANDLE;
     }
 }
 
@@ -924,6 +947,7 @@ bool Renderer::createShadowPipeline() {
     rasterizer.depthBiasEnable = VK_TRUE;
     rasterizer.depthBiasConstantFactor = 0.5f;
     rasterizer.depthBiasSlopeFactor = 0.75f;
+    rasterizer.depthClampEnable = depthClampSupported_ ? VK_TRUE : VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -982,136 +1006,19 @@ void Renderer::destroyShadowPipeline() {
     }
 }
 
-Renderer::CascadeData Renderer::computeCascades(const Camera& camera, float aspectRatio) const {
-    CascadeData result;
-
-    // Practical split scheme (Zhang et al.): blends a purely logarithmic
-    // split (matches perspective's natural depth precision falloff, but
-    // puts too much of the shadow budget far away for typical third-
-    // person camera distances) with a purely uniform split (opposite
-    // problem) via splitLambda. 0.5 is a standard, unremarkable starting
-    // point -- not tuned against this scene specifically.
-    constexpr float splitLambda = 0.5f;
-    float nearDist = camera.nearPlane;
-    float farDist = kShadowMaxDistance; // not camera.farPlane -- see this method's declaration comment
-
-    std::array<float, kCascadeCount> splitDepths =
-        computeCascadeSplitDepths<kCascadeCount>(nearDist, farDist, splitLambda);
-
-    glm::vec3 lightDir = glm::normalize(lighting_.directionWS);
-    // glm::lookAt is degenerate when its forward and up vectors are
-    // parallel -- guards against a light pointing (near-)straight down.
-    glm::vec3 up = std::abs(lightDir.y) > 0.99f ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
-
-    float previousSplit = nearDist;
-    for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade) {
-        float splitNear = previousSplit;
-        float splitFar = splitDepths[cascade];
-        previousSplit = splitFar;
-
-        // The 8 corners of the camera frustum's sub-volume between
-        // [splitNear, splitFar], in world space -- via the inverse of a
-        // perspective/view matrix built for just that sub-range, evaluated
-        // at NDC's 8 corner combinations.
-        glm::mat4 subProj = glm::perspective(glm::radians(camera.verticalFovDegrees), aspectRatio, splitNear, splitFar);
-        subProj[1][1] *= -1.0f;
-        glm::mat4 invSubViewProj = glm::inverse(subProj * camera.viewMatrix());
-
-        std::array<glm::vec3, 8> corners{};
-        size_t cornerIndex = 0;
-        for (int x = 0; x < 2; ++x) {
-            for (int y = 0; y < 2; ++y) {
-                for (int z = 0; z < 2; ++z) {
-                    glm::vec4 ndc(2.0f * static_cast<float>(x) - 1.0f, 2.0f * static_cast<float>(y) - 1.0f,
-                                  static_cast<float>(z), 1.0f);
-                    glm::vec4 worldPos = invSubViewProj * ndc;
-                    corners[cornerIndex++] = glm::vec3(worldPos) / worldPos.w;
-                }
-            }
-        }
-
-        glm::vec3 frustumCenter(0.0f);
-        for (const glm::vec3& corner : corners) frustumCenter += corner;
-        frustumCenter /= 8.0f;
-
-        // A bounding-sphere radius (not a tight box) for placing the
-        // light's eye position: rounded up to a coarse 1/16-unit step so
-        // small camera movements don't perturb it by a sub-step amount,
-        // the same stability goal the texel-snapping below serves for the
-        // ortho volume itself.
-        float radius = 0.0f;
-        for (const glm::vec3& corner : corners) {
-            radius = std::max(radius, glm::length(corner - frustumCenter));
-        }
-        radius = std::ceil(radius * 16.0f) / 16.0f;
-
-        glm::vec3 lightEye = frustumCenter - lightDir * (radius + kShadowDepthPadding);
-        glm::mat4 lightView = glm::lookAt(lightEye, frustumCenter, up);
-
-        glm::vec3 minBounds(std::numeric_limits<float>::max());
-        glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
-        for (const glm::vec3& corner : corners) {
-            glm::vec3 lightSpaceCorner = glm::vec3(lightView * glm::vec4(corner, 1.0f));
-            minBounds = glm::min(minBounds, lightSpaceCorner);
-            maxBounds = glm::max(maxBounds, lightSpaceCorner);
-        }
-
-        // Stable splits: snap the ortho volume's X/Y bounds to whole
-        // shadow-texel increments in light space. Without this, panning
-        // the camera shifts the light-space bounding box by a fractional
-        // texel every frame, which reads as shadow edges shimmering even
-        // though nothing in the scene moved -- snapping makes the
-        // cascade's world-space footprint jump in whole-texel steps
-        // instead, which is imperceptible. This also matters for
-        // scene.frag's receiver-plane bias: that bias is derived from
-        // real screen-space depth derivatives, so a sub-texel-jittering
-        // projection would make the derivative itself noisy frame to
-        // frame, not just the shadow edge. texelSizeX/Y stay effectively
-        // constant frame to frame here (they only depend on this
-        // cascade's fixed FOV/aspect/split-distance shape, not camera
-        // position), so the floor() snap below is a stable grid, not a
-        // moving target.
-        float texelSizeX = (maxBounds.x - minBounds.x) / static_cast<float>(kShadowMapResolution);
-        if (texelSizeX > 0.0f) {
-            minBounds.x = std::floor(minBounds.x / texelSizeX) * texelSizeX;
-            maxBounds.x = minBounds.x + static_cast<float>(kShadowMapResolution) * texelSizeX;
-        }
-        float texelSizeY = (maxBounds.y - minBounds.y) / static_cast<float>(kShadowMapResolution);
-        if (texelSizeY > 0.0f) {
-            minBounds.y = std::floor(minBounds.y / texelSizeY) * texelSizeY;
-            maxBounds.y = minBounds.y + static_cast<float>(kShadowMapResolution) * texelSizeY;
-        }
-
-        // glm::lookAt's view space looks down -Z, so light-space corner Z
-        // values are negative in front of the eye -- negate to get plain
-        // forward distances for glm::ortho's near/far (same convention as
-        // Camera::projectionMatrix's near/far). kShadowDepthPadding
-        // extends the near side back toward the light -- see its
-        // declaration comment.
-        float orthoNear = -maxBounds.z - kShadowDepthPadding;
-        float orthoFar = -minBounds.z;
-
-        glm::mat4 lightProj = glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
-        lightProj[1][1] *= -1.0f; // same Vulkan clip-space Y-flip as Camera::projectionMatrix
-
-        result.lightViewProj[cascade] = lightProj * lightView;
-        result.splitDepths[cascade] = splitFar;
-        result.depthRanges[cascade] = orthoFar - orthoNear;
-    }
-
-    return result;
+render::CascadeFits Renderer::computeCascades(const Camera& camera, float aspectRatio) const {
+    render::CascadeSettings settings;
+    settings.nearPlane = camera.nearPlane;
+    settings.maxDistance = kShadowMaxDistance;
+    settings.verticalFovRadians = glm::radians(camera.verticalFovDegrees);
+    settings.aspectRatio = aspectRatio;
+    settings.resolution = kShadowMapResolution;
+    settings.casterPadding = kShadowDepthPadding;
+    return render::fitCascades(camera.viewMatrix(), lighting_.directionWS, settings);
 }
 
-void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary) {
-    // Cascade matrices are read from the SceneUBO (already written by
-    // drawSceneInto() before this runs, once, shared with the main pass's
-    // fragment shader) -- not passed as a parameter here, since this
-    // function only needs shadow.vert to know which cascade *index* it's
-    // rendering (pushed per-draw below), not the matrices themselves.
-
-    // One barrier covering all kCascadeCount layers of the array image,
-    // not one per layer -- transitionImage's layerCount parameter exists
-    // for exactly this.
+void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
+                              const render::CascadeFits& cascades) {
     transitionImage(cmd, frame.shadowImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                      VK_ACCESS_2_NONE, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
@@ -1127,12 +1034,27 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
+    struct Caster {
+        glm::mat4 model;
+        glm::vec3 center;
+        float radius;
+        const Mesh* mesh;
+    };
+    std::vector<Caster> casters;
     auto view = ecs.view<Transform, Renderable>();
+    for (auto entity : view) {
+        const auto& renderable = view.get<Renderable>(entity);
+        if (!renderable.visible || !renderable.castsShadow) continue;
+        const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
+        if (!mesh) continue;
+        glm::mat4 model = hierarchy::computeWorldMatrix(ecs, entity);
+        glm::vec3 localCenter = 0.5f * (mesh->localBoundsMin() + mesh->localBoundsMax());
+        float localRadius = 0.5f * glm::length(mesh->localBoundsMax() - mesh->localBoundsMin());
+        float maxScale = std::max({glm::length(glm::vec3(model[0])), glm::length(glm::vec3(model[1])),
+                                   glm::length(glm::vec3(model[2]))});
+        casters.push_back({model, glm::vec3(model * glm::vec4(localCenter, 1.0f)), localRadius * maxScale, mesh});
+    }
 
-    // One full depth pass per cascade -- kCascadeCount times the shadow
-    // draw-call count versus the old single-cascade pass, the real,
-    // unavoidable cost of CSM. Each pass targets a different single-layer
-    // 2D view (frame.shadowCascadeViews[cascade]) of the same array image.
     for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade) {
         VkRenderingAttachmentInfo depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         depthAttachment.imageView = frame.shadowCascadeViews[cascade];
@@ -1147,33 +1069,23 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
         renderingInfo.pDepthAttachment = &depthAttachment;
 
         vkCmdBeginRendering(cmd, &renderingInfo);
-
-        for (auto entity : view) {
-            auto& renderable = view.get<Renderable>(entity);
-            if (!renderable.visible || !renderable.castsShadow) continue;
-
-            const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
-            if (!mesh) continue;
-
+        for (const Caster& caster : casters) {
+            if (!render::sphereIntersectsCascade(cascades[cascade], lighting_.directionWS, caster.center,
+                                                 caster.radius)) {
+                continue;
+            }
             ShadowPushConstants push{};
-            // Kronos (Alpha Roadmap Phase 2, "Scene graph stability"):
-            // real parent-aware world transform -- see
-            // core::hierarchy::computeWorldMatrix()'s own comment. Byte-
-            // identical to transform.matrix() alone for the overwhelming
-            // majority of entities (anything with no Hierarchy component,
-            // i.e. everything that existed before this feature).
-            push.model = hierarchy::computeWorldMatrix(ecs, entity);
+            push.model = caster.model;
             push.cascadeIndex = static_cast<int32_t>(cascade);
             vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
 
             VkDeviceSize offset = 0;
-            VkBuffer vb = mesh->vertexBuffer();
+            VkBuffer vb = caster.mesh->vertexBuffer();
             vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
-            vkCmdBindIndexBuffer(cmd, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, mesh->indexCount(), 1, 0, 0, 0);
-            recordDraw(mesh->indexCount(), 1);
+            vkCmdBindIndexBuffer(cmd, caster.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, caster.mesh->indexCount(), 1, 0, 0, 0);
+            recordDraw(caster.mesh->indexCount(), 1);
         }
-
         vkCmdEndRendering(cmd);
     }
 
@@ -1567,6 +1479,130 @@ void Renderer::updateRayTracedShadowDescriptor(FrameSync& frame) {
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
+render::GpuContext Renderer::gpuContext() const {
+    return render::GpuContext{device_, allocator_, pipelineCache_,
+                              resolveResourceDir(executableDirectory(), "shaders", ENGINE_SHADER_DIR)};
+}
+
+bool Renderer::initRenderModules() {
+    render::GpuContext ctx = gpuContext();
+    if (!ibl_.initialize(ctx)) {
+        std::fprintf(stderr, "Renderer: image-based lighting setup failed.\n");
+        return false;
+    }
+    if (!clusteredLighting_.initialize(ctx, sceneDescriptorSetLayout_)) {
+        std::fprintf(stderr, "Renderer: clustered lighting setup failed.\n");
+        return false;
+    }
+    if (!temporalAA_.initialize(ctx, framesInFlight_ + static_cast<uint32_t>(kMaxAuxiliaryScenes))) {
+        std::fprintf(stderr, "Renderer: temporal AA setup failed.\n");
+        return false;
+    }
+    mainViewHistory_ = std::make_shared<render::ViewHistory>();
+    for (auto& frame : frames_) {
+        if (!initFrameRenderResources(frame, true)) return false;
+    }
+    return true;
+}
+
+void Renderer::shutdownRenderModules() {
+    render::GpuContext ctx = gpuContext();
+    for (auto& frame : frames_) destroyFrameRenderResources(frame);
+    temporalAA_.shutdown(ctx);
+    clusteredLighting_.shutdown(ctx);
+    ibl_.shutdown(ctx);
+    mainViewHistory_.reset();
+}
+
+bool Renderer::initFrameRenderResources(FrameSync& frame, bool mainView) {
+    render::GpuContext ctx = gpuContext();
+    if (!render::ClusteredLighting::createFrameResources(ctx, frame.clusterResources)) return false;
+    if (!render::createBuffer(ctx, sizeof(GpuObjectRecord) * kMaxObjectRecords, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                              true, frame.objectRecords)) {
+        return false;
+    }
+    static_cast<GpuObjectRecord*>(frame.objectRecords.mapped)[0] = GpuObjectRecord{};
+    frame.objectRecordCount = 1;
+    // Frames in flight of one view share a history: frame N+1's resolve must read what frame N wrote.
+    frame.viewHistory = mainView ? mainViewHistory_ : std::make_shared<render::ViewHistory>();
+    writeSceneModuleDescriptors(frame);
+    return true;
+}
+
+void Renderer::destroyFrameRenderResources(FrameSync& frame) {
+    render::GpuContext ctx = gpuContext();
+    render::ClusteredLighting::destroyFrameResources(ctx, frame.clusterResources);
+    render::destroyBuffer(ctx, frame.objectRecords);
+    render::destroyImage(ctx, frame.velocity);
+    temporalAA_.releaseBinding(ctx, frame.taaBinding);
+    if (frame.viewHistory && frame.viewHistory.use_count() == 1) {
+        render::TemporalAA::destroyHistory(ctx, *frame.viewHistory);
+    }
+    frame.viewHistory.reset();
+}
+
+void Renderer::writeSceneModuleDescriptors(FrameSync& frame) {
+    VkDescriptorImageInfo compareInfo{shadowCompareSampler_, frame.shadowArrayView,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo envInfo{ibl_.sampler(), ibl_.prefilteredView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo dfgInfo{ibl_.sampler(), ibl_.dfgView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    std::array<VkDescriptorBufferInfo, 5> buffers{{
+        {ibl_.shBuffer(), 0, VK_WHOLE_SIZE},
+        {frame.clusterResources.lights.buffer, 0, VK_WHOLE_SIZE},
+        {frame.clusterResources.counts.buffer, 0, VK_WHOLE_SIZE},
+        {frame.clusterResources.indices.buffer, 0, VK_WHOLE_SIZE},
+        {frame.objectRecords.buffer, 0, VK_WHOLE_SIZE},
+    }};
+
+    std::array<VkWriteDescriptorSet, 8> writes{};
+    const VkDescriptorImageInfo* images[] = {&compareInfo, &envInfo, &dfgInfo};
+    for (uint32_t i = 0; i < 3; ++i) {
+        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[i].dstSet = frame.sceneDescriptorSet;
+        writes[i].dstBinding = 4 + i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = images[i];
+    }
+    for (uint32_t i = 0; i < buffers.size(); ++i) {
+        VkWriteDescriptorSet& w = writes[3 + i];
+        w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = frame.sceneDescriptorSet;
+        w.dstBinding = 7 + i;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        w.pBufferInfo = &buffers[i];
+    }
+    vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+uint32_t Renderer::pushObjectRecord(FrameSync& frame, EntityId entity, const MaterialLayers& layers,
+                                    const glm::mat4& model) {
+    const uint32_t key = static_cast<uint32_t>(entt::to_integral(entity));
+    render::ViewHistory* history = frame.viewHistory.get();
+    const glm::mat4* previous = nullptr;
+    if (history != nullptr) {
+        history->currentModels[key] = model;
+        auto it = history->previousModels.find(key);
+        if (it != history->previousModels.end()) previous = &it->second;
+    }
+    // Static objects with default materials share record 0 -- camera motion alone gives them correct velocity.
+    const bool moved = previous != nullptr && *previous != model;
+    if ((!moved && layers.isDefault()) || frame.objectRecordCount >= kMaxObjectRecords) return 0;
+
+    GpuObjectRecord record;
+    record.prevModel = moved ? *previous : model;
+    record.misc.y = moved ? 1.0f : 0.0f;
+    const MaterialLayers& l = layers;
+    record.clearcoat = {l.clearcoat, l.clearcoatRoughness, l.anisotropy, l.anisotropyRotation};
+    record.sheen = {l.sheenColor, l.sheenRoughness};
+    record.misc.x = l.specular;
+
+    uint32_t index = frame.objectRecordCount++;
+    static_cast<GpuObjectRecord*>(frame.objectRecords.mapped)[index] = record;
+    return index;
+}
+
 void Renderer::destroySceneDescriptorResourcesFor(FrameSync& frame) {
     if (frame.sceneUboBuffer != VK_NULL_HANDLE) {
         vmaDestroyBuffer(allocator_, frame.sceneUboBuffer, frame.sceneUboAllocation);
@@ -1585,7 +1621,7 @@ bool Renderer::createSceneDescriptorResources() {
     uboBinding.binding = 0;
     uboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     uboBinding.descriptorCount = 1;
-    uboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    uboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutBinding shadowBinding{};
     shadowBinding.binding = 1;
@@ -1629,6 +1665,25 @@ bool Renderer::createSceneDescriptorResources() {
         bindings.push_back(materialsBinding);
     }
 
+    auto addBinding = [&](uint32_t binding, VkDescriptorType type, VkShaderStageFlags stages) {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = binding;
+        b.descriptorType = type;
+        b.descriptorCount = 1;
+        b.stageFlags = stages;
+        bindings.push_back(b);
+    };
+    constexpr VkShaderStageFlags kComputeFragment = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    addBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);  // shadow compare
+    addBinding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);  // prefiltered env
+    addBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);  // DFG LUT
+    addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);          // irradiance SH
+    addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kComputeFragment);                      // lights
+    addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kComputeFragment);                      // cluster counts
+    addBinding(10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kComputeFragment);                     // cluster indices
+    addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);                   // object records
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
     layoutInfo.pBindings = bindings.data();
@@ -1644,11 +1699,11 @@ bool Renderer::createSceneDescriptorResources() {
     uint32_t totalSceneSlots = framesInFlight_ + static_cast<uint32_t>(kMaxAuxiliaryScenes);
     std::vector<VkDescriptorPoolSize> poolSizes{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, totalSceneSlots},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, totalSceneSlots},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * totalSceneSlots},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, (rayTracingSupported_ ? 6 : 5) * totalSceneSlots},
     };
     if (rayTracingSupported_) {
         poolSizes.push_back({VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, totalSceneSlots});
-        poolSizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, totalSceneSlots});
     }
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = totalSceneSlots;
@@ -1994,8 +2049,10 @@ bool Renderer::createScenePipeline() {
     colorBlendAttachment.blendEnable = VK_FALSE; // no transparency pass yet, §4.1 TODO
 
     VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    std::array<VkPipelineColorBlendAttachmentState, 2> blendAttachments{colorBlendAttachment, {}};
+    blendAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+    colorBlending.attachmentCount = 2;
+    colorBlending.pAttachments = blendAttachments.data();
 
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -2032,9 +2089,10 @@ bool Renderer::createScenePipeline() {
     }
 
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.colorAttachmentCount = 2;
     VkFormat hdrFormat = kHDRFormat; // renders into the internal HDR intermediate, not the final presentable image
-    renderingInfo.pColorAttachmentFormats = &hdrFormat;
+    std::array<VkFormat, 2> sceneColorFormats{hdrFormat, kVelocityFormat};
+    renderingInfo.pColorAttachmentFormats = sceneColorFormats.data();
     renderingInfo.depthAttachmentFormat = depthFormat_;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -2145,8 +2203,11 @@ bool Renderer::createGlassPipeline() {
     colorBlendAttachment.blendEnable = VK_FALSE; // the shader computes the final color directly -- see this function's own comment
 
     VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    // Transparent glass keeps the opaque surface's velocity underneath it.
+    std::array<VkPipelineColorBlendAttachmentState, 2> blendAttachments{colorBlendAttachment, {}};
+    blendAttachments[1].colorWriteMask = 0;
+    colorBlending.attachmentCount = 2;
+    colorBlending.pAttachments = blendAttachments.data();
 
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -2171,9 +2232,10 @@ bool Renderer::createGlassPipeline() {
     }
 
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.colorAttachmentCount = 2;
     VkFormat hdrFormat = kHDRFormat;
-    renderingInfo.pColorAttachmentFormats = &hdrFormat;
+    std::array<VkFormat, 2> sceneColorFormats{hdrFormat, kVelocityFormat};
+    renderingInfo.pColorAttachmentFormats = sceneColorFormats.data();
     renderingInfo.depthAttachmentFormat = depthFormat_;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -2290,8 +2352,10 @@ bool Renderer::createSkinnedScenePipeline() {
     colorBlendAttachment.blendEnable = VK_FALSE;
 
     VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    std::array<VkPipelineColorBlendAttachmentState, 2> blendAttachments{colorBlendAttachment, {}};
+    blendAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+    colorBlending.attachmentCount = 2;
+    colorBlending.pAttachments = blendAttachments.data();
 
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -2325,9 +2389,10 @@ bool Renderer::createSkinnedScenePipeline() {
     }
 
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.colorAttachmentCount = 2;
     VkFormat hdrFormat = kHDRFormat;
-    renderingInfo.pColorAttachmentFormats = &hdrFormat;
+    std::array<VkFormat, 2> sceneColorFormats{hdrFormat, kVelocityFormat};
+    renderingInfo.pColorAttachmentFormats = sceneColorFormats.data();
     renderingInfo.depthAttachmentFormat = depthFormat_;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -2451,8 +2516,10 @@ bool Renderer::createInstancedScenePipeline() {
     colorBlendAttachment.blendEnable = VK_FALSE;
 
     VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    std::array<VkPipelineColorBlendAttachmentState, 2> blendAttachments{colorBlendAttachment, {}};
+    blendAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+    colorBlending.attachmentCount = 2;
+    colorBlending.pAttachments = blendAttachments.data();
 
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -2460,9 +2527,10 @@ bool Renderer::createInstancedScenePipeline() {
     dynamicState.pDynamicStates = dynamicStates;
 
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.colorAttachmentCount = 2;
     VkFormat hdrFormat = kHDRFormat; // renders into the internal HDR intermediate, not the final presentable image
-    renderingInfo.pColorAttachmentFormats = &hdrFormat;
+    std::array<VkFormat, 2> sceneColorFormats{hdrFormat, kVelocityFormat};
+    renderingInfo.pColorAttachmentFormats = sceneColorFormats.data();
     renderingInfo.depthAttachmentFormat = depthFormat_;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -3589,17 +3657,20 @@ bool Renderer::createSkyPipeline() {
                                                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         colorBlendAttachment.blendEnable = VK_FALSE;
         VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &colorBlendAttachment;
+        std::array<VkPipelineColorBlendAttachmentState, 2> blendAttachments{colorBlendAttachment, {}};
+        blendAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+        colorBlending.attachmentCount = 2;
+        colorBlending.pAttachments = blendAttachments.data();
         VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
         VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
         dynamicState.dynamicStateCount = 2;
         dynamicState.pDynamicStates = dynamicStates;
 
         VkFormat hdrFormat = kHDRFormat; // writes into frame.hdrView, same target scene geometry draws into
+        std::array<VkFormat, 2> sceneColorFormats{hdrFormat, kVelocityFormat};
         VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-        renderingInfo.colorAttachmentCount = 1;
-        renderingInfo.pColorAttachmentFormats = &hdrFormat;
+        renderingInfo.colorAttachmentCount = 2;
+        renderingInfo.pColorAttachmentFormats = sceneColorFormats.data();
         renderingInfo.depthAttachmentFormat = depthFormat_; // must match the render scope's real depth attachment format even though this pipeline never tests/writes it
 
         VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -3727,7 +3798,8 @@ bool Renderer::ensurePostProcessTargets(FrameSync& frame, VkExtent2D extent, VkI
         imageInfo.format = kHDRFormat;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        // TRANSFER_DST: the TAA resolve copies its output back into the HDR target.
+        imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -3754,6 +3826,11 @@ bool Renderer::ensurePostProcessTargets(FrameSync& frame, VkExtent2D extent, VkI
 
     if (!createTarget(extent, frame.hdrImage, frame.hdrAllocation, frame.hdrView)) return false;
     if (!createTarget(bloomExtent, frame.bloomImage, frame.bloomAllocation, frame.bloomView)) return false;
+    if (!render::createImage(gpuContext(), kVelocityFormat, extent.width, extent.height, 1, 1, false,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, frame.velocity)) {
+        std::fprintf(stderr, "Renderer: velocity target creation failed.\n");
+        return false;
+    }
 
     VkDescriptorSetAllocateInfo singleAllocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     singleAllocInfo.descriptorPool = postProcessDescriptorPool_;
@@ -4249,6 +4326,7 @@ void Renderer::destroyPostProcessTargets(FrameSync& frame) {
         vkDeviceWaitIdle(device_);
     }
 
+    render::destroyImage(gpuContext(), frame.velocity);
     if (frame.particleDepthDescriptorSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(device_, postProcessDescriptorPool_, 1, &frame.particleDepthDescriptorSet);
         frame.particleDepthDescriptorSet = VK_NULL_HANDLE;
@@ -4879,22 +4957,38 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // needs the whole array too (to re-derive the right cascade's
     // light-space position for shadow sampling) -- both read it through
     // the same descriptor set, so there's exactly one write, not one per pass.
-    CascadeData cascades = computeCascades(camera, aspectRatio);
+    render::CascadeFits cascades = computeCascades(camera, aspectRatio);
+    render::ViewHistory& history = *frame.viewHistory;
 
     SceneUBO ubo{};
     ubo.view = camera.viewMatrix();
     ubo.proj = camera.projectionMatrix(aspectRatio);
-    ubo.invViewProj = glm::inverse(ubo.proj * ubo.view); // one CPU-side inverse/frame -- see this field's own comment in SceneTypes.hpp
-    for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade) {
-        ubo.lightViewProj[cascade] = cascades.lightViewProj[cascade];
+    ubo.viewProjNoJitter = ubo.proj * ubo.view;
+    ubo.prevViewProjNoJitter = history.hasPreviousViewProj ? history.previousViewProjNoJitter : ubo.viewProjNoJitter;
+
+    const bool taaActive = temporalAAEnabled_ && depthImage != VK_NULL_HANDLE;
+    glm::vec2 jitter(0.0f);
+    if (taaActive) {
+        jitter = render::TemporalAA::jitterNdc(history.frameIndex, extent);
+        // Offsetting the projection's z column shifts clip-space x/y by jitter * w, i.e. a constant NDC offset.
+        ubo.proj[2][0] += jitter.x;
+        ubo.proj[2][1] += jitter.y;
     }
-    ubo.cascadeSplitsView = glm::vec4(cascades.splitDepths[0], cascades.splitDepths[1], cascades.splitDepths[2], 0.0f);
-    // .w rides the live receiver-plane-bias-scale dial (previously unused
-    // padding) -- see Renderer::setReceiverPlaneBiasScale()'s own comment.
-    ubo.cascadeBiasScale = glm::vec4(cascades.depthRanges[0] / kReferenceShadowDepthRange,
-                                      cascades.depthRanges[1] / kReferenceShadowDepthRange,
-                                      cascades.depthRanges[2] / kReferenceShadowDepthRange,
-                                      receiverPlaneBiasScale_);
+    ubo.invViewProj = glm::inverse(ubo.proj * ubo.view);
+    ubo.taaJitter = glm::vec4(jitter, taaActive ? history.previousJitter : glm::vec2(0.0f));
+    ubo.screenSize = glm::vec4(static_cast<float>(extent.width), static_cast<float>(extent.height),
+                               1.0f / static_cast<float>(extent.width), 1.0f / static_cast<float>(extent.height));
+    ubo.frameParams = glm::vec4(static_cast<float>(history.frameIndex % 1024), taaActive ? 1.0f : 0.0f, 0.0f, 0.0f);
+
+    for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade) {
+        const render::CascadeFit& fit = cascades[cascade];
+        ubo.lightViewProj[cascade] = fit.viewProj;
+        ubo.cascadeSplitsView[static_cast<glm::length_t>(cascade)] = fit.splitFar;
+        ubo.cascadeTexelWorld[static_cast<glm::length_t>(cascade)] = fit.texelWorld;
+        ubo.cascadeDepthRange[static_cast<glm::length_t>(cascade)] = fit.depthRange;
+    }
+    ubo.shadowParams = glm::vec4(receiverPlaneBiasScale_, std::tan(glm::radians(sunAngularRadiusDegrees_)),
+                                 static_cast<float>(kShadowMapResolution), performanceModeEnabled_ ? 1.0f : 2.0f);
     // Kronos ("Rendering Fidelity Foundation" Phase 1.1): real weather
     // composed on top of whatever setLighting() last provided -- see
     // applyWeather()'s own comment for why Clear weather is an exact,
@@ -4942,37 +5036,15 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // std140 padding before this.
     ubo.renderFlags.w = underwaterCausticsEnabled_ ? 1.0f : 0.0f;
 
-    // Sprint 16 point lights -- copy up to kMaxPointLights real entries;
-    // extras are silently dropped (see SceneLighting::pointLights' own
-    // comment), remaining UBO slots stay zero-intensity from SceneUBO{}'s
-    // own default member initializers above, a real no-op in
-    // computePointLights() below.
-    uint32_t pointLightCount = std::min<uint32_t>(static_cast<uint32_t>(lighting_.pointLights.size()), kMaxPointLights);
-    for (uint32_t i = 0; i < pointLightCount; ++i) {
-        const SceneLighting::PointLight& light = lighting_.pointLights[i];
-        ubo.pointLightPositionRadius[i] = glm::vec4(light.position, light.radius);
-        ubo.pointLightColorIntensity[i] = glm::vec4(light.color, light.intensity);
-    }
-    // Kronos (Alpha Roadmap Phase 3, "Component system"): real entity-
-    // driven point lights -- every live Light+Transform entity contributes
-    // a real slot here too, filling whatever budget the manually-authored
-    // SceneLighting::pointLights entries above didn't already use (same
-    // kMaxPointLights cap, extras silently dropped, matching that array's
-    // own established convention). World position goes through
-    // hierarchy::computeWorldMatrix() rather than raw Transform::position
-    // so a Light parented under a moving rig tracks it correctly -- see
-    // Components.hpp's own Light comment.
-    auto lightView = ecs.view<Light, Transform>();
-    for (auto entity : lightView) {
-        if (pointLightCount >= kMaxPointLights) break;
-        const Light& light = lightView.get<Light>(entity);
-        if (!light.enabled) continue;
-        glm::vec3 worldPosition = glm::vec3(hierarchy::computeWorldMatrix(ecs, entity)[3]);
-        ubo.pointLightPositionRadius[pointLightCount] = glm::vec4(worldPosition, light.radius);
-        ubo.pointLightColorIntensity[pointLightCount] = glm::vec4(light.color, light.intensity);
-        ++pointLightCount;
-    }
-    ubo.pointLightCount = glm::vec4(static_cast<float>(pointLightCount), 0.0f, 0.0f, 0.0f);
+    render::gatherLights(ecs, lighting_, camera.position, gatheredLights_);
+    uint32_t lightCount = render::ClusteredLighting::uploadLights(frame.clusterResources, gatheredLights_);
+    render::ClusterGrid clusterGrid = render::computeClusterGrid(extent.width, extent.height, camera.nearPlane,
+                                                                 camera.farPlane);
+    ubo.clusterParams = glm::vec4(clusterGrid.sliceScale, clusterGrid.sliceBias, clusterGrid.tileSizePixels,
+                                  static_cast<float>(lightCount));
+    ubo.clusterDims = glm::uvec4(clusterGrid.dims, kMaxLightsPerCluster);
+
+    ubo.iblParams = glm::vec4(iblSpecularIntensity_, iblReflectionNormalization_, ibl_.prefilteredMaxMip(), 0.0f);
     // Kronos ("Rendering Fidelity Foundation" Phase 1.3): same real
     // "toggle AND a currently-valid TLAS" gating as renderFlags.x above --
     // see this field's own comment in SceneTypes.hpp.
@@ -5000,9 +5072,25 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // already use.
     ubo.giParams.x = (rtGIEnabled_ && rayTracingScene_.hasValidTlas()) ? 1.0f : 0.0f;
     ubo.giParams.y = rtGIIntensity_;
+
+    // The environment is captured from the same analytic sky the sky pass draws, so reflections and the
+    // visible background agree; it is only re-captured when the quantised sky inputs change.
+    render::IblInputs iblInputs;
+    iblInputs.zenith = effectiveLighting.skyZenithColor;
+    iblInputs.horizon = effectiveLighting.skyHorizonColor;
+    iblInputs.ground = effectiveLighting.ambientGround;
+    iblInputs.towardSun = -glm::vec3(ubo.lightDirectionWS);
+    iblInputs.origin = camera.position;
+    iblInputs.atmosphere = ubo.atmosphereParams;
+    iblInputs.clouds = ubo.cloudParams;
+    ibl_.update(cmd, iblInputs);
+    ubo.iblParams.w = ibl_.valid() ? 1.0f : 0.0f;
+
     std::memcpy(frame.sceneUboMapped, &ubo, sizeof(ubo)); // persistently mapped -- no map/unmap round trip
 
-    drawShadowPass(cmd, frame, ecs, meshLibrary);
+    drawShadowPass(cmd, frame, ecs, meshLibrary, cascades);
+    clusteredLighting_.record(cmd, frame.sceneDescriptorSet, frame.clusterResources, clusterGrid);
+    frame.objectRecordCount = 1;
 
     // Renders into frame.hdrImage (the internal HDR intermediate), not
     // colorImage directly -- drawBloomAndComposite() at the end of this
@@ -5017,6 +5105,9 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
                      VK_ACCESS_2_NONE, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
                      VK_IMAGE_ASPECT_DEPTH_BIT);
+    render::imageBarrier(cmd, frame.velocity.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
     VkRenderingAttachmentInfo colorAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     colorAttachment.imageView = frame.hdrView;
@@ -5047,8 +5138,16 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     VkRenderingInfo renderingInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
     renderingInfo.renderArea = {{0, 0}, extent};
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
+    VkRenderingAttachmentInfo velocityAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    velocityAttachment.imageView = frame.velocity.view;
+    velocityAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    velocityAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    velocityAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    velocityAttachment.clearValue.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 0.0f}};
+    std::array<VkRenderingAttachmentInfo, 2> sceneColorAttachments{colorAttachment, velocityAttachment};
+
+    renderingInfo.colorAttachmentCount = static_cast<uint32_t>(sceneColorAttachments.size());
+    renderingInfo.pColorAttachments = sceneColorAttachments.data();
     renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRendering(cmd, &renderingInfo);
@@ -5116,6 +5215,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         // whenever bindless isn't initialised -- see SceneTypes.hpp's own
         // comment on why this flag can't ride inside that helper.
         push.textureIndices.w = renderable.unlitSilhouette ? 1u : 0u;
+        push.textureIndices.z |= pushObjectRecord(frame, entity, renderable.layers, push.model) << 16;
         vkCmdPushConstants(cmd, scenePipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                             0, sizeof(push), &push);
 
@@ -5260,41 +5360,45 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     } else {
         // No depth image handle available (an auxiliary scene path):
         // keep the previous behaviour rather than skipping particles.
-        vkCmdBeginRendering(cmd, &renderingInfo);
+        VkRenderingInfo particleOnly = renderingInfo;
+        particleOnly.colorAttachmentCount = 1; // the particle pipeline has no velocity output
+        vkCmdBeginRendering(cmd, &particleOnly);
         drawParticles(cmd, frame, particleSystem);
         vkCmdEndRendering(cmd);
     }
 
-    // Sprint 16: capture this frame slot's own camera history *before*
-    // overwriting it -- see FrameSync::previousViewProj's own comment on
-    // why this is per-slot, not Renderer-wide, and why "N frames back"
-    // under multi-buffering is a real, honest, accepted imprecision. On
-    // this slot's very first use (hasPreviousViewProj == false), falling
-    // back to *this* frame's own view-proj is deliberate: it makes the
-    // reprojected velocity exactly zero for that one frame instead of an
-    // undefined/garbage large jump from an uninitialized matrix.
-    glm::mat4 currentViewProj = ubo.proj * ubo.view;
-    glm::mat4 previousViewProjForThisFrame = frame.hasPreviousViewProj ? frame.previousViewProj : currentViewProj;
-    frame.previousViewProj = currentViewProj;
-    frame.hasPreviousViewProj = true;
+    const glm::mat4 currentViewProj = ubo.viewProjNoJitter;
+    const glm::mat4 previousViewProjForThisFrame = ubo.prevViewProjNoJitter;
 
-    // frame.hdrImage is done being written by the opaque/instanced/
-    // particle pass above -- transitioned here, once, so both
-    // drawCinematicPass() (if it runs) and drawBloomAndComposite()'s
-    // bloom-extract stage can read it as a texture without either one
-    // needing to know whether the other already did this.
+    constexpr VkPipelineStageFlags2 kPostReadStages =
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     transitionImage(cmd, frame.hdrImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
-                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
-
-    // Depth is done being written for this frame -- Sprint 16's cinematic
-    // pass (if it runs at all, see drawCinematicPass()'s own real bypass)
-    // needs to sample it back as a real texture for SSAO/DOF/motion-blur
-    // world-position reconstruction.
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, kPostReadStages);
     transitionImage(cmd, depthImage, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
-                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, kPostReadStages,
                      VK_IMAGE_ASPECT_DEPTH_BIT);
+    render::imageBarrier(cmd, frame.velocity.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, kPostReadStages, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    // TAA runs before SSR/fog/cinematic so every later pass sees the stable, anti-aliased image; the
+    // resolve writes the new history and copies it back into hdrImage.
+    if (taaActive) {
+        render::GpuContext ctx = gpuContext();
+        if (temporalAA_.ensureHistory(ctx, history, extent) &&
+            temporalAA_.bind(ctx, frame.taaBinding, history, frame.hdrView, frame.velocity.view, depthView)) {
+            temporalAA_.resolve(cmd, frame.taaBinding, history, frame.hdrImage, taaFeedback_);
+        }
+    } else {
+        history.historyValid = false;
+    }
+    history.previousJitter = jitter;
+    history.previousViewProjNoJitter = currentViewProj;
+    history.hasPreviousViewProj = true;
+    history.advanceModels();
+    ++history.frameIndex;
 
     // Kronos ("Rendering Fidelity" -- SSR fallback pass): real
     // screen-space reflections run *first* in the post-FX chain, before
@@ -5394,7 +5498,8 @@ Renderer::AuxiliarySceneHandle Renderer::createAuxiliaryScene() {
     // frames_[] slot), and this slot is never submitted/presented on its
     // own so it needs no sync primitives of its own.
     if (!initShadowResourcesFor(frame) || !initSceneDescriptorResourcesFor(frame) || !initInstanceBufferFor(frame) ||
-        !initParticleInstanceBufferFor(frame) || !initSkinningResourcesFor(frame)) {
+        !initParticleInstanceBufferFor(frame) || !initSkinningResourcesFor(frame) ||
+        !initFrameRenderResources(frame, false)) {
         std::fprintf(stderr, "Renderer: createAuxiliaryScene() failed to allocate GPU resources for slot %zu.\n", handle);
         destroyAuxiliaryScene(handle);
         return kInvalidAuxiliaryScene;
@@ -5406,6 +5511,7 @@ void Renderer::destroyAuxiliaryScene(AuxiliarySceneHandle handle) {
     if (handle == kInvalidAuxiliaryScene || handle >= auxiliaryScenes_.size()) return;
     FrameSync& frame = auxiliaryScenes_[handle];
     destroyPostProcessTargets(frame);
+    destroyFrameRenderResources(frame);
     destroySceneDescriptorResourcesFor(frame);
     destroyShadowResourcesFor(frame);
     destroyInstanceBufferFor(frame);
@@ -5436,6 +5542,7 @@ void Renderer::drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& 
         data.emissive = glm::vec4(renderable->emissiveColor, renderable->emissiveIntensity);
         data.textureIndices = packTextureIndices(*renderable, textureLibrary);
         data.textureIndices.w = renderable->unlitSilhouette ? 1u : 0u;
+        data.textureIndices.z |= pushObjectRecord(frame, entity, renderable->layers, data.model) << 16;
         buckets[renderable->meshHandle].push_back(data);
     }
 
@@ -5593,6 +5700,8 @@ void Renderer::drawSkinnedEntities(VkCommandBuffer cmd, FrameSync& frame, ECS& e
         push.baseColor = skinned.baseColor;
         push.metallicRoughness = glm::vec4(skinned.metallic, skinned.roughness, 1.0f, 0.0f);
         push.emissive = glm::vec4(skinned.emissiveColor, skinned.emissiveIntensity);
+        // Rigid transform motion only; pose deformation would need the previous bone palette.
+        push.textureIndices.z = pushObjectRecord(frame, entity, MaterialLayers{}, push.model) << 16;
         vkCmdPushConstants(cmd, skinnedScenePipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                             0, sizeof(push), &push);
 
@@ -5845,6 +5954,7 @@ void Renderer::shutdown() {
         destroyAuxiliaryScene(handle);
     }
     auxiliaryScenes_.clear();
+    shutdownRenderModules();
 
     destroySceneDescriptorResources(); // uses frames_ -- must run before the loop below clears it
     destroyShadowResources();          // also uses frames_ -- same reason

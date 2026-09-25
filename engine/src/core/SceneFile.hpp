@@ -55,6 +55,7 @@ struct SceneEntityRecord {
     float metallic = 0.05f;
     float roughness = 0.6f;
     float normalIntensity = 1.0f;
+    MaterialLayers layers;
     glm::vec3 emissiveColor{1.0f, 1.0f, 1.0f};
     float emissiveIntensity = 0.0f;
     bool castsShadow = true;

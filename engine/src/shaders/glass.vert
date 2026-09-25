@@ -20,29 +20,7 @@ layout(location = 1) out vec3 outWorldNormal;
 // SceneTypes.hpp's own comment) driving the real ripple offset below;
 // std140 offsets are positional, so every field up to the one actually
 // read must be declared even though most go unused here.
-layout(set = 0, binding = 0) uniform SceneUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 lightViewProj[3];
-    mat4 invViewProj;
-    vec4 cascadeSplitsView;
-    vec4 cascadeBiasScale;
-    vec4 lightDirectionWS;
-    vec4 lightColorIntensity;
-    vec4 viewPositionWS;
-    vec4 ambientColor;
-    vec4 ambientGroundColor;
-    vec4 fogColorDensity;
-    vec4 skyZenithColor;
-    vec4 skyHorizonColor;
-    vec4 renderFlags;
-    vec4 pointLightPositionRadius[4];
-    vec4 pointLightColorIntensity[4];
-    vec4 pointLightCount;
-    vec4 reflectionParams;
-    vec4 atmosphereParams;
-    vec4 cloudParams; // w: real total elapsed seconds -- see this block's own header comment
-} scene;
+#include "kronos/scene_ubo.glsl"
 
 layout(push_constant) uniform GlassPushConstants {
     mat4 model;

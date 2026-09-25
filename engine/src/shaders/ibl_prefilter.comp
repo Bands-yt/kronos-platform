@@ -1,0 +1,54 @@
+#version 450
+
+// GGX-prefiltered specular environment (split-sum, N = V = R), one
+// dispatch per output mip. Source samples read a mip chosen from each
+// sample's pdf (Krivanek & Colbert, GPU Gems 3 ch. 20) so few samples
+// integrate a wide lobe without aliasing.
+
+#include "kronos/brdf.glsl"
+#include "kronos/cubemap.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform samplerCube envSource;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray prefilteredOut;
+
+layout(push_constant) uniform PrefilterPush {
+    float perceptualRoughness;
+    float sourceSize;
+    uint sampleCount;
+    float sourceMaxMip;
+} pc;
+
+void main() {
+    uint size = uint(imageSize(prefilteredOut).x);
+    uvec3 id = gl_GlobalInvocationID;
+    if (id.x >= size || id.y >= size) return;
+    vec3 N = cubeTexelDirection(id.z, id.xy, size);
+
+    if (pc.perceptualRoughness <= 0.0) {
+        imageStore(prefilteredOut, ivec3(id), vec4(textureLod(envSource, N, 0.0).rgb, 1.0));
+        return;
+    }
+
+    float a = pc.perceptualRoughness * pc.perceptualRoughness;
+    vec3 T, B;
+    orthonormalBasis(N, T, B);
+    float texelSolidAngle = 4.0 * PI / (6.0 * pc.sourceSize * pc.sourceSize);
+
+    vec3 sum = vec3(0.0);
+    float weight = 0.0;
+    for (uint i = 0u; i < pc.sampleCount; ++i) {
+        vec3 h = importanceSampleGGX(hammersley(i, pc.sampleCount), a);
+        vec3 H = T * h.x + B * h.y + N * h.z;
+        vec3 L = 2.0 * dot(N, H) * H - N;
+        float NoL = dot(N, L);
+        if (NoL <= 0.0) continue;
+        // With N = V: pdf(L) = D(NoH) / 4.
+        float pdf = D_GGX(h.z, a) * 0.25;
+        float sampleSolidAngle = 1.0 / (float(pc.sampleCount) * pdf + 1e-6);
+        float lod = clamp(0.5 * log2(sampleSolidAngle / texelSolidAngle) + 1.0, 0.0, pc.sourceMaxMip);
+        sum += textureLod(envSource, L, lod).rgb * NoL;
+        weight += NoL;
+    }
+    imageStore(prefilteredOut, ivec3(id), vec4(sum / max(weight, 1e-4), 1.0));
+}

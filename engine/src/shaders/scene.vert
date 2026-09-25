@@ -33,26 +33,14 @@ layout(location = 6) out vec4 outWorldTangent;
 // per-fragment gradient across a triangle, not one flat value per
 // primitive the way outBaseColor/outMetallicRoughness/outEmissive are.
 layout(location = 7) out vec4 outVertexColor;
+layout(location = 9) out vec4 outClipPos;
+layout(location = 10) out vec4 outPrevClipPos;
 
 // Per-frame data -- one instance per frame-in-flight, bound once per
 // drawSceneInto() call (see Renderer.cpp). Not rebound per-object; only
 // its *contents* change frame to frame.
-layout(set = 0, binding = 0) uniform SceneUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 lightViewProj[3];    // world -> light clip space, one per cascade -- consumed in scene.frag for shadow sampling
-    mat4 invViewProj;         // world-space ray reconstruction -- only shaders/sky.frag reads this
-    vec4 cascadeSplitsView;   // x/y/z: view-space far distance of cascades 0/1/2
-    vec4 cascadeBiasScale;    // x/y/z: per-cascade shadow-bias scale
-    vec4 lightDirectionWS;    // xyz: direction the light travels (surface-facing = -lightDirectionWS)
-    vec4 lightColorIntensity; // rgb: color, a: intensity
-    vec4 viewPositionWS;
-    vec4 ambientColor;
-    vec4 ambientGroundColor;
-    vec4 fogColorDensity;     // rgb: fog color, a: density (0 = no fog) -- consumed in scene.frag
-    vec4 skyZenithColor;      // only shaders/sky.frag reads this
-    vec4 skyHorizonColor;     // only shaders/sky.frag reads this
-} scene;
+#include "kronos/scene_ubo.glsl"
+#include "kronos/object_records.glsl"
 
 // Per-object data -- matches core::ObjectPushConstants exactly (see
 // SceneTypes.hpp). Cheap enough to push per draw call at this entity
@@ -89,4 +77,6 @@ void main() {
     outTextureIndices = object.textureIndices;
     outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
+    outClipPos = scene.viewProjNoJitter * worldPos;
+    outPrevClipPos = scene.prevViewProjNoJitter * previousWorldPosition(objectRecordIndex(object.textureIndices), vec4(inPosition, 1.0), worldPos);
 }

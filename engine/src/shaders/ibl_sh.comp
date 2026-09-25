@@ -1,0 +1,72 @@
+#version 450
+
+// Projects the environment onto 9 SH coefficients and applies the cosine
+// lobe convolution (Ramamoorthi & Hanrahan 2001), so evaluating the stored
+// coefficients with the bare polynomials in kronos/ibl.glsl yields E / PI.
+
+#include "kronos/common.glsl"
+#include "kronos/cubemap.glsl"
+
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0) uniform samplerCube envSource;
+layout(std430, set = 0, binding = 1) writeonly buffer EnvironmentSH {
+    vec4 shIrradiance[9];
+} shOut;
+
+layout(push_constant) uniform ShPush {
+    uint faceSize;
+    float lod;
+} pc;
+
+shared vec3 partial[256][9];
+shared float partialWeight[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    vec3 c[9];
+    for (int k = 0; k < 9; ++k) c[k] = vec3(0.0);
+    float totalWeight = 0.0;
+
+    uint texelCount = pc.faceSize * pc.faceSize * 6u;
+    for (uint i = tid; i < texelCount; i += 256u) {
+        uint face = i / (pc.faceSize * pc.faceSize);
+        uint local = i % (pc.faceSize * pc.faceSize);
+        uvec2 texel = uvec2(local % pc.faceSize, local / pc.faceSize);
+        vec3 n = cubeTexelDirection(face, texel, pc.faceSize);
+        float w = cubeTexelSolidAngle(texel, pc.faceSize);
+        vec3 L = textureLod(envSource, n, pc.lod).rgb * w;
+        c[0] += L;
+        c[1] += L * n.y;
+        c[2] += L * n.z;
+        c[3] += L * n.x;
+        c[4] += L * (n.x * n.y);
+        c[5] += L * (n.y * n.z);
+        c[6] += L * (3.0 * n.z * n.z - 1.0);
+        c[7] += L * (n.x * n.z);
+        c[8] += L * (n.x * n.x - n.y * n.y);
+        totalWeight += w;
+    }
+    for (int k = 0; k < 9; ++k) partial[tid][k] = c[k];
+    partialWeight[tid] = totalWeight;
+    barrier();
+
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            for (int k = 0; k < 9; ++k) partial[tid][k] += partial[tid + stride][k];
+            partialWeight[tid] += partialWeight[tid + stride];
+        }
+        barrier();
+    }
+
+    if (tid == 0u) {
+        // Per coefficient: K^2 (basis constant, once for projection and once
+        // for evaluation) * A_l / PI (cosine convolution, normalised to E/PI).
+        const float kBasisSq[9] = float[9](0.079577, 0.238732, 0.238732, 0.238732, 1.193662, 1.193662, 0.099472,
+                                           1.193662, 0.298416);
+        const float kBand[9] = float[9](1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 0.25, 0.25, 0.25, 0.25, 0.25);
+        float solidAngleScale = 4.0 * PI / max(partialWeight[0], 1e-6);
+        for (int k = 0; k < 9; ++k) {
+            shOut.shIrradiance[k] = vec4(partial[0][k] * solidAngleScale * kBasisSq[k] * kBand[k], 0.0);
+        }
+    }
+}

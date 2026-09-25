@@ -12,16 +12,17 @@ namespace engine::core {
 // SceneUBO's array size, Renderer's cascade math, and every shader that
 // reads lightViewProj[]/cascadeSplitsView, so it's declared exactly once
 // here rather than as a magic "3" repeated in four places.
-inline constexpr uint32_t kShadowCascadeCount = 3;
+inline constexpr uint32_t kShadowCascadeCount = 4;
 
-// Sprint 16 ("Cinematic Graphics") -- small fixed array of additional
-// point lights (key/rim/fill, per-scene lighting presets) layered on top
-// of the single directional sun light that already existed. Fixed-size
-// (not a real dynamic/bindless array) so SceneUBO stays a plain, fully
-// CPU-mirrorable std140 struct like every other field in it -- 4 is
-// comfortably enough for "key + rim + fill + one extra" per scene, the
-// brief's own vocabulary (Phase 3: "key lights, rim lights, fill lights
-// per scene").
+// Clustered forward+ limits. Must match cluster_build.comp / lights.glsl.
+inline constexpr uint32_t kMaxGpuLights = 1024;
+inline constexpr uint32_t kMaxLightsPerCluster = 128;
+inline constexpr uint32_t kClusterTilesX = 16;
+inline constexpr uint32_t kClusterTilesY = 9;
+inline constexpr uint32_t kClusterSlices = 24;
+inline constexpr uint32_t kMaxObjectRecords = 8192;
+
+// Retained for API compatibility; point lights are no longer capped by the UBO.
 inline constexpr uint32_t kMaxPointLights = 4;
 
 // Must exactly match the `push_constant` block in shaders/scene.vert and
@@ -254,116 +255,55 @@ struct SSRPushConstants {
     float stepCount = 32.0f;
 };
 
-// Must exactly match the `SceneUBO` uniform block in shaders/scene.vert,
-// shaders/scene.frag, and shaders/shadow.vert (std140 layout -- again,
-// every member here is already 16-byte-aligned by construction, including
-// the mat4 array: std140's array stride for mat4 is 64 bytes with no
-// interior padding, identical to a plain C array of glm::mat4).
+// Mirrors shaders/kronos/scene_ubo.glsl byte-for-byte (std140; every
+// member is 16-byte sized so the C++ layout is identical).
 struct SceneUBO {
     glm::mat4 view;
-    glm::mat4 proj;
-    glm::mat4 lightViewProj[kShadowCascadeCount]; // world -> light clip space, one per cascade (see Renderer::computeCascades)
-    // World-space ray reconstruction for shaders/sky.frag -- see that
-    // file's own comment for why a full-screen pass needs this instead
-    // of the per-vertex model/view/proj chain every other shader uses.
-    // Computed once per frame on the CPU side (Renderer::drawSceneIntoImpl())
-    // from the same view/proj above, not per-fragment (a 4x4 inverse per
-    // pixel would be real but wasteful when one CPU-side inverse per
-    // frame is exactly equivalent).
+    glm::mat4 proj; // jittered when TAA is on
     glm::mat4 invViewProj;
-    glm::vec4 cascadeSplitsView; // x/y/z: view-space far distance of cascades 0/1/2; w: unused (std140 padding)
-    glm::vec4 cascadeBiasScale;  // x/y/z: per-cascade shadow-bias scale (see Renderer::kReferenceShadowDepthRange); w: unused
-    glm::vec4 lightDirectionWS;    // xyz: direction the light travels
-    glm::vec4 lightColorIntensity; // rgb: color, a: intensity
+    glm::mat4 viewProjNoJitter;
+    glm::mat4 prevViewProjNoJitter;
+    glm::mat4 lightViewProj[kShadowCascadeCount];
+    glm::vec4 cascadeSplitsView;
+    glm::vec4 cascadeTexelWorld;
+    glm::vec4 cascadeDepthRange;
+    glm::vec4 shadowParams; // x receiver-plane bias scale, y tan(sun angular radius), z map resolution, w filter 0 hard / 1 PCF / 2 PCSS
+    glm::vec4 lightDirectionWS;
+    glm::vec4 lightColorIntensity;
     glm::vec4 viewPositionWS;
-    glm::vec4 ambientColor;       // "sky" hemisphere tone -- see scene.frag's hemisphere ambient blend
-    glm::vec4 ambientGroundColor; // "ground" hemisphere tone
-    // Sprint 6 ("World Systems & Environment") -- real fog + a real basic
-    // procedural skybox, both driven by the same core::SceneLighting a
-    // caller already fills in via Renderer::setLighting() (see that
-    // struct's own comment on the new fields below).
-    glm::vec4 fogColorDensity;  // rgb: fog color, a: density (0 = no fog)
-    glm::vec4 skyZenithColor;   // rgb: straight-up sky color; a: unused
-    glm::vec4 skyHorizonColor;  // rgb: horizon sky color; a: unused
-    // Sprint 14 ("RTX Upgrade" Phase 2 / "Performance Mode") -- two real,
-    // independent per-frame toggles packed into one vec4 (std140 already
-    // pads a lone scalar out to 16 bytes regardless, so a second real
-    // scalar rides along for free instead of needing its own field):
-    //   x: 1.0 if scene_rt.frag should real-trace a ray-query shadow this
-    //      frame (both the user's own real toggle AND a real, currently-
-    //      valid non-empty TLAS -- see Renderer::drawSceneIntoImpl()'s
-    //      own comment on why it's never just the raw toggle), 0.0
-    //      otherwise (real, honest CSM-only fallback, identical to
-    //      scene.frag's own unmodified behavior).
-    //   y: 1.0 if Performance Mode is on -- real-switches the CSM path
-    //      (both scene.frag and scene_rt.frag's fallback) from a 3x3 (9-tap)
-    //      PCF loop to a single real center tap, a real, direct per-
-    //      fragment shadow-sampling cost cut. See Renderer::setPerformanceMode().
-    //   z: real weather wetness (0..1, Renderer::setWeather()), reduces
-    //      roughness on upward-facing geometry (see scene.frag).
-    //   w: Kronos ("Four RTX Maps" Phase 5c) real underwater caustic-light
-    //      strength (Renderer::setUnderwaterCausticsEnabled()) -- was
-    //      documented std140 padding before this.
-    glm::vec4 renderFlags{0.0f};
+    glm::vec4 ambientColor;
+    glm::vec4 ambientGroundColor;
+    glm::vec4 fogColorDensity;
+    glm::vec4 skyZenithColor;
+    glm::vec4 skyHorizonColor;
+    glm::vec4 renderFlags{0.0f};      // x RT shadows, y performance mode, z wetness, w caustics
+    glm::vec4 reflectionParams{0.0f}; // x RT reflections, y rough cutoff, z metallic cutoff
+    glm::vec4 atmosphereParams{0.0f}; // x enabled, y sun radiance, z mie strength, w suppress sun disk
+    glm::vec4 cloudParams{0.0f};      // x enabled, y coverage, z wind speed, w time
+    glm::vec4 giParams{0.0f};         // x RT GI, y intensity
+    glm::vec4 iblParams{0.0f};        // x specular intensity, y reflection normalization, z prefiltered max mip, w valid
+    glm::vec4 taaJitter{0.0f};        // xy current jitter (NDC), zw previous
+    glm::vec4 screenSize{0.0f};       // xy pixels, zw reciprocal
+    glm::vec4 clusterParams{0.0f};    // x slice scale, y slice bias, z tile size (px), w light count
+    glm::uvec4 clusterDims{0u};       // xyz grid dims, w max lights per cluster
+    glm::vec4 frameParams{0.0f};      // x frame index, y 1 when TAA resolves this view
+};
+static_assert(sizeof(SceneUBO) == 64 * 9 + 16 * 23, "SceneUBO must match kronos/scene_ubo.glsl");
 
-    // Sprint 16 point lights -- see kMaxPointLights's comment above.
-    // positionRadius: xyz world position, w falloff radius (real
-    // inverse-square attenuation, clamped to exactly 0 at/beyond this
-    // distance -- see scene.frag's computePointLights()).
-    // colorIntensity: rgb color, a intensity. Slots at/beyond
-    // pointLightCount.x are zero-intensity (a real no-op multiply, not
-    // uninitialized garbage) -- see Renderer::drawSceneIntoImpl().
-    glm::vec4 pointLightPositionRadius[kMaxPointLights]{};
-    glm::vec4 pointLightColorIntensity[kMaxPointLights]{};
-    glm::vec4 pointLightCount{0.0f}; // x: real count as a float (0..kMaxPointLights); yzw: unused padding
+// Mirrors GpuLight in shaders/kronos/scene_resources.glsl (std430).
+struct GpuLight {
+    glm::vec4 positionRange;
+    glm::vec4 colorIntensity;
+    glm::vec4 directionType; // xyz direction the light travels, w 0 point / 1 spot
+    glm::vec4 spotParams;    // x cos(outer), y 1/(cos(inner) - cos(outer)), z softening radius^2
+};
 
-    // Kronos ("Rendering Fidelity Foundation" Phase 1.3) -- real hybrid RT
-    // reflections, see Renderer::setRTReflectionsEnabled()'s own comment.
-    // x: 1.0 real-enables scene_rt.frag's traceReflection() this frame
-    // (both the user's own toggle AND a real, currently-valid TLAS -- same
-    // "never just the raw toggle" reasoning renderFlags.x already
-    // documents), 0.0 otherwise. y/z: the real roughness/metallic trace-
-    // cost cutoffs (setReflectionRoughnessCutoff()). w: unused padding.
-    glm::vec4 reflectionParams{0.0f};
-
-    // Kronos ("Rendering Fidelity" -- full atmospheric-scattering skybox):
-    // real single-scattering Rayleigh+Mie atmosphere, see
-    // Renderer::setAtmosphereScatteringEnabled()'s own comment and
-    // shaders/sky.frag's own computeAtmosphere(). x: 1.0 real-enables it
-    // this frame, 0.0 otherwise (the real, honest default -- every
-    // existing scene/map/trailer beat that never calls
-    // setAtmosphereScatteringEnabled(true) renders its own existing
-    // skyZenithColor/skyHorizonColor two-tone gradient exactly as before,
-    // untouched). y: real sun radiance multiplier (higher = brighter,
-    // more saturated midday blue / sunset orange). z: real Mie-strength
-    // multiplier (higher = hazier, more sun-aureole glow, like real
-    // atmospheric turbidity). w: unused padding.
-    glm::vec4 atmosphereParams{0.0f};
-
-    // Kronos ("Rendering Fidelity" -- volumetric cloud layer): real 3D
-    // value-noise fbm clouds, raymarched through a flat altitude shell
-    // entirely inside shaders/sky.frag's own existing background pass
-    // (see Renderer::setCloudsEnabled()'s own comment). x: 1.0
-    // real-enables it this frame, 0.0 otherwise (the real, honest
-    // default). y: real cloud coverage, 0..1 (higher = more overcast).
-    // z: real wind scroll speed. w: real total elapsed seconds (drives
-    // the wind scroll -- same clock Renderer::drawCinematicPass()'s own
-    // CinematicPushConstants::time already uses, just delivered through
-    // this UBO instead of a push constant since sky.frag's pipeline has
-    // none).
-    glm::vec4 cloudParams{0.0f};
-
-    // Kronos ("Rendering Fidelity" -- ray-traced bounce lighting/GI): real
-    // single-bounce indirect diffuse -- see Renderer::setRTGIEnabled()'s
-    // own comment and shaders/scene_rt.frag's own traceIndirectDiffuse().
-    // x: 1.0 real-enables it this frame (both the user's own toggle AND a
-    // real, currently-valid TLAS -- same "never just the raw toggle"
-    // reasoning renderFlags.x/reflectionParams.x already document), 0.0
-    // otherwise (the real, honest default -- RT-only, same as reflections;
-    // non-RT devices, running scene.frag, never had this term at all).
-    // y: real intensity multiplier on the indirect contribution. z/w:
-    // unused padding.
-    glm::vec4 giParams{0.0f};
+// Mirrors ObjectRecord in shaders/kronos/object_records.glsl (std430).
+struct GpuObjectRecord {
+    glm::mat4 prevModel{1.0f};
+    glm::vec4 clearcoat{0.0f, 0.1f, 0.0f, 0.0f}; // x strength, y perceptual roughness, z anisotropy, w anisotropy rotation
+    glm::vec4 sheen{0.0f, 0.0f, 0.0f, 0.5f};     // rgb color, a perceptual roughness
+    glm::vec4 misc{0.5f, 0.0f, 0.0f, 0.0f};      // x specular reflectance, y prevModel valid
 };
 
 // Plain data a caller of Renderer::setLighting() fills in -- kept
@@ -405,12 +345,8 @@ struct SceneLighting {
     glm::vec3 skyZenithColor{0.25f, 0.45f, 0.85f};
     glm::vec3 skyHorizonColor{0.75f, 0.80f, 0.85f};
 
-    // Sprint 16 ("Cinematic Graphics") point lights -- key/rim/fill per
-    // scene, see kMaxPointLights's comment. A plain std::vector here (not
-    // a fixed array) so callers can push_back() naturally; entries beyond
-    // kMaxPointLights are silently dropped (a real, logged-nowhere but
-    // harmless cap, not a crash) by Renderer::drawSceneIntoImpl() when it
-    // copies this into SceneUBO's fixed-size arrays.
+    // Scene-level point lights (key/rim/fill presets). Uploaded to the
+    // clustered light buffer together with ECS Light components.
     struct PointLight {
         glm::vec3 position{0.0f};
         float radius = 10.0f;

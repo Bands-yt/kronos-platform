@@ -44,6 +44,23 @@ struct Transform {
 // yet (no textures, no material library) for that indirection to be worth
 // its complexity. materialHandle is kept as a placeholder for exactly that
 // future indirection (texture-backed materials), unused today.
+// Optional physically-based layers on top of the base metal/rough lobe.
+// Defaults are exact no-ops (no clearcoat, no sheen, isotropic, 4% F0),
+// so records only need uploading when isDefault() is false.
+struct MaterialLayers {
+    float clearcoat = 0.0f;
+    float clearcoatRoughness = 0.1f;
+    float anisotropy = 0.0f;         // [-1, 1]; positive stretches highlights along the tangent
+    float anisotropyRotation = 0.0f; // radians, rotates the tangent frame
+    glm::vec3 sheenColor{0.0f};
+    float sheenRoughness = 0.5f;
+    float specular = 0.5f; // dielectric reflectance remap: F0 = 0.16 * specular^2 (0.5 -> 4%)
+
+    [[nodiscard]] bool isDefault() const {
+        return clearcoat == 0.0f && anisotropy == 0.0f && sheenColor == glm::vec3(0.0f) && specular == 0.5f;
+    }
+};
+
 struct Renderable {
     uint32_t meshHandle = kInvalidHandle;
     uint32_t materialHandle = kInvalidHandle;
@@ -71,6 +88,8 @@ struct Renderable {
     // (see Renderer.cpp) rather than growing either struct -- see
     // SceneTypes.hpp's "z/w: unused" comment on that field.
     float normalIntensity = 1.0f;
+
+    MaterialLayers layers;
 
     // Kronos ("Sky Map Full Biome Rebuild" Phase 3): real, per-object
     // opt-in for triplanar world-space texture projection (see
@@ -433,21 +452,19 @@ struct Hierarchy {
     std::vector<entt::entity> children;
 };
 
-// Kronos (Alpha Roadmap Phase 3, "Component system"): a real, entity-
-// driven point light -- see Renderer.cpp's own point-light UBO-fill
-// comment for where these get combined with (and capped alongside)
-// SceneLighting::pointLights' own manually-authored entries against the
-// same kMaxPointLights budget (SceneTypes.hpp). Position is read from the
-// entity's own Transform (via core::hierarchy::computeWorldMatrix(), so a
-// Light parented under a moving rig tracks its real world position, not
-// just its local offset) -- deliberately not duplicated onto this
-// component, same "position lives on Transform" convention every other
-// component here already follows.
+// Entity-driven punctual light, shaded through the clustered light list
+// (no per-scene cap). Position and, for spots, direction (-Z) come from
+// the entity's world transform.
+enum class LightType : uint8_t { Point = 0, Spot = 1 };
+
 struct Light {
     bool enabled = true;
     glm::vec3 color{1.0f};
     float intensity = 1.0f;
-    float radius = 10.0f;
+    float radius = 10.0f; // influence range; attenuation reaches exactly zero here
+    LightType type = LightType::Point;
+    float innerConeDegrees = 25.0f;
+    float outerConeDegrees = 35.0f;
 };
 
 // Kronos (Alpha Roadmap Phase 3, "Component system"): a real, entity-
