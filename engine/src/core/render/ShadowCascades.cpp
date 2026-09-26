@@ -68,9 +68,11 @@ CascadeFits fitCascades(const glm::mat4& cameraView, glm::vec3 lightDirWS, const
         float depth = -centerLS.z;
         float orthoNear = depth - radius - settings.casterPadding;
         float orthoFar = depth + radius;
-        glm::mat4 lightProj = glm::ortho(centerLS.x - radius, centerLS.x + radius, centerLS.y - radius,
-                                         centerLS.y + radius, orthoNear, orthoFar);
-        lightProj[1][1] *= -1.0f;
+        // Bottom and top are swapped for Vulkan's downward Y. Negating [1][1]
+        // alone flips the scale but not the offset, which pushes the cascade
+        // off its fitted sphere away from the world origin.
+        glm::mat4 lightProj = glm::ortho(centerLS.x - radius, centerLS.x + radius, centerLS.y + radius,
+                                         centerLS.y - radius, orthoNear, orthoFar);
 
         CascadeFit& fit = fits[i];
         fit.viewProj = lightProj * lightView;
