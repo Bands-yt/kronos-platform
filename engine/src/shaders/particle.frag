@@ -12,8 +12,12 @@ layout(set = 1, binding = 0) uniform sampler2D sceneDepth;
 
 layout(location = 0) in vec2 inUV;
 layout(location = 1) in vec4 inColor;
+layout(location = 2) in vec4 inClipPos;
+layout(location = 3) in vec4 inPrevClipPos;
 
 layout(location = 0) out vec4 outColor;
+// Blended over the opaque velocity by coverage (see createParticlePipeline()).
+layout(location = 1) out vec4 outVelocity;
 
 void main() {
     // Soft circular falloff from the quad's center -- turns the flat quad
@@ -63,4 +67,7 @@ void main() {
     // dependency the way regular alpha blending would need, which is
     // exactly why additive was chosen for a first particle pass.
     outColor = vec4(inColor.rgb, inColor.a * falloff);
+
+    vec2 velocity = (inClipPos.xy / inClipPos.w - inPrevClipPos.xy / inPrevClipPos.w) * 0.5;
+    outVelocity = vec4(velocity, 0.0, clamp(inColor.a * falloff, 0.0, 1.0));
 }

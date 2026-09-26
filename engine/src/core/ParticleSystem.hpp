@@ -60,6 +60,10 @@ struct Particle {
     [[nodiscard]] float normalizedAge() const { return lifetime > 0.0f ? age / lifetime : 1.0f; }
     [[nodiscard]] float currentSize() const;
     [[nodiscard]] glm::vec4 currentColor() const;
+
+    // Ballistic extrapolation back in time, clamped to the particle's age.
+    [[nodiscard]] glm::vec3 positionBefore(float seconds) const;
+    [[nodiscard]] float sizeBefore(float seconds) const;
 };
 
 // CPU-driven particle simulation -- spawns from every ParticleEmitter
@@ -80,6 +84,8 @@ public:
 
     [[nodiscard]] const std::vector<Particle>& liveParticles() const { return particles_; }
     [[nodiscard]] size_t liveCount() const { return particles_.size(); }
+    // Total simulated seconds; renderers diff it between frames to derive particle motion.
+    [[nodiscard]] double simulationTime() const { return simulationTime_; }
 
     // Generous headroom, not a tuned content budget -- see
     // Renderer::kMaxInstancesPerFrame's declaration comment for the same
@@ -90,6 +96,7 @@ private:
     void spawnParticle(const ParticleEmitterSettings& settings, glm::vec3 origin);
 
     std::vector<Particle> particles_;
+    double simulationTime_ = 0.0;
     std::mt19937 rng_{2024}; // fixed seed -- reproducible particle behavior run to run, not true randomness
 };
 

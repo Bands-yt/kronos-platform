@@ -16,9 +16,12 @@ layout(location = 2) in vec2 inUV;
 
 layout(location = 4) in vec4 inInstancePositionSize; // xyz: world position, w: current size
 layout(location = 5) in vec4 inInstanceColor;
+layout(location = 6) in vec4 inInstancePrevPositionSize;
 
 layout(location = 0) out vec2 outUV;
 layout(location = 1) out vec4 outColor;
+layout(location = 2) out vec4 outClipPos;
+layout(location = 3) out vec4 outPrevClipPos;
 
 #include "kronos/scene_ubo.glsl"
 
@@ -30,11 +33,15 @@ void main() {
     vec3 right = vec3(scene.view[0][0], scene.view[1][0], scene.view[2][0]);
     vec3 up    = vec3(scene.view[0][1], scene.view[1][1], scene.view[2][1]);
 
-    vec3 worldPos = inInstancePositionSize.xyz
-        + right * inPosition.x * inInstancePositionSize.w
-        + up    * inPosition.y * inInstancePositionSize.w;
+    vec3 corner = right * inPosition.x + up * inPosition.y;
+    vec3 worldPos = inInstancePositionSize.xyz + corner * inInstancePositionSize.w;
+    // The previous corner reuses this frame's billboard axes; the error under
+    // camera rotation scales with particle size and stays sub-pixel for sparks.
+    vec3 prevWorldPos = inInstancePrevPositionSize.xyz + corner * inInstancePrevPositionSize.w;
 
     outUV = inUV;
     outColor = inInstanceColor;
+    outClipPos = scene.viewProjNoJitter * vec4(worldPos, 1.0);
+    outPrevClipPos = scene.prevViewProjNoJitter * vec4(prevWorldPos, 1.0);
     gl_Position = scene.proj * scene.view * vec4(worldPos, 1.0);
 }

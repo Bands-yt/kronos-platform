@@ -18,6 +18,7 @@
 #include "core/Components.hpp"
 #include "core/ECS.hpp"
 #include "core/Mesh.hpp"
+#include "core/ParticleSystem.hpp"
 #include "core/Renderer.hpp"
 #include "core/RiggedAvatar.hpp"
 #include "core/CatalogueIndex.hpp"
@@ -217,7 +218,26 @@ int main(int argc, char** argv) {
     };
     poseAvatar(0.0f, false);
 
+    // Spark fountain for the motion view: fast ballistic particles over a
+    // mostly static background.
+    core::ParticleSystem particles;
+    {
+        core::EntityId e = ecs.createEntity();
+        ecs.tryGetComponent<core::Transform>(e)->position = {-1.6f, 0.3f, 2.6f};
+        core::ParticleEmitter emitter;
+        emitter.settings.emissionRate = 120.0f;
+        emitter.settings.particleLifetime = 1.2f;
+        emitter.settings.velocityMin = {-1.5f, 3.5f, -0.4f};
+        emitter.settings.velocityMax = {1.5f, 5.5f, 0.4f};
+        emitter.settings.gravity = {0.0f, -7.0f, 0.0f};
+        emitter.settings.sizeStart = 0.07f;
+        emitter.settings.sizeEnd = 0.03f;
+        emitter.settings.colorStart = {6.0f, 3.0f, 0.8f, 1.0f};
+        emitter.settings.colorEnd = {3.0f, 0.6f, 0.1f, 0.6f};
+        ecs.addComponent<core::ParticleEmitter>(e, emitter);
+    }
     constexpr float kMotionStep = 1.0f / 30.0f;
+    for (int i = 0; i < 60; ++i) particles.update(kMotionStep, ecs);
 
     trailer::CaptureRig rig;
     if (!rig.initialize(renderer, VkExtent2D{1280, 720})) return 1;
@@ -254,11 +274,13 @@ int main(int argc, char** argv) {
             if (view.motion) {
                 const float time = static_cast<float>(f) * kMotionStep;
                 poseAvatar(time, true);
+                particles.update(kMotionStep, ecs);
                 ecs.tryGetComponent<core::Transform>(torusEntity)->position =
                     torusHome + glm::vec3(0.4f * static_cast<float>(f), 0.0f, 0.0f);
             }
             renderer.setMotionVectorDebugView(velocityFrame);
-            if (!rig.captureFrame(renderer, ecs, meshes, textures, camera, dir, 0, true, &riggedMeshes)) {
+            if (!rig.captureFrame(renderer, ecs, meshes, textures, camera, dir, 0, true, &riggedMeshes,
+                                  view.motion ? &particles : nullptr)) {
                 std::fprintf(stderr, "lookdev: capture failed for %s\n", view.name);
                 return 1;
             }

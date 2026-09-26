@@ -2681,9 +2681,22 @@ bool Renderer::createParticlePipeline() {
     colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
+    // Velocity is an over-blend weighted by coverage, so faint particles
+    // mostly keep the motion of the surface behind them.
+    VkPipelineColorBlendAttachmentState velocityBlendAttachment{};
+    velocityBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+    velocityBlendAttachment.blendEnable = VK_TRUE;
+    velocityBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    velocityBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    velocityBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    velocityBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    velocityBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    velocityBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    std::array<VkPipelineColorBlendAttachmentState, 2> blendAttachments{colorBlendAttachment, velocityBlendAttachment};
     VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.attachmentCount = static_cast<uint32_t>(blendAttachments.size());
+    colorBlending.pAttachments = blendAttachments.data();
 
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -2691,9 +2704,10 @@ bool Renderer::createParticlePipeline() {
     dynamicState.pDynamicStates = dynamicStates;
 
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    renderingInfo.colorAttachmentCount = 1;
-    VkFormat hdrFormat = kHDRFormat; // renders into the internal HDR intermediate, not the final presentable image
-    renderingInfo.pColorAttachmentFormats = &hdrFormat;
+    // Renders into the internal HDR intermediate and the scene velocity buffer.
+    const std::array<VkFormat, 2> colorFormats{kHDRFormat, kVelocityFormat};
+    renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
+    renderingInfo.pColorAttachmentFormats = colorFormats.data();
     renderingInfo.depthAttachmentFormat = depthFormat_;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -5357,16 +5371,21 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // This also moves particles after skinned meshes, which is a
     // correctness improvement in its own right: blended effects belong
     // last, so solid geometry occludes them properly.
+    // LOAD, not CLEAR: this pass composites onto what was just drawn.
+    std::array<VkRenderingAttachmentInfo, 2> particleColorAttachments = sceneColorAttachments;
+    for (VkRenderingAttachmentInfo& attachment : particleColorAttachments) attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    for (VkImage image : {frame.hdrImage, frame.velocity.image}) {
+        render::imageBarrier(cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    }
     if (depthImage != VK_NULL_HANDLE) {
         transitionImage(cmd, depthImage, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                          VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                          VK_IMAGE_ASPECT_DEPTH_BIT, 1);
-
-        VkRenderingAttachmentInfo particleColor = colorAttachment;
-        // LOAD, not CLEAR: this pass composites onto what was just drawn.
-        particleColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 
         VkRenderingAttachmentInfo particleDepth = depthAttachment;
         particleDepth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
@@ -5376,8 +5395,8 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         VkRenderingInfo particlePass{VK_STRUCTURE_TYPE_RENDERING_INFO};
         particlePass.renderArea = {{0, 0}, extent};
         particlePass.layerCount = 1;
-        particlePass.colorAttachmentCount = 1;
-        particlePass.pColorAttachments = &particleColor;
+        particlePass.colorAttachmentCount = static_cast<uint32_t>(particleColorAttachments.size());
+        particlePass.pColorAttachments = particleColorAttachments.data();
         particlePass.pDepthAttachment = &particleDepth;
 
         vkCmdBeginRendering(cmd, &particlePass);
@@ -5396,7 +5415,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         // No depth image handle available (an auxiliary scene path):
         // keep the previous behaviour rather than skipping particles.
         VkRenderingInfo particleOnly = renderingInfo;
-        particleOnly.colorAttachmentCount = 1; // the particle pipeline has no velocity output
+        particleOnly.pColorAttachments = particleColorAttachments.data();
         vkCmdBeginRendering(cmd, &particleOnly);
         drawParticles(cmd, frame, particleSystem);
         vkCmdEndRendering(cmd);
@@ -5631,6 +5650,13 @@ void Renderer::drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& 
 }
 
 void Renderer::drawParticles(VkCommandBuffer cmd, FrameSync& frame, const ParticleSystem& particleSystem) {
+    render::ViewHistory& history = *frame.viewHistory;
+    const double simulationTime = particleSystem.simulationTime();
+    const float elapsed =
+        history.hasParticleTime ? static_cast<float>(std::max(0.0, simulationTime - history.previousParticleTime)) : 0.0f;
+    history.previousParticleTime = simulationTime;
+    history.hasParticleTime = true;
+
     const std::vector<Particle>& particles = particleSystem.liveParticles();
     if (particles.empty()) return;
 
@@ -5652,6 +5678,7 @@ void Renderer::drawParticles(VkCommandBuffer cmd, FrameSync& frame, const Partic
         const Particle& p = particles[i];
         instanceCursor[i].positionSize = glm::vec4(p.position, p.currentSize());
         instanceCursor[i].color = p.currentColor();
+        instanceCursor[i].previousPositionSize = glm::vec4(p.positionBefore(elapsed), p.sizeBefore(elapsed));
     }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline_);

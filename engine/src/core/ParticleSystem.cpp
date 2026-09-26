@@ -10,6 +10,17 @@ float Particle::currentSize() const {
     return sizeStart + (sizeEnd - sizeStart) * std::clamp(normalizedAge(), 0.0f, 1.0f);
 }
 
+glm::vec3 Particle::positionBefore(float seconds) const {
+    const float t = std::clamp(seconds, 0.0f, age);
+    return position - velocity * t + 0.5f * gravity * t * t;
+}
+
+float Particle::sizeBefore(float seconds) const {
+    const float previousAge = age - std::clamp(seconds, 0.0f, age);
+    const float t = lifetime > 0.0f ? std::clamp(previousAge / lifetime, 0.0f, 1.0f) : 1.0f;
+    return sizeStart + (sizeEnd - sizeStart) * t;
+}
+
 glm::vec4 Particle::currentColor() const {
     return glm::mix(colorStart, colorEnd, std::clamp(normalizedAge(), 0.0f, 1.0f));
 }
@@ -35,6 +46,7 @@ void ParticleSystem::spawnParticle(const ParticleEmitterSettings& settings, glm:
 }
 
 void ParticleSystem::update(float dt, ECS& ecs) {
+    simulationTime_ += dt;
     // Age and integrate existing particles first, pruning expired ones,
     // before spawning new ones -- so a particle spawned this tick always
     // gets a full tick's simulation next update(), not this one.

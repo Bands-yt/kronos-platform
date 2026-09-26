@@ -120,6 +120,7 @@ struct InstanceData {
 struct ParticleInstanceData {
     glm::vec4 positionSize; // xyz: world position, w: current billboard half-size
     glm::vec4 color;
+    glm::vec4 previousPositionSize; // same, at the view's previous frame (motion vectors)
 
     static VkVertexInputBindingDescription bindingDescription();
     static std::vector<VkVertexInputAttributeDescription> attributeDescriptions();

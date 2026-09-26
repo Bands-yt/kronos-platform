@@ -40,6 +40,9 @@ struct ViewHistory {
     std::unordered_map<uint32_t, glm::mat4> currentModels;
     std::unordered_map<uint32_t, std::vector<glm::mat4>> previousBones;
     std::unordered_map<uint32_t, std::vector<glm::mat4>> currentBones;
+    // ParticleSystem::simulationTime() at the previous frame.
+    double previousParticleTime = 0.0;
+    bool hasParticleTime = false;
 
     // Call once per rendered frame after all draws have looked up the
     // previous-frame state.

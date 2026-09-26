@@ -180,7 +180,7 @@ bool CaptureRig::initialize(core::Renderer& renderer, VkExtent2D extent) {
 bool CaptureRig::captureFrame(core::Renderer& renderer, core::ECS& ecs, core::MeshLibrary& meshLibrary,
                                core::TextureLibrary& textureLibrary, const core::Camera& camera,
                                const std::string& outputDirectory, int frameIndex, bool fullSceneLook,
-                               core::RiggedMeshLibrary* riggedMeshLibrary) {
+                               core::RiggedMeshLibrary* riggedMeshLibrary, core::ParticleSystem* particles) {
     if (!isValid()) {
         std::fprintf(stderr, "CaptureRig::captureFrame: not initialized.\n");
         return false;
@@ -210,8 +210,8 @@ bool CaptureRig::captureFrame(core::Renderer& renderer, core::ECS& ecs, core::Me
     vkBeginCommandBuffer(cmd, &beginInfo);
 
     renderer.drawSceneInto(auxiliaryScene_, cmd, colorImage_, colorImageView_, depthImage_, depthImageView_, extent_,
-                            camera, ecs, meshLibrary, captureParticleSystem_, textureLibrary,
-                            riggedMeshLibrary, /*applyWeatherEffects=*/fullSceneLook,
+                            camera, ecs, meshLibrary, particles != nullptr ? *particles : captureParticleSystem_,
+                            textureLibrary, riggedMeshLibrary, /*applyWeatherEffects=*/fullSceneLook,
                             /*applyBloom=*/fullSceneLook, /*suppressSunDisk=*/!fullSceneLook,
                             /*useFlatBackground=*/!fullSceneLook);
     // drawSceneInto() leaves colorImage_ in COLOR_ATTACHMENT_OPTIMAL (see

@@ -48,11 +48,13 @@ public:
     // (core::Renderer::drawSceneInto()), then real-reads it back into
     // `outputDirectory/<frameFilename(frameIndex)>`. Returns false
     // (logged) on any real failure. Skinned entities are drawn only when
-    // `riggedMeshLibrary` is given.
+    // `riggedMeshLibrary` is given; `particles` replaces the rig's own
+    // (empty) particle system.
     [[nodiscard]] bool captureFrame(core::Renderer& renderer, core::ECS& ecs, core::MeshLibrary& meshLibrary,
                                      core::TextureLibrary& textureLibrary, const core::Camera& camera,
                                      const std::string& outputDirectory, int frameIndex, bool fullSceneLook = false,
-                                     core::RiggedMeshLibrary* riggedMeshLibrary = nullptr);
+                                     core::RiggedMeshLibrary* riggedMeshLibrary = nullptr,
+                                     core::ParticleSystem* particles = nullptr);
 
     // Real end-to-end Offline Export: walks `sequence`/`rail`'s real
     // schedule (cinematic::runExportSchedule(), built from `settings` via
