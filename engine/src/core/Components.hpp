@@ -465,6 +465,7 @@ struct Light {
     LightType type = LightType::Point;
     float innerConeDegrees = 25.0f;
     float outerConeDegrees = 35.0f;
+    bool castsShadow = false; // spot lights only; see render/SpotShadows.hpp for the per-view budget
 };
 
 // Kronos (Alpha Roadmap Phase 3, "Component system"): a real, entity-

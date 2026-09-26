@@ -803,10 +803,15 @@ bool Renderer::initShadowResourcesFor(FrameSync& frame) {
             return false;
         }
     }
+    if (!render::createSpotShadowMaps(gpuContext(), kShadowFormat, frame.spotShadowMaps)) {
+        std::fprintf(stderr, "Renderer: spot shadow map creation failed.\n");
+        return false;
+    }
     return true;
 }
 
 void Renderer::destroyShadowResourcesFor(FrameSync& frame) {
+    render::destroySpotShadowMaps(gpuContext(), frame.spotShadowMaps);
     for (auto& cascadeView : frame.shadowCascadeViews) {
         if (cascadeView != VK_NULL_HANDLE) {
             vkDestroyImageView(device_, cascadeView, nullptr);
@@ -873,7 +878,7 @@ void Renderer::destroyShadowResources() {
 bool Renderer::createShadowPipeline() {
     // Own pipeline layout, not scenePipelineLayout_ -- CSM's shadow pass
     // needs to tell shadow.vert which cascade it's rendering into
-    // (ShadowPushConstants::cascadeIndex, to index SceneUBO.lightViewProj[]),
+    // (ShadowPushConstants::viewIndex, to pick a SceneUBO shadow matrix),
     // a different push-constant shape than the main pass's
     // ObjectPushConstants. Same descriptor set layout either way (both
     // need the UBO). See SceneTypes.hpp's ShadowPushConstants comment.
@@ -1018,7 +1023,7 @@ render::CascadeFits Renderer::computeCascades(const Camera& camera, float aspect
 }
 
 void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
-                              const render::CascadeFits& cascades) {
+                              const render::CascadeFits& cascades, const render::SpotShadowSet& spotShadows) {
     transitionImage(cmd, frame.shadowImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                      VK_ACCESS_2_NONE, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
@@ -1027,12 +1032,6 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_, 0, 1,
                              &frame.sceneDescriptorSet, 0, nullptr);
-
-    VkViewport viewport{0.0f, 0.0f, static_cast<float>(kShadowMapResolution), static_cast<float>(kShadowMapResolution),
-                         0.0f, 1.0f};
-    VkRect2D scissor{{0, 0}, {kShadowMapResolution, kShadowMapResolution}};
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     struct Caster {
         glm::mat4 model;
@@ -1055,28 +1054,30 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
         casters.push_back({model, glm::vec3(model * glm::vec4(localCenter, 1.0f)), localRadius * maxScale, mesh});
     }
 
-    for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade) {
+    auto drawCasters = [&](VkImageView target, uint32_t extent, int32_t viewIndex, auto&& visible) {
         VkRenderingAttachmentInfo depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        depthAttachment.imageView = frame.shadowCascadeViews[cascade];
+        depthAttachment.imageView = target;
         depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         depthAttachment.clearValue.depthStencil = {1.0f, 0};
 
         VkRenderingInfo renderingInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        renderingInfo.renderArea = {{0, 0}, {kShadowMapResolution, kShadowMapResolution}};
+        renderingInfo.renderArea = {{0, 0}, {extent, extent}};
         renderingInfo.layerCount = 1;
         renderingInfo.pDepthAttachment = &depthAttachment;
 
+        VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent), static_cast<float>(extent), 0.0f, 1.0f};
+        VkRect2D scissor{{0, 0}, {extent, extent}};
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
         vkCmdBeginRendering(cmd, &renderingInfo);
         for (const Caster& caster : casters) {
-            if (!render::sphereIntersectsCascade(cascades[cascade], lighting_.directionWS, caster.center,
-                                                 caster.radius)) {
-                continue;
-            }
+            if (!visible(caster)) continue;
             ShadowPushConstants push{};
             push.model = caster.model;
-            push.cascadeIndex = static_cast<int32_t>(cascade);
+            push.viewIndex = viewIndex;
             vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
 
             VkDeviceSize offset = 0;
@@ -1087,12 +1088,38 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
             recordDraw(caster.mesh->indexCount(), 1);
         }
         vkCmdEndRendering(cmd);
+    };
+
+    for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade) {
+        drawCasters(frame.shadowCascadeViews[cascade], kShadowMapResolution, static_cast<int32_t>(cascade),
+                    [&](const Caster& caster) {
+                        return render::sphereIntersectsCascade(cascades[cascade], lighting_.directionWS,
+                                                               caster.center, caster.radius);
+                    });
     }
 
     transitionImage(cmd, frame.shadowImage, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                      VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, kCascadeCount);
+
+    // Unused layers are only transitioned: the forward pass never samples a slot that was not drawn.
+    VkImage spotImage = frame.spotShadowMaps.array.image;
+    transitionImage(cmd, spotImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                     VK_ACCESS_2_NONE, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                     VK_IMAGE_ASPECT_DEPTH_BIT, kMaxShadowedSpotLights);
+    for (uint32_t slot = 0; slot < spotShadows.count; ++slot) {
+        const glm::mat4& viewProj = spotShadows.viewProj[slot];
+        drawCasters(frame.spotShadowMaps.layerViews[slot], render::kSpotShadowResolution,
+                    static_cast<int32_t>(kCascadeCount + slot), [&](const Caster& caster) {
+                        return render::sphereInFrustum(viewProj, caster.center, caster.radius);
+                    });
+    }
+    transitionImage(cmd, spotImage, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_IMAGE_ASPECT_DEPTH_BIT, kMaxShadowedSpotLights);
 }
 
 void Renderer::recreateSwapchain() {
@@ -1546,6 +1573,8 @@ void Renderer::writeSceneModuleDescriptors(FrameSync& frame) {
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo envInfo{ibl_.sampler(), ibl_.prefilteredView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo dfgInfo{ibl_.sampler(), ibl_.dfgView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo spotShadowInfo{shadowCompareSampler_, frame.spotShadowMaps.array.view,
+                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     std::array<VkDescriptorBufferInfo, 5> buffers{{
         {ibl_.shBuffer(), 0, VK_WHOLE_SIZE},
         {frame.clusterResources.lights.buffer, 0, VK_WHOLE_SIZE},
@@ -1554,18 +1583,19 @@ void Renderer::writeSceneModuleDescriptors(FrameSync& frame) {
         {frame.objectRecords.buffer, 0, VK_WHOLE_SIZE},
     }};
 
-    std::array<VkWriteDescriptorSet, 8> writes{};
-    const VkDescriptorImageInfo* images[] = {&compareInfo, &envInfo, &dfgInfo};
-    for (uint32_t i = 0; i < 3; ++i) {
+    std::array<VkWriteDescriptorSet, 9> writes{};
+    const std::pair<uint32_t, const VkDescriptorImageInfo*> images[] = {
+        {4, &compareInfo}, {5, &envInfo}, {6, &dfgInfo}, {12, &spotShadowInfo}};
+    for (uint32_t i = 0; i < 4; ++i) {
         writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writes[i].dstSet = frame.sceneDescriptorSet;
-        writes[i].dstBinding = 4 + i;
+        writes[i].dstBinding = images[i].first;
         writes[i].descriptorCount = 1;
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = images[i];
+        writes[i].pImageInfo = images[i].second;
     }
     for (uint32_t i = 0; i < buffers.size(); ++i) {
-        VkWriteDescriptorSet& w = writes[3 + i];
+        VkWriteDescriptorSet& w = writes[4 + i];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstSet = frame.sceneDescriptorSet;
         w.dstBinding = 7 + i;
@@ -1683,6 +1713,7 @@ bool Renderer::createSceneDescriptorResources() {
     addBinding(10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kComputeFragment);                     // cluster indices
     addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);                   // object records
+    addBinding(12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT); // spot shadow maps
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -1699,7 +1730,7 @@ bool Renderer::createSceneDescriptorResources() {
     uint32_t totalSceneSlots = framesInFlight_ + static_cast<uint32_t>(kMaxAuxiliaryScenes);
     std::vector<VkDescriptorPoolSize> poolSizes{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, totalSceneSlots},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * totalSceneSlots},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 * totalSceneSlots},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, (rayTracingSupported_ ? 6 : 5) * totalSceneSlots},
     };
     if (rayTracingSupported_) {
@@ -5037,6 +5068,10 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     ubo.renderFlags.w = underwaterCausticsEnabled_ ? 1.0f : 0.0f;
 
     render::gatherLights(ecs, lighting_, camera.position, gatheredLights_);
+    const render::SpotShadowSet spotShadows =
+        render::assignSpotShadows(gatheredLights_, ubo.viewProjNoJitter, camera.position);
+    std::copy(spotShadows.viewProj.begin(), spotShadows.viewProj.end(), ubo.spotShadowViewProj);
+    ubo.spotShadowTexelScale = spotShadows.texelScale;
     uint32_t lightCount = render::ClusteredLighting::uploadLights(frame.clusterResources, gatheredLights_);
     render::ClusterGrid clusterGrid = render::computeClusterGrid(extent.width, extent.height, camera.nearPlane,
                                                                  camera.farPlane);
@@ -5088,7 +5123,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
 
     std::memcpy(frame.sceneUboMapped, &ubo, sizeof(ubo)); // persistently mapped -- no map/unmap round trip
 
-    drawShadowPass(cmd, frame, ecs, meshLibrary, cascades);
+    drawShadowPass(cmd, frame, ecs, meshLibrary, cascades, spotShadows);
     clusteredLighting_.record(cmd, frame.sceneDescriptorSet, frame.clusterResources, clusterGrid);
     frame.objectRecordCount = 1;
 

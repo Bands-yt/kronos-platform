@@ -265,7 +265,7 @@ void main() {
         float visibility = sunVisibility(Ngeo, L, viewDepth, noise);
         color += surfaceShading(s, p, L, sunRadiance, visibility);
     }
-    color += evaluateClusteredLights(s, p, gl_FragCoord.xy, viewDepth);
+    color += evaluateClusteredLights(s, p, gl_FragCoord.xy, viewDepth, noise);
 
     vec3 R;
     vec3 specularRadiance = iblSpecularRadiance(s, p, R);

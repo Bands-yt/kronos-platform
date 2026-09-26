@@ -5,7 +5,7 @@
 // clusterDims.x * clusterDims.y screen tiles times clusterDims.z
 // exponentially-distributed depth slices; cluster_build.comp writes, per
 // cluster, the indices of the lights whose range sphere touches it.
-// Requires scene_resources.glsl + material.glsl.
+// Requires scene_resources.glsl, material.glsl and shadows.glsl.
 
 uint clusterSlice(float viewDepth) {
     float slice = log(max(viewDepth, 1e-4)) * scene.clusterParams.x - scene.clusterParams.y;
@@ -34,7 +34,7 @@ float spotAttenuation(GpuLight light, vec3 L) {
     return t * t;
 }
 
-vec3 evaluatePunctualLight(ShadingContext s, PixelParams p, GpuLight light) {
+vec3 evaluatePunctualLight(ShadingContext s, PixelParams p, GpuLight light, float noise) {
     vec3 toLight = light.positionRange.xyz - s.worldPos;
     float distanceSq = dot(toLight, toLight);
     float range = light.positionRange.w;
@@ -43,18 +43,24 @@ vec3 evaluatePunctualLight(ShadingContext s, PixelParams p, GpuLight light) {
     float attenuation = lightAttenuation(distanceSq, range, light.spotParams.z);
     if (light.directionType.w > 0.5) attenuation *= spotAttenuation(light, L);
     if (attenuation <= 0.0) return vec3(0.0);
+    int shadowSlot = int(light.spotParams.w);
+    if (shadowSlot >= 0) {
+        attenuation *= spotShadow(shadowSlot, light.positionRange.xyz, light.directionType.xyz, s.worldPos, s.Ngeo, L,
+                                  noise);
+        if (attenuation <= 0.0) return vec3(0.0);
+    }
     vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
     return surfaceShading(s, p, L, radiance, 1.0);
 }
 
-vec3 evaluateClusteredLights(ShadingContext s, PixelParams p, vec2 fragCoord, float viewDepth) {
+vec3 evaluateClusteredLights(ShadingContext s, PixelParams p, vec2 fragCoord, float viewDepth, float noise) {
     if (scene.clusterParams.w < 0.5) return vec3(0.0);
     uint cluster = clusterIndexAt(fragCoord, viewDepth);
     uint count = min(clusterCounts.counts[cluster], scene.clusterDims.w);
     uint base = cluster * scene.clusterDims.w;
     vec3 result = vec3(0.0);
     for (uint i = 0u; i < count; ++i) {
-        result += evaluatePunctualLight(s, p, lightBuffer.lights[clusterIndices.indices[base + i]]);
+        result += evaluatePunctualLight(s, p, lightBuffer.lights[clusterIndices.indices[base + i]], noise);
     }
     return result;
 }

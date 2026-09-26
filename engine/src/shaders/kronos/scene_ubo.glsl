@@ -6,6 +6,7 @@
 // member is a vec4/uvec4/mat4 so the C++ layout is identical).
 
 #define KRONOS_CASCADE_COUNT 4
+#define KRONOS_MAX_SHADOWED_SPOTS 4
 
 layout(set = 0, binding = 0) uniform SceneUBO {
     mat4 view;
@@ -37,6 +38,8 @@ layout(set = 0, binding = 0) uniform SceneUBO {
     vec4 clusterParams;         // x slice scale, y slice bias, z tile size (px), w light count
     uvec4 clusterDims;          // xyz grid dims, w max lights per cluster
     vec4 frameParams;           // x frame index (wraps), y 1 when TAA resolves this view, zw reserved
+    mat4 spotShadowViewProj[KRONOS_MAX_SHADOWED_SPOTS];
+    vec4 spotShadowTexelScale;  // per slot: world size of one shadow texel per metre from the light
 } scene;
 
 #endif

@@ -112,6 +112,35 @@ float sampleCascadeShadow(int cascade, vec3 worldPos, vec3 Ngeo, float NoL, floa
     return sum / float(taps);
 }
 
+// Spot shadows use the same Vogel-disk PCF as the cascades. The bias is
+// applied in world space before projecting: a normal offset plus a pull
+// toward the light, both sized to the texel footprint at the receiver's
+// distance, which a perspective map makes grow linearly with range.
+float spotShadow(int slot, vec3 lightPos, vec3 lightDir, vec3 worldPos, vec3 Ngeo, vec3 L, float noise) {
+    float axialDistance = max(dot(worldPos - lightPos, lightDir), 1e-3);
+    float texelWorld = scene.spotShadowTexelScale[slot] * axialDistance;
+    float NoL = saturate(dot(Ngeo, L));
+    float sinTheta = sqrt(1.0 - NoL * NoL);
+    vec3 offsetPos = worldPos + Ngeo * (texelWorld * kNormalOffsetTexels * sinTheta) + L * (texelWorld * 0.5);
+
+    vec4 lightClip = scene.spotShadowViewProj[slot] * vec4(offsetPos, 1.0);
+    if (lightClip.w <= 0.0) return 1.0;
+    vec3 p = lightClip.xyz / lightClip.w;
+    vec2 uv = p.xy * 0.5 + 0.5;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))) || p.z >= 1.0) return 1.0;
+
+    if (scene.renderFlags.y > 0.5) return texture(spotShadowMaps, vec4(uv, float(slot), p.z));
+
+    float radiusUV = 1.5 / float(textureSize(spotShadowMaps, 0).x);
+    float phi = noise * 2.0 * PI;
+    float sum = 0.0;
+    for (int i = 0; i < kPcfTaps; ++i) {
+        vec2 offset = vogelDiskSample(i, kPcfTaps, phi) * radiusUV;
+        sum += texture(spotShadowMaps, vec4(uv + offset, float(slot), p.z));
+    }
+    return sum / float(kPcfTaps);
+}
+
 float cascadedShadow(vec3 worldPos, vec3 Ngeo, float NoL, float viewDepth, float noise) {
     int cascade = selectCascade(viewDepth);
     if (viewDepth > scene.cascadeSplitsView[KRONOS_CASCADE_COUNT - 1]) return 1.0;

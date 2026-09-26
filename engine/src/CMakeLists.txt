@@ -112,6 +112,7 @@ add_library(engine_core STATIC
     core/Renderer.cpp
     core/render/GpuHelpers.cpp
     core/render/ShadowCascades.cpp
+    core/render/SpotShadows.cpp
     core/render/ClusteredLighting.cpp
     core/render/ImageBasedLighting.cpp
     core/render/TemporalAA.cpp

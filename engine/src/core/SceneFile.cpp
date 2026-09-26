@@ -176,7 +176,8 @@ std::string base64Decode(const std::string& input) {
 
 constexpr uint32_t kBinaryMagic = 0x4E435343; // "KSCN" as a little-endian u32 (bytes 'K','S','C','N')
 // v2 adds MaterialLayers after the renderable block and spot fields after the light block.
-constexpr uint32_t kBinaryVersion = 2;
+// v3 appends Light::castsShadow.
+constexpr uint32_t kBinaryVersion = 3;
 
 bool hasKronosExtension(const std::string& path) {
     constexpr std::string_view kExt = ".kronos";
@@ -286,7 +287,7 @@ bool SceneFile::saveToFile(const std::string& path, const polyglot::VirtualFileS
             const auto& l = e.light;
             out << "LIGHT " << (l.enabled ? 1 : 0) << ' ' << l.color.x << ' ' << l.color.y << ' ' << l.color.z
                 << ' ' << l.intensity << ' ' << l.radius << ' ' << static_cast<int>(l.type) << ' '
-                << l.innerConeDegrees << ' ' << l.outerConeDegrees << "\n";
+                << l.innerConeDegrees << ' ' << l.outerConeDegrees << ' ' << (l.castsShadow ? 1 : 0) << "\n";
         }
 
         if (e.hasRigidBody) {
@@ -461,6 +462,8 @@ bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFil
                 current->light.innerConeDegrees = inner;
                 current->light.outerConeDegrees = outer;
             }
+            int shadowInt = 0;
+            if (iss >> shadowInt) current->light.castsShadow = shadowInt != 0;
         } else if (line.rfind("RIGIDBODY ", 0) == 0 && current != nullptr) {
             current->hasRigidBody = true;
             std::istringstream iss(line.substr(10));
@@ -633,6 +636,7 @@ bool SceneFile::saveToBinaryFile(const std::string& path) const {
             w.writeU8(static_cast<uint8_t>(e.light.type));
             w.writeFloat(e.light.innerConeDegrees);
             w.writeFloat(e.light.outerConeDegrees);
+            w.writeBool(e.light.castsShadow);
         }
 
         w.writeBool(e.hasRigidBody);
@@ -839,6 +843,7 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
                 e.light.innerConeDegrees = r.readFloat();
                 e.light.outerConeDegrees = r.readFloat();
             }
+            if (version >= 3) e.light.castsShadow = r.readBool();
         }
 
         e.hasRigidBody = r.readBool();

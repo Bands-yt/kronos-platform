@@ -21,6 +21,7 @@ inline constexpr uint32_t kClusterTilesX = 16;
 inline constexpr uint32_t kClusterTilesY = 9;
 inline constexpr uint32_t kClusterSlices = 24;
 inline constexpr uint32_t kMaxObjectRecords = 8192;
+inline constexpr uint32_t kMaxShadowedSpotLights = 4;
 
 // Retained for API compatibility; point lights are no longer capped by the UBO.
 inline constexpr uint32_t kMaxPointLights = 4;
@@ -68,7 +69,7 @@ struct GlassPushConstants {
 // Must exactly match the `push_constant` block in shaders/shadow.vert.
 // Deliberately a separate (smaller) layout from ObjectPushConstants/
 // scenePipelineLayout_ -- the shadow pass needs to know which cascade
-// it's rendering into (cascadeIndex, to index SceneUBO.lightViewProj[]),
+// it's rendering into (viewIndex, to pick a SceneUBO shadow matrix),
 // which the main pass has no use for, and doesn't need baseColor/
 // metallicRoughness/emissive at all (shadow.vert never reads them). See
 // Renderer.cpp's createShadowPipeline() for why this got its own
@@ -77,7 +78,7 @@ struct GlassPushConstants {
 // pass's layout since it only needed a subset of the same fields).
 struct ShadowPushConstants {
     glm::mat4 model;
-    int32_t cascadeIndex = 0;
+    int32_t viewIndex = 0; // cascade, or kShadowCascadeCount + spot shadow slot
 };
 
 // Per-instance vertex data for the GPU-driven instanced draw path (see
@@ -287,16 +288,22 @@ struct SceneUBO {
     glm::vec4 clusterParams{0.0f};    // x slice scale, y slice bias, z tile size (px), w light count
     glm::uvec4 clusterDims{0u};       // xyz grid dims, w max lights per cluster
     glm::vec4 frameParams{0.0f};      // x frame index, y 1 when TAA resolves this view
+    glm::mat4 spotShadowViewProj[kMaxShadowedSpotLights];
+    glm::vec4 spotShadowTexelScale{0.0f}; // per slot: world size of one shadow texel per metre from the light
 };
-static_assert(sizeof(SceneUBO) == 64 * 9 + 16 * 23, "SceneUBO must match kronos/scene_ubo.glsl");
+static_assert(sizeof(SceneUBO) == 64 * (9 + kMaxShadowedSpotLights) + 16 * 24,
+              "SceneUBO must match kronos/scene_ubo.glsl");
 
 // Mirrors GpuLight in shaders/kronos/scene_resources.glsl (std430).
 struct GpuLight {
     glm::vec4 positionRange;
     glm::vec4 colorIntensity;
     glm::vec4 directionType; // xyz direction the light travels, w 0 point / 1 spot
-    glm::vec4 spotParams;    // x cos(outer), y 1/(cos(inner) - cos(outer)), z softening radius^2
+    glm::vec4 spotParams;    // x cos(outer), y 1/(cos(inner) - cos(outer)), z softening radius^2, w shadow slot
 };
+inline constexpr float kGpuLightNoShadow = -1.0f;
+// Set by gatherLights; render::assignSpotShadows replaces it with a slot or kGpuLightNoShadow.
+inline constexpr float kGpuLightShadowRequested = -2.0f;
 
 // Mirrors ObjectRecord in shaders/kronos/object_records.glsl (std430).
 struct GpuObjectRecord {

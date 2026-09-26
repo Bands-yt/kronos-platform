@@ -42,7 +42,7 @@ GpuLight makeGpuLight(glm::vec3 position, glm::vec3 color, float intensity, floa
     light.positionRange = glm::vec4(position, std::max(range, 1e-3f));
     light.colorIntensity = glm::vec4(color, intensity);
     light.directionType = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
-    light.spotParams = glm::vec4(-1.0f, 1.0f, 1.0f, 0.0f);
+    light.spotParams = glm::vec4(-1.0f, 1.0f, 1.0f, kGpuLightNoShadow);
     return light;
 }
 
@@ -74,8 +74,10 @@ void gatherLights(ECS& ecs, const SceneLighting& lighting, glm::vec3 viewPositio
         if (light.type == LightType::Spot) {
             glm::vec3 direction = -glm::vec3(world[2]);
             if (glm::dot(direction, direction) < 1e-12f) direction = glm::vec3(0.0f, -1.0f, 0.0f);
-            out.push_back(makeGpuSpotLight(position, direction, light.color, light.intensity, light.radius,
-                                           light.innerConeDegrees, light.outerConeDegrees));
+            GpuLight spot = makeGpuSpotLight(position, direction, light.color, light.intensity, light.radius,
+                                             light.innerConeDegrees, light.outerConeDegrees);
+            if (light.castsShadow) spot.spotParams.w = kGpuLightShadowRequested;
+            out.push_back(spot);
         } else {
             out.push_back(makeGpuLight(position, light.color, light.intensity, light.radius));
         }

@@ -15,8 +15,8 @@
 // the lights of the cluster its fragment falls in. Cost scales with local
 // light density instead of total light count.
 //
-// Extension points: shadowed local lights (add a shadow index to
-// GpuLight::spotParams.w), area lights (new type value), and a compacted
+// Spot shadows are resolved by render/SpotShadows after gathering.
+// Extension points: area lights (new type value) and a compacted
 // variable-length index list if kMaxLightsPerCluster ever becomes limiting.
 
 namespace engine::core {
@@ -45,6 +45,7 @@ struct ClusterGrid {
 
 // Collects SceneLighting::pointLights plus every enabled Light entity. When
 // more than kMaxGpuLights exist, the ones nearest `viewPosition` are kept.
+// Shadow-casting spots are marked kGpuLightShadowRequested.
 void gatherLights(ECS& ecs, const SceneLighting& lighting, glm::vec3 viewPosition, std::vector<GpuLight>& out);
 
 class ClusteredLighting {

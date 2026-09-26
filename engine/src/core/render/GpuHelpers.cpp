@@ -73,7 +73,7 @@ void destroyBuffer(const GpuContext& ctx, GpuBuffer& buffer) {
 }
 
 bool createImage(const GpuContext& ctx, VkFormat format, uint32_t width, uint32_t height, uint32_t mipLevels,
-                 uint32_t layers, bool cube, VkImageUsageFlags usage, GpuImage& out) {
+                 uint32_t layers, bool cube, VkImageUsageFlags usage, GpuImage& out, VkImageAspectFlags aspect) {
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
     info.imageType = VK_IMAGE_TYPE_2D;
@@ -98,7 +98,7 @@ bool createImage(const GpuContext& ctx, VkFormat format, uint32_t width, uint32_
     viewInfo.image = out.image;
     viewInfo.viewType = cube ? VK_IMAGE_VIEW_TYPE_CUBE : (layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D);
     viewInfo.format = format;
-    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, layers};
+    viewInfo.subresourceRange = {aspect, 0, mipLevels, 0, layers};
     if (vkCreateImageView(ctx.device, &viewInfo, nullptr, &out.view) != VK_SUCCESS) {
         destroyImage(ctx, out);
         return false;

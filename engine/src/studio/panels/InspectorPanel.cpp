@@ -11,6 +11,7 @@
 #include "core/Navigation.hpp"
 #include "core/OreNode.hpp"
 #include "core/PhysicsMaterial.hpp"
+#include "core/SceneTypes.hpp"
 
 namespace engine::studio::panels {
 
@@ -603,6 +604,11 @@ void InspectorPanel::drawLightSection(core::ECS& ecs, core::EntityId selected) {
         ImGui::DragFloat("Outer Cone", &light->outerConeDegrees, 0.25f, 0.0f, 89.0f, "%.1f deg",
                          ImGuiSliderFlags_AlwaysClamp);
         light->innerConeDegrees = std::min(light->innerConeDegrees, light->outerConeDegrees);
+        ImGui::Checkbox("Cast Shadows", &light->castsShadow);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Up to %u shadowed spots are rendered per view, nearest visible first.",
+                              core::kMaxShadowedSpotLights);
+        }
     }
     ImGui::TextDisabled(
         "Shaded through the clustered light list, so there is no per-scene light cap. Spots aim down the entity's "

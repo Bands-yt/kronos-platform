@@ -40,9 +40,10 @@ struct GpuBuffer {
                                 GpuBuffer& out);
 void destroyBuffer(const GpuContext& ctx, GpuBuffer& buffer);
 
-// 2D or cube (layers == 6 with cube = true) image with a full-range view.
+// 2D, 2D array or cube (layers == 6 with cube = true) image with a full-range view.
 [[nodiscard]] bool createImage(const GpuContext& ctx, VkFormat format, uint32_t width, uint32_t height,
-                               uint32_t mipLevels, uint32_t layers, bool cube, VkImageUsageFlags usage, GpuImage& out);
+                               uint32_t mipLevels, uint32_t layers, bool cube, VkImageUsageFlags usage, GpuImage& out,
+                               VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT);
 void destroyImage(const GpuContext& ctx, GpuImage& image);
 
 [[nodiscard]] VkImageView createArrayView(const GpuContext& ctx, VkImage image, VkFormat format, uint32_t mip,

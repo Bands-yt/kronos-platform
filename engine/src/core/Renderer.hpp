@@ -32,6 +32,7 @@
 #include "core/render/ClusteredLighting.hpp"
 #include "core/render/ImageBasedLighting.hpp"
 #include "core/render/ShadowCascades.hpp"
+#include "core/render/SpotShadows.hpp"
 #include "core/render/TemporalAA.hpp"
 
 namespace engine::core {
@@ -973,6 +974,7 @@ private:
         VmaAllocation shadowAllocation = nullptr;
         VkImageView shadowArrayView = VK_NULL_HANDLE;
         std::array<VkImageView, kCascadeCount> shadowCascadeViews{};
+        render::SpotShadowMaps spotShadowMaps;
 
         // Per-frame-in-flight instance buffer for the GPU-instanced draw
         // path (see drawInstancedBatches()) -- same "why per-frame-in-
@@ -1453,7 +1455,7 @@ private:
     [[nodiscard]] render::CascadeFits computeCascades(const Camera& camera, float aspectRatio) const;
 
     void drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
-                        const render::CascadeFits& cascades);
+                        const render::CascadeFits& cascades, const render::SpotShadowSet& spotShadows);
 
     // Call immediately after every vkCmdDrawIndexed/vkCmdDraw -- tallies
     // into frameDrawCalls_/frameTriangles_ for this frame's metrics()

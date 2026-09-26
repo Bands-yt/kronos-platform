@@ -36,6 +36,7 @@ struct View {
     float pitch;
     bool night;
     bool motion = false; // animated avatar + moving torus; also captures a velocity visualisation
+    bool spots = false;  // shadowed spot lights at night
 };
 
 core::SceneLighting dayLighting() {
@@ -146,6 +147,36 @@ int main(int argc, char** argv) {
         nightLights.push_back(e);
     }
 
+    struct SpotSetup {
+        glm::vec3 position;
+        glm::vec3 target;
+        glm::vec3 color;
+        float outerDegrees;
+    };
+    const SpotSetup spotSetups[] = {
+        {{-2.0f, 4.5f, 2.5f}, {-1.0f, 0.5f, -1.0f}, {1.0f, 0.75f, 0.45f}, 32.0f},
+        {{2.5f, 3.0f, 3.5f}, {5.5f, 0.8f, 1.0f}, {0.5f, 0.7f, 1.0f}, 24.0f},
+        {{-4.5f, 2.2f, 4.0f}, {-7.0f, 0.4f, 1.5f}, {0.6f, 1.0f, 0.6f}, 18.0f},
+    };
+    std::vector<core::EntityId> spotLights;
+    for (const SpotSetup& setup : spotSetups) {
+        core::EntityId e = ecs.createEntity();
+        auto& t = *ecs.tryGetComponent<core::Transform>(e);
+        t.position = setup.position;
+        t.rotation = glm::quatLookAt(glm::normalize(setup.target - setup.position), glm::vec3(0.0f, 1.0f, 0.0f));
+        core::Light light;
+        light.type = core::LightType::Spot;
+        light.color = setup.color;
+        light.intensity = 40.0f;
+        light.radius = 14.0f;
+        light.innerConeDegrees = setup.outerDegrees * 0.7f;
+        light.outerConeDegrees = setup.outerDegrees;
+        light.castsShadow = true;
+        light.enabled = false;
+        ecs.addComponent<core::Light>(e, light);
+        spotLights.push_back(e);
+    }
+
     // Waving avatar with a static root: arm velocity can only come from
     // pose deformation (previous-frame bone palette).
     core::RiggedMeshLibrary riggedMeshes;
@@ -197,11 +228,15 @@ int main(int argc, char** argv) {
         {"grazing", {-1.0f, 1.2f, 6.0f}, -95.0f, -4.0f, false},
         {"night", {0.0f, 4.0f, 8.0f}, -90.0f, -22.0f, true},
         {"motion", {0.0f, 1.6f, 7.0f}, -90.0f, -8.0f, false, true},
+        {"spots", {0.0f, 4.5f, 9.5f}, -90.0f, -24.0f, true, false, true},
     };
 
     for (const View& view : views) {
         renderer.setLighting(view.night ? nightLighting() : dayLighting());
-        for (core::EntityId e : nightLights) ecs.tryGetComponent<core::Light>(e)->enabled = view.night;
+        for (core::EntityId e : nightLights) {
+            ecs.tryGetComponent<core::Light>(e)->enabled = view.night && !view.spots;
+        }
+        for (core::EntityId e : spotLights) ecs.tryGetComponent<core::Light>(e)->enabled = view.spots;
 
         core::Camera camera;
         camera.position = view.position;
