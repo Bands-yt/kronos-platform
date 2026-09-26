@@ -200,7 +200,6 @@ struct CompositePushConstants {
 
 // Must exactly match the `push_constant` block in shaders/cinematic.frag.
 struct CinematicPushConstants {
-    glm::mat4 previousViewProj{1.0f};
     float focusDistance = 15.0f;
     float focusRange = 10.0f;
     float maxCoCRadiusPx = 6.0f;

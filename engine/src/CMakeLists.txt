@@ -39,6 +39,7 @@ set(ENGINE_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ibl_sh.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cluster_build.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/taa_resolve.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/motion_tiles.comp
 )
 # Shared shader library (#include'd); any change recompiles every shader.
 file(GLOB ENGINE_SHADER_LIBRARY CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/kronos/*.glsl)
@@ -116,6 +117,7 @@ add_library(engine_core STATIC
     core/render/ClusteredLighting.cpp
     core/render/ImageBasedLighting.cpp
     core/render/TemporalAA.cpp
+    core/render/MotionBlur.cpp
     core/SwapchainSelection.cpp
     core/CubeLut.cpp
     core/Utf8.cpp

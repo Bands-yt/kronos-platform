@@ -1525,6 +1525,10 @@ bool Renderer::initRenderModules() {
         std::fprintf(stderr, "Renderer: temporal AA setup failed.\n");
         return false;
     }
+    if (!motionBlur_.initialize(ctx, framesInFlight_ + static_cast<uint32_t>(kMaxAuxiliaryScenes))) {
+        std::fprintf(stderr, "Renderer: motion blur setup failed.\n");
+        return false;
+    }
     mainViewHistory_ = std::make_shared<render::ViewHistory>();
     for (auto& frame : frames_) {
         if (!initFrameRenderResources(frame, true)) return false;
@@ -1535,6 +1539,7 @@ bool Renderer::initRenderModules() {
 void Renderer::shutdownRenderModules() {
     render::GpuContext ctx = gpuContext();
     for (auto& frame : frames_) destroyFrameRenderResources(frame);
+    motionBlur_.shutdown(ctx);
     temporalAA_.shutdown(ctx);
     clusteredLighting_.shutdown(ctx);
     ibl_.shutdown(ctx);
@@ -1561,6 +1566,7 @@ void Renderer::destroyFrameRenderResources(FrameSync& frame) {
     render::ClusteredLighting::destroyFrameResources(ctx, frame.clusterResources);
     render::destroyBuffer(ctx, frame.objectRecords);
     render::destroyImage(ctx, frame.velocity);
+    motionBlur_.releaseBinding(ctx, frame.motionBlurBinding);
     temporalAA_.releaseBinding(ctx, frame.taaBinding);
     if (frame.viewHistory && frame.viewHistory.use_count() == 1) {
         render::TemporalAA::destroyHistory(ctx, *frame.viewHistory);
@@ -3388,7 +3394,8 @@ bool Renderer::createPostProcessPipelines() {
             pushRange.offset = 0;
             pushRange.size = sizeof(CinematicPushConstants);
 
-            std::array<VkDescriptorSetLayout, 2> setLayouts{sceneDescriptorSetLayout_, cinematicDescriptorSetLayout_};
+            std::array<VkDescriptorSetLayout, 3> setLayouts{sceneDescriptorSetLayout_, cinematicDescriptorSetLayout_,
+                                                            motionBlur_.sampleSetLayout()};
             VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             layoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
             layoutInfo.pSetLayouts = setLayouts.data();
@@ -3874,6 +3881,10 @@ bool Renderer::ensurePostProcessTargets(FrameSync& frame, VkExtent2D extent, VkI
     if (!render::createImage(gpuContext(), kVelocityFormat, extent.width, extent.height, 1, 1, false,
                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, frame.velocity)) {
         std::fprintf(stderr, "Renderer: velocity target creation failed.\n");
+        return false;
+    }
+    if (!motionBlur_.bind(gpuContext(), frame.motionBlurBinding, extent, frame.velocity.view)) {
+        std::fprintf(stderr, "Renderer: motion blur target creation failed.\n");
         return false;
     }
 
@@ -4372,6 +4383,7 @@ void Renderer::destroyPostProcessTargets(FrameSync& frame) {
     }
 
     render::destroyImage(gpuContext(), frame.velocity);
+    motionBlur_.releaseBinding(gpuContext(), frame.motionBlurBinding);
     if (frame.particleDepthDescriptorSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(device_, postProcessDescriptorPool_, 1, &frame.particleDepthDescriptorSet);
         frame.particleDepthDescriptorSet = VK_NULL_HANDLE;
@@ -4598,13 +4610,13 @@ void Renderer::drawVolumetricFogPass(VkCommandBuffer cmd, FrameSync& frame, VkEx
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 }
 
-void Renderer::drawCinematicPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent2D extent,
-                                  const glm::mat4& previousViewProj) {
+void Renderer::drawCinematicPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent2D extent) {
     // Real, direct bypass -- see this method's own header comment in
     // Renderer.hpp. Nothing below records so much as a barrier when
     // Cinematic Mode is off.
     if (!cinematicModeEnabled_) return;
-    if (frame.cinematicImage == VK_NULL_HANDLE || frame.cinematicDescriptorSet == VK_NULL_HANDLE) {
+    if (frame.cinematicImage == VK_NULL_HANDLE || frame.cinematicDescriptorSet == VK_NULL_HANDLE ||
+        frame.motionBlurBinding.sampleSet == VK_NULL_HANDLE) {
         // ensureCinematicTarget() failed this frame (already logged
         // there, e.g. descriptor pool exhaustion) -- skip rather than
         // recording a draw against a null target; frame.hdrImage still
@@ -4629,6 +4641,7 @@ void Renderer::drawCinematicPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent
         frame.autoExposureValue = std::clamp(frame.autoExposureValue, 0.05f, 20.0f);
     }
 
+    motionBlur_.prepareTiles(cmd, frame.motionBlurBinding, motionBlurStrength_ > 0.001f);
     transitionImage(cmd, frame.cinematicImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                      VK_ACCESS_2_NONE, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -4652,12 +4665,12 @@ void Renderer::drawCinematicPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cinematicPipeline_);
-    std::array<VkDescriptorSet, 2> sets{frame.sceneDescriptorSet, frame.cinematicDescriptorSet};
+    std::array<VkDescriptorSet, 3> sets{frame.sceneDescriptorSet, frame.cinematicDescriptorSet,
+                                        frame.motionBlurBinding.sampleSet};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cinematicPipelineLayout_, 0,
                              static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
 
     CinematicPushConstants push{};
-    push.previousViewProj = previousViewProj;
     push.focusDistance = dofFocusDistance_;
     push.focusRange = dofFocusRange_;
     push.maxCoCRadiusPx = dofMaxCoCRadiusPx_;
@@ -5422,7 +5435,6 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     }
 
     const glm::mat4 currentViewProj = ubo.viewProjNoJitter;
-    const glm::mat4 previousViewProjForThisFrame = ubo.prevViewProjNoJitter;
 
     constexpr VkPipelineStageFlags2 kPostReadStages =
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -5472,7 +5484,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // conditional on fog's output once fog is enabled.
     drawVolumetricFogPass(cmd, frame, extent);
 
-    drawCinematicPass(cmd, frame, extent, previousViewProjForThisFrame);
+    drawCinematicPass(cmd, frame, extent);
 
     // Sprint 16 god rays: the sun's own real screen-space position this
     // frame, projected from a point far along the *reverse* of the light's

@@ -38,6 +38,7 @@ struct View {
     bool night;
     bool motion = false; // animated avatar + moving torus; also captures a velocity visualisation
     bool spots = false;  // shadowed spot lights at night
+    bool blur = false;   // motion view through the cinematic pass with a 180 degree shutter
 };
 
 core::SceneLighting dayLighting() {
@@ -249,6 +250,7 @@ int main(int argc, char** argv) {
         {"night", {0.0f, 4.0f, 8.0f}, -90.0f, -22.0f, true},
         {"motion", {0.0f, 1.6f, 7.0f}, -90.0f, -8.0f, false, true},
         {"spots", {0.0f, 4.5f, 9.5f}, -90.0f, -24.0f, true, false, true},
+        {"motion_blur", {0.0f, 1.6f, 7.0f}, -90.0f, -8.0f, false, true, false, true},
     };
 
     for (const View& view : views) {
@@ -257,6 +259,9 @@ int main(int argc, char** argv) {
             ecs.tryGetComponent<core::Light>(e)->enabled = view.night && !view.spots;
         }
         for (core::EntityId e : spotLights) ecs.tryGetComponent<core::Light>(e)->enabled = view.spots;
+        renderer.setCinematicMode(view.blur);
+        renderer.setDepthOfFieldEnabled(false);
+        renderer.setMotionBlurShutterAngle(view.blur ? 180.0f : 0.0f);
 
         core::Camera camera;
         camera.position = view.position;
@@ -265,9 +270,10 @@ int main(int argc, char** argv) {
 
         // Motion views capture the colour result, then one extra frame
         // with the velocity visualisation.
-        const int captures = view.motion ? frames + 1 : frames;
+        const bool velocityCapture = view.motion && !view.blur;
+        const int captures = velocityCapture ? frames + 1 : frames;
         for (int f = 0; f < captures; ++f) {
-            const bool velocityFrame = view.motion && f == frames;
+            const bool velocityFrame = velocityCapture && f == frames;
             std::string dir = outDir + "/" + (velocityFrame ? std::string(view.name) + "_velocity" : view.name);
             if (f + 1 < frames) dir = outDir + "/.warmup";
             std::filesystem::create_directories(dir);

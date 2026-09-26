@@ -1,0 +1,51 @@
+#version 450
+
+// Per-tile maximum of the scene velocity (by screen-space length), the
+// dominant-motion input of the motion blur gather in cinematic.frag.
+
+#include "kronos/motion_blur.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D velocityTex;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D tileMax;
+
+const int kSpan = KRONOS_MOTION_TILE_SIZE / 8;
+
+shared vec2 sharedVelocity[64];
+shared float sharedLength[64];
+
+void main() {
+    ivec2 size = textureSize(velocityTex, 0);
+    vec2 pixelScale = vec2(size);
+    ivec2 base = ivec2(gl_WorkGroupID.xy) * KRONOS_MOTION_TILE_SIZE + ivec2(gl_LocalInvocationID.xy) * kSpan;
+
+    vec2 best = vec2(0.0);
+    float bestLength = 0.0;
+    for (int y = 0; y < kSpan; ++y) {
+        for (int x = 0; x < kSpan; ++x) {
+            ivec2 p = base + ivec2(x, y);
+            if (any(greaterThanEqual(p, size))) continue;
+            vec2 v = texelFetch(velocityTex, p, 0).xy;
+            vec2 px = v * pixelScale;
+            float l = dot(px, px);
+            if (l > bestLength) {
+                bestLength = l;
+                best = v;
+            }
+        }
+    }
+
+    uint i = gl_LocalInvocationIndex;
+    sharedVelocity[i] = best;
+    sharedLength[i] = bestLength;
+    barrier();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (i < stride && sharedLength[i + stride] > sharedLength[i]) {
+            sharedLength[i] = sharedLength[i + stride];
+            sharedVelocity[i] = sharedVelocity[i + stride];
+        }
+        barrier();
+    }
+    if (i == 0u) imageStore(tileMax, ivec2(gl_WorkGroupID.xy), vec4(sharedVelocity[0], 0.0, 0.0));
+}

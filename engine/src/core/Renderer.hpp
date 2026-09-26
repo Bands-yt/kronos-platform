@@ -34,6 +34,7 @@
 #include "core/render/ShadowCascades.hpp"
 #include "core/render/SpotShadows.hpp"
 #include "core/render/TemporalAA.hpp"
+#include "core/render/MotionBlur.hpp"
 
 namespace engine::core {
 
@@ -1160,6 +1161,7 @@ private:
         // RG16F screen-space motion, written by the opaque pass.
         render::GpuImage velocity;
         render::TaaBinding taaBinding;
+        render::MotionBlurBinding motionBlurBinding;
         // Shared by every FrameSync that renders the same view.
         std::shared_ptr<render::ViewHistory> viewHistory;
     };
@@ -1380,10 +1382,8 @@ private:
     // direct bypass: not recorded at all when isCinematicModeEnabled() is
     // false, so the pre-Sprint-16 frame.hdrImage -> bloom_extract path is
     // byte-for-byte unchanged cost-wise with Cinematic Mode off.
-    // `previousViewProj`: this frame slot's own camera history, see
-    // FrameSync's own comment.
-    void drawCinematicPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent2D extent,
-                            const glm::mat4& previousViewProj);
+    // Motion blur gathers along frame.velocity (render::MotionBlur).
+    void drawCinematicPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent2D extent);
 
     // Bright-pass+blur (bloom_extract.frag) into frame.bloomImage, then
     // composite (composite.frag: HDR + bloom -> exposure -> ACES tonemap
@@ -1957,6 +1957,7 @@ private:
     render::ImageBasedLighting ibl_;
     render::ClusteredLighting clusteredLighting_;
     render::TemporalAA temporalAA_;
+    render::MotionBlur motionBlur_;
     std::shared_ptr<render::ViewHistory> mainViewHistory_;
     std::vector<GpuLight> gatheredLights_;
     bool temporalAAEnabled_ = true;

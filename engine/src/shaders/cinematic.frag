@@ -2,7 +2,7 @@
 
 // Sprint 16 ("Cinematic Graphics"): a single consolidated full-screen
 // post-process pass combining screen-space ambient occlusion (SSAO),
-// depth-of-field (circle-of-confusion blur), and camera-based motion blur
+// depth-of-field (circle-of-confusion blur), and motion blur
 // -- three separate named deliverables in the brief, deliberately built as
 // one real pipeline instead of three near-duplicate ones, since all three
 // need the exact same inputs (the just-rendered HDR color + depth
@@ -34,13 +34,17 @@ layout(location = 0) out vec4 outColor;
 // is enough under std140 (trailing, undeclared members don't need to
 // appear here at all).
 #include "kronos/scene_ubo.glsl"
+#include "kronos/motion_blur.glsl"
 
 layout(set = 1, binding = 0) uniform sampler2D hdrColor;
 layout(set = 1, binding = 1) uniform sampler2D sceneDepth;
 
+// See render::MotionBlur.
+layout(set = 2, binding = 0) uniform sampler2D velocityTex;
+layout(set = 2, binding = 1) uniform sampler2D velocityTiles;
+
 // Must exactly match core::CinematicPushConstants (SceneTypes.hpp).
 layout(push_constant) uniform CinematicPushConstants {
-    mat4 previousViewProj;
     float focusDistance;
     float focusRange;
     float maxCoCRadiusPx;
@@ -125,15 +129,87 @@ vec3 blurDisk(vec2 uv, float radiusPx) {
     return sum / weight;
 }
 
-vec3 blurDirectional(vec2 uv, vec2 velocityUV) {
-    const int kTaps = 8;
-    vec3 sum = vec3(0.0);
-    for (int i = 0; i < kTaps; ++i) {
-        float t = (float(i) / float(kTaps - 1)) - 0.5;
-        vec2 sampleUV = clamp(uv + velocityUV * t, vec2(0.0), vec2(1.0));
-        sum += texture(hdrColor, sampleUV).rgb;
+float interleavedGradientNoise(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+float linearDepth(float depth) {
+    return scene.proj[3][2] / (depth + scene.proj[2][2]);
+}
+
+// Blur radius in pixels: half the displacement over the open shutter,
+// centred on the current frame, capped at one tile.
+vec2 blurRadius(vec2 velocityUV, vec2 size) {
+    vec2 r = velocityUV * size * (0.5 * pc.motionBlurStrength);
+    float l = length(r);
+    return l > float(KRONOS_MOTION_TILE_SIZE) ? r * (float(KRONOS_MOTION_TILE_SIZE) / l) : r;
+}
+
+vec2 neighbourhoodMaxRadius(vec2 size) {
+    ivec2 tile = ivec2(gl_FragCoord.xy) / KRONOS_MOTION_TILE_SIZE;
+    ivec2 lastTile = textureSize(velocityTiles, 0) - 1;
+    vec2 best = vec2(0.0);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2 r = blurRadius(texelFetch(velocityTiles, clamp(tile + ivec2(x, y), ivec2(0), lastTile), 0).xy, size);
+            if (dot(r, r) > dot(best, best)) best = r;
+        }
     }
-    return sum / float(kTaps);
+    return best;
+}
+
+// A tap counts when it lies behind the centre and the centre's blur
+// reaches it, or in front and its own blur reaches the centre.
+float tapWeight(float centerDepth, float tapDepth, float offset, float centerSpread, float tapSpread, float depthScale) {
+    vec2 depthCmp = clamp(0.5 + vec2(depthScale, -depthScale) * (tapDepth - centerDepth), 0.0, 1.0);
+    vec2 spreadCmp = clamp(vec2(centerSpread, tapSpread) - offset + 1.0, 0.0, 1.0);
+    return dot(depthCmp, spreadCmp);
+}
+
+// Scatter-as-gather reconstruction (Jimenez 2014, as in Unreal 4): symmetric
+// taps along the dominant neighbourhood velocity. Tap weights accumulate as
+// coverage and whatever they leave uncovered keeps the unblurred centre, so
+// fast objects smear over static backgrounds and static pixels stay sharp.
+// Taps read the pre-AO colour, so the centre's AO is applied to them.
+vec3 motionBlur(vec2 colorUV, vec3 centerColor, float centerDepthHW, float aoFactor) {
+    vec2 size = vec2(textureSize(velocityTex, 0));
+    vec2 maxRadius = neighbourhoodMaxRadius(size);
+    float maxLength = length(maxRadius);
+    if (maxLength < 0.5) return centerColor;
+
+    vec2 texel = 1.0 / size;
+    float centerDepth = linearDepth(centerDepthHW);
+    float centerSpread = length(blurRadius(texture(velocityTex, inUV).xy, size));
+    float depthScale = 1.0 / max(0.01 * centerDepth, 1e-3);
+    float jitter = interleavedGradientNoise(gl_FragCoord.xy) - 0.5;
+
+    const int kSteps = 8;
+    vec4 sum = vec4(0.0);
+    for (int i = 0; i < kSteps; ++i) {
+        float t = (float(i) + 0.5 + jitter) / float(kSteps);
+        vec2 offsetUV = maxRadius * t * texel;
+        float offset = maxLength * t;
+
+        vec2 uv0 = inUV + offsetUV;
+        vec2 uv1 = inUV - offsetUV;
+        float depth0 = linearDepth(texture(sceneDepth, uv0).r);
+        float depth1 = linearDepth(texture(sceneDepth, uv1).r);
+        float spread0 = length(blurRadius(texture(velocityTex, uv0).xy, size));
+        float spread1 = length(blurRadius(texture(velocityTex, uv1).xy, size));
+        float w0 = tapWeight(centerDepth, depth0, offset, centerSpread, spread0, depthScale);
+        float w1 = tapWeight(centerDepth, depth1, offset, centerSpread, spread1, depthScale);
+
+        // Mirror filter: guess what lies behind a foreground tap from its partner.
+        bool fartherFirst = depth0 > depth1;
+        bool fasterSecond = spread1 > spread0;
+        float m0 = (fartherFirst && fasterSecond) ? w1 : w0;
+        float m1 = (fartherFirst || fasterSecond) ? w1 : w0;
+
+        sum.rgb += m0 * texture(hdrColor, colorUV + offsetUV).rgb + m1 * texture(hdrColor, colorUV - offsetUV).rgb;
+        sum.a += m0 + m1;
+    }
+    sum /= float(2 * kSteps);
+    return sum.rgb * aoFactor + (1.0 - clamp(sum.a, 0.0, 1.0)) * centerColor;
 }
 
 void main() {
@@ -160,41 +236,32 @@ void main() {
     // frame (sky.frag's own background pass, or simply outside every
     // model's bounds) -- see this file's header comment on scope: none of
     // SSAO/DOF/motion blur make sense applied to "no real surface here".
+    // Motion blur still runs there: moving objects smear over the sky, and
+    // the sky itself carries camera-rotation velocity.
     bool isBackground = depth >= 0.9999;
-    if (isBackground) {
-        outColor = vec4(color, 1.0);
-        return;
-    }
+    float aoFactor = 1.0;
+    if (!isBackground) {
+        vec3 worldPos = worldPosFromDepth(inUV, depth);
 
-    vec3 worldPos = worldPosFromDepth(inUV, depth);
+        if (pc.ssaoEnabled > 0.5) {
+            mat4 viewProj = scene.proj * scene.view;
+            float ao = computeSSAO(inUV, worldPos, viewProj);
+            aoFactor = mix(1.0, ao, clamp(pc.ssaoStrength, 0.0, 1.0));
+            color *= aoFactor;
+        }
 
-    if (pc.ssaoEnabled > 0.5) {
-        mat4 viewProj = scene.proj * scene.view;
-        float ao = computeSSAO(inUV, worldPos, viewProj);
-        color *= mix(1.0, ao, clamp(pc.ssaoStrength, 0.0, 1.0));
-    }
-
-    if (pc.dofEnabled > 0.5) {
-        float viewDist = length(worldPos - scene.viewPositionWS.xyz);
-        float coc = clamp(abs(viewDist - pc.focusDistance) / max(pc.focusRange, 1e-4), 0.0, 1.0);
-        float radiusPx = coc * pc.maxCoCRadiusPx;
-        if (radiusPx > 0.5) {
-            color = blurDisk(colorUV, radiusPx);
+        if (pc.dofEnabled > 0.5) {
+            float viewDist = length(worldPos - scene.viewPositionWS.xyz);
+            float coc = clamp(abs(viewDist - pc.focusDistance) / max(pc.focusRange, 1e-4), 0.0, 1.0);
+            float radiusPx = coc * pc.maxCoCRadiusPx;
+            if (radiusPx > 0.5) {
+                color = blurDisk(colorUV, radiusPx);
+            }
         }
     }
 
     if (pc.motionBlurStrength > 0.001) {
-        vec4 prevClip = pc.previousViewProj * vec4(worldPos, 1.0);
-        prevClip.xyz /= prevClip.w;
-        vec2 prevUV = prevClip.xy * 0.5 + 0.5;
-        // Clamped so a first-frame/camera-cut/no-real-previous-VP
-        // discontinuity produces a bounded, real blur instead of an
-        // unbounded runaway smear across the whole image.
-        const float kMaxMotionBlurUV = 0.05;
-        vec2 velocity = clamp((colorUV - prevUV) * pc.motionBlurStrength, vec2(-kMaxMotionBlurUV), vec2(kMaxMotionBlurUV));
-        if (length(velocity) > 0.0005) {
-            color = blurDirectional(colorUV, velocity);
-        }
+        color = motionBlur(colorUV, color, depth, aoFactor);
     }
 
     outColor = vec4(color, 1.0);
