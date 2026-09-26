@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -33,15 +34,20 @@ struct ViewHistory {
     glm::vec2 previousJitter{0.0f};
     glm::mat4 previousViewProjNoJitter{1.0f};
     bool hasPreviousViewProj = false;
-    // Previous-frame world matrices, keyed by entity id, for object motion.
+    // Previous-frame world matrices and skinning palettes, keyed by entity
+    // id, for object and deformation motion.
     std::unordered_map<uint32_t, glm::mat4> previousModels;
     std::unordered_map<uint32_t, glm::mat4> currentModels;
+    std::unordered_map<uint32_t, std::vector<glm::mat4>> previousBones;
+    std::unordered_map<uint32_t, std::vector<glm::mat4>> currentBones;
 
-    // Call once per rendered frame after all draws have looked up
-    // previousModels.
-    void advanceModels() {
+    // Call once per rendered frame after all draws have looked up the
+    // previous-frame state.
+    void advanceObjects() {
         previousModels.swap(currentModels);
         currentModels.clear();
+        previousBones.swap(currentBones);
+        currentBones.clear();
     }
 };
 
@@ -78,9 +84,10 @@ public:
     // Resolves into the history image and copies the result over
     // `targetImage` (the current HDR colour). Expects the colour, velocity
     // and depth inputs in SHADER_READ_ONLY_OPTIMAL, readable from compute;
-    // leaves `targetImage` in SHADER_READ_ONLY_OPTIMAL.
+    // leaves `targetImage` in SHADER_READ_ONLY_OPTIMAL. `debugVelocity`
+    // replaces the output with a motion-vector visualisation.
     void resolve(VkCommandBuffer cmd, const TaaBinding& binding, ViewHistory& view, VkImage targetImage,
-                 float feedback) const;
+                 float feedback, bool debugVelocity = false) const;
 
 private:
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;

@@ -19,6 +19,8 @@
 #include "core/ECS.hpp"
 #include "core/Mesh.hpp"
 #include "core/Renderer.hpp"
+#include "core/RiggedAvatar.hpp"
+#include "core/CatalogueIndex.hpp"
 #include "core/Texture.hpp"
 #include "core/Window.hpp"
 #include "trailer/CaptureRig.hpp"
@@ -33,6 +35,7 @@ struct View {
     float yaw;
     float pitch;
     bool night;
+    bool motion = false; // animated avatar + moving torus; also captures a velocity visualisation
 };
 
 core::SceneLighting dayLighting() {
@@ -114,7 +117,8 @@ int main(int argc, char** argv) {
         spawn(ecs, sphere, {x, 0.5f, -2.8f}, glm::vec3(1), {0.95f, 0.95f, 0.95f}, 1.0f, rough);
     }
 
-    spawn(ecs, torus, {-5.5f, 0.8f, 1.5f}, glm::vec3(1), {0.2f, 0.4f, 0.9f}, 0.0f, 0.35f);
+    const glm::vec3 torusHome{-5.5f, 0.8f, 1.5f};
+    core::EntityId torusEntity = spawn(ecs, torus, torusHome, glm::vec3(1), {0.2f, 0.4f, 0.9f}, 0.0f, 0.35f);
     spawn(ecs, box, {5.5f, 1.0f, 1.0f}, glm::vec3(1.0f, 2.0f, 1.0f), {0.7f, 0.7f, 0.65f}, 0.0f, 0.8f);
     // Distant pillars and a thin fence exercise cascade transitions and fine-caster stability.
     for (int i = 0; i < 12; ++i) {
@@ -142,6 +146,48 @@ int main(int argc, char** argv) {
         nightLights.push_back(e);
     }
 
+    // Waving avatar with a static root: arm velocity can only come from
+    // pose deformation (previous-frame bone palette).
+    core::RiggedMeshLibrary riggedMeshes;
+    const core::Skeleton skeleton = core::buildHumanoidSkeleton();
+    const std::vector<glm::mat4> inverseBind = skeleton.inverseBindMatrices();
+    std::vector<core::EntityId> avatar;
+    {
+        core::AvatarLoadout loadout;
+        core::CatalogueIndex catalogue;
+        std::string error;
+        if (!core::spawnRiggedAvatar(ecs, skeleton, loadout, catalogue, riggedMeshes, alloc, device, pool, queue, avatar,
+                                     error)) {
+            std::fprintf(stderr, "lookdev: avatar spawn failed: %s\n", error.c_str());
+            return 1;
+        }
+        for (core::EntityId e : avatar) {
+            auto& t = *ecs.tryGetComponent<core::Transform>(e);
+            t.position = {1.8f, 0.0f, 2.4f};
+            t.scale = glm::vec3(0.75f);
+        }
+    }
+    auto poseAvatar = [&](float time, bool visible) {
+        core::Skeleton posed = skeleton;
+        auto rotate = [&](const char* joint, glm::vec3 axis, float radians) {
+            int i = posed.findJointIndex(joint);
+            if (i >= 0) posed.joints[i].localRotation = glm::angleAxis(radians, axis) * posed.joints[i].localRotation;
+        };
+        rotate("arm_L_upper", {0, 0, 1}, 0.9f * std::sin(time * 5.0f));
+        rotate("arm_L_lower", {0, 0, 1}, 0.6f * std::sin(time * 5.0f + 1.0f));
+        rotate("arm_R_upper", {1, 0, 0}, 0.8f * std::sin(time * 4.0f));
+        std::vector<glm::mat4> world = posed.bindPoseMatrices();
+        for (core::EntityId e : avatar) {
+            auto& skinned = *ecs.tryGetComponent<core::SkinnedRenderable>(e);
+            skinned.visible = visible;
+            skinned.skinningMatrices.resize(world.size());
+            for (size_t j = 0; j < world.size(); ++j) skinned.skinningMatrices[j] = world[j] * inverseBind[j];
+        }
+    };
+    poseAvatar(0.0f, false);
+
+    constexpr float kMotionStep = 1.0f / 30.0f;
+
     trailer::CaptureRig rig;
     if (!rig.initialize(renderer, VkExtent2D{1280, 720})) return 1;
 
@@ -150,6 +196,7 @@ int main(int argc, char** argv) {
         {"wide", {9.0f, 6.0f, 9.0f}, -130.0f, -24.0f, false},
         {"grazing", {-1.0f, 1.2f, 6.0f}, -95.0f, -4.0f, false},
         {"night", {0.0f, 4.0f, 8.0f}, -90.0f, -22.0f, true},
+        {"motion", {0.0f, 1.6f, 7.0f}, -90.0f, -8.0f, false, true},
     };
 
     for (const View& view : views) {
@@ -161,15 +208,29 @@ int main(int argc, char** argv) {
         camera.yawDegrees = view.yaw;
         camera.pitchDegrees = view.pitch;
 
-        for (int f = 0; f < frames; ++f) {
-            std::string dir = outDir + "/" + view.name;
+        // Motion views capture the colour result, then one extra frame
+        // with the velocity visualisation.
+        const int captures = view.motion ? frames + 1 : frames;
+        for (int f = 0; f < captures; ++f) {
+            const bool velocityFrame = view.motion && f == frames;
+            std::string dir = outDir + "/" + (velocityFrame ? std::string(view.name) + "_velocity" : view.name);
             if (f + 1 < frames) dir = outDir + "/.warmup";
             std::filesystem::create_directories(dir);
-            if (!rig.captureFrame(renderer, ecs, meshes, textures, camera, dir, 0, true)) {
+            if (view.motion) {
+                const float time = static_cast<float>(f) * kMotionStep;
+                poseAvatar(time, true);
+                ecs.tryGetComponent<core::Transform>(torusEntity)->position =
+                    torusHome + glm::vec3(0.4f * static_cast<float>(f), 0.0f, 0.0f);
+            }
+            renderer.setMotionVectorDebugView(velocityFrame);
+            if (!rig.captureFrame(renderer, ecs, meshes, textures, camera, dir, 0, true, &riggedMeshes)) {
                 std::fprintf(stderr, "lookdev: capture failed for %s\n", view.name);
                 return 1;
             }
         }
+        renderer.setMotionVectorDebugView(false);
+        poseAvatar(0.0f, false);
+        ecs.tryGetComponent<core::Transform>(torusEntity)->position = torusHome;
         std::printf("lookdev: wrote %s\n", view.name);
     }
     std::filesystem::remove_all(outDir + "/.warmup");
@@ -177,6 +238,7 @@ int main(int argc, char** argv) {
     vkDeviceWaitIdle(device);
     rig.shutdown(renderer);
     meshes.destroyAll(alloc);
+    riggedMeshes.destroyAll(alloc);
     textures.destroyAll(alloc, device);
     renderer.shutdown();
     return 0;

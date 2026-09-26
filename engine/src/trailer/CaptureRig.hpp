@@ -47,10 +47,12 @@ public:
     // `camera` into this rig's own real offscreen target
     // (core::Renderer::drawSceneInto()), then real-reads it back into
     // `outputDirectory/<frameFilename(frameIndex)>`. Returns false
-    // (logged) on any real failure.
+    // (logged) on any real failure. Skinned entities are drawn only when
+    // `riggedMeshLibrary` is given.
     [[nodiscard]] bool captureFrame(core::Renderer& renderer, core::ECS& ecs, core::MeshLibrary& meshLibrary,
                                      core::TextureLibrary& textureLibrary, const core::Camera& camera,
-                                     const std::string& outputDirectory, int frameIndex, bool fullSceneLook = false);
+                                     const std::string& outputDirectory, int frameIndex, bool fullSceneLook = false,
+                                     core::RiggedMeshLibrary* riggedMeshLibrary = nullptr);
 
     // Real end-to-end Offline Export: walks `sequence`/`rail`'s real
     // schedule (cinematic::runExportSchedule(), built from `settings` via

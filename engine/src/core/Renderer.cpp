@@ -1824,7 +1824,7 @@ void Renderer::destroyParticleResources() {
 bool Renderer::initSkinningResourcesFor(FrameSync& frame) {
     for (uint32_t slot = 0; slot < kMaxSkinnedDrawsPerFrame; ++slot) {
         VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bufferInfo.size = sizeof(glm::mat4) * kMaxJointsPerSkeleton;
+        bufferInfo.size = kSkinningUboSize;
         bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -1849,7 +1849,7 @@ bool Renderer::initSkinningResourcesFor(FrameSync& frame) {
             return false;
         }
 
-        VkDescriptorBufferInfo bufInfo{frame.skinningUboBuffers[slot], 0, sizeof(glm::mat4) * kMaxJointsPerSkeleton};
+        VkDescriptorBufferInfo bufInfo{frame.skinningUboBuffers[slot], 0, kSkinningUboSize};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         write.dstSet = frame.skinningDescriptorSets[slot];
         write.dstBinding = 0;
@@ -5389,7 +5389,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         render::GpuContext ctx = gpuContext();
         if (temporalAA_.ensureHistory(ctx, history, extent) &&
             temporalAA_.bind(ctx, frame.taaBinding, history, frame.hdrView, frame.velocity.view, depthView)) {
-            temporalAA_.resolve(cmd, frame.taaBinding, history, frame.hdrImage, taaFeedback_);
+            temporalAA_.resolve(cmd, frame.taaBinding, history, frame.hdrImage, taaFeedback_, motionVectorDebugView_);
         }
     } else {
         history.historyValid = false;
@@ -5397,7 +5397,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     history.previousJitter = jitter;
     history.previousViewProjNoJitter = currentViewProj;
     history.hasPreviousViewProj = true;
-    history.advanceModels();
+    history.advanceObjects();
     ++history.frameIndex;
 
     // Kronos ("Rendering Fidelity" -- SSR fallback pass): real
@@ -5691,7 +5691,19 @@ void Renderer::drawSkinnedEntities(VkCommandBuffer cmd, FrameSync& frame, ECS& e
         // UBO slot (never shared with any other skinned draw this same
         // call) -- see FrameSync's skinning fields' doc comment.
         uint32_t jointCount = std::min(static_cast<uint32_t>(skinned.skinningMatrices.size()), kMaxJointsPerSkeleton);
-        std::memcpy(frame.skinningUboMapped[slot], skinned.skinningMatrices.data(), sizeof(glm::mat4) * jointCount);
+        auto* palettes = static_cast<glm::mat4*>(frame.skinningUboMapped[slot]);
+        std::memcpy(palettes, skinned.skinningMatrices.data(), sizeof(glm::mat4) * jointCount);
+        // The previous palette sits right after the current one. Without a
+        // matching history (first frame, rig change) it repeats the current
+        // pose so the draw only carries rigid motion.
+        render::ViewHistory& history = *frame.viewHistory;
+        const uint32_t key = entt::to_integral(entity);
+        auto previous = history.previousBones.find(key);
+        const bool hasPrevious = previous != history.previousBones.end() && previous->second.size() == jointCount;
+        const glm::mat4* previousPalette = hasPrevious ? previous->second.data() : skinned.skinningMatrices.data();
+        std::memcpy(palettes + kMaxJointsPerSkeleton, previousPalette, sizeof(glm::mat4) * jointCount);
+        history.currentBones[key].assign(skinned.skinningMatrices.begin(),
+                                          skinned.skinningMatrices.begin() + jointCount);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedScenePipelineLayout_, 2, 1,
                                  &frame.skinningDescriptorSets[slot], 0, nullptr);
 
@@ -5700,7 +5712,6 @@ void Renderer::drawSkinnedEntities(VkCommandBuffer cmd, FrameSync& frame, ECS& e
         push.baseColor = skinned.baseColor;
         push.metallicRoughness = glm::vec4(skinned.metallic, skinned.roughness, 1.0f, 0.0f);
         push.emissive = glm::vec4(skinned.emissiveColor, skinned.emissiveIntensity);
-        // Rigid transform motion only; pose deformation would need the previous bone palette.
         push.textureIndices.z = pushObjectRecord(frame, entity, MaterialLayers{}, push.model) << 16;
         vkCmdPushConstants(cmd, skinnedScenePipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                             0, sizeof(push), &push);

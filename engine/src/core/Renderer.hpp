@@ -233,6 +233,10 @@ public:
     // Weight of the current frame once history has converged (lower is
     // smoother but slower to respond).
     void setTemporalAAFeedback(float feedback) { taaFeedback_ = std::clamp(feedback, 0.02f, 1.0f); }
+    // Debug: show per-pixel motion (red = horizontal, green = vertical;
+    // 4 px of motion = full intensity) in place of the scene. Needs TAA on.
+    void setMotionVectorDebugView(bool enabled) { motionVectorDebugView_ = enabled; }
+    [[nodiscard]] bool isMotionVectorDebugViewEnabled() const { return motionVectorDebugView_; }
 
     // Image-based lighting: specular intensity and how strongly captured
     // sky reflections are normalised to the preset's hemisphere ambient.
@@ -919,6 +923,8 @@ private:
     // fixed once before.
     static constexpr uint32_t kMaxJointsPerSkeleton = 64;
     static constexpr uint32_t kMaxSkinnedDrawsPerFrame = 40;
+    // Current palette followed by the previous frame's (motion vectors) -- see scene_skinned.vert.
+    static constexpr VkDeviceSize kSkinningUboSize = sizeof(glm::mat4) * kMaxJointsPerSkeleton * 2;
 
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphics;
@@ -1953,6 +1959,7 @@ private:
     std::vector<GpuLight> gatheredLights_;
     bool temporalAAEnabled_ = true;
     float taaFeedback_ = 0.1f;
+    bool motionVectorDebugView_ = false;
     float iblSpecularIntensity_ = 1.0f;
     float iblReflectionNormalization_ = 1.0f;
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;

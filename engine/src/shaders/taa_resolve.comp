@@ -21,8 +21,8 @@ layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D resolved;
 
 layout(push_constant) uniform TaaPush {
     vec2 invSize;
-    float feedback;    // weight of the current frame in steady state
-    float resetHistory;
+    float feedback; // weight of the current frame in steady state
+    uint flags;     // 1 reset history, 2 motion-vector visualisation
 } pc;
 
 vec3 rgbToYCoCg(vec3 c) {
@@ -71,8 +71,15 @@ void main() {
     if (any(greaterThanEqual(p, size))) return;
     vec2 uv = (vec2(p) + 0.5) * pc.invSize;
 
+    if ((pc.flags & 2u) != 0u) {
+        // |motion| in pixels: red = horizontal, green = vertical, 4 px -> 1.0.
+        vec2 motionPixels = texelFetch(velocityTex, p, 0).rg * vec2(size);
+        imageStore(resolved, p, vec4(abs(motionPixels) * 0.25, 0.02, 1.0));
+        return;
+    }
+
     vec3 current = texelFetch(currentColor, p, 0).rgb;
-    if (pc.resetHistory > 0.5) {
+    if ((pc.flags & 1u) != 0u) {
         imageStore(resolved, p, vec4(current, 1.0));
         return;
     }

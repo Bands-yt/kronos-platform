@@ -56,7 +56,17 @@ layout(push_constant) uniform ObjectPushConstants {
 #define MAX_JOINTS 64
 layout(set = 2, binding = 0) uniform SkinningUBO {
     mat4 boneMatrices[MAX_JOINTS]; // already composed jointWorldMatrix * inverseBindMatrix -- see AnimationPlayer::computeSkinningMatrices()
+    mat4 prevBoneMatrices[MAX_JOINTS]; // last frame's palette for this view (== boneMatrices when there is none)
 } skinning;
+
+mat4 blendSkin(ivec4 joints, vec4 weights, bool previous) {
+    if (previous) {
+        return weights.x * skinning.prevBoneMatrices[joints.x] + weights.y * skinning.prevBoneMatrices[joints.y] +
+               weights.z * skinning.prevBoneMatrices[joints.z] + weights.w * skinning.prevBoneMatrices[joints.w];
+    }
+    return weights.x * skinning.boneMatrices[joints.x] + weights.y * skinning.boneMatrices[joints.y] +
+           weights.z * skinning.boneMatrices[joints.z] + weights.w * skinning.boneMatrices[joints.w];
+}
 
 void main() {
     // -1 (unused slot) must never reach the array index below --
@@ -68,10 +78,7 @@ void main() {
     // that clamped read contributes nothing to the blend.
     ivec4 safeJointIndices = max(inJointIndices, ivec4(0));
 
-    mat4 skinMatrix = inJointWeights.x * skinning.boneMatrices[safeJointIndices.x] +
-                       inJointWeights.y * skinning.boneMatrices[safeJointIndices.y] +
-                       inJointWeights.z * skinning.boneMatrices[safeJointIndices.z] +
-                       inJointWeights.w * skinning.boneMatrices[safeJointIndices.w];
+    mat4 skinMatrix = blendSkin(safeJointIndices, inJointWeights, false);
 
     vec4 skinnedLocalPos = skinMatrix * vec4(inPosition, 1.0);
     vec3 skinnedLocalNormal = mat3(skinMatrix) * inNormal;
@@ -92,7 +99,9 @@ void main() {
     outVertexColor = inColor;
     gl_Position = scene.proj * scene.view * worldPos;
     outClipPos = scene.viewProjNoJitter * worldPos;
-    // Extension point: previous-frame bone matrices would add skinned
-    // deformation motion; for now only the object transform contributes.
-    outPrevClipPos = scene.prevViewProjNoJitter * previousWorldPosition(objectRecordIndex(object.textureIndices), skinnedLocalPos, worldPos);
+    // Velocity covers pose deformation (previous palette) and rigid motion
+    // (previous model, falling back to the current one when unchanged).
+    vec4 prevSkinnedLocalPos = blendSkin(safeJointIndices, inJointWeights, true) * vec4(inPosition, 1.0);
+    outPrevClipPos = scene.prevViewProjNoJitter *
+        previousWorldPosition(objectRecordIndex(object.textureIndices), prevSkinnedLocalPos, object.model * prevSkinnedLocalPos);
 }

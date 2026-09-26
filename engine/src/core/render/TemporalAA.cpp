@@ -9,8 +9,11 @@ constexpr VkFormat kHistoryFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 struct TaaPush {
     glm::vec2 invSize;
     float feedback;
-    float resetHistory;
+    uint32_t flags;
 };
+
+constexpr uint32_t kFlagResetHistory = 1u;
+constexpr uint32_t kFlagDebugVelocity = 2u;
 
 float halton(uint32_t index, uint32_t base) {
     float f = 1.0f;
@@ -174,7 +177,7 @@ void TemporalAA::releaseBinding(const GpuContext& ctx, TaaBinding& binding) {
 }
 
 void TemporalAA::resolve(VkCommandBuffer cmd, const TaaBinding& binding, ViewHistory& view, VkImage targetImage,
-                         float feedback) const {
+                         float feedback, bool debugVelocity) const {
     uint32_t read = view.readIndex;
     uint32_t write = 1 - read;
     VkImage readImage = view.history[read].image;
@@ -193,7 +196,7 @@ void TemporalAA::resolve(VkCommandBuffer cmd, const TaaBinding& binding, ViewHis
     TaaPush push{};
     push.invSize = glm::vec2(1.0f / static_cast<float>(view.extent.width), 1.0f / static_cast<float>(view.extent.height));
     push.feedback = feedback;
-    push.resetHistory = view.historyValid ? 0.0f : 1.0f;
+    push.flags = (view.historyValid ? 0u : kFlagResetHistory) | (debugVelocity ? kFlagDebugVelocity : 0u);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1, &binding.sets[read], 0, nullptr);
     vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
@@ -222,7 +225,8 @@ void TemporalAA::resolve(VkCommandBuffer cmd, const TaaBinding& binding, ViewHis
                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
     view.readIndex = write;
-    view.historyValid = true;
+    // The visualisation overwrote the history, so it can't seed the next frame.
+    view.historyValid = !debugVelocity;
 }
 
 } // namespace engine::core::render
