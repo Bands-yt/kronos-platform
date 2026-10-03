@@ -328,9 +328,7 @@ void NleTimelinePlugin::drawEffectsLibraryWindow() {
 
     ImGui::Separator();
     ImGui::TextWrapped(
-        "Real post-processing knobs already on this engine's own Renderer -- while a clip carrying an effect is "
-        "the active one at the playhead, its own real values drive that same global knob (this Renderer has no "
-        "true per-screen-region compositing pass). Film Grain isn't listed: no real grain shader exists here.");
+        "While a clip with an effect is active at the playhead, its values drive the renderer\'s global post-processing settings.");
     ImGui::End();
 }
 

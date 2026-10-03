@@ -21,6 +21,7 @@
 #include <cstring>
 
 #include "core/ECS.hpp"
+#include "core/HotReloadLayoutFingerprint.hpp"
 #include "core/HotReloadModuleAbi.hpp"
 #include "core/Renderer.hpp"
 #include "studio/StudioNativePluginAbi.hpp"
@@ -119,5 +120,6 @@ private:
 } // namespace
 
 extern "C" int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
+extern "C" unsigned long long kronosHotReloadLayoutFingerprint() { return engine::core::kHotReloadLayoutFingerprint; }
 extern "C" engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new SampleStudioToolPlugin(); }
 extern "C" void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* module) { delete module; }

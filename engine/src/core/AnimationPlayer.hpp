@@ -88,6 +88,11 @@ public:
     // affect fade weight.
     void seek(Handle handle, float time);
     [[nodiscard]] float playhead(Handle handle) const;
+    // Playhead as a fraction of the clip's duration (0 for an unknown handle).
+    [[nodiscard]] float normalizedPlayhead(Handle handle) const;
+
+    // Scales how fast `handle`'s playhead advances (fades are unaffected).
+    void setPlaybackRate(Handle handle, float rate);
 
     // Advances every active clip's playhead + fade weight by dt, then
     // recomputes this tick's pose (see the .cpp's header comment on
@@ -116,6 +121,7 @@ private:
         Handle handle = kInvalidHandle;
         AnimationClip clip;
         float playheadTime = 0.0f;
+        float rate = 1.0f;
         bool looping = true;
         bool paused = false;
         bool alive = true;

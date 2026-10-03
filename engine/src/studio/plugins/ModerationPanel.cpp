@@ -49,7 +49,7 @@ void ModerationPanel::drawChatLogSection() {
     if (!ImGui::CollapsingHeader("Chat Log")) return;
 
     const moderation::ChatLog& log = session_->chatLog();
-    ImGui::Text("%zu real logged messages", log.size());
+    ImGui::Text("%zu logged messages", log.size());
     ImGui::BeginChild("##chat_log_scroll", ImVec2(0, 150), true);
     for (const moderation::ChatLogEntry& entry : log.entries()) {
         ImVec4 color = entry.containedProfanity || entry.flaggedByClassifier ? ImVec4(0.90f, 0.55f, 0.25f, 1.0f)
@@ -66,10 +66,8 @@ void ModerationPanel::drawDirectMessagesSection() {
 
     const moderation::DirectMessageLog& log = session_->directMessageLog();
     ImGui::TextWrapped(
-        "Real, server-side record of every real direct message this server has processed -- routed through the "
-        "exact same TrustSafetyService/PolicyEngine chat uses. A real, blocked DM (Minor Mode restriction or a "
-        "real hard-block category) is still recorded here for review, even though it was never delivered.");
-    ImGui::Text("%zu real logged direct message(s)", log.size());
+        "Server-side record of every direct message this server has processed, routed through the same Trust & Safety policy engine as chat. Blocked DMs are recorded for review even though they were never delivered.");
+    ImGui::Text("%zu logged direct message(s)", log.size());
     ImGui::BeginChild("##dm_log_scroll", ImVec2(0, 150), true);
     for (const moderation::DirectMessageLogEntry& entry : log.entries()) {
         ImVec4 color = entry.blocked ? ImVec4(0.90f, 0.30f, 0.30f, 1.0f)
@@ -98,12 +96,12 @@ void ModerationPanel::drawReportSection() {
         reportDescriptionBuffer_[0] = '\0';
     }
     ImGui::EndDisabled();
-    if (!session_->isClient()) ImGui::TextDisabled("Join a server (Network Overlay) to submit a real report.");
+    if (!session_->isClient()) ImGui::TextDisabled("Join a server (Network Overlay) to submit a report.");
     if (!reportStatus_.empty()) ImGui::TextDisabled("%s", reportStatus_.c_str());
 
     ImGui::Separator();
     const moderation::ReportLog& reportLog = session_->reportLog();
-    ImGui::Text("%zu real logged reports", reportLog.size());
+    ImGui::Text("%zu logged reports", reportLog.size());
     ImGui::BeginChild("##report_log_scroll", ImVec2(0, 120), true);
     for (const moderation::PlayerReport& report : reportLog.reports()) {
         ImGui::Text("[%.1fs] player %u reported player %u (%s): %s", report.serverTimestampSeconds, report.reporter,
@@ -117,7 +115,7 @@ void ModerationPanel::drawReviewQueueSection() {
 
     moderation::ReviewQueue& queue = session_->reviewQueue();
     const safety::TrustSafetyService& trustSafety = session_->trustSafetyService();
-    ImGui::Text("%zu real case(s) awaiting human review", queue.size());
+    ImGui::Text("%zu case(s) awaiting human review", queue.size());
     ImGui::BeginChild("##review_queue_scroll", ImVec2(0, 120), true);
     for (const moderation::ReviewCase& reviewCase : queue.cases()) {
         // Kronos ("Moderation Architecture v1", Phase 1): the real,
@@ -141,9 +139,8 @@ void ModerationPanel::drawAuditLogSection() {
 
     const moderation::EscalationEventLog& log = session_->escalationEventLog();
     ImGui::TextWrapped(
-        "Real, disk-persisted record of every real escalation dispatch (Mute/Restrict/Human Review/Legal Report) "
-        "this server has ever made -- survives a restart, unlike the live risk score above.");
-    ImGui::Text("%zu real logged escalation(s)", log.size());
+        "Persistent record of every escalation (Mute / Restrict / Human Review / Legal Report) this server has made. Survives restarts, unlike the live risk score above.");
+    ImGui::Text("%zu logged escalation(s)", log.size());
     ImGui::BeginChild("##audit_log_scroll", ImVec2(0, 150), true);
     for (const moderation::EscalationEvent& event : log.events()) {
         ImGui::Text("[%.1fs] player %u -- %s (%s)", event.serverTimestampSeconds, event.player,
@@ -156,7 +153,7 @@ void ModerationPanel::drawAppealsSection() {
     if (!ImGui::CollapsingHeader("Appeals", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     moderation::AppealLog& appeals = session_->appealLog();
-    ImGui::Text("%zu real appeal(s) on file", appeals.size());
+    ImGui::Text("%zu appeal(s) on file", appeals.size());
     ImGui::BeginChild("##appeals_scroll", ImVec2(0, 150), true);
     for (size_t i = 0; i < appeals.appeals().size(); ++i) {
         const moderation::Appeal& appeal = appeals.appeals()[i];
@@ -183,7 +180,7 @@ void ModerationPanel::drawAppealsSection() {
     // this one session's own ephemeral PlayerId.
     if (selected.profileId != 0) {
         size_t accountAppealCount = appeals.appealsForProfileId(selected.profileId).size();
-        ImGui::Text("Account profileId: %llu (%zu real appeal(s) from this account)",
+        ImGui::Text("Account profileId: %llu (%zu appeal(s) from this account)",
                      static_cast<unsigned long long>(selected.profileId), accountAppealCount);
     } else {
         ImGui::TextDisabled("Account profileId: unknown (pre-Account-System-v2 client)");
@@ -222,7 +219,7 @@ void ModerationPanel::drawTrustedCreatorSection() {
     if (!ImGui::CollapsingHeader("Trusted Creators")) return;
 
     moderation::TrustedCreatorRegistry& registry = session_->trustedCreatorRegistry();
-    ImGui::Text("%zu real trusted creator(s)", registry.trustedCount());
+    ImGui::Text("%zu trusted creator(s)", registry.trustedCount());
     ImGui::InputInt("Creator player id##trust", &trustTargetId_);
     ImGui::SameLine();
     if (ImGui::Button("Trust")) registry.setTrusted(static_cast<net::PlayerId>(trustTargetId_), true);
@@ -252,9 +249,7 @@ void ModerationPanel::drawSafetyReportSection() {
     if (!ImGui::CollapsingHeader("Safety Reports")) return;
 
     ImGui::TextWrapped(
-        "Exports a real, human-readable summary of flags/escalations/appeals/reversed decisions currently "
-        "retained in this session's logs. This is a cumulative snapshot at generation time, not a "
-        "calendar-date-filtered query -- see SafetyReportGenerator.hpp's own comment for why.");
+        "Exports a readable summary of the flags, escalations, appeals and reversed decisions retained in this session\'s logs, as a cumulative snapshot at generation time.");
 
     if (ImGui::Button("Generate Safety Report")) {
         int64_t nowUnixSeconds = std::chrono::duration_cast<std::chrono::seconds>(

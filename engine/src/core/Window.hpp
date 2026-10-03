@@ -89,6 +89,10 @@ public:
     [[nodiscard]] uint32_t windowId() const { return window_ != nullptr ? SDL_GetWindowID(window_) : 0; }
     [[nodiscard]] uint32_t width() const { return width_; }
     [[nodiscard]] uint32_t height() const { return height_; }
+    // Drawable size in physical pixels; larger than width()/height() on
+    // high-DPI displays where the compositor scales logical coordinates.
+    [[nodiscard]] uint32_t pixelWidth() const;
+    [[nodiscard]] uint32_t pixelHeight() const;
     [[nodiscard]] bool wasResized() const { return resized_; }
     void clearResizedFlag() { resized_ = false; }
 

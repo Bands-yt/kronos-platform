@@ -113,6 +113,8 @@ bool Renderer::initialize(const CreateInfo& info) {
         std::fprintf(stderr, "Renderer: RayTracingScene::initialize failed -- continuing with ray-traced shadows disabled.\n");
         rayTracingSupported_ = false;
     }
+    // Every Mesh created from here on is also a BLAS build input.
+    setRayTracingGeometryUsage(rayTracingSupported_);
 
     if (!createSwapchain()) return false;
     if (!createDepthResources()) return false;
@@ -631,7 +633,7 @@ bool Renderer::createSwapchain() {
 
     VkSurfaceFormatKHR surfaceFormat = chooseSurfaceFormat(formats);
     VkPresentModeKHR presentMode = choosePresentMode(presentModes, vsyncEnabled_);
-    VkExtent2D extent = chooseExtent(caps, window_->width(), window_->height());
+    VkExtent2D extent = chooseExtent(caps, window_->pixelWidth(), window_->pixelHeight());
 
     uint32_t imageCount = caps.minImageCount + 1;
     if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
@@ -992,6 +994,9 @@ bool Renderer::createShadowPipeline() {
 
     VkResult result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &shadowPipeline_);
     vkDestroyShaderModule(device_, vertModule, nullptr);
+    if (result == VK_SUCCESS && !createSkinnedShadowPipeline(pipelineInfo, shaderDir)) {
+        std::fprintf(stderr, "Renderer: skinned shadow pipeline failed -- characters will not cast shadow-map shadows.\n");
+    }
 
     if (result != VK_SUCCESS) {
         std::fprintf(stderr, "Renderer: vkCreateGraphicsPipelines (shadow) failed.\n");
@@ -1000,7 +1005,53 @@ bool Renderer::createShadowPipeline() {
     return true;
 }
 
+bool Renderer::createSkinnedShadowPipeline(VkGraphicsPipelineCreateInfo pipelineInfo, const std::string& shaderDir) {
+    VkPushConstantRange pushRange{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConstants)};
+    std::array<VkDescriptorSetLayout, 2> setLayouts{sceneDescriptorSetLayout_, skinningDescriptorSetLayout_};
+    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+    layoutInfo.pSetLayouts = setLayouts.data();
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &skinnedShadowPipelineLayout_) != VK_SUCCESS) return false;
+
+    auto code = readBinaryFile(shaderDir + "/shadow_skinned.vert.spv");
+    VkShaderModule module = code.empty() ? VK_NULL_HANDLE : createShaderModule(device_, code);
+    if (module == VK_NULL_HANDLE) return false;
+    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stage.module = module;
+    stage.pName = "main";
+
+    std::array<VkVertexInputBindingDescription, 2> bindings{Vertex::bindingDescription(),
+                                                            GpuSkinVertex::bindingDescription()};
+    std::vector<VkVertexInputAttributeDescription> attributes;
+    for (const auto& attribute : Vertex::attributeDescriptions()) {
+        if (attribute.location == 0) attributes.push_back(attribute);
+    }
+    for (const auto& attribute : GpuSkinVertex::attributeDescriptions(4)) attributes.push_back(attribute);
+    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInput.vertexBindingDescriptionCount = static_cast<uint32_t>(bindings.size());
+    vertexInput.pVertexBindingDescriptions = bindings.data();
+    vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size());
+    vertexInput.pVertexAttributeDescriptions = attributes.data();
+
+    pipelineInfo.pStages = &stage;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.layout = skinnedShadowPipelineLayout_;
+    VkResult result =
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &skinnedShadowPipeline_);
+    vkDestroyShaderModule(device_, module, nullptr);
+    return result == VK_SUCCESS;
+}
+
 void Renderer::destroyShadowPipeline() {
+    if (skinnedShadowPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, skinnedShadowPipeline_, nullptr);
+    if (skinnedShadowPipelineLayout_ != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(device_, skinnedShadowPipelineLayout_, nullptr);
+    }
+    skinnedShadowPipeline_ = VK_NULL_HANDLE;
+    skinnedShadowPipelineLayout_ = VK_NULL_HANDLE;
     if (shadowPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(device_, shadowPipeline_, nullptr);
         shadowPipeline_ = VK_NULL_HANDLE;
@@ -1073,6 +1124,7 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
         vkCmdSetScissor(cmd, 0, 1, &scissor);
 
         vkCmdBeginRendering(cmd, &renderingInfo);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
         for (const Caster& caster : casters) {
             if (!visible(caster)) continue;
             ShadowPushConstants push{};
@@ -1086,6 +1138,32 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
             vkCmdBindIndexBuffer(cmd, caster.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(cmd, caster.mesh->indexCount(), 1, 0, 0, 0);
             recordDraw(caster.mesh->indexCount(), 1);
+        }
+        if (skinnedShadowPipeline_ != VK_NULL_HANDLE) {
+            bool bound = false;
+            for (const SkinnedDraw& draw : skinnedDraws_) {
+                if (!draw.castsShadow || !visible(Caster{draw.model, draw.center, draw.radius, nullptr})) continue;
+                if (!bound) {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedShadowPipeline_);
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedShadowPipelineLayout_, 0, 1,
+                                            &frame.sceneDescriptorSet, 0, nullptr);
+                    bound = true;
+                }
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedShadowPipelineLayout_, 1, 1,
+                                        &frame.skinningDescriptorSets[draw.slot], 0, nullptr);
+                ShadowPushConstants push{};
+                push.model = draw.model;
+                push.viewIndex = viewIndex;
+                vkCmdPushConstants(cmd, skinnedShadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push),
+                                   &push);
+                const Mesh& mesh = draw.mesh->mesh();
+                std::array<VkBuffer, 2> buffers{mesh.vertexBuffer(), draw.mesh->skinBuffer()};
+                std::array<VkDeviceSize, 2> offsets{0, 0};
+                vkCmdBindVertexBuffers(cmd, 0, 2, buffers.data(), offsets.data());
+                vkCmdBindIndexBuffer(cmd, mesh.indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(cmd, mesh.indexCount(), 1, 0, 0, 0);
+                recordDraw(mesh.indexCount(), 1);
+            }
         }
         vkCmdEndRendering(cmd);
     };
@@ -1460,24 +1538,20 @@ bool Renderer::initSceneDescriptorResourcesFor(FrameSync& frame) {
     // drawShadowPass()'s post-pass transition guarantees every frame.
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    // Sprint 14 ("RTX Upgrade" Phase 2): binding 2, the real TLAS --
-    // written separately (see updateRayTracedShadowDescriptor()'s own
-    // comment), with whatever real (possibly still-empty)
-    // rayTracingScene_.tlas() already holds by this point (rayTracingScene_
-    // is real-initialized before createSceneDescriptorResources() ever
-    // runs -- see Renderer::initialize()'s own call order).
+    if (rayTracingSupported_ && !rayTracingScene_.initializeFrame(frame.rayTracing)) {
+        std::fprintf(stderr, "Renderer: failed to create a ray-tracing frame.\n");
+        return false;
+    }
     updateRayTracedShadowDescriptor(frame);
     return true;
 }
 
 void Renderer::updateRayTracedShadowDescriptor(FrameSync& frame) {
-    if (!rayTracingSupported_) return;
+    if (!rayTracingSupported_ || frame.rayTracing.tlas == VK_NULL_HANDLE) return;
 
     VkWriteDescriptorSetAccelerationStructureKHR asWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
-    VkAccelerationStructureKHR tlas = rayTracingScene_.tlas();
     asWrite.accelerationStructureCount = 1;
-    asWrite.pAccelerationStructures = &tlas;
-
+    asWrite.pAccelerationStructures = &frame.rayTracing.tlas;
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     write.pNext = &asWrite;
     write.dstSet = frame.sceneDescriptorSet;
@@ -1485,25 +1559,64 @@ void Renderer::updateRayTracedShadowDescriptor(FrameSync& frame) {
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 
-    // Kronos ("Rendering Fidelity Foundation" Phase 1.3): binding 3, the
-    // real materials buffer hybrid RT reflections read -- written
-    // alongside binding 2 every time this function runs (same call sites,
-    // same "the underlying handle may have just reallocated" trigger, see
-    // this function's own call sites' comments). A real, valid (if
-    // possibly zero-length-backed) buffer exists from the moment
-    // RayTracingScene::initialize() first calls rebuild({}), same
-    // "always something real and valid bound" guarantee binding 2 above
-    // already has.
-    VkDescriptorBufferInfo materialsInfo{rayTracingScene_.materialsBuffer(), 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet materialsWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    materialsWrite.dstSet = frame.sceneDescriptorSet;
-    materialsWrite.dstBinding = 3;
-    materialsWrite.descriptorCount = 1;
-    materialsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    materialsWrite.pBufferInfo = &materialsInfo;
+    VkDescriptorBufferInfo recordsInfo{frame.rayTracing.instanceData.buffer, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet recordsWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    recordsWrite.dstSet = frame.sceneDescriptorSet;
+    recordsWrite.dstBinding = 3;
+    recordsWrite.descriptorCount = 1;
+    recordsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    recordsWrite.pBufferInfo = &recordsInfo;
 
-    std::array<VkWriteDescriptorSet, 2> writes{write, materialsWrite};
+    std::array<VkWriteDescriptorSet, 2> writes{write, recordsWrite};
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+void Renderer::recordRayTracingScene(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
+                                     TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary) {
+    rtMeshInstances_.clear();
+    rtSkinnedInstances_.clear();
+    auto view = ecs.view<Transform, Renderable>();
+    for (auto entity : view) {
+        const auto& renderable = view.get<Renderable>(entity);
+        if (!renderable.visible || renderable.unlitSilhouette) continue;
+        const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
+        if (mesh == nullptr || !mesh->rayTracingReady()) continue;
+        uint32_t albedoSlot = kBindlessWhiteSlot;
+        if (bindlessInitialised_ && !renderable.useTriplanarProjection) {
+            albedoSlot = bindlessSlotFor(renderable.albedoTexture, textureLibrary, kBindlessWhiteSlot);
+        }
+        RtMeshInstance instance;
+        instance.mesh = mesh;
+        instance.transform = hierarchy::computeWorldMatrix(ecs, entity);
+        instance.mask = rtInstanceMask(renderable.castsShadow && renderable.transmission <= 0.0f);
+        instance.material = makeRtMaterial(renderable.baseColor, renderable.metallic, renderable.roughness,
+                                           renderable.emissiveColor, renderable.emissiveIntensity, albedoSlot);
+        rtMeshInstances_.push_back(instance);
+    }
+    if (riggedMeshLibrary != nullptr) {
+        auto skinnedView = ecs.view<Transform, SkinnedRenderable>();
+        for (auto entity : skinnedView) {
+            const auto& skinned = skinnedView.get<SkinnedRenderable>(entity);
+            if (!skinned.visible || skinned.skinningMatrices.empty()) continue;
+            const RiggedMesh* rigged = riggedMeshLibrary->get(skinned.riggedMeshHandle);
+            if (rigged == nullptr || !rigged->mesh().rayTracingReady()) continue;
+            RtSkinnedInstance instance;
+            instance.mesh = rigged;
+            instance.key = static_cast<uint64_t>(entt::to_integral(entity));
+            instance.transform = hierarchy::computeWorldMatrix(ecs, entity);
+            instance.palette = skinned.skinningMatrices.data();
+            instance.jointCount =
+                std::min(static_cast<uint32_t>(skinned.skinningMatrices.size()), kMaxJointsPerSkeleton);
+            instance.mask = rtInstanceMask(skinned.castsShadow);
+            instance.material = makeRtMaterial(skinned.baseColor, skinned.metallic, skinned.roughness,
+                                               skinned.emissiveColor, skinned.emissiveIntensity, kBindlessWhiteSlot);
+            rtSkinnedInstances_.push_back(instance);
+        }
+    }
+    if (rayTracingScene_.record(cmd, frame.rayTracing, rtMeshInstances_, rtSkinnedInstances_)) {
+        updateRayTracedShadowDescriptor(frame);
+    }
+    lastRtInstanceCount_ = frame.rayTracing.instanceCount;
 }
 
 render::GpuContext Renderer::gpuContext() const {
@@ -1513,6 +1626,9 @@ render::GpuContext Renderer::gpuContext() const {
 
 bool Renderer::initRenderModules() {
     render::GpuContext ctx = gpuContext();
+    if (rayTracingSupported_ && !rayTracingScene_.initializeSkinning(ctx)) {
+        std::fprintf(stderr, "Renderer: ray-traced skinning unavailable -- characters are left out of the TLAS.\n");
+    }
     if (!ibl_.initialize(ctx)) {
         std::fprintf(stderr, "Renderer: image-based lighting setup failed.\n");
         return false;
@@ -1543,6 +1659,7 @@ void Renderer::shutdownRenderModules() {
     temporalAA_.shutdown(ctx);
     clusteredLighting_.shutdown(ctx);
     ibl_.shutdown(ctx);
+    if (mainViewHistory_) render::TemporalAA::destroyHistory(ctx, *mainViewHistory_);
     mainViewHistory_.reset();
 }
 
@@ -1633,6 +1750,8 @@ uint32_t Renderer::pushObjectRecord(FrameSync& frame, EntityId entity, const Mat
     record.clearcoat = {l.clearcoat, l.clearcoatRoughness, l.anisotropy, l.anisotropyRotation};
     record.sheen = {l.sheenColor, l.sheenRoughness};
     record.misc.x = l.specular;
+    record.misc.z = l.waterWaves;
+    record.misc.w = l.waterFoam;
 
     uint32_t index = frame.objectRecordCount++;
     static_cast<GpuObjectRecord*>(frame.objectRecords.mapped)[index] = record;
@@ -1640,6 +1759,7 @@ uint32_t Renderer::pushObjectRecord(FrameSync& frame, EntityId entity, const Mat
 }
 
 void Renderer::destroySceneDescriptorResourcesFor(FrameSync& frame) {
+    rayTracingScene_.destroyFrame(frame.rayTracing);
     if (frame.sceneUboBuffer != VK_NULL_HANDLE) {
         vmaDestroyBuffer(allocator_, frame.sceneUboBuffer, frame.sceneUboAllocation);
         frame.sceneUboBuffer = VK_NULL_HANDLE;
@@ -2672,16 +2792,15 @@ bool Renderer::createParticlePipeline() {
     depthStencil.depthWriteEnable = VK_FALSE; // particles don't occlude each other or write depth -- standard for blended fx
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
-    // Additive blending, modulated by alpha -- no back-to-front sort
-    // dependency the way regular (over) alpha blending would need, which
-    // is exactly why this pass uses it instead: sorting thousands of
-    // particles per frame is real cost this pass doesn't need to pay yet.
+    // Premultiplied blending: particle.frag outputs alpha 0 for additive
+    // particles (dst * 1, the classic glow) and their coverage for occluding
+    // ones (an over-blend), so both kinds share one unsorted pass.
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+                                           VK_COLOR_COMPONENT_B_BIT;
     colorBlendAttachment.blendEnable = VK_TRUE;
-    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
     colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
@@ -4017,29 +4136,32 @@ bool Renderer::ensureSSRTargets(FrameSync& frame, VkExtent2D extent, VkImageView
             std::fprintf(stderr, "Renderer: vkAllocateDescriptorSets (SSR input) failed.\n");
             return false;
         }
+        frame.ssrInputViews = {};
     }
 
     if (frame.ssrInputDescriptorSet != VK_NULL_HANDLE) {
-        // Rewritten every call, same "depthView can legitimately change on
-        // a resize" reasoning as ensureCinematicTarget()'s own identical
-        // comment -- and always hdrView/depthView, never conditional (see
-        // this function's own header comment).
+        // Always hdrView/depthView, never conditional (see this function's
+        // header comment); rewritten only when either view changes.
         VkDescriptorImageInfo hdrInfo{postProcessSampler_, frame.hdrView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo depthInfo{depthSampler_, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 2> writes{};
-        writes[0] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[0].dstSet = frame.ssrInputDescriptorSet;
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &hdrInfo;
-        writes[1] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[1].dstSet = frame.ssrInputDescriptorSet;
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[1].pImageInfo = &depthInfo;
-        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        const std::array<VkImageView, 2> views{frame.hdrView, depthView};
+        if (views != frame.ssrInputViews) {
+            frame.ssrInputViews = views;
+            std::array<VkWriteDescriptorSet, 2> writes{};
+            writes[0] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[0].dstSet = frame.ssrInputDescriptorSet;
+            writes[0].dstBinding = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[0].pImageInfo = &hdrInfo;
+            writes[1] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[1].dstSet = frame.ssrInputDescriptorSet;
+            writes[1].dstBinding = 1;
+            writes[1].descriptorCount = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[1].pImageInfo = &depthInfo;
+            vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
     }
     return true;
 }
@@ -4101,31 +4223,33 @@ bool Renderer::ensureVolumetricFogTargets(FrameSync& frame, VkExtent2D extent, V
             std::fprintf(stderr, "Renderer: vkAllocateDescriptorSets (volumetric fog input) failed.\n");
             return false;
         }
+        frame.fogInputViews = {};
     }
 
     if (frame.fogInputDescriptorSet != VK_NULL_HANDLE) {
-        // Rewritten every call, same "depthView can legitimately change on
-        // a resize" reasoning as ensureCinematicTarget()'s own identical
-        // comment. Binding 0 conditional on SSR (see this function's own
-        // header comment) -- same "always just rewrite it" reasoning
-        // ensureCinematicTarget() already applies to its own fog condition.
+        // Binding 0 is conditional on SSR (see this function's header
+        // comment); rewritten only when either view changes.
         VkImageView fogInput = (ssrEnabled_ && frame.ssrView != VK_NULL_HANDLE) ? frame.ssrView : frame.hdrView;
         VkDescriptorImageInfo hdrInfo{postProcessSampler_, fogInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo depthInfo{depthSampler_, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 2> writes{};
-        writes[0] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[0].dstSet = frame.fogInputDescriptorSet;
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &hdrInfo;
-        writes[1] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[1].dstSet = frame.fogInputDescriptorSet;
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[1].pImageInfo = &depthInfo;
-        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        const std::array<VkImageView, 2> views{fogInput, depthView};
+        if (views != frame.fogInputViews) {
+            frame.fogInputViews = views;
+            std::array<VkWriteDescriptorSet, 2> writes{};
+            writes[0] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[0].dstSet = frame.fogInputDescriptorSet;
+            writes[0].dstBinding = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[0].pImageInfo = &hdrInfo;
+            writes[1] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[1].dstSet = frame.fogInputDescriptorSet;
+            writes[1].dstBinding = 1;
+            writes[1].descriptorCount = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[1].pImageInfo = &depthInfo;
+            vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
     }
     return true;
 }
@@ -4186,35 +4310,34 @@ bool Renderer::ensureCinematicTarget(FrameSync& frame, VkExtent2D extent, VkImag
             std::fprintf(stderr, "Renderer: vkAllocateDescriptorSets (cinematic) failed.\n");
             return false;
         }
+        frame.cinematicInputViews = {};
     }
 
     if (frame.cinematicDescriptorSet != VK_NULL_HANDLE) {
-        // Rewritten every call (not just on first allocation): depthView
-        // can legitimately change (a resize recreates the caller's depth
-        // buffer) even on a call where frame.cinematicImage itself didn't
-        // need to move -- cheap enough (2 descriptor writes) to just
-        // always keep it current rather than tracking a third "did depth
-        // change" flag. Kronos Phase 1.2: binding 0 is now conditional --
-        // frame.fogView if volumetric fog ran this frame, else
-        // frame.hdrView -- same "always just rewrite it" reasoning applies
-        // just as well to this condition as it already did to depthView.
+        // depthView can change on a resize even when cinematicImage did not,
+        // and binding 0 is fogView when volumetric fog ran, else hdrView;
+        // rewritten only when either view changes.
         VkImageView cinematicInput = (volumetricFogEnabled_ && frame.fogView != VK_NULL_HANDLE) ? frame.fogView : frame.hdrView;
         VkDescriptorImageInfo hdrInfo{postProcessSampler_, cinematicInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo depthInfo{depthSampler_, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 2> writes{};
-        writes[0] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[0].dstSet = frame.cinematicDescriptorSet;
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &hdrInfo;
-        writes[1] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[1].dstSet = frame.cinematicDescriptorSet;
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[1].pImageInfo = &depthInfo;
-        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        const std::array<VkImageView, 2> views{cinematicInput, depthView};
+        if (views != frame.cinematicInputViews) {
+            frame.cinematicInputViews = views;
+            std::array<VkWriteDescriptorSet, 2> writes{};
+            writes[0] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[0].dstSet = frame.cinematicDescriptorSet;
+            writes[0].dstBinding = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[0].pImageInfo = &hdrInfo;
+            writes[1] = VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[1].dstSet = frame.cinematicDescriptorSet;
+            writes[1].dstBinding = 1;
+            writes[1].descriptorCount = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[1].pImageInfo = &depthInfo;
+            vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
     }
 
     // Kronos Phase 1.2 / ("Rendering Fidelity" -- SSR): the real "front of
@@ -4497,7 +4620,7 @@ void Renderer::drawSSRPass(VkCommandBuffer cmd, FrameSync& frame, VkExtent2D ext
     // actually active -- checked per-frame (not via ssrEnabled_ itself)
     // so a scene with RT reflections requested but no valid TLAS yet
     // still gets real SSR as the honest fallback it's meant to be.
-    if (rtReflectionsEnabled_ && rayTracingScene_.hasValidTlas()) return;
+    if (rtReflectionsEnabled_ && frame.rayTracing.tlas != VK_NULL_HANDLE) return;
     if (frame.ssrImage == VK_NULL_HANDLE || frame.ssrInputDescriptorSet == VK_NULL_HANDLE) {
         // ensureSSRTargets() failed this frame (already logged there) --
         // skip rather than recording a draw against a null target;
@@ -4958,55 +5081,11 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
 
     float aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
 
-    // Sprint 14 ("RTX Upgrade" Phase 2): real, per-frame TLAS rebuild --
-    // only collects/rebuilds when the user's own real toggle is on (a
-    // real, honest early-out otherwise, matching every other optional
-    // real cost in this function). Mirrors drawShadowPass()'s own
-    // shadow-caster filter (`visible && castsShadow`) exactly, so a
-    // ray-traced shadow and the existing CSM rasterized one agree on
-    // which entities cast a shadow at all -- see RayTracingScene.hpp's
-    // own header comment for why only MeshSource-described Box/Plane
-    // entities can actually participate this pass. Kronos ("Rendering
-    // Fidelity Foundation" Phase 1.3): also rebuilds when
-    // rtReflectionsEnabled_ alone is on (shadows off) -- reflections need
-    // this exact same real TLAS to trace against even with shadow tracing
-    // disabled; without this real `||`, enabling reflections alone would
-    // silently trace against a stale or empty TLAS with no error.
-    if (rayTracedShadowsEnabled_ || rtReflectionsEnabled_) {
-        std::vector<RayTracingScene::Instance> rtInstances;
-        auto rtView = ecs.view<Transform, Renderable, MeshSource>();
-        for (auto entity : rtView) {
-            const auto& renderable = rtView.get<Renderable>(entity);
-            if (!renderable.visible || !renderable.castsShadow) continue;
-            const auto& meshSource = rtView.get<MeshSource>(entity);
-            if (meshSource.kind != MeshSourceKind::Box && meshSource.kind != MeshSourceKind::Plane) continue;
-            const auto& transform = rtView.get<Transform>(entity);
-            RayTracingScene::Instance rtInstance{meshSource.kind, meshSource.params, transform.matrix()};
-            // Kronos Phase 1.3: real material data riding along for
-            // reflections -- see RayTracingScene::Instance's own comment.
-            // Harmless to always populate (a real, tiny 5-float copy)
-            // even on a frame where only shadows are enabled.
-            rtInstance.baseColor = renderable.baseColor;
-            rtInstance.metallic = renderable.metallic;
-            rtInstance.roughness = renderable.roughness;
-            rtInstances.push_back(rtInstance);
-        }
-        VkAccelerationStructureKHR tlasBefore = rayTracingScene_.tlas();
-        VkBuffer materialsBufferBefore = rayTracingScene_.materialsBuffer();
-        rayTracingScene_.rebuild(rtInstances);
-        if (rayTracingScene_.tlas() != tlasBefore || rayTracingScene_.materialsBuffer() != materialsBufferBefore) {
-            // The grow-only TLAS and/or materials buffer had to reallocate
-            // this frame, producing a real, different handle -- every
-            // frame's own descriptor set (not just this one) needs to
-            // real-point at the new one before it's next used, since each
-            // FrameSync/AuxiliarySceneHandle owns an independent real
-            // descriptor set. The two buffers can reallocate independently
-            // (different byte-size-per-instance, different starting
-            // capacity), so either one changing must trigger this same
-            // real propagation -- not just the TLAS.
-            for (auto& f : frames_) updateRayTracedShadowDescriptor(f);
-            for (auto& aux : auxiliaryScenes_) updateRayTracedShadowDescriptor(aux);
-        }
+    const bool rayTracingActive = rayTracingSupported_ && rayTracingWanted() && frame.rayTracing.tlas != VK_NULL_HANDLE;
+    if (rayTracingActive) {
+        recordRayTracingScene(cmd, frame, ecs, meshLibrary, textureLibrary, riggedMeshLibrary);
+    } else {
+        lastRtInstanceCount_ = 0;
     }
 
     // The UBO (including every cascade's lightViewProj) is filled once,
@@ -5077,7 +5156,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // SceneTypes.hpp. scene_rt.frag never attempts a real ray query
     // against a real, valid-but-empty (zero-instance) TLAS just because
     // the user flipped the toggle before any real shadow-caster existed.
-    ubo.renderFlags.x = (rayTracedShadowsEnabled_ && rayTracingScene_.hasValidTlas()) ? 1.0f : 0.0f;
+    ubo.renderFlags.x = (rayTracingActive && rayTracedShadowsEnabled_) ? 1.0f : 0.0f;
     ubo.renderFlags.y = performanceModeEnabled_ ? 1.0f : 0.0f;
     // Kronos ("Rendering Fidelity Foundation" Phase 1.1): real
     // wet-surface response -- see WeatherProfile::wetness's own comment.
@@ -5110,7 +5189,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // Kronos ("Rendering Fidelity Foundation" Phase 1.3): same real
     // "toggle AND a currently-valid TLAS" gating as renderFlags.x above --
     // see this field's own comment in SceneTypes.hpp.
-    ubo.reflectionParams.x = (rtReflectionsEnabled_ && rayTracingScene_.hasValidTlas()) ? 1.0f : 0.0f;
+    ubo.reflectionParams.x = (rayTracingActive && rtReflectionsEnabled_) ? 1.0f : 0.0f;
     ubo.reflectionParams.y = reflectionRoughCutoff_;
     ubo.reflectionParams.z = reflectionMirrorCutoff_;
     // Kronos ("Rendering Fidelity" -- full atmospheric-scattering skybox):
@@ -5132,8 +5211,10 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // SceneUBO::giParams's own comment. Same real "toggle AND a
     // currently-valid TLAS" gating renderFlags.x/reflectionParams.x above
     // already use.
-    ubo.giParams.x = (rtGIEnabled_ && rayTracingScene_.hasValidTlas()) ? 1.0f : 0.0f;
+    ubo.giParams.x = (rayTracingActive && rtGIEnabled_) ? 1.0f : 0.0f;
     ubo.giParams.y = rtGIIntensity_;
+    ubo.giParams.z = static_cast<float>(performanceModeEnabled_ ? std::max(1, rtGISamples_ / 2) : rtGISamples_);
+    ubo.giParams.w = (rayTracingActive && rtAOEnabled_) ? rtAORadius_ : 0.0f;
 
     // The environment is captured from the same analytic sky the sky pass draws, so reflections and the
     // visible background agree; it is only re-captured when the quantised sky inputs change.
@@ -5150,6 +5231,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
 
     std::memcpy(frame.sceneUboMapped, &ubo, sizeof(ubo)); // persistently mapped -- no map/unmap round trip
 
+    prepareSkinnedDraws(frame, ecs, riggedMeshLibrary);
     drawShadowPass(cmd, frame, ecs, meshLibrary, cascades, spotShadows);
     clusteredLighting_.record(cmd, frame.sceneDescriptorSet, frame.clusterResources, clusterGrid);
     frame.objectRecordCount = 1;
@@ -5691,6 +5773,7 @@ void Renderer::drawParticles(VkCommandBuffer cmd, FrameSync& frame, const Partic
         instanceCursor[i].positionSize = glm::vec4(p.position, p.currentSize());
         instanceCursor[i].color = p.currentColor();
         instanceCursor[i].previousPositionSize = glm::vec4(p.positionBefore(elapsed), p.sizeBefore(elapsed));
+        instanceCursor[i].params = glm::vec4(p.occlusion, 0.0f, 0.0f, 0.0f);
     }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline_);
@@ -5718,58 +5801,29 @@ void Renderer::drawParticles(VkCommandBuffer cmd, FrameSync& frame, const Partic
     recordDraw(particleQuadMesh_.indexCount(), count);
 }
 
-void Renderer::drawSkinnedEntities(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, RiggedMeshLibrary* riggedMeshLibrary,
-                                    TextureLibrary& textureLibrary) {
+void Renderer::prepareSkinnedDraws(FrameSync& frame, ECS& ecs, RiggedMeshLibrary* riggedMeshLibrary) {
+    skinnedDraws_.clear();
     if (riggedMeshLibrary == nullptr) return;
-
+    bool warned = false;
     auto view = ecs.view<Transform, SkinnedRenderable>();
-    bool boundPipeline = false;
-    uint32_t slot = 0;
-
     for (auto entity : view) {
         auto& skinned = view.get<SkinnedRenderable>(entity);
         if (!skinned.visible) continue;
-
         const RiggedMesh* riggedMesh = riggedMeshLibrary->get(skinned.riggedMeshHandle);
         if (riggedMesh == nullptr) continue;
-
+        const uint32_t slot = static_cast<uint32_t>(skinnedDraws_.size());
         if (slot >= kMaxSkinnedDrawsPerFrame) {
-            std::fprintf(stderr,
-                         "Renderer: drawSkinnedEntities() skipped an entity -- kMaxSkinnedDrawsPerFrame (%u) already "
-                         "used this call.\n",
-                         kMaxSkinnedDrawsPerFrame);
+            if (!warned) {
+                std::fprintf(stderr, "Renderer: more than %u skinned entities in one view; the rest are skipped.\n",
+                             kMaxSkinnedDrawsPerFrame);
+                warned = true;
+            }
             continue;
         }
 
-        if (!boundPipeline) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedScenePipeline_);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedScenePipelineLayout_, 0, 1,
-                                     &frame.sceneDescriptorSet, 0, nullptr);
-            // set=1: skinned entities don't support textured materials in
-            // this pass (a real, stated scope boundary -- see
-            // Components.hpp's SkinnedRenderable comment) -- the default
-            // (all-fallback) material set keeps set=1 valid for every
-            // skinned draw, same precedent the instanced-batch path above
-            // already established for its own per-instance-texture
-            // limitation.
-            Renderable defaultMaterial{};
-            VkDescriptorSet defaultMaterialSet = getOrCreateMaterialDescriptorSet(defaultMaterial, textureLibrary);
-            if (defaultMaterialSet != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedScenePipelineLayout_, 1, 1,
-                                         &defaultMaterialSet, 0, nullptr);
-            }
-            boundPipeline = true;
-        }
-
-        // Writes this entity's current pose into its own, independent
-        // UBO slot (never shared with any other skinned draw this same
-        // call) -- see FrameSync's skinning fields' doc comment.
         uint32_t jointCount = std::min(static_cast<uint32_t>(skinned.skinningMatrices.size()), kMaxJointsPerSkeleton);
         auto* palettes = static_cast<glm::mat4*>(frame.skinningUboMapped[slot]);
         std::memcpy(palettes, skinned.skinningMatrices.data(), sizeof(glm::mat4) * jointCount);
-        // The previous palette sits right after the current one. Without a
-        // matching history (first frame, rig change) it repeats the current
-        // pose so the draw only carries rigid motion.
         render::ViewHistory& history = *frame.viewHistory;
         const uint32_t key = entt::to_integral(entity);
         auto previous = history.previousBones.find(key);
@@ -5777,28 +5831,57 @@ void Renderer::drawSkinnedEntities(VkCommandBuffer cmd, FrameSync& frame, ECS& e
         const glm::mat4* previousPalette = hasPrevious ? previous->second.data() : skinned.skinningMatrices.data();
         std::memcpy(palettes + kMaxJointsPerSkeleton, previousPalette, sizeof(glm::mat4) * jointCount);
         history.currentBones[key].assign(skinned.skinningMatrices.begin(),
-                                          skinned.skinningMatrices.begin() + jointCount);
+                                         skinned.skinningMatrices.begin() + jointCount);
+
+        const Mesh& mesh = riggedMesh->mesh();
+        SkinnedDraw draw{entity, riggedMesh, slot, hierarchy::computeWorldMatrix(ecs, entity), glm::vec3(0.0f), 0.0f,
+                         skinned.castsShadow};
+        glm::vec3 localCenter = 0.5f * (mesh.localBoundsMin() + mesh.localBoundsMax());
+        draw.center = glm::vec3(draw.model * glm::vec4(localCenter, 1.0f));
+        float scale = std::max({glm::length(glm::vec3(draw.model[0])), glm::length(glm::vec3(draw.model[1])),
+                                glm::length(glm::vec3(draw.model[2]))});
+        // Bind-pose bounds; animation can reach past them (raised arms), so pad generously.
+        draw.radius = 1.5f * scale * 0.5f * glm::length(mesh.localBoundsMax() - mesh.localBoundsMin());
+        skinnedDraws_.push_back(draw);
+    }
+}
+
+void Renderer::drawSkinnedEntities(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, RiggedMeshLibrary* riggedMeshLibrary,
+                                   TextureLibrary& textureLibrary) {
+    if (riggedMeshLibrary == nullptr || skinnedDraws_.empty()) return;
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedScenePipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedScenePipelineLayout_, 0, 1,
+                            &frame.sceneDescriptorSet, 0, nullptr);
+    Renderable defaultMaterial{};
+    VkDescriptorSet defaultMaterialSet = getOrCreateMaterialDescriptorSet(defaultMaterial, textureLibrary);
+    if (defaultMaterialSet != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedScenePipelineLayout_, 1, 1,
+                                &defaultMaterialSet, 0, nullptr);
+    }
+
+    for (const SkinnedDraw& draw : skinnedDraws_) {
+        const auto* skinned = ecs.tryGetComponent<SkinnedRenderable>(draw.entity);
+        if (skinned == nullptr) continue;
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedScenePipelineLayout_, 2, 1,
-                                 &frame.skinningDescriptorSets[slot], 0, nullptr);
+                                &frame.skinningDescriptorSets[draw.slot], 0, nullptr);
 
         ObjectPushConstants push{};
-        push.model = hierarchy::computeWorldMatrix(ecs, entity);
-        push.baseColor = skinned.baseColor;
-        push.metallicRoughness = glm::vec4(skinned.metallic, skinned.roughness, 1.0f, 0.0f);
-        push.emissive = glm::vec4(skinned.emissiveColor, skinned.emissiveIntensity);
-        push.textureIndices.z = pushObjectRecord(frame, entity, MaterialLayers{}, push.model) << 16;
+        push.model = draw.model;
+        push.baseColor = skinned->baseColor;
+        push.metallicRoughness = glm::vec4(skinned->metallic, skinned->roughness, 1.0f, 0.0f);
+        push.emissive = glm::vec4(skinned->emissiveColor, skinned->emissiveIntensity);
+        push.textureIndices.z = pushObjectRecord(frame, draw.entity, MaterialLayers{}, push.model) << 16;
         vkCmdPushConstants(cmd, skinnedScenePipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                            0, sizeof(push), &push);
+                           0, sizeof(push), &push);
 
-        VkDeviceSize offset = 0;
-        std::array<VkBuffer, 2> vertexBuffers{riggedMesh->mesh().vertexBuffer(), riggedMesh->skinBuffer()};
-        std::array<VkDeviceSize, 2> vertexOffsets{offset, offset};
+        const Mesh& mesh = draw.mesh->mesh();
+        std::array<VkBuffer, 2> vertexBuffers{mesh.vertexBuffer(), draw.mesh->skinBuffer()};
+        std::array<VkDeviceSize, 2> vertexOffsets{0, 0};
         vkCmdBindVertexBuffers(cmd, 0, 2, vertexBuffers.data(), vertexOffsets.data());
-        vkCmdBindIndexBuffer(cmd, riggedMesh->mesh().indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, riggedMesh->mesh().indexCount(), 1, 0, 0, 0);
-        recordDraw(riggedMesh->mesh().indexCount(), 1);
-
-        ++slot;
+        vkCmdBindIndexBuffer(cmd, mesh.indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, mesh.indexCount(), 1, 0, 0, 0);
+        recordDraw(mesh.indexCount(), 1);
     }
 }
 

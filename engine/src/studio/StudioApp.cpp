@@ -23,7 +23,9 @@
 #include "core/QualityScore.hpp"
 #include "core/ResourcePaths.hpp"
 #include "core/SceneHistory.hpp"
+#include "core/SwapchainSelection.hpp"
 #include "core/UITheme.hpp"
+#include "core/UIWidgets.hpp"
 #include "publishing/PackageArchive.hpp"
 #include "publishing/PublishValidation.hpp"
 #include "publishing/ThumbnailCapture.hpp"
@@ -968,8 +970,8 @@ void StudioApp::buildBringUpScene() {
     // Studio happened to be launched from the repo root -- every other
     // resource path here (assets/shaders/games) already goes through
     // resolveResourceDir()/ENGINE_TEMPLATES_DIR precisely to avoid that.
-    switchToScene(core::resolveResourceDir(core::executableDirectory(), "templates", ENGINE_TEMPLATES_DIR) +
-                  "/project/default.scene");
+    openTemplateScene(core::resolveResourceDir(core::executableDirectory(), "templates", ENGINE_TEMPLATES_DIR) +
+                      "/project/default.scene");
     core::logEcsStats(ecs_);
 }
 
@@ -1047,6 +1049,7 @@ bool StudioApp::initImGuiVulkanBackend() {
     initInfo.Allocator = nullptr;
     initInfo.CheckVkResultFn = &checkVkResult;
 
+    uiTargetIsSrgb_ = core::isSrgbFormat(renderer_.swapchainFormat());
     if (!ImGui_ImplVulkan_Init(&initInfo)) {
         return false;
     }
@@ -1223,14 +1226,27 @@ void StudioApp::drawDockspace() {
     // "Reset Layout to Default" (View menu, see this method's own
     // rebuild block below) -- layoutResetRequested_ is the only other
     // thing that can make this branch run.
+    // The OS window is often resized by the compositor right after
+    // creation; DockBuilder splits are absolute, so rebuild once it settles.
+    if (defaultLayoutSettleFrames_ > 0) {
+        --defaultLayoutSettleFrames_;
+        if (viewport->WorkSize.x != defaultLayoutBuiltSize_.x || viewport->WorkSize.y != defaultLayoutBuiltSize_.y) {
+            layoutResetRequested_ = true;
+        }
+    }
     if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr || layoutResetRequested_) {
+        if (!layoutResetRequested_) defaultLayoutSettleFrames_ = 90;
+        defaultLayoutBuiltSize_ = viewport->WorkSize;
         // Kronos ("First-Launch Experience"): reuses this exact same
         // detection rather than a second marker-file mechanism -- a
         // genuinely first-ever launch (or imgui.ini deleted) is real
         // signal either way. NOT set on a manual reset -- the Welcome
         // panel is a first-launch onboarding surface, not something a
         // user resetting their layout mid-session is asking to see again.
-        if (!layoutResetRequested_) welcomePanelOpen_ = true;
+        if (!layoutResetRequested_ && !openedFromCommandLine_) {
+            welcomePanelOpen_ = true;
+            welcomeFocusPending_ = true;
+        }
         layoutResetRequested_ = false;
         ImGui::DockBuilderRemoveNode(dockspaceId);
         ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
@@ -1260,6 +1276,7 @@ void StudioApp::drawDockspace() {
             ImGui::DockBuilderDockWindow("Material Editor", leftId);
             ImGui::DockBuilderDockWindow("Brush & Stamp", leftId);
             ImGui::DockBuilderDockWindow("Explorer", rightId);
+            ImGui::DockBuilderDockWindow("Scene Search", rightId);
             ImGui::DockBuilderDockWindow("Inspector", rightId);
             ImGui::DockBuilderDockWindow("PBR Texture Inspector", rightId);
             ImGui::DockBuilderDockWindow("Viewport", centerId);
@@ -1366,9 +1383,7 @@ void StudioApp::drawAboutPanel() {
                 break;
             case StudioMode::Full:
             default:
-                blurb = "Kronos Studio is the real-time 3D editor for the Kronos platform: scene editing, avatar "
-                        "creation, marketplace publishing, moderation, and networked playtesting, all in one Alpha "
-                        "build.";
+                blurb = "Kronos Studio is the editor for the Kronos platform: scene editing, avatar creation, marketplace publishing, moderation and networked playtesting.";
                 break;
         }
         ImGui::TextWrapped("%s", blurb);
@@ -1487,37 +1502,30 @@ void StudioApp::drawNetworkEmulationBar() {
         if (kLossOptionsPercent[i] == currentLoss) lossIndex = i;
     }
 
-    ImGui::SameLine(0.0f, 24.0f);
-    ImGui::TextDisabled("Network:");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(72.0f);
-    if (ImGui::BeginCombo("##NetLatency", kLatencyLabels[latencyIndex])) {
+    char menuLabel[64];
+    if (latencyIndex == 0 && lossIndex == 0) {
+        std::snprintf(menuLabel, sizeof(menuLabel), "Network: Ideal###netsim");
+    } else {
+        std::snprintf(menuLabel, sizeof(menuLabel), "Network: %s / %s loss###netsim", kLatencyLabels[latencyIndex],
+                      kLossLabels[lossIndex]);
+    }
+    if (ImGui::BeginMenu(menuLabel)) {
+        ui::sectionHeader("Added latency");
         for (int i = 0; i < static_cast<int>(std::size(kLatencyOptionsMs)); ++i) {
-            bool selected = (i == latencyIndex);
-            if (ImGui::Selectable(kLatencyLabels[i], selected)) {
+            if (ImGui::MenuItem(kLatencyLabels[i], nullptr, i == latencyIndex)) {
                 networkSession_.setSimulatedLatencyMs(kLatencyOptionsMs[i]);
             }
-            if (selected) ImGui::SetItemDefaultFocus();
         }
-        ImGui::EndCombo();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Simulated added round-trip latency, applied to every real send() while testing multiplayer.");
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(64.0f);
-    if (ImGui::BeginCombo("##NetLoss", kLossLabels[lossIndex])) {
+        ui::sectionHeader("Packet loss (unreliable only)");
         for (int i = 0; i < static_cast<int>(std::size(kLossOptionsPercent)); ++i) {
-            bool selected = (i == lossIndex);
-            if (ImGui::Selectable(kLossLabels[i], selected)) {
+            if (ImGui::MenuItem(kLossLabels[i], nullptr, i == lossIndex)) {
                 networkSession_.setSimulatedPacketLossPercent(kLossOptionsPercent[i]);
             }
-            if (selected) ImGui::SetItemDefaultFocus();
         }
-        ImGui::EndCombo();
+        ImGui::EndMenu();
     }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Simulated packet loss on unreliable sends only -- reliable channels are never dropped, see ENetTransport::setSimulatedPacketLossPercent().");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Simulate latency and packet loss while testing multiplayer.");
     }
 }
 
@@ -1745,8 +1753,7 @@ void StudioApp::drawPackageWorldWizard() {
     ImGui::SetNextWindowSize(ImVec2(440.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::Begin("Package World", &packageWizardOpen_)) {
         ImGui::TextWrapped(
-            "Bundles the current live scene, a real relative asset manifest, any scene-authored scripts, and an "
-            "optional thumbnail into a single compressed .kronos archive.");
+            "Bundles the current scene, a relative asset manifest, scene scripts and an optional thumbnail into a single compressed .kronos archive.");
         ImGui::Spacing();
 
         ImGui::SetNextItemWidth(-1.0f);
@@ -1959,75 +1966,145 @@ void StudioApp::drawRecoveryBanner() {
 void StudioApp::drawWelcomePanel() {
     if (!welcomePanelOpen_) return;
 
-    // Kronos ("Modular Executable Targets" -- follow-up: "Condition the
-    // startup welcome dialog on StudioMode ... tailored quickstart modal
-    // per app"): the original copy below (Full's own, unchanged) named
-    // "the Plugins menu" and "Plugins > World" (Block Builder/Creator
-    // Tools) -- neither exists in any narrow mode (that menu is hidden
-    // entirely there, see showPluginsMenu(), and neither plugin is ever
-    // registered outside StudioMode::Full), so reusing it verbatim would
-    // point a first-time 3D Maker/Movie Maker/Audio user at UI that isn't
-    // there. Each mode gets its own real title/body naming only its own
-    // actual dedicated windows; the "Open Default Project"/"View
-    // Quickstart" buttons stay the same real actions in every mode.
-    std::string title = std::string("Welcome to ") + brandName();
-    ImGui::SetNextWindowSize(ImVec2(460.0f, 0.0f), ImGuiCond_Appearing);
-    if (ImGui::Begin(title.c_str(), &welcomePanelOpen_)) {
-        StudioAccent welcomeAccent = accentColor();
-        ImGui::TextColored(ImVec4(welcomeAccent.r, welcomeAccent.g, welcomeAccent.b, 1.0f), "%s", title.c_str());
-        switch (mode_) {
-            case StudioMode::ThreeDMaker:
-                ImGui::TextWrapped(
-                    "This is a real, working PBR material/texture painting tool -- everything you click here "
-                    "does something real. A few places to start:");
-                ImGui::Spacing();
-                ImGui::BulletText("Click an object in the 3D Viewport to select it.");
-                ImGui::BulletText("Material Editor edits its base color/metallic/roughness and presets.");
-                ImGui::BulletText("PBR Texture Inspector loads albedo/normal/metallic/roughness/AO maps.");
-                ImGui::BulletText("Brush & Stamp paints directly onto its textures with the compute painter.");
-                break;
-            case StudioMode::MovieMaker:
-                ImGui::TextWrapped(
-                    "This is a real, working cinematic authoring tool -- everything you click here does "
-                    "something real. A few places to start:");
-                ImGui::Spacing();
-                ImGui::BulletText("Sequencer Timeline adds tracks/clips and drives the transport.");
-                ImGui::BulletText("Camera Rail shapes the Bezier path the cinematic camera flies along.");
-                ImGui::BulletText("Clip Inspector edits the selected track's own keyframe curves.");
-                ImGui::BulletText("Render Export renders the sequence to disk, unthrottled from real time.");
-                break;
-            case StudioMode::Audio:
-                ImGui::TextWrapped(
-                    "This is a real, working audio/lip-sync authoring tool -- everything you click here does "
-                    "something real. A few places to start:");
-                ImGui::Spacing();
-                ImGui::BulletText("Audio Source loads a file and plays it through Studio's own audio engine.");
-                ImGui::BulletText("DSP Node Graph builds a real node-based effects chain over the source.");
-                ImGui::BulletText("Viseme Timeline previews phoneme-driven lip-sync against the loaded clip.");
-                break;
-            case StudioMode::Full:
-            default:
-                ImGui::TextWrapped(
-                    "This is a real, working creator tool -- everything you click here does "
-                    "something real. A few places to start:");
-                ImGui::Spacing();
-                ImGui::BulletText("The Plugins menu (top bar) lists every built-in tool, grouped by category.");
-                ImGui::BulletText("Block Builder (Plugins > World) places real primitives you can move/rotate/scale.");
-                ImGui::BulletText("Creator Tools (Plugins > World) places props, terrain, and lighting.");
-                break;
-        }
+    struct Step {
+        const char* title;
+        const char* detail;
+    };
+    const char* subtitle = nullptr;
+    std::vector<Step> steps;
+    switch (mode_) {
+        case StudioMode::ThreeDMaker:
+            subtitle = "Model, sculpt and paint PBR assets.";
+            steps = {{"Select", "Click any object in the viewport."},
+                     {"Material Editor", "Base color, metallic, roughness and presets."},
+                     {"Texture Inspector", "Load albedo, normal, ORM and AO maps."},
+                     {"Brush & Stamp", "Paint straight onto textures on the GPU."}};
+            break;
+        case StudioMode::MovieMaker:
+            subtitle = "Block, animate and render cinematics.";
+            steps = {{"Sequencer", "Tracks, clips and transport."},
+                     {"Camera Rail", "Shape the Bezier path the camera flies."},
+                     {"Clip Inspector", "Edit keyframe curves for the selected track."},
+                     {"Render Export", "Write the sequence to disk at full quality."}};
+            break;
+        case StudioMode::Audio:
+            subtitle = "Design sound and drive lip-sync.";
+            steps = {{"Audio Source", "Load a file and audition it."},
+                     {"DSP Graph", "Build a node-based effects chain."},
+                     {"Viseme Timeline", "Preview phoneme-driven lip-sync."}};
+            break;
+        case StudioMode::Full:
+        default:
+            subtitle = "Build, script and publish worlds.";
+            steps = {{"Plugins menu", "Every built-in tool, grouped by category."},
+                     {"Block Builder", "Place primitives and transform them with W / E / R."},
+                     {"Creator Tools", "Drop in props, terrain and lighting."}};
+            break;
+    }
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(500.0f, 0.0f), ImGuiCond_Appearing);
+    if (welcomeFocusPending_) {
+        ImGui::SetNextWindowFocus();
+        welcomeFocusPending_ = false;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 22.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
+                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar |
+                                        ImGuiWindowFlags_AlwaysAutoResize;
+    if (ImGui::Begin("##welcome", &welcomePanelOpen_, kFlags)) {
+        const ImVec2 winPos = ImGui::GetWindowPos();
+        const ImVec2 winSize = ImGui::GetWindowSize();
+        const StudioAccent a = accentColor();
+        const ImVec4 accent(a.r, a.g, a.b, 1.0f);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddRectFilled(winPos, ImVec2(winPos.x + winSize.x, winPos.y + 3.0f), ImGui::GetColorU32(accent), 12.0f,
+                                ImDrawFlags_RoundCornersTop);
+
+        const std::string title = std::string("Welcome to ") + brandName();
+        ui::pageTitle(title.c_str(), subtitle);
         ImGui::Spacing();
-        if (ImGui::Button("Open Default Project", ImVec2(200.0f, 0.0f))) {
-            switchToScene(core::resolveResourceDir(core::executableDirectory(), "templates", ENGINE_TEMPLATES_DIR) +
-                          "/project/default.scene");
+
+        for (std::size_t i = 0; i < steps.size(); ++i) {
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float lineH = ImGui::GetTextLineHeight();
+            const float r = 11.0f;
+            const ImVec2 c(p.x + r, p.y + lineH);
+            drawList->AddCircleFilled(c, r, ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.18f)));
+            char num[4];
+            std::snprintf(num, sizeof(num), "%zu", i + 1);
+            const ImVec2 ns = ImGui::CalcTextSize(num);
+            drawList->AddText(ImVec2(c.x - ns.x * 0.5f, c.y - ns.y * 0.5f), ImGui::GetColorU32(accent), num);
+            ImGui::SetCursorScreenPos(ImVec2(p.x + r * 2.0f + 12.0f, p.y));
+            ImGui::BeginGroup();
+            ImGui::PushFont(core::kronosBoldFont(), 0.0f);
+            ImGui::TextUnformatted(steps[i].title);
+            ImGui::PopFont();
+            ImGui::TextDisabled("%s", steps[i].detail);
+            ImGui::EndGroup();
+            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+        if (ui::button("Open default project", ui::ButtonKind::Primary, ImVec2(200.0f, 34.0f))) {
+            openTemplateScene(core::resolveResourceDir(core::executableDirectory(), "templates",
+                                                       ENGINE_TEMPLATES_DIR) +
+                              "/project/default.scene");
             welcomePanelOpen_ = false;
         }
         ImGui::SameLine();
-        if (ImGui::Button("View Quickstart", ImVec2(200.0f, 0.0f))) {
+        if (ui::button("Quickstart guide", ui::ButtonKind::Secondary, ImVec2(160.0f, 34.0f))) {
             notifications_.push("Quickstart guide: docs/QUICKSTART.md", NotificationSeverity::Info);
+        }
+        ImGui::SameLine();
+        if (ui::button("Close", ui::ButtonKind::Ghost, ImVec2(0.0f, 34.0f)) ||
+            (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape))) {
+            welcomePanelOpen_ = false;
         }
     }
     ImGui::End();
+    ImGui::PopStyleVar(2);
+}
+
+void StudioApp::openFileArgument(const std::string& path) {
+    auto endsWith = [&](const char* suffix) {
+        const std::string ext(suffix);
+        if (path.size() < ext.size()) return false;
+        return std::equal(ext.rbegin(), ext.rend(), path.rbegin(),
+                          [](char a, char b) { return a == std::tolower(static_cast<unsigned char>(b)); });
+    };
+    if (endsWith(".scene")) {
+        openedFromCommandLine_ = true;
+        openTemplateScene(path);
+    } else if (audioPreviewPlugin_ != nullptr &&
+               (endsWith(".wav") || endsWith(".flac") || endsWith(".mp3"))) {
+        openedFromCommandLine_ = true;
+        audioPreviewPlugin_->openFile(path);
+    } else {
+        notifications_.push("Cannot open " + path + ": unsupported file type.", NotificationSeverity::Warning);
+    }
+}
+
+void StudioApp::openTemplateScene(const std::string& path) {
+    if (!sceneManager_.currentScenePath().empty()) {
+        (void)sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
+                                        &movieModePlugin_->rail(), &movieModePlugin_->sequence());
+    }
+    if (!sceneManager_.loadScene(path, ecs_, meshLibrary_, renderer_.allocator(), renderer_.device(),
+                                  renderer_.commandPool(), renderer_.graphicsQueue(), viewportPanel_.camera(),
+                                  nullptr, &movieModePlugin_->rail(), &movieModePlugin_->sequence())) {
+        fileActionStatus_ = "Load failed: " + path;
+        notifications_.push(fileActionStatus_, NotificationSeverity::Error);
+        return;
+    }
+    sceneManager_.detachFromFile(ecs_);
+    explorerPanel_.setSelected(core::kNullEntity);
+    recoveryOfferPath_.clear();
+    fileActionStatus_ = "New scene from template -- use Save Scene As to keep it";
+    notifications_.push(fileActionStatus_, NotificationSeverity::Info);
 }
 
 void StudioApp::switchToScene(const std::string& path) {
@@ -2138,8 +2215,7 @@ void StudioApp::checkCrashPatternAndWarn(const std::string& projectPath) {
 
         char message[512];
         std::snprintf(message, sizeof(message),
-                      "\"%s\" has crashed in %.0f%% of its last %lld real sessions -- consider marking it Under "
-                      "Review in game.gamemanifest until the cause is found.",
+                      "\"%s\" has crashed in %.0f%% of its last %lld sessions. Consider marking it Under Review in game.gamemanifest until the cause is found.",
                       thisGameManifest.name.c_str(), static_cast<double>(entry.stats.crashRate) * 100.0,
                       static_cast<long long>(entry.launchCount));
         notifications_.push(message, NotificationSeverity::Warning);
@@ -2162,6 +2238,7 @@ void StudioApp::endFrame() {
     // initialize() for why this split exists.
     ImGui::Render();
     pendingDrawData_ = ImGui::GetDrawData();
+    if (uiTargetIsSrgb_) core::linearizeDrawDataColors(pendingDrawData_);
 }
 
 void StudioApp::run() {

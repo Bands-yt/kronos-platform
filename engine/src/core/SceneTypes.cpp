@@ -47,10 +47,11 @@ std::vector<VkVertexInputAttributeDescription> ParticleInstanceData::attributeDe
     // but still present in the shared Vertex layout, see Mesh.hpp) is what
     // pushed this struct's own locations up from 3/4 to 4/5. Particle
     // data follows at 4/5/6.
-    std::vector<VkVertexInputAttributeDescription> attrs(3);
+    std::vector<VkVertexInputAttributeDescription> attrs(4);
     attrs[0] = {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ParticleInstanceData, positionSize)};
     attrs[1] = {5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ParticleInstanceData, color)};
     attrs[2] = {6, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ParticleInstanceData, previousPositionSize)};
+    attrs[3] = {7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ParticleInstanceData, params)};
     return attrs;
 }
 

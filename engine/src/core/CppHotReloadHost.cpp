@@ -10,6 +10,7 @@
 #endif
 
 #include "core/ECS.hpp"
+#include "core/HotReloadLayoutFingerprint.hpp"
 
 namespace engine::core {
 
@@ -81,6 +82,16 @@ bool CppHotReloadHost::loadInto(const std::string& sharedLibraryPath, LoadedLibr
         return false;
     }
 
+    if (auto fingerprintFn =
+            reinterpret_cast<HotReloadLayoutFingerprintFn>(GetProcAddress(handle, kHotReloadLayoutFingerprintSymbol))) {
+        if (fingerprintFn() != kHotReloadLayoutFingerprint) {
+            outError = "CppHotReloadHost: module was built against different engine headers; rebuild it";
+            FreeLibrary(handle);
+            fs::remove(tempPath, ec);
+            return false;
+        }
+    }
+
     IHotReloadableModule* module = createFn();
     if (!module) {
         outError = "CppHotReloadHost: module's create function returned nullptr";
@@ -116,6 +127,16 @@ bool CppHotReloadHost::loadInto(const std::string& sharedLibraryPath, LoadedLibr
         dlclose(handle);
         fs::remove(tempPath, ec);
         return false;
+    }
+
+    if (auto fingerprintFn =
+            reinterpret_cast<HotReloadLayoutFingerprintFn>(dlsym(handle, kHotReloadLayoutFingerprintSymbol))) {
+        if (fingerprintFn() != kHotReloadLayoutFingerprint) {
+            outError = "CppHotReloadHost: module was built against different engine headers; rebuild it";
+            dlclose(handle);
+            fs::remove(tempPath, ec);
+            return false;
+        }
     }
 
     IHotReloadableModule* module = createFn();

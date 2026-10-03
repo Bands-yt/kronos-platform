@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -8,6 +9,7 @@
 #include "core/CollisionLayers.hpp"
 #include "core/ECS.hpp"
 #include "core/PhysicsMaterial.hpp"
+#include "core/RagdollDesc.hpp"
 
 // Forward-declared rather than included here so anything that only needs
 // Physics::step()/createBoxBody() doesn't have to pull in Jolt's headers.
@@ -336,8 +338,53 @@ public:
     // from the main thread. Call once per tick, after step().
     [[nodiscard]] std::vector<CollisionEvent> drainCollisionEvents();
 
+    // Opt-in stream of contacts carrying their closing speed along the
+    // contact normal, separate from drainCollisionEvents() (which
+    // Application drains every tick for scripting). Only contacts at or
+    // above `minImpactSpeed` are queued.
+    struct ImpactEvent {
+        uint32_t bodyA = 0;
+        uint32_t bodyB = 0;
+        glm::vec3 point{0.0f};
+        glm::vec3 normal{0.0f, 1.0f, 0.0f};
+        float impactSpeed = 0.0f;
+    };
+    void setImpactRecording(bool enabled, float minImpactSpeed = 1.0f);
+    [[nodiscard]] std::vector<ImpactEvent> drainImpactEvents();
+
+    // Ragdolls built on Jolt's RagdollSettings. Handles are never reused.
+    using RagdollHandle = uint32_t;
+    static constexpr RagdollHandle kInvalidRagdoll = 0;
+
+    // Bodies and constraints are built at the bind pose placed by
+    // `modelToWorld`, so joint limits are relative to the bind pose.
+    // `initialPartWorld` (one matrix per part, world space) then moves
+    // the bodies into a different starting pose without changing those limits.
+    [[nodiscard]] RagdollHandle createRagdoll(const RagdollDesc& desc, const glm::mat4& modelToWorld,
+                                              const std::vector<glm::mat4>* initialPartWorld = nullptr,
+                                              glm::vec3 initialVelocity = glm::vec3(0.0f),
+                                              CollisionLayer layer = CollisionLayer::Character);
+    void destroyRagdoll(RagdollHandle handle);
+    [[nodiscard]] bool ragdollExists(RagdollHandle handle) const;
+
+    // World transform of every part's body, in desc.parts order.
+    [[nodiscard]] bool getRagdollPartTransforms(RagdollHandle handle, std::vector<glm::mat4>& outPartWorld) const;
+    [[nodiscard]] std::vector<uint32_t> ragdollBodyIds(RagdollHandle handle) const;
+    // -1 when the body is not part of this ragdoll.
+    [[nodiscard]] int ragdollPartIndexForBody(RagdollHandle handle, uint32_t bodyId) const;
+
+    [[nodiscard]] glm::vec3 ragdollPartVelocity(RagdollHandle handle, int partIndex) const;
+    void addRagdollImpulse(RagdollHandle handle, int partIndex, glm::vec3 impulse);
+    void addRagdollVelocity(RagdollHandle handle, glm::vec3 deltaVelocity);
+
+    // Loosens a joint to near-free rotation (e.g. a broken bone).
+    void setRagdollJointLimp(RagdollHandle handle, int partIndex);
+
 private:
     void syncTransforms(ECS& ecs);
+
+    struct RagdollStore;
+    std::unique_ptr<RagdollStore> ragdolls_;
 
     std::unique_ptr<JPH::TempAllocatorImpl> tempAllocator_;
     std::unique_ptr<JPH::JobSystemThreadPool> jobSystem_;
@@ -361,6 +408,11 @@ private:
     std::unique_ptr<JPH::ContactListener> contactListener_;
     std::mutex collisionEventsMutex_;
     std::vector<CollisionEvent> pendingCollisionEvents_;
+
+    std::mutex impactEventsMutex_;
+    std::vector<ImpactEvent> pendingImpactEvents_;
+    std::atomic<bool> impactRecordingEnabled_{false};
+    std::atomic<float> minImpactSpeed_{1.0f};
 
     bool initialized_ = false;
 };

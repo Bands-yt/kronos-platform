@@ -271,4 +271,11 @@ public:
 [[nodiscard]] bool validateAnimationClipAgainstSkeleton(const AnimationClip& clip, const Skeleton& skeleton,
                                                           std::string& outError);
 
+// Keyframes store absolute joint translations, so a clip authored for
+// `authoredFor` would undo any proportion changes in `target`. Rewrites each
+// key's translation as target bind + (key - authored bind), scaled by the
+// ratio of the two bind offsets; tracks for joints missing from either
+// skeleton are left untouched.
+void retargetClipTranslations(AnimationClip& clip, const Skeleton& authoredFor, const Skeleton& target);
+
 } // namespace engine::core

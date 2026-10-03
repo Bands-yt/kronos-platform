@@ -31,6 +31,8 @@ struct ParticleEmitterSettings {
     float sizeEnd = 0.02f;
     glm::vec4 colorStart{1.0f, 0.8f, 0.3f, 1.0f};
     glm::vec4 colorEnd{1.0f, 0.2f, 0.05f, 0.0f};
+    // 0 glows additively; 1 blends over the scene like paint (blood, smoke, spray).
+    float occlusion = 0.0f;
 };
 
 // ECS component -- marks an entity as a particle emitter. Real component,
@@ -56,6 +58,7 @@ struct Particle {
     float sizeEnd = 0.1f;
     glm::vec4 colorStart{1.0f};
     glm::vec4 colorEnd{1.0f};
+    float occlusion = 0.0f;
 
     [[nodiscard]] float normalizedAge() const { return lifetime > 0.0f ? age / lifetime : 1.0f; }
     [[nodiscard]] float currentSize() const;

@@ -5,6 +5,11 @@
 
 namespace engine::core {
 
+bool isSrgbFormat(VkFormat format) {
+    return format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_SRGB ||
+           format == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+}
+
 VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
     for (const auto& f : formats) {
         if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {

@@ -3,6 +3,9 @@
 //
 //   kronos_lookdev <outputDir> [frames]
 //
+// KRONOS_LOOKDEV_RT=1 turns on ray-traced shadows, reflections and GI.
+// KRONOS_LOOKDEV_ONLY=<text> renders only views whose name contains <text>.
+//
 // `frames` > 1 renders each view that many times before capturing (lets
 // temporal passes converge; the capture is always the last frame).
 
@@ -14,6 +17,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/AnimationPlayer.hpp"
 #include "core/Camera.hpp"
 #include "core/Components.hpp"
 #include "core/ECS.hpp"
@@ -39,6 +43,9 @@ struct View {
     bool motion = false; // animated avatar + moving torus; also captures a velocity visualisation
     bool spots = false;  // shadowed spot lights at night
     bool blur = false;   // motion view through the cinematic pass with a 180 degree shutter
+    bool avatar = false; // close-up of the posed avatar
+    const char* clip = nullptr; // avatar posed from this shipped clip (assets/animations/<clip>.anim)...
+    float phase = 0.0f;         // ...at this fraction of its duration
 };
 
 core::SceneLighting dayLighting() {
@@ -95,6 +102,11 @@ int main(int argc, char** argv) {
     rendererInfo.enableValidation = std::getenv("KRONOS_LOOKDEV_VALIDATION") != nullptr;
     if (!renderer.initialize(rendererInfo)) return 1;
     renderer.setAutoExposureEnabled(false);
+    if (std::getenv("KRONOS_LOOKDEV_RT") != nullptr) {
+        renderer.setRayTracedShadowsEnabled(true);
+        renderer.setRTReflectionsEnabled(true);
+        renderer.setRTGIEnabled(true);
+    }
 
     VmaAllocator alloc = renderer.allocator();
     VkDevice device = renderer.device();
@@ -218,6 +230,23 @@ int main(int argc, char** argv) {
         }
     };
     poseAvatar(0.0f, false);
+    auto poseAvatarFromClip = [&](const char* clipName, float phase) {
+        core::AnimationClip clip;
+        const std::string path = std::string(ENGINE_ASSET_DIR) + "/animations/" + clipName + ".anim";
+        if (!clip.loadFromFile(path)) {
+            std::fprintf(stderr, "lookdev: could not load %s\n", path.c_str());
+            return;
+        }
+        core::AnimationPlayer player(skeleton);
+        core::AnimationPlayer::Handle handle = player.play(clip, core::AnimationLayer::Base, true);
+        player.seek(handle, phase * clip.duration);
+        player.tick(0.0f);
+        for (core::EntityId e : avatar) {
+            auto& skinned = *ecs.tryGetComponent<core::SkinnedRenderable>(e);
+            skinned.visible = true;
+            skinned.skinningMatrices = player.skinningMatrices();
+        }
+    };
 
     // Spark fountain for the motion view: fast ballistic particles over a
     // mostly static background.
@@ -251,9 +280,22 @@ int main(int argc, char** argv) {
         {"motion", {0.0f, 1.6f, 7.0f}, -90.0f, -8.0f, false, true},
         {"spots", {0.0f, 4.5f, 9.5f}, -90.0f, -24.0f, true, false, true},
         {"motion_blur", {0.0f, 1.6f, 7.0f}, -90.0f, -8.0f, false, true, false, true},
+        {"avatar", {1.8f, 1.0f, 4.6f}, -90.0f, -4.0f, false, false, false, false, true},
+        {"avatar_close", {2.1f, 1.25f, 3.75f}, -103.0f, -8.0f, false, false, false, false, true, "idle", 0.3f},
+        {"walk_00", {4.6f, 0.75f, 2.4f}, 180.0f, -2.0f, false, false, false, false, true, "walk", 0.0f},
+        {"walk_25", {4.6f, 0.75f, 2.4f}, 180.0f, -2.0f, false, false, false, false, true, "walk", 0.25f},
+        {"walk_50", {4.6f, 0.75f, 2.4f}, 180.0f, -2.0f, false, false, false, false, true, "walk", 0.5f},
+        {"walk_75", {4.6f, 0.75f, 2.4f}, 180.0f, -2.0f, false, false, false, false, true, "walk", 0.75f},
+        {"run_00", {4.6f, 0.75f, 2.4f}, 180.0f, -2.0f, false, false, false, false, true, "run", 0.0f},
+        {"run_25", {4.6f, 0.75f, 2.4f}, 180.0f, -2.0f, false, false, false, false, true, "run", 0.25f},
+        {"run_50", {4.6f, 0.75f, 2.4f}, 180.0f, -2.0f, false, false, false, false, true, "run", 0.5f},
+        {"run_75", {4.6f, 0.75f, 2.4f}, 180.0f, -2.0f, false, false, false, false, true, "run", 0.75f},
+        {"walk_front", {1.8f, 0.9f, 5.0f}, -90.0f, -3.0f, false, false, false, false, true, "walk", 0.15f},
     };
 
+    const char* only = std::getenv("KRONOS_LOOKDEV_ONLY");
     for (const View& view : views) {
+        if (only != nullptr && std::string(view.name).find(only) == std::string::npos) continue;
         renderer.setLighting(view.night ? nightLighting() : dayLighting());
         for (core::EntityId e : nightLights) {
             ecs.tryGetComponent<core::Light>(e)->enabled = view.night && !view.spots;
@@ -277,6 +319,13 @@ int main(int argc, char** argv) {
             std::string dir = outDir + "/" + (velocityFrame ? std::string(view.name) + "_velocity" : view.name);
             if (f + 1 < frames) dir = outDir + "/.warmup";
             std::filesystem::create_directories(dir);
+            if (view.avatar) {
+                if (view.clip != nullptr) {
+                    poseAvatarFromClip(view.clip, view.phase);
+                } else {
+                    poseAvatar(0.35f, true);
+                }
+            }
             if (view.motion) {
                 const float time = static_cast<float>(f) * kMotionStep;
                 poseAvatar(time, true);

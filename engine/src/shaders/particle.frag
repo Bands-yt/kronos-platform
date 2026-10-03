@@ -14,6 +14,7 @@ layout(location = 0) in vec2 inUV;
 layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec4 inClipPos;
 layout(location = 3) in vec4 inPrevClipPos;
+layout(location = 4) flat in float inOcclusion;
 
 layout(location = 0) out vec4 outColor;
 // Blended over the opaque velocity by coverage (see createParticlePipeline()).
@@ -61,12 +62,10 @@ void main() {
     float softFade = smoothstep(0.0, 0.02, depthDelta);
     falloff *= softFade;
 
-    // Premultiplied-alpha-style output for additive blending (see
-    // Renderer::createParticlePipeline's blend state) -- alpha still
-    // modulates brightness/fade-out, but there's no back-to-front sort
-    // dependency the way regular alpha blending would need, which is
-    // exactly why additive was chosen for a first particle pass.
-    outColor = vec4(inColor.rgb, inColor.a * falloff);
+    // Premultiplied output (see Renderer::createParticlePipeline's blend
+    // state): alpha 0 adds light, alpha = coverage paints over the scene.
+    float coverage = inColor.a * falloff;
+    outColor = vec4(inColor.rgb * coverage, coverage * inOcclusion);
 
     vec2 velocity = (inClipPos.xy / inClipPos.w - inPrevClipPos.xy / inPrevClipPos.w) * 0.5;
     outVelocity = vec4(velocity, 0.0, clamp(inColor.a * falloff, 0.0, 1.0));

@@ -22,7 +22,7 @@ void GameLoop::simTick(float dt) {
     subsystems_.scripting->tick(dt);
 
     // physics.step(dt);
-    subsystems_.physics->step(dt, *subsystems_.ecs);
+    subsystems_.physics->step(dt * timeScale_, *subsystems_.ecs);
 
     if (postPhysicsHook_) {
         postPhysicsHook_(dt);

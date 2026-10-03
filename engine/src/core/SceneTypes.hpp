@@ -121,6 +121,7 @@ struct ParticleInstanceData {
     glm::vec4 positionSize; // xyz: world position, w: current billboard half-size
     glm::vec4 color;
     glm::vec4 previousPositionSize; // same, at the view's previous frame (motion vectors)
+    glm::vec4 params;               // x: occlusion (0 additive, 1 alpha-blended)
 
     static VkVertexInputBindingDescription bindingDescription();
     static std::vector<VkVertexInputAttributeDescription> attributeDescriptions();
@@ -281,7 +282,7 @@ struct SceneUBO {
     glm::vec4 reflectionParams{0.0f}; // x RT reflections, y rough cutoff, z metallic cutoff
     glm::vec4 atmosphereParams{0.0f}; // x enabled, y sun radiance, z mie strength, w suppress sun disk
     glm::vec4 cloudParams{0.0f};      // x enabled, y coverage, z wind speed, w time
-    glm::vec4 giParams{0.0f};         // x RT GI, y intensity
+    glm::vec4 giParams{0.0f};         // x RT GI, y bounce intensity, z GI rays per pixel, w RT AO radius (0 = off)
     glm::vec4 iblParams{0.0f};        // x specular intensity, y reflection normalization, z prefiltered max mip, w valid
     glm::vec4 taaJitter{0.0f};        // xy current jitter (NDC), zw previous
     glm::vec4 screenSize{0.0f};       // xy pixels, zw reciprocal
@@ -310,7 +311,7 @@ struct GpuObjectRecord {
     glm::mat4 prevModel{1.0f};
     glm::vec4 clearcoat{0.0f, 0.1f, 0.0f, 0.0f}; // x strength, y perceptual roughness, z anisotropy, w anisotropy rotation
     glm::vec4 sheen{0.0f, 0.0f, 0.0f, 0.5f};     // rgb color, a perceptual roughness
-    glm::vec4 misc{0.5f, 0.0f, 0.0f, 0.0f};      // x specular reflectance, y prevModel valid
+    glm::vec4 misc{0.5f, 0.0f, 0.0f, 0.0f};      // x specular reflectance, y prevModel valid, z water waves, w water foam
 };
 
 // Plain data a caller of Renderer::setLighting() fills in -- kept

@@ -24,19 +24,18 @@ void SafeContentPreviewPanel::drawSafeTextPreviewSection() {
     if (!ImGui::CollapsingHeader("SafeTextPreview", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     ImGui::TextWrapped(
-        "Runs your listing title/description (or any creator-authored text) through the same real text "
-        "heuristic and policy engine the live server applies to chat, before you publish.");
+        "Checks your listing title and description (or any creator text) with the same policy engine the live server applies to chat, before you publish.");
     ImGui::InputTextMultiline("##textPreviewInput", textPreviewBuffer_, sizeof(textPreviewBuffer_), ImVec2(0, 80));
 
     std::string text(textPreviewBuffer_);
     if (text.empty()) {
-        ImGui::TextDisabled("Type or paste text above to see a real preview.");
+        ImGui::TextDisabled("Type or paste text above to preview the result.");
         return;
     }
 
     safety::TextClassification classification = textClassifier_.classify(text);
     if (!classification.flagged) {
-        ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1.0f), "No real heuristic flags matched.");
+        ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1.0f), "No flags matched.");
         return;
     }
 
@@ -57,8 +56,7 @@ void SafeContentPreviewPanel::drawSafeThumbnailPreviewSection() {
     if (!ImGui::CollapsingHeader("SafeThumbnailPreview")) return;
 
     ImGui::TextWrapped(
-        "Runs a real image file through the same real structural checks and filename heuristic the live "
-        "upload path applies, before you publish it.");
+        "Runs an image through the same structural and filename checks as the live upload path, before you publish it.");
     ImGui::InputText("Image path", thumbnailPathBuffer_, sizeof(thumbnailPathBuffer_));
 
     if (ImGui::Button("Scan Thumbnail")) {
@@ -77,7 +75,7 @@ void SafeContentPreviewPanel::drawSafeThumbnailPreviewSection() {
             safety::ImageClassification classification = imageClassifier_.classify(filename);
 
             if (!structuralReport.anyFlagged() && !classification.flagged) {
-                thumbnailScanStatus_ = "No real findings -- structurally clean, no filename markers matched.";
+                thumbnailScanStatus_ = "No findings: structurally clean, no filename markers matched.";
             } else {
                 std::string status;
                 for (const safety::AssetSafetyFinding& finding : structuralReport.findings) {
@@ -104,9 +102,7 @@ void SafeContentPreviewPanel::drawSafeScriptScanSection() {
     if (!ImGui::CollapsingHeader("SafeScriptScan")) return;
 
     ImGui::TextWrapped(
-        "Scans a script file's own literal source TEXT for the same real keyword markers chat/listing text is "
-        "checked against -- catches a harmful string embedded in a UI/dialogue line. This does NOT analyze what "
-        "the script's code actually does; that's a real, separate, unbuilt capability, not claimed here.");
+        "Scans a script\'s source text for the same keyword markers used on chat and listings, catching harmful strings in UI or dialogue lines. It does not analyze what the code does.");
     ImGui::InputText("Script path", scriptPathBuffer_, sizeof(scriptPathBuffer_));
 
     if (ImGui::Button("Scan Script")) {
@@ -118,7 +114,7 @@ void SafeContentPreviewPanel::drawSafeScriptScanSection() {
             std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
             safety::TextClassification classification = textClassifier_.classify(source);
             if (!classification.flagged) {
-                scriptScanStatus_ = "No real heuristic flags matched in this script's source text.";
+                scriptScanStatus_ = "No flags matched in this script\'s source text.";
             } else {
                 std::string status = "Matched categories:\n";
                 for (safety::TextRiskCategory category : classification.categories) {

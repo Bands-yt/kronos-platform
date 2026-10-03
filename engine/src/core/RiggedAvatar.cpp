@@ -1,6 +1,10 @@
 #include "core/RiggedAvatar.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <functional>
+#include <map>
 
 #include "core/CatalogueIndex.hpp"
 #include "core/Components.hpp"
@@ -25,510 +29,435 @@ const char* jointNameFor(HumanoidBodySegment segment) {
     return "";
 }
 
-// Same 24-vertex, 6-face, flat-normal box shape core::Mesh::createBox()
-// uploads -- duplicated here as a host-only (no GPU) generator, appending
-// into an existing vertex/index array at `center` rather than always at
-// the origin, and tagged with which HumanoidBodySegment it belongs to.
-// Same "no shared VulkanUtils-style helper TU in this codebase" precedent
-// RiggedMesh.cpp's own file-local staging-buffer duplication already set.
-// Real, rigid (single-joint) skin weight -- the right choice for a
-// terminal piece (head/hand/foot) that never needs to bend internally.
-void appendBox(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<HumanoidBodySegment>& segments,
-                glm::vec3 center, glm::vec3 halfExtents, int jointIndex, HumanoidBodySegment segment,
-                SkinWeights& skinWeights) {
-    glm::vec3 h = halfExtents;
-    uint32_t base = static_cast<uint32_t>(vertices.size());
+constexpr float kPi = 3.14159265f;
 
-    std::array<Vertex, 24> box = {{
-        // +X
-        {{h.x, -h.y, -h.z}, {1, 0, 0}, {0, 0}}, {{h.x, -h.y, h.z}, {1, 0, 0}, {1, 0}},
-        {{h.x, h.y, h.z}, {1, 0, 0}, {1, 1}}, {{h.x, h.y, -h.z}, {1, 0, 0}, {0, 1}},
-        // -X
-        {{-h.x, -h.y, h.z}, {-1, 0, 0}, {0, 0}}, {{-h.x, -h.y, -h.z}, {-1, 0, 0}, {1, 0}},
-        {{-h.x, h.y, -h.z}, {-1, 0, 0}, {1, 1}}, {{-h.x, h.y, h.z}, {-1, 0, 0}, {0, 1}},
-        // +Y
-        {{-h.x, h.y, -h.z}, {0, 1, 0}, {0, 0}}, {{h.x, h.y, -h.z}, {0, 1, 0}, {1, 0}},
-        {{h.x, h.y, h.z}, {0, 1, 0}, {1, 1}}, {{-h.x, h.y, h.z}, {0, 1, 0}, {0, 1}},
-        // -Y
-        {{-h.x, -h.y, h.z}, {0, -1, 0}, {0, 0}}, {{h.x, -h.y, h.z}, {0, -1, 0}, {1, 0}},
-        {{h.x, -h.y, -h.z}, {0, -1, 0}, {1, 1}}, {{-h.x, -h.y, -h.z}, {0, -1, 0}, {0, 1}},
-        // +Z
-        {{h.x, -h.y, h.z}, {0, 0, 1}, {0, 0}}, {{-h.x, -h.y, h.z}, {0, 0, 1}, {1, 0}},
-        {{-h.x, h.y, h.z}, {0, 0, 1}, {1, 1}}, {{h.x, h.y, h.z}, {0, 0, 1}, {0, 1}},
-        // -Z
-        {{-h.x, -h.y, -h.z}, {0, 0, -1}, {0, 0}}, {{h.x, -h.y, -h.z}, {0, 0, -1}, {1, 0}},
-        {{h.x, h.y, -h.z}, {0, 0, -1}, {1, 1}}, {{-h.x, h.y, -h.z}, {0, 0, -1}, {0, 1}},
-    }};
+float signedPow(float x, float e) { return std::copysign(std::pow(std::abs(x), e), x); }
 
-    // Kronos ("Fix Blocky Extremity Normals"): real, smooth-shaded
-    // corners -- every appendBox() call in this file builds hand/foot
-    // geometry (palm, 4 finger blocks, thumb, both feet -- see this
-    // function's own call sites, there is no other real caller), and hard
-    // per-face normals on small blocky primitives read as flat, harsh
-    // faceted lighting instead of the soft, rounded highlight a stylized
-    // hand/foot should have. UVs and the existing 24-vertex/36-index
-    // layout stay exactly as authored above (still real per-face UVs, no
-    // texture-mapping change) -- only the normal each of the 3 vertices
-    // sharing a given real corner position carries is replaced with the
-    // real average of that corner's 3 adjacent face normals (the
-    // standard smooth-cube technique: for a box this average always
-    // equals that corner's own normalized sign vector, e.g. the +X+Y+Z
-    // corner's 3 face normals (1,0,0)/(0,1,0)/(0,0,1) average to a real,
-    // normalized (0.577,0.577,0.577) diagonal), so lighting interpolates
-    // smoothly across each edge instead of snapping hard at it.
-    for (size_t i = 0; i < box.size(); ++i) {
-        glm::vec3 normalSum(0.0f);
-        for (size_t j = 0; j < box.size(); ++j) {
-            if (glm::distance(box[i].position, box[j].position) < 0.0001f) normalSum += box[j].normal;
-        }
-        box[i].normal = glm::normalize(normalSum);
-    }
+// Appends skinned vertices/triangles for one body segment. Triangles are
+// wound so their geometric normal agrees with the vertex normals, and
+// smoothNormals() replaces provisional normals with welded, area-weighted ones.
+struct BodyBuilder {
+    std::vector<Vertex>& vertices;
+    std::vector<uint32_t>& indices;
+    std::vector<HumanoidBodySegment>& segments;
+    SkinWeights& skinWeights;
+    HumanoidBodySegment segment;
 
-    for (auto& v : box) {
-        v.position += center;
+    uint32_t vertexMark() const { return static_cast<uint32_t>(vertices.size()); }
+    size_t indexMark() const { return indices.size(); }
+
+    uint32_t push(glm::vec3 position, glm::vec3 normal, glm::vec2 uv, int jointA, int jointB = -1, float weightB = 0.0f) {
+        Vertex v;
+        v.position = position;
+        v.normal = glm::length(normal) > 1e-8f ? glm::normalize(normal) : glm::vec3(0.0f, 1.0f, 0.0f);
+        v.uv = uv;
         vertices.push_back(v);
         segments.push_back(segment);
         VertexSkinWeights sw;
-        sw.jointIndices = {jointIndex, -1, -1, -1};
-        sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
+        weightB = std::clamp(weightB, 0.0f, 1.0f);
+        if (jointB < 0 || jointB == jointA || weightB <= 0.0f) {
+            sw.jointIndices = {jointA, -1, -1, -1};
+            sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
+        } else if (weightB >= 1.0f) {
+            sw.jointIndices = {jointB, -1, -1, -1};
+            sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
+        } else {
+            sw.jointIndices = {jointA, jointB, -1, -1};
+            sw.weights = {1.0f - weightB, weightB, 0.0f, 0.0f};
+        }
         skinWeights.perVertex.push_back(sw);
+        return static_cast<uint32_t>(vertices.size() - 1);
     }
 
-    for (uint32_t face = 0; face < 6; ++face) {
-        uint32_t faceBase = base + face * 4;
-        indices.insert(indices.end(), {faceBase, faceBase + 1, faceBase + 2, faceBase, faceBase + 2, faceBase + 3});
+    void tri(uint32_t a, uint32_t b, uint32_t c) {
+        const glm::vec3& pa = vertices[a].position;
+        glm::vec3 n = glm::cross(vertices[b].position - pa, vertices[c].position - pa);
+        if (glm::dot(n, n) < 1e-16f) return;
+        glm::vec3 reference = vertices[a].normal + vertices[b].normal + vertices[c].normal;
+        if (glm::dot(n, reference) < 0.0f) std::swap(b, c);
+        indices.insert(indices.end(), {a, b, c});
     }
+
+    void quad(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+        tri(a, b, c);
+        tri(a, c, d);
+    }
+
+    // Rings of `ringSize` vertices starting at `first`, laid out consecutively.
+    void connectRings(uint32_t first, uint32_t ringCount, uint32_t ringSize, bool wrap) {
+        uint32_t columns = wrap ? ringSize : ringSize - 1;
+        for (uint32_t r = 0; r + 1 < ringCount; ++r) {
+            for (uint32_t s = 0; s < columns; ++s) {
+                uint32_t next = (s + 1) % ringSize;
+                quad(first + r * ringSize + s, first + r * ringSize + next, first + (r + 1) * ringSize + next,
+                     first + (r + 1) * ringSize + s);
+            }
+        }
+    }
+
+    void smoothNormals(uint32_t firstVertex, size_t firstIndex) {
+        auto key = [](glm::vec3 p) {
+            return std::array<int64_t, 3>{std::llround(p.x * 1e5), std::llround(p.y * 1e5), std::llround(p.z * 1e5)};
+        };
+        std::map<std::array<int64_t, 3>, glm::vec3> accumulated;
+        for (size_t i = firstIndex; i + 2 < indices.size(); i += 3) {
+            const glm::vec3& a = vertices[indices[i]].position;
+            const glm::vec3& b = vertices[indices[i + 1]].position;
+            const glm::vec3& c = vertices[indices[i + 2]].position;
+            glm::vec3 n = glm::cross(b - a, c - a);
+            for (const glm::vec3* p : {&a, &b, &c}) accumulated[key(*p)] += n;
+        }
+        for (uint32_t v = firstVertex; v < vertices.size(); ++v) {
+            auto it = accumulated.find(key(vertices[v].position));
+            if (it != accumulated.end() && glm::dot(it->second, it->second) > 1e-20f) {
+                vertices[v].normal = glm::normalize(it->second);
+            }
+        }
+    }
+};
+
+// Superellipsoid (exponent 1 = ellipsoid, < 1 rounds toward a box) in an
+// arbitrary orientation. With jointB set, weights blend from jointA to
+// jointB across the plane perpendicular to `blendAxis`.
+struct Ellipsoid {
+    glm::vec3 center{0.0f};
+    glm::vec3 halfExtents{0.1f};
+    glm::mat3 basis{1.0f};
+    float exponent = 1.0f;
+    uint32_t rings = 16;
+    uint32_t segments = 24;
+    int jointA = -1;
+    int jointB = -1;
+    glm::vec3 blendAxis{0.0f, -1.0f, 0.0f};
+};
+
+using EllipsoidDeform = std::function<glm::vec3(glm::vec3 local, glm::vec3 unit)>;
+
+void appendEllipsoid(BodyBuilder& builder, const Ellipsoid& e, const EllipsoidDeform& deform = {}) {
+    uint32_t first = builder.vertexMark();
+    size_t firstIndex = builder.indexMark();
+    glm::vec3 axis = glm::length(e.blendAxis) > 1e-5f ? glm::normalize(e.blendAxis) : glm::vec3(0.0f, -1.0f, 0.0f);
+    for (uint32_t r = 0; r <= e.rings; ++r) {
+        float v = static_cast<float>(r) / static_cast<float>(e.rings);
+        float phi = v * kPi;
+        for (uint32_t s = 0; s <= e.segments; ++s) {
+            float u = static_cast<float>(s) / static_cast<float>(e.segments);
+            float theta = u * 2.0f * kPi;
+            glm::vec3 unit(std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta));
+            glm::vec3 shaped(signedPow(std::sin(phi), e.exponent) * signedPow(std::cos(theta), e.exponent),
+                             signedPow(std::cos(phi), e.exponent),
+                             signedPow(std::sin(phi), e.exponent) * signedPow(std::sin(theta), e.exponent));
+            glm::vec3 local = shaped * e.halfExtents;
+            if (deform) local = deform(local, unit);
+            glm::vec3 worldUnit = e.basis * unit;
+            float blend = e.jointB >= 0 ? glm::smoothstep(-0.45f, 0.45f, glm::dot(worldUnit, axis)) : 0.0f;
+            builder.push(e.center + e.basis * local, e.basis * (unit / e.halfExtents), {u, v}, e.jointA, e.jointB, blend);
+        }
+    }
+    builder.connectRings(first, e.rings + 1, e.segments + 1, false);
+    builder.smoothNormals(first, firstIndex);
 }
 
-// A real, low-poly lat/long sphere (8 segments x 4 rings) -- "Head
-// (simple sphere/oval)" per the Avatar spec -- appended host-only the
-// same way appendBox() is, rigidly bound to one joint (a head has no
-// internal joint to blend with).
 void appendSphere(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<HumanoidBodySegment>& segments,
                    glm::vec3 center, glm::vec3 radii, int jointIndex, HumanoidBodySegment segment,
                    SkinWeights& skinWeights) {
-    constexpr uint32_t kSegments = 8;
-    constexpr uint32_t kRings = 4;
-    uint32_t base = static_cast<uint32_t>(vertices.size());
-
-    for (uint32_t r = 0; r <= kRings; ++r) {
-        float v = static_cast<float>(r) / static_cast<float>(kRings); // 0 (top pole) -> 1 (bottom pole)
-        float phi = v * 3.14159265f;
-        for (uint32_t s = 0; s <= kSegments; ++s) {
-            float u = static_cast<float>(s) / static_cast<float>(kSegments);
-            float theta = u * 2.0f * 3.14159265f;
-            glm::vec3 unit(std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta));
-            Vertex vert;
-            vert.position = center + unit * radii;
-            vert.normal = glm::normalize(unit);
-            vert.uv = {u, v};
-            vertices.push_back(vert);
-            segments.push_back(segment);
-            VertexSkinWeights sw;
-            sw.jointIndices = {jointIndex, -1, -1, -1};
-            sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
-            skinWeights.perVertex.push_back(sw);
-        }
-    }
-
-    uint32_t ringStride = kSegments + 1;
-    for (uint32_t r = 0; r < kRings; ++r) {
-        for (uint32_t s = 0; s < kSegments; ++s) {
-            uint32_t a = base + r * ringStride + s;
-            uint32_t b = base + r * ringStride + s + 1;
-            uint32_t c = base + (r + 1) * ringStride + s + 1;
-            uint32_t d = base + (r + 1) * ringStride + s;
-            indices.insert(indices.end(), {a, b, c, a, c, d});
-        }
-    }
+    BodyBuilder builder{vertices, indices, segments, skinWeights, segment};
+    Ellipsoid e;
+    e.center = center;
+    e.halfExtents = radii;
+    e.jointA = jointIndex;
+    appendEllipsoid(builder, e);
 }
 
-// Kronos (beta-blocking fix -- "shoulder disconnected from torso"): a
-// blended two-joint sphere, same "middle blends smoothly between two
-// bones" idea appendSmoothLimb() already uses for limb rings, applied to
-// a cap sphere instead of a tube. A rigid single-joint cap (plain
-// appendSphere()) always opens a visible gap on one side of a two-bone
-// junction once it rotates away from bind pose: bound to the torso's
-// joint it stays with the torso but separates from the swinging limb;
-// bound to the limb's joint it swings with the limb but separates from
-// the torso side. `blendAxis` is the cap's own real bind-pose direction
-// from `primaryJoint` toward `secondaryJoint` (e.g. shoulder->elbow) --
-// vertices nearest that direction (where the limb cylinder actually
-// attaches) blend toward `secondaryJoint`; vertices on the opposite pole
-// (nearest the torso's own bulge) stay closer to `primaryJoint`. Same
-// 8-segment/4-ring layout as appendSphere() -- only the per-vertex skin
-// weight differs.
 void appendSphereBlended(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
                           std::vector<HumanoidBodySegment>& segments, glm::vec3 center, glm::vec3 radii,
                           int primaryJoint, int secondaryJoint, glm::vec3 blendAxis, HumanoidBodySegment segment,
                           SkinWeights& skinWeights) {
-    constexpr uint32_t kSegments = 8;
-    constexpr uint32_t kRings = 4;
-    uint32_t base = static_cast<uint32_t>(vertices.size());
-    glm::vec3 axis = glm::length(blendAxis) > 1e-5f ? glm::normalize(blendAxis) : glm::vec3(0.0f, -1.0f, 0.0f);
-
-    for (uint32_t r = 0; r <= kRings; ++r) {
-        float v = static_cast<float>(r) / static_cast<float>(kRings); // 0 (top pole) -> 1 (bottom pole)
-        float phi = v * 3.14159265f;
-        for (uint32_t s = 0; s <= kSegments; ++s) {
-            float u = static_cast<float>(s) / static_cast<float>(kSegments);
-            float theta = u * 2.0f * 3.14159265f;
-            glm::vec3 unit(std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta));
-            Vertex vert;
-            vert.position = center + unit * radii;
-            vert.normal = glm::normalize(unit);
-            vert.uv = {u, v};
-            vertices.push_back(vert);
-            segments.push_back(segment);
-
-            // Real linear blend along blendAxis: 0 at the pole facing
-            // -blendAxis (primaryJoint's own side) -> 1 at the pole
-            // facing +blendAxis (secondaryJoint's own side). dot() ranges
-            // [-1, 1], remapped to [0, 1].
-            float blend = std::clamp((glm::dot(unit, axis) + 1.0f) * 0.5f, 0.0f, 1.0f);
-            VertexSkinWeights sw;
-            sw.jointIndices = {primaryJoint, secondaryJoint, -1, -1};
-            sw.weights = {1.0f - blend, blend, 0.0f, 0.0f};
-            skinWeights.perVertex.push_back(sw);
-        }
-    }
-
-    uint32_t ringStride = kSegments + 1;
-    for (uint32_t r = 0; r < kRings; ++r) {
-        for (uint32_t s = 0; s < kSegments; ++s) {
-            uint32_t a = base + r * ringStride + s;
-            uint32_t b = base + r * ringStride + s + 1;
-            uint32_t c = base + (r + 1) * ringStride + s + 1;
-            uint32_t d = base + (r + 1) * ringStride + s;
-            indices.insert(indices.end(), {a, b, c, a, c, d});
-        }
-    }
+    BodyBuilder builder{vertices, indices, segments, skinWeights, segment};
+    Ellipsoid e;
+    e.center = center;
+    e.halfExtents = radii;
+    e.jointA = primaryJoint;
+    e.jointB = secondaryJoint;
+    e.blendAxis = blendAxis;
+    e.rings = 12;
+    e.segments = 18;
+    appendEllipsoid(builder, e);
 }
 
-// Kronos ("Avatar Visual Silhouette Pass" -- "Head" -- "reshape the head
-// to a stylised human oval... add cheek curvature and a subtle jawline
-// for personality", revised after a live-screenshot check showed a
-// first, much more aggressive curvature profile reading as snout-like/
-// animal next to the first hair design -- explicit user feedback:
-// "Revert the avatar head to a humanoid shape. Do not use animal or
-// novelty meshes."): the same real, low-poly lat/long sphere
-// appendSphere() above generates, but each of its 5 real latitude rings
-// (top pole through bottom pole) gets its own real horizontal (X/Z only,
-// vertical Y untouched) width multiplier instead of one uniform radius
-// -- a real, visible cheekbone bulge and jaw taper, tuned to sit between
-// that first over-aggressive pass (0.55 chin scale, read as a snout) and
-// an overly-subtle in-between revision -- enough real curvature to read
-// as "personality," not just a smoothed sphere. Normals stay the pure
-// spherical `normalize(unit)` appendSphere() already uses (not
-// re-derived for the per-ring anisotropy) -- the same accepted "cheap,
-// approximate ring normal" precedent appendProfiledBarrel() already
-// establishes for the torso; imperceptible at this rig's flat, stylized
-// low-poly scale.
+// Ellipsoid with a cranium that is fuller at the temples and a jaw that
+// narrows toward the chin. The front of the face stays where the facial
+// feature joints (face_* in buildHumanoidSkeleton()) expect it.
 void appendProfiledHead(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
                          std::vector<HumanoidBodySegment>& segments, glm::vec3 center, glm::vec3 radii, int jointIndex,
                          HumanoidBodySegment segment, SkinWeights& skinWeights) {
-    constexpr uint32_t kSegments = 8;
-    constexpr uint32_t kRings = 4;
-    constexpr std::array<float, kRings + 1> kRingWidthScale = {0.90f, 1.0f, 1.06f, 0.90f, 0.72f};
-    uint32_t base = static_cast<uint32_t>(vertices.size());
-
-    for (uint32_t r = 0; r <= kRings; ++r) {
-        float v = static_cast<float>(r) / static_cast<float>(kRings);
-        float phi = v * 3.14159265f;
-        float widthScale = kRingWidthScale[r];
-        for (uint32_t s = 0; s <= kSegments; ++s) {
-            float u = static_cast<float>(s) / static_cast<float>(kSegments);
-            float theta = u * 2.0f * 3.14159265f;
-            glm::vec3 unit(std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta));
-            Vertex vert;
-            vert.position = center + glm::vec3(unit.x * radii.x * widthScale, unit.y * radii.y, unit.z * radii.z * widthScale);
-            vert.normal = glm::normalize(unit);
-            vert.uv = {u, v};
-            vertices.push_back(vert);
-            segments.push_back(segment);
-            VertexSkinWeights sw;
-            sw.jointIndices = {jointIndex, -1, -1, -1};
-            sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
-            skinWeights.perVertex.push_back(sw);
-        }
-    }
-
-    uint32_t ringStride = kSegments + 1;
-    for (uint32_t r = 0; r < kRings; ++r) {
-        for (uint32_t s = 0; s < kSegments; ++s) {
-            uint32_t a = base + r * ringStride + s;
-            uint32_t b = base + r * ringStride + s + 1;
-            uint32_t c = base + (r + 1) * ringStride + s + 1;
-            uint32_t d = base + (r + 1) * ringStride + s;
-            indices.insert(indices.end(), {a, b, c, a, c, d});
-        }
-    }
+    BodyBuilder builder{vertices, indices, segments, skinWeights, segment};
+    Ellipsoid e;
+    e.center = center;
+    e.halfExtents = radii;
+    e.jointA = jointIndex;
+    e.rings = 20;
+    e.segments = 28;
+    appendEllipsoid(builder, e, [](glm::vec3 local, glm::vec3 unit) {
+        float height = unit.y; // +1 crown, -1 chin
+        float temples = 1.0f + 0.06f * std::exp(-std::pow((height - 0.15f) / 0.45f, 2.0f));
+        float jaw = 1.0f - 0.22f * glm::smoothstep(-0.15f, -0.95f, height);
+        float lateral = temples * jaw;
+        float depth = temples * (unit.z < 0.0f ? 1.0f + 0.05f * glm::smoothstep(-0.5f, 0.6f, height) : 1.0f);
+        float chin = unit.z > 0.0f ? 1.0f - 0.06f * glm::smoothstep(-0.4f, -0.9f, height) : 1.0f;
+        return glm::vec3(local.x * lateral, local.y, local.z * depth * chin);
+    });
 }
 
-// Kronos ("Avatar System" -- 18-bone rig, real smooth skinning; "Default
-// Avatar Redesign" -- "Arms/Legs: cylindrical with slight taper"): a
-// real, low-poly octagonal "tube" between two joints (e.g. shoulder to
-// elbow) -- cylindrical at this rig's own established low-poly scale, the
-// same 8-segment convention appendSphere()'s own rings already use, in
-// place of the old 4-corner rectangular cross-section. 3 real
-// cross-section rings (start/mid/end) -- the middle ring's skin weight is
-// a real 50/50 blend between the two joints, so when the joint rotates
-// this ring interpolates smoothly between both bones' influence instead
-// of snapping at a hard boundary. This is what actually delivers "smooth
-// bending at elbows/knees" -- appendBox()'s single rigid joint per vertex
-// can't. The start ring is 100% the start joint, the end ring 100% the
-// end joint (matching how a rigid box/sphere appended at either end of
-// this chain rigidly continues from there, e.g. a hand box rigidly bound
-// to hand_L picks up exactly where this chain's own end ring left off).
-// `crossSectionStart`/`crossSectionEnd` are real, independent radii (not
-// one shared value) -- the real, honest "slight taper" the redesign asks
-// for; the mid ring uses their real average, so the taper interpolates
-// smoothly rather than stepping partway through.
+// A tapered tube between two joints with a slight muscle swell. Rings blend
+// from startJoint to endJoint over the far half so a bend at endJoint
+// stretches the skin instead of tearing it; the end ring follows endJoint
+// exactly, matching the next limb's start ring.
 void appendSmoothLimb(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
                        std::vector<HumanoidBodySegment>& segments, glm::vec3 startPos, glm::vec3 endPos,
                        glm::vec2 crossSectionStart, glm::vec2 crossSectionEnd, int startJoint, int endJoint,
-                       HumanoidBodySegment segment, SkinWeights& skinWeights) {
-    constexpr uint32_t kLimbSegments = 8;
-    glm::vec3 midPos = (startPos + endPos) * 0.5f;
-    glm::vec2 crossSectionMid = (crossSectionStart + crossSectionEnd) * 0.5f;
+                       HumanoidBodySegment segment, SkinWeights& skinWeights, float swell = 0.07f) {
+    constexpr uint32_t kRingSize = 18;
+    constexpr uint32_t kRings = 9;
+    BodyBuilder builder{vertices, indices, segments, skinWeights, segment};
 
-    // Kronos ("Avatar Redesign & Geometry Fixes" pre-launch fix -- real,
-    // confirmed via a direct GPU-readback capture of bind pose vs. idle
-    // pose): the ring's cross-section basis used to be hard-coded to the
-    // XZ-plane (offset varying X/Z only, Y fixed at the ring's own
-    // center) -- correct only for a bone that extends along world Y
-    // (true for the legs/torso, which is why they've always looked
-    // right), but wrong for any limb whose real bone direction isn't
-    // close to Y. The arm bone is horizontal in bind pose (T-pose,
-    // extends along X) and, even once idle.anim rotates the shoulder to
-    // hang the arm down, a single rigid rotation can't fix a
-    // cross-section that was already built in the wrong plane -- it
-    // just carries the same wrong shape along for the ride, producing a
-    // flattened, bone-axis-aligned "ribbon" instead of a round tube, and
-    // reading as a visibly detached/malformed limb once away from the
-    // one direction (Y) the old hard-coded plane happened to match.
-    // basisA/basisB are the real, standard "orthonormal frame from one
-    // direction vector" construction, spanning the plane genuinely
-    // perpendicular to this limb's own real bone direction -- correct
-    // for any bone orientation, not just Y-aligned ones.
     glm::vec3 boneDir = endPos - startPos;
-    if (glm::length(boneDir) < 1e-5f) boneDir = glm::vec3(0.0f, -1.0f, 0.0f); // degenerate zero-length bone -- fall back to straight down
+    if (glm::length(boneDir) < 1e-5f) boneDir = glm::vec3(0.0f, -1.0f, 0.0f);
     boneDir = glm::normalize(boneDir);
     glm::vec3 reference = std::abs(boneDir.y) > 0.99f ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
     glm::vec3 basisA = glm::normalize(glm::cross(reference, boneDir));
     glm::vec3 basisB = glm::normalize(glm::cross(boneDir, basisA));
 
-    auto makeRing = [&](glm::vec3 center, glm::vec2 crossSection, int jointA, float weightA, int jointB,
-                         float weightB) -> std::vector<uint32_t> {
-        std::vector<uint32_t> result(kLimbSegments);
-        for (uint32_t i = 0; i < kLimbSegments; ++i) {
-            float theta = (static_cast<float>(i) / static_cast<float>(kLimbSegments)) * 2.0f * 3.14159265f;
-            // Real generalization of the original XZ-plane ellipse
-            // (radius crossSection.x along what used to be hard-coded
-            // world-X, crossSection.y along hard-coded world-Z): same
-            // per-axis radii, now measured along basisA/basisB (the
-            // plane genuinely perpendicular to this limb's own bone
-            // direction) instead of always world-X/world-Z.
+    uint32_t first = builder.vertexMark();
+    size_t firstIndex = builder.indexMark();
+    for (uint32_t r = 0; r < kRings; ++r) {
+        float t = static_cast<float>(r) / static_cast<float>(kRings - 1);
+        glm::vec3 center = glm::mix(startPos, endPos, t);
+        glm::vec2 crossSection = glm::mix(crossSectionStart, crossSectionEnd, t) * (1.0f + swell * std::sin(kPi * t));
+        float endWeight = glm::smoothstep(0.4f, 1.0f, t);
+        for (uint32_t i = 0; i < kRingSize; ++i) {
+            float theta = (static_cast<float>(i) / static_cast<float>(kRingSize)) * 2.0f * kPi;
+            glm::vec3 radial = basisA * std::cos(theta) + basisB * std::sin(theta);
             glm::vec3 offset = basisA * (std::cos(theta) * crossSection.x) + basisB * (std::sin(theta) * crossSection.y);
-            Vertex v;
-            v.position = center + offset;
-            v.normal = glm::normalize(offset);
-            v.uv = {static_cast<float>(i) / static_cast<float>(kLimbSegments), 0.0f};
-            uint32_t index = static_cast<uint32_t>(vertices.size());
-            vertices.push_back(v);
-            segments.push_back(segment);
-            VertexSkinWeights sw;
-            sw.jointIndices = {jointA, weightB > 0.0f ? jointB : -1, -1, -1};
-            sw.weights = {weightA, weightB, 0.0f, 0.0f};
-            skinWeights.perVertex.push_back(sw);
-            result[i] = index;
+            builder.push(center + offset, radial, {static_cast<float>(i) / static_cast<float>(kRingSize), t}, startJoint,
+                         endJoint, endWeight);
         }
-        return result;
-    };
-
-    std::vector<uint32_t> ringStart = makeRing(startPos, crossSectionStart, startJoint, 1.0f, -1, 0.0f);
-    std::vector<uint32_t> ringMid = makeRing(midPos, crossSectionMid, startJoint, 0.5f, endJoint, 0.5f);
-    std::vector<uint32_t> ringEnd = makeRing(endPos, crossSectionEnd, endJoint, 1.0f, -1, 0.0f);
-
-    auto connect = [&](const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
-        for (uint32_t i = 0; i < kLimbSegments; ++i) {
-            uint32_t next = (i + 1) % kLimbSegments;
-            indices.insert(indices.end(), {a[i], a[next], b[next], a[i], b[next], b[i]});
-        }
-    };
-    connect(ringStart, ringMid);
-    connect(ringMid, ringEnd);
+    }
+    builder.connectRings(first, kRings, kRingSize, true);
+    builder.smoothNormals(first, firstIndex);
 }
 
-// Kronos ("Avatar Phase" -- "Default Avatar Redesign" -- "Torso:
-// redesigned (not a box), rounded front/back, clear shoulder
-// silhouette"): a real, low-poly "profiled barrel" -- the same real
-// 8-segment ring convention appendSphere()/appendSmoothLimb() already
-// use, but each of `ringRadii`'s own rings (bottom-to-top, evenly spaced
-// across `halfHeight`) carries its own independent elliptical {radiusX,
-// radiusZ} instead of one fixed sphere radius. A flattened ellipse
-// (radiusZ < radiusX) is what makes each ring "rounded front/back" rather
-// than flat like a box's own rectangular cross-section; a wider top ring
-// than bottom ring is what gives the real "shoulder silhouette" the
-// spec asks for. Flat-capped top/bottom (a real fan triangulation, not a
-// rounded pole) -- a torso's top/bottom are real, open attachment
-// boundaries to the neck/hips, not a rounded cap the way a head's own
-// poles are. Real, rigid (single-joint) skin weight, same as the box this
-// replaces -- still "one connected piece" per the Avatar System spec (see
-// this function's own real caller for why a multi-joint smooth spine
-// stays a deliberately un-built refinement).
+// Upsamples a few control rings with Catmull-Rom so the silhouette curves
+// instead of kinking at each control ring.
+std::vector<glm::vec2> upsampleProfile(const std::vector<glm::vec2>& controls, uint32_t stepsPerSpan) {
+    if (controls.size() < 2) return controls;
+    std::vector<glm::vec2> out;
+    auto at = [&](int i) { return controls[static_cast<size_t>(std::clamp(i, 0, static_cast<int>(controls.size()) - 1))]; };
+    for (int span = 0; span + 1 < static_cast<int>(controls.size()); ++span) {
+        for (uint32_t step = 0; step < stepsPerSpan; ++step) {
+            float t = static_cast<float>(step) / static_cast<float>(stepsPerSpan);
+            glm::vec2 p0 = at(span - 1), p1 = at(span), p2 = at(span + 1), p3 = at(span + 2);
+            float t2 = t * t, t3 = t2 * t;
+            out.push_back(0.5f * (2.0f * p1 + (p2 - p0) * t + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2 +
+                                  (3.0f * p1 - p0 - 3.0f * p2 + p3) * t3));
+        }
+    }
+    out.push_back(controls.back());
+    return out;
+}
+
+// Vertical barrel through `ringRadii` (bottom to top) with a squarish
+// superellipse cross-section. capDome > 0 closes the ends with domes of that
+// height (as a fraction of the end ring's depth); 0 closes them flat.
 void appendProfiledBarrel(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices,
                            std::vector<HumanoidBodySegment>& segments, glm::vec3 center, float halfHeight,
                            const std::vector<glm::vec2>& ringRadii, int jointIndex, HumanoidBodySegment segment,
-                           SkinWeights& skinWeights) {
-    constexpr uint32_t kSegments = 8;
-    uint32_t ringCount = static_cast<uint32_t>(ringRadii.size());
-    uint32_t base = static_cast<uint32_t>(vertices.size());
-    uint32_t ringStride = kSegments;
+                           SkinWeights& skinWeights, float capDome = 0.0f) {
+    constexpr uint32_t kRingSize = 28;
+    constexpr uint32_t kDomeRings = 4;
+    constexpr float kSquareness = 0.8f;
+    BodyBuilder builder{vertices, indices, segments, skinWeights, segment};
+    std::vector<glm::vec2> profile = upsampleProfile(ringRadii, 4);
+    if (profile.empty()) return;
 
-    auto pushVertex = [&](glm::vec3 position, glm::vec3 normal, glm::vec2 uv) {
-        Vertex v;
-        v.position = position;
-        v.normal = normal;
-        v.uv = uv;
-        vertices.push_back(v);
-        segments.push_back(segment);
-        VertexSkinWeights sw;
-        sw.jointIndices = {jointIndex, -1, -1, -1};
-        sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
-        skinWeights.perVertex.push_back(sw);
+    struct Ring {
+        float y;
+        glm::vec2 radii;
     };
-
-    for (uint32_t r = 0; r < ringCount; ++r) {
-        float v = ringCount > 1 ? static_cast<float>(r) / static_cast<float>(ringCount - 1) : 0.0f;
-        float y = center.y + (v * 2.0f - 1.0f) * halfHeight;
-        glm::vec2 radii = ringRadii[r];
-        for (uint32_t s = 0; s < kSegments; ++s) {
-            float theta = (static_cast<float>(s) / static_cast<float>(kSegments)) * 2.0f * 3.14159265f;
-            glm::vec3 offset(std::cos(theta) * radii.x, 0.0f, std::sin(theta) * radii.y);
-            glm::vec3 n(std::cos(theta) / std::max(radii.x, 1e-4f), 0.0f, std::sin(theta) / std::max(radii.y, 1e-4f));
-            pushVertex(glm::vec3(center.x, y, center.z) + offset, glm::normalize(n),
-                       {static_cast<float>(s) / static_cast<float>(kSegments), v});
+    std::vector<Ring> rings;
+    auto domeRings = [&](glm::vec2 radii, float y, float direction) {
+        std::vector<Ring> dome;
+        float height = capDome * std::min(radii.x, radii.y);
+        for (uint32_t k = 1; k <= kDomeRings; ++k) {
+            float a = (static_cast<float>(k) / static_cast<float>(kDomeRings + 1)) * 0.5f * kPi;
+            dome.push_back({y + direction * height * std::sin(a), radii * std::cos(a)});
         }
+        return dome;
+    };
+    float bottomY = center.y - halfHeight;
+    float span = 2.0f * halfHeight;
+    if (capDome > 0.0f) {
+        std::vector<Ring> bottom = domeRings(profile.front(), bottomY, -1.0f);
+        rings.insert(rings.end(), bottom.rbegin(), bottom.rend());
+    }
+    for (size_t r = 0; r < profile.size(); ++r) {
+        float v = profile.size() > 1 ? static_cast<float>(r) / static_cast<float>(profile.size() - 1) : 0.0f;
+        rings.push_back({bottomY + v * span, profile[r]});
+    }
+    if (capDome > 0.0f) {
+        std::vector<Ring> top = domeRings(profile.back(), bottomY + span, 1.0f);
+        rings.insert(rings.end(), top.begin(), top.end());
     }
 
-    for (uint32_t r = 0; r + 1 < ringCount; ++r) {
-        for (uint32_t s = 0; s < kSegments; ++s) {
-            uint32_t next = (s + 1) % kSegments;
-            uint32_t a = base + r * ringStride + s;
-            uint32_t b = base + r * ringStride + next;
-            uint32_t c = base + (r + 1) * ringStride + next;
-            uint32_t d = base + (r + 1) * ringStride + s;
-            indices.insert(indices.end(), {a, b, c, a, c, d});
+    uint32_t first = builder.vertexMark();
+    size_t firstIndex = builder.indexMark();
+    for (size_t r = 0; r < rings.size(); ++r) {
+        float v = static_cast<float>(r) / static_cast<float>(rings.size() - 1);
+        for (uint32_t s = 0; s < kRingSize; ++s) {
+            float theta = (static_cast<float>(s) / static_cast<float>(kRingSize)) * 2.0f * kPi;
+            glm::vec3 offset(signedPow(std::cos(theta), kSquareness) * rings[r].radii.x, 0.0f,
+                             signedPow(std::sin(theta), kSquareness) * rings[r].radii.y);
+            builder.push(glm::vec3(center.x, rings[r].y, center.z) + offset, offset,
+                         {static_cast<float>(s) / static_cast<float>(kRingSize), v}, jointIndex);
         }
     }
+    uint32_t ringCount = static_cast<uint32_t>(rings.size());
+    builder.connectRings(first, ringCount, kRingSize, true);
 
-    // Flat top/bottom caps -- a real fan triangulation from a real,
-    // separate center vertex (not shared with any ring vertex, so its own
-    // flat normal doesn't get blended into the ring's own curved
-    // normals).
-    auto appendCap = [&](uint32_t ringIndex, bool facesDown) {
-        float v = ringCount > 1 ? static_cast<float>(ringIndex) / static_cast<float>(ringCount - 1) : 0.0f;
-        float y = center.y + (v * 2.0f - 1.0f) * halfHeight;
-        uint32_t centerIndex = static_cast<uint32_t>(vertices.size());
-        pushVertex(glm::vec3(center.x, y, center.z), facesDown ? glm::vec3(0, -1, 0) : glm::vec3(0, 1, 0), {0.5f, 0.5f});
-        for (uint32_t s = 0; s < kSegments; ++s) {
-            uint32_t next = (s + 1) % kSegments;
-            uint32_t a = base + ringIndex * ringStride + s;
-            uint32_t b = base + ringIndex * ringStride + next;
-            if (facesDown) {
-                indices.insert(indices.end(), {centerIndex, b, a});
-            } else {
-                indices.insert(indices.end(), {centerIndex, a, b});
+    auto closeEnd = [&](uint32_t ring, float y, glm::vec3 outward, bool flat) {
+        uint32_t centerIndex = builder.push(glm::vec3(center.x, y, center.z), outward, {0.5f, 0.5f}, jointIndex);
+        uint32_t rimFirst = first + ring * kRingSize;
+        if (flat) {
+            rimFirst = builder.vertexMark();
+            for (uint32_t s = 0; s < kRingSize; ++s) {
+                builder.push(vertices[first + ring * kRingSize + s].position, outward, {0.5f, 0.5f}, jointIndex);
             }
         }
+        for (uint32_t s = 0; s < kRingSize; ++s) builder.tri(centerIndex, rimFirst + s, rimFirst + (s + 1) % kRingSize);
     };
-    appendCap(0, /*facesDown=*/true);
-    appendCap(ringCount - 1, /*facesDown=*/false);
+    if (capDome > 0.0f) {
+        float bottomHeight = capDome * std::min(profile.front().x, profile.front().y);
+        float topHeight = capDome * std::min(profile.back().x, profile.back().y);
+        closeEnd(0, bottomY - bottomHeight, {0.0f, -1.0f, 0.0f}, false);
+        closeEnd(ringCount - 1, bottomY + span + topHeight, {0.0f, 1.0f, 0.0f}, false);
+        builder.smoothNormals(first, firstIndex);
+    } else {
+        builder.smoothNormals(first, firstIndex);
+        closeEnd(0, rings.front().y, {0.0f, -1.0f, 0.0f}, true);
+        closeEnd(ringCount - 1, rings.back().y, {0.0f, 1.0f, 0.0f}, true);
+    }
 }
 
-// Kronos ("Critical Visual Fixes" -- "Avatar Chest Mesh Clipping"): real,
-// shared torso ring shape -- factored out so both the base body mesh
-// (buildHumanoidMeshData()'s own torso block) and the separate clothing
-// shirt shell (spawnAvatarClothing()) always describe literally the same
-// silhouette, just at two different outward scales. Before this, the
-// shirt shell kept its own, independently hand-tuned 3-ring profile
-// (missing the base body's real 4th "shoulder bulge" control point
-// entirely) -- at the shoulder/chest band the base body's own 0.29*w
-// bulge was wider than the shirt shell's ~0.26*w interpolated radius
-// even at a "Tight" 1.06x shell scale, so real skin-colored torso
-// geometry poked through the shirt there. Reusing this exact profile
-// (scaled outward by `outwardScale`) guarantees the shirt always fully
-// encloses the base body at every ring, not just at the two endpoints,
-// and stays correct automatically if the base torso's own shape is ever
-// retuned again. `outwardScale` folds in clothingFitScaleMultiplier()
-// for a real shirt shell, or is 1.0f for the base body itself.
+// Shared torso silhouette: the base body and the shirt shell
+// (spawnAvatarClothing()) use the same profile at different outward scales
+// so the shirt always encloses the body. Bottom to top: hips, waist,
+// chest, upper chest/shoulders, neckline.
 std::vector<glm::vec2> torsoProfileFor(float w, float outwardScale) {
+    float s = w * outwardScale;
     return {
-        {0.20f * w * outwardScale, 0.12f * w * outwardScale}, // waist (bottom)
-        {0.24f * w * outwardScale, 0.14f * w * outwardScale}, // chest (mid)
-        {0.29f * w * outwardScale, 0.15f * w * outwardScale}, // shoulder bulge
-        {0.24f * w * outwardScale, 0.14f * w * outwardScale}, // neckline (rounds back in)
+        {0.215f * s, 0.135f * s},
+        {0.200f * s, 0.125f * s},
+        {0.240f * s, 0.145f * s},
+        {0.300f * s, 0.150f * s},
+        {0.235f * s, 0.135f * s},
     };
 }
 
-// Kronos ("Torso Proportion Fix" / "Avatar Chest Mesh Clipping"): real,
-// shared -- the fraction of the way from pelvis to neck the torso
-// barrel's own top ring sits at (see buildHumanoidMeshData()'s own
-// "Reduce Torso Height" comment for why 0.81, not the full pelvis-to-neck
-// span). The base body and the shirt shell both need to agree on this
-// exact value so their real rings land at the same real heights --
-// previously the shirt shell used the *full* pelvis-to-neck span here
-// while the base body used 0.81 of it, so even where the two profiles'
-// own numbers matched, they landed at different absolute heights and no
-// longer lined up.
+// Fraction of the pelvis-to-neck span the torso's top ring sits at; the
+// body and the shirt shell must agree so their rings line up.
 constexpr float kTorsoTopFraction = 0.81f;
 
-// Kronos ("Avatar Visual Silhouette Pass" -- "Hands"): a real palm box
-// (bigger than the old plain "mitten" box -- see the caller's own
-// palmHalfExtents comment) plus 4 real, small, rigid finger blocks
-// protruding from the palm's distal (fingertip-side) face. "Stylised
-// blocks," not individually-jointed fingers, per the spec -- every
-// finger box is 100% rigidly bound to the exact same hand_L/hand_R joint
-// the palm itself uses (setJointIndex-style single-joint weighting, no
-// new joints, no new skin-weight complexity), so "deformation remains
-// clean under animation" is automatic: whatever the hand joint does, the
-// whole hand (palm + fingers) moves as one rigid piece, the same
-// guarantee every other terminal box (head/old hand/feet) in this rig
-// already has. `sideSign` (-1 left, +1 right) is real, not arbitrary --
-// the shoulder->elbow->wrist chain's own bind-pose joints sit purely
-// along local X from each other (see buildHumanoidSkeleton()'s own arm
-// joint offsets), so continuing that same X direction past the wrist is
-// the real, anatomical "toward the fingertips" axis, not a guess.
+constexpr float kTorsoCapDome = 0.55f;
+
+// A relaxed hand: rounded palm, four slightly curled fingers of natural
+// lengths and a thumb angled forward, all rigidly bound to the hand joint.
+// The arm chain runs along local X in bind pose, so `sideSign` (-1 left,
+// +1 right) points toward the fingertips. palmHalfExtents: x length,
+// y thickness, z width.
 void appendHand(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<HumanoidBodySegment>& segments,
                  glm::vec3 wristPos, float sideSign, glm::vec3 palmHalfExtents, int jointIndex,
                  HumanoidBodySegment segment, SkinWeights& skinWeights) {
-    appendBox(vertices, indices, segments, wristPos, palmHalfExtents, jointIndex, segment, skinWeights);
+    BodyBuilder builder{vertices, indices, segments, skinWeights, segment};
+    glm::vec3 along(sideSign, 0.0f, 0.0f);
+    glm::vec3 h = palmHalfExtents;
 
-    constexpr int kFingerCount = 4;
-    glm::vec3 fingerHalfExtents(palmHalfExtents.x * 0.6f, palmHalfExtents.y * 0.34f, palmHalfExtents.z * 0.34f);
-    float palmDistalX = wristPos.x + sideSign * palmHalfExtents.x;
-    float fingerSpread = palmHalfExtents.z * 2.0f - fingerHalfExtents.z * 2.0f;
-    for (int i = 0; i < kFingerCount; ++i) {
-        float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(kFingerCount) - 0.5f; // -0.375 .. 0.375
-        glm::vec3 fingerCenter(palmDistalX + sideSign * fingerHalfExtents.x, wristPos.y, wristPos.z + t * fingerSpread);
-        appendBox(vertices, indices, segments, fingerCenter, fingerHalfExtents, jointIndex, segment, skinWeights);
+    Ellipsoid palm;
+    palm.center = wristPos + along * (h.x * 0.85f);
+    palm.halfExtents = h;
+    palm.exponent = 0.6f;
+    palm.jointA = jointIndex;
+    palm.rings = 12;
+    palm.segments = 18;
+    appendEllipsoid(builder, palm);
+
+    auto fingerBasis = [&](glm::vec3 direction) {
+        glm::vec3 x = glm::normalize(direction);
+        glm::vec3 z = glm::normalize(glm::cross(x, glm::vec3(0.0f, 1.0f, 0.0f)));
+        if (glm::dot(z, glm::vec3(0.0f, 0.0f, 1.0f)) < 0.0f) z = -z;
+        glm::vec3 y = glm::cross(z, x);
+        return glm::mat3(x, y, z);
+    };
+
+    constexpr std::array<float, 4> kFingerLength = {0.92f, 1.0f, 0.94f, 0.76f};
+    float fingerRadius = h.z * 0.24f;
+    float knuckleX = h.x * 1.75f;
+    for (size_t i = 0; i < kFingerLength.size(); ++i) {
+        float lane = (static_cast<float>(i) / 3.0f) * 2.0f - 1.0f; // +1 index (front) .. -1 pinky
+        float length = h.x * 0.95f * kFingerLength[i];
+        glm::vec3 direction = along + glm::vec3(0.0f, -0.28f, 0.05f * lane);
+        glm::vec3 base = wristPos + along * knuckleX + glm::vec3(0.0f, -h.y * 0.15f, lane * h.z * 0.7f);
+        Ellipsoid finger;
+        finger.basis = fingerBasis(direction);
+        finger.center = base + glm::normalize(direction) * (length * 0.5f);
+        finger.halfExtents = glm::vec3(length * 0.5f + fingerRadius * 0.5f, fingerRadius * 0.9f, fingerRadius);
+        finger.exponent = 0.75f;
+        finger.jointA = jointIndex;
+        finger.rings = 8;
+        finger.segments = 10;
+        appendEllipsoid(builder, finger);
     }
 
-    // Kronos ("Avatar Proportion and Arm Polish Pass" -- "Refine hand
-    // blocks into stylised palms with visible finger segmentation"):
-    // real, small thumb box, set apart from the 4 real finger blocks --
-    // offset along local Y (the palm's own "top" edge, perpendicular to
-    // the fingers' own Z spread) and positioned less distally than the
-    // fully-extended fingers (nearer the palm's own base), the real,
-    // honest low-poly equivalent of a thumb's real anatomical offset --
-    // not just a 5th finger in the same row. Same single-joint-rigid
-    // binding as the palm/fingers -- no new joint, "deformation remains
-    // clean under animation" stays automatic.
-    glm::vec3 thumbHalfExtents(palmHalfExtents.x * 0.45f, palmHalfExtents.y * 0.28f, palmHalfExtents.z * 0.28f);
-    glm::vec3 thumbCenter(wristPos.x + sideSign * palmHalfExtents.x * 0.5f, wristPos.y + palmHalfExtents.y * 0.85f,
-                           wristPos.z - palmHalfExtents.z * 0.55f);
-    appendBox(vertices, indices, segments, thumbCenter, thumbHalfExtents, jointIndex, segment, skinWeights);
+    float thumbLength = h.x * 0.85f;
+    glm::vec3 thumbDirection = along * 0.55f + glm::vec3(0.0f, -0.35f, 0.8f);
+    glm::vec3 thumbBase = wristPos + along * (h.x * 0.55f) + glm::vec3(0.0f, -h.y * 0.2f, h.z * 0.75f);
+    Ellipsoid thumb;
+    thumb.basis = fingerBasis(thumbDirection);
+    thumb.center = thumbBase + glm::normalize(thumbDirection) * (thumbLength * 0.5f);
+    thumb.halfExtents = glm::vec3(thumbLength * 0.5f + fingerRadius * 0.5f, fingerRadius, fingerRadius * 1.1f);
+    thumb.exponent = 0.75f;
+    thumb.jointA = jointIndex;
+    thumb.rings = 8;
+    thumb.segments = 10;
+    appendEllipsoid(builder, thumb);
+}
+
+// A sneaker: a rounded upper that lowers toward the toe and a slightly
+// wider, flat sole, both rigidly bound to the foot joint.
+void appendShoe(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<HumanoidBodySegment>& segments,
+                 glm::vec3 footPos, float ls, int jointIndex, HumanoidBodySegment segment, SkinWeights& skinWeights) {
+    BodyBuilder builder{vertices, indices, segments, skinWeights, segment};
+    Ellipsoid upper;
+    upper.center = footPos + glm::vec3(0.0f, -0.07f, 0.07f);
+    upper.halfExtents = glm::vec3(0.12f, 0.08f, 0.21f) * ls;
+    upper.exponent = 0.55f;
+    upper.jointA = jointIndex;
+    float halfLength = upper.halfExtents.z;
+    float halfHeight = upper.halfExtents.y;
+    appendEllipsoid(builder, upper, [halfLength, halfHeight](glm::vec3 local, glm::vec3) {
+        float toe = glm::smoothstep(-0.1f, 1.0f, local.z / halfLength);
+        if (local.y > 0.0f) local.y *= 1.0f - 0.45f * toe;
+        local.y -= 0.12f * halfHeight * toe;
+        local.x *= 1.0f - 0.12f * toe * toe;
+        return local;
+    });
+
+    Ellipsoid sole;
+    sole.center = footPos + glm::vec3(0.0f, -0.135f, 0.075f);
+    sole.halfExtents = glm::vec3(0.13f, 0.025f, 0.225f) * ls;
+    sole.exponent = 0.4f;
+    sole.jointA = jointIndex;
+    sole.rings = 10;
+    appendEllipsoid(builder, sole);
 }
 
 } // namespace
@@ -562,8 +491,11 @@ Skeleton buildHumanoidSkeleton() {
     // Y=0 -- root sits at the ground, pelvis at real waist height above
     // it, matching this engine's existing ~1.8-2.0 unit character-height
     // convention (CharacterController's own capsule).
+    // The root joint is lifted by the shoe sole depth so soles rest on
+    // the skeleton origin rather than the ankle joint.
     Joint root;
     root.name = "root";
+    root.localPosition = {0.0f, kAvatarSoleDepth, 0.0f};
     int rootIndex = skeleton.addJoint(root);
 
     Joint pelvis;
@@ -874,295 +806,95 @@ Skeleton buildHumanoidSkeleton() {
 HumanoidMeshData buildHumanoidMeshData(const Skeleton& skeleton, HeadShape headShape, BodyProportions bodyProportions) {
     HumanoidMeshData data;
     std::vector<glm::mat4> world = skeleton.bindPoseMatrices();
-
     auto worldPos = [&](const char* jointName) -> glm::vec3 {
         int index = skeleton.findJointIndex(jointName);
         return index >= 0 ? glm::vec3(world[static_cast<size_t>(index)][3]) : glm::vec3(0.0f);
     };
-    auto jointIndexFor = [&](const char* jointName) { return skeleton.findJointIndex(jointName); };
+    auto joint = [&](const char* jointName) { return skeleton.findJointIndex(jointName); };
+    auto& v = data.vertices;
+    auto& i = data.indices;
+    auto& tags = data.vertexSegments;
+    auto& sw = data.skinWeights;
+    const float w = bodyProportions.width;
+    const float ls = bodyProportions.limbScale;
 
-    // Head -- rigidly bound (a head has no internal joint to blend
-    // with). Real, chosen radii per headShape -- see HeadShape's own
-    // header comment. Only the real, new default Oval shape gets the
-    // real per-ring cheek/jaw curvature (see appendProfiledHead()'s own
-    // comment) -- Sphere stays the exact, unmodified appendSphere() call
-    // it always was, preserving its own explicit "perfect sphere, equal
-    // radii on all three axes, the classic block-engine alternative"
-    // contract (HeadShape::Sphere's own header comment) rather than
-    // silently curving the one shape whose entire point is to be
-    // uncurved.
+    // Head and neck share the Head segment (skin colour) but the neck is
+    // bound to its own joint so head turns twist the neck, not the collar.
     if (headShape == HeadShape::Oval) {
-        appendProfiledHead(data.vertices, data.indices, data.vertexSegments, worldPos("head"), headShapeRadii(headShape),
-                            jointIndexFor("head"), HumanoidBodySegment::Head, data.skinWeights);
+        appendProfiledHead(v, i, tags, worldPos("head"), headShapeRadii(headShape), joint("head"),
+                           HumanoidBodySegment::Head, sw);
     } else {
-        appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("head"), headShapeRadii(headShape),
-                     jointIndexFor("head"), HumanoidBodySegment::Head, data.skinWeights);
+        appendSphere(v, i, tags, worldPos("head"), headShapeRadii(headShape), joint("head"), HumanoidBodySegment::Head, sw);
     }
-
-    // Torso -- "single connected piece" per spec: one rigid, real profiled
-    // barrel (see appendProfiledBarrel()'s own comment for why this
-    // replaced the old box) spanning pelvis to neck, bound to spine_upper
-    // (the real chest reference this rig's arms also attach to). A
-    // multi-joint smooth-blended spine is a real, deliberately un-built
-    // refinement -- this Alpha's idle/walk/run set doesn't bend the
-    // spine, so the honest, simpler rigid choice here doesn't cost
-    // anything real yet (see class-level scope note below).
-    {
-        glm::vec3 pelvisPos = worldPos("pelvis");
-        glm::vec3 neckPos = worldPos("neck");
-        // Kronos ("Torso Proportion Fix" -- "Reduce Torso Height"): real,
-        // ~19% reduction -- the torso barrel previously spanned the full
-        // pelvis-to-neck distance, which put its own topmost ("neckline")
-        // ring, and therefore the fixed-height shoulder caps sitting on
-        // it, at roughly mid-chest instead of collarbone height. The
-        // barrel's own BOTTOM stays anchored exactly at pelvisPos
-        // (unchanged -- the hip cap below already connects flush there),
-        // and only the TOP is pulled down to 81% of the way to the real
-        // neck joint, opening a real, deliberate gap the new neck
-        // cylinder below fills -- not a uniform shrink around the same
-        // center, which would have also pulled the torso's own bottom up
-        // off the pelvis and reopened the hip gap this file's own earlier
-        // "Unified Lower Body" pass just closed.
-        glm::vec3 torsoTop = pelvisPos + (neckPos - pelvisPos) * kTorsoTopFraction;
-        glm::vec3 torsoCenter = (pelvisPos + torsoTop) * 0.5f;
-        float torsoHalfHeight = glm::length(torsoTop - pelvisPos) * 0.5f;
-        float w = bodyProportions.width;
-        // Waist (narrower) -> chest -> shoulders (wider) -- a real,
-        // gentle taper, not a uniform box, giving the torso both "rounded
-        // front/back" (radiusZ < radiusX at every ring) and a "clear
-        // shoulder silhouette". Kronos ("Avatar Visual Silhouette Pass" --
-        // "Torso and Shoulders" -- "Add shoulder rounding and a gentle
-        // taper toward the waist"): real, 4 rings now (was 3) -- the
-        // widest ring sits just below the very top (a real shoulder
-        // bulge, 0.29 vs. the old flat 0.27 max), then narrows back in
-        // slightly at the neckline ring, so the silhouette actually
-        // rounds over the shoulder into the neck instead of stopping flat
-        // at its own widest point. The waist ring is unchanged -- the
-        // "gentle taper toward the waist" was already real here before
-        // this pass. Ring *shape* is unchanged by the height reduction
-        // above -- appendProfiledBarrel() spaces these 4 rings evenly
-        // across torsoHalfHeight regardless of its absolute value, so the
-        // neckline ring is still real-real 0.24*w/0.14*w, just reached at
-        // a lower absolute Y now -- exactly the value the new neck
-        // cylinder's own base cross-section below matches, so there's no
-        // visible step at the seam.
-        std::vector<glm::vec2> torsoProfile = torsoProfileFor(w, 1.0f);
-        appendProfiledBarrel(data.vertices, data.indices, data.vertexSegments, torsoCenter, torsoHalfHeight,
-                              torsoProfile, jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, data.skinWeights);
-
-        // Kronos ("Torso Proportion Fix" -- "Add Distinct Neck
-        // Primitive"): real, short, tapered cylinder bridging the
-        // shortened torso's own new top (torsoTop, computed above) to the
-        // real, already-existing "neck" joint (previously unused by any
-        // mesh piece -- head sat directly on top of the old, taller torso
-        // barrel with no distinct neck at all). Reuses appendSmoothLimb()
-        // (already the established "tapered cylinder between two points,
-        // smooth normals, real cross-section taper" primitive this file
-        // uses for arms/legs) rather than a new, separate, near-identical
-        // function. Base cross-section exactly matches the torso's own
-        // neckline ring (0.24*w, 0.14*w -- see the comment above) for a
-        // flush, gapless seam; the top cross-section is real-narrower
-        // (0.14*w, 0.13*w), a genuine neck taper, not a torso-width
-        // cylinder. Rigidly bound to the real "neck" joint at both ends
-        // (this rig's current animation set never rotates it
-        // independently of spine_upper, so a smooth 2-joint blend isn't
-        // needed here the way it is for a real bending elbow/knee).
-        // Kronos ("Final Visual Refinements" -- "Match neck ... color
-        // precisely to the face skin tone"): real, HumanoidBodySegment::Head
-        // (not Torso) -- a neck is bare skin, not shirt fabric; Head
-        // already resolves to the real skinColor argument in
-        // resolveSegmentColorsForLoadout(), so this reuses that existing
-        // skin-region grouping rather than inventing a new one (same
-        // "reuse the existing category, don't grow the enum again"
-        // choice this file already made for the pelvis cap ->
-        // LeftLeg).
-        int neckJointIndex = jointIndexFor("neck");
-        appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, torsoTop, neckPos,
-                          glm::vec2(0.24f * w, 0.14f * w), glm::vec2(0.14f * w, 0.13f * w), neckJointIndex, neckJointIndex,
-                          HumanoidBodySegment::Head, data.skinWeights);
-    }
-
-    float ls = bodyProportions.limbScale;
-
-    // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Shoulder Redesign",
-    // beta-blocking fix -- "shoulder disconnected from torso", real
-    // second pass after a blended two-joint cap still showed a visible
-    // seam): real, rounded dome geometry bridging the torso's own
-    // shoulder-bulge ring (0.29*w above) and each arm's proximal cylinder
-    // ring (shoulderCrossSection, 0.125*ls below). A 50/50-blended cap
-    // (tried first) reads as pinched/torn right at this joint: idle.anim
-    // rotates arm_L_upper/arm_R_upper by close to 90 degrees from bind
-    // pose (T-pose out to hanging at the sides -- see idle.anim's own
-    // quaternion keyframes), and linear blend skinning pulls any
-    // multi-joint vertex *inward*, off the sphere's own surface, once the
-    // two joints' rotations diverge that far -- fine for
-    // appendSmoothLimb()'s small elbow-bend angles, visibly wrong here.
-    // Real fix instead: rigid, single-joint, bound to the arm's own
-    // shoulder joint (jointIndexFor("arm_*_upper"), the same joint the
-    // cylinder's own start ring already uses) -- NOT spine_upper. This
-    // cap's center is built at `worldPos("arm_*_upper")`, i.e. exactly
-    // that joint's own bind-pose pivot point, and idle.anim never changes
-    // that joint's *translation* (only its rotation, see idle.anim's KEY
-    // lines) -- so this cap's world position never moves at all: a sphere
-    // centered on its own rotation pivot is rotationally invariant (looks
-    // identical from any angle), and since arm_L_upper is a child of
-    // spine_upper, this stays correctly anchored to the torso through any
-    // torso motion too, via the normal FK chain -- not by also binding to
-    // spine_upper directly. Stays flush with the torso's own shoulder
-    // bulge for exactly the same reason the bind-pose margin already
-    // documented above (0.025 units of deliberate overlap) holds: nothing
-    // here ever moves relative to it.
-    // HumanoidBodySegment::LeftArm/RightArm (not Torso) -- correctly
-    // reflects that this cap is anchored to the arm's own shoulder joint
-    // (governed by the real, separate `shoulderWidth` proportion, not
-    // `width`) rather than the torso's own body, and keeps
-    // testBuildHumanoidMeshDataAppliesWidthAndLimbScaleToMeshDimensions()'s
-    // real "wider `width` -> wider Torso bbox" check meaningful (a
-    // Torso-tagged cap whose own size/position never responds to `width`
-    // would dominate and flatten that measurement). Colors identically to
-    // the torso either way -- LeftArm/RightArm also use kDefaultShirtColor
-    // (see resolveSegmentColorsForLoadout()) -- the segment tag only
-    // affects coloring/bounding-box grouping, not which joint deforms it.
-    float shoulderCapRadius = 0.15f * ls;
-    appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_upper"), glm::vec3(shoulderCapRadius),
-                 jointIndexFor("arm_L_upper"), HumanoidBodySegment::LeftArm, data.skinWeights);
-    appendSphere(data.vertices, data.indices, data.vertexSegments, worldPos("arm_R_upper"), glm::vec3(shoulderCapRadius),
-                 jointIndexFor("arm_R_upper"), HumanoidBodySegment::RightArm, data.skinWeights);
-
-    // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Unified Lower Body"):
-    // real, rounded ellipsoid cap bridging the torso's own waist ring
-    // (bottom of the barrel above sits exactly at pelvisPos's own Y,
-    // since torsoCenter +/- torsoHalfHeight collapses to pelvisPos/neckPos
-    // on a purely-vertical spine) and both thighs' own proximal rings,
-    // which start 0.1 units *below* pelvisPos per buildHumanoidSkeleton()
-    // -- that 0.1-unit vertical span, previously open background, is
-    // exactly the visible hip gap this closes. Rigidly bound to the
-    // pelvis joint -- not either individual leg -- so it stays fixed and
-    // shared as each leg swings independently during walk/run, rather
-    // than tearing toward whichever single leg it would otherwise follow.
-    // A real ellipsoid, not a sphere: X radius real-derived from the
-    // actual (already width-scaled, via worldPos rather than a hardcoded
-    // literal) hip joint offset plus the hip cross-section radius below,
-    // so this stays correct under any real BodyProportions.width; Z
-    // matches the torso's own waist depth (0.12*w).
     glm::vec3 pelvisPos = worldPos("pelvis");
-    float hipLateralReach = std::abs(worldPos("leg_L_upper").x - pelvisPos.x) + 0.11f * ls;
-    glm::vec3 hipCapRadii(hipLateralReach, 0.09f, 0.13f * bodyProportions.width);
-    // Kronos ("Multi-Region Clothing Shader & Palette System" -- "Pants
-    // Region: Thighs, Lower Legs, Pelvis Cap"): HumanoidBodySegment::LeftLeg
-    // (not Torso) -- real, deliberate, matches the requested region
-    // grouping (this cap should recolor with pants, not with the shirt).
-    // Arbitrarily LeftLeg rather than a shared/new segment: it spans both
-    // legs, but categoryForBodySegment() already routes LeftLeg and
-    // RightLeg to the exact same AvatarItemCategory::Legs, and
-    // resolveSegmentColorsForLoadout() gives both the same default
-    // kDefaultTrouserColor -- so either side produces an identical real
-    // result, and this stays a straightforward, unambiguous choice
-    // instead of inventing a new "Pelvis" segment for one shared piece.
-    appendSphere(data.vertices, data.indices, data.vertexSegments, pelvisPos + glm::vec3(0.0f, -0.05f, 0.0f), hipCapRadii,
-                 jointIndexFor("pelvis"), HumanoidBodySegment::LeftLeg, data.skinWeights);
+    glm::vec3 neckPos = worldPos("neck");
+    glm::vec3 torsoTop = pelvisPos + (neckPos - pelvisPos) * kTorsoTopFraction;
+    appendSmoothLimb(v, i, tags, torsoTop - glm::vec3(0.0f, 0.03f, 0.0f), neckPos + glm::vec3(0.0f, 0.04f, 0.0f),
+                     glm::vec2(0.1f * w, 0.092f * w), glm::vec2(0.078f * w, 0.075f * w), joint("neck"), joint("neck"),
+                     HumanoidBodySegment::Head, sw, 0.0f);
 
-    // Arms -- real smooth-blended upper-to-lower chain (the actual elbow
-    // bend the spec asks for), capped with a real palm + finger-block
-    // hand (see appendHand()'s own comment). A real, slight taper
-    // (shoulder wider than elbow, elbow wider than wrist) -- continuous
-    // across the elbow (upper arm's own end radius equals lower arm's
-    // own start radius, so there's no visible step). Cross-sections and
-    // the hand scale with `bodyProportions.limbScale` only -- see that
-    // field's own header comment.
-    // Kronos ("Avatar Silhouette Pass" -- real proportional-reference
-    // correction, direct user feedback against a real reference image:
-    // "match the arm length, hand size and shoulder offset"): real,
-    // meaningfully thicker cross-sections and a real, notably bigger
-    // hand -- the previous, more tapered/slender arm read as nearly
-    // invisible next to the torso from most camera angles; a real,
-    // classic blocky-avatar arm stays thick along most of its length
-    // (elbow only slightly narrower than the shoulder, not a steep
-    // taper) and ends in a real, large, clearly-visible hand.
-    glm::vec2 shoulderCrossSection(0.125f * ls, 0.125f * ls);
-    glm::vec2 elbowCrossSection(0.105f * ls, 0.105f * ls);
-    glm::vec2 wristCrossSection(0.095f * ls, 0.095f * ls);
-    glm::vec3 palmHalfExtents(0.13f * ls, 0.15f * ls, 0.085f * ls);
-    appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_upper"), worldPos("arm_L_lower"),
-                      shoulderCrossSection, elbowCrossSection, jointIndexFor("arm_L_upper"), jointIndexFor("arm_L_lower"),
-                      HumanoidBodySegment::LeftArm, data.skinWeights);
-    appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_L_lower"), worldPos("hand_L"),
-                      elbowCrossSection, wristCrossSection, jointIndexFor("arm_L_lower"), jointIndexFor("hand_L"),
-                      HumanoidBodySegment::LeftArm, data.skinWeights);
-    // Kronos ("Multi-Region Clothing Shader & Palette System" -- "Skin
-    // Region: Hands"): HumanoidBodySegment::LeftHand (not LeftArm) -- the
-    // hand's own real, distinct segment, so it colors/shades as skin
-    // rather than an extension of the shirt sleeve. Skinning stays
-    // exactly as before (still rigidly bound to the hand_L joint) --
-    // this only changes the color-grouping tag, not the deformation.
-    appendHand(data.vertices, data.indices, data.vertexSegments, worldPos("hand_L"), -1.0f, palmHalfExtents,
-               jointIndexFor("hand_L"), HumanoidBodySegment::LeftHand, data.skinWeights);
+    appendProfiledBarrel(v, i, tags, (pelvisPos + torsoTop) * 0.5f, glm::length(torsoTop - pelvisPos) * 0.5f,
+                         torsoProfileFor(w, 1.0f), joint("spine_upper"), HumanoidBodySegment::Torso, sw, kTorsoCapDome);
 
-    appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_R_upper"), worldPos("arm_R_lower"),
-                      shoulderCrossSection, elbowCrossSection, jointIndexFor("arm_R_upper"), jointIndexFor("arm_R_lower"),
-                      HumanoidBodySegment::RightArm, data.skinWeights);
-    appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("arm_R_lower"), worldPos("hand_R"),
-                      elbowCrossSection, wristCrossSection, jointIndexFor("arm_R_lower"), jointIndexFor("hand_R"),
-                      HumanoidBodySegment::RightArm, data.skinWeights);
-    appendHand(data.vertices, data.indices, data.vertexSegments, worldPos("hand_R"), 1.0f, palmHalfExtents,
-               jointIndexFor("hand_R"), HumanoidBodySegment::RightHand, data.skinWeights);
+    float hipReach = std::abs(worldPos("leg_L_upper").x - pelvisPos.x) + 0.1f * ls;
+    appendSphere(v, i, tags, pelvisPos + glm::vec3(0.0f, -0.05f, 0.0f), glm::vec3(hipReach, 0.11f, 0.135f * w),
+                 joint("pelvis"), HumanoidBodySegment::LeftLeg, sw);
 
-    // Legs -- same real smooth knee bend (continuous taper across it, same
-    // reasoning as the arms above), capped with a rigid "simple block"
-    // foot. Same limbScale-only scaling as the arms above. Kronos
-    // ("Avatar Visual Silhouette Pass" -- target silhouette "broad
-    // shoulders, narrow legs"): real, slightly slimmer than the
-    // original 0.13/0.105/0.085 -- a deliberate, real contrast against
-    // the torso's own widened 0.29 shoulder bulge, not a proportional
-    // side effect of anything else in this pass.
-    glm::vec2 hipCrossSection(0.11f * ls, 0.11f * ls);
-    glm::vec2 kneeCrossSection(0.09f * ls, 0.09f * ls);
-    glm::vec2 ankleCrossSection(0.07f * ls, 0.07f * ls);
-    // Kronos ("Avatar Visual Silhouette Pass" -- "Widen feet for
-    // stability and clearer silhouette"): X (width) real-increased
-    // 0.1 -> 0.13, Y (thickness) real-increased 0.06 -> 0.07 for a
-    // chunkier, more stable-reading stylized foot -- Z (length) is
-    // unchanged.
-    glm::vec3 footBoxHalfExtents(0.13f * ls, 0.07f * ls, 0.18f * ls);
-    // Kronos ("Avatar Mesh Update v0.2.0-alpha" -- "Add Real Hands/Feet
-    // Geometry" -- "defined shoe/foot primitives"): real, second box --
-    // a wider, flatter sole beneath the existing foot box -- giving a
-    // simple, real 2-part shoe silhouette (upper + sole) instead of one
-    // undifferentiated block, matching "static shape only" scope (same
-    // single foot_L/foot_R joint binding, no new joints). Positioned so
-    // its top edge sits flush against (with a small, deliberate 0.01
-    // overlap into) the existing foot box's own bottom edge -- no visible
-    // seam between the two.
-    glm::vec3 soleHalfExtents(0.145f * ls, 0.03f * ls, 0.21f * ls);
-    glm::vec3 soleOffset(0.0f, -0.04f - footBoxHalfExtents.y - soleHalfExtents.y + 0.01f, 0.08f);
-    appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_L_upper"), worldPos("leg_L_lower"),
-                      hipCrossSection, kneeCrossSection, jointIndexFor("leg_L_upper"), jointIndexFor("leg_L_lower"),
-                      HumanoidBodySegment::LeftLeg, data.skinWeights);
-    appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_L_lower"), worldPos("foot_L"),
-                      kneeCrossSection, ankleCrossSection, jointIndexFor("leg_L_lower"), jointIndexFor("foot_L"),
-                      HumanoidBodySegment::LeftLeg, data.skinWeights);
-    // Kronos ("Multi-Region Clothing Shader & Palette System" -- "Shoe
-    // Region: Feet, Shoe Soles"): HumanoidBodySegment::LeftFoot (not
-    // LeftLeg) for both the foot box and its sole -- the shin cylinder
-    // just above stays LeftLeg (lower legs are real, still "Pants
-    // Region" per this pass's own spec), only the foot-shaped geometry
-    // itself becomes its own segment.
-    appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_L") + glm::vec3(0.0f, -0.04f, 0.08f),
-              footBoxHalfExtents, jointIndexFor("foot_L"), HumanoidBodySegment::LeftFoot, data.skinWeights);
-    appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_L") + soleOffset, soleHalfExtents,
-              jointIndexFor("foot_L"), HumanoidBodySegment::LeftFoot, data.skinWeights);
+    struct ArmSpec {
+        const char* upper;
+        const char* lower;
+        const char* hand;
+        HumanoidBodySegment arm;
+        HumanoidBodySegment handSegment;
+        float side;
+    };
+    const glm::vec2 shoulderSection(0.09f * ls, 0.088f * ls);
+    const glm::vec2 elbowSection(0.068f * ls, 0.066f * ls);
+    const glm::vec2 wristSection(0.052f * ls, 0.045f * ls);
+    for (const ArmSpec& arm : {ArmSpec{"arm_L_upper", "arm_L_lower", "hand_L", HumanoidBodySegment::LeftArm,
+                                       HumanoidBodySegment::LeftHand, -1.0f},
+                               ArmSpec{"arm_R_upper", "arm_R_lower", "hand_R", HumanoidBodySegment::RightArm,
+                                       HumanoidBodySegment::RightHand, 1.0f}}) {
+        glm::vec3 shoulder = worldPos(arm.upper);
+        glm::vec3 elbow = worldPos(arm.lower);
+        glm::vec3 wrist = worldPos(arm.hand);
+        appendSphereBlended(v, i, tags, shoulder - glm::vec3(arm.side * 0.04f * ls, 0.03f * ls, 0.0f),
+                            glm::vec3(0.12f, 0.095f, 0.1f) * ls, joint("spine_upper"), joint(arm.upper),
+                            glm::vec3(arm.side, -0.6f, 0.0f), arm.arm, sw);
+        appendSmoothLimb(v, i, tags, shoulder, elbow, shoulderSection, elbowSection, joint(arm.upper), joint(arm.lower),
+                         arm.arm, sw);
+        appendSphereBlended(v, i, tags, elbow, glm::vec3(elbowSection.x * 0.98f), joint(arm.upper), joint(arm.lower),
+                            glm::normalize(wrist - elbow), arm.arm, sw);
+        appendSmoothLimb(v, i, tags, elbow, wrist, elbowSection, wristSection, joint(arm.lower), joint(arm.hand),
+                         arm.arm, sw, 0.1f);
+        appendHand(v, i, tags, wrist, arm.side, glm::vec3(0.092f, 0.04f, 0.082f) * ls, joint(arm.hand),
+                   arm.handSegment, sw);
+    }
 
-    appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_R_upper"), worldPos("leg_R_lower"),
-                      hipCrossSection, kneeCrossSection, jointIndexFor("leg_R_upper"), jointIndexFor("leg_R_lower"),
-                      HumanoidBodySegment::RightLeg, data.skinWeights);
-    appendSmoothLimb(data.vertices, data.indices, data.vertexSegments, worldPos("leg_R_lower"), worldPos("foot_R"),
-                      kneeCrossSection, ankleCrossSection, jointIndexFor("leg_R_lower"), jointIndexFor("foot_R"),
-                      HumanoidBodySegment::RightLeg, data.skinWeights);
-    appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_R") + glm::vec3(0.0f, -0.04f, 0.08f),
-              footBoxHalfExtents, jointIndexFor("foot_R"), HumanoidBodySegment::RightFoot, data.skinWeights);
-    appendBox(data.vertices, data.indices, data.vertexSegments, worldPos("foot_R") + soleOffset, soleHalfExtents,
-              jointIndexFor("foot_R"), HumanoidBodySegment::RightFoot, data.skinWeights);
-
+    struct LegSpec {
+        const char* upper;
+        const char* lower;
+        const char* foot;
+        HumanoidBodySegment leg;
+        HumanoidBodySegment footSegment;
+    };
+    const glm::vec2 hipSection(0.12f * ls, 0.12f * ls);
+    const glm::vec2 kneeSection(0.085f * ls, 0.088f * ls);
+    const glm::vec2 ankleSection(0.06f * ls, 0.062f * ls);
+    for (const LegSpec& leg : {LegSpec{"leg_L_upper", "leg_L_lower", "foot_L", HumanoidBodySegment::LeftLeg,
+                                       HumanoidBodySegment::LeftFoot},
+                               LegSpec{"leg_R_upper", "leg_R_lower", "foot_R", HumanoidBodySegment::RightLeg,
+                                       HumanoidBodySegment::RightFoot}}) {
+        glm::vec3 hip = worldPos(leg.upper);
+        glm::vec3 knee = worldPos(leg.lower);
+        glm::vec3 ankle = worldPos(leg.foot);
+        appendSmoothLimb(v, i, tags, hip, knee, hipSection, kneeSection, joint(leg.upper), joint(leg.lower), leg.leg, sw);
+        appendSphereBlended(v, i, tags, knee, glm::vec3(kneeSection.x * 1.02f), joint(leg.upper), joint(leg.lower),
+                            glm::normalize(ankle - knee), leg.leg, sw);
+        appendSmoothLimb(v, i, tags, knee, ankle, kneeSection, ankleSection, joint(leg.lower), joint(leg.foot), leg.leg,
+                         sw, 0.12f);
+        appendShoe(v, i, tags, ankle, ls, joint(leg.foot), leg.footSegment, sw);
+    }
     return data;
 }
 
@@ -1500,7 +1232,7 @@ bool spawnAvatarClothing(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout
         float torsoHalfHeight = glm::length(torsoTop - pelvisPos) * 0.5f * 1.03f; // real, slight over-extension so the shell doesn't clip through the neck/waist seam
         std::vector<glm::vec2> shirtProfile = torsoProfileFor(w, shell);
         appendProfiledBarrel(vertices, indices, unusedSegments, torsoCenter, torsoHalfHeight, shirtProfile,
-                              jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, skinWeights);
+                              jointIndexFor("spine_upper"), HumanoidBodySegment::Torso, skinWeights, kTorsoCapDome);
 
         // Kronos ("Critical Visual Fixes" -- "Neck Protrudes Unnaturally
         // From Shirt"): real fix for a real regression the chest-clipping
@@ -1562,8 +1294,8 @@ bool spawnAvatarClothing(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout
         appendProfiledBarrel(vertices, indices, unusedSegments, collarCenter, collarHalfHeight, collarProfile,
                               neckJointIndex, HumanoidBodySegment::Torso, skinWeights);
 
-        glm::vec2 shoulderCS(0.095f * ls * shell, 0.095f * ls * shell);
-        glm::vec2 sleeveCS(0.085f * ls * shell, 0.085f * ls * shell);
+        glm::vec2 shoulderCS(0.102f * ls * shell, 0.098f * ls * shell);
+        glm::vec2 sleeveCS(0.082f * ls * shell, 0.078f * ls * shell);
         appendSmoothLimb(vertices, indices, unusedSegments, worldPos("arm_L_upper"), worldPos("arm_L_lower"), shoulderCS,
                           sleeveCS, jointIndexFor("arm_L_upper"), jointIndexFor("arm_L_lower"), HumanoidBodySegment::LeftArm,
                           skinWeights);
@@ -1588,7 +1320,7 @@ bool spawnAvatarClothing(ECS& ecs, const Skeleton& skeleton, const AvatarLoadout
         std::vector<uint32_t> indices;
         SkinWeights skinWeights;
 
-        glm::vec2 hipCS(0.13f * ls * shell, 0.13f * ls * shell);
+        glm::vec2 hipCS(0.135f * ls * shell, 0.135f * ls * shell);
         glm::vec2 kneeCS(0.105f * ls * shell, 0.105f * ls * shell);
         glm::vec2 ankleCS(0.09f * ls * shell, 0.09f * ls * shell); // real, slightly looser than the bare ankle so trouser cuffs don't clip the foot box
 

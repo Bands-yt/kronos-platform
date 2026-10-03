@@ -1,0 +1,76 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+
+// Skins a RiggedMesh's bind-pose vertices into a per-view buffer that a
+// refittable BLAS is built from (and hit shading reads). Output keeps the
+// engine's 16-float Vertex layout: position, normal, uv, tangent, color.
+
+layout(local_size_x = 64) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SourceVertices {
+    float v[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer SkinnedVertices {
+    float v[];
+};
+struct SkinVertex {
+    ivec4 joints;
+    vec4 weights;
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer SkinWeights {
+    SkinVertex s[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Palette {
+    mat4 m[];
+};
+
+layout(push_constant) uniform Push {
+    uvec2 source;
+    uvec2 skin;
+    uvec2 palette;
+    uvec2 destination;
+    uint vertexCount;
+} pc;
+
+const uint kStride = 16u;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= pc.vertexCount) return;
+
+    SourceVertices src = SourceVertices(pc.source);
+    SkinnedVertices dst = SkinnedVertices(pc.destination);
+    SkinVertex sv = SkinWeights(pc.skin).s[index];
+    Palette palette = Palette(pc.palette);
+
+    ivec4 joints = max(sv.joints, ivec4(0));
+    vec4 weights = max(sv.weights, vec4(0.0));
+    float total = weights.x + weights.y + weights.z + weights.w;
+    weights = total > 1e-6 ? weights / total : vec4(1.0, 0.0, 0.0, 0.0);
+    mat4 skin = weights.x * palette.m[joints.x] + weights.y * palette.m[joints.y] +
+                weights.z * palette.m[joints.z] + weights.w * palette.m[joints.w];
+
+    uint base = index * kStride;
+    vec3 position = vec3(src.v[base], src.v[base + 1u], src.v[base + 2u]);
+    vec3 normal = vec3(src.v[base + 3u], src.v[base + 4u], src.v[base + 5u]);
+    vec3 tangent = vec3(src.v[base + 8u], src.v[base + 9u], src.v[base + 10u]);
+
+    position = (skin * vec4(position, 1.0)).xyz;
+    mat3 linear = mat3(skin);
+    normal = normalize(linear * normal + vec3(0.0, 1e-8, 0.0));
+    tangent = normalize(linear * tangent + vec3(1e-8, 0.0, 0.0));
+
+    dst.v[base] = position.x;
+    dst.v[base + 1u] = position.y;
+    dst.v[base + 2u] = position.z;
+    dst.v[base + 3u] = normal.x;
+    dst.v[base + 4u] = normal.y;
+    dst.v[base + 5u] = normal.z;
+    dst.v[base + 6u] = src.v[base + 6u];
+    dst.v[base + 7u] = src.v[base + 7u];
+    dst.v[base + 8u] = tangent.x;
+    dst.v[base + 9u] = tangent.y;
+    dst.v[base + 10u] = tangent.z;
+    for (uint k = 11u; k < kStride; ++k) dst.v[base + k] = src.v[base + k];
+}

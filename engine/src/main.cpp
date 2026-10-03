@@ -33,6 +33,8 @@
 #include "core/Navigation.hpp"
 #include "core/OreNode.hpp"
 #include "core/PhysicsMaterial.hpp"
+#include "core/ProcessLaunch.hpp"
+#include "core/ResourcePaths.hpp"
 #include "core/Shop.hpp"
 #include "core/Terrain.hpp"
 #include "core/UpgradeSystem.hpp"
@@ -44,6 +46,7 @@
 #include "despair/FacilityLayout.hpp"
 #include "despair/FacilityMapBuilder.hpp"
 #include "housedemo/HouseDemoScene.hpp"
+#include "brokenbones/BrokenBonesGame.hpp"
 #include "miningsim/MiningSimRtx.hpp"
 #include "miningsim/Mob.hpp"
 #include "tntwars/DestructibleGeometryVisual.hpp"
@@ -148,6 +151,8 @@ int main(int argc, char** argv) {
     std::string trailerScriptPath = "TrailerScript.lua";
     std::string trailerOutputDir = "trailer_output";
     bool miningSimMode = false;
+    bool brokenBonesMode = false;
+    int brokenBonesStartLevel = 0;
     bool houseDemoMode = false;
     bool despairMode = false;
     bool renderShowcaseMode = false;
@@ -276,6 +281,10 @@ int main(int argc, char** argv) {
             // windowed app.run() loop every other engine_runtime launch
             // uses, so the scene can actually be looked at/moved through.
             miningSimMode = true;
+        } else if (arg == "--brokenbones") {
+            // Optional positional starting level: `--brokenbones 5`; otherwise the saved level.
+            brokenBonesMode = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') brokenBonesStartLevel = std::max(1, std::atoi(argv[++i]));
         } else if (arg == "--house-demo") {
             // Kronos ("house-demo"): real, live, interactive launch mode
             // for the house-building deliverable (see
@@ -432,9 +441,15 @@ int main(int argc, char** argv) {
     // job, for zero benefit. networkConfig.mode's own check happens
     // later than all of trailerMode/miningSimMode/renderShowcaseMode/
     // tntWarsMode's own early-return branches below, so it's included
-    // here explicitly rather than assumed already covered.
-    bool homeScreenMode = networkConfig.mode == engine::net::NetworkMode::Offline && !trailerMode && !miningSimMode &&
-                           !renderShowcaseMode && !tntWarsMode && !houseDemoMode;
+    // here explicitly rather than assumed already covered. despairMode
+    // belongs in this same exclusion list -- PROJECT: DESPAIR's vertical
+    // slice is a tester jumping straight into the facility, not a menu
+    // flow; leaving it out left the Home Screen shell overlaid on top of
+    // the facility scene AND startWithCapturedMouse forced false below,
+    // which is what was actually breaking mouse-look, not a missing
+    // cursor-lock call.
+    bool homeScreenMode = networkConfig.mode == engine::net::NetworkMode::Offline && !trailerMode && !miningSimMode && !brokenBonesMode &&
+                           !renderShowcaseMode && !tntWarsMode && !houseDemoMode && !despairMode;
 
     engine::core::Application app;
 
@@ -609,6 +624,45 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (brokenBonesMode) {
+        std::fprintf(stdout, "engine_runtime: --brokenbones mode\n");
+        engine::core::ProceduralMaterialLibrary materials = engine::core::ProceduralMaterialLibrary::generate(
+            app.textureLibrary(), app.renderer().allocator(), app.renderer().device(), app.renderer().commandPool(),
+            app.renderer().graphicsQueue());
+
+        uint32_t seed = std::random_device{}();
+        engine::brokenbones::BrokenBonesGame game(app, materials, seed, "brokenbones_save.json");
+        glm::vec3 provisionalSpawn(0.0f, engine::brokenbones::cliffHeightForLevel(1) + 1.2f, -14.0f);
+        if (!app.spawnLocalPlayerAvatar(provisionalSpawn)) {
+            std::fprintf(stderr, "engine_runtime: spawnLocalPlayerAvatar() failed for --brokenbones.\n");
+            app.shutdown();
+            return 1;
+        }
+        if (!game.start(brokenBonesStartLevel)) {
+            std::fprintf(stderr, "engine_runtime: Broken Bones failed to start.\n");
+            app.shutdown();
+            return 1;
+        }
+
+        app.setDayLengthSeconds(999999.0f);
+        app.timeOfDayState().hours = 9.2f;
+        app.renderer().setRayTracedShadowsEnabled(true);
+        app.renderer().setAtmosphereScatteringEnabled(true);
+        app.renderer().setAtmosphereScatteringParams(6.0f, 0.4f);
+        app.renderer().setCloudsEnabled(true);
+        app.renderer().setCloudParams(0.45f, 6.0f);
+        app.renderer().setSSREnabled(false);
+        app.renderer().setRTReflectionsEnabled(true);
+        app.renderer().setReflectionRoughnessCutoff(0.72f, 0.9f);
+
+        app.gameLoop()->setPreRenderHook([&game](float dt) { game.tick(dt); });
+        app.run();
+        app.gameLoop()->setPreRenderHook(nullptr);
+        game.finish();
+        app.shutdown();
+        return 0;
+    }
+
     if (houseDemoMode) {
         std::fprintf(stdout, "engine_runtime: --house-demo mode -- a standard house on rolling hills\n");
 
@@ -674,6 +728,15 @@ int main(int argc, char** argv) {
         // invisible from inside it -- exactly what a single-player
         // first-person mode with no mirrors needs.
         (void)app.characterController().spawn(app.ecs(), app.physics(), layout.playerSpawn);
+        // Despair-only movement feel: sharp, modern-FPS ground response
+        // instead of CharacterController::Settings' shared defaults (60/80,
+        // tuned for the general-purpose bring-up character) -- scoped here
+        // via settingsMutable() rather than changing those defaults, since
+        // every other mode reuses the same Application::characterController_
+        // instance. Deceleration well above acceleration so releasing
+        // input stops in ~2 frames instead of sliding.
+        app.characterController().settingsMutable().groundAcceleration = 200.0f;
+        app.characterController().settingsMutable().groundDeceleration = 400.0f;
         // FPSPlayerSettings is the real seam (see
         // despair::configureFirstPersonCamera()'s own comment): attaching
         // it is what turns this character's third-person orbit cam into
@@ -687,7 +750,25 @@ int main(int argc, char** argv) {
         app.characterController().setInitialCameraAngles(0.0f, 0.0f);
 
         app.run();
+        bool restart = app.despairRestartRequested();
         app.shutdown();
+        if (restart) {
+            // Escape-to-restart (see Application::despairRestartRequested()'s
+            // own comment): a fresh relaunch of this same binary with the
+            // same --despair flag, not a loop back into
+            // buildFacilityScene() in place -- a full fresh process means
+            // a genuinely clean Jolt/ECS/renderer state with zero new
+            // teardown code, since neither owns a real "destroy every
+            // despair body/entity" primitive to rebuild onto safely. Same
+            // core::launchProcess() self-relaunch RuntimeShell::
+            // selectGame() already uses for a CLI-flag game mode -- this
+            // process's own job is done once the new one is spawned.
+            std::string selfPath = engine::core::executableDirectory() + "/engine_runtime";
+            if (!engine::core::launchProcess(selfPath, {"--despair"})) {
+                std::fprintf(stderr, "engine_runtime: failed to relaunch for Escape-to-restart.\n");
+                return 1;
+            }
+        }
         return 0;
     }
 

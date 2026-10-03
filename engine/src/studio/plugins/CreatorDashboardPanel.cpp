@@ -23,7 +23,7 @@ void CreatorDashboardPanel::drawPanel(core::ECS&, core::EntityId, const std::vec
     drawPluginHeader("Creator Dashboard");
 
     if (localProfile_->creatorId.empty()) {
-        ImGui::TextDisabled("No real creatorId yet -- publish an item from Upload Item first.");
+        ImGui::TextDisabled("No creator ID yet. Publish an item from Upload Item first.");
         drawPluginFooter();
         ImGui::End();
         return;

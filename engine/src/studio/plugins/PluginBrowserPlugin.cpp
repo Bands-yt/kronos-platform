@@ -61,7 +61,7 @@ void PluginBrowserPlugin::createStarterPlugin() {
 
 void PluginBrowserPlugin::drawLocalPluginsSection() {
     ImGui::TextUnformatted("Local Plugins");
-    ImGui::TextDisabled("Discovers *.manifest files sitting in a real local directory -- \"local only for alpha\".");
+    ImGui::TextDisabled("Finds *.manifest files in a local directory.");
 
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
     ImGui::InputText("##plugin_directory", &pluginDirectoryBuffer_);
@@ -75,8 +75,7 @@ void PluginBrowserPlugin::drawLocalPluginsSection() {
                               discoveredPlugins_.empty() ? NotificationSeverity::Warning : NotificationSeverity::Success);
     }
     ImGui::SameLine();
-    helpMarker("A path relative to Studio's working directory (or absolute). Re-scan any time after adding/removing "
-               "manifests -- this list is a real snapshot, not a live watch.");
+    helpMarker("Relative to the working directory, or absolute. Re-scan after adding or removing manifests.");
 
     if (hasScanned_ && discoveredPlugins_.empty()) {
         // Kronos: real empty-state guidance (found via a live playtest --
@@ -132,12 +131,7 @@ void PluginBrowserPlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
 
     ImGui::Begin("Plugin Browser");
     ImGui::TextWrapped(
-        "Load a third-party plugin by pointing at its manifest file -- a small "
-        "text file naming the plugin and its entry Luau script (see "
-        "studio/PluginManifest.hpp for the exact format). The script runs in "
-        "its own sandboxed Luau VM with the same memory/time budgets "
-        "gameplay scripts get, plus a small ECS-only `world` table and a "
-        "`network` table for real client/server RPC.");
+        "Load a third-party plugin from its manifest file, which names the plugin and its entry Luau script. The script runs in a sandboxed Luau VM with the same memory and time budgets as gameplay scripts, plus a `world` table for the ECS and a `network` table for client/server RPC.");
 
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     ImGui::InputTextWithHint("##manifest_path", "path/to/plugin.manifest", &manifestPathBuffer_);

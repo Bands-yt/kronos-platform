@@ -104,6 +104,16 @@ float AnimationPlayer::playhead(Handle handle) const {
     return active != nullptr ? active->playheadTime : 0.0f;
 }
 
+float AnimationPlayer::normalizedPlayhead(Handle handle) const {
+    const ActiveClip* active = findActive(handle);
+    if (active == nullptr || active->clip.duration <= 0.0f) return 0.0f;
+    return active->playheadTime / active->clip.duration;
+}
+
+void AnimationPlayer::setPlaybackRate(Handle handle, float rate) {
+    if (ActiveClip* active = findActive(handle)) active->rate = std::max(rate, 0.0f);
+}
+
 void AnimationPlayer::tickLayer(std::vector<ActiveClip>& clips, float dt) {
     for (auto& active : clips) {
         if (!active.alive) continue;
@@ -111,7 +121,7 @@ void AnimationPlayer::tickLayer(std::vector<ActiveClip>& clips, float dt) {
         float previousTime = active.playheadTime;
         if (!active.paused) {
             float duration = active.clip.duration;
-            float newTime = active.playheadTime + dt;
+            float newTime = active.playheadTime + dt * active.rate;
             bool wrapped = false;
             if (active.looping && duration > 0.0f) {
                 while (newTime >= duration) {

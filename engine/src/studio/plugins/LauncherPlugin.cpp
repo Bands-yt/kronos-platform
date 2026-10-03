@@ -64,7 +64,7 @@ void LauncherPlugin::clearBiome(core::ECS& ecs) {
 
 void LauncherPlugin::drawBiomeSelectSection(core::ECS& ecs) {
     if (!ImGui::CollapsingHeader("Biome Selection", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    ImGui::TextDisabled("Real, procedural preview of each TNT Wars map's own base geometry, loaded into this scene.");
+    ImGui::TextDisabled("Procedural preview of each TNT Wars map, loaded into this scene.");
     ImGui::TextDisabled("(Studio's own bring-up scene has no live physics -- this is a flat editor preview, not the");
     ImGui::TextDisabled("full sculpted/collidable map engine_runtime's own --tntwars mode builds.)");
 
@@ -81,7 +81,7 @@ void LauncherPlugin::drawBiomeSelectSection(core::ECS& ecs) {
         if (i + 1 < IM_ARRAYSIZE(kBiomeNames)) ImGui::SameLine();
     }
 
-    ImGui::Text("%zu real spawned entities", spawnedBiomeEntities_.size());
+    ImGui::Text("%zu spawned entities", spawnedBiomeEntities_.size());
     ImGui::BeginDisabled(spawnedBiomeEntities_.empty());
     if (ImGui::Button("Clear Biome")) {
         clearBiome(ecs);
@@ -100,7 +100,7 @@ void LauncherPlugin::applySettingsToRenderer() {
 
 void LauncherPlugin::drawSettingsSection() {
     if (!ImGui::CollapsingHeader("Settings", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    ImGui::TextDisabled("Real renderer toggles -- applied immediately to this Studio session's own live preview.");
+    ImGui::TextDisabled("Renderer toggles apply immediately to the live preview.");
 
     bool changed = false;
     changed |= ImGui::Checkbox("RT Reflections", &rtReflectionsEnabled_);
@@ -113,7 +113,7 @@ void LauncherPlugin::drawSettingsSection() {
 
 void LauncherPlugin::drawPreferencesSection() {
     if (!ImGui::CollapsingHeader("Preferences", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    ImGui::TextDisabled("Real JSON-backed save/load -- persists your last biome + settings across Studio sessions.");
+    ImGui::TextDisabled("Your last biome and settings are saved between sessions.");
 
     if (ImGui::Button("Save Preferences")) savePreferences();
     ImGui::SameLine();

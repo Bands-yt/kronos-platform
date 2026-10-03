@@ -38,6 +38,12 @@ Application::~Application() {
     shutdown();
 }
 
+void Application::showDespairFloatingText(const std::string& text) {
+    despairFloatingText_ = text;
+    despairFloatingTextTimer_ = 3.0f;
+    std::fprintf(stdout, "[floating text] %s\n", text.c_str());
+}
+
 bool Application::initialize(const CreateInfo& info) {
     if (info.headless) {
         if (SDL_Init(SDL_INIT_EVENTS | SDL_INIT_TIMER) != 0) {
@@ -356,6 +362,19 @@ bool Application::initialize(const CreateInfo& info) {
                        platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey, SDL_SCANCODE_4});
     input_.bindAction("TntWarsSelectClass5",
                        platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey, SDL_SCANCODE_5});
+    // PROJECT: DESPAIR -- hotbar item use. Same physical 1-4 keys
+    // TntWarsSelectClass1-4 already bind, harmless overlap since only one
+    // of these two action namespaces is ever checked for a given loaded
+    // scene (same "bound everywhere, safe no-op where irrelevant"
+    // convention as every other action in this block).
+    input_.bindAction("HotbarUseSlot1",
+                       platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey, SDL_SCANCODE_1});
+    input_.bindAction("HotbarUseSlot2",
+                       platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey, SDL_SCANCODE_2});
+    input_.bindAction("HotbarUseSlot3",
+                       platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey, SDL_SCANCODE_3});
+    input_.bindAction("HotbarUseSlot4",
+                       platform_adapters::InputBinding{platform_adapters::PhysicalInputKind::KeyboardKey, SDL_SCANCODE_4});
     // Kronos ("Explosives System" world-building): real, thrown grenades
     // -- a distinct action from TntWarsPlaceCharge (G, a stationary
     // placed charge) since a grenade is thrown along the camera's own
@@ -536,6 +555,26 @@ bool Application::initialize(const CreateInfo& info) {
         // settings this same frame.
         if (ecs_.tryGetComponent<despair::FPSPlayerSettings>(characterController_.entity()) != nullptr) {
             despair::configureFirstPersonCamera(characterController_);
+
+            // PROJECT: DESPAIR -- stamina-gated sprint. Same "capture the
+            // real base value once, then always reassign from that base"
+            // convention tntWarsSuitBaseWalkSpeed_/tntWarsSuitBaseRunSpeed_
+            // already use above (this is a single generic characterController_
+            // shared with every other mode, so overwriting runSpeed in place
+            // without a separately captured base would compound every tick).
+            // Must run here, before tick() below resolves this tick's
+            // movement -- StaminaState::exhausted itself is written later,
+            // in the postPhysicsHook's updateFirstPersonPlayer() call, off
+            // last tick's resolved speed, which is the correct "did sprint
+            // exhaust the player before this tick" read; despair::
+            // StaminaState is lazily attached there too, so it's real,
+            // honest still-nullptr (never exhausted) on the very first tick
+            // before it exists yet.
+            if (despairBaseRunSpeed_ <= 0.0f) despairBaseRunSpeed_ = characterController_.settings().runSpeed;
+            auto* stamina = ecs_.tryGetComponent<despair::StaminaState>(characterController_.entity());
+            bool exhausted = stamina != nullptr && stamina->exhausted;
+            characterController_.settingsMutable().runSpeed =
+                exhausted ? characterController_.settings().walkSpeed : despairBaseRunSpeed_;
         }
 
         if (!cameraShowcaseModeEnabled_ && !movementInputSuspended_ && !isNetworkedClientNow) {
@@ -651,7 +690,7 @@ bool Application::initialize(const CreateInfo& info) {
             }
         }
 
-        particleSystem_.update(dt, ecs_);
+        particleSystem_.update(gameLoop_ ? dt * gameLoop_->timeScale() : dt, ecs_);
         animationPlayer_.tick(dt, ecs_);
         // PROJECT: DESPAIR -- unconditional, same as the two systems right
         // above: a no-op real early-exit (empty view) in any scene with no
@@ -2035,20 +2074,20 @@ bool Application::initialize(const CreateInfo& info) {
         std::vector<EntityId> nearby = findInteractablesInRange(ecs_, characterPos);
         EntityId nearestProximityTarget = nearby.empty() ? kNullEntity : nearby.front();
 
-        // Real UI-hint stub: engine_runtime has no on-screen text
-        // rendering at all (a stated architectural boundary, see
-        // Interactable.hpp's comment) to draw a real prompt into, so this
-        // prints to stdout instead -- a real, functioning signal (only on
-        // an actual change, not every tick) standing in for where a real
-        // on-screen prompt widget would read the exact same
-        // Interactable::prompt string from.
+        // Real UI hint: despairInteractionPrompt_ is drawn on-screen
+        // (see the FPSPlayerSettings-gated UI block below), and still
+        // prints the same stdout line every call site already did, only
+        // on an actual change (entering/leaving range or look-at), not
+        // every tick while unchanged.
         EntityId hintTarget = lookAtTarget != kNullEntity ? lookAtTarget : nearestProximityTarget;
         if (hintTarget != lastInteractionHintEntity_) {
             if (hintTarget != kNullEntity) {
                 std::string prompt = "Interact";
                 if (auto* interactable = ecs_.tryGetComponent<Interactable>(hintTarget)) prompt = interactable->prompt;
+                despairInteractionPrompt_ = prompt;
                 std::fprintf(stdout, "[UI hint] %s\n", prompt.c_str());
             } else {
+                despairInteractionPrompt_.clear();
                 std::fprintf(stdout, "[UI hint] (none)\n");
             }
             lastInteractionHintEntity_ = hintTarget;
@@ -2086,7 +2125,7 @@ bool Application::initialize(const CreateInfo& info) {
             // LootKind::None) is a real, honest "found nothing" -- an
             // empty description, not an error.
             std::string lootDescription = despair::grantContainerLoot(ecs_, searchedContainer, character, despairSanitySystem_);
-            std::fprintf(stdout, "[floating text] %s\n", lootDescription.empty() ? "Searched. Nothing here." : lootDescription.c_str());
+            showDespairFloatingText(lootDescription.empty() ? "Searched. Nothing here." : lootDescription);
         }
 
         if (interactDown && !interactKeyWasDown_) {
@@ -2103,7 +2142,7 @@ bool Application::initialize(const CreateInfo& info) {
                     if (despair::tryToggleHiding(*spot, hidingState->currentSpot, *hidingState, characterPos) ==
                         despair::HidingTransition::Exited) {
                         physics_.setPosition(character, ecs_, hidingState->positionBeforeHiding);
-                        std::fprintf(stdout, "[floating text] Left hiding spot.\n");
+                        showDespairFloatingText("Left hiding spot.");
                     }
                 }
                 interactKeyWasDown_ = interactDown;
@@ -2137,28 +2176,22 @@ bool Application::initialize(const CreateInfo& info) {
                         const despair::KeycardInventory& inventory =
                             keycardInventory != nullptr ? *keycardInventory : emptyInventory;
 
-                        // PROJECT: DESPAIR -- the blastDoor is the one
-                        // LockedDoor in this facility that needs a second
-                        // precondition (the facility breaker) alongside
-                        // the keycard tier, so it's routed through
-                        // tryEscapeThroughBlastDoor() instead of plain
-                        // tryUnlockDoor() -- see BlastDoorTag's own
-                        // comment for why a tag, not a second door type,
-                        // is what distinguishes it. Only one PowerBreaker
-                        // exists in this vertical slice, so scanning for
-                        // it here (rather than threading a reference
-                        // through the whole interaction cascade) is the
-                        // simplest honest way to find "the" breaker.
+                        // PROJECT: DESPAIR -- the blastDoor is the
+                        // facility's exit, gated on the showcase
+                        // objective counter (ObjectiveManager,
+                        // LootSystem.hpp) instead of a keycard tier, so
+                        // it's routed through tryUnlockExitWithObjective()
+                        // instead of plain tryUnlockDoor() -- see
+                        // BlastDoorTag's own comment for why a tag, not a
+                        // second door type, is what distinguishes it.
                         despair::DoorUnlockResult unlockResult;
-                        if (ecs_.hasComponent<despair::BlastDoorTag>(target)) {
-                            despair::PowerBreaker fallbackBreaker;
-                            auto breakerView = ecs_.view<despair::PowerBreaker>();
-                            const despair::PowerBreaker* breaker = &fallbackBreaker;
-                            for (auto breakerEntity : breakerView) {
-                                breaker = &breakerView.get<despair::PowerBreaker>(breakerEntity);
-                                break;
-                            }
-                            unlockResult = despair::tryEscapeThroughBlastDoor(*lockedDoor, inventory, *breaker);
+                        bool isBlastDoor = ecs_.hasComponent<despair::BlastDoorTag>(target);
+                        if (isBlastDoor) {
+                            auto* objective = ecs_.tryGetComponent<despair::ObjectiveManager>(character);
+                            despair::ObjectiveManager emptyObjective;
+                            const despair::ObjectiveManager& objectiveRef =
+                                objective != nullptr ? *objective : emptyObjective;
+                            unlockResult = despair::tryUnlockExitWithObjective(*lockedDoor, objectiveRef);
                         } else {
                             unlockResult = despair::tryUnlockDoor(*lockedDoor, inventory);
                         }
@@ -2172,11 +2205,19 @@ bool Application::initialize(const CreateInfo& info) {
                             // isn't just opening a door the player was already
                             // walking through.
                             physics_.detachBody(target, ecs_);
-                            std::fprintf(stdout, "[floating text] Unlocked.\n");
+                            showDespairFloatingText("Unlocked.");
                         } else if (unlockResult == despair::DoorUnlockResult::DeniedMissingKeycard) {
                             canToggle = false;
-                            std::fprintf(stdout, "[floating text] Locked -- requires %s keycard.\n",
-                                         despair::keycardTierName(lockedDoor->requiredTier));
+                            if (isBlastDoor) {
+                                auto* objective = ecs_.tryGetComponent<despair::ObjectiveManager>(character);
+                                int collected = objective != nullptr ? objective->keycardsCollected : 0;
+                                showDespairFloatingText("Locked -- need " +
+                                                         std::to_string(despair::kKeycardsRequiredForExit - collected) +
+                                                         " more keycard(s).");
+                            } else {
+                                showDespairFloatingText(std::string("Locked -- requires ") +
+                                                         despair::keycardTierName(lockedDoor->requiredTier) + " keycard.");
+                            }
                         }
                     }
                     if (canToggle) {
@@ -2185,6 +2226,16 @@ bool Application::initialize(const CreateInfo& info) {
                 }
                 if (ecs_.hasComponent<Pickup>(target)) {
                     collectPickup(target, ecs_);
+                    // A collected pickup with its own live Jolt body (see
+                    // FacilityMapBuilder.cpp's keycard sensor body) would
+                    // otherwise sit there as an invisible collider
+                    // forever -- collectPickup() only hides the
+                    // Renderable/removes Interactable (core-generic, no
+                    // Physics dependency of its own), so this raycast
+                    // trigger detaches the body itself, same as
+                    // DoorUnlockResult::Unlocked does above. A safe no-op
+                    // for any Pickup that never had a body.
+                    physics_.detachBody(target, ecs_);
                 }
                 // PROJECT: DESPAIR -- keycard inventory. Pairs with
                 // core::Pickup on the same entity (handled just above) for
@@ -2196,7 +2247,8 @@ bool Application::initialize(const CreateInfo& info) {
                     auto* keycardInventory = ecs_.tryGetComponent<despair::KeycardInventory>(character);
                     if (keycardInventory == nullptr) keycardInventory = &ecs_.addComponent<despair::KeycardInventory>(character);
                     if (despair::addKeycardTier(*keycardInventory, keycard->tier)) {
-                        std::fprintf(stdout, "[floating text] Picked up %s keycard.\n", despair::keycardTierName(keycard->tier));
+                        despair::addKeycardToObjective(ecs_, character);
+                        showDespairFloatingText(std::string("Picked up ") + despair::keycardTierName(keycard->tier) + " keycard.");
                     }
                 }
                 // PROJECT: DESPAIR -- hiding-spot entry. Exit is handled
@@ -2212,9 +2264,9 @@ bool Application::initialize(const CreateInfo& info) {
                         physics_.setPosition(character, ecs_, spot->interiorPosition);
                         physics_.setHorizontalVelocity(character, ecs_, {0.0f, 0.0f});
                         physics_.setVerticalVelocity(character, ecs_, 0.0f);
-                        std::fprintf(stdout, "[floating text] Hiding...\n");
+                        showDespairFloatingText("Hiding...");
                     } else if (result == despair::HidingTransition::Denied) {
-                        std::fprintf(stdout, "[floating text] Already occupied.\n");
+                        showDespairFloatingText("Already occupied.");
                     }
                 }
                 // Sprint 6 ("World Systems & Environment"): a real, working
@@ -2235,7 +2287,17 @@ bool Application::initialize(const CreateInfo& info) {
                     if (auto* renderable = ecs_.tryGetComponent<Renderable>(target)) {
                         renderable->baseColor = activated ? glm::vec4(0.15f, 0.75f, 0.15f, 1.0f) : glm::vec4(0.75f, 0.15f, 0.10f, 1.0f);
                     }
-                    std::fprintf(stdout, "[floating text] %s\n", activated ? "Breaker activated." : "Breaker deactivated.");
+                    // The real "power box" payoff -- every room light wired
+                    // to this breaker (despair::BreakerPoweredLight, see its
+                    // own comment) actually goes from dark to lit, not just
+                    // the breaker prop's own color.
+                    auto poweredLights = ecs_.view<despair::BreakerPoweredLight, Light>();
+                    for (auto lightEntity : poweredLights) {
+                        auto& poweredLight = poweredLights.get<despair::BreakerPoweredLight>(lightEntity);
+                        auto& light = poweredLights.get<Light>(lightEntity);
+                        light.intensity = activated ? poweredLight.litIntensity : 0.0f;
+                    }
+                    showDespairFloatingText(activated ? "Breaker activated." : "Breaker deactivated.");
                 }
                 // Sprint 10 ("Creator Tools Phase 2") task category 3:
                 // the real "toggle" animation event hook -- interacting
@@ -2411,7 +2473,108 @@ bool Application::initialize(const CreateInfo& info) {
         // ordering is load-bearing). Real, honest no-op for any scene that
         // never attaches despair::FPSPlayerSettings to the character.
         despair::updateFirstPersonPlayer(ecs_, physics_, characterController_.entity(), camera_,
-                                          characterController_.settings(), input_.isActionDown("Crouch"));
+                                          characterController_.settings(), input_.isActionDown("Crouch"), dt);
+
+        // PROJECT: DESPAIR -- stamina HUD bar. Gated on FPSPlayerSettings,
+        // same "component is the seam" convention as the rest of this file's
+        // DESPAIR-specific blocks -- real, honest no-op (no beginFrame()
+        // call at all, so the overlay stays whatever it last was, same as
+        // every other non-HUD-owning scene) for every non-DESPAIR mode.
+        // updateFirstPersonPlayer() above just lazily attached StaminaState
+        // if it wasn't already there, so it's guaranteed present here.
+        if (ecs_.tryGetComponent<despair::FPSPlayerSettings>(characterController_.entity()) != nullptr) {
+            uiRenderer_.beginFrame(VkExtent2D{window_.width(), window_.height()});
+            if (auto* stamina = ecs_.tryGetComponent<despair::StaminaState>(characterController_.entity())) {
+                float staminaFrac = stamina->max > 0.0f ? glm::clamp(stamina->current / stamina->max, 0.0f, 1.0f) : 0.0f;
+                constexpr glm::vec2 kStaminaBarSize(220.0f, 14.0f);
+                constexpr glm::vec2 kStaminaBarPos(24.0f, 24.0f);
+                uiRenderer_.drawRect(kStaminaBarPos, kStaminaBarSize, glm::vec4(0.0f, 0.0f, 0.0f, 0.55f));
+                glm::vec4 staminaColor = stamina->exhausted ? glm::vec4(0.55f, 0.15f, 0.15f, 0.85f)
+                                                             : glm::vec4(0.75f, 0.65f, 0.2f, 0.85f);
+                uiRenderer_.drawRect(kStaminaBarPos, glm::vec2(kStaminaBarSize.x * staminaFrac, kStaminaBarSize.y), staminaColor);
+            }
+
+            // PROJECT: DESPAIR -- minimal objective overlay. Lazily
+            // attached the same way HotbarInventory/StaminaState are, so
+            // "0/3" is the honest real value before any keycard is found,
+            // not a fabricated placeholder.
+            {
+                auto* objective = ecs_.tryGetComponent<despair::ObjectiveManager>(characterController_.entity());
+                int collected = objective != nullptr ? objective->keycardsCollected : 0;
+                std::string keycardText =
+                    "Keycards Found: " + std::to_string(collected) + "/" + std::to_string(despair::kKeycardsRequiredForExit);
+                uiRenderer_.drawText(keycardText, glm::vec2(24.0f, 48.0f), 0.7f, glm::vec4(1.0f, 1.0f, 1.0f, 0.9f));
+                uiRenderer_.drawText("Objective: Collect keycards and reach the exit", glm::vec2(24.0f, 70.0f), 0.6f,
+                                     glm::vec4(0.85f, 0.85f, 0.85f, 0.85f));
+            }
+
+            // PROJECT: DESPAIR -- hotbar. Lazily attached the same way
+            // KeycardInventory/StaminaState are -- a real, honest "found
+            // nothing yet" no-op (no slots drawn) until grantContainerLoot()
+            // first attaches one.
+            EntityId hotbarCharacter = characterController_.entity();
+            if (auto* hotbar = ecs_.tryGetComponent<despair::HotbarInventory>(hotbarCharacter)) {
+                static const char* kHotbarKeyNames[despair::kHotbarSlotCount] = {"HotbarUseSlot1", "HotbarUseSlot2",
+                                                                                  "HotbarUseSlot3", "HotbarUseSlot4"};
+                for (int i = 0; i < despair::kHotbarSlotCount; ++i) {
+                    bool keyDown = input_.isActionDown(kHotbarKeyNames[i]);
+                    if (keyDown && !despairHotbarUseKeyWasDown_[i]) {
+                        std::string used = despair::useHotbarSlot(ecs_, *hotbar, i, hotbarCharacter, despairSanitySystem_);
+                        if (!used.empty()) showDespairFloatingText(used);
+                    }
+                    despairHotbarUseKeyWasDown_[i] = keyDown;
+                }
+
+                constexpr glm::vec2 kHotbarSlotSize(56.0f, 56.0f);
+                constexpr float kHotbarSlotGap = 8.0f;
+                float hotbarWidth = despair::kHotbarSlotCount * kHotbarSlotSize.x + (despair::kHotbarSlotCount - 1) * kHotbarSlotGap;
+                glm::vec2 hotbarOrigin((static_cast<float>(window_.width()) - hotbarWidth) * 0.5f,
+                                       static_cast<float>(window_.height()) - kHotbarSlotSize.y - 24.0f);
+                for (int i = 0; i < despair::kHotbarSlotCount; ++i) {
+                    const despair::HotbarSlot& slot = hotbar->slots[static_cast<std::size_t>(i)];
+                    glm::vec2 slotPos(hotbarOrigin.x + static_cast<float>(i) * (kHotbarSlotSize.x + kHotbarSlotGap), hotbarOrigin.y);
+                    uiRenderer_.drawRect(slotPos, kHotbarSlotSize, glm::vec4(0.0f, 0.0f, 0.0f, 0.55f));
+
+                    if (slot.kind == despair::LootKind::None) continue;
+                    glm::vec4 iconColor = slot.kind == despair::LootKind::SanityInjector
+                                               ? glm::vec4(0.25f, 0.75f, 0.65f, 0.9f)
+                                               : glm::vec4(0.8f, 0.7f, 0.2f, 0.9f);
+                    constexpr glm::vec2 kIconInset(8.0f, 8.0f);
+                    uiRenderer_.drawRect(slotPos + kIconInset, kHotbarSlotSize - kIconInset * 2.0f, iconColor);
+
+                    std::string countText = std::to_string(slot.count);
+                    glm::vec2 countPos = slotPos + glm::vec2(kHotbarSlotSize.x - 14.0f, kHotbarSlotSize.y - 18.0f);
+                    uiRenderer_.drawText(countText, countPos, 0.8f, glm::vec4(1.0f));
+                }
+            }
+
+            // Interaction prompt: whatever despairInteractionPrompt_ was
+            // last set to, just above the crosshair -- same bottom-of-
+            // screen tutorial-hint style tntWarsMatchElapsedSeconds_'s own
+            // block (above) already uses.
+            if (!despairInteractionPrompt_.empty()) {
+                std::string promptText = "[E] " + despairInteractionPrompt_;
+                glm::vec2 size = uiRenderer_.measureText(promptText, 0.7f);
+                glm::vec2 pos((static_cast<float>(window_.width()) - size.x) * 0.5f,
+                               static_cast<float>(window_.height()) * 0.5f + 40.0f);
+                uiRenderer_.drawRect(pos + glm::vec2(-12.0f, -8.0f), size + glm::vec2(24.0f, 16.0f),
+                                      glm::vec4(0.0f, 0.0f, 0.0f, 0.6f));
+                uiRenderer_.drawText(promptText, pos, 0.7f, glm::vec4(1.0f, 1.0f, 0.85f, 1.0f));
+            }
+
+            // Floating text: a short-lived event message (door unlocked,
+            // loot found, hiding entered/denied, ...) -- despairFloatingText_
+            // is set by showDespairFloatingText(), timed out here the same
+            // way despairFloatingTextTimer_ is decremented every tick it's
+            // still positive.
+            if (despairFloatingTextTimer_ > 0.0f) {
+                despairFloatingTextTimer_ -= dt;
+                glm::vec2 size = uiRenderer_.measureText(despairFloatingText_, 0.75f);
+                glm::vec2 pos((static_cast<float>(window_.width()) - size.x) * 0.5f,
+                               static_cast<float>(window_.height()) * 0.5f - 80.0f);
+                uiRenderer_.drawText(despairFloatingText_, pos, 0.75f, glm::vec4(1.0f, 0.9f, 0.6f, 1.0f));
+            }
+        }
 
         // PROJECT: DESPAIR -- runs here, not in the pre-tick hook
         // despairSanitySystem_ uses, because HorrorAIManager's perception
@@ -2434,6 +2597,24 @@ bool Application::initialize(const CreateInfo& info) {
         // comment).
         EntityId despairCharacter = characterController_.entity();
         if (auto* escapeState = ecs_.tryGetComponent<despair::EscapeGameState>(despairCharacter)) {
+            despairElapsedSeconds_ += dt;
+
+            // Escape-to-restart (see despairRestartRequested_'s own
+            // comment): edge-triggered on "ToggleMenu" so holding Escape
+            // down doesn't push a real SDL_QUIT every tick -- one real
+            // press is one real restart request. The pushed event is
+            // what actually stops GameLoop::run()'s loop (its own
+            // pumpEvents() sees it on the next poll, same as a real
+            // window-close click); this hook only decides *when* to ask.
+            bool toggleMenuDown = input_.isActionDown("ToggleMenu");
+            if (toggleMenuDown && !despairToggleMenuWasDown_) {
+                despairRestartRequested_ = true;
+                SDL_Event quitEvent;
+                quitEvent.type = SDL_QUIT;
+                SDL_PushEvent(&quitEvent);
+            }
+            despairToggleMenuWasDown_ = toggleMenuDown;
+
             glm::vec3 despairPlayerPos(0.0f);
             if (auto* transform = ecs_.tryGetComponent<Transform>(despairCharacter)) despairPlayerPos = transform->position;
 
@@ -2479,10 +2660,41 @@ bool Application::initialize(const CreateInfo& info) {
                     }
                 }
             }
-            renderer_.setVhsStaticNoiseIntensity(despair::computeVhsStaticNoiseIntensity(nearestThreatDistance));
+            // Load-in grace period: real elapsed time since this character
+            // first carried FPSPlayerSettings (despairElapsedSeconds_,
+            // accumulated below), not a frame counter -- immune to a slow
+            // first few frames (shader/pipeline warm-up) under- or over-
+            // shooting the real seconds asked for. Forces a real, honest
+            // 0.0f regardless of nearestThreatDistance/caughtByThreat's own
+            // math above (both of which still run every tick above,
+            // unaffected -- this only clamps the visual burst itself), just
+            // long enough to cover pipeline warm-up -- kept short
+            // deliberately: the Back Corridor now puts a real, sustained
+            // Tormentor chase within reach of the first seconds of play
+            // (see FacilityLayout.cpp's own comment), and a longer grace
+            // would hide that chase's static warning entirely instead of
+            // only suppressing a one-frame load spike.
+            constexpr float kDespairStaticGraceSeconds = 1.5f;
+            // Ambient proximity static is halved (still a real warning as
+            // the threat closes in, just not fighting visibility during
+            // the chase itself) -- full 1.0 is reserved for the actual
+            // "you died" moment (caughtByThreat this tick, already
+            // resolved by the Hunting-only scan above), so the burst
+            // reads as ambient tension right up until it reads as death.
+            constexpr float kDespairAmbientStaticScale = 0.2f;
+            float staticIntensity;
+            if (caughtByThreat) {
+                staticIntensity = 1.0f;
+            } else if (despairElapsedSeconds_ < kDespairStaticGraceSeconds) {
+                staticIntensity = 0.0f;
+            } else {
+                staticIntensity =
+                    despair::computeVhsStaticNoiseIntensity(nearestThreatDistance) * kDespairAmbientStaticScale;
+            }
+            renderer_.setVhsStaticNoiseIntensity(staticIntensity);
 
             // The blastDoor's own LockedDoor::locked latches false the
-            // instant tryEscapeThroughBlastDoor() succeeds (see
+            // instant tryUnlockExitWithObjective() succeeds (see
             // Application.cpp's own door-unlock cascade above) and never
             // re-locks, so reading it here is a real, honest "did the
             // player already escape," not a one-shot event that could be
@@ -2499,17 +2711,61 @@ bool Application::initialize(const CreateInfo& info) {
             if (escapeState->outcome != previousOutcome) {
                 switch (escapeState->outcome) {
                     case despair::EscapeOutcome::Victory:
-                        std::fprintf(stdout, "[floating text] You escaped the facility. VICTORY.\n");
+                        showDespairFloatingText("You escaped the facility. VICTORY.");
                         break;
                     case despair::EscapeOutcome::CaughtByHunter:
-                        std::fprintf(stdout, "[floating text] Something caught you. GAME OVER.\n");
+                        showDespairFloatingText("Something caught you. GAME OVER.");
                         break;
                     case despair::EscapeOutcome::LostToMadness:
-                        std::fprintf(stdout, "[floating text] Your mind is gone. GAME OVER.\n");
+                        showDespairFloatingText("Your mind is gone. GAME OVER.");
                         break;
                     case despair::EscapeOutcome::InProgress:
                         break;
                 }
+            }
+
+            // PROJECT: DESPAIR -- death/victory screen. Appends into the
+            // same UIRenderer batch the stamina-bar block above already
+            // opened with beginFrame() this tick (drawing here needs no
+            // second beginFrame() call -- see UIRenderer::beginFrame()'s
+            // own "clears the previous frame's batch" doc comment, which
+            // is exactly why this must NOT call it again). Drawn every
+            // tick the outcome is non-InProgress, not just on the
+            // transition tick above, so the screen stays up rather than
+            // flashing for one frame.
+            if (escapeState->outcome != despair::EscapeOutcome::InProgress) {
+                glm::vec2 screenSize(static_cast<float>(window_.width()), static_cast<float>(window_.height()));
+                uiRenderer_.drawRect(glm::vec2(0.0f), screenSize, glm::vec4(0.0f, 0.0f, 0.0f, 0.78f));
+
+                std::string title;
+                glm::vec4 titleColor(1.0f);
+                switch (escapeState->outcome) {
+                    case despair::EscapeOutcome::Victory:
+                        title = "YOU ESCAPED";
+                        titleColor = glm::vec4(0.75f, 0.9f, 0.75f, 1.0f);
+                        break;
+                    case despair::EscapeOutcome::CaughtByHunter:
+                        title = "YOU DIED";
+                        titleColor = glm::vec4(0.85f, 0.15f, 0.15f, 1.0f);
+                        break;
+                    case despair::EscapeOutcome::LostToMadness:
+                        title = "YOUR MIND IS GONE";
+                        titleColor = glm::vec4(0.7f, 0.2f, 0.75f, 1.0f);
+                        break;
+                    case despair::EscapeOutcome::InProgress:
+                        break;
+                }
+
+                constexpr float kTitleScale = 3.0f;
+                glm::vec2 titleSize = uiRenderer_.measureText(title, kTitleScale);
+                glm::vec2 titlePos((screenSize.x - titleSize.x) * 0.5f, screenSize.y * 0.4f);
+                uiRenderer_.drawText(title, titlePos, kTitleScale, titleColor);
+
+                const std::string subtitle = "Press ESC to restart";
+                constexpr float kSubtitleScale = 1.2f;
+                glm::vec2 subtitleSize = uiRenderer_.measureText(subtitle, kSubtitleScale);
+                glm::vec2 subtitlePos((screenSize.x - subtitleSize.x) * 0.5f, titlePos.y + titleSize.y + 20.0f);
+                uiRenderer_.drawText(subtitle, subtitlePos, kSubtitleScale, glm::vec4(0.85f, 0.85f, 0.85f, 0.9f));
             }
         }
     });

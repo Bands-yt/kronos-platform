@@ -7,8 +7,6 @@
 #include "studio/apps/StandaloneAppMain.hpp"
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
     return engine::studio::apps::runStandaloneApp(engine::studio::StudioApp::StudioMode::ThreeDMaker,
-                                                   "kronos_3d_maker.log", "Kronos 3D Maker");
+                                                   "kronos_3d_maker.log", "Kronos 3D Maker", argc, argv);
 }

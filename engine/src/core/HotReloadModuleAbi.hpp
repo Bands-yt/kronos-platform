@@ -85,7 +85,8 @@ public:
 //
 // v2: added IHotReloadableModule::queryExtension() -- a real vtable shape
 // change, so a v1-built module must not be trusted against a v2 host.
-inline constexpr int kHotReloadModuleAbiVersion = 2;
+// v3: Renderer gained members; modules built before that crash on load.
+inline constexpr int kHotReloadModuleAbiVersion = 3;
 
 // Kronos: every real hot-reloadable module's .cpp defines these three
 // functions under `extern "C"` -- unmangled, literal symbol names
@@ -109,5 +110,11 @@ using HotReloadDestroyModuleFn = void (*)(IHotReloadableModule*);
 inline constexpr const char* kHotReloadAbiVersionSymbol = "kronosHotReloadAbiVersion";
 inline constexpr const char* kHotReloadCreateModuleSymbol = "kronosCreateHotReloadModule";
 inline constexpr const char* kHotReloadDestroyModuleSymbol = "kronosDestroyHotReloadModule";
+// Optional: modules that reach into engine types (e.g. Renderer) also export
+// `uint64_t kronosHotReloadLayoutFingerprint()` returning
+// kHotReloadLayoutFingerprint from core/HotReloadLayoutFingerprint.hpp; the
+// host refuses the module when it differs from its own.
+using HotReloadLayoutFingerprintFn = unsigned long long (*)();
+inline constexpr const char* kHotReloadLayoutFingerprintSymbol = "kronosHotReloadLayoutFingerprint";
 
 } // namespace engine::core

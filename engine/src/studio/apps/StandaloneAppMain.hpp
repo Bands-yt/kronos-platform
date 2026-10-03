@@ -24,6 +24,8 @@ namespace engine::studio::apps {
 // Returns the real process exit code -- 0 on a clean shutdown, 1 on any
 // fatal failure (initialize() returning false, or an uncaught
 // exception), exactly matching StudioMain.cpp's own convention.
-int runStandaloneApp(StudioApp::StudioMode mode, const char* logFileName, const char* dialogTitle);
+// argv[1], when present, is opened as a document (see StudioApp::openFileArgument).
+int runStandaloneApp(StudioApp::StudioMode mode, const char* logFileName, const char* dialogTitle, int argc = 0,
+                     char** argv = nullptr);
 
 } // namespace engine::studio::apps

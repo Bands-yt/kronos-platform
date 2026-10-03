@@ -75,7 +75,7 @@ void TrailerPanel::shutdown(core::Renderer& renderer) {
 void TrailerPanel::drawSceneListSection() {
     if (!ImGui::CollapsingHeader("Scenes", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
-    ImGui::TextDisabled("%zu real beats, %.1fs total", director_.beats().size(),
+    ImGui::TextDisabled("%zu beats, %.1fs total", director_.beats().size(),
                          static_cast<double>(director_.timeline().totalDurationSeconds()));
     ImGui::BeginChild("##trailer_scene_list", ImVec2(0, 160), true);
     const auto& beats = director_.beats();
@@ -150,14 +150,14 @@ void TrailerPanel::drawPanel(core::ECS&, core::EntityId, const std::vector<core:
         ImVec2 previewSize(static_cast<float>(previewRig_.extent().width), static_cast<float>(previewRig_.extent().height));
         ImGui::Image(reinterpret_cast<ImTextureID>(previewRig_.imguiTextureId()), previewSize);
     } else {
-        ImGui::TextDisabled("Preview renders once this panel has been open for a real frame.");
+        ImGui::TextDisabled("The preview renders once this panel has been open for a frame.");
     }
 
     drawSceneListSection();
     drawPlaybackSection();
     drawCaptureSection();
 
-    drawPluginFooter("Same real trailer::TrailerDirector engine_runtime's own --trailer mode drives.");
+    drawPluginFooter("Uses the same trailer director as the client\'s --trailer mode.");
     ImGui::End();
 }
 

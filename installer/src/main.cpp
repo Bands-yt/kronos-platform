@@ -208,7 +208,7 @@ std::string parseChecksumFile(const std::string& path) {
 bool downloadAndExtract(InstallerState& state, const std::string& platformSuffix, const std::string& destinationDir,
                          std::string& outTopLevelDir, std::string& outTagName) {
     setStatus(state, InstallStage::FetchingRelease, "Checking GitHub for the latest Kronos release...");
-    kronos_installer::LatestRelease release = kronos_installer::fetchLatestRelease(kRepoOwner, kRepoName);
+    kronos_installer::LatestRelease release = kronos_installer::fetchLatestRelease(kRepoOwner, kRepoName, platformSuffix);
     if (!release.success) {
         setStatus(state, InstallStage::Failed, "Could not reach GitHub: " + release.error);
         return false;
@@ -391,7 +391,7 @@ void runUpdate(InstallerState& state, const std::string& installDir, const std::
 void runInstall(InstallerState& state, const std::string& platformSuffix, bool isWindowsTarget,
                  const std::string& runtimeExeName, const std::string& installDir) {
     setStatus(state, InstallStage::FetchingRelease, "Checking GitHub for the latest Kronos release...");
-    kronos_installer::LatestRelease release = kronos_installer::fetchLatestRelease(kRepoOwner, kRepoName);
+    kronos_installer::LatestRelease release = kronos_installer::fetchLatestRelease(kRepoOwner, kRepoName, platformSuffix);
     if (!release.success) {
         setStatus(state, InstallStage::Failed, "Could not reach GitHub: " + release.error);
         return;

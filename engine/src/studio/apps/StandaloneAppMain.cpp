@@ -25,7 +25,8 @@ void showFatalErrorDialog(const std::string& dialogTitle, const std::string& log
 
 } // namespace
 
-int runStandaloneApp(StudioApp::StudioMode mode, const char* logFileName, const char* dialogTitle) {
+int runStandaloneApp(StudioApp::StudioMode mode, const char* logFileName, const char* dialogTitle, int argc,
+                     char** argv) {
     if (!engine::core::Logger::instance().enableFileLogging(logFileName)) {
         std::fprintf(stderr, "%s: could not open %s for writing -- continuing without a log file.\n", dialogTitle,
                      logFileName);
@@ -42,6 +43,7 @@ int runStandaloneApp(StudioApp::StudioMode mode, const char* logFileName, const 
             return 1;
         }
 
+        if (argc > 1 && argv != nullptr && argv[1] != nullptr) app.openFileArgument(argv[1]);
         app.run();
         app.shutdown();
         return 0;

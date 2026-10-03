@@ -94,7 +94,7 @@ void TntWarsPlugin::drawMapEditingSection(core::ECS& ecs) {
     ImGui::BeginDisabled(spawnedMapEntities_.empty());
     if (ImGui::Button("Clear Map Geometry")) clearMapGeometry(ecs);
     ImGui::EndDisabled();
-    ImGui::Text("%zu real spawned map entities", spawnedMapEntities_.size());
+    ImGui::Text("%zu spawned map entities", spawnedMapEntities_.size());
 }
 
 void TntWarsPlugin::drawClassTuningSection() {
@@ -116,7 +116,7 @@ void TntWarsPlugin::drawClassTuningSection() {
     if (changed) tuning.setStatsFor(classType, stats);
 
     float fireRate = stats.primaryCooldownSeconds > 0.0f ? 1.0f / stats.primaryCooldownSeconds : 0.0f;
-    ImGui::TextDisabled("Real derived fire-rate cap this feeds TntWarsAntiCheat: %.2f shots/sec", fireRate);
+    ImGui::TextDisabled("Anti-cheat fire-rate cap: %.2f shots/sec", fireRate);
     ImGui::Text("Ultimate: %s -- Primary: %s", tntwars::ultimateTypeName(tntwars::ultimateForClass(classType)),
                 tntwars::projectileTypeName(tntwars::primaryProjectileForClass(classType)));
 
@@ -152,7 +152,7 @@ void TntWarsPlugin::drawMapTuningSection() {
 void TntWarsPlugin::drawMatchFlowSection() {
     if (!ImGui::CollapsingHeader("Match Flow (live server state)")) return;
     if (!session_->isServer()) {
-        ImGui::TextDisabled("Host a server (Network Overlay) to drive real match-flow state.");
+        ImGui::TextDisabled("Host a server (Network Overlay) to drive match flow.");
         return;
     }
 
@@ -178,10 +178,7 @@ void TntWarsPlugin::drawMatchFlowSection() {
 
 void TntWarsPlugin::drawPanel(core::ECS& ecs, core::EntityId, const std::vector<core::EntityId>&) {
     ImGui::Begin(name());
-    ImGui::TextDisabled(
-        "Sprint 14 note: \"anime-style\"/\"cinematic\" here means real camera-choreography, particle-trigger,");
-    ImGui::TextDisabled(
-        "and network-synced-event SYSTEMS -- not hand-authored character art or shading. See CinematicSequence.hpp.");
+    ImGui::TextDisabled("Cinematic events: camera choreography, particle triggers and network-synced events.");
     ImGui::Separator();
 
     drawMapEditingSection(ecs);

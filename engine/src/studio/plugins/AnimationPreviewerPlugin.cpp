@@ -237,7 +237,7 @@ void AnimationPreviewerPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*se
                                           const std::vector<core::EntityId>& /*selectedEntities*/) {
     ImGui::Begin("Animation Previewer");
 
-    ImGui::TextWrapped("Previewing \"%s\" on a real rigged demo body -- drag to orbit, scroll to zoom.",
+    ImGui::TextWrapped("Previewing \"%s\" on a rigged demo body. Drag to orbit, scroll to zoom.",
                         currentClipName_.c_str());
     if (!statusMessage_.empty()) ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", statusMessage_.c_str());
 

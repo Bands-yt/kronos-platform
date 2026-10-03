@@ -1,6 +1,7 @@
 #include "core/Mesh.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -9,6 +10,19 @@
 #include "core/Logger.hpp"
 
 namespace engine::core {
+
+namespace {
+std::atomic<bool> gRayTracingGeometryUsage{false};
+std::atomic<uint64_t> gNextMeshUid{1};
+} // namespace
+
+void setRayTracingGeometryUsage(bool enabled) { gRayTracingGeometryUsage = enabled; }
+
+VkBufferUsageFlags rayTracingGeometryUsage() {
+    if (!gRayTracingGeometryUsage) return 0;
+    return VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+}
 
 VkVertexInputBindingDescription Vertex::bindingDescription() {
     VkVertexInputBindingDescription binding{};
@@ -216,19 +230,23 @@ bool Mesh::uploadFromHost(VmaAllocator allocator, VkDevice device, VkCommandPool
     VkDeviceSize vertexBytes = sizeof(Vertex) * tangentSpaceVertices.size();
     VkDeviceSize indexBytes = sizeof(uint32_t) * indices.size();
 
+    const VkBufferUsageFlags rtUsage = rayTracingGeometryUsage();
     if (!uploadToDeviceLocalBuffer(allocator, device, cmdPool, queue, tangentSpaceVertices.data(), vertexBytes,
-                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertexBuffer_, vertexAllocation_)) {
+                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rtUsage, vertexBuffer_, vertexAllocation_)) {
         logError("Mesh", "vertex buffer upload failed.");
         return false;
     }
     if (!uploadToDeviceLocalBuffer(allocator, device, cmdPool, queue, indices.data(), indexBytes,
-                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT, indexBuffer_, indexAllocation_)) {
+                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rtUsage, indexBuffer_, indexAllocation_)) {
         logError("Mesh", "index buffer upload failed.");
         vmaDestroyBuffer(allocator, vertexBuffer_, vertexAllocation_);
         return false;
     }
 
     indexCount_ = static_cast<uint32_t>(indices.size());
+    vertexCount_ = static_cast<uint32_t>(tangentSpaceVertices.size());
+    uid_ = gNextMeshUid.fetch_add(1);
+    rayTracingReady_ = rtUsage != 0;
     return true;
 }
 
@@ -238,6 +256,9 @@ void Mesh::destroy(VmaAllocator allocator) {
     vertexBuffer_ = VK_NULL_HANDLE;
     indexBuffer_ = VK_NULL_HANDLE;
     indexCount_ = 0;
+    vertexCount_ = 0;
+    uid_ = 0;
+    rayTracingReady_ = false;
 }
 
 Mesh Mesh::createBox(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue, glm::vec3 h) {

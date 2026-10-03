@@ -111,7 +111,7 @@ void MaterialPlugin::stampAllSlots(core::Renderable& renderable, glm::vec2 uv) {
     tryStamp(renderable.normalTexture, glm::vec4(0.5f, 0.5f, 1.0f, 1.0f));
     tryStamp(renderable.roughnessTexture, glm::vec4(paintRoughnessValue_, paintRoughnessValue_, paintRoughnessValue_, 1.0f));
     tryStamp(renderable.metallicTexture, glm::vec4(paintMetallicValue_, paintMetallicValue_, paintMetallicValue_, 1.0f));
-    paintStatusMessage_ = "Stamped " + std::to_string(stamped) + " real texture(s) directly in GPU memory.";
+    paintStatusMessage_ = "Stamped " + std::to_string(stamped) + " texture(s) on the GPU.";
 }
 
 void MaterialPlugin::handleViewportPickPaint(core::Renderable& renderable) {
@@ -165,10 +165,7 @@ void MaterialPlugin::handleViewportPickPaint(core::Renderable& renderable) {
 void MaterialPlugin::drawComputePaintSection(core::Renderable& renderable) {
     ImGui::SeparatorText("Compute Paint (direct-to-VRAM PBR stamp)");
     ImGui::TextWrapped(
-        "Create a paintable texture per slot, then click directly on the preview sphere above (or use the Stamp "
-        "button below) to stamp a soft circular brush directly into GPU memory via a real compute shader -- see "
-        "core::ComputePbrPainter's own header comment for exactly what this does (and the real scope cuts: a flat "
-        "normal brush rather than sculpted detail).");
+        "Create a paintable texture per slot, then click the preview sphere above (or use Stamp below) to paint a soft circular brush straight into GPU memory with a compute shader.");
 
     auto createPaintable = [&](uint32_t* handle, glm::vec4 clearColor, const char* label) {
         ImGui::PushID(label);

@@ -8,8 +8,6 @@
 #include "studio/apps/StandaloneAppMain.hpp"
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
     return engine::studio::apps::runStandaloneApp(engine::studio::StudioApp::StudioMode::Full, "kronos_studio.log",
-                                                   "Kronos Studio");
+                                                   "Kronos Studio", argc, argv);
 }

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstddef>
+#include <vector>
+
 #include <glm/glm.hpp>
 
 #include "core/ECS.hpp"
@@ -14,6 +17,15 @@ namespace engine::despair {
 // uses the same constant for its camera height so what the AI can raycast to
 // matches what the player camera actually sees from.
 inline constexpr float kPlayerEyeHeight = 1.6f;
+
+// Attached to the AI entity itself (not the eye-glow child) by
+// FacilityMapBuilder.cpp's spawnAiSilhouette(), so HorrorAIManager's own
+// tick*() methods can find "this AI's eye glow entity" via a plain
+// component lookup instead of a name-based hierarchy search (no such
+// search exists -- see core/Hierarchy.hpp).
+struct AiEyeGlowRef {
+    core::EntityId eyeEntity = core::kNullEntity;
+};
 
 // PROJECT: DESPAIR -- the spec's "three-tier AI" (StalkerAI, TormentorAI,
 // DespairCullerAI). Same honest constraint Mob.hpp already committed this
@@ -49,6 +61,15 @@ inline constexpr float kPlayerEyeHeight = 1.6f;
 // horror mechanic), not text lifted from the original one-line spec.
 enum class StalkerBehaviorState { Dormant, Stalking, Frozen };
 
+// Pure state->eye-glow-color mapping (Green/Red/Yellow, see
+// FacilityMapBuilder.cpp's AiEyeGlowRef/spawnAiSilhouette): Dormant reads
+// as the same "nothing wrong" green every tier idles at, Stalking (closing
+// in on a real, current line-of-sight fix) as red, Frozen (mutual
+// eye contact broke its approach, but it hasn't given up like Dormant)
+// as yellow -- the closest of this tier's three states to "lost sight,
+// searching."
+[[nodiscard]] glm::vec3 stalkerStateColor(StalkerBehaviorState state);
+
 struct StalkerAIState {
     StalkerBehaviorState behavior = StalkerBehaviorState::Dormant;
     float moveSpeed = 1.5f; // deliberately slower than the player -- it relies on stealth, not a footrace
@@ -79,7 +100,22 @@ void tickStalkerState(StalkerAIState& stalker, glm::vec3 stalkerPos, glm::vec3 p
 // investigate-noise behavior"). Investigates noise and half-seen
 // movement; escalates to a real, direct hunt only once it actually has
 // eyes on the player.
-enum class TormentorBehaviorState { Idle, Investigating, Hunting };
+// Patrolling is the settle state a Tormentor with a non-empty
+// patrolWaypoints list falls back to instead of Idle -- still no
+// pathfinding involved (see this file's own top comment): it's a real,
+// hand-authored, ordered list of positions walked with the exact same
+// directLineStep() every other AI movement here already uses, one
+// waypoint at a time, looping back to the first once it reaches the last.
+// A Tormentor with an empty patrolWaypoints list (every tier's default)
+// falls back to Idle exactly as before -- this is strictly additive.
+enum class TormentorBehaviorState { Idle, Investigating, Hunting, Patrolling };
+
+// Pure state->eye-glow-color mapping, the tier this maps onto most
+// directly: Idle/Patrolling (nothing spotted) green, Hunting (real,
+// current line-of-sight) red, Investigating (lost sight, checking a last-
+// known position or noise) yellow -- exactly the spec's
+// Patrol-Idle/Chasing/Searching scheme.
+[[nodiscard]] glm::vec3 tormentorStateColor(TormentorBehaviorState state);
 
 struct TormentorAIState {
     TormentorBehaviorState behavior = TormentorBehaviorState::Idle;
@@ -94,6 +130,16 @@ struct TormentorAIState {
     glm::vec3 investigateTarget{0.0f};
     float loseInterestTimer = 0.0f;
     static constexpr float kLoseInterestSeconds = 5.0f;
+
+    // Hand-authored patrol route (facility-local converted to world space
+    // at spawn -- see FacilityAiSpawnSpec::patrolWaypoints's own comment).
+    // Empty by default, meaning "no patrol route, settle to Idle like
+    // before" -- only the one Tormentor FacilityLayout.cpp actually gives a
+    // route ever leaves Idle for Patrolling.
+    std::vector<glm::vec3> patrolWaypoints;
+    std::size_t patrolIndex = 0;
+    float patrolSpeed = 2.0f; // deliberately slower than moveSpeed -- ambient wandering, not a hunt
+    static constexpr float kPatrolArrivalEpsilon = 0.3f;
 };
 
 // No facing/turning system exists for AI creatures yet (they're plain
@@ -121,6 +167,12 @@ void tickTormentorState(TormentorAIState& tormentor, float dt, glm::vec3 torment
 // not stand down even if sanity later recovers -- a real culler, once
 // summoned, stays summoned for the rest of this vertical slice.
 enum class CullerBehaviorState { Dormant, Hunting };
+
+// Pure state->eye-glow-color mapping. Only two states exist for this tier
+// (see this enum's own comment -- once armed it never stands down), so
+// there's no real "searching" state to map yellow onto; Dormant is green,
+// Hunting is red.
+[[nodiscard]] glm::vec3 cullerStateColor(CullerBehaviorState state);
 
 struct DespairCullerAIState {
     CullerBehaviorState behavior = CullerBehaviorState::Dormant;
@@ -164,7 +216,7 @@ private:
 
     void tickStalkers(float dt, core::ECS& ecs, core::Physics& physics);
     void tickTormentors(float dt, core::ECS& ecs, core::Physics& physics);
-    void tickCullers(float dt, core::ECS& ecs);
+    void tickCullers(float dt, core::ECS& ecs, core::Physics& physics);
 
     // Set by the SanitySystem hallucination-crossed callback registered in
     // the constructor; latched true forever the first time any tracked

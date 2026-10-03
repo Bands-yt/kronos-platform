@@ -50,8 +50,16 @@ EntityId resolveInteractionTarget(EntityId lookAtTarget, EntityId nearestProximi
 }
 
 void toggleDoor(Door& door, Transform& transform) {
+    if (!door.isOpen) door.closedPosition = transform.position;
+
     door.isOpen = !door.isOpen;
     transform.rotation = door.isOpen ? door.openRotation : door.closedRotation;
+
+    if (door.hingeHalfWidth > 0.0f) {
+        const glm::vec3 hingeOffset = door.hingeAxisLocal * door.hingeHalfWidth;
+        const glm::vec3 hinge = door.closedPosition - door.closedRotation * hingeOffset;
+        transform.position = door.isOpen ? hinge + door.openRotation * hingeOffset : door.closedPosition;
+    }
 }
 
 void collectPickup(EntityId entity, ECS& ecs) {

@@ -218,9 +218,7 @@ void CreatorAssetBrowserPlugin::drawImportedAssetsSection() {
         importStatusMessage_ = std::string("Importing \"") + importPathBuffer_ + "\" in the background...";
     }
     ImGui::SameLine();
-    helpMarker("Re-importing an already-registered path real-replaces its entry (re-reads real metadata) rather than "
-               "creating a duplicate -- use this after editing a file on disk. Runs in the background -- Studio "
-               "keeps rendering while a large file imports.");
+    helpMarker("Re-importing a registered path replaces its entry and re-reads its metadata instead of creating a duplicate. Imports run in the background.");
     size_t pending = importQueue_.pendingCount();
     if (pending > 0) {
         ImGui::TextDisabled("%zu asset%s importing...", pending, pending == 1 ? "" : "s");
@@ -275,7 +273,7 @@ void CreatorAssetBrowserPlugin::drawPanel(core::ECS& ecs, core::EntityId selecte
 
     ImGui::InputTextWithHint("##search", "Search by name or tag...", searchBuffer_, sizeof(searchBuffer_));
     ImGui::SameLine();
-    helpMarker("Matches against each entry's real name and its tags (shown in grey under the name), e.g. \"container\" finds Crate and Barrel.");
+    helpMarker("Matches names and tags (shown in grey under the name), e.g. \"container\" finds Crate and Barrel.");
     const char* categoryNames[] = {"All", "Props", "Materials", "Particles", "Terrain", "Imported"};
     ImGui::Combo("Category", &categoryFilter_, categoryNames, 6);
 
@@ -288,7 +286,7 @@ void CreatorAssetBrowserPlugin::drawPanel(core::ECS& ecs, core::EntityId selecte
     if (categoryFilter_ == 0 || categoryFilter_ == 5) drawImportedAssetsSection();
     ImGui::EndChild();
 
-    drawPluginFooter("Every entry here calls the same real function its dedicated tool does -- not a separate asset system.");
+    drawPluginFooter("Each entry uses the same spawn path as its dedicated tool.");
     ImGui::End();
 }
 

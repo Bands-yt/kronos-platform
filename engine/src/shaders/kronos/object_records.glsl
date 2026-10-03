@@ -10,7 +10,7 @@ struct ObjectRecord {
     mat4 prevModel;
     vec4 clearcoat; // x strength, y perceptual roughness, z anisotropy [-1, 1], w anisotropy rotation (radians)
     vec4 sheen;     // rgb color, a perceptual roughness
-    vec4 misc;      // x specular reflectance (0.5 = 4% F0), y 1 if prevModel is valid, zw reserved
+    vec4 misc;      // x specular reflectance (0.5 = 4% F0), y 1 if prevModel is valid, z water waves, w water foam
 };
 
 layout(std430, set = 0, binding = 11) readonly buffer ObjectRecords {

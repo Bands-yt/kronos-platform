@@ -50,7 +50,7 @@ void CreatorToolsPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
     ImGui::Checkbox("Snap to Surface##sprint9", &snapToSurfaceEnabled_);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    helpMarker("Overrides spawn Y with the real terrain height at that X/Z. Needs a terrain to exist first (see the Terrain Presets section below or the Terrain Editor).");
+    helpMarker("Places the object on the terrain surface at that X/Z. Requires a terrain (see Terrain Presets below or the Terrain Editor).");
     glm::vec3 effectivePosition = effectiveSpawnPosition();
     ImGui::TextDisabled("Effective: (%.2f, %.2f, %.2f)", effectivePosition.x, effectivePosition.y, effectivePosition.z);
 
@@ -145,8 +145,7 @@ void CreatorToolsPlugin::drawPointLightSection(core::ECS& ecs) {
         spawnPointLightAuthoring(ecs, effectiveSpawnPosition(), pointLightSpawnCount_, boxMesh_);
     }
     ImGui::TextDisabled(
-        "A real, entity-driven core::Light -- select it afterward and edit color/intensity/radius in the "
-        "Inspector's Light section.");
+        "Adds a light entity. Select it to edit color, intensity and radius in the Inspector.");
 }
 
 void CreatorToolsPlugin::drawTerrainSection() {

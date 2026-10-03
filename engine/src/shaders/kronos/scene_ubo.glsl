@@ -31,7 +31,7 @@ layout(set = 0, binding = 0) uniform SceneUBO {
     vec4 reflectionParams;      // x RT reflections, y rough cutoff, z mirror cutoff
     vec4 atmosphereParams;      // x enabled, y sun intensity, z mie strength, w suppress sun disk
     vec4 cloudParams;           // x enabled, y coverage, z speed, w time (s)
-    vec4 giParams;              // x RT GI, y intensity
+    vec4 giParams;              // x RT GI, y bounce intensity, z GI rays per pixel, w RT AO radius (0 = off)
     vec4 iblParams;             // x specular intensity, y reflection normalization, z prefiltered max mip, w IBL valid
     vec4 taaJitter;             // xy current jitter (NDC), zw previous
     vec4 screenSize;            // xy pixels, zw reciprocal

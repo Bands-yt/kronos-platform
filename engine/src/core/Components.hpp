@@ -55,9 +55,13 @@ struct MaterialLayers {
     glm::vec3 sheenColor{0.0f};
     float sheenRoughness = 0.5f;
     float specular = 0.5f; // dielectric reflectance remap: F0 = 0.16 * specular^2 (0.5 -> 4%)
+    // Animated wave normals for flat, up-facing water: 0 off, 1 a choppy lagoon.
+    float waterWaves = 0.0f;
+    float waterFoam = 0.0f; // whitens wave crests
 
     [[nodiscard]] bool isDefault() const {
-        return clearcoat == 0.0f && anisotropy == 0.0f && sheenColor == glm::vec3(0.0f) && specular == 0.5f;
+        return clearcoat == 0.0f && anisotropy == 0.0f && sheenColor == glm::vec3(0.0f) && specular == 0.5f &&
+               waterWaves == 0.0f;
     }
 };
 
@@ -361,14 +365,7 @@ struct SkinnedRenderable {
     std::vector<glm::mat4> skinningMatrices;
 
     bool visible = true;
-    // NOT wired to anything yet -- drawShadowPass() only iterates
-    // Renderable-having entities (see Renderer.cpp), so skinned entities
-    // never cast shadows today regardless of this flag. A real skinned
-    // shadow pass needs its own shadow_skinned.vert (the shadow pass's
-    // vertex shader would need the same joint-blend logic
-    // scene_skinned.vert has), a real, separate, not-yet-built follow-up
-    // -- kept here so the field exists and defaults sanely once that
-    // exists, rather than adding it as a breaking change later.
+    // Shadow maps draw it through shadow_skinned.vert; ray-traced shadows through its skinned BLAS.
     bool castsShadow = true;
 
     glm::vec4 baseColor{0.8f, 0.8f, 0.8f, 1.0f};

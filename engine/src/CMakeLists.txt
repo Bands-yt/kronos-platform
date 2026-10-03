@@ -40,6 +40,8 @@ set(ENGINE_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cluster_build.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/taa_resolve.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/motion_tiles.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/rt_skinning.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow_skinned.vert
 )
 # Shared shader library (#include'd); any change recompiles every shader.
 file(GLOB ENGINE_SHADER_LIBRARY CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/kronos/*.glsl)
@@ -125,6 +127,7 @@ add_library(engine_core STATIC
     core/UILayout.cpp
     core/ScriptUiLayoutApi.cpp
     core/AudioDspGraph.cpp
+    core/Spectrogram.cpp
     core/PhonemeLipSync.cpp
     core/GpuParticleCompute.cpp
     core/ComputePbrPainter.cpp
@@ -192,6 +195,8 @@ add_library(engine_core STATIC
     core/RiggedMesh.cpp
     core/AnimationPlayer.cpp
     core/RiggedAvatar.cpp
+    core/RagdollDesc.cpp
+    core/HumanoidRagdoll.cpp
     core/AvatarFace.cpp
     core/AvatarAccessories.cpp
     core/AvatarHair.cpp
@@ -349,6 +354,20 @@ add_library(engine_core STATIC
     publishing/WorldRegistry.cpp
     publishing/ThumbnailCapture.cpp
 
+    brokenbones/RockMesh.cpp
+    brokenbones/CliffGenerator.cpp
+    brokenbones/CliffMap.cpp
+    brokenbones/RunRules.cpp
+    brokenbones/Shop.cpp
+    brokenbones/Boosts.cpp
+    brokenbones/SoundBank.cpp
+    brokenbones/Meta.cpp
+    brokenbones/BrokenBonesMenus.cpp
+    brokenbones/BrokenBonesInjuries.cpp
+    brokenbones/Injuries.cpp
+    brokenbones/Effects.cpp
+    brokenbones/Music.cpp
+    brokenbones/BrokenBonesGame.cpp
     tntwars/ClassSystem.cpp
     tntwars/Team.cpp
     tntwars/UltimateCharge.cpp
@@ -612,6 +631,7 @@ if(ENGINE_BUILD_RUNTIME)
         # real "one source file, two targets" pattern CMake already
         # supports natively -- not a duplicated copy to keep in sync.
         core/UITheme.cpp
+        core/UIWidgets.cpp
         # Kronos ("Home Screen Avatar Preview"): same real "one source
         # file, two targets" precedent as core/UITheme.cpp just above --
         # studio::PreviewScene/OffscreenTarget have zero real Studio-only
@@ -681,6 +701,7 @@ if(ENGINE_BUILD_STUDIO)
         # above for why this lives here (and there) instead of in
         # engine_core.
         core/UITheme.cpp
+        core/UIWidgets.cpp
         studio/Notification.cpp
         studio/EntityClassification.cpp
         studio/CreatorToolsSpawning.cpp
@@ -849,6 +870,12 @@ if(ENGINE_BUILD_STUDIO)
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../native_plugins"
         POSITION_INDEPENDENT_CODE ON
     )
+    # Studio dlopen()s this at startup; keep it in lockstep with the headers.
+    add_dependencies(studio sample_studio_tool_plugin)
+    add_dependencies(kronos_studio sample_studio_tool_plugin)
+    add_dependencies(kronos_3d_maker sample_studio_tool_plugin)
+    add_dependencies(kronos_movie_maker sample_studio_tool_plugin)
+    add_dependencies(kronos_audio sample_studio_tool_plugin)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -517,7 +517,7 @@ void InspectorPanel::drawNavigationSection(core::ECS& ecs, core::EntityId select
     std::snprintf(linkBuf, sizeof(linkBuf), "%s", pad->linkTag.c_str());
     ImGui::TextUnformatted("Link Tag");
     if (ImGui::InputText("##teleport_link_tag", linkBuf, sizeof(linkBuf))) pad->linkTag = linkBuf;
-    ImGui::TextDisabled("Two pads sharing a non-empty Link Tag are a real, paired fast-travel route.");
+    ImGui::TextDisabled("Two pads with the same Link Tag form a fast-travel route.");
 }
 
 void InspectorPanel::drawNavMarkerSection(core::ECS& ecs, core::EntityId selected) {

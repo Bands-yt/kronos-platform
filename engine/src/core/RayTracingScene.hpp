@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <unordered_map>
 #include <vector>
@@ -8,173 +9,154 @@
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
-#include "core/Components.hpp"
+#include "core/Mesh.hpp"
+#include "core/render/GpuHelpers.hpp"
 
 namespace engine::core {
 
-// Sprint 14 ("RTX Upgrade" Phase 2)'s real hardware acceleration
-// structure scene for ray-traced shadows via VK_KHR_ray_query (inline
-// ray tracing invoked directly from scene.frag -- no separate ray
-// tracing pipeline, no raygen/miss/closest-hit shaders, no shader
-// binding table needed for a pure visibility test like a shadow ray).
-// Builds one real BLAS per distinct (MeshSourceKind, params) shape,
-// cached and only rebuilt the first time a given shape is seen, and one
-// real TLAS every frame instancing every live shadow-casting entity's
-// BLAS at its current real world transform.
-//
-// Deliberately scoped to MeshSourceKind::Box/Plane only -- the two
-// shapes this engine's procedural content (Studio's Prefab/
-// TntWarsPlugin/TerrainEditor's non-terrain props, engine_runtime's
-// bring-up scene) is actually authored from. core::Mesh's own GPU
-// vertex/index buffers are deliberately NOT reused here: they're created
-// without VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT/
-// VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
-// (see Mesh.cpp), and adding those usage bits unconditionally to that
-// shared, pervasively-used class would be invalid Vulkan usage on any
-// future device that doesn't have bufferDeviceAddress enabled -- with no
-// validation layer installed in this environment to catch that
-// immediately, retrofitting Mesh for every existing call site across the
-// whole engine was the wrong risk to take for this pass. Instead this
-// class regenerates real, position-only geometry directly from the same
-// real MeshSourceKind/params data scene serialization already uses (see
-// Components.hpp's own MeshSource comment on why that data exists),
-// into its own dedicated, real RT-flagged buffers. Imported OBJ meshes
-// and core::Terrain chunks (which don't carry MeshSource params in this
-// shape) simply don't participate -- they keep casting the existing,
-// unchanged real CSM rasterized shadow. A real, stated scope boundary,
-// not a silently-dropped one.
+class RiggedMesh;
+
+// Surface data ray-traced hit shading reads per TLAS instance. std430;
+// mirrors RtInstance in shaders/kronos/raytracing.glsl.
+struct RtInstanceData {
+    glm::vec4 baseColor{1.0f};
+    glm::vec4 surface{0.0f, 1.0f, 0.0f, 0.0f}; // x metallic, y perceptual roughness
+    glm::vec4 emissive{0.0f};                   // rgb radiance
+    glm::uvec4 geometry{0u};                    // xy vertex buffer address, zw index buffer address
+    glm::uvec4 textures{0u};                    // x albedo bindless slot (0 = white)
+};
+static_assert(sizeof(RtInstanceData) == 80);
+
+[[nodiscard]] RtInstanceData makeRtMaterial(glm::vec4 baseColor, float metallic, float roughness, glm::vec3 emissiveColor,
+                                            float emissiveIntensity, uint32_t albedoSlot);
+
+// Instance mask bits: shadow rays only see casters, every other ray sees everything visible.
+inline constexpr uint8_t kRtMaskShadowCaster = 0x01;
+inline constexpr uint8_t kRtMaskVisible = 0x02;
+
+[[nodiscard]] constexpr uint8_t rtInstanceMask(bool castsShadow) {
+    return castsShadow ? uint8_t(kRtMaskShadowCaster | kRtMaskVisible) : kRtMaskVisible;
+}
+
+struct RtMeshInstance {
+    const Mesh* mesh = nullptr;
+    glm::mat4 transform{1.0f};
+    uint8_t mask = rtInstanceMask(true);
+    RtInstanceData material;
+};
+
+struct RtSkinnedInstance {
+    const RiggedMesh* mesh = nullptr;
+    uint64_t key = 0; // stable per entity so its BLAS is refit, not rebuilt
+    glm::mat4 transform{1.0f};
+    const glm::mat4* palette = nullptr;
+    uint32_t jointCount = 0;
+    uint8_t mask = rtInstanceMask(true);
+    RtInstanceData material;
+};
+
+// Hardware ray tracing scene: one BLAS per uploaded Mesh (cached by uid),
+// GPU-skinned BLASes refit every frame for animated characters, and a TLAS
+// per in-flight frame rebuilt inside that frame's command buffer.
 class RayTracingScene {
 public:
-    ~RayTracingScene();
-
-    // Real, one-time setup against an already-ray-tracing-capable device
-    // (see Renderer::checkRayTracingSupport()) -- creates the one real
-    // command pool/buffer this class reuses every frame to record and
-    // submit its own real BLAS/TLAS build commands.
-    [[nodiscard]] bool initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
-                                   uint32_t queueFamilyIndex, VkQueue queue);
-    void shutdown();
-
-    struct Instance {
-        MeshSourceKind kind = MeshSourceKind::Box;
-        glm::vec3 params{0.5f};
-        glm::mat4 transform{1.0f};
-        // Kronos ("Rendering Fidelity Foundation" Phase 1.3): real PBR
-        // material data carried alongside this instance's existing
-        // position-only geometry -- shadows never needed to know *what*
-        // was hit, only *whether* something was (a boolean ray query),
-        // but hybrid RT reflections need the hit surface's own real
-        // color/metallic/roughness to shade a reflection ray's result.
-        // See packMaterials()'s own comment for how this reaches the GPU.
-        glm::vec4 baseColor{1.0f};
-        float metallic = 0.0f;
-        float roughness = 1.0f;
-    };
-
-    // Pure, device-free proxy for buildBlasFor()'s own real switch (Box/
-    // Plane build a real BLAS, every other kind returns an empty entry
-    // unconditionally, before touching any device resource -- see that
-    // function's own comment) -- lets that real filter's *shape* be
-    // tested without a live Vulkan device. Public and static.
-    [[nodiscard]] static bool isSupportedShapeKind(MeshSourceKind kind);
-
-    // Pure -- packs 2 vec4 per entry in `survivingInstances` (baseColor,
-    // then vec4(metallic, roughness, 0, 0)), in the same order given.
-    // Deliberately takes the *already-filtered* survivor list rather than
-    // re-deriving "which shapes survive" itself (that would be a second,
-    // could-diverge copy of buildBlasFor()'s own real filter to keep in
-    // sync by hand) -- rebuild() calls this against exactly the instances
-    // that already got a real, non-null BlasEntry that same call, so
-    // there is exactly one real filter in this class, not two. Public
-    // and static specifically so this packing step is directly testable
-    // without a live Vulkan device.
-    [[nodiscard]] static std::vector<glm::vec4> packMaterials(const std::vector<Instance>& survivingInstances);
-
-    // Real storage buffer -- binding 3 of sceneDescriptorSetLayout_ (see
-    // Renderer::createSceneDescriptorResources()), read by
-    // scene_rt.frag's traceReflection() and indexed by a ray-query hit's
-    // own instanceCustomIndex (see rebuild()'s own comment on how that
-    // index is assigned in lockstep with this buffer's contents).
-    [[nodiscard]] VkBuffer materialsBuffer() const { return materialsBuffer_.buffer; }
-
-    // Real, per-frame rebuild: (re)builds a real BLAS for any newly-seen
-    // real (kind, params) shape (cached thereafter -- the expensive part
-    // is NOT redone every frame), then always rebuilds the real TLAS
-    // instance buffer and calls a real vkCmdBuildAccelerationStructuresKHR
-    // for the TLAS itself (correct, standard practice for a dynamic
-    // scene -- BLAS rebuild-every-frame would not be, TLAS rebuild-every-
-    // frame is). A real, honest no-op if `instances` is empty (leaves the
-    // previous frame's TLAS, if any, bound and valid rather than
-    // destroying/recreating a zero-instance one that scene.frag would
-    // then have nothing real to trace against).
-    void rebuild(const std::vector<Instance>& instances);
-
-    [[nodiscard]] VkAccelerationStructureKHR tlas() const { return tlas_; }
-    [[nodiscard]] bool hasValidTlas() const { return tlas_ != VK_NULL_HANDLE; }
-
-private:
-    struct ShapeKey {
-        MeshSourceKind kind;
-        glm::vec3 params;
-        bool operator==(const ShapeKey& other) const;
-    };
-    struct ShapeKeyHash {
-        size_t operator()(const ShapeKey& key) const;
-    };
-
     struct Buffer {
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocation allocation = nullptr;
         VkDeviceAddress address = 0;
+        void* mapped = nullptr;
+        VkDeviceSize size = 0;
     };
 
+    struct SkinnedBlas {
+        Buffer vertices;
+        Buffer storage;
+        Buffer scratch;
+        VkAccelerationStructureKHR blas = VK_NULL_HANDLE;
+        VkDeviceAddress address = 0;
+        uint64_t sourceUid = 0;
+        uint32_t lastUsed = 0;
+        bool built = false;
+    };
+
+    // Host-written data (TLAS instances, hit-shading records, bone palettes)
+    // cycles through this many segments: an auxiliary scene is recorded into
+    // consecutive frames' command buffers, so its previous upload may still
+    // be in flight when the next one is written.
+    static constexpr uint32_t kHostRing = 3;
+
+    // Everything one view traces against. Owned by that view's frame
+    // resources; GPU-side reuse is ordered by barriers in record().
+    struct Frame {
+        VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
+        Buffer tlasStorage;
+        Buffer tlasScratch;
+        Buffer instanceData; // device-local, bound at set 0 binding 3
+        Buffer hostUpload;   // kHostRing segments
+        VkDeviceSize hostSegment = 0;
+        std::unordered_map<uint64_t, SkinnedBlas> skinned;
+        uint32_t recordCount = 0;
+        uint32_t instanceCount = 0;
+    };
+
+    ~RayTracingScene();
+
+    [[nodiscard]] bool initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
+                                  uint32_t queueFamilyIndex, VkQueue queue);
+    // Needs the pipeline cache and shader directory, which exist later than the device.
+    [[nodiscard]] bool initializeSkinning(const render::GpuContext& ctx);
+    void shutdown();
+
+    // Gives `frame` a valid empty TLAS so its descriptors can be written immediately.
+    [[nodiscard]] bool initializeFrame(Frame& frame);
+    void destroyFrame(Frame& frame);
+
+    // Records skinning, BLAS builds/refits and the TLAS build into `cmd`
+    // (outside any render pass), ending in a barrier that makes the TLAS
+    // visible to shader ray queries. Returns true when the frame's TLAS or
+    // instance-data buffer changed handle, so its descriptors need rewriting.
+    bool record(VkCommandBuffer cmd, Frame& frame, const std::vector<RtMeshInstance>& meshes,
+                const std::vector<RtSkinnedInstance>& skinned);
+
+    [[nodiscard]] bool initialized() const { return initialized_; }
+    [[nodiscard]] size_t cachedBlasCount() const { return blasCache_.size(); }
+
+    [[nodiscard]] static VkTransformMatrixKHR toVkTransform(const glm::mat4& m);
+
+private:
     struct BlasEntry {
         VkAccelerationStructureKHR blas = VK_NULL_HANDLE;
-        Buffer asBuffer;
-        Buffer vertexBuffer;
-        Buffer indexBuffer;
-        VkDeviceAddress blasAddress = 0;
+        Buffer storage;
+        VkDeviceAddress address = 0;
+        uint32_t lastUsed = 0;
     };
 
-    [[nodiscard]] Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memUsage,
-                                       VmaAllocationCreateFlags flags, bool wantAddress);
+    [[nodiscard]] Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible);
     void destroyBuffer(Buffer& buffer);
-    [[nodiscard]] VkDeviceAddress bufferDeviceAddress(VkBuffer buffer) const;
-    [[nodiscard]] const BlasEntry* getOrBuildBlas(const ShapeKey& key);
-    [[nodiscard]] BlasEntry buildBlasFor(const ShapeKey& key);
-    void destroyTlas();
-    // Real, one-shot command buffer submit+wait -- the same
-    // "small number of real build commands, synchronous, not pipelined"
-    // simplification core::Mesh's own uploadToDeviceLocalBuffer() already
-    // established for this codebase's procedural-geometry uploads.
+    // Grow-only; returns true if the buffer was (re)allocated.
+    bool ensureBuffer(Buffer& buffer, VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible);
+    [[nodiscard]] VkDeviceAddress deviceAddress(VkBuffer buffer) const;
+    [[nodiscard]] VkAccelerationStructureKHR createAccelerationStructure(VkAccelerationStructureTypeKHR type,
+                                                                        const Buffer& storage,
+                                                                        VkDeviceAddress& outAddress);
+    void buildMissingBlases(const std::vector<RtMeshInstance>& meshes);
+    void recordSkinnedBlases(VkCommandBuffer cmd, Frame& frame, const std::vector<RtSkinnedInstance>& skinned);
+    void releaseUnusedBlases();
+    void destroySkinnedBlas(SkinnedBlas& entry);
     void submitAndWait(const std::function<void(VkCommandBuffer)>& record);
 
     VmaAllocator allocator_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
-    VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     VkCommandPool cmdPool_ = VK_NULL_HANDLE;
+    VkDeviceSize scratchAlignment_ = 256;
 
-    std::unordered_map<ShapeKey, BlasEntry, ShapeKeyHash> blasCache_;
+    VkPipelineLayout skinningLayout_ = VK_NULL_HANDLE;
+    VkPipeline skinningPipeline_ = VK_NULL_HANDLE;
 
-    VkAccelerationStructureKHR tlas_ = VK_NULL_HANDLE;
-    Buffer tlasBuffer_;
-    Buffer tlasScratch_;
-    Buffer tlasInstanceBuffer_;
-    VkDeviceSize tlasBufferCapacity_ = 0;
-    VkDeviceSize tlasScratchCapacity_ = 0;
-    VkDeviceSize tlasInstanceCapacity_ = 0;
+    std::unordered_map<uint64_t, BlasEntry> blasCache_;
+    uint32_t recordClock_ = 0;
     bool initialized_ = false;
-
-    // Kronos ("Rendering Fidelity Foundation" Phase 1.3) -- see
-    // materialsBuffer()'s own comment. materials_ is this frame's real,
-    // host-side packed data (also what packMaterials() itself returns);
-    // materialsBuffer_ is its GPU-visible upload, resized (never shrunk,
-    // same "avoid alloc/free churn" convention tlasInstanceBuffer_ above
-    // already uses) whenever a frame needs more room than it currently has.
-    std::vector<glm::vec4> materials_;
-    Buffer materialsBuffer_;
-    VkDeviceSize materialsBufferCapacity_ = 0;
 };
 
 } // namespace engine::core

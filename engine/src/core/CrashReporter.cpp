@@ -1,6 +1,7 @@
 #include "core/CrashReporter.hpp"
 
 #include <csignal>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -10,6 +11,7 @@
 #if defined(__linux__)
 #include <execinfo.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -21,6 +23,7 @@ namespace {
 
 bool g_installed = false;
 int g_crashFileFd = -1;
+char g_crashFilePath[128] = {};
 struct sigaction g_previousHandlers[6]; // one per signal below, for real chaining after our own handler runs
 
 constexpr int kSignals[] = {SIGSEGV, SIGABRT, SIGFPE, SIGILL, SIGBUS, SIGTRAP};
@@ -109,23 +112,33 @@ void crashHandler(int sig) {
     raise(sig);
 }
 
+void removeUnusedCrashFile() {
+    if (g_crashFileFd < 0) return;
+    struct stat info{};
+    const bool empty = fstat(g_crashFileFd, &info) == 0 && info.st_size == 0;
+    close(g_crashFileFd);
+    g_crashFileFd = -1;
+    if (empty) unlink(g_crashFilePath);
+}
+
 } // namespace
 
 void installCrashReporter() {
     if (g_installed) return;
     g_installed = true;
 
-    char path[128];
+    char* path = g_crashFilePath;
     std::time_t now = std::time(nullptr);
     std::tm tmValue{};
     localtime_r(&now, &tmValue);
-    std::snprintf(path, sizeof(path), "crash_report_%04d%02d%02d_%02d%02d%02d.txt", tmValue.tm_year + 1900,
+    std::snprintf(path, sizeof(g_crashFilePath), "crash_report_%04d%02d%02d_%02d%02d%02d.txt", tmValue.tm_year + 1900,
                   tmValue.tm_mon + 1, tmValue.tm_mday, tmValue.tm_hour, tmValue.tm_min, tmValue.tm_sec);
     // Opened once, here, at install() time (not inside the handler) --
     // open() itself is not guaranteed async-signal-safe either; doing it
     // eagerly means the handler only ever does the real signal-safe
     // write()/fsync() to an already-valid fd.
     g_crashFileFd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    std::atexit(&removeUnusedCrashFile);
 
     struct sigaction action{};
     action.sa_handler = &crashHandler;

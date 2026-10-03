@@ -92,8 +92,16 @@ public:
         // match the real walk/run clips' own authored timings (see
         // engine/assets/animations/{walk,run}.anim) rather than the
         // earlier placeholder values.
-        float walkSpeedThreshold = 1.0f; // studs/sec above which Idle -> Walk
-        float runSpeedThreshold = 3.0f;  // studs/sec above which Walk -> Run
+        float walkSpeedThreshold = 0.4f; // studs/sec above which Idle -> Walk
+        float runSpeedThreshold = 3.0f;  // studs/sec around which Walk <-> Run switches
+        float locomotionHysteresis = 0.35f; // width of the Walk/Run switching band, so jitter can't flicker clips
+        // Ground speed at which each clip's stance foot does not slide (see
+        // tools/generate_locomotion_clips.py); playback rate follows the
+        // actual speed within [minPlaybackRate, maxPlaybackRate].
+        float walkClipSpeed = 1.5f;
+        float runClipSpeed = 5.0f;
+        float minPlaybackRate = 0.5f;
+        float maxPlaybackRate = 1.6f;
         float locomotionBlendSeconds = 0.25f;
         float jumpBlendSeconds = 0.1f;
         float emoteBlendSeconds = 0.15f;
@@ -105,40 +113,22 @@ public:
         float capsuleRadius = 0.35f;
         float capsuleHalfHeight = 0.55f;
 
-        // Kronos ("Avatar 2.0" -- "Animation Polish: secondary motion"):
-        // real, small, procedural head-bob/sway layered on TOP of
-        // whatever authored clip is already playing (idle/walk/run) --
-        // this rig's own shipped clips already carry the *primary*
-        // motion (see idle.anim's own real spine/head/arm sway
-        // keyframes); this is deliberately a tiny, separate,
-        // state-dependent addition on the head joint only, not a
-        // reimplementation of authored animation. Idle uses a slow, calm
-        // sway (breathing-like); Walk/Run use a faster, sharper bob tied
-        // to footfall cadence. Degrees are small on purpose -- this is a
-        // subtle "alive" cue, not a visible bobblehead.
+        // Procedural secondary motion layered over the playing clip. It runs
+        // on its own clock, so it is only on by default for Idle: the shipped
+        // walk/run clips already carry head, torso and arm motion locked to
+        // their footfalls, and an unsynchronised sway on top fights them.
         float idleSwayDegrees = 1.2f;
-        float walkBobDegrees = 3.0f;
-        float runBobDegrees = 4.5f;
+        float walkBobDegrees = 0.0f;
+        float runBobDegrees = 0.0f;
         float idleSwayHz = 0.3f;
         float walkBobHz = 1.8f;
         float runBobHz = 2.6f;
-
-        // Kronos ("Avatar 2.0" -- "Animation Polish" -- "secondary
-        // motion for head, torso, and arms"): real, same real
-        // per-state-amplitude shape as the head-bob fields above,
-        // reusing the exact same locomotion-synced secondaryMotionPhase_
-        // (not a second, independent phase per body part) -- torso sways
-        // side-to-side (Z-axis roll, distinct from the head's own
-        // front-back X-axis nod); arms swing front-back (X-axis, like a
-        // natural walking arm pump), with the real, opposite phase
-        // between left/right arms (computeSecondaryOscillationDegrees()'s
-        // own header comment).
         float idleTorsoSwayDegrees = 0.8f;
-        float walkTorsoSwayDegrees = 2.5f;
-        float runTorsoSwayDegrees = 4.0f;
+        float walkTorsoSwayDegrees = 0.0f;
+        float runTorsoSwayDegrees = 0.0f;
         float idleArmSwingDegrees = 1.0f;
-        float walkArmSwingDegrees = 6.0f;
-        float runArmSwingDegrees = 10.0f;
+        float walkArmSwingDegrees = 0.0f;
+        float runArmSwingDegrees = 0.0f;
 
         // Kronos ("Avatar 2.0" -- "Facial System"): real, tuned so a
         // real 0.15s auto-blink (autoBlinkDurationSeconds) still reads
@@ -245,6 +235,10 @@ public:
     // exactly as it did under the old single-Jump-state model -- real,
     // additive, not a breaking change.
     void tickAnimation(float dt, float horizontalSpeed, bool grounded, float verticalVelocity = 0.0f);
+    [[nodiscard]] AvatarLocomotionState desiredLocomotionState(float horizontalSpeed) const;
+    // Shipped clips are authored against buildHumanoidSkeleton(); this maps
+    // them onto this avatar's (possibly re-proportioned) skeleton.
+    [[nodiscard]] AnimationClip retargeted(AnimationClip clip) const;
 
     // Kronos ("Avatar 2.0" -- "Facial System" -- "expressions can be
     // driven by animation curves"): real, sets the real TARGET
@@ -293,6 +287,7 @@ private:
     // Real playhead tracking for the Landing state's own exit condition
     // -- see setJumpLandClip()'s own comment.
     AnimationPlayer::Handle landHandle_ = AnimationPlayer::kInvalidHandle;
+    AnimationPlayer::Handle locomotionHandle_ = AnimationPlayer::kInvalidHandle;
 
     AnimationPlayer::Handle emoteHandle_ = AnimationPlayer::kInvalidHandle;
     bool emotePlaying_ = false;

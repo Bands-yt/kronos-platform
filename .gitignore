@@ -42,3 +42,7 @@ test_world_package_*/
 test_world_registry*.json
 test_world_metadata.json
 test_logger_file_sink.log
+
+# Local game saves and Python caches
+brokenbones_save.json
+__pycache__/

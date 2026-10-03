@@ -315,8 +315,7 @@ void AvatarEditor::drawPanel(core::ECS&, core::EntityId, const std::vector<core:
     drawPluginHeader("Avatar Editor");
 
     ImGui::TextWrapped(
-        "Choose a skin tone for your Kronos avatar -- applies consistently across every body region, and is "
-        "saved to your real, shared profile (used by both Studio and engine_runtime).");
+        "Choose a skin tone for your avatar. It applies to every body region and is saved to your profile (shared by Studio and the Kronos client).");
 
     ImGui::BeginChild("##avatar_preview", ImVec2(0.0f, 320.0f));
     scene_.drawAndHandleOrbit();
@@ -377,17 +376,14 @@ void AvatarEditor::drawPanel(core::ECS&, core::EntityId, const std::vector<core:
     }
 
     if (currentIndex < 0) {
-        ImGui::TextDisabled("No skin tone chosen yet -- using the real, honest default.");
+        ImGui::TextDisabled("No skin tone chosen yet; using the default.");
     } else {
         ImGui::Text("Current: %s", palette[static_cast<size_t>(currentIndex)].name);
     }
 
     ImGui::SeparatorText("Clothing & Accessories");
     ImGui::TextWrapped(
-        "Equip items you own from the Catalogue. Top/Bottom now generate a real, separate procedural clothing mesh "
-        "(see \"Clothing Fit\" below) instead of just recoloring the body; Hat still recolors the head region. "
-        "Shoes/Face/Back are real, saved, ownership-checked equips with no visual effect on this body yet, an "
-        "honest, stated gap.");
+        "Equip items you own from the Catalogue. Tops and bottoms generate a fitted clothing mesh (see \"Clothing Fit\" below); hats recolor the head. Shoes, face and back items are saved but not yet visible on the body.");
     for (const auto& slot : kClothingSlots) {
         ImGui::PushID(static_cast<int>(slot.category));
         std::string equippedId = loadout_->equippedItemId(slot.category);
@@ -422,8 +418,7 @@ void AvatarEditor::drawPanel(core::ECS&, core::EntityId, const std::vector<core:
 
     ImGui::SeparatorText("Facial Expression");
     ImGui::TextWrapped(
-        "Live preview only -- these sliders drive the real expression system above, but aren't saved (a future "
-        "dialogue/emote system is the real, intended real-time driver, see AvatarController::setFacialExpression()).");
+        "Live preview only. These sliders drive the expression system above but are not saved.");
     ImGui::SliderFloat("Blink", &facialExpression_.blinkWeight, 0.0f, 1.0f);
     ImGui::SliderFloat("Smile", &facialExpression_.smileWeight, 0.0f, 1.0f);
     ImGui::SliderFloat("Frown", &facialExpression_.frownWeight, 0.0f, 1.0f);

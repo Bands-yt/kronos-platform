@@ -30,7 +30,9 @@
 #include "core/LoopbackHttpServer.hpp"
 #include "core/OAuthPkce.hpp"
 #include "core/OpenUrl.hpp"
+#include "core/SwapchainSelection.hpp"
 #include "core/UITheme.hpp"
+#include "core/UIWidgets.hpp"
 #include "marketplace/CreditsPurchase.hpp"
 #include "marketplace/RatingSubmission.hpp"
 #include "marketplace/RecommendationEngine.hpp"
@@ -91,7 +93,7 @@ std::string resolveKronosBackendUrl() {
 
 // Kronos Client shell chrome geometry -- one definition, used by both
 // the chrome itself and every content panel that has to inset around it.
-constexpr float kSidebarWidth = 214.0f;
+constexpr float kSidebarWidth = 232.0f;
 constexpr float kTopBarHeight = 64.0f;
 constexpr float kBrandPanelWidth = 300.0f;
 
@@ -267,6 +269,7 @@ bool RuntimeShell::initialize() {
     // the same real overlay mechanism Studio's Principle-4 "what you see
     // in Studio is what ships" relies on, here proving that hook is
     // genuinely generic engine_core API, not something Studio-specific.
+    uiTargetIsSrgb_ = core::isSrgbFormat(renderer.swapchainFormat());
     renderer.setOverlayCallback([this](VkCommandBuffer cmd, VkImageView, VkExtent2D) {
         if (pendingDrawData_) ImGui_ImplVulkan_RenderDrawData(pendingDrawData_, cmd);
     });
@@ -607,6 +610,30 @@ void RuntimeShell::leaveSession() {
     state_ = computeNextState(state_, ShellEvent::SessionEnded);
 }
 
+// KRONOS_SHELL_PAGE opens the launcher straight onto one page, skipping the
+// splash -- used for screenshot-based UI checks.
+void RuntimeShell::applyStartPageOverride() {
+    const char* page = std::getenv("KRONOS_SHELL_PAGE");
+    if (page == nullptr || state_ != ShellState::Home) return;
+    const std::string name(page);
+    showSplash_ = false;
+    if (name == "discover" || name == "create") {
+        catalogueTab_ = name == "create" ? CatalogueTab::Create : CatalogueTab::Discover;
+        state_ = ShellState::GameCatalogue;
+        openGameCatalogue();
+    } else if (name == "avatar") {
+        state_ = ShellState::AvatarShop;
+        openAvatarShop();
+    } else if (name == "settings") {
+        state_ = ShellState::Settings;
+        openSettings();
+    } else if (name == "directory") {
+        state_ = ShellState::Friends;
+    } else if (name == "notifications") {
+        state_ = ShellState::Notifications;
+    }
+}
+
 void RuntimeShell::openGameCatalogue() {
     // Deliberately NOT gated on state_: the sidebar sets state_ to
     // GameCatalogue before calling this, and the old `state_ != Home`
@@ -698,7 +725,7 @@ void RuntimeShell::finishPendingGameLoad() {
     discovered.manifest = game.manifest;
     discovered.parseSucceeded = true;
     if (!loadGame(app_, discovered)) {
-        std::fprintf(stderr, "RuntimeShell: \"%s\" real-failed to load\n", game.manifest.name.c_str());
+        std::fprintf(stderr, "RuntimeShell: \"%s\" failed to load\n", game.manifest.name.c_str());
         // Kronos ("Animated Hourglass Loading Screen"): real, same
         // "just go back to the Catalogue, no formal error panel"
         // behavior this had before the Loading beat was inserted -- a
@@ -809,6 +836,7 @@ void RuntimeShell::endFrame() {
     // studio::StudioApp::endFrame() already documents.
     ImGui::Render();
     pendingDrawData_ = ImGui::GetDrawData();
+    if (uiTargetIsSrgb_) core::linearizeDrawDataColors(pendingDrawData_);
 }
 
 void RuntimeShell::tick(float dt) {
@@ -986,6 +1014,10 @@ void RuntimeShell::tick(float dt) {
     // Kronos ("Home UI Polish" -- "Smooth transitions"): real, general
     // fade-in on every real state change -- see stateTransitionClock_'s
     // own comment.
+    if (!startPageApplied_) {
+        startPageApplied_ = true;
+        applyStartPageOverride();
+    }
     if (state_ != previousDrawState_) {
         stateTransitionClock_ = 0.0f;
         previousDrawState_ = state_;
@@ -995,29 +1027,34 @@ void RuntimeShell::tick(float dt) {
     float transitionAlpha = std::clamp(stateTransitionClock_ / kStateTransitionFadeSeconds, 0.0f, 1.0f);
 
     beginFrame();
+    const bool splashActive = state_ == ShellState::Home && showSplash_;
+    // Chrome surrounds every browsing state but not Loading/InGame/Error,
+    // which are full-screen moments.
+    const bool showChrome = !splashActive &&
+                            (state_ == ShellState::Home || state_ == ShellState::GameCatalogue ||
+                             state_ == ShellState::AvatarShop || state_ == ShellState::Settings ||
+                             state_ == ShellState::Friends || state_ == ShellState::Notifications ||
+                             state_ == ShellState::SessionBrowser);
+    if (showChrome) {
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        const float* bg = core::kronos_palette::kCharcoal;
+        const ImVec4 background(bg[0], bg[1], bg[2], 1.0f);
+        ImGui::GetBackgroundDrawList()->AddRectFilled(
+            viewport->Pos, ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
+            ImGui::GetColorU32(background));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, background);
+        drawSidebar();
+        drawTopBar();
+        drawBrandPanel();
+    }
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, transitionAlpha);
-    // Kronos ("Branding + Release Prep"): a real, one-time splash --
-    // takes over the very first few real Home frames, then never shows
-    // again this run.
-    if (state_ == ShellState::Home && showSplash_) {
+    if (splashActive) {
         splashClock_ += dt;
         if (splashClock_ >= kSplashDurationSeconds) showSplash_ = false;
         drawSplashPanel();
     } else {
-        // Kronos Client shell chrome -- drawn around every browsing state.
-        // Deliberately NOT around Loading/InGame/Error: those are
-        // full-screen moments where a sidebar and a sign-in button would
-        // be noise, not navigation.
-        bool showChrome = state_ == ShellState::Home || state_ == ShellState::GameCatalogue ||
-                          state_ == ShellState::AvatarShop || state_ == ShellState::Settings ||
-                          state_ == ShellState::Friends || state_ == ShellState::Notifications ||
-                          state_ == ShellState::SessionBrowser;
-        if (showChrome) {
-            drawSidebar();
-            drawTopBar();
-            drawBrandPanel();
-        }
-
         switch (state_) {
             case ShellState::Home: drawHomePanel(); break;
             case ShellState::SessionBrowser: drawSessionBrowserPanel(); break;
@@ -1063,6 +1100,10 @@ void RuntimeShell::tick(float dt) {
         if (state_ == ShellState::Home && showAboutOverlay_) drawAboutPanel();
     }
     ImGui::PopStyleVar();
+    if (showChrome) {
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(2);
+    }
     drawToasts();
     endFrame();
 }
@@ -1226,46 +1267,52 @@ void RuntimeShell::drawHomePanel() {
     std::optional<core::KronosUser> user = kronosApi_.currentUser();
     bool isGuest = user.has_value() && user->email.empty() && user->displayName.rfind("Guest", 0) == 0;
     if (isGuest) {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(kSkyBlue[0] * 0.22f, kSkyBlue[1] * 0.22f, kSkyBlue[2] * 0.28f, 1.0f));
-        ImGui::BeginChild("##guest_banner", ImVec2(0.0f, 46.0f), true);
+        ui::beginCard("##guest_banner");
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(paletteColor(kTextBright),
-                            "Playing as Guest -- Sign Up to save progress and add friends!");
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 96.0f);
-        pushPrimaryActionButtonColors();
-        if (ImGui::Button("Sign Up", ImVec2(96.0f, 26.0f))) startBrowserSignIn();
-        popPrimaryActionButtonColors();
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
+        ImGui::TextColored(paletteColor(kTextBright), "Playing as Guest");
+        ImGui::SameLine();
+        ImGui::TextColored(paletteColor(kTextMuted), "Sign up to save progress and add friends.");
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - 96.0f);
+        if (ui::button("Sign Up", ui::ButtonKind::Success, ImVec2(96.0f, 0.0f))) startBrowserSignIn();
+        ui::endCard();
         ImGui::Dummy(ImVec2(0.0f, 12.0f));
     }
 
     // --- update banner ------------------------------------------------
     if (updateAvailable_ && !updateBannerDismissed_) {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, paletteColor(kSlate));
-        ImGui::BeginChild("##update_banner", ImVec2(0.0f, 68.0f), true);
+        ui::beginCard("##update_banner");
         ImGui::TextColored(paletteColor(kSkyBlue), "Kronos %s is available", updateAvailableTag_.c_str());
         ImGui::TextColored(paletteColor(kTextMuted), "You're running %s.", core::kKronosVersion);
-        pushPrimaryActionButtonColors();
-        if (ImGui::SmallButton("Update now")) {
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        if (ui::button("Update now", ui::ButtonKind::Success)) {
             if (!startUpdateDownload()) {
                 notify(core::NotificationKind::SystemMessage, "Update failed to start", updateStatusMessage_);
             }
         }
-        popPrimaryActionButtonColors();
         ImGui::SameLine();
-        if (ImGui::SmallButton("Later")) updateBannerDismissed_ = true;
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
+        if (ui::button("Later", ui::ButtonKind::Ghost)) updateBannerDismissed_ = true;
+        ui::endCard();
         ImGui::Dummy(ImVec2(0.0f, 12.0f));
     }
 
     drawFriendsCarousel();
 
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
-    ImGui::SeparatorText("Jump back in");
+    ui::sectionHeader("Jump back in");
     ImGui::TextColored(paletteColor(kTextMuted),
                        "Browse published games under Discover, or open your own local projects under Create.");
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    if (ui::button("Browse games", ui::ButtonKind::Primary)) {
+        catalogueTab_ = CatalogueTab::Discover;
+        state_ = ShellState::GameCatalogue;
+        openGameCatalogue();
+    }
+    ImGui::SameLine();
+    if (ui::button("Local projects", ui::ButtonKind::Secondary)) {
+        catalogueTab_ = CatalogueTab::Create;
+        state_ = ShellState::GameCatalogue;
+        openGameCatalogue();
+    }
 
     if (backendReachability_ == BackendReachability::Unreachable) {
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
@@ -1309,11 +1356,25 @@ void RuntimeShell::drawToolManagerSection() {
     using namespace core::kronos_palette;
 
     ImGui::Dummy(ImVec2(0.0f, 12.0f));
-    ImGui::SeparatorText("Kronos Tools");
-    ImGui::TextColored(paletteColor(kTextMuted), "Player is already running (this app). Install or update the "
-                                                  "rest of the Kronos Creator Suite below.");
+    ui::sectionHeader("Kronos Tools");
+    ImGui::TextColored(paletteColor(kTextMuted), "The rest of the Kronos Creator Suite. Player is this app.");
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+
+    struct ToolStyle {
+        ImVec4 color;
+        const char* blurb;
+        ui::Icon icon;
+    };
+    static const ToolStyle kToolStyles[] = {
+        {ImVec4(0.545f, 0.361f, 0.965f, 1.0f), "Build worlds, scripts and multiplayer games", ui::Icon::Create},
+        {ImVec4(0.961f, 0.620f, 0.043f, 1.0f), "Model, sculpt and texture meshes", ui::Icon::Avatar},
+        {ImVec4(0.388f, 0.400f, 0.945f, 1.0f), "Cut cinematics and trailers", ui::Icon::Play},
+        {ImVec4(0.024f, 0.714f, 0.831f, 1.0f), "Edit, mix and preview sound", ui::Icon::Bell},
+    };
 
     std::filesystem::path exeDir(core::executableDirectory());
+    const float columnWidth = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    int index = 0;
     for (const ToolManagerEntry& entry : kToolManagerEntries) {
 #if defined(_WIN32)
         const char* exeName = entry.exeNameWindows;
@@ -1321,22 +1382,58 @@ void RuntimeShell::drawToolManagerSection() {
         const char* exeName = entry.exeNameLinux;
 #endif
         bool installed = std::filesystem::exists(exeDir / exeName);
+        const ToolStyle& style = kToolStyles[index];
 
         ImGui::PushID(entry.componentId);
-        ImGui::BeginChild("##tool_row", ImVec2(0.0f, 40.0f), true);
-        ImGui::AlignTextToFramePadding();
+        if (index % 2 == 1) ImGui::SameLine();
+        ImGui::BeginGroup();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 14.0f));
+        ImGui::BeginChild("##tool_card", ImVec2(columnWidth, 78.0f), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+        ImGui::PopStyleVar();
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 tileMin(origin.x, origin.y + 2.0f);
+        const ImVec2 tileMax(tileMin.x + 44.0f, tileMin.y + 44.0f);
+        drawList->AddRectFilled(tileMin, tileMax, ImGui::GetColorU32(ImVec4(style.color.x, style.color.y, style.color.z, 0.16f)), 10.0f);
+        drawList->AddRect(tileMin, tileMax, ImGui::GetColorU32(ImVec4(style.color.x, style.color.y, style.color.z, 0.35f)), 10.0f);
+        ui::drawIcon(drawList, style.icon, ImVec2((tileMin.x + tileMax.x) * 0.5f, (tileMin.y + tileMax.y) * 0.5f), 20.0f,
+                     ImGui::GetColorU32(style.color));
+
+        ImGui::SetCursorScreenPos(ImVec2(tileMax.x + 14.0f, origin.y + 2.0f));
+        ImGui::BeginGroup();
+        if (ImFont* medium = core::kronosMediumFont()) ImGui::PushFont(medium, 0.0f);
         ImGui::TextColored(paletteColor(kTextBright), "%s", entry.label);
-        ImGui::SameLine();
-        ImGui::TextColored(installed ? paletteColor(kGreen) : paletteColor(kTextMuted),
-                            installed ? "Installed" : "Not installed");
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 96.0f);
-        pushPrimaryActionButtonColors();
-        if (ImGui::SmallButton(installed ? "Update" : "Install")) {
+        if (core::kronosMediumFont()) ImGui::PopFont();
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.9f);
+        ImGui::TextColored(paletteColor(kTextMuted), "%s", style.blurb);
+        ImGui::PopFont();
+        ImGui::EndGroup();
+
+        const float actionWidth = 92.0f;
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + columnWidth - 14.0f - actionWidth, origin.y + 8.0f));
+        if (installed && !updateAvailable_) {
+            ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + columnWidth - 14.0f - 86.0f, origin.y + 12.0f));
+            ui::badge("Installed", paletteColor(kGreen));
+        } else if (ui::button(installed ? "Update" : "Install", installed ? ui::ButtonKind::Primary : ui::ButtonKind::Success,
+                              ImVec2(actionWidth, 0.0f))) {
             startComponentInstall(entry.componentId, entry.label);
         }
-        popPrimaryActionButtonColors();
+        const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        const float lift = ui::animate(ImGui::GetID("##lift"), hovered ? 1.0f : 0.0f);
+        if (lift > 0.01f) {
+            const ImVec2 winMin = ImGui::GetWindowPos();
+            const ImVec2 winMax(winMin.x + ImGui::GetWindowWidth(), winMin.y + ImGui::GetWindowHeight());
+            drawList->PushClipRect(winMin, winMax, false);
+            drawList->AddRect(winMin, winMax, ImGui::GetColorU32(ImVec4(style.color.x, style.color.y, style.color.z, 0.55f * lift)),
+                              ImGui::GetStyle().ChildRounding, 0, 1.0f);
+            drawList->PopClipRect();
+        }
         ImGui::EndChild();
+        ui::softShadow(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetStyle().ChildRounding,
+                       6.0f + 8.0f * lift, ImVec4(0.0f, 0.0f, 0.0f, 0.45f + 0.2f * lift));
+        ImGui::EndGroup();
         ImGui::PopID();
+        ++index;
     }
 
     if (!toolManagerStatusMessage_.empty()) {
@@ -1525,7 +1622,7 @@ void RuntimeShell::drawDirectoryPanel() {
 
     for (const core::DirectoryUser& entry : directoryUsers_) {
         ImGui::PushID(entry.id.c_str());
-        ImGui::BeginChild("##row", ImVec2(0.0f, 56.0f), true);
+        ImGui::BeginChild("##row", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
 
         // Spec colours: grey offline, green launcher, orange studio, blue
         // playing.
@@ -1697,7 +1794,7 @@ void RuntimeShell::drawAddFriendsModal() {
 
     for (const core::UserSearchResult& entry : friendSearchResults_) {
         ImGui::PushID(entry.id.c_str());
-        ImGui::BeginChild("##row", ImVec2(0.0f, 60.0f), true);
+        ImGui::BeginChild("##row", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
 
         ImVec2 origin = ImGui::GetCursorScreenPos();
         drawAvatarHeadGlyph(ImGui::GetWindowDrawList(), ImVec2(origin.x + 22.0f, origin.y + 20.0f), 18.0f);
@@ -1755,7 +1852,7 @@ void RuntimeShell::drawFriendsCarousel() {
 
     size_t friendCount = friends_.size();
     std::string heading = friendCount > 0 ? "Friends (" + std::to_string(friendCount) + ")" : "Friends";
-    ImGui::SeparatorText(heading.c_str());
+    ui::sectionHeader(heading.c_str());
 
     if (!user.has_value()) {
         ImGui::TextColored(paletteColor(kTextMuted), "Sign in to see who's online.");
@@ -1764,8 +1861,10 @@ void RuntimeShell::drawFriendsCarousel() {
 
     constexpr float kCardSize = 84.0f;
     constexpr float kBadgeRadius = 30.0f;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::BeginChild("##friends_carousel", ImVec2(0.0f, kCardSize + 34.0f), false,
                        ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::PopStyleColor();
 
     // Add Friends action card, always first.
     {
@@ -1905,9 +2004,7 @@ void RuntimeShell::drawAboutPanel() {
         ImGui::TextDisabled("Built %s", core::kKronosBuildDate);
         ImGui::Separator();
         ImGui::TextWrapped(
-            "Kronos is a local, solo-developer game platform: a real-time 3D engine, a Studio "
-            "editor, and a runtime shell with an avatar marketplace, social layer, and LAN "
-            "multiplayer -- all in one Alpha build.");
+            "Kronos is a game platform: a real-time 3D engine, the Studio editor suite, and a client with avatars, a marketplace, friends and multiplayer.");
         ImGui::Separator();
         ImGui::TextDisabled("Your Profile Id: %s", localProfile_.creatorId.c_str());
         if (ImGui::Button("Close")) open = false;
@@ -1935,7 +2032,7 @@ void RuntimeShell::drawSessionBrowserPanel() {
         return;
     }
 
-    ImGui::SeparatorText("Sessions on your network");
+    ui::sectionHeader("Sessions on your network");
     ensureLocalProfileLoaded();
     // Kronos ("Session Browser Polish v2" -- "Sorting"/"Filters"): real,
     // pure logic (net::SessionBrowserSort.hpp) -- this panel only
@@ -1968,7 +2065,7 @@ void RuntimeShell::drawSessionBrowserPanel() {
 
     if (shown.empty()) {
         ImGui::TextDisabled(sessionBrowserFriendsOnly_ ? "None of your friends have a session running right now."
-                                                        : "Searching for real sessions being announced on your LAN...");
+                                                        : "Searching for sessions on your local network...");
     } else {
         // Kronos ("Moderation Architecture v2", "Session Browser Game
         // Identity"): a real "Game" column -- a flat color-swatch
@@ -2046,7 +2143,7 @@ void RuntimeShell::drawSessionBrowserPanel() {
     ensureSessionHistoryLoaded();
     std::vector<net::SessionHistoryEntry> recent = sessionHistory_.entriesMostRecentFirst();
     if (!recent.empty()) {
-        ImGui::SeparatorText("Recently played");
+        ui::sectionHeader("Recently played");
         for (const auto& entry : recent) {
             ImGui::PushID(entry.address.c_str());
             ImGui::PushID(entry.port);
@@ -2220,7 +2317,7 @@ GameCardResult drawGameRow(const std::vector<const core::GameCatalogueEntry*>& g
 void RuntimeShell::drawLocalGamesTab() {
     if (discoveredGames_.empty()) {
         ImGui::TextDisabled(
-            "No real games found in games/ -- see docs/QUICKSTART.md for the real games/<Name>/game.gamemanifest layout.");
+            "No games found in games/. See docs/QUICKSTART.md for the games/<Name>/game.gamemanifest layout.");
         return;
     }
 
@@ -2247,7 +2344,7 @@ void RuntimeShell::drawLocalGamesTab() {
               });
     std::vector<const core::GameCatalogueEntry*> featured(
         sortedByQuality.begin(), sortedByQuality.begin() + static_cast<long>(std::min<size_t>(5, sortedByQuality.size())));
-    ImGui::SeparatorText("Featured");
+    ui::sectionHeader("Featured");
     {
         GameCardResult rowResult = drawGameRow(featured, "featured", liveDiscoveredSessions);
         if (rowResult.toPlay) toPlay = rowResult.toPlay;
@@ -2270,7 +2367,7 @@ void RuntimeShell::drawLocalGamesTab() {
                 inGenre.push_back(g);
             }
         }
-        ImGui::SeparatorText(genre.c_str());
+        ui::sectionHeader(genre.c_str());
         GameCardResult rowResult = drawGameRow(inGenre, genre.c_str(), liveDiscoveredSessions);
         if (rowResult.toPlay) toPlay = rowResult.toPlay;
         if (rowResult.toJoin) toJoin = rowResult.toJoin;
@@ -2294,7 +2391,7 @@ void RuntimeShell::drawLocalGamesTab() {
         }
     }
     if (!hiddenGems.empty()) {
-        ImGui::SeparatorText("Hidden Gems");
+        ui::sectionHeader("Hidden Gems");
         GameCardResult rowResult = drawGameRow(hiddenGems, "hidden_gems", liveDiscoveredSessions);
         if (rowResult.toPlay) toPlay = rowResult.toPlay;
         if (rowResult.toJoin) toJoin = rowResult.toJoin;
@@ -2327,7 +2424,7 @@ void RuntimeShell::drawGameCataloguePanel() {
         }
 
         ImGui::Dummy(ImVec2(0.0f, 16.0f));
-        ImGui::SeparatorText("Local projects");
+        ui::sectionHeader("Local projects");
         ImGui::TextColored(paletteColor(kTextMuted),
                             "Discovered in this machine's games/ folder. Not published to Kronos -- nobody else can "
                             "see them. Play launches locally, with no join ticket and no server allocation.");
@@ -2471,7 +2568,7 @@ void RuntimeShell::drawAvatarShopPanel() {
         std::vector<const core::AvatarItemManifest*> recommended =
             marketplace::rankRecommendedItems(allApproved, nowSeconds, 6);
         if (!recommended.empty()) {
-            ImGui::SeparatorText("Recommended");
+            ui::sectionHeader("Recommended");
             for (size_t i = 0; i < recommended.size(); ++i) {
                 const core::AvatarItemManifest* item = recommended[i];
                 ImGui::PushID(item->item.id.c_str());
@@ -2988,89 +3085,95 @@ void RuntimeShell::drawSettingsPanel() {
                       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
     }
 
-    if (ImGui::Button("Back")) {
-        if (showSettingsOverlay_) {
+    if (showSettingsOverlay_) {
+        if (ui::button("Back", ui::ButtonKind::Ghost)) {
             showSettingsOverlay_ = false;
             app_.setMovementInputSuspended(false);
-        } else {
-            state_ = computeNextState(state_, ShellEvent::ReturnHome);
+            rebindingActionName_.clear();
+            ImGui::End();
+            return;
         }
-        rebindingActionName_.clear();
-        ImGui::End();
-        return;
+    } else {
+        ui::pageTitle("Settings", "Changes apply immediately and are saved to your local profile.");
     }
 
     bool changed = false;
+    auto percentSlider = [](const char* id, float* value) {
+        float percent = *value * 100.0f;
+        if (!ImGui::SliderFloat(id, &percent, 0.0f, 100.0f, "%.0f%%")) return false;
+        *value = percent / 100.0f;
+        return true;
+    };
 
-    ImGui::SeparatorText("Graphics");
-    if (ImGui::Combo("Quality Preset", &localProfile_.qualityPresetIndex, kQualityPresetNames,
-                      IM_ARRAYSIZE(kQualityPresetNames))) {
+    ui::sectionHeader("Graphics");
+    ui::beginCard("##settings_graphics");
+    ui::settingLabel("Quality preset", "Bundles shadow, post-processing and draw-distance settings.");
+    if (ImGui::Combo("##quality", &localProfile_.qualityPresetIndex, kQualityPresetNames, IM_ARRAYSIZE(kQualityPresetNames))) {
         applyQualityPreset(localProfile_.qualityPresetIndex);
-        // Kronos ("Graphics Setting -- Volumetric Fog Toggle"): real --
-        // applyQualityPreset() just bundled its own default fog state in
-        // with everything else; re-apply the player's own explicit
-        // volumetricFogEnabled choice right after so switching presets
-        // doesn't silently clobber it.
+        // Re-apply the player's explicit fog choice; the preset bundles its own.
         app_.renderer().setVolumetricFogEnabled(localProfile_.volumetricFogEnabled);
         changed = true;
     }
-    if (ImGui::Checkbox("Volumetric Fog", &localProfile_.volumetricFogEnabled)) {
+    ui::settingLabel("Volumetric fog");
+    if (ui::toggle("##fog", &localProfile_.volumetricFogEnabled)) {
         app_.renderer().setVolumetricFogEnabled(localProfile_.volumetricFogEnabled);
         changed = true;
     }
-    if (ImGui::Checkbox("VSync", &localProfile_.vsyncEnabled)) {
+    ui::settingLabel("VSync", "Locks presentation to the display refresh rate.");
+    if (ui::toggle("##vsync", &localProfile_.vsyncEnabled)) {
         app_.renderer().setVsyncEnabled(localProfile_.vsyncEnabled);
         changed = true;
     }
-    if (ImGui::SliderInt("FPS Cap (0 = uncapped)", &localProfile_.fpsCap, 0, 240)) {
+    ui::settingLabel("Frame rate cap", "0 means uncapped.");
+    if (ImGui::SliderInt("##fpscap", &localProfile_.fpsCap, 0, 240, localProfile_.fpsCap == 0 ? "Uncapped" : "%d fps")) {
         if (app_.gameLoop() != nullptr) {
             app_.gameLoop()->setTargetRenderDt(localProfile_.fpsCap > 0 ? 1.0f / static_cast<float>(localProfile_.fpsCap)
                                                                          : 0.0f);
         }
         changed = true;
     }
-    // Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real
-    // -- core::Window::setFullscreen()/setSize() actually switch the
-    // live window; the existing resize-triggered
-    // Renderer::recreateSwapchain() path (already exercised by vsync
-    // toggling) handles the Vulkan side automatically.
-    if (ImGui::Checkbox("Fullscreen", &localProfile_.fullscreenEnabled)) {
+    ui::settingLabel("Fullscreen");
+    if (ui::toggle("##fullscreen", &localProfile_.fullscreenEnabled)) {
         app_.window().setFullscreen(localProfile_.fullscreenEnabled);
         changed = true;
     }
-    ImGui::BeginDisabled(localProfile_.fullscreenEnabled);
     static constexpr const char* kResolutionNames[] = {
         kWindowResolutionPresets[0].label, kWindowResolutionPresets[1].label, kWindowResolutionPresets[2].label,
         kWindowResolutionPresets[3].label,
     };
-    if (ImGui::Combo("Resolution", &localProfile_.windowResolutionIndex, kResolutionNames,
-                      IM_ARRAYSIZE(kResolutionNames))) {
+    ui::settingLabel("Window size", localProfile_.fullscreenEnabled ? "Only applies in windowed mode." : nullptr);
+    ImGui::BeginDisabled(localProfile_.fullscreenEnabled);
+    if (ImGui::Combo("##resolution", &localProfile_.windowResolutionIndex, kResolutionNames, IM_ARRAYSIZE(kResolutionNames))) {
         const WindowResolutionPreset& preset = kWindowResolutionPresets[localProfile_.windowResolutionIndex];
         app_.window().setSize(preset.width, preset.height);
         changed = true;
     }
     ImGui::EndDisabled();
-    if (localProfile_.fullscreenEnabled) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(windowed only)");
-    }
+    ui::endCard();
 
-    ImGui::SeparatorText("Audio");
-    if (ImGui::SliderFloat("Master Volume", &localProfile_.masterVolume, 0.0f, 1.0f)) {
+    ui::sectionHeader("Audio");
+    ui::beginCard("##settings_audio");
+    ui::settingLabel("Master volume");
+    if (percentSlider("##master", &localProfile_.masterVolume)) {
         app_.audio().setMasterVolume(localProfile_.masterVolume);
         changed = true;
     }
-    if (ImGui::SliderFloat("Music Volume", &localProfile_.musicVolume, 0.0f, 1.0f)) {
+    ui::settingLabel("Music");
+    if (percentSlider("##music", &localProfile_.musicVolume)) {
         app_.audio().setCategoryVolume(core::AudioCategory::Music, localProfile_.musicVolume);
         changed = true;
     }
-    if (ImGui::SliderFloat("SFX Volume", &localProfile_.sfxVolume, 0.0f, 1.0f)) {
+    ui::settingLabel("Sound effects");
+    if (percentSlider("##sfx", &localProfile_.sfxVolume)) {
         app_.audio().setCategoryVolume(core::AudioCategory::SFX, localProfile_.sfxVolume);
         changed = true;
     }
+    ui::endCard();
 
-    ImGui::SeparatorText("Controls");
-    ImGui::TextWrapped("Click a binding, then press any key to rebind it.");
+    ui::sectionHeader("Controls");
+    ui::beginCard("##settings_controls");
+    ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "Click a binding, then press any key. Esc cancels.");
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
     for (const auto& action : kRemappableActions) {
         ImGui::PushID(action.actionName);
         bool isListening = rebindingActionName_ == action.actionName;
@@ -3079,30 +3182,28 @@ void RuntimeShell::drawSettingsPanel() {
         if (overrideIt != localProfile_.inputBindingOverrides.end()) currentScancode = overrideIt->second;
         std::string keyLabel = isListening ? "Press a key..."
                                             : SDL_GetScancodeName(static_cast<SDL_Scancode>(currentScancode));
-        ImGui::Text("%s", action.displayLabel);
-        ImGui::SameLine(220.0f);
-        if (ImGui::Button(keyLabel.c_str(), ImVec2(160.0f, 0.0f))) {
+        ui::settingLabel(action.displayLabel);
+        if (ui::button(keyLabel.c_str(), isListening ? ui::ButtonKind::Primary : ui::ButtonKind::Secondary, ImVec2(160.0f, 0.0f))) {
             rebindingActionName_ = action.actionName;
         }
         ImGui::PopID();
     }
-    if (ImGui::Button("Reset All Bindings to Default")) {
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    if (ui::button("Reset all bindings", ui::ButtonKind::Ghost)) {
         localProfile_.inputBindingOverrides.clear();
         applyInputBindingOverrides();
         changed = true;
     }
-    // Kronos ("Input Remapping System"): real SDL keyboard-state polling
-    // -- not an ImGui-specific key-event hook, since we need to capture
-    // *any* physical key across the whole real scancode range, not one
-    // this frame's ImGui already knows to look for. Skips the frame a
-    // rebind was just requested on (avoids the same click that opened
-    // "Press a key..." also being read as the new binding).
+    ui::endCard();
+    // Polls raw SDL keyboard state so any physical key can be captured.
+    // Skips the frame the rebind was requested on so the opening click
+    // isn't read as the new binding.
     if (!rebindingActionName_.empty()) {
         int numKeys = 0;
         const Uint8* keyState = SDL_GetKeyboardState(&numKeys);
         for (int scancode = 0; scancode < numKeys; ++scancode) {
             if (!keyState[scancode]) continue;
-            if (scancode == SDL_SCANCODE_ESCAPE) { // real, honest "cancel rebind" escape hatch
+            if (scancode == SDL_SCANCODE_ESCAPE) {
                 rebindingActionName_.clear();
                 break;
             }
@@ -3114,25 +3215,30 @@ void RuntimeShell::drawSettingsPanel() {
         }
     }
 
-    ImGui::SeparatorText("Accessibility");
-    if (ImGui::SliderFloat("Text Size", &localProfile_.textScale, 0.5f, 2.0f)) {
+    ui::sectionHeader("Accessibility");
+    ui::beginCard("##settings_accessibility");
+    ui::settingLabel("Text size");
+    if (ImGui::SliderFloat("##textscale", &localProfile_.textScale, 0.5f, 2.0f, "%.2fx")) {
         ImGui::GetIO().FontGlobalScale = std::max(localProfile_.textScale, 0.1f);
         changed = true;
     }
-    if (ImGui::SliderFloat("UI Scale", &localProfile_.uiScale, 0.5f, 2.0f)) {
+    ui::settingLabel("Interface scale");
+    if (ImGui::SliderFloat("##uiscale", &localProfile_.uiScale, 0.5f, 2.0f, "%.2fx")) {
         ImGui::GetStyle() = baseUIStyle_;
         ImGui::GetStyle().ScaleAllSizes(std::max(localProfile_.uiScale, 0.1f));
         changed = true;
     }
-    if (ImGui::Combo("Colorblind Mode", &localProfile_.colorblindModeIndex, kColorblindModeNames,
-                      IM_ARRAYSIZE(kColorblindModeNames))) {
+    ui::settingLabel("Colorblind mode");
+    if (ImGui::Combo("##colorblind", &localProfile_.colorblindModeIndex, kColorblindModeNames, IM_ARRAYSIZE(kColorblindModeNames))) {
         app_.renderer().setColorblindMode(localProfile_.colorblindModeIndex);
         changed = true;
     }
-    if (ImGui::Checkbox("Reduced Motion (less camera shake, no cutscene FOV changes)", &localProfile_.reducedMotion)) {
+    ui::settingLabel("Reduced motion", "Less camera shake, no cutscene FOV changes.");
+    if (ui::toggle("##reducedmotion", &localProfile_.reducedMotion)) {
         app_.setReducedMotionEnabled(localProfile_.reducedMotion);
         changed = true;
     }
+    ui::endCard();
 
     if (changed) (void)localProfile_.saveToFile(kLocalProfilePath);
 
@@ -3278,36 +3384,53 @@ void RuntimeShell::drawSidebar() {
 
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(ImVec2(kSidebarWidth, viewport->WorkSize.y));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kSlate));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 16.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kSurface));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 18.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 3.0f));
     ImGui::Begin("##kronos_sidebar", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 windowPos = ImGui::GetWindowPos();
+    drawList->AddLine(ImVec2(windowPos.x + kSidebarWidth - 1.0f, windowPos.y),
+                      ImVec2(windowPos.x + kSidebarWidth - 1.0f, windowPos.y + viewport->WorkSize.y),
+                      ImGui::GetColorU32(paletteColor(kBorder)));
 
-    if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold);
-    ImGui::SetWindowFontScale(1.25f);
-    ImGui::TextColored(paletteColor(kTextBright), "KRONOS");
-    ImGui::SetWindowFontScale(1.0f);
-    if (core::kronosBoldFont()) ImGui::PopFont();
-    ImGui::Dummy(ImVec2(0.0f, 12.0f));
+    {
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 markMin(origin.x + 4.0f, origin.y);
+        const ImVec2 markMax(markMin.x + 30.0f, markMin.y + 30.0f);
+        ui::softShadow(drawList, markMin, markMax, 8.0f, 8.0f, ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], 0.35f));
+        drawList->AddRectFilled(markMin, markMax, ImGui::GetColorU32(paletteColor(kSkyBlue)), 8.0f);
+        drawList->AddRectFilled(markMin, ImVec2(markMax.x, (markMin.y + markMax.y) * 0.5f), IM_COL32(255, 255, 255, 30), 8.0f,
+                                ImDrawFlags_RoundCornersTop);
+        const ImVec2 markCenter((markMin.x + markMax.x) * 0.5f, (markMin.y + markMax.y) * 0.5f);
+        const ImU32 white = IM_COL32(255, 255, 255, 240);
+        drawList->AddTriangleFilled(ImVec2(markCenter.x - 7.0f, markCenter.y - 8.0f), ImVec2(markCenter.x + 7.0f, markCenter.y - 8.0f),
+                                    ImVec2(markCenter.x, markCenter.y), white);
+        drawList->AddTriangle(ImVec2(markCenter.x, markCenter.y), ImVec2(markCenter.x - 7.0f, markCenter.y + 8.0f),
+                              ImVec2(markCenter.x + 7.0f, markCenter.y + 8.0f), white, 1.6f);
+        ImGui::SetCursorScreenPos(ImVec2(markMax.x + 10.0f, origin.y + 3.0f));
+        if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, 19.0f);
+        ImGui::TextColored(paletteColor(kTextBright), "Kronos");
+        if (core::kronosBoldFont()) ImGui::PopFont();
+        ImGui::SetCursorScreenPos(ImVec2(origin.x, markMax.y + 22.0f));
+    }
 
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##sidebar_search", "Search...", searchBuffer_, sizeof(searchBuffer_));
-    ImGui::Dummy(ImVec2(0.0f, 14.0f));
+    ui::sectionHeader("Menu");
 
-    // Each entry maps to a real ShellState the shell already knows how to
-    // draw -- the sidebar is navigation, not a second state machine.
     struct NavEntry {
         const char* label;
         const char* subtitle;
         ShellState target;
+        ui::Icon icon;
     };
     static const NavEntry kNav[] = {
-        {"Home", nullptr, ShellState::Home},
-        {"Discover", nullptr, ShellState::GameCatalogue},
-        {"Avatar", nullptr, ShellState::AvatarShop},
-        {"Directory", "Accounts & presence", ShellState::Friends},
-        {"Create", "Studio & Local Dev Games", ShellState::Home}, // Create is a mode of the catalogue, see below
-        {"Settings", nullptr, ShellState::Settings},
+        {"Home", nullptr, ShellState::Home, ui::Icon::Home},
+        {"Discover", nullptr, ShellState::GameCatalogue, ui::Icon::Discover},
+        {"Avatar", nullptr, ShellState::AvatarShop, ui::Icon::Avatar},
+        {"Directory", "Accounts & presence", ShellState::Friends, ui::Icon::People},
+        {"Create", "Studio & local games", ShellState::Home, ui::Icon::Create}, // a mode of the catalogue
+        {"Settings", nullptr, ShellState::Settings, ui::Icon::Settings},
     };
 
     for (const NavEntry& entry : kNav) {
@@ -3315,16 +3438,7 @@ void RuntimeShell::drawSidebar() {
         bool selected = isCreate ? (state_ == ShellState::GameCatalogue && catalogueTab_ == CatalogueTab::Create)
                                   : (state_ == entry.target &&
                                      !(entry.target == ShellState::GameCatalogue && catalogueTab_ == CatalogueTab::Create));
-
-        // Sky blue marks where you are; everything else stays flat slate.
-        ImGui::PushStyleColor(ImGuiCol_Button, selected ? paletteColor(kSkyBlue) : ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                               selected ? paletteColor(kSkyBlue) : ImVec4(1.0f, 1.0f, 1.0f, 0.06f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, paletteColor(kSkyBlue));
-        ImGui::PushStyleColor(ImGuiCol_Text, selected ? ImVec4(0.06f, 0.09f, 0.11f, 1.0f) : paletteColor(kTextMuted));
-
-        float height = entry.subtitle != nullptr ? 42.0f : 34.0f;
-        if (ImGui::Button(entry.label, ImVec2(-1.0f, height))) {
+        if (ui::navItem(entry.label, selected, entry.subtitle, entry.icon)) {
             if (isCreate) {
                 catalogueTab_ = CatalogueTab::Create;
                 state_ = ShellState::GameCatalogue;
@@ -3335,8 +3449,6 @@ void RuntimeShell::drawSidebar() {
                 openGameCatalogue();
             } else {
                 state_ = entry.target;
-                // Route through the same real open* helpers the old menu
-                // used, so each destination still loads what it needs.
                 if (entry.target == ShellState::AvatarShop) openAvatarShop();
                 else if (entry.target == ShellState::Settings) openSettings();
                 else if (entry.target == ShellState::Friends) {
@@ -3345,21 +3457,30 @@ void RuntimeShell::drawSidebar() {
                 }
             }
         }
-        ImGui::PopStyleColor(4);
-
-        if (entry.subtitle != nullptr) {
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 12.0f);
-            ImGui::TextColored(paletteColor(kTextMuted), "   %s", entry.subtitle);
-        }
-        ImGui::Dummy(ImVec2(0.0f, 4.0f));
     }
 
-    // Version, pinned to the bottom.
-    ImGui::SetCursorPosY(viewport->WorkSize.y - 32.0f);
-    ImGui::TextColored(paletteColor(kTextMuted), "Kronos Client v%s", core::kKronosVersion);
+    {
+        const bool online = backendReachability_ == BackendReachability::Reachable;
+        const bool offline = backendReachability_ == BackendReachability::Unreachable;
+        const ImVec4 statusColor = online ? paletteColor(kGreen) : offline ? paletteColor(kDanger) : paletteColor(kWarning);
+        const float footerY = windowPos.y + viewport->WorkSize.y - 50.0f;
+        drawList->AddLine(ImVec2(windowPos.x + 12.0f, footerY - 12.0f), ImVec2(windowPos.x + kSidebarWidth - 12.0f, footerY - 12.0f),
+                          ImGui::GetColorU32(paletteColor(kBorder)));
+        const ImVec2 dot(windowPos.x + 20.0f, footerY + 8.0f);
+        const float pulse = online ? 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 2.4f) : 0.0f;
+        drawList->AddCircleFilled(dot, 4.0f + 3.0f * pulse, ImGui::GetColorU32(ImVec4(statusColor.x, statusColor.y, statusColor.z, 0.25f * (1.0f - pulse))));
+        drawList->AddCircleFilled(dot, 4.0f, ImGui::GetColorU32(statusColor));
+        drawList->AddText(ImVec2(dot.x + 12.0f, footerY), ImGui::GetColorU32(paletteColor(kTextBright)),
+                          online ? "Online" : offline ? "Offline" : "Connecting...");
+        const std::string version = std::string("v") + core::kKronosVersion;
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.85f);
+        drawList->AddText(ImVec2(dot.x + 12.0f, footerY + ImGui::GetTextLineHeight() + 6.0f),
+                          ImGui::GetColorU32(paletteColor(kTextFaint)), version.c_str());
+        ImGui::PopFont();
+    }
 
     ImGui::End();
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(2);
     ImGui::PopStyleColor();
 }
 
@@ -3370,56 +3491,77 @@ void RuntimeShell::drawTopBar() {
 
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y));
     ImGui::SetNextWindowSize(ImVec2(contentWidth, kTopBarHeight));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kCharcoal));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 0.0f));
     ImGui::Begin("##kronos_topbar", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 windowPos = ImGui::GetWindowPos();
+    drawList->AddLine(ImVec2(windowPos.x, windowPos.y + kTopBarHeight - 1.0f),
+                      ImVec2(windowPos.x + contentWidth, windowPos.y + kTopBarHeight - 1.0f), ImGui::GetColorU32(paletteColor(kBorder)));
 
-    ImGui::SetNextItemWidth(contentWidth * 0.42f);
-    ImGui::InputTextWithHint("##topbar_search", "Search...", searchBuffer_, sizeof(searchBuffer_));
+    const float controlHeight = 34.0f;
+    const float rowY = (kTopBarHeight - controlHeight) * 0.5f;
+    ImGui::SetCursorPos(ImVec2(24.0f, rowY));
+    {
+        const float searchWidth = std::min(contentWidth * 0.45f, 460.0f);
+        const ImVec2 searchMin = ImGui::GetCursorScreenPos();
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(36.0f, (controlHeight - ImGui::GetTextLineHeight()) * 0.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, controlHeight * 0.5f);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, paletteColor(kSlate));
+        ImGui::SetNextItemWidth(searchWidth);
+        ImGui::InputTextWithHint("##topbar_search", "Search games, people and items", searchBuffer_, sizeof(searchBuffer_));
+        const bool focused = ImGui::IsItemActive();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(2);
+        const float focusT = ui::animate(ImGui::GetID("##search_focus"), focused ? 1.0f : 0.0f);
+        drawList->AddRect(searchMin, ImVec2(searchMin.x + searchWidth, searchMin.y + controlHeight),
+                          ui::mix(paletteColor(kBorder), paletteColor(kSkyBlue), focusT), controlHeight * 0.5f, 0, 1.0f + focusT * 0.5f);
+        ui::drawIcon(drawList, ui::Icon::Search, ImVec2(searchMin.x + 19.0f, searchMin.y + controlHeight * 0.5f), 15.0f,
+                     ui::mix(paletteColor(kTextMuted), paletteColor(kSkyBlue), focusT));
+    }
 
-    // Right cluster: profile card, notification bell, sign-in button.
     std::optional<core::KronosUser> user = kronosApi_.currentUser();
     const char* profileLabel = user.has_value()
                                     ? (user->displayName.empty() ? user->email.c_str() : user->displayName.c_str())
                                     : "Player";
+    const char* authLabel = user.has_value() ? "Sign Out" : (backendAuthInProgress_.load() ? "Waiting..." : "Sign In");
+    const float authWidth = ImGui::CalcTextSize(authLabel).x + 40.0f;
+    const float profileWidth = 34.0f + 8.0f + ImGui::CalcTextSize(profileLabel).x;
+    const float clusterWidth = controlHeight + 14.0f + profileWidth + 18.0f + authWidth;
 
-    float signInWidth = user.has_value() ? 92.0f : 132.0f;
-    float rightClusterWidth = 150.0f + 34.0f + signInWidth + 24.0f;
-    ImGui::SameLine(contentWidth - rightClusterWidth);
-
-    // Profile card -- the smooth fixed-shape avatar head, drawn
-    // procedurally so it matches the character silhouette without needing
-    // a separate portrait asset per user.
-    ImVec2 headOrigin = ImGui::GetCursorScreenPos();
-    drawAvatarHeadGlyph(ImGui::GetWindowDrawList(), ImVec2(headOrigin.x + 15.0f, headOrigin.y + 16.0f), 13.0f);
-    ImGui::Dummy(ImVec2(34.0f, 32.0f));
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(paletteColor(kTextBright), "%s", profileLabel);
-
-    ImGui::SameLine();
-    if (ImGui::Button(notification::unreadCount(localProfile_) > 0 ? "(*)" : "( )", ImVec2(30.0f, 30.0f))) {
+    ImGui::SetCursorPos(ImVec2(contentWidth - 24.0f - clusterWidth, rowY));
+    if (ui::iconButton("##notifications", ui::Icon::Bell, controlHeight, notification::unreadCount(localProfile_) > 0)) {
         state_ = ShellState::Notifications;
     }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Notifications");
 
-    ImGui::SameLine();
+    ImGui::SameLine(0.0f, 14.0f);
+    {
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 headCenter(origin.x + 17.0f, origin.y + controlHeight * 0.5f);
+        drawList->AddCircleFilled(headCenter, 17.0f, ImGui::GetColorU32(paletteColor(kRaised)));
+        drawAvatarHeadGlyph(drawList, headCenter, 10.5f);
+        drawList->AddCircle(headCenter, 17.0f, ImGui::GetColorU32(paletteColor(kBorder)), 0, 1.0f);
+        const float textY = origin.y + (controlHeight - ImGui::GetTextLineHeight()) * 0.5f;
+        if (ImFont* medium = core::kronosMediumFont()) ImGui::PushFont(medium, 0.0f);
+        drawList->AddText(ImVec2(origin.x + 42.0f, textY), ImGui::GetColorU32(paletteColor(kTextBright)), profileLabel);
+        if (core::kronosMediumFont()) ImGui::PopFont();
+        ImGui::Dummy(ImVec2(profileWidth, controlHeight));
+    }
+
+    ImGui::SameLine(0.0f, 18.0f);
     if (user.has_value()) {
-        if (ImGui::Button("Sign Out", ImVec2(signInWidth, 30.0f))) backendSignOut();
+        if (ui::button(authLabel, ui::ButtonKind::Secondary, ImVec2(authWidth, controlHeight))) backendSignOut();
     } else {
-        // Spec: the launcher never shows a username or password field.
-        // This button's ONLY job is to hand off to the system browser.
-        pushPrimaryActionButtonColors();
-        if (ImGui::Button(backendAuthInProgress_.load() ? "Waiting..." : "Sign In / Sign Up",
-                           ImVec2(signInWidth, 30.0f))) {
-            if (!backendAuthInProgress_.load()) startBrowserSignIn();
+        // The launcher never shows a username or password field; this only
+        // hands off to the system browser.
+        if (ui::button(authLabel, ui::ButtonKind::Success, ImVec2(authWidth, controlHeight)) && !backendAuthInProgress_.load()) {
+            startBrowserSignIn();
         }
-        popPrimaryActionButtonColors();
     }
 
     ImGui::End();
     ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
 }
 
 void RuntimeShell::drawBrandPanel() {
@@ -3428,40 +3570,46 @@ void RuntimeShell::drawBrandPanel() {
 
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - kBrandPanelWidth, viewport->WorkPos.y));
     ImGui::SetNextWindowSize(ImVec2(kBrandPanelWidth, viewport->WorkSize.y));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kCharcoal));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kSurface));
     ImGui::Begin("##kronos_brand", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    ImVec2 center(ImGui::GetWindowPos().x + kBrandPanelWidth * 0.5f,
-                   ImGui::GetWindowPos().y + viewport->WorkSize.y * 0.38f);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 windowPos = ImGui::GetWindowPos();
+    drawList->AddLine(windowPos, ImVec2(windowPos.x, windowPos.y + viewport->WorkSize.y), ImGui::GetColorU32(paletteColor(kBorder)));
+    const ImVec2 center(windowPos.x + kBrandPanelWidth * 0.5f, windowPos.y + viewport->WorkSize.y * 0.36f);
+    const float time = static_cast<float>(ImGui::GetTime());
 
-    // Concentric sky-blue rings, then the existing procedural hourglass
-    // in the middle -- reusing the real one the loading screen already
-    // draws rather than introducing a separate art asset.
-    ImU32 ringColor = ImGui::GetColorU32(ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], 0.55f));
-    drawList->AddCircle(center, 118.0f, ringColor, 96, 2.5f);
-    drawList->AddCircle(center, 104.0f, ImGui::GetColorU32(ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], 0.25f)), 96,
-                         1.5f);
-    drawAnimatedHourglass(drawList, center, 44.0f, 62.0f, static_cast<float>(ImGui::GetTime()));
+    // Soft accent halo behind the mark.
+    for (int i = 16; i >= 1; --i) {
+        const float r = 40.0f + i * 5.5f;
+        drawList->AddCircleFilled(center, r, ImGui::GetColorU32(ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], 0.009f)), 128);
+    }
+    drawList->AddCircle(center, 112.0f, ImGui::GetColorU32(ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], 0.20f)), 128, 1.0f);
+    const float sweep = std::fmod(time * 0.9f, 6.2831853f);
+    drawList->PathArcTo(center, 112.0f, sweep, sweep + 1.8849556f, 64);
+    drawList->PathStroke(ImGui::GetColorU32(ImVec4(kSkyBlue[0], kSkyBlue[1], kSkyBlue[2], 0.85f)), ImDrawFlags_None, 2.0f);
+    drawList->AddCircle(center, 96.0f, ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.05f)), 128, 1.0f);
+    drawAnimatedHourglass(drawList, center, 40.0f, 56.0f, time);
 
-    ImGui::SetCursorPosY(viewport->WorkSize.y * 0.38f + 150.0f);
+    ImGui::SetCursorPosY(viewport->WorkSize.y * 0.36f + 140.0f);
     auto centeredText = [&](const ImVec4& color, const char* text) {
         float width = ImGui::CalcTextSize(text).x;
         ImGui::SetCursorPosX((kBrandPanelWidth - width) * 0.5f);
         ImGui::TextColored(color, "%s", text);
     };
-    centeredText(paletteColor(kTextBright), "KRONOS");
-    std::string versionLine = std::string("Kronos Client v") + core::kKronosVersion;
+    if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, 22.0f);
+    centeredText(paletteColor(kTextBright), "Kronos");
+    if (core::kronosBoldFont()) ImGui::PopFont();
+    std::string versionLine = std::string("Client v") + core::kKronosVersion;
     centeredText(paletteColor(kTextMuted), versionLine.c_str());
-    // Real status, not decorative text: this reflects whether the last
-    // real backend call actually reached the service.
-    centeredText(paletteColor(kTextMuted), backendStatusLine().c_str());
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    // Reflects whether the last real backend call reached the service.
+    centeredText(paletteColor(kTextFaint), backendStatusLine().c_str());
 
     ImGui::End();
     ImGui::PopStyleColor();
 }
-
 
 void RuntimeShell::startBackendSessionRestore() {
     if (backendAuthInProgress_.load()) return;
@@ -3908,7 +4056,7 @@ void RuntimeShell::drawBackendAccountSection() {
 }
 
 void RuntimeShell::drawOnlineCatalogueSection() {
-    ImGui::SeparatorText("Kronos Online");
+    ui::sectionHeader("Kronos Online");
 
     // Browsing is public: the catalogue endpoint takes optional auth, so
     // a signed-out visitor still sees what is published. Only Play needs
@@ -3936,7 +4084,7 @@ void RuntimeShell::drawOnlineCatalogueSection() {
     // no placeholder entry is ever synthesized here.
     for (const core::CatalogueGame& game : onlineGames_) {
         ImGui::PushID(game.id.c_str());
-        ImGui::BeginChild("##online_card", ImVec2(0.0f, 76.0f), true);
+        ImGui::BeginChild("##online_card", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
 
         ImGui::TextUnformatted(game.title.c_str());
         ImGui::TextDisabled("by %s", game.creatorName.c_str());
@@ -4162,8 +4310,7 @@ void RuntimeShell::pollGoogleSignInResult() {
         // CredentialStore.hpp's own "real, honest best-effort" scope
         // note on why this can fail (locked keyring, no Secret Service
         // daemon running, etc.).
-        std::fprintf(stderr, "RuntimeShell: could not securely store the real Google OAuth token(s) -- you may need "
-                              "to sign in again next launch.\n");
+        std::fprintf(stderr, "RuntimeShell: could not securely store the Google OAuth token -- you may need to sign in again next launch.\n");
     }
     (void)localProfile_.saveToFile(kLocalProfilePath);
 }
@@ -4222,7 +4369,7 @@ void RuntimeShell::drawFriendsPanel() {
     ImGui::TextDisabled("Your Friend Id: %s (share this so someone else can add you)", localProfile_.creatorId.c_str());
     ImGui::Separator();
 
-    ImGui::SeparatorText("Add a Friend");
+    ui::sectionHeader("Add a Friend");
     ImGui::SetNextItemWidth(220.0f);
     ImGui::InputTextWithHint("##add_friend_id", "Friend Id (e.g. creator_1234567890)", addFriendIdBuffer_,
                               sizeof(addFriendIdBuffer_));
@@ -4259,7 +4406,7 @@ void RuntimeShell::drawFriendsPanel() {
     if (!friendsStatusMessage_.empty()) ImGui::TextDisabled("%s", friendsStatusMessage_.c_str());
 
     if (!localProfile_.pendingRequests.empty()) {
-        ImGui::SeparatorText("Pending Requests (sent, awaiting response)");
+        ui::sectionHeader("Pending Requests (sent, awaiting response)");
         // Kronos ("Social Layer" -- honest local-simulation scope): there
         // is no real transport to deliver this request to another
         // machine (see social::sendFriendRequest()'s own header
@@ -4290,9 +4437,9 @@ void RuntimeShell::drawFriendsPanel() {
         }
     }
 
-    ImGui::SeparatorText("Friends");
+    ui::sectionHeader("Friends");
     if (localProfile_.friends.empty()) {
-        ImGui::TextDisabled("No friends yet -- send a request above using someone's real Friend Id.");
+        ImGui::TextDisabled("No friends yet. Send a request above using a Friend ID.");
     }
     std::string removeId;
     for (const auto& friendEntry : localProfile_.friends) {
@@ -4350,7 +4497,7 @@ void RuntimeShell::drawFriendsPanel() {
     // one currently-selected friend -- see core::FriendMessage's own
     // comment for exactly what "local simulation" honestly means here.
     if (!openConversationFriendId_.empty()) {
-        ImGui::SeparatorText(("Conversation with " + openConversationFriendId_).c_str());
+        ui::sectionHeader(("Conversation with " + openConversationFriendId_).c_str());
         ImGui::BeginChild("friend_conversation", ImVec2(0.0f, 200.0f), true);
         for (const auto& message : social::messagesWithFriend(localProfile_, openConversationFriendId_)) {
             ImGui::TextWrapped("%s: %s", message.fromMe ? "You" : "Them", message.text.c_str());
@@ -4703,7 +4850,7 @@ void RuntimeShell::drawPlayerListOverlay() {
                 }
                 popPrimaryActionButtonColors();
                 ImGui::EndDisabled();
-                if (!session.isClient()) ImGui::TextDisabled("Join a real multiplayer session to submit a report.");
+                if (!session.isClient()) ImGui::TextDisabled("Join a multiplayer session to submit a report.");
                 if (!reportStatus_.empty()) ImGui::TextDisabled("%s", reportStatus_.c_str());
                 ImGui::EndTabItem();
             }
@@ -4960,7 +5107,7 @@ void RuntimeShell::drawTrailerCapturePanel() {
             }
         }
 
-        ImGui::SeparatorText("Scene Bookmarks");
+        ui::sectionHeader("Scene Bookmarks");
         ImGui::SetNextItemWidth(150.0f);
         ImGui::InputTextWithHint("##bookmark_name", "Bookmark name", trailerBookmarkNameBuffer_,
                                   sizeof(trailerBookmarkNameBuffer_));

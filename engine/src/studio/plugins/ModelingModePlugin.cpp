@@ -52,9 +52,7 @@ void ModelingModePlugin::applyCsg(core::EditableMeshComponent& component, core::
     core::EditableMesh box = core::EditableMesh::createBox(csgBoxHalfExtents_, csgBoxOffset_);
     core::EditableMesh result = core::booleanOp(component.mesh, box, op);
     if (result.faceCount() == 0) {
-        csgStatus_ = "CSG produced an empty result -- left the current mesh untouched. Try a smaller/overlapping "
-                      "box offset, or see CsgMesh.hpp's own scope comment (exact coincident planes are a known "
-                      "edge case).";
+        csgStatus_ = "CSG produced an empty result, so the mesh was left unchanged. Try a smaller or overlapping box offset (exactly coincident planes are a known edge case).";
         return;
     }
     component.mesh = std::move(result);
@@ -215,14 +213,12 @@ void ModelingModePlugin::applySculptStroke(core::EditableMeshComponent& componen
 
     for (size_t i = 0; i < result.size(); ++i) mesh.setVertexPosition(static_cast<uint32_t>(i), result[i]);
     reuploadMesh(component, renderable);
-    sculptStatus_ = "Applied a real GPU sculpt stroke to " + std::to_string(result.size()) + " vertices.";
+    sculptStatus_ = "Applied a GPU sculpt stroke to " + std::to_string(result.size()) + " vertices.";
 }
 
 void ModelingModePlugin::drawSculptSection(core::EditableMeshComponent& component, core::Renderable& renderable) {
     helpMarker(
-        "Real GPU compute sculpting (core::ComputePbrPainter::sculpt()) centered on the current sub-object "
-        "selection above -- pick a vertex/edge/face there first, then Apply Sculpt here. This is a real, one-shot "
-        "GPU dispatch per click, not a live click-drag gesture in the Viewport.");
+        "GPU compute sculpting centered on the current vertex/edge/face selection. Pick one above, then click Apply Sculpt; each click is one stroke.");
 
     static const char* kModeNames[] = {"Grab", "Clay Strips", "Pinch", "Smooth"};
     int modeIndex = static_cast<int>(sculptBrushMode_);
@@ -240,12 +236,12 @@ void ModelingModePlugin::drawSculptSection(core::EditableMeshComponent& componen
         ImGui::SetNextItemWidth(220.0f);
         ImGui::DragFloat3("Drag Delta##sculpt", &sculptDragDelta_.x, 0.01f);
     } else if (sculptBrushMode_ == core::SculptBrushMode::ClayStrips) {
-        ImGui::TextDisabled("Offsets along the selected face's own real normal (Face mode) or +Y otherwise.");
+        ImGui::TextDisabled("Offsets along the selected face normal (Face mode) or +Y otherwise.");
     } else if (sculptBrushMode_ == core::SculptBrushMode::Smooth) {
         ImGui::SetNextItemWidth(120.0f);
         ImGui::DragFloat("Neighbor Radius##sculpt", &sculptNeighborRadius_, 0.01f, 0.01f, 10.0f);
         ImGui::SameLine();
-        helpMarker("Real spatial neighbor search (position-based), not full mesh-topology adjacency.");
+        helpMarker("Position-based neighbor search, not full topology adjacency.");
     }
 
     if (ImGui::Button("Apply Sculpt")) applySculptStroke(component, renderable);
@@ -311,17 +307,14 @@ void ModelingModePlugin::drawModifierStackSection(core::EditableMeshComponent& c
                 ImGui::SetNextItemWidth(120.0f);
                 changed |= ImGui::DragFloat("Thickness##solidify", &mod.solidify.thickness, 0.01f, -2.0f, 2.0f);
                 ImGui::SameLine();
-                helpMarker("Walls only real open boundary edges (shared by exactly 1 face, by real vertex index) -- "
-                           "see SolidifyModifierParams's own comment on why an unwelded EditableMesh::createBox() "
-                           "gets walled on every outer edge, same as bevelEdge()'s own real per-index scope.");
+                helpMarker("Adds walls along open boundary edges (edges used by exactly one face). Unwelded meshes get walls on every outer edge.");
                 break;
             }
             case core::ModifierType::Subdivision: {
                 ImGui::SetNextItemWidth(80.0f);
                 changed |= ImGui::DragInt("Levels##subdivision", &mod.subdivision.levels, 1.0f, 1, 4);
                 ImGui::SameLine();
-                helpMarker("Real flat (linear) 1-to-4 refinement per level -- not a true Catmull-Clark limit "
-                           "surface (no smoothing pass over vertex positions).");
+                helpMarker("Linear 1-to-4 refinement per level (no Catmull-Clark smoothing).");
                 break;
             }
             case core::ModifierType::Boolean: {
@@ -390,14 +383,12 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
         auto* meshSource = ecs.tryGetComponent<core::MeshSource>(selected);
         if (renderable == nullptr || meshSource == nullptr || meshSource->kind != core::MeshSourceKind::Box) {
             ImGui::TextWrapped(
-                "This entity isn't editable yet -- Modeling Mode can only start from a Box-sourced mesh "
-                "(a Block Builder Cube, or a box prop), the one real shape it knows how to seed identically. "
-                "Sphere/Cylinder/Wedge/imported meshes aren't supported yet.");
+                "This entity is not editable yet. Modeling Mode starts from box meshes (a Block Builder cube or a box prop); spheres, cylinders, wedges and imported meshes are not supported yet.");
             drawPluginFooter();
             ImGui::End();
             return;
         }
-        ImGui::TextWrapped("This entity's current box can become a real, editable mesh.");
+        ImGui::TextWrapped("Convert this box into an editable mesh.");
         if (ImGui::Button("Start Editing", ImVec2(160.0f, 0.0f))) {
             auto& component = ecs.addComponent<core::EditableMeshComponent>(selected);
             component.mesh = core::EditableMesh::createBox(meshSource->params);
@@ -440,9 +431,7 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
         subObjectMode_ = core::EditableMesh::SelectionMode::Face;
     }
     ImGui::SameLine();
-    helpMarker("Ctrl+Click a real vertex/edge/face on this entity in the Viewport to select it there instead of "
-               "from these lists -- both write the same real selectedVertex/selectedEdge/selectedFace this panel "
-               "already uses, and a translate gizmo appears on the current selection either way.");
+    helpMarker("Ctrl+Click a vertex, edge or face on this entity in the Viewport to select it. A translate gizmo appears on the selection.");
     ImGui::Spacing();
 
     ImGui::SeparatorText("Vertices");
@@ -498,7 +487,7 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
         }
     }
     ImGui::SameLine();
-    helpMarker("Only works on a real interior edge (shared by exactly 2 faces) -- a real, honest no-op otherwise.");
+    helpMarker("Only works on interior edges (shared by exactly two faces).");
 
     ImGui::Spacing();
     ImGui::SeparatorText("Whole Mesh");
@@ -518,8 +507,7 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
     ImGui::SameLine();
     if (ImGui::Button("Intersect##csg")) applyCsg(*editable, *renderable, core::CsgOperation::Intersect);
     ImGui::SameLine();
-    helpMarker("Combines the current mesh with a real box at the given offset/half-extents. Only correct for "
-               "closed, manifold meshes with consistent winding -- see core::CsgMesh.hpp's own scope comment.");
+    helpMarker("Combines the current mesh with a box at the given offset and half-extents. Requires closed, manifold meshes with consistent winding.");
     if (!csgStatus_.empty()) ImGui::TextWrapped("%s", csgStatus_.c_str());
 
     ImGui::Spacing();
@@ -562,8 +550,7 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
         reuploadMesh(*editable, *renderable);
     }
     ImGui::SameLine();
-    helpMarker("Auto Unwrap is a real, simplified per-triangle unwrap (shape-preserving per face, more seams than "
-               "a full conformal unwrapper) -- see UvTools.hpp's own comment.");
+    helpMarker("Auto Unwrap is a simplified per-triangle unwrap: shape-preserving per face, with more seams than a conformal unwrapper.");
 
     ImGui::Spacing();
     ImGui::SeparatorText("Export / Import");
@@ -598,7 +585,7 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
     }
     if (!exportImportStatus_.empty()) ImGui::TextWrapped("%s", exportImportStatus_.c_str());
 
-    drawPluginFooter("Every edit re-uploads to the GPU immediately -- what you see is the real, current mesh.");
+    drawPluginFooter("Every edit uploads to the GPU immediately.");
     ImGui::End();
 }
 

@@ -610,8 +610,6 @@ EditableMesh sliceByPlane(const EditableMesh& mesh, glm::vec3 planePoint, glm::v
         }
     }
 
-    fprintf(stderr, "[SLICE-DEBUG] boundaryEdges.size()=%zu\n", boundaryEdges.size());
-    for (auto& e : boundaryEdges) fprintf(stderr, "[SLICE-DEBUG]   edge %u -> %u\n", e.first, e.second);
     if (fillCap && !boundaryEdges.empty()) {
         std::unordered_map<uint32_t, uint32_t> nextInLoop;
         for (const auto& e : boundaryEdges) nextInLoop[e.first] = e.second;
@@ -631,9 +629,6 @@ EditableMesh sliceByPlane(const EditableMesh& mesh, glm::vec3 planePoint, glm::v
             }
             // A real, honest no-op for a chain that doesn't close back on
             // its own start -- see this function's own header comment.
-            fprintf(stderr, "[SLICE-DEBUG] loop size=%zu closed=%d: ", loop.size(), curr == start);
-            for (uint32_t idx : loop) fprintf(stderr, "%u ", idx);
-            fprintf(stderr, "\n");
             if (loop.size() < 3 || curr != start) continue;
 
             glm::vec3 centroid(0.0f);
@@ -646,10 +641,20 @@ EditableMesh sliceByPlane(const EditableMesh& mesh, glm::vec3 planePoint, glm::v
             cv.uv = glm::vec2(0.5f, 0.5f);
             outVertices.push_back(cv);
 
+            glm::vec3 loopNormal(0.0f);
+            for (size_t i = 0; i < loop.size(); ++i) {
+                loopNormal += glm::cross(outVertices[loop[i]].position - centroid,
+                                         outVertices[loop[(i + 1) % loop.size()]].position - centroid);
+            }
+            const bool loopFacesOut = glm::dot(loopNormal, effectiveNormal) < 0.0f;
             for (size_t i = 0; i < loop.size(); ++i) {
                 uint32_t v0 = loop[i];
                 uint32_t v1 = loop[(i + 1) % loop.size()];
-                outIndices.insert(outIndices.end(), {centroidIdx, v1, v0});
+                if (loopFacesOut) {
+                    outIndices.insert(outIndices.end(), {centroidIdx, v0, v1});
+                } else {
+                    outIndices.insert(outIndices.end(), {centroidIdx, v1, v0});
+                }
             }
         }
     }

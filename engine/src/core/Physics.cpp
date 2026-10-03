@@ -2,6 +2,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <atomic>
 #include <thread>
 
 #include <Jolt/Jolt.h>
@@ -29,6 +30,15 @@
 #include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Body/BodyManager.h>
+#include <Jolt/Physics/Collision/GroupFilterTable.h>
+#include <Jolt/Physics/Constraints/HingeConstraint.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
+#include <Jolt/Physics/Ragdoll/Ragdoll.h>
+#include <Jolt/Skeleton/Skeleton.h>
+
+#include <unordered_map>
+
+#include <glm/gtc/quaternion.hpp>
 
 namespace engine::core {
 
@@ -141,8 +151,15 @@ JPH::Quat toJolt(glm::quat q) { return JPH::Quat(q.x, q.y, q.z, q.w); }
 // defensive boilerplate.
 class ContactListenerImpl final : public JPH::ContactListener {
 public:
-    ContactListenerImpl(std::mutex& mutex, std::vector<engine::core::Physics::CollisionEvent>& events)
-        : mutex_(mutex), events_(events) {}
+    ContactListenerImpl(std::mutex& mutex, std::vector<engine::core::Physics::CollisionEvent>& events,
+                        std::mutex& impactMutex, std::vector<engine::core::Physics::ImpactEvent>& impactEvents,
+                        const std::atomic<bool>& impactEnabled, const std::atomic<float>& minImpactSpeed)
+        : mutex_(mutex),
+          events_(events),
+          impactMutex_(impactMutex),
+          impactEvents_(impactEvents),
+          impactEnabled_(impactEnabled),
+          minImpactSpeed_(minImpactSpeed) {}
 
     void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold,
                          JPH::ContactSettings&) override {
@@ -163,13 +180,37 @@ public:
         event.normal = {manifold.mWorldSpaceNormal.GetX(), manifold.mWorldSpaceNormal.GetY(),
                          manifold.mWorldSpaceNormal.GetZ()};
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        events_.push_back(event);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            events_.push_back(event);
+        }
+
+        if (!impactEnabled_.load(std::memory_order_relaxed) || body1.IsSensor() || body2.IsSensor()) return;
+        JPH::RVec3 contactPoint = manifold.mRelativeContactPointsOn1.empty() ? manifold.mBaseOffset
+                                                                              : manifold.GetWorldSpaceContactPointOn1(0);
+        // mWorldSpaceNormal points from body1 towards body2, so a positive
+        // value means the bodies are closing.
+        float closingSpeed =
+            (body1.GetPointVelocity(contactPoint) - body2.GetPointVelocity(contactPoint)).Dot(manifold.mWorldSpaceNormal);
+        if (closingSpeed < minImpactSpeed_.load(std::memory_order_relaxed)) return;
+
+        engine::core::Physics::ImpactEvent impact;
+        impact.bodyA = body1.GetID().GetIndexAndSequenceNumber();
+        impact.bodyB = body2.GetID().GetIndexAndSequenceNumber();
+        impact.point = event.point;
+        impact.normal = event.normal;
+        impact.impactSpeed = closingSpeed;
+        std::lock_guard<std::mutex> lock(impactMutex_);
+        impactEvents_.push_back(impact);
     }
 
 private:
     std::mutex& mutex_;
     std::vector<engine::core::Physics::CollisionEvent>& events_;
+    std::mutex& impactMutex_;
+    std::vector<engine::core::Physics::ImpactEvent>& impactEvents_;
+    const std::atomic<bool>& impactEnabled_;
+    const std::atomic<float>& minImpactSpeed_;
 };
 
 constexpr JPH::uint kMaxBodies = 65536;
@@ -192,6 +233,24 @@ float resolveMass(float explicitMass, float volume, const PhysicsMaterial& mater
 }
 
 } // namespace
+
+struct Physics::RagdollStore {
+    struct Entry {
+        JPH::Ref<JPH::RagdollSettings> settings;
+        JPH::Ref<JPH::Ragdoll> ragdoll;
+    };
+    std::unordered_map<RagdollHandle, Entry> entries;
+    RagdollHandle nextHandle = 1;
+
+    ~RagdollStore() {
+        for (auto& [handle, entry] : entries) entry.ragdoll->RemoveFromPhysicsSystem();
+    }
+
+    [[nodiscard]] JPH::Ragdoll* find(RagdollHandle handle) const {
+        auto it = entries.find(handle);
+        return it == entries.end() ? nullptr : it->second.ragdoll.GetPtr();
+    }
+};
 
 Physics::Physics() = default;
 Physics::~Physics() { shutdown(); }
@@ -218,8 +277,12 @@ bool Physics::initialize() {
         kMaxBodies, kNumBodyMutexes, kMaxBodyPairs, kMaxContactConstraints,
         *broadPhaseLayerInterface_, *objectVsBroadPhaseLayerFilter_, *objectLayerPairFilter_);
 
-    contactListener_ = std::make_unique<ContactListenerImpl>(collisionEventsMutex_, pendingCollisionEvents_);
+    contactListener_ = std::make_unique<ContactListenerImpl>(collisionEventsMutex_, pendingCollisionEvents_,
+                                                             impactEventsMutex_, pendingImpactEvents_,
+                                                             impactRecordingEnabled_, minImpactSpeed_);
     physicsSystem_->SetContactListener(contactListener_.get());
+
+    ragdolls_ = std::make_unique<RagdollStore>();
 
     initialized_ = true;
     std::fprintf(stdout, "Physics: Jolt initialized (%d worker threads)\n", workerThreads);
@@ -235,6 +298,8 @@ std::vector<Physics::CollisionEvent> Physics::drainCollisionEvents() {
 
 void Physics::shutdown() {
     if (!initialized_) return;
+
+    ragdolls_.reset(); // ragdoll destructors destroy their bodies through physicsSystem_
 
     contactListener_.reset(); // must outlive physicsSystem_'s use of it, so reset before it
     physicsSystem_.reset();
@@ -765,6 +830,243 @@ Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, floa
         result.normal = toGlm(body.GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, ray.GetPointOnRay(hit.mFraction)));
     }
     return result;
+}
+
+void Physics::setImpactRecording(bool enabled, float minImpactSpeed) {
+    minImpactSpeed_.store(std::max(0.0f, minImpactSpeed), std::memory_order_relaxed);
+    impactRecordingEnabled_.store(enabled, std::memory_order_relaxed);
+    if (!enabled) {
+        std::lock_guard<std::mutex> lock(impactEventsMutex_);
+        pendingImpactEvents_.clear();
+    }
+}
+
+std::vector<Physics::ImpactEvent> Physics::drainImpactEvents() {
+    std::lock_guard<std::mutex> lock(impactEventsMutex_);
+    std::vector<ImpactEvent> drained;
+    drained.swap(pendingImpactEvents_);
+    return drained;
+}
+
+namespace {
+
+JPH::Mat44 toJoltMat(const glm::mat4& m) {
+    glm::quat rotation = glm::normalize(glm::quat_cast(glm::mat3(m)));
+    return JPH::Mat44::sRotationTranslation(toJolt(rotation), JPH::Vec3(m[3].x, m[3].y, m[3].z));
+}
+
+glm::mat4 toGlmMat(JPH::RVec3 position, JPH::Quat rotation) {
+    glm::mat4 m = glm::mat4_cast(toGlm(rotation));
+    m[3] = glm::vec4(toGlm(position), 1.0f);
+    return m;
+}
+
+} // namespace
+
+Physics::RagdollHandle Physics::createRagdoll(const RagdollDesc& desc, const glm::mat4& modelToWorld,
+                                              const std::vector<glm::mat4>* initialPartWorld, glm::vec3 initialVelocity,
+                                              CollisionLayer layer) {
+    if (!initialized_) return kInvalidRagdoll;
+    std::string error;
+    if (!validateRagdollDesc(desc, error)) {
+        std::fprintf(stderr, "Physics: createRagdoll rejected an invalid desc: %s\n", error.c_str());
+        return kInvalidRagdoll;
+    }
+    if (initialPartWorld != nullptr && initialPartWorld->size() != desc.parts.size()) {
+        std::fprintf(stderr, "Physics: createRagdoll got %zu initial transforms for %zu parts.\n",
+                     initialPartWorld->size(), desc.parts.size());
+        return kInvalidRagdoll;
+    }
+
+    const glm::mat3 worldRotation(modelToWorld);
+    auto toWorldPoint = [&](glm::vec3 p) { return glm::vec3(modelToWorld * glm::vec4(p, 1.0f)); };
+    auto toWorldAxis = [&](glm::vec3 v) { return toJolt(glm::normalize(worldRotation * v)); };
+
+    JPH::Ref<JPH::Skeleton> skeleton = new JPH::Skeleton;
+    JPH::Ref<JPH::RagdollSettings> settings = new JPH::RagdollSettings;
+    settings->mSkeleton = skeleton;
+    settings->mParts.resize(desc.parts.size());
+    std::vector<JPH::Mat44> bindWorld(desc.parts.size());
+
+    for (size_t i = 0; i < desc.parts.size(); ++i) {
+        const RagdollPartDesc& part = desc.parts[i];
+        skeleton->AddJoint(part.name, part.parent);
+
+        float length = glm::length(part.to - part.from);
+        JPH::ShapeSettings::ShapeResult shape;
+        if (length < 1e-4f) {
+            shape = JPH::SphereShapeSettings(part.radius).Create();
+        } else {
+            // Slightly longer than the bone so neighbouring capsules overlap at
+            // the joint instead of leaving a visible gap.
+            float halfHeight = std::max(0.5f * length - 0.5f * part.radius, 0.01f);
+            shape = JPH::CapsuleShapeSettings(halfHeight, part.radius).Create();
+        }
+        if (shape.HasError()) {
+            std::fprintf(stderr, "Physics: createRagdoll failed to build part \"%s\": %s\n", part.name.c_str(),
+                         shape.GetError().c_str());
+            return kInvalidRagdoll;
+        }
+
+        glm::mat4 world = modelToWorld * ragdollPartBindMatrix(part);
+        bindWorld[i] = toJoltMat(world);
+
+        JPH::RagdollSettings::Part& body = settings->mParts[i];
+        body.SetShape(shape.Get());
+        body.mPosition = JPH::RVec3(world[3].x, world[3].y, world[3].z);
+        body.mRotation = bindWorld[i].GetQuaternion();
+        body.mMotionType = JPH::EMotionType::Dynamic;
+        body.mObjectLayer = toObjectLayer(layer);
+        body.mMotionQuality = JPH::EMotionQuality::LinearCast; // falls reach tens of m/s
+        body.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+        body.mMassPropertiesOverride.mMass = std::max(part.mass, 0.1f);
+        body.mFriction = 0.7f;
+        body.mRestitution = 0.15f;
+        body.mLinearDamping = 0.02f;
+        body.mAngularDamping = 0.3f;
+        body.mLinearVelocity = toJolt(initialVelocity);
+
+        if (part.parent < 0) continue;
+        JPH::RVec3 pivot(toWorldPoint(part.pivot).x, toWorldPoint(part.pivot).y, toWorldPoint(part.pivot).z);
+        if (part.jointType == RagdollJointType::Hinge) {
+            auto* hinge = new JPH::HingeConstraintSettings;
+            hinge->mSpace = JPH::EConstraintSpace::WorldSpace;
+            hinge->mPoint1 = hinge->mPoint2 = pivot;
+            hinge->mHingeAxis1 = hinge->mHingeAxis2 = toWorldAxis(part.axis);
+            hinge->mNormalAxis1 = hinge->mNormalAxis2 = toWorldAxis(part.normal);
+            hinge->mLimitsMin = std::min(part.hingeMin, 0.0f);
+            hinge->mLimitsMax = std::max(part.hingeMax, 0.0f);
+            hinge->mMaxFrictionTorque = part.frictionTorque;
+            body.mToParent = hinge;
+        } else {
+            auto* swingTwist = new JPH::SwingTwistConstraintSettings;
+            swingTwist->mSpace = JPH::EConstraintSpace::WorldSpace;
+            swingTwist->mPosition1 = swingTwist->mPosition2 = pivot;
+            swingTwist->mTwistAxis1 = swingTwist->mTwistAxis2 = toWorldAxis(part.axis);
+            swingTwist->mPlaneAxis1 = swingTwist->mPlaneAxis2 = toWorldAxis(part.normal);
+            swingTwist->mNormalHalfConeAngle = part.normalHalfCone;
+            swingTwist->mPlaneHalfConeAngle = part.planeHalfCone;
+            swingTwist->mTwistMinAngle = part.twistMin;
+            swingTwist->mTwistMaxAngle = part.twistMax;
+            swingTwist->mMaxFrictionTorque = part.frictionTorque;
+            body.mToParent = swingTwist;
+        }
+    }
+
+    skeleton->CalculateParentJointIndices();
+    if (!settings->Stabilize()) {
+        std::fprintf(stderr, "Physics: createRagdoll -- RagdollSettings::Stabilize() failed.\n");
+    }
+    settings->DisableParentChildCollisions(bindWorld.data(), 0.02f);
+    settings->CalculateBodyIndexToConstraintIndex();
+    settings->CalculateConstraintIndexToBodyIdxPair();
+
+    RagdollHandle handle = ragdolls_->nextHandle++;
+    JPH::Ref<JPH::Ragdoll> ragdoll =
+        settings->CreateRagdoll(handle, static_cast<JPH::uint64>(static_cast<uint32_t>(kNullEntity)), physicsSystem_.get());
+    if (ragdoll == nullptr) {
+        std::fprintf(stderr, "Physics: createRagdoll -- out of bodies.\n");
+        return kInvalidRagdoll;
+    }
+
+    if (initialPartWorld != nullptr) {
+        std::vector<JPH::Mat44> pose(desc.parts.size());
+        for (size_t i = 0; i < pose.size(); ++i) pose[i] = toJoltMat((*initialPartWorld)[i]);
+        ragdoll->SetPose(JPH::RVec3::sZero(), pose.data());
+    }
+    ragdoll->AddToPhysicsSystem(JPH::EActivation::Activate);
+
+    ragdolls_->entries.emplace(handle, RagdollStore::Entry{settings, ragdoll});
+    return handle;
+}
+
+void Physics::destroyRagdoll(RagdollHandle handle) {
+    if (!ragdolls_) return;
+    auto it = ragdolls_->entries.find(handle);
+    if (it == ragdolls_->entries.end()) return;
+    it->second.ragdoll->RemoveFromPhysicsSystem();
+    ragdolls_->entries.erase(it);
+}
+
+bool Physics::ragdollExists(RagdollHandle handle) const { return ragdolls_ && ragdolls_->find(handle) != nullptr; }
+
+bool Physics::getRagdollPartTransforms(RagdollHandle handle, std::vector<glm::mat4>& outPartWorld) const {
+    JPH::Ragdoll* ragdoll = ragdolls_ ? ragdolls_->find(handle) : nullptr;
+    if (ragdoll == nullptr) return false;
+    const JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
+    outPartWorld.resize(ragdoll->GetBodyCount());
+    for (size_t i = 0; i < ragdoll->GetBodyCount(); ++i) {
+        JPH::RVec3 position;
+        JPH::Quat rotation;
+        bodyInterface.GetPositionAndRotation(ragdoll->GetBodyID(static_cast<int>(i)), position, rotation);
+        outPartWorld[i] = toGlmMat(position, rotation);
+    }
+    return true;
+}
+
+std::vector<uint32_t> Physics::ragdollBodyIds(RagdollHandle handle) const {
+    std::vector<uint32_t> ids;
+    JPH::Ragdoll* ragdoll = ragdolls_ ? ragdolls_->find(handle) : nullptr;
+    if (ragdoll == nullptr) return ids;
+    for (const JPH::BodyID& id : ragdoll->GetBodyIDs()) ids.push_back(id.GetIndexAndSequenceNumber());
+    return ids;
+}
+
+int Physics::ragdollPartIndexForBody(RagdollHandle handle, uint32_t bodyId) const {
+    JPH::Ragdoll* ragdoll = ragdolls_ ? ragdolls_->find(handle) : nullptr;
+    if (ragdoll == nullptr) return -1;
+    for (size_t i = 0; i < ragdoll->GetBodyCount(); ++i) {
+        if (ragdoll->GetBodyID(static_cast<int>(i)).GetIndexAndSequenceNumber() == bodyId) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+glm::vec3 Physics::ragdollPartVelocity(RagdollHandle handle, int partIndex) const {
+    JPH::Ragdoll* ragdoll = ragdolls_ ? ragdolls_->find(handle) : nullptr;
+    if (ragdoll == nullptr || partIndex < 0 || partIndex >= static_cast<int>(ragdoll->GetBodyCount())) {
+        return glm::vec3(0.0f);
+    }
+    JPH::Vec3 v = physicsSystem_->GetBodyInterface().GetLinearVelocity(ragdoll->GetBodyID(partIndex));
+    return {v.GetX(), v.GetY(), v.GetZ()};
+}
+
+void Physics::addRagdollImpulse(RagdollHandle handle, int partIndex, glm::vec3 impulse) {
+    JPH::Ragdoll* ragdoll = ragdolls_ ? ragdolls_->find(handle) : nullptr;
+    if (ragdoll == nullptr || partIndex < 0 || partIndex >= static_cast<int>(ragdoll->GetBodyCount())) return;
+    physicsSystem_->GetBodyInterface().AddImpulse(ragdoll->GetBodyID(partIndex), toJolt(impulse));
+}
+
+void Physics::addRagdollVelocity(RagdollHandle handle, glm::vec3 deltaVelocity) {
+    JPH::Ragdoll* ragdoll = ragdolls_ ? ragdolls_->find(handle) : nullptr;
+    if (ragdoll == nullptr) return;
+    ragdoll->AddLinearVelocity(toJolt(deltaVelocity));
+    ragdoll->Activate();
+}
+
+void Physics::setRagdollJointLimp(RagdollHandle handle, int partIndex) {
+    if (!ragdolls_) return;
+    auto it = ragdolls_->entries.find(handle);
+    if (it == ragdolls_->entries.end()) return;
+    const JPH::RagdollSettings& settings = *it->second.settings;
+    if (partIndex < 0 || partIndex >= static_cast<int>(settings.mParts.size())) return;
+    int constraintIndex = settings.GetConstraintIndexForBodyIndex(partIndex);
+    if (constraintIndex < 0) return;
+
+    JPH::TwoBodyConstraint* constraint = it->second.ragdoll->GetConstraint(constraintIndex);
+    constexpr float kLimp = 0.92f * JPH::JPH_PI;
+    if (constraint->GetSubType() == JPH::EConstraintSubType::Hinge) {
+        auto* hinge = static_cast<JPH::HingeConstraint*>(constraint);
+        hinge->SetLimits(-kLimp, kLimp);
+        hinge->SetMaxFrictionTorque(0.1f);
+    } else if (constraint->GetSubType() == JPH::EConstraintSubType::SwingTwist) {
+        auto* swingTwist = static_cast<JPH::SwingTwistConstraint*>(constraint);
+        swingTwist->SetNormalHalfConeAngle(kLimp);
+        swingTwist->SetPlaneHalfConeAngle(kLimp);
+        swingTwist->SetTwistMinAngle(-kLimp);
+        swingTwist->SetTwistMaxAngle(kLimp);
+        swingTwist->SetMaxFrictionTorque(0.1f);
+    }
+    it->second.ragdoll->Activate();
 }
 
 } // namespace engine::core

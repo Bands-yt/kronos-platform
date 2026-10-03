@@ -96,20 +96,8 @@ bool DebugConsolePanel::initialize(core::ECS& ecs, plugins::MovieModePlugin& mov
     });
     scripting_.setOutputCallback([this](const std::string& line) { appendLine(line); });
 
-    history_.push_back("Debug Console ready -- print/engine.log/task.*/events.*, a small ECS-only world.* "
-                        "(findByName/getPosition/setPosition/setColor), mesh.* (beginEditingBox/extrudeFace/"
-                        "insetFace/subdivideFace/mergeVertices/setVertexPosition/setVertexUv), cinematic.* "
-                        "(addTrack/addKeyframe/sampleChannel/play/setPlayhead/addRailPoint/sampleRail/"
-                        "setPhysicalCamera/depthOfFieldRangeMeters/buildExportSchedule/...), and render.* "
-                        "(setExposure/exposure/setBloomSettings/bloomSettings/setCinematicMode/"
-                        "isCinematicModeEnabled/setDepthOfFieldEnabled/isDepthOfFieldEnabled/setDepthOfFieldParams/"
-                        "depthOfFieldParams/setTonemapOperator/tonemapOperator/setColorGradingLutStrength/"
-                        "colorGradingLutStrength/loadColorGradingLut/resetColorGradingLutToIdentity -- real, "
-                        "numeric/enum tuning knobs only, never a raw Vulkan handle) are available. "
-                        "A mesh.* edit shows up in the viewport next frame via Modeling Mode's own re-upload "
-                        "sweep; a cinematic.* Transform/LightIntensity track applies live via Movie Mode's own "
-                        "update(); a render.* call applies live, the same real Renderer state the Lighting Tools "
-                        "panel's own sliders edit. Enter to run.");
+    history_.push_back("Lua console. Modules: world, mesh, cinematic, render, task, events, engine.log. "
+                        "Press Enter to run.");
     return true;
 }
 

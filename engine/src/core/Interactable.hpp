@@ -21,12 +21,10 @@ namespace engine::core {
 // at all.
 struct Interactable {
     // What a UI hint would show, e.g. "Press E to open" -- the real
-    // string this pass's "UI hint (stub)" surfaces (see
-    // findInteractablesInRange()'s doc comment for exactly how, and why
-    // it's a stub: engine_runtime has no on-screen text rendering at all
-    // to draw this into -- a real, stated architectural boundary [no
-    // ImGui in engine_runtime, see docs/ARCHITECTURE.md's "no
-    // Studio-only privileges" principle], not an oversight).
+    // string the interaction UI-hint in Application.cpp surfaces, drawn
+    // on-screen via core::UIRenderer (see Application.cpp's
+    // despairInteractionPrompt_ block) wherever a mode's own HUD renders
+    // it, e.g. Application.cpp's despair::FPSPlayerSettings-gated block.
     std::string prompt = "Interact";
 
     // 0 = no cooldown, interactable every time (the default, matching
@@ -112,6 +110,17 @@ struct Door {
     bool isOpen = false;
     glm::quat closedRotation{1.0f, 0.0f, 0.0f, 0.0f};
     glm::quat openRotation{1.0f, 0.0f, 0.0f, 0.0f};
+
+    // Real hinge swing, opt-in: with hingeHalfWidth left at 0 (the
+    // default), toggleDoor() only ever touches rotation, exactly as
+    // before -- any Door that never sets these (HouseDemoScene's front
+    // door) is unaffected. A leaf that does set them pivots at the near
+    // edge (closedPosition - closedRotation * hingeAxisLocal *
+    // hingeHalfWidth) instead of its own center, so opening it actually
+    // clears the gap it sits in rather than just re-rotating in place.
+    glm::vec3 hingeAxisLocal{1.0f, 0.0f, 0.0f};
+    float hingeHalfWidth = 0.0f;
+    glm::vec3 closedPosition{0.0f};
 };
 
 // Pure -- flips `door.isOpen` and writes the corresponding rotation into

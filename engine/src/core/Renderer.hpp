@@ -459,6 +459,14 @@ public:
     void setRTGIEnabled(bool enabled) { rtGIEnabled_ = enabled && rayTracingSupported_; }
     [[nodiscard]] bool isRTGIEnabled() const { return rtGIEnabled_; }
     void setRTGIIntensity(float intensity) { rtGIIntensity_ = intensity; }
+    void setRTGISamples(int samples) { rtGISamples_ = std::clamp(samples, 1, 32); }
+    // Short-range ray-traced ambient occlusion; skipped while RT GI is on
+    // (GI already occludes the sky). Radius 0 disables it.
+    void setRTAmbientOcclusionEnabled(bool enabled) { rtAOEnabled_ = enabled && rayTracingSupported_; }
+    [[nodiscard]] bool isRTAmbientOcclusionEnabled() const { return rtAOEnabled_; }
+    void setRTAmbientOcclusionRadius(float radius) { rtAORadius_ = std::max(radius, 0.0f); }
+    // Instances in the most recent ray-tracing build (0 while ray tracing is idle).
+    [[nodiscard]] uint32_t rayTracingInstanceCount() const { return lastRtInstanceCount_; }
 
     // Sprint 14 ("Performance Mode"): one real toggle bundling several
     // concrete rendering-cost reductions -- see the .cpp implementation
@@ -947,6 +955,7 @@ private:
         VmaAllocation sceneUboAllocation = nullptr;
         void* sceneUboMapped = nullptr; // persistently mapped -- see createSceneDescriptorResources()
         VkDescriptorSet sceneDescriptorSet = VK_NULL_HANDLE;
+        RayTracingScene::Frame rayTracing; // this view's TLAS + hit records (set 0 bindings 2, 3)
 
         // One shadow map *per frame-in-flight*, not one shared map --
         // with framesInFlight_ >= 2, frame N+1's GPU work can start before
@@ -1123,6 +1132,12 @@ private:
         // frame.hdrView (SSR, like fog, can never legally read its own
         // output), binding 1 this frame's real sampled depth view.
         VkDescriptorSet ssrInputDescriptorSet = VK_NULL_HANDLE;
+        // Views last written into the ssr/fog/cinematic input sets. Auxiliary
+        // scenes share one slot across frames in flight, so a set may still
+        // be pending on the GPU; it is only rewritten when a view changes.
+        std::array<VkImageView, 2> ssrInputViews{};
+        std::array<VkImageView, 2> fogInputViews{};
+        std::array<VkImageView, 2> cinematicInputViews{};
         // Same real tracking role as cinematicSourceBound/fogSourceBoundForComposite
         // above, for isSSREnabled() specifically.
         bool ssrSourceBoundForComposite = false;
@@ -1448,6 +1463,20 @@ private:
     bool initParticleInstanceBufferFor(FrameSync& frame);
     void destroyParticleInstanceBufferFor(FrameSync& frame);
     bool createShadowPipeline();   // owns shadowPipelineLayout_ -- see its .cpp comment for why not scenePipelineLayout_
+    bool createSkinnedShadowPipeline(VkGraphicsPipelineCreateInfo pipelineInfo, const std::string& shaderDir);
+    // Assigns skinning palette slots and uploads palettes once per view, so
+    // the shadow pass and the main pass draw the same skinned set.
+    void prepareSkinnedDraws(FrameSync& frame, ECS& ecs, RiggedMeshLibrary* riggedMeshLibrary);
+    struct SkinnedDraw {
+        EntityId entity;
+        const RiggedMesh* mesh;
+        uint32_t slot;
+        glm::mat4 model;
+        glm::vec3 center;
+        float radius;
+        bool castsShadow;
+    };
+    std::vector<SkinnedDraw> skinnedDraws_;
     void destroyShadowPipeline();
 
     // Stable sphere-fitted cascades over [nearPlane, kShadowMaxDistance];
@@ -1642,6 +1671,17 @@ private:
     // see setRTGIEnabled()/setRTGIIntensity()'s own comments.
     bool rtGIEnabled_ = false;
     float rtGIIntensity_ = 1.0f;
+    int rtGISamples_ = 8;
+    bool rtAOEnabled_ = false;
+    float rtAORadius_ = 1.2f;
+    uint32_t lastRtInstanceCount_ = 0;
+    std::vector<RtMeshInstance> rtMeshInstances_;
+    std::vector<RtSkinnedInstance> rtSkinnedInstances_;
+    [[nodiscard]] bool rayTracingWanted() const {
+        return rayTracedShadowsEnabled_ || rtReflectionsEnabled_ || rtGIEnabled_ || rtAOEnabled_;
+    }
+    void recordRayTracingScene(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
+                               TextureLibrary& textureLibrary, RiggedMeshLibrary* riggedMeshLibrary);
 
     // Kronos ("Shadow Bias / Peter-Panning Fix" v3) -- see
     // setReceiverPlaneBiasScale()'s own public comment.
@@ -1966,6 +2006,8 @@ private:
     float iblSpecularIntensity_ = 1.0f;
     float iblReflectionNormalization_ = 1.0f;
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
+    VkPipeline skinnedShadowPipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout skinnedShadowPipelineLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout_ = VK_NULL_HANDLE; // ShadowPushConstants -- see SceneTypes.hpp, not scenePipelineLayout_
 
     ECS* sceneEcs_ = nullptr;

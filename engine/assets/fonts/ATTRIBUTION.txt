@@ -8,3 +8,10 @@ The OFL permits embedding/bundling these font files in software and
 redistributing them as part of it, which is exactly how Kronos Studio and
 engine_runtime use them (ImGui's default text/heading font, replacing
 ImGui's own built-in bitmap font -- see studio/StudioFonts.cpp).
+
+Inter-Regular.ttf / Inter-Medium.ttf / Inter-SemiBold.ttf
+Font: Inter 4.1 (https://rsms.me/inter/)
+Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
+License: SIL Open Font License, Version 1.1 -- full text in Inter-LICENSE.txt.
+Kronos's primary UI typeface; Noto Sans above is merged in as the fallback
+for glyphs Inter lacks.

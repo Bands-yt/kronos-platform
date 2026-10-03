@@ -401,6 +401,7 @@ private:
     void drawBackendAccountSection();
     void drawOnlineCatalogueSection();
     // Kronos Client shell chrome (see the spec's Brand Panels section).
+    void applyStartPageOverride();
     void beginContentCanvas(const char* id);
     void endContentCanvas();
     void drawFriendsCarousel();
@@ -807,6 +808,7 @@ private:
     // alongside it (reusing drawAnimatedHourglass(), the same real
     // component drawLoadingPanel() already uses).
     bool showSplash_ = true;
+    bool startPageApplied_ = false;
     float splashClock_ = 0.0f;
     // Kronos ("Enable Initial Hourglass Boot Overlay"): real, 1.6 -> 2.0
     // -- close enough to the user's own literal "~2 seconds" ask that a
@@ -958,6 +960,7 @@ private:
 
     VkDescriptorPool imguiDescriptorPool_ = nullptr;
     ImDrawData* pendingDrawData_ = nullptr;
+    bool uiTargetIsSrgb_ = false;
 };
 
 } // namespace engine::runtime

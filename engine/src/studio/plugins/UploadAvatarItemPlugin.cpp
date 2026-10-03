@@ -156,7 +156,7 @@ void UploadAvatarItemPlugin::submitUpload() {
         auto imageResult =
             trustSafetyService_->onImageUpload(hashCreatorIdToPlayerId(draft_.creatorId), draft_.item.texturePath);
         if (imageResult.blocked) {
-            statusMessage_ = "Upload rejected: the texture file failed a real safety scan.";
+            statusMessage_ = "Upload rejected: the texture failed the safety scan.";
             statusIsError_ = true;
             return;
         }
@@ -178,7 +178,7 @@ void UploadAvatarItemPlugin::submitUpload() {
         trustSafetyService_->onCreatorContentSubmission(hashCreatorIdToPlayerId(draft_.creatorId), submittedText,
                                                           "AvatarItemPublish");
     if (contentResult.blocked) {
-        statusMessage_ = "Upload rejected: the item's name/tags failed a real content safety scan.";
+        statusMessage_ = "Upload rejected: the item name or tags failed the content safety scan.";
         statusIsError_ = true;
         return;
     }

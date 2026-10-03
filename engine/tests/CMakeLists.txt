@@ -47,6 +47,7 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/ModelingModePlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/PluginChrome.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UITheme.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UIWidgets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/Notification.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/EntityClassification.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/StudioIcons.cpp
@@ -131,6 +132,8 @@ target_compile_features(hotreload_counter_module_v2 PRIVATE cxx_std_20)
 # already establish for "a test needs to find a real build output/asset
 # by absolute path, not a guess at the working directory it happens to
 # be run from."
+add_dependencies(engine_tests hotreload_counter_module_v1 hotreload_counter_module_v2)
+
 target_compile_definitions(engine_tests PRIVATE
     HOTRELOAD_MODULE_V1_PATH="$<TARGET_FILE:hotreload_counter_module_v1>"
     HOTRELOAD_MODULE_V2_PATH="$<TARGET_FILE:hotreload_counter_module_v2>"

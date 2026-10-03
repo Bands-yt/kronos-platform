@@ -42,6 +42,7 @@ void ParticleSystem::spawnParticle(const ParticleEmitterSettings& settings, glm:
     p.sizeEnd = settings.sizeEnd;
     p.colorStart = settings.colorStart;
     p.colorEnd = settings.colorEnd;
+    p.occlusion = settings.occlusion;
     particles_.push_back(p);
 }
 

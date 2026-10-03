@@ -64,7 +64,7 @@ void NetworkOverlayPlugin::drawRecentServersSection() {
     if (sessionHistory_.size() == 0) return;
 
     if (!ImGui::CollapsingHeader("Recent Servers")) return;
-    ImGui::TextDisabled("A real local history of servers you've connected to -- not live network discovery.");
+    ImGui::TextDisabled("Servers you have connected to before.");
     for (const auto& entry : sessionHistory_.entriesMostRecentFirst()) {
         ImGui::PushID(entry.address.c_str());
         ImGui::PushID(entry.port);
@@ -140,7 +140,7 @@ void NetworkOverlayPlugin::drawConnectionSection(core::ECS& ecs) {
                     session_->setOnPlayerJoin([](core::ECS& joinEcs, net::PlayerId player) -> core::EntityId {
                         std::string entityName = "NetworkPlayer" + std::to_string(player);
                         core::EntityId entity = joinEcs.createEntity(entityName);
-                        std::fprintf(stdout, "NetworkOverlayPlugin: spawned real avatar entity for player %u\n", player);
+                        std::fprintf(stdout, "NetworkOverlayPlugin: spawned avatar entity for player %u\n", player);
                         return entity;
                     });
                     statusText_ = "Hosting on port " + std::to_string(portValue_) + ".";
@@ -240,7 +240,7 @@ void NetworkOverlayPlugin::drawStressTestSection() {
             session_->startStressTest(static_cast<size_t>(stressPlayerCount_), stressRate_);
         }
     } else {
-        ImGui::Text("Running: %zu real synthetic clients connected", session_->stressTestClientCount());
+        ImGui::Text("Running: %zu synthetic clients connected", session_->stressTestClientCount());
         if (ImGui::Button("Stop Stress Test")) session_->stopStressTest();
     }
 }

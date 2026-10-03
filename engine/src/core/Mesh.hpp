@@ -58,6 +58,12 @@ struct Vertex {
 // Mesh::uploadFromHost()'s automatic call for every procedural generator.
 void computeTangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
 
+// When enabled (by the Renderer, on ray-tracing-capable devices, before any
+// mesh is created) geometry buffers are also created as acceleration
+// structure build inputs readable by device address from hit shading.
+void setRayTracingGeometryUsage(bool enabled);
+[[nodiscard]] VkBufferUsageFlags rayTracingGeometryUsage();
+
 // The pure vertex/index generation Mesh::createCapsule() uploads to the
 // GPU, factored out so core::EditableMesh::createCapsule() (CPU-only,
 // no Vulkan handles) can build the exact same geometry for real
@@ -97,6 +103,10 @@ public:
     [[nodiscard]] VkBuffer vertexBuffer() const { return vertexBuffer_; }
     [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_; }
     [[nodiscard]] uint32_t indexCount() const { return indexCount_; }
+    [[nodiscard]] uint32_t vertexCount() const { return vertexCount_; }
+    // Unique per upload; identifies the geometry for acceleration structure caching.
+    [[nodiscard]] uint64_t uid() const { return uid_; }
+    [[nodiscard]] bool rayTracingReady() const { return rayTracingReady_ && indexCount_ > 0; }
 
     // Local-space (pre-Transform) axis-aligned bounding box, computed once
     // from the vertex list in uploadFromHost() -- the CPU-side counterpart
@@ -182,6 +192,9 @@ private:
     VkBuffer indexBuffer_ = VK_NULL_HANDLE;
     VmaAllocation indexAllocation_ = nullptr;
     uint32_t indexCount_ = 0;
+    uint32_t vertexCount_ = 0;
+    uint64_t uid_ = 0;
+    bool rayTracingReady_ = false;
 
     glm::vec3 localBoundsMin_{0.0f};
     glm::vec3 localBoundsMax_{0.0f};

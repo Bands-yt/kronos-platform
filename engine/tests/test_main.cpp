@@ -1,3 +1,4 @@
+#include <set>
 // Assertion-based checks over pure logic in engine_core -- no window, no
 // GPU, no Audio/Scripting init. See tests/CMakeLists.txt's header comment
 // for why this exists and why it's dependency-free. core::Physics is the
@@ -11,6 +12,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -41,6 +43,8 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/Spectrogram.hpp"
+#include "net/RollbackSession.hpp"
 #include "core/Camera.hpp"
 #include "core/CsgMesh.hpp"
 #include "core/EditableMesh.hpp"
@@ -8918,6 +8922,73 @@ engine::core::AnimationClip makeHoldPoseClip(const std::string& jointName, glm::
     return clip;
 }
 
+void testRetargetClipTranslationsFollowsBodyProportions() {
+    engine::core::Skeleton authored = engine::core::buildHumanoidSkeleton();
+    engine::core::BodyProportions tall;
+    tall.height = 1.2f;
+    engine::core::Skeleton target = engine::core::applyBodyProportionsToSkeleton(authored, tall);
+
+    engine::core::AnimationClip clip;
+    engine::core::Keyframe knee;
+    knee.position = authored.joints[static_cast<size_t>(authored.findJointIndex("leg_L_lower"))].localPosition;
+    clip.trackFor("leg_L_lower").addKeyframe(knee);
+    engine::core::Keyframe pelvis;
+    pelvis.position = authored.joints[static_cast<size_t>(authored.findJointIndex("pelvis"))].localPosition +
+                      glm::vec3(0.0f, 0.05f, 0.0f);
+    clip.trackFor("pelvis").addKeyframe(pelvis);
+    engine::core::Keyframe unknown;
+    unknown.position = glm::vec3(7.0f);
+    clip.trackFor("not_a_joint").addKeyframe(unknown);
+
+    engine::core::retargetClipTranslations(clip, authored, target);
+    glm::vec3 targetKnee = target.joints[static_cast<size_t>(target.findJointIndex("leg_L_lower"))].localPosition;
+    check(glm::distance(clip.trackFor("leg_L_lower").keyframes()[0].position, targetKnee) < 1e-5f,
+          "retargeting a bind-pose translation lands on the re-proportioned skeleton's bind offset");
+    check(nearlyEqual(clip.trackFor("pelvis").keyframes()[0].position.y, 1.2f + 0.06f, 1e-4f),
+          "retargeting keeps an animated offset, scaled with the joint's bind offset");
+    check(clip.trackFor("not_a_joint").keyframes()[0].position == glm::vec3(7.0f),
+          "tracks for joints the skeletons do not share are left untouched");
+}
+
+void testAnimationPlayerPlaybackRate() {
+    engine::core::Skeleton skeleton = makeTwoJointTestSkeleton();
+    engine::core::AnimationPlayer player(skeleton);
+    engine::core::AnimationClip clip = makeHoldPoseClip("child", skeleton.joints[1].localPosition, 0.0f);
+    clip.duration = 2.0f;
+    auto handle = player.play(clip, engine::core::AnimationLayer::Base, true);
+    player.setPlaybackRate(handle, 2.0f);
+    player.tick(0.25f);
+    check(nearlyEqual(player.playhead(handle), 0.5f), "playback rate scales how far the playhead advances");
+    check(nearlyEqual(player.normalizedPlayhead(handle), 0.25f), "normalizedPlayhead reports the fraction of the clip");
+    player.setPlaybackRate(handle, -1.0f);
+    player.tick(0.25f);
+    check(nearlyEqual(player.playhead(handle), 0.5f), "a negative rate is clamped to a paused playhead, never reversed");
+}
+
+void testAvatarControllerWalkRunHysteresis() {
+    engine::core::Skeleton skeleton = makeTwoJointTestSkeleton();
+    glm::vec3 childBind = skeleton.joints[1].localPosition;
+    engine::core::AvatarController::Settings settings;
+    settings.locomotionBlendSeconds = 0.0f;
+    engine::core::AvatarController controller(skeleton, settings);
+    controller.setIdleClip(makeHoldPoseClip("child", childBind, 0.0f));
+    controller.setWalkClip(makeHoldPoseClip("child", childBind, 1.0f));
+    controller.setRunClip(makeHoldPoseClip("child", childBind, 2.0f));
+    using State = engine::core::AvatarLocomotionState;
+    const float run = settings.runSpeedThreshold;
+
+    controller.tickAnimation(0.1f, 2.0f, true);
+    check(controller.locomotionState() == State::Walk, "hysteresis: walking speed walks");
+    controller.tickAnimation(0.1f, run + 0.05f, true);
+    check(controller.locomotionState() == State::Walk, "hysteresis: just above the run threshold keeps walking");
+    controller.tickAnimation(0.1f, run + settings.locomotionHysteresis, true);
+    check(controller.locomotionState() == State::Run, "hysteresis: clearly above the band switches to Run");
+    controller.tickAnimation(0.1f, run - 0.05f, true);
+    check(controller.locomotionState() == State::Run, "hysteresis: just below the run threshold keeps running");
+    controller.tickAnimation(0.1f, run - settings.locomotionHysteresis, true);
+    check(controller.locomotionState() == State::Walk, "hysteresis: clearly below the band drops back to Walk");
+}
+
 void testAvatarControllerStateMachine() {
     engine::core::Skeleton skeleton = makeTwoJointTestSkeleton();
     glm::vec3 childBind = skeleton.joints[1].localPosition;
@@ -9813,9 +9884,15 @@ void testBuildHumanoidMeshDataHandHasRealFingerGeometry() {
     for (auto s : data.vertexSegments) {
         if (s == engine::core::HumanoidBodySegment::LeftHand) ++leftHandVertexCount;
     }
-    check(leftHandVertexCount == 144,
-          "the real LeftHand segment holds exactly the palm (24) + 4 fingers (96) + thumb (24) = 144 real "
-          "vertices -- genuinely new finger geometry, not a relabeled box");
+    check(leftHandVertexCount > 144, "the LeftHand segment holds a rounded palm plus separate finger and thumb geometry");
+    int handJoint = skeleton.findJointIndex("hand_L");
+    bool rigid = true;
+    for (size_t i = 0; i < data.vertices.size(); ++i) {
+        if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::LeftHand) continue;
+        const auto& sw = data.skinWeights.perVertex[i];
+        if (sw.jointIndices[0] != handJoint || sw.weights[0] != 1.0f) rigid = false;
+    }
+    check(rigid, "every hand vertex is rigidly bound to its hand joint");
 }
 
 // Kronos ("Avatar Visual Silhouette Pass" -- "Widen feet for stability
@@ -12925,75 +13002,44 @@ void testApplyWeatherNeverProducesNegativeFogDensity() {
     }
 }
 
-// Kronos ("Rendering Fidelity Foundation" Phase 1.3) -- real hybrid RT
-// reflections. rebuild()'s own real TLAS/material-buffer build needs a
-// live Vulkan device (same honest ceiling core::Terrain's GPU mesh
-// upload already has, per that module's own comment) -- these two pure,
-// static functions are the real, device-free seam that lets the
-// index-alignment invariant between them be tested anyway, see
-// RayTracingScene.hpp's own comment on why rebuild() calls these exact
-// functions rather than a separately-derived duplicate.
+// Ray tracing scene: the device-free pieces of the TLAS/hit-record path.
 
-void testIsSupportedShapeKindMatchesRealBoxPlaneScope() {
-    using engine::core::MeshSourceKind;
+void testRtTransformIsRowMajorThreeByFour() {
     using engine::core::RayTracingScene;
-    check(RayTracingScene::isSupportedShapeKind(MeshSourceKind::Box), "Box is really a supported RT shadow/reflection shape");
-    check(RayTracingScene::isSupportedShapeKind(MeshSourceKind::Plane), "Plane is really a supported RT shadow/reflection shape");
-    check(!RayTracingScene::isSupportedShapeKind(MeshSourceKind::Capsule), "Capsule is really NOT supported this pass -- see RayTracingScene.hpp's own stated scope");
-    check(!RayTracingScene::isSupportedShapeKind(MeshSourceKind::Quad), "Quad is really NOT supported this pass either");
-}
-
-void testPackMaterialsProducesTwoVec4PerInstanceInOrder() {
-    using engine::core::RayTracingScene;
-    std::vector<RayTracingScene::Instance> instances(3);
-    instances[0].baseColor = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
-    instances[0].metallic = 0.1f;
-    instances[0].roughness = 0.2f;
-    instances[1].baseColor = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
-    instances[1].metallic = 0.3f;
-    instances[1].roughness = 0.4f;
-    instances[2].baseColor = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
-    instances[2].metallic = 0.5f;
-    instances[2].roughness = 0.6f;
-
-    std::vector<glm::vec4> packed = RayTracingScene::packMaterials(instances);
-    check(packed.size() == 6, "packMaterials() really produces exactly 2 vec4 per input instance");
-
-    // Real index-alignment invariant: instance i's own data lands at
-    // packed[i*2]/packed[i*2+1], in the exact same order given -- this is
-    // the specific property rebuild()'s own instanceCustomIndex assignment
-    // (i == that instance's own position in the surviving-instances list)
-    // depends on to never show the wrong reflection color for one entity.
-    for (size_t i = 0; i < instances.size(); ++i) {
-        check(nearlyEqual(glm::length(packed[i * 2] - instances[i].baseColor), 0.0f),
-              "packMaterials() keeps this instance's real baseColor at its own real, correctly-indexed slot");
-        glm::vec4 expectedMetallicRoughness(instances[i].metallic, instances[i].roughness, 0.0f, 0.0f);
-        check(nearlyEqual(glm::length(packed[i * 2 + 1] - expectedMetallicRoughness), 0.0f),
-              "packMaterials() keeps this instance's real metallic/roughness at its own real, correctly-indexed slot, not swapped with a neighbor");
+    glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, -2.0f, 7.0f)) *
+                  glm::rotate(glm::mat4(1.0f), 0.7f, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                  glm::scale(glm::mat4(1.0f), glm::vec3(2.0f, 1.0f, 0.5f));
+    VkTransformMatrixKHR t = RayTracingScene::toVkTransform(m);
+    bool same = true;
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 4; ++col) same = same && nearlyEqual(t.matrix[row][col], m[col][row]);
     }
+    check(same, "VkTransformMatrixKHR holds the top three rows of the column-major model matrix");
+    check(nearlyEqual(t.matrix[0][3], 3.0f) && nearlyEqual(t.matrix[1][3], -2.0f) && nearlyEqual(t.matrix[2][3], 7.0f),
+          "translation lands in the last column");
 }
 
-void testPackMaterialsIsRealIdentityOnMixedOrderNotJustSorted() {
-    // Real, deliberately non-monotonic baseColor.r values (not simply
-    // ascending) -- a bug that silently sorted or reversed the list would
-    // still pass a test built from monotonically-increasing inputs.
-    using engine::core::RayTracingScene;
-    std::vector<RayTracingScene::Instance> instances(4);
-    float rValues[4] = {0.7f, 0.1f, 0.9f, 0.3f};
-    for (int i = 0; i < 4; ++i) instances[static_cast<size_t>(i)].baseColor = glm::vec4(rValues[i], 0.0f, 0.0f, 1.0f);
-
-    std::vector<glm::vec4> packed = RayTracingScene::packMaterials(instances);
-    for (int i = 0; i < 4; ++i) {
-        check(nearlyEqual(packed[static_cast<size_t>(i) * 2].r, rValues[i]),
-              "packMaterials() preserves real input order exactly, even when values aren't monotonically increasing");
-    }
+void testRtMaterialPacking() {
+    using namespace engine::core;
+    RtInstanceData d = makeRtMaterial(glm::vec4(0.2f, 0.4f, 0.6f, 1.0f), 1.5f, -0.2f, glm::vec3(1.0f, 0.5f, 0.0f), 4.0f, 9u);
+    check(nearlyEqual(d.surface.x, 1.0f) && nearlyEqual(d.surface.y, 0.0f), "metallic and roughness are clamped to [0, 1]");
+    check(nearlyEqual(d.emissive.r, 4.0f) && nearlyEqual(d.emissive.g, 2.0f), "emission is premultiplied by intensity");
+    check(d.textures.x == 9u && d.geometry == glm::uvec4(0u), "albedo slot is stored; geometry is filled at TLAS build");
+    RtInstanceData off = makeRtMaterial(glm::vec4(1.0f), 0.0f, 0.5f, glm::vec3(1.0f), -3.0f, 0u);
+    check(nearlyEqual(glm::length(glm::vec3(off.emissive)), 0.0f), "negative emissive intensity never emits");
 }
 
-void testPackMaterialsHandlesEmptyInput() {
-    using engine::core::RayTracingScene;
-    std::vector<RayTracingScene::Instance> empty;
-    std::vector<glm::vec4> packed = RayTracingScene::packMaterials(empty);
-    check(packed.empty(), "a real, honest empty result for zero surviving instances, not a crash or garbage entry");
+void testRtInstanceMasks() {
+    using namespace engine::core;
+    check((rtInstanceMask(true) & kRtMaskShadowCaster) != 0 && (rtInstanceMask(true) & kRtMaskVisible) != 0,
+          "shadow casters are seen by shadow rays and every other ray");
+    check((rtInstanceMask(false) & kRtMaskShadowCaster) == 0 && (rtInstanceMask(false) & kRtMaskVisible) != 0,
+          "non-casters still show up in reflections and GI but never shadow");
+}
+
+void testMeshWithoutGpuUploadIsNotRayTracingReady() {
+    engine::core::Mesh mesh;
+    check(!mesh.rayTracingReady() && mesh.uid() == 0, "an empty mesh is never handed to a BLAS build");
 }
 
 // --- Biome (pure) -----------------------------------------------------
@@ -14823,6 +14869,163 @@ void testAudioDspGraphDetectsCycle() {
     AudioDspProcessResult result = graph.process();
     check(!result.success, "a real cycle is detected, not an infinite-recursion crash");
     check(result.errorMessage.find("cycle") != std::string::npos, "the real error message names the cycle");
+}
+
+namespace rollback_test {
+struct State {
+    int64_t position[2] = {0, 0};
+    uint64_t hash = 1469598103934665603ull;
+    bool operator==(const State& o) const {
+        return position[0] == o.position[0] && position[1] == o.position[1] && hash == o.hash;
+    }
+};
+struct Input {
+    int8_t dx = 0;
+    bool operator==(const Input& o) const { return dx == o.dx; }
+};
+using Session = engine::net::RollbackSession<State, Input, 2>;
+void step(State& state, const Session::Inputs& inputs, uint32_t frame) {
+    for (int p = 0; p < 2; ++p) {
+        state.position[p] += inputs[p].dx;
+        state.hash = (state.hash ^ static_cast<uint64_t>(state.position[p] + frame)) * 1099511628211ull;
+    }
+}
+} // namespace rollback_test
+
+bool rollbackPeersConverge(uint32_t seed, uint32_t maxJitter, uint64_t& rollbacksOut);
+
+void testRollbackSessionConvergesUnderLatency() {
+    bool allConverged = true;
+    uint64_t totalRollbacks = 0;
+    for (uint32_t seed = 1; seed <= 24; ++seed) {
+        uint64_t rollbacks = 0;
+        allConverged = rollbackPeersConverge(seed * 7919u, 2 + seed % 6, rollbacks) && allConverged;
+        totalRollbacks += rollbacks;
+    }
+    check(allConverged, "both peers converge to the reference across 24 seeds with 2-12 tick jitter");
+    check(totalRollbacks > 0, "mispredictions across those runs really trigger rollbacks");
+}
+
+bool rollbackPeersConverge(uint32_t seed, uint32_t maxJitter, uint64_t& rollbacksOut) {
+    using namespace rollback_test;
+    constexpr uint32_t kFrames = 300;
+    uint32_t rng = seed;
+    auto next = [&] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+
+    std::vector<Input> scripted[2];
+    for (int p = 0; p < 2; ++p) {
+        int8_t held = 0;
+        for (uint32_t f = 0; f < kFrames; ++f) {
+            if (next() % 5 == 0) held = static_cast<int8_t>(static_cast<int>(next() % 7) - 3);
+            scripted[p].push_back({held});
+        }
+    }
+    State reference;
+    for (uint32_t f = 0; f < kFrames; ++f) step(reference, {scripted[0][f], scripted[1][f]}, f);
+
+    Session peers[2] = {Session(State{}, 2, 0, step, 8), Session(State{}, 2, 1, step, 8)};
+    struct Packet { uint32_t deliverTick; int to; uint32_t player; uint32_t frame; Input input; };
+    std::vector<Packet> inFlight;
+    uint32_t stalls = 0;
+    for (uint32_t tick = 0; tick < 2000; ++tick) {
+        for (int p = 0; p < 2; ++p) {
+            const uint32_t f = peers[p].currentFrame();
+            if (f >= kFrames) continue;
+            if (!peers[p].advance(scripted[p][f])) { ++stalls; continue; }
+            inFlight.push_back({tick + 2 + next() % (maxJitter + 1), 1 - p, static_cast<uint32_t>(p), f, scripted[p][f]});
+        }
+        for (size_t i = 0; i < inFlight.size();) {
+            if (inFlight[i].deliverTick <= tick) {
+                peers[inFlight[i].to].addRemoteInput(inFlight[i].player, inFlight[i].frame, inFlight[i].input);
+                inFlight[i] = inFlight.back();
+                inFlight.pop_back();
+            } else {
+                ++i;
+            }
+        }
+        if (inFlight.empty() && peers[0].currentFrame() == kFrames && peers[1].currentFrame() == kFrames) break;
+    }
+    for (Session& peer : peers) peer.synchronize();
+
+    (void)stalls;
+    rollbacksOut = peers[0].stats().rollbacks + peers[1].stats().rollbacks;
+    return peers[0].currentFrame() == kFrames && peers[1].currentFrame() == kFrames &&
+           peers[0].confirmedFrame() == kFrames - 1 && peers[1].confirmedFrame() == kFrames - 1 &&
+           peers[0].state() == reference && peers[1].state() == reference;
+}
+
+void testRollbackSessionStallsAtWindowEdge() {
+    using namespace rollback_test;
+    Session session(State{}, 2, 0, step, 4);
+    uint32_t advanced = 0;
+    while (session.advance(Input{1}) && advanced < 100) ++advanced;
+    check(advanced == 4, "the session predicts at most maxRollbackFrames ahead of confirmed input");
+    check(!session.canAdvance(), "canAdvance reports the stall");
+    check(session.addRemoteInput(1, 0, Input{0}), "a remote input inside the window is accepted");
+    check(session.canAdvance(), "confirming the oldest frame unblocks the session");
+    check(session.advance(Input{1}), "advancing resumes after confirmation");
+    check(!session.addRemoteInput(0, 1, Input{0}), "inputs claiming to be the local player are rejected");
+    check(!session.addRemoteInput(1, 500, Input{0}), "inputs far beyond the window are rejected");
+
+    Session predicted(State{}, 2, 0, step, 8);
+    for (int i = 0; i < 3; ++i) predicted.advance(Input{});
+    predicted.addRemoteInput(1, 0, Input{0});
+    predicted.addRemoteInput(1, 1, Input{0});
+    predicted.synchronize();
+    check(predicted.stats().rollbacks == 0, "a correct prediction never rolls back");
+    predicted.addRemoteInput(1, 2, Input{5});
+    predicted.synchronize();
+    check(predicted.stats().rollbacks == 1 && predicted.state().position[1] == 5,
+          "a wrong prediction rolls back and applies the real input");
+}
+
+void testSpectrogramFftAndStft() {
+    using namespace engine::core;
+    std::vector<std::complex<float>> impulse(64, {0.0f, 0.0f});
+    impulse[0] = {1.0f, 0.0f};
+    check(fftInPlace(impulse), "fftInPlace accepts a power-of-two length");
+    bool flat = true;
+    for (const auto& v : impulse) flat = flat && std::abs(std::abs(v) - 1.0f) < 1e-5f;
+    check(flat, "the FFT of a unit impulse has unit magnitude in every bin");
+
+    std::vector<std::complex<float>> odd(48);
+    check(!fftInPlace(odd), "fftInPlace rejects a non-power-of-two length");
+
+    std::vector<std::complex<float>> tone(256);
+    for (size_t i = 0; i < tone.size(); ++i) {
+        tone[i] = {static_cast<float>(std::cos(2.0 * 3.14159265358979 * 10.0 * i / 256.0)), 0.0f};
+    }
+    fftInPlace(tone);
+    check(std::abs(std::abs(tone[10]) - 128.0f) < 1e-2f && std::abs(tone[11]) < 1e-2f,
+          "a 10-cycle cosine lands entirely in bin 10 with magnitude N/2");
+
+    constexpr uint32_t kRate = 48000;
+    std::vector<float> sine(kRate);
+    for (size_t i = 0; i < sine.size(); ++i) {
+        sine[i] = static_cast<float>(std::sin(2.0 * 3.14159265358979 * 1000.0 * i / kRate));
+    }
+    SpectrogramSettings settings;
+    settings.columns = 32;
+    settings.rows = 96;
+    const Spectrogram spec = computeSpectrogram(sine, kRate, settings);
+    check(spec.columns == 32 && spec.rows == 96 && spec.db.size() == 32u * 96u, "spectrogram has the requested grid");
+    check(std::abs(spec.durationSeconds - 1.0f) < 1e-4f, "spectrogram duration matches the buffer");
+    uint32_t loudestRow = 0;
+    for (uint32_t r = 1; r < spec.rows; ++r) {
+        if (spec.at(16, r) > spec.at(16, loudestRow)) loudestRow = r;
+    }
+    const float centerHz = spec.rowCenterHz(loudestRow);
+    check(centerHz > 900.0f && centerHz < 1110.0f, "a 1 kHz sine peaks in the band around 1 kHz");
+    check(std::abs(spec.at(16, loudestRow)) < 1.5f, "a full-scale sine reads about 0 dBFS");
+    check(spec.at(16, spec.rows - 1) < -60.0f, "bands far from the tone stay near the floor");
+
+    const Spectrogram silent = computeSpectrogram(std::vector<float>(4096, 0.0f), kRate, settings);
+    bool allFloor = true;
+    for (float v : silent.db) allFloor = allFloor && v == settings.floorDb;
+    check(allFloor, "silence reads as the dB floor everywhere");
+    check(computeSpectrogram({}, kRate).empty(), "an empty buffer yields an empty spectrogram");
+    check(computeSpectrogram(std::vector<float>(100, 0.5f), kRate, settings).columns == 32,
+          "a buffer shorter than one FFT frame is zero-padded instead of rejected");
 }
 
 void testComputeWaveformPeaksBucketsCoverWholeBuffer() {
@@ -35120,17 +35323,13 @@ void testEditableMeshSliceByPlaneKeepsOnlyTheRequestedSideAndCapsTheCut() {
         engine::core::sliceByPlane(box, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f), /*keepPositiveSide=*/true,
                                     /*fillCap=*/true);
 
-    fprintf(stderr, "[DEBUG] faceCount=%zu vertexCount=%zu\n", sliced.faceCount(), sliced.vertexCount());
-    for (size_t f = 0; f < sliced.faceCount(); ++f) {
-        glm::vec3 n = sliced.faceNormal(f);
-        fprintf(stderr, "[DEBUG] face %zu normal = (%f, %f, %f)\n", f, n.x, n.y, n.z);
-    }
-    check(sliced.faceCount() == 16,
-          "12 side/top wall triangles from clipping (4 side faces x 3 each) + 2 kept top-face triangles + 2 real "
-          "cap triangles from the new 4-vertex boundary loop");
-    check(sliced.vertexCount() == 8,
-          "4 real, surviving top-half original vertices + 4 new cut vertices + 1 real cap centroid vertex, with "
-          "every discarded-side original vertex actually dropped (not left dangling unreferenced)");
+    // Each side quad's diagonal also crosses the plane, so the cut loop has
+    // 8 vertices: 4 on the vertical edges and 4 at the diagonal midpoints.
+    check(sliced.faceCount() == 22,
+          "12 clipped side triangles (4 sides x 3) + 2 kept top triangles + 8 centroid-fan cap triangles");
+    check(sliced.vertexCount() == 13,
+          "4 surviving top vertices + 8 shared cut vertices + 1 cap centroid, with every discarded-side "
+          "vertex dropped");
 
     glm::vec3 minB = sliced.boundsMin();
     glm::vec3 maxB = sliced.boundsMax();
@@ -35164,7 +35363,7 @@ void testEditableMeshSliceByPlaneKeepingTheOppositeSideMirrorsTheResult() {
     glm::vec3 maxB = sliced.boundsMax();
     check(maxB.y < 1e-4f, "keepPositiveSide=false keeps the opposite (-Y) side of the exact same plane");
     check(minB.y < -0.49f, "the kept half still reaches the original box's own bottom face");
-    check(sliced.faceCount() == 16, "keeping the other side is a real mirror of the same clip -- same face count");
+    check(sliced.faceCount() == 22, "keeping the other side is a real mirror of the same clip -- same face count");
 }
 
 void testEditableMeshSliceByPlaneWithoutFillCapLeavesAnOpenShell() {
@@ -35950,19 +36149,23 @@ void testShippedAvatarAnimationClipsLoadAndValidate() {
         check(engine::core::validateAnimationClipAgainstSkeleton(clip, skeleton, error),
               "shipped clip validates against the real 18-bone skeleton");
 
-        // Real "no root motion" check: every keyframe's position must
-        // exactly equal that joint's own real bind-local position --
-        // nothing ever translates away from bind pose, only rotates.
+        // No root motion: the character controller moves the avatar, so only
+        // the pelvis may translate, and only in place (gait bob and sway,
+        // never forward travel); every other joint stays at its bind offset.
         bool noRootMotion = true;
         for (const auto& track : clip.tracks) {
             int jointIndex = skeleton.findJointIndex(track.targetName());
             if (jointIndex < 0) continue; // already caught by validateAnimationClipAgainstSkeleton above
             glm::vec3 bindPos = skeleton.joints[static_cast<size_t>(jointIndex)].localPosition;
+            bool isPelvis = track.targetName() == "pelvis";
             for (const auto& keyframe : track.keyframes()) {
-                if (glm::distance(keyframe.position, bindPos) > 1e-4f) noRootMotion = false;
+                glm::vec3 offset = keyframe.position - bindPos;
+                bool ok = isPelvis ? glm::length(offset) < 0.15f && std::abs(offset.z) < 1e-4f
+                                   : glm::length(offset) <= 1e-4f;
+                if (!ok) noRootMotion = false;
             }
         }
-        check(noRootMotion, "shipped clip never animates position away from bind pose -- real, honest no-root-motion");
+        check(noRootMotion, "shipped clip has no root motion: only an in-place pelvis offset, no forward travel");
     }
 }
 
@@ -36854,7 +37057,7 @@ void testUpdateFirstPersonPlayerIsANoOpWithoutFPSPlayerSettings() {
     engine::core::Camera camera;
     camera.pitchDegrees = -40.0f;
     engine::core::CharacterController::Settings settings;
-    engine::despair::updateFirstPersonPlayer(ecs, physics, character, camera, settings, false);
+    engine::despair::updateFirstPersonPlayer(ecs, physics, character, camera, settings, false, 1.0f / 60.0f);
 
     check(ecs.tryGetComponent<engine::despair::SanityState>(character) == nullptr,
           "no FPSPlayerSettings on the character -- real, honest no-op, same as every other DESPAIR system in "
@@ -36889,7 +37092,7 @@ void testUpdateFirstPersonPlayerWritesRotationAndNoiseThenPhysicsStepClobbersRot
     // identity here) before updateFirstPersonPlayer gets a chance to
     // overlay the real full-pitch look direction on top of it.
     physics.step(1.0f / 60.0f, ecs);
-    engine::despair::updateFirstPersonPlayer(ecs, physics, character, camera, controllerSettings, false);
+    engine::despair::updateFirstPersonPlayer(ecs, physics, character, camera, controllerSettings, false, 1.0f / 60.0f);
 
     auto* transform = ecs.tryGetComponent<engine::core::Transform>(character);
     glm::vec3 rotatedForward = transform->rotation * glm::vec3(0.0f, 0.0f, -1.0f);
@@ -36985,20 +37188,32 @@ void testFirstPersonEyeHeightRaycastSelfHitsWithoutOriginOffset() {
 // testHouseLayoutHasExactlyOneFloorAndTwoRoofWedges() above for the same
 // pattern on that precedent).
 void testFacilityLayoutHasOneLockedDoorGatingOneKeycardOfTheSameTier() {
+    // Every plain door in layout.doors (corridor door, Deep Storage Wing
+    // entrance, every grid-generated '+' door) is deliberately unlocked in
+    // this showcase -- the real gate is the blastDoor's own keycard-COUNT
+    // objective (kKeycardsRequiredForExit, LootSystem.hpp), not a specific
+    // tier match on any door in this list. The invariant this test cares
+    // about is the same "every gate is actually solvable" spirit as before,
+    // just re-pointed at the gate that's actually real now: enough
+    // keycards must exist in the layout for the objective to be
+    // achievable at all.
     auto layout = engine::despair::computeFacilityLayout();
-    check(layout.doors.size() == 1, "exactly one door gate in this vertical slice's facility");
-    if (layout.doors.empty()) return;
-
-    const auto& door = layout.doors.front();
-    check(door.locked, "the corridor door starts locked -- the whole point of the keycard gate");
-
-    bool hasMatchingKeycard = false;
-    for (const auto& keycard : layout.keycards) {
-        if (keycard.tier == door.requiredTier) hasMatchingKeycard = true;
+    for (const auto& door : layout.doors) {
+        check(!door.locked, "every plain door in this showcase's doors list is unlocked -- the real "
+                             "exit gate is the blastDoor's own keycard-count objective, not a per-door tier lock");
     }
-    check(hasMatchingKeycard, "a real keycard of the door's own required tier actually exists somewhere in the "
-                              "layout -- a locked door with no matching keycard placed anywhere would be an "
-                              "unsolvable gate");
+    // A real keycard reaches the player two ways: a standalone
+    // FacilityKeycardSpec pickup, or a FacilityContainerSpec whose own
+    // LootDrop is LootKind::Keycard (e.g. the Gold "Master Keycard" duffel
+    // bag) -- both count toward kKeycardsRequiredForExit equally (see
+    // LootSystem.cpp's grantContainerLoot()/addKeycardToObjective()).
+    int totalKeycards = static_cast<int>(layout.keycards.size());
+    for (const auto& container : layout.containers) {
+        if (container.loot.kind == engine::despair::LootKind::Keycard) ++totalKeycards;
+    }
+    check(totalKeycards >= engine::despair::kKeycardsRequiredForExit,
+          "at least kKeycardsRequiredForExit real keycards exist somewhere in the layout -- otherwise the "
+          "blastDoor's own keycard-count objective would be an unsolvable gate");
 }
 
 void testFacilityLayoutSpawnsExactlyOneOfEachAiTier() {
@@ -37040,25 +37255,26 @@ void testFacilityLayoutDuffelBagSearchesLongerThanAFootlocker() {
 
 void testFacilityLayoutCorridorDoorFrameGapIsOpenAtFloorLevel() {
     // Real, direct check mirroring testHouseLayoutDoorGapIsOpenInFrontWall()
-    // above -- no Wall part's box may actually cover the corridor door's
-    // own 1.2m gap (z in [-0.6, 0.6] at x=5, below the lintel at y=2.2), or
-    // the real door leaf FacilityMapBuilder spawns there would be sealed
-    // behind solid geometry.
+    // above, generalized to run over every door in the layout (not just
+    // doors.front()) now that the Deep Storage Wing extension adds more
+    // than one -- no Wall-kind box may actually cover a door's own (x, z)
+    // position below its lintel (y < 2.2), or the real door leaf
+    // FacilityMapBuilder spawns there would be sealed behind solid
+    // geometry.
     auto layout = engine::despair::computeFacilityLayout();
-    check(layout.doors.size() == 1, "exactly one door to check the frame gap against");
-    if (layout.doors.empty()) return;
+    check(!layout.doors.empty(), "at least one door to check the frame gap against");
 
-    float doorX = layout.doors.front().localPosition.x;
-    bool gapBlocked = false;
-    for (const auto& part : layout.geometry) {
-        if (part.kind != engine::despair::FacilityWallKind::Wall) continue;
-        bool touchesDoorX = std::fabs(part.localPosition.x - doorX) < 0.15f;
-        if (!touchesDoorX) continue;
-        bool overlapsDoorGapZ = (part.localPosition.z - part.halfExtents.z < 0.0f) &&
-                                 (part.localPosition.z + part.halfExtents.z > 0.0f) && part.localPosition.y < 2.2f;
-        if (overlapsDoorGapZ) gapBlocked = true;
+    for (const auto& door : layout.doors) {
+        bool gapBlocked = false;
+        for (const auto& part : layout.geometry) {
+            if (part.kind != engine::despair::FacilityWallKind::Wall) continue;
+            if (part.localPosition.y >= 2.2f) continue; // a lintel above the leaf's own height can't block it
+            bool coversX = std::fabs(part.localPosition.x - door.localPosition.x) < part.halfExtents.x;
+            bool coversZ = std::fabs(part.localPosition.z - door.localPosition.z) < part.halfExtents.z;
+            if (coversX && coversZ) gapBlocked = true;
+        }
+        check(!gapBlocked, "no wall part actually covers this door's own position below the lintel");
     }
-    check(!gapBlocked, "no wall part at the door's own X blocks its Z gap below the lintel");
 }
 
 void testFacilityLayoutPlayerSpawnsInsideEntryHallAboveTheFloor() {
@@ -37070,6 +37286,65 @@ void testFacilityLayoutPlayerSpawnsInsideEntryHallAboveTheFloor() {
     check(layout.playerSpawn.y > 0.0f, "player spawn sits above the y=0 floor, not on/under it");
     check(layout.playerSpawn.x > -3.0f && layout.playerSpawn.x < 3.0f, "player spawn is within EntryHall's own X span");
     check(layout.playerSpawn.z > -3.0f && layout.playerSpawn.z < 3.0f, "player spawn is within EntryHall's own Z span");
+}
+
+void testDeepStorageWingGridEveryRoomReachableFromEntrance() {
+    // The one mechanical check available for "is this hand-authored ASCII
+    // grid actually connected the way its author intended" -- see
+    // computeDeepStorageWingGrid()'s own header comment. A plain
+    // 4-directional BFS from the entrance ('+' at rows[6][0]) over every
+    // non-'#' cell, then asserting each of the four rooms' own footprints
+    // (Hub, North, South, East -- exact coordinates from that same
+    // comment) contains at least one reached cell.
+    auto grid = engine::despair::computeDeepStorageWingGrid();
+    check(!grid.rows.empty(), "the Deep Storage Wing grid actually has rows to search");
+    if (grid.rows.empty()) return;
+
+    int rowCount = static_cast<int>(grid.rows.size());
+    std::vector<std::vector<bool>> reached(static_cast<std::size_t>(rowCount));
+    for (int r = 0; r < rowCount; ++r) reached[static_cast<std::size_t>(r)].assign(grid.rows[static_cast<std::size_t>(r)].size(), false);
+
+    auto isOpen = [&](int r, int c) -> bool {
+        if (r < 0 || r >= rowCount) return false;
+        const std::string& line = grid.rows[static_cast<std::size_t>(r)];
+        if (c < 0 || c >= static_cast<int>(line.size())) return false;
+        return line[static_cast<std::size_t>(c)] != '#';
+    };
+
+    std::vector<std::pair<int, int>> stack;
+    stack.push_back({6, 0});
+    check(isOpen(6, 0), "the wing's own documented entrance cell (rows[6][0]) is actually open, not a wall");
+    if (isOpen(6, 0)) reached[6][0] = true;
+
+    while (!stack.empty()) {
+        auto [r, c] = stack.back();
+        stack.pop_back();
+        constexpr int kOffsets[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+        for (const auto& offset : kOffsets) {
+            int nr = r + offset[0];
+            int nc = c + offset[1];
+            if (!isOpen(nr, nc) || reached[static_cast<std::size_t>(nr)][static_cast<std::size_t>(nc)]) continue;
+            reached[static_cast<std::size_t>(nr)][static_cast<std::size_t>(nc)] = true;
+            stack.push_back({nr, nc});
+        }
+    }
+
+    auto anyReachedInBox = [&](int rowStart, int rowEnd, int colStart, int colEnd) {
+        for (int r = rowStart; r <= rowEnd; ++r) {
+            for (int c = colStart; c <= colEnd; ++c) {
+                if (r >= 0 && r < rowCount && c >= 0 && c < static_cast<int>(reached[static_cast<std::size_t>(r)].size()) &&
+                    reached[static_cast<std::size_t>(r)][static_cast<std::size_t>(c)]) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    check(anyReachedInBox(5, 7, 4, 6), "the Hub is reachable from the wing's own entrance");
+    check(anyReachedInBox(1, 3, 4, 6), "the North room is reachable from the wing's own entrance");
+    check(anyReachedInBox(9, 11, 4, 6), "the South room (a dead-end branch) is reachable from the wing's own entrance");
+    check(anyReachedInBox(5, 7, 8, 9), "the East room is reachable from the wing's own entrance");
 }
 
 // Kronos ("Studio Movie Mode"): the plugin's non-ImGui behaviour -- what
@@ -39621,6 +39896,1553 @@ void testGameSlugResolution() {
           "a slug with no matching on-disk game is a real, honest empty result, not a crash or a wrong match");
 }
 
+#include "brokenbones/Boosts.hpp"
+#include "brokenbones/Effects.hpp"
+#include "brokenbones/Injuries.hpp"
+#include "brokenbones/Meta.hpp"
+#include "brokenbones/Music.hpp"
+#include "brokenbones/CliffGenerator.hpp"
+#include "brokenbones/RockMesh.hpp"
+#include "brokenbones/RunRules.hpp"
+#include "core/HumanoidRagdoll.hpp"
+#include "core/RiggedAvatar.hpp"
+
+namespace {
+
+using engine::core::HumanoidRagdollPart;
+
+bool finiteVec(glm::vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+
+engine::core::HumanoidRagdoll buildTestHumanoid() {
+    std::string error;
+    engine::core::HumanoidRagdoll humanoid = engine::core::buildHumanoidRagdoll(
+        engine::core::applyBodyProportionsToSkeleton(engine::core::buildHumanoidSkeleton(), {}), error);
+    check(error.empty(), "buildHumanoidRagdoll succeeds on the default avatar skeleton");
+    if (!error.empty()) std::fprintf(stderr, "  ragdoll error: %s\n", error.c_str());
+    return humanoid;
+}
+
+glm::vec3 partAxis(const glm::mat4& partWorld) { return glm::normalize(glm::vec3(partWorld[1])); }
+
+void testBrokenBonesCliffLayoutIsSeededAndGrowsWithLevel() {
+    using namespace engine::brokenbones;
+    CliffLayout a = generateCliffLayout(1234u, 3);
+    CliffLayout b = generateCliffLayout(1234u, 3);
+    CliffLayout c = generateCliffLayout(98765u, 3);
+
+    bool identical = a.faceVertices.size() == b.faceVertices.size() && a.boulders.size() == b.boulders.size();
+    for (size_t i = 0; identical && i < a.faceVertices.size(); ++i) {
+        identical = a.faceVertices[i].position == b.faceVertices[i].position;
+    }
+    check(identical, "the same seed and level generate an identical cliff");
+
+    bool differs = a.ledges.size() != c.ledges.size() || a.boulders.size() != c.boulders.size();
+    for (size_t i = 0; !differs && i < std::min(a.faceVertices.size(), c.faceVertices.size()); ++i) {
+        differs = a.faceVertices[i].position != c.faceVertices[i].position;
+    }
+    check(differs, "a different seed generates a different cliff");
+
+    float previous = 0.0f;
+    float previousGain = 0.0f;
+    bool growing = true;
+    bool accelerating = true;
+    for (int level = 1; level <= 8; ++level) {
+        CliffLayout layout = generateCliffLayout(42u, level);
+        float gain = layout.height - previous;
+        growing = growing && layout.height > previous && (level == 1 || gain >= 70.0f);
+        accelerating = accelerating && (level <= 2 || gain > previousGain);
+        previousGain = gain;
+        previous = layout.height;
+    }
+    check(growing, "every level's cliff is at least 70 m taller than the last");
+    check(accelerating, "each level adds more height than the one before");
+    check(nearlyEqual(cliffHeightForLevel(1), 80.0f) && cliffHeightForLevel(5) >= 450.0f &&
+              nearlyEqual(cliffHeightForLevel(1000), kMaxCliffHeight),
+          "cliff height starts at 80 m, passes 450 m by level 5 and caps at the maximum");
+
+    bool finite = true;
+    for (const auto& v : a.faceVertices) finite = finite && finiteVec(v.position) && finiteVec(v.normal);
+    check(finite, "cliff face vertices and normals are all finite");
+    bool indicesValid = !a.faceIndices.empty() && a.faceIndices.size() % 3 == 0;
+    for (uint32_t index : a.faceIndices) indicesValid = indicesValid && index < a.faceVertices.size();
+    check(indicesValid, "cliff face indices form whole triangles inside the vertex range");
+
+    check(a.spawnPoint.y > a.plateau.center.y + a.plateau.halfExtents.y, "the player spawns above the plateau top");
+    check(findLayoutProblems(a).empty(), "the generated cliff has no overlaps and a clear board and lagoon");
+    check(a.lagoonMax.x > a.lagoonMin.x && a.lagoonMax.y > a.lagoonMin.y, "the lagoon has an area");
+    check(!a.ledges.empty() && !a.beams.empty() && !a.boulders.empty(), "the cliff has ledges, beams and boulders");
+}
+
+void testBrokenBonesCliffsNeverOverlapAndVary() {
+    using namespace engine::brokenbones;
+    int layouts = 0;
+    int dirty = 0;
+    std::set<std::string> palettes;
+    float minLagoonX = 1e9f, maxLagoonX = -1e9f, minBoardX = 1e9f, maxBoardX = -1e9f;
+    int withGullyOrButtress = 0, withOverhang = 0, withPartialLedge = 0, withStacks = 0;
+    size_t minBeams = 1000, minBoulders = 1000;
+    for (uint32_t seed = 0; seed < 120; ++seed) {
+        for (int level : {1, 3, 6, 10}) {
+            CliffLayout layout = generateCliffLayout(seed * 7717u + 3u, level);
+            ++layouts;
+            std::vector<std::string> problems = findLayoutProblems(layout);
+            if (!problems.empty()) {
+                if (++dirty <= 5) std::fprintf(stderr, "  seed %u level %d: %s\n", seed, level, problems.front().c_str());
+            }
+            palettes.insert(layout.rockName);
+            float lagoonX = 0.5f * (layout.lagoonMin.x + layout.lagoonMax.x);
+            minLagoonX = std::min(minLagoonX, lagoonX);
+            maxLagoonX = std::max(maxLagoonX, lagoonX);
+            minBoardX = std::min(minBoardX, layout.divingBoard.center.x);
+            maxBoardX = std::max(maxBoardX, layout.divingBoard.center.x);
+            withGullyOrButtress += !layout.features.empty();
+            withOverhang += layout.overhangDepth > 0.0f;
+            withPartialLedge += std::any_of(layout.ledges.begin(), layout.ledges.end(),
+                                            [](const CliffLedge& l) { return l.halfWidth < 1e5f; });
+            withStacks += std::any_of(layout.boulders.begin(), layout.boulders.end(),
+                                      [](const CliffBoulder& b) { return b.stretch.y > 2.0f; });
+            minBeams = std::min(minBeams, layout.beams.size());
+            minBoulders = std::min(minBoulders, layout.boulders.size());
+        }
+    }
+    std::fprintf(stdout,
+                 "  %d cliffs: %d with problems, %zu rock types, lagoon x %.0f..%.0f, board x %.0f..%.0f, "
+                 "%d gully/buttress, %d overhang, %d partial ledge, %d sea stacks, min %zu beams / %zu boulders\n",
+                 layouts, dirty, palettes.size(), minLagoonX, maxLagoonX, minBoardX, maxBoardX, withGullyOrButtress,
+                 withOverhang, withPartialLedge, withStacks, minBeams, minBoulders);
+    check(dirty == 0, "no generated cliff has overlapping obstacles, a blocked lagoon or a blocked diving board");
+    check(palettes.size() >= 4, "cliffs come in several rock types");
+    check(maxLagoonX - minLagoonX > 15.0f && maxBoardX - minBoardX > 8.0f, "lagoon and diving board move around");
+    check(withGullyOrButtress > layouts / 3 && withGullyOrButtress < layouts, "some cliffs have gullies or buttresses");
+    check(withOverhang > 0 && withPartialLedge > 0 && withStacks > 0, "overhangs, partial ledges and sea stacks appear");
+    check(minBeams >= 2 && minBoulders >= 15, "every cliff still gets plenty of obstacles");
+}
+
+void testBrokenBonesRockMeshIsClosedAndFinite() {
+    using namespace engine::brokenbones;
+    RockParams params;
+    params.seed = 77u;
+    params.radius = 2.0f;
+    params.stretch = glm::vec3(1.4f, 0.8f, 1.0f);
+    RockMeshData rock = generateRockMesh(params);
+    bool valid = rock.vertices.size() > 100 && rock.indices.size() % 3 == 0;
+    for (uint32_t index : rock.indices) valid = valid && index < rock.vertices.size();
+    bool finite = true;
+    float maxExtent = 0.0f;
+    for (const auto& v : rock.vertices) {
+        finite = finite && finiteVec(v.position) && finiteVec(v.normal);
+        maxExtent = std::max(maxExtent, glm::length(v.position));
+    }
+    check(valid, "rock mesh indices are valid triangles");
+    check(finite, "rock mesh vertices are finite");
+    check(maxExtent > 1.0f && maxExtent < 5.0f, "rock mesh size follows its radius and stretch");
+
+    RockMeshData other = generateRockMesh(RockParams{78u});
+    RockMeshData same = generateRockMesh(RockParams{78u});
+    check(other.vertices.size() == same.vertices.size() && other.vertices[5].position == same.vertices[5].position,
+          "rock generation is deterministic per seed");
+}
+
+void testBrokenBonesHumanoidRagdollDescIsValid() {
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    std::string error;
+    check(humanoid.desc.parts.size() == engine::core::kHumanoidRagdollPartCount,
+          "the humanoid ragdoll has one part per HumanoidRagdollPart");
+    check(engine::core::validateRagdollDesc(humanoid.desc, error), "the humanoid ragdoll description validates");
+    float mass = 0.0f;
+    for (const auto& part : humanoid.desc.parts) mass += part.mass;
+    check(mass > 60.0f && mass < 90.0f, "the humanoid ragdoll weighs like a person");
+
+    std::vector<glm::mat4> bindParts(humanoid.desc.parts.size());
+    for (size_t p = 0; p < bindParts.size(); ++p) bindParts[p] = engine::core::ragdollPartBindMatrix(humanoid.desc.parts[p]);
+    std::vector<glm::mat4> skinning;
+    engine::core::computeRagdollSkinningMatrices(humanoid, bindParts, glm::mat4(1.0f), skinning);
+    bool identity = !skinning.empty();
+    for (const glm::mat4& m : skinning) {
+        for (int col = 0; col < 4; ++col) identity = identity && glm::length(m[col] - glm::mat4(1.0f)[col]) < 1e-4f;
+    }
+    check(identity, "ragdoll parts in their bind pose skin the mesh to the bind pose");
+
+    glm::mat4 meshWorld = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 10.0f, -2.0f));
+    std::vector<glm::mat4> fromSkinning = engine::core::ragdollPartsFromSkinning(humanoid, skinning, meshWorld);
+    bool roundTrip = fromSkinning.size() == bindParts.size();
+    for (size_t p = 0; roundTrip && p < bindParts.size(); ++p) {
+        roundTrip = glm::length(glm::vec3(fromSkinning[p][3]) - glm::vec3(meshWorld * bindParts[p][3])) < 1e-3f;
+    }
+    check(roundTrip, "ragdoll parts recovered from skinning land where the mesh is");
+}
+
+void testBrokenBonesRagdollSettlesOnGroundAndStaysConnected() {
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "ragdoll test: Physics initializes headlessly");
+    physics.createStaticBox(ecs, glm::vec3(0.0f, -0.5f, 0.0f), glm::vec3(20.0f, 0.5f, 20.0f));
+    physics.setImpactRecording(true, 3.0f);
+
+    glm::mat4 modelToWorld = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 4.0f - engine::core::kAvatarSoleDepth, 0.0f));
+    auto handle = physics.createRagdoll(humanoid.desc, modelToWorld, nullptr, glm::vec3(0.0f),
+                                        engine::core::CollisionLayer::Debris);
+    check(handle != engine::core::Physics::kInvalidRagdoll, "a humanoid ragdoll is created in Jolt");
+    check(physics.ragdollBodyIds(handle).size() == humanoid.desc.parts.size(), "every ragdoll part has a body");
+
+    std::vector<glm::mat4> parts;
+    auto pivotGap = [&](size_t p) {
+        const auto& desc = humanoid.desc.parts;
+        glm::vec4 pivot(desc[p].pivot, 1.0f);
+        glm::vec3 viaChild = parts[p] * glm::inverse(engine::core::ragdollPartBindMatrix(desc[p])) * pivot;
+        glm::vec3 viaParent =
+            parts[desc[p].parent] * glm::inverse(engine::core::ragdollPartBindMatrix(desc[desc[p].parent])) * pivot;
+        return glm::distance(viaChild, viaParent);
+    };
+
+    bool ownImpacts = false;
+    float hardest = 0.0f;
+    for (int i = 0; i < 480; ++i) {
+        physics.step(1.0f / 120.0f, ecs);
+        for (const auto& impact : physics.drainImpactEvents()) {
+            if (physics.ragdollPartIndexForBody(handle, impact.bodyA) >= 0 ||
+                physics.ragdollPartIndexForBody(handle, impact.bodyB) >= 0) {
+                ownImpacts = true;
+                hardest = std::max(hardest, impact.impactSpeed);
+            }
+        }
+    }
+    check(ownImpacts, "a falling ragdoll reports impact events against the ground");
+    check(hardest > 5.0f && hardest < 12.0f, "the ragdoll's hardest impact speed matches a ~3 m drop");
+
+    check(physics.getRagdollPartTransforms(handle, parts), "ragdoll transforms are readable after simulation");
+    bool finite = true;
+    bool connected = true;
+    bool aboveGround = true;
+    for (size_t p = 0; p < parts.size(); ++p) {
+        glm::vec3 position(parts[p][3]);
+        finite = finite && finiteVec(position);
+        aboveGround = aboveGround && position.y > -0.05f && (p != 0 || position.y < 0.8f);
+        if (p == 0) continue;
+        connected = connected && pivotGap(p) < 0.05f;
+    }
+    check(finite, "ragdoll parts stay finite");
+    check(connected, "ragdoll joints stay connected after hitting the ground");
+    check(aboveGround, "ragdoll collapses onto the ground, not through it");
+
+    float maxSpeed = 0.0f;
+    for (size_t p = 0; p < parts.size(); ++p) {
+        maxSpeed = std::max(maxSpeed, glm::length(physics.ragdollPartVelocity(handle, static_cast<int>(p))));
+    }
+    check(maxSpeed < engine::brokenbones::RunTracker::kStillSpeed, "a settled ragdoll counts as still");
+
+    physics.destroyRagdoll(handle);
+    check(!physics.ragdollExists(handle), "a destroyed ragdoll is gone");
+    physics.shutdown();
+}
+
+// Kicks one limb part forwards or backwards while the whole ragdoll free-falls
+// (so gravity causes no relative motion) and returns how far the hinge bent.
+float bendAfterKick(const engine::core::HumanoidRagdoll& humanoid, HumanoidRagdollPart kicked, glm::vec3 impulse) {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    if (!physics.initialize()) return -1.0f;
+    auto handle = physics.createRagdoll(humanoid.desc, glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 100.0f, 0.0f)),
+                                        nullptr, glm::vec3(0.0f), engine::core::CollisionLayer::Debris);
+    int child = static_cast<int>(kicked);
+    int parent = humanoid.desc.parts[child].parent;
+    physics.addRagdollImpulse(handle, child, impulse);
+    for (int i = 0; i < 30; ++i) physics.step(1.0f / 120.0f, ecs);
+    std::vector<glm::mat4> parts;
+    (void)physics.getRagdollPartTransforms(handle, parts);
+    float bend = std::acos(std::clamp(glm::dot(partAxis(parts[child]), partAxis(parts[parent])), -1.0f, 1.0f));
+    physics.shutdown();
+    return bend;
+}
+
+void testBrokenBonesKneesAndElbowsBendTheRightWay() {
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    const glm::vec3 forward(0.0f, 0.0f, 1.0f);
+    const float kick = 15.0f;
+
+    for (HumanoidRagdollPart shin : {HumanoidRagdollPart::LowerLegL, HumanoidRagdollPart::LowerLegR}) {
+        float backward = bendAfterKick(humanoid, shin, -forward * kick);
+        float wrong = bendAfterKick(humanoid, shin, forward * kick);
+        std::fprintf(stdout, "  knee %d: kicked back bends %.2f rad, kicked forward bends %.2f rad\n",
+                     static_cast<int>(shin), backward, wrong);
+        check(backward > 0.15f, "a shin kicked backwards bends the knee");
+        check(wrong < 0.05f, "a shin kicked forwards cannot hyperextend the knee");
+    }
+    for (HumanoidRagdollPart forearm : {HumanoidRagdollPart::LowerArmL, HumanoidRagdollPart::LowerArmR}) {
+        float flex = bendAfterKick(humanoid, forearm, forward * kick);
+        float wrong = bendAfterKick(humanoid, forearm, -forward * kick);
+        std::fprintf(stdout, "  elbow %d: kicked forward bends %.2f rad, kicked back bends %.2f rad\n",
+                     static_cast<int>(forearm), flex, wrong);
+        check(flex > 0.1f, "a forearm kicked forwards bends the elbow");
+        check(wrong < 0.05f, "a forearm kicked backwards cannot hyperextend the elbow");
+    }
+}
+
+void testBrokenBonesRunTrackerRules() {
+    using namespace engine::brokenbones;
+    CliffLayout layout = generateCliffLayout(5u, 1);
+    RunTracker run;
+    run.begin(layout.height);
+
+    check(!run.registerImpact(HumanoidRagdollPart::Head, 5.0f).has_value(), "a soft knock breaks nothing");
+    check(run.hits() == 1, "a knock above the counted-hit speed counts as a hit");
+    auto skull = run.registerImpact(HumanoidRagdollPart::Head, 20.0f);
+    check(skull.has_value() && run.isBroken(HumanoidRagdollPart::Head), "a hard head impact breaks the skull");
+    check(!run.registerImpact(HumanoidRagdollPart::Head, 40.0f).has_value() && run.bonesBroken() == 1,
+          "the same bone never breaks twice");
+    check(!run.registerImpact(HumanoidRagdollPart::Pelvis, 10.0f).has_value(),
+          "the pelvis needs a harder impact than a shin");
+    check(run.registerImpact(HumanoidRagdollPart::LowerLegL, 10.0f).has_value(), "a 10 m/s hit breaks a tibia");
+
+    glm::vec3 onScree(0.0f, 20.0f, layout.faceZ(0.0f, 20.0f));
+    RunEndReason reason = RunEndReason::None;
+    for (int i = 0; i < 290 && reason == RunEndReason::None; ++i) reason = run.update(0.01f, onScree, 0.2f, layout);
+    check(reason == RunEndReason::None, "lying still for under 3 s does not end the run");
+    for (int i = 0; i < 20 && reason == RunEndReason::None; ++i) reason = run.update(0.01f, onScree, 0.2f, layout);
+    check(reason == RunEndReason::CameToRest, "lying still for 3 s ends the run");
+
+    run.begin(layout.height);
+    for (int i = 0; i < 200; ++i) (void)run.update(0.01f, onScree, 0.2f, layout);
+    check(run.update(0.01f, onScree, 5.0f, layout) == RunEndReason::None && run.stillSeconds() == 0.0f,
+          "moving again resets the stillness timer");
+
+    glm::vec2 lagoonMid = 0.5f * (layout.lagoonMin + layout.lagoonMax);
+    check(run.update(0.01f, glm::vec3(lagoonMid.x, layout.waterY - 0.1f, lagoonMid.y), 20.0f, layout) ==
+              RunEndReason::Splashdown,
+          "landing in the lagoon ends the run with a splashdown");
+    check(bonesNeededForLevel(1) == 5 && bonesNeededForLevel(8) == 12 && bonesNeededForLevel(9) > kBaseBoneCount &&
+              bonesNeededForLevel(1000) == kMaxBoneCount,
+          "past level 8 the bones needed outgrow a 12-bone skeleton, up to the 500 maximum");
+}
+
+// End to end: throw the ragdoll off a generated cliff's diving board and
+// play the run exactly as BrokenBonesGame scores it.
+void runOffGeneratedCliff(uint32_t seed, int level, float minFallFraction) {
+    using namespace engine::brokenbones;
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    CliffLayout layout = generateCliffLayout(seed, level);
+
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "full run: Physics initializes headlessly");
+    physics.setLayerCollision(engine::core::CollisionLayer::Debris, engine::core::CollisionLayer::Character, false);
+
+    std::vector<glm::vec3> positions;
+    auto addMesh = [&](const std::vector<engine::core::Vertex>& vertices, const std::vector<uint32_t>& indices) {
+        positions.resize(vertices.size());
+        for (size_t i = 0; i < vertices.size(); ++i) positions[i] = vertices[i].position;
+        return physics.createMeshBody(ecs, glm::vec3(0.0f), positions, indices) != engine::core::kNullEntity;
+    };
+    check(addMesh(layout.faceVertices, layout.faceIndices), "the cliff face becomes a Jolt mesh body");
+    const glm::quat identity(1.0f, 0.0f, 0.0f, 0.0f);
+    physics.createStaticBox(ecs, layout.plateau.center, layout.plateau.halfExtents, identity);
+    physics.createStaticBox(ecs, layout.divingBoard.center, layout.divingBoard.halfExtents, identity);
+    for (const AxisBox& piece : layout.groundPieces) physics.createStaticBox(ecs, piece.center, piece.halfExtents, identity);
+    for (const CliffBeam& beam : layout.beams) physics.createStaticBox(ecs, beam.position, beam.halfExtents, beam.rotation);
+    for (const CliffBoulder& boulder : layout.boulders) {
+        RockParams params;
+        params.seed = boulder.seed;
+        params.radius = boulder.radius;
+        params.stretch = boulder.stretch;
+        RockMeshData rock = generateRockMesh(params);
+        for (auto& v : rock.vertices) v.position = boulder.position + boulder.rotation * v.position;
+        addMesh(rock.vertices, rock.indices);
+    }
+    physics.optimizeBroadPhase();
+
+    glm::vec3 boardTip(layout.divingBoard.center.x, layout.height + 0.25f,
+                       layout.divingBoard.center.z + layout.divingBoard.halfExtents.z);
+    glm::mat4 modelToWorld = glm::translate(glm::mat4(1.0f), boardTip);
+    auto handle = physics.createRagdoll(humanoid.desc, modelToWorld, nullptr, glm::vec3(0.0f, 1.0f, 4.0f),
+                                        engine::core::CollisionLayer::Debris);
+    physics.setImpactRecording(true, 3.0f);
+
+    RunTracker run;
+    run.begin(boardTip.y + 1.0f);
+    engine::brokenbones::InjuryTracker injuries;
+    RunEndReason reason = RunEndReason::None;
+    std::vector<glm::mat4> parts;
+    bool finite = true;
+    const float dt = 1.0f / 120.0f;
+    double slowestStepMs = 0.0;
+    double totalStepMs = 0.0;
+    int steps = 0;
+    for (int i = 0; i < 120 * 150 && reason == RunEndReason::None; ++i) {
+        auto stepStart = std::chrono::steady_clock::now();
+        physics.step(dt, ecs);
+        double stepMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stepStart).count();
+        slowestStepMs = std::max(slowestStepMs, stepMs);
+        totalStepMs += stepMs;
+        ++steps;
+        for (const auto& impact : physics.drainImpactEvents()) {
+            int a = physics.ragdollPartIndexForBody(handle, impact.bodyA);
+            int b = physics.ragdollPartIndexForBody(handle, impact.bodyB);
+            if ((a >= 0) == (b >= 0)) continue;
+            int part = a >= 0 ? a : b;
+            auto hitPart = static_cast<HumanoidRagdollPart>(part);
+            bool broke = run.registerImpact(hitPart, impact.impactSpeed).has_value();
+            if (broke) physics.setRagdollJointLimp(handle, part);
+            (void)injuries.registerImpact(hitPart, impact.impactSpeed, boneBreakSpeed(hitPart), broke);
+        }
+        (void)injuries.registerNeckSnap(glm::length(
+            physics.ragdollPartVelocity(handle, static_cast<int>(HumanoidRagdollPart::Head)) -
+            physics.ragdollPartVelocity(handle, static_cast<int>(HumanoidRagdollPart::Chest))));
+        injuries.update(dt);
+        (void)physics.getRagdollPartTransforms(handle, parts);
+        float maxSpeed = 0.0f;
+        for (size_t p = 0; p < parts.size(); ++p) {
+            finite = finite && finiteVec(glm::vec3(parts[p][3]));
+            maxSpeed = std::max(maxSpeed, glm::length(physics.ragdollPartVelocity(handle, static_cast<int>(p))));
+        }
+        reason = run.update(dt, glm::vec3(parts[0][3]), maxSpeed, layout);
+    }
+
+    std::fprintf(stdout,
+                 "  full run on a %.0f m cliff: %s after %.1f s, fell %.1f m, %d bones, %d hits, top %.1f m/s, "
+                 "hardest %.1f m/s, physics step avg %.2f ms, worst %.2f ms\n",
+                 layout.height, reason == RunEndReason::None ? "no end" : runEndReasonText(reason),
+                 run.elapsedSeconds(), run.distanceFallen(), run.bonesBroken(), run.hits(), run.topSpeed(),
+                 run.hardestImpact(), totalStepMs / std::max(steps, 1), slowestStepMs);
+    std::string injuryNames;
+    for (const auto& hit : injuries.injuries()) injuryNames += std::string(" ") + engine::brokenbones::injuryInfo(hit.injury).name + ",";
+    std::fprintf(stdout, "    %d injuries:%s bled %.1f s, injury cash $%d\n", injuries.count(), injuryNames.c_str(),
+                 injuries.bleedSeconds(), injuries.cash());
+    check(slowestStepMs < 1000.0 / 120.0 * 4.0, "no single physics step stalls a frame");
+    check(finite, "the ragdoll stays finite for the whole run");
+    check(reason == RunEndReason::CameToRest || reason == RunEndReason::Splashdown,
+          "a run off the cliff ends by coming to rest or splashing down");
+    check(run.distanceFallen() > layout.height * minFallFraction, "the ragdoll actually falls down the cliff");
+    check(run.bonesBroken() >= 1 && run.hits() >= 2, "falling down the cliff breaks bones");
+    check(run.topSpeed() > 15.0f, "the fall reaches a real terminal-ish speed");
+    physics.shutdown();
+}
+
+// Distance from `p` to the nearest thing the player can actually see on this cliff.
+struct VisibleCliff {
+    const engine::brokenbones::CliffLayout& layout;
+    std::vector<std::vector<glm::vec3>> rockPoints;
+
+    explicit VisibleCliff(const engine::brokenbones::CliffLayout& cliff) : layout(cliff) {
+        for (const auto& boulder : layout.boulders) {
+            engine::brokenbones::RockParams params;
+            params.seed = boulder.seed;
+            params.radius = boulder.radius;
+            params.stretch = boulder.stretch;
+            auto rock = engine::brokenbones::generateRockMesh(params);
+            std::vector<glm::vec3> points;
+            for (const auto& v : rock.vertices) points.push_back(boulder.position + boulder.rotation * v.position);
+            rockPoints.push_back(std::move(points));
+        }
+    }
+
+    static float boxDistance(glm::vec3 p, glm::vec3 centre, glm::vec3 half, glm::quat rotation) {
+        glm::vec3 local = glm::inverse(rotation) * (p - centre);
+        glm::vec3 outside = glm::max(glm::abs(local) - half, glm::vec3(0.0f));
+        return glm::length(outside);
+    }
+
+    float distance(glm::vec3 p) const {
+        const glm::quat identity(1.0f, 0.0f, 0.0f, 0.0f);
+        float best = 1e9f;
+        if (std::abs(p.x) <= 0.5f * layout.width + 1.0f && p.y > -2.0f && p.y < layout.height + 2.0f) {
+            for (float dx = -2.0f; dx <= 2.0f; dx += 0.25f) {
+                for (float dy = -2.0f; dy <= 2.0f; dy += 0.25f) {
+                    float x = glm::clamp(p.x + dx, -0.5f * layout.width, 0.5f * layout.width);
+                    float y = glm::clamp(p.y + dy, 0.0f, layout.height);
+                    best = std::min(best, glm::distance(p, glm::vec3(x, y, layout.faceZ(x, y))));
+                }
+            }
+        }
+        best = std::min(best, boxDistance(p, layout.plateau.center, layout.plateau.halfExtents, identity));
+        best = std::min(best, boxDistance(p, layout.divingBoard.center, layout.divingBoard.halfExtents, identity));
+        for (const auto& piece : layout.groundPieces) best = std::min(best, boxDistance(p, piece.center, piece.halfExtents, identity));
+        for (const auto& beam : layout.beams) best = std::min(best, boxDistance(p, beam.position, beam.halfExtents, beam.rotation));
+        for (const auto& points : rockPoints) {
+            for (const glm::vec3& q : points) best = std::min(best, glm::distance(p, q));
+        }
+        return best;
+    }
+};
+
+void testBrokenBonesEveryImpactIsOnVisibleGeometry() {
+    using namespace engine::brokenbones;
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    int impacts = 0;
+    int invisible = 0;
+    struct Launch {
+        glm::vec3 velocity;
+        bool rocket;
+    };
+    const Launch launches[] = {{{0.0f, 1.0f, 4.0f}, false}, {{3.0f, 12.0f, 24.0f}, false}, {{0.0f, 10.0f, 22.0f}, true}};
+    for (uint32_t seed = 1; seed <= 12; ++seed) {
+        int level = 1 + static_cast<int>(seed % 6) * 3;
+        CliffLayout layout = generateCliffLayout(seed * 7919u, level);
+        VisibleCliff visible(layout);
+        for (const Launch& launch : launches) {
+            engine::core::ECS ecs;
+            engine::core::Physics physics;
+            (void)physics.initialize();
+            std::vector<glm::vec3> positions;
+            auto addMesh = [&](const std::vector<engine::core::Vertex>& vertices, const std::vector<uint32_t>& indices) {
+                positions.resize(vertices.size());
+                for (size_t i = 0; i < vertices.size(); ++i) positions[i] = vertices[i].position;
+                (void)physics.createMeshBody(ecs, glm::vec3(0.0f), positions, indices);
+            };
+            addMesh(layout.faceVertices, layout.faceIndices);
+            const glm::quat identity(1.0f, 0.0f, 0.0f, 0.0f);
+            physics.createStaticBox(ecs, layout.plateau.center, layout.plateau.halfExtents, identity);
+            physics.createStaticBox(ecs, layout.divingBoard.center, layout.divingBoard.halfExtents, identity);
+            for (const AxisBox& piece : layout.groundPieces) physics.createStaticBox(ecs, piece.center, piece.halfExtents, identity);
+            for (const CliffBeam& beam : layout.beams) physics.createStaticBox(ecs, beam.position, beam.halfExtents, beam.rotation);
+            for (size_t b = 0; b < layout.boulders.size(); ++b) {
+                RockParams params;
+                params.seed = layout.boulders[b].seed;
+                params.radius = layout.boulders[b].radius;
+                params.stretch = layout.boulders[b].stretch;
+                RockMeshData rock = generateRockMesh(params);
+                for (auto& v : rock.vertices) v.position = layout.boulders[b].position + layout.boulders[b].rotation * v.position;
+                addMesh(rock.vertices, rock.indices);
+            }
+            physics.optimizeBroadPhase();
+            glm::vec3 tip(layout.divingBoard.center.x, layout.height + 0.25f,
+                          layout.divingBoard.center.z + layout.divingBoard.halfExtents.z);
+            auto handle = physics.createRagdoll(humanoid.desc, glm::translate(glm::mat4(1.0f), tip), nullptr,
+                                                launch.velocity, engine::core::CollisionLayer::Debris);
+            physics.setImpactRecording(true, 3.0f);
+            RocketController rocket;
+            if (launch.rocket) rocket.ignite(0.9f);
+            RunTracker run;
+            run.begin(tip.y);
+            std::vector<glm::mat4> parts;
+            const float dt = 1.0f / 120.0f;
+            RunEndReason reason = RunEndReason::None;
+            for (int i = 0; i < 120 * 60 && reason == RunEndReason::None; ++i) {
+                (void)rocket.update(dt, glm::vec3(0.0f, -0.3f, 1.0f), physics, handle);
+                physics.step(dt, ecs);
+                for (const auto& impact : physics.drainImpactEvents()) {
+                    int a = physics.ragdollPartIndexForBody(handle, impact.bodyA);
+                    int bb = physics.ragdollPartIndexForBody(handle, impact.bodyB);
+                    if ((a >= 0) == (bb >= 0)) continue;
+                    ++impacts;
+                    float gap = visible.distance(impact.point);
+                    if (gap > 1.5f) {
+                        ++invisible;
+                        if (invisible <= 10) {
+                            std::fprintf(stdout,
+                                         "  invisible hit: seed %u level %d at (%.1f, %.1f, %.1f), %.1f m from any "
+                                         "visible surface, %.1f m/s\n",
+                                         seed * 7919u, level, impact.point.x, impact.point.y, impact.point.z, gap,
+                                         impact.impactSpeed);
+                        }
+                    }
+                }
+                (void)physics.getRagdollPartTransforms(handle, parts);
+                float maxSpeed = 0.0f;
+                for (size_t p = 0; p < parts.size(); ++p) {
+                    maxSpeed = std::max(maxSpeed, glm::length(physics.ragdollPartVelocity(handle, static_cast<int>(p))));
+                }
+                reason = run.update(dt, glm::vec3(parts[0][3]), maxSpeed, layout);
+            }
+            physics.shutdown();
+        }
+    }
+    std::fprintf(stdout, "  impact audit: %d impacts, %d more than 1.5 m from visible geometry\n", impacts, invisible);
+    check(impacts > 100 && invisible == 0, "every impact happens on geometry the player can see");
+}
+
+void testBrokenBonesFullRunOffGeneratedCliff() {
+    runOffGeneratedCliff(2024u, 2, 0.5f);
+    // Tall cliffs can legitimately catch the body on a ledge part-way down.
+    runOffGeneratedCliff(77u, 8, 0.1f);
+    runOffGeneratedCliff(4242u, 12, 0.1f);
+}
+
+} // namespace
+
+#include "brokenbones/Boosts.hpp"
+#include "brokenbones/Shop.hpp"
+#include "brokenbones/SoundBank.hpp"
+
+namespace {
+
+void testBrokenBonesShopPricesPrerequisitesAndLimits() {
+    using namespace engine::brokenbones;
+    Progress progress;
+    check(buyItem(progress, ShopItem::Floats) == BuyResult::NotEnoughCash && progress.cash == 0,
+          "a broke player cannot buy floats");
+    progress.cash = 20000;
+    check(buyItem(progress, ShopItem::Rocket) == BuyResult::Locked, "rockets stay locked until level 2");
+    check(buyItem(progress, ShopItem::CashBonus) == BuyResult::Locked && progress.cash == 20000,
+          "cash bonus stays locked until level 4 and costs nothing when refused");
+    progress.bestLevel = 4;
+    check(buyItem(progress, ShopItem::BigBalloons) == BuyResult::NeedsPrerequisite,
+          "big balloons need floats first");
+    check(buyResultText(BuyResult::NeedsPrerequisite, ShopItem::BigBalloons) == "BUY FLOATS FIRST",
+          "the refusal names the missing item");
+    check(buyItem(progress, ShopItem::Floats) == BuyResult::Bought && progress.cash == 19600, "floats cost $400");
+    check(buyItem(progress, ShopItem::Floats) == BuyResult::MaxedOut, "only one set of floats can be owned");
+    check(shopPrice(progress, ShopItem::BigBalloons) == 350, "the first big balloon upgrade costs $350");
+    (void)buyItem(progress, ShopItem::BigBalloons);
+    check(shopPrice(progress, ShopItem::BigBalloons) == 700, "each further upgrade costs more");
+    (void)buyItem(progress, ShopItem::BigBalloons);
+    (void)buyItem(progress, ShopItem::BigBalloons);
+    check(buyItem(progress, ShopItem::BigBalloons) == BuyResult::MaxedOut, "big balloons cap at three");
+    check(nearlyEqual(floatsHeliumCapacity(progress), 12.5f), "helium is 5 s plus 2.5 s per big balloon");
+
+    int cashBefore = progress.cash;
+    (void)buyItem(progress, ShopItem::Bomb);
+    (void)buyItem(progress, ShopItem::Rocket);
+    check(progress.count(ShopItem::Bomb) == 1 && progress.count(ShopItem::Rocket) == 1 &&
+              cashBefore - progress.cash == 240,
+          "a bomb is $90 and a rocket $150");
+    check(shopPrice(progress, ShopItem::Rocket) == 150, "consumables never get pricier");
+
+    Progress fresh;
+    check(nearlyEqual(floatsHeliumCapacity(fresh), 0.0f) && nearlyEqual(blastPowerMultiplier(fresh), 1.0f) &&
+              nearlyEqual(cashBonusMultiplier(fresh), 1.0f) && glm::length(springLeapVelocity(fresh, {0, 0, 1})) == 0.0f,
+          "without upgrades there is no helium, bonus blast, bonus cash or leap");
+    fresh.owned[static_cast<size_t>(ShopItem::BlastPower)] = 2;
+    fresh.owned[static_cast<size_t>(ShopItem::CashBonus)] = 1;
+    fresh.owned[static_cast<size_t>(ShopItem::SpringShoes)] = 1;
+    check(nearlyEqual(blastPowerMultiplier(fresh), 1.5f) && nearlyEqual(cashBonusMultiplier(fresh), 1.15f),
+          "blast power and cash bonus stack per level");
+    glm::vec3 leap = springLeapVelocity(fresh, glm::vec3(0.0f, -0.8f, 0.6f));
+    check(leap.z > 13.0f && leap.y > 8.0f && nearlyEqual(leap.x, 0.0f), "spring shoes leap forward and up");
+    fresh.owned[static_cast<size_t>(ShopItem::BrittleBones)] = 2;
+    check(nearlyEqual(breakSpeedMultiplier(fresh), 0.8f), "two brittle bones upgrades make bones break 20% easier");
+    RunTracker brittle;
+    brittle.begin(100.0f, breakSpeedMultiplier(fresh));
+    check(brittle.registerImpact(engine::core::HumanoidRagdollPart::LowerLegL, 8.5f).has_value(),
+          "brittle bones snap a tibia at 8.5 m/s, below the normal 10 m/s");
+}
+
+void testBrokenBonesFuelIsFinite() {
+    using namespace engine::brokenbones;
+    FuelTank tank;
+    tank.refill(5.0f);
+    float burned = 0.0f;
+    for (int i = 0; i < 600; ++i) burned += tank.burn(1.0f / 60.0f);
+    check(nearlyEqual(burned, 5.0f, 1e-3f), "holding the floats for 10 s burns exactly the 5 s of helium");
+    check(tank.empty() && nearlyEqual(tank.burn(1.0f), 0.0f), "an empty tank gives no more lift");
+    tank.refill(5.0f);
+    check(nearlyEqual(tank.fraction(), 1.0f), "a new run refills the tank");
+}
+
+void testBrokenBonesBiggerSkeletons() {
+    using namespace engine::brokenbones;
+    using engine::core::HumanoidRagdollPart;
+    bool sums = true;
+    for (int total : {12, 25, 50, 100, 206, 300, 400, 500}) {
+        BoneCounts counts = distributeBones(total);
+        int sum = 0;
+        for (int c : counts) {
+            sum += c;
+            sums = sums && c >= 1;
+        }
+        sums = sums && sum == total;
+    }
+    check(sums, "every skeleton size splits exactly over the body parts, at least one bone each");
+    BoneCounts base = distributeBones(kBaseBoneCount);
+    check(std::all_of(base.begin(), base.end(), [](int c) { return c == 1; }), "the base skeleton is one bone per part");
+    BoneCounts full = distributeBones(kMaxBoneCount);
+    check(full[static_cast<size_t>(HumanoidRagdollPart::LowerArmL)] > full[static_cast<size_t>(HumanoidRagdollPart::UpperArmL)] * 10,
+          "hands hold far more bones than the humerus");
+    int clamped = 0;
+    for (int c : distributeBones(9000)) clamped += c;
+    check(clamped == kMaxBoneCount, "skeletons are capped at 500 bones");
+
+    check(bonesSnappedByImpact(1, 1, 50.0f, 10.0f) == 1, "a one-bone part snaps exactly once");
+    check(bonesSnappedByImpact(60, 60, 9.0f, 10.0f) == 0, "a soft hit snaps nothing");
+    int light = bonesSnappedByImpact(60, 60, 11.0f, 10.0f);
+    int heavy = bonesSnappedByImpact(60, 60, 30.0f, 10.0f);
+    check(light >= 1 && heavy > light * 5, "harder hits shatter many more bones");
+    check(bonesSnappedByImpact(60, 3, 80.0f, 10.0f) == 3, "an impact never snaps more than what is left");
+
+    RunTracker run;
+    run.begin(100.0f, 1.0f, kMaxBoneCount);
+    check(run.totalBones() == kMaxBoneCount, "a run tracks the whole skeleton");
+    auto first = run.registerImpact(HumanoidRagdollPart::LowerLegL, 25.0f);
+    auto second = run.registerImpact(HumanoidRagdollPart::LowerLegL, 25.0f);
+    int legBones = run.bonesInPart(HumanoidRagdollPart::LowerLegL);
+    check(first && second && first->count > 1, "a big skeleton can break the same part again and again");
+    check(run.bonesBroken() == first->count + second->count && run.brokenInPart(HumanoidRagdollPart::LowerLegL) <= legBones,
+          "broken bones add up per part");
+    for (int i = 0; i < 50; ++i) (void)run.registerImpact(HumanoidRagdollPart::LowerLegL, 200.0f);
+    check(run.brokenInPart(HumanoidRagdollPart::LowerLegL) == legBones &&
+              !run.registerImpact(HumanoidRagdollPart::LowerLegL, 200.0f),
+          "a fully shattered part has nothing left to break");
+
+    BoneBreak single{HumanoidRagdollPart::Head, 20.0f, 1, 1, 1};
+    check(boneBreakCash(single, kBaseBoneCount) == 30, "the base skeleton pays the classic per-bone price");
+    BoneCounts big = distributeBones(kMaxBoneCount);
+    int wholeBody = 0;
+    for (size_t p = 0; p < big.size(); ++p) {
+        wholeBody += boneBreakCash(BoneBreak{static_cast<HumanoidRagdollPart>(p), 20.0f, 1, big[p], big[p]}, kMaxBoneCount);
+    }
+    int wholeBase = 0;
+    for (size_t p = 0; p < big.size(); ++p) wholeBase += boneBreakCash(BoneBreak{static_cast<HumanoidRagdollPart>(p), 20.0f}, 12);
+    std::fprintf(stdout, "  shattering every bone pays $%d with 12 bones, $%d with 500\n", wholeBase, wholeBody);
+    check(wholeBody > wholeBase * 5 && wholeBody < wholeBase * 8, "a 500-bone skeleton is worth several times more, not 40x");
+
+    Progress progress;
+    progress.cash = 1000000;
+    bool doubling = true;
+    for (int n = 0; n < 7; ++n) {
+        doubling = doubling && shopPrice(progress, ShopItem::MoreBones) == (250 << n);
+        (void)buyItem(progress, ShopItem::MoreBones);
+    }
+    check(buyItem(progress, ShopItem::MoreBones) == BuyResult::MaxedOut, "MORE BONES stops at the maximum");
+    check(skeletonBoneCount(progress) == kMaxBoneCount && progress.count(ShopItem::MoreBones) == 7,
+          "seven MORE BONES upgrades reach the 500-bone maximum");
+    check(doubling, "each MORE BONES upgrade costs double the last");
+}
+
+void testBrokenBonesMapsAndAltitude() {
+    using namespace engine::brokenbones;
+    int dirty = 0;
+    for (size_t t = 0; t < kMapThemeCount; ++t) {
+        for (uint32_t seed = 0; seed < 12; ++seed) {
+            for (float scale : {1.0f, 2.0f}) {
+                CliffLayout layout = generateCliffLayout(seed * 31u + 5u, 1 + static_cast<int>(seed % 9),
+                                                         MapOptions{static_cast<MapTheme>(t), scale});
+                auto problems = findLayoutProblems(layout);
+                if (!problems.empty() && ++dirty <= 3) {
+                    std::fprintf(stderr, "  %s seed %u: %s\n", mapThemeInfo(layout.theme).name, seed, problems.front().c_str());
+                }
+            }
+        }
+    }
+    check(dirty == 0, "every map theme generates clean layouts, with and without altitude upgrades");
+
+    CliffLayout coast = generateCliffLayout(7u, 4);
+    CliffLayout canyon = generateCliffLayout(7u, 4, MapOptions{MapTheme::Canyon, 1.0f});
+    CliffLayout tall = generateCliffLayout(7u, 4, MapOptions{MapTheme::Coast, 2.0f});
+    check(canyon.beams.size() + canyon.boulders.size() > coast.beams.size() + coast.boulders.size(),
+          "the canyon is packed with more obstacles than the coast");
+    check(nearlyEqual(tall.height, 2.0f * coast.height), "altitude upgrades scale the cliff height");
+    CliffLayout tallest = generateCliffLayout(7u, 20, MapOptions{MapTheme::Volcano, 2.0f});
+    check(tallest.faceVertices.size() <= 111u * 1202u, "the face mesh stays bounded on the tallest cliffs");
+    check(mapThemeInfo(MapTheme::Volcano).cashMultiplier > mapThemeInfo(MapTheme::Canyon).cashMultiplier &&
+              mapThemeInfo(MapTheme::Canyon).cashMultiplier > mapThemeInfo(MapTheme::Coast).cashMultiplier,
+          "pricier maps pay more");
+
+    Progress progress;
+    check(nextOwnedMap(progress) == MapTheme::Coast, "with only the coast, [M] stays on the coast");
+    progress.owned[static_cast<size_t>(ShopItem::GlacierMap)] = 1;
+    progress.owned[static_cast<size_t>(ShopItem::VolcanoMap)] = 1;
+    progress.map = nextOwnedMap(progress);
+    MapTheme second = nextOwnedMap(progress);
+    progress.map = second;
+    check(second == MapTheme::Volcano && nextOwnedMap(progress) == MapTheme::Coast, "[M] cycles through owned maps only");
+    check(nearlyEqual(altitudeMultiplier(progress), 1.0f), "no altitude upgrades means normal height");
+
+    std::array<int, kShopItemCount> seen{};
+    for (size_t page = 0; page < kShopPageCount; ++page) {
+        for (size_t i = 0; i < shopPage(page).count; ++i) ++seen[static_cast<size_t>(shopPage(page).items[i])];
+        check(shopPage(page).count <= 9, "each shop page fits on the number keys");
+    }
+    check(std::all_of(seen.begin(), seen.end(), [](int n) { return n == 1; }), "every shop item appears on exactly one page");
+
+    std::string path = (std::filesystem::temp_directory_path() / "kronos_bb_map_save.json").string();
+    std::string error;
+    check(saveProgress(progress, path, error), "progress with a chosen map saves");
+    Progress loaded;
+    check(loadProgress(loaded, path, error) && loaded.map == MapTheme::Volcano &&
+              loaded.count(ShopItem::VolcanoMap) == 1,
+          "the chosen map and map unlocks survive a reload");
+    loaded.owned[static_cast<size_t>(ShopItem::VolcanoMap)] = 0;
+    check(saveProgress(loaded, path, error) && loadProgress(loaded, path, error) && loaded.map == MapTheme::Coast,
+          "a save pointing at a map you don't own falls back to the coast");
+    std::filesystem::remove(path);
+}
+
+void testBrokenBonesAchievementsTutorialAndRebirth() {
+    using namespace engine::brokenbones;
+    Progress progress;
+    RunSummary run;
+    run.finished = true;
+    run.reason = RunEndReason::Splashdown;
+    run.map = MapTheme::Volcano;
+    run.bones = 12;
+    run.totalBones = 12;
+    run.bestCombo = 6;
+    run.skull = true;
+    run.topSpeed = 120.0f;
+    run.fall = 1100.0f;
+    run.superBoosts = 1;
+    std::vector<Achievement> unlocked = unlockAchievements(progress, &run);
+    auto has = [&](Achievement a) { return hasAchievement(progress, a); };
+    check(has(Achievement::FirstFall) && has(Achievement::BoneCollector) && has(Achievement::SkullCracker) &&
+              has(Achievement::ComboKing) && has(Achievement::MakeASplash) && has(Achievement::SpeedDemon) &&
+              has(Achievement::SkyHigh) && has(Achievement::SuperBooster) && has(Achievement::Shattered) &&
+              has(Achievement::LavaDip),
+          "a big run unlocks every achievement it earned");
+    check(!has(Achievement::ComboGod) && !has(Achievement::SoundBarrier) && !has(Achievement::Oops) &&
+              !has(Achievement::HundredBones),
+          "achievements that weren't earned stay locked");
+    int rewards = 0;
+    for (Achievement a : unlocked) rewards += achievementInfo(a).reward;
+    check(progress.cash == rewards && achievementsUnlocked(progress) == static_cast<int>(unlocked.size()),
+          "each unlock pays its reward once");
+    check(unlockAchievements(progress, &run).empty() && progress.cash == rewards, "achievements never pay twice");
+
+    RunSummary abandoned = run;
+    abandoned.finished = false;
+    Progress fresh;
+    check(unlockAchievements(fresh, &abandoned).empty(), "an abandoned run earns nothing");
+    fresh.owned[static_cast<size_t>(ShopItem::MoreBones)] = 7;
+    fresh.owned[static_cast<size_t>(ShopItem::GlacierMap)] = 1;
+    fresh.owned[static_cast<size_t>(ShopItem::CanyonMap)] = 1;
+    fresh.owned[static_cast<size_t>(ShopItem::VolcanoMap)] = 1;
+    auto shopUnlocks = unlockAchievements(fresh, nullptr);
+    check(hasAchievement(fresh, Achievement::FullSkeleton) && hasAchievement(fresh, Achievement::Tourist) &&
+              shopUnlocks.size() == 2,
+          "owning 500 bones and every map unlock their achievements outside a run");
+
+    int step = 0;
+    check(tutorialTip(step, false) != nullptr && tutorialTip(step, true) == nullptr, "the first tip shows while walking");
+    step = advanceTutorial(step, TutorialEvent::OpenedShop);
+    check(step == 0, "unrelated events don't skip tutorial steps");
+    for (TutorialEvent event : {TutorialEvent::StartedFalling, TutorialEvent::RunEnded, TutorialEvent::OpenedShop,
+                                TutorialEvent::Bought, TutorialEvent::StartedFalling}) {
+        step = advanceTutorial(step, event);
+    }
+    check(step == kTutorialDone && tutorialTip(step, false) == nullptr, "the tutorial finishes after a full loop");
+
+    Progress veteran;
+    veteran.level = kRebirthLevel - 1;
+    check(!canRebirth(veteran) && !rebirth(veteran), "rebirth needs level 12");
+    veteran.level = kRebirthLevel;
+    veteran.bestLevel = 14;
+    veteran.cash = 50000;
+    veteran.runs = 80;
+    veteran.totalBones = 3000;
+    veteran.achievements = progress.achievements;
+    veteran.owned[static_cast<size_t>(ShopItem::Floats)] = 1;
+    veteran.owned[static_cast<size_t>(ShopItem::MoreBones)] = 4;
+    veteran.owned[static_cast<size_t>(ShopItem::CanyonMap)] = 1;
+    veteran.map = MapTheme::Canyon;
+    veteran.settings.volume = 0.3f;
+    veteran.stats.cashEarned = 90000;
+    check(rebirth(veteran), "a level-12 player can rebirth");
+    check(veteran.level == 1 && veteran.bestLevel == 1 && veteran.cash == 0 && !veteran.has(ShopItem::Floats) &&
+              skeletonBoneCount(veteran) == kBaseBoneCount,
+          "rebirth resets level, cash, gear and bones");
+    check(veteran.rebirths == 1 && veteran.has(ShopItem::CanyonMap) && veteran.map == MapTheme::Canyon &&
+              veteran.runs == 80 && veteran.totalBones == 3000 && veteran.achievements == progress.achievements &&
+              nearlyEqual(veteran.settings.volume, 0.3f) && veteran.stats.cashEarned == 90000,
+          "rebirth keeps maps, stats, achievements and settings");
+    check(nearlyEqual(rebirthMultiplier(veteran), 1.5f), "each rebirth adds +50% cash forever");
+
+    veteran.tutorialStep = kTutorialDone;
+    veteran.settings.slowMotion = false;
+    veteran.settings.sensitivity = 1.7f;
+    veteran.stats.playSeconds = 3725.0;
+    veteran.stats.superBoosts = 9;
+    std::string path = (std::filesystem::temp_directory_path() / "kronos_bb_meta_save.json").string();
+    std::string error;
+    Progress loaded;
+    check(saveProgress(veteran, path, error) && loadProgress(loaded, path, error), "meta progress saves and loads");
+    check(loaded.rebirths == 1 && loaded.achievements == veteran.achievements && loaded.tutorialStep == kTutorialDone &&
+              !loaded.settings.slowMotion && nearlyEqual(loaded.settings.sensitivity, 1.7f) &&
+              loaded.stats.playSeconds > 3724.0 && loaded.stats.superBoosts == 9 && loaded.stats.cashEarned == 90000,
+          "settings, stats, achievements, rebirths and tutorial progress survive a reload");
+
+    nlohmann::json legacy = {{"version", 2}, {"cash", 10}, {"level", 3}, {"runs", 12}};
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << legacy.dump();
+    }
+    Progress old;
+    check(loadProgress(old, path, error) && old.tutorialStep == kTutorialDone && old.settings.tips,
+          "players from before the tutorial existed skip it");
+    std::filesystem::remove(path);
+}
+
+void testBrokenBonesInjuries() {
+    using namespace engine::brokenbones;
+    using engine::core::HumanoidRagdollPart;
+    InjuryTracker injuries;
+    check(injuries.registerImpact(HumanoidRagdollPart::Head, 10.0f, 9.0f, true).empty() && injuries.cash() == 0,
+          "a light knock on the head is just a broken skull, not a concussion");
+    auto hits = injuries.registerImpact(HumanoidRagdollPart::Head, 40.0f, 9.0f, true);
+    bool concussed = std::any_of(hits.begin(), hits.end(), [](const InjuryHit& h) { return h.injury == Injury::Concussion; });
+    check(concussed && injuries.has(Injury::KnockedOut) && injuries.has(Injury::CompoundFracture),
+          "a 40 m/s headbutt concusses, knocks out and opens a compound fracture");
+    check(injuries.blackout() > 0.99f && injuries.daze() > 0.99f, "being knocked out blacks the screen right away");
+    check(injuries.registerImpact(HumanoidRagdollPart::Head, 60.0f, 9.0f, true).empty(),
+          "each injury only counts once per run");
+    int cashBefore = injuries.cash();
+    injuries.update(2.0f);
+    check(injuries.blackout() > 0.99f && injuries.bleedSeconds() > 1.9f, "the blackout holds while the head bleeds");
+    check(injuries.cash() == cashBefore + static_cast<int>(std::round(2.0f * InjuryTracker::kBleedCashPerSecond)),
+          "bleeding pays by the second");
+    injuries.update(5.0f, false);
+    check(injuries.blackout() == 0.0f && injuries.bleedSeconds() < 2.1f,
+          "the player comes round, and bleeding after the run doesn't pay");
+    injuries.update(10.0f);
+    check(injuries.daze() == 0.0f, "the daze wears off");
+    injuries.update(100.0f);
+    check(injuries.bleedSeconds() <= InjuryTracker::kMaxBleedSeconds, "bleeding cash is capped");
+
+    check(!injuries.registerNeckSnap(10.0f) && injuries.registerNeckSnap(25.0f) && !injuries.registerNeckSnap(30.0f),
+          "a hard enough head snap is whiplash, once");
+    (void)injuries.registerImpact(HumanoidRagdollPart::UpperArmR, 15.0f, 11.0f, false);
+    (void)injuries.registerImpact(HumanoidRagdollPart::Abdomen, 26.0f, 12.0f, false);
+    (void)injuries.registerImpact(HumanoidRagdollPart::Chest, 31.0f, 12.0f, false);
+    check(injuries.has(Injury::DislocatedShoulder) && injuries.has(Injury::InternalBleeding) &&
+              !injuries.has(Injury::PuncturedLung),
+          "arm, gut and rib injuries need their own kind of hit (a lung needs a broken rib)");
+    (void)injuries.registerImpact(HumanoidRagdollPart::Chest, 31.0f, 12.0f, true);
+    (void)injuries.registerImpact(HumanoidRagdollPart::Pelvis, 39.0f, 12.0f, false);
+    check(injuries.count() == static_cast<int>(kInjuryCount) && injuries.mask() == (1u << kInjuryCount) - 1,
+          "every injury type can happen");
+    for (HumanoidRagdollPart part : {HumanoidRagdollPart::LowerLegL, HumanoidRagdollPart::LowerLegR,
+                                     HumanoidRagdollPart::LowerArmL, HumanoidRagdollPart::LowerArmR}) {
+        (void)injuries.registerImpact(part, 60.0f, 10.0f, true);
+    }
+    check(injuries.bleeding().size() == InjuryTracker::kMaxBleeds, "at most three wounds bleed at once");
+    injuries.begin();
+    check(injuries.count() == 0 && injuries.cash() == 0 && injuries.bleeding().empty(), "a new run starts unhurt");
+
+    RunTracker run;
+    run.begin(100.0f);
+    (void)run.registerImpact(HumanoidRagdollPart::Head, 20.0f);
+    RunPayout plain = computeRunPayout(run, 1, RunEndReason::CameToRest);
+    RunPayout hurt = computeRunPayout(run, 1, RunEndReason::CameToRest, 1.0f, 500);
+    check(hurt.injuries == 500 && hurt.total == plain.total + 500, "injury cash joins the payout");
+    RunPayout quit = computeRunPayout(run, 1, RunEndReason::None, 1.0f, 500);
+    check(quit.injuries == 0, "an abandoned run pays nothing for injuries");
+
+    Progress progress;
+    RunSummary summary;
+    summary.finished = true;
+    summary.injuries = 5;
+    summary.knockedOut = true;
+    (void)unlockAchievements(progress, &summary);
+    check(hasAchievement(progress, Achievement::WalkingDisaster) && hasAchievement(progress, Achievement::LightsOut) &&
+              !hasAchievement(progress, Achievement::FrequentFlyer),
+          "injury achievements unlock from the run");
+    progress.injuriesSeen = (1u << kInjuryCount) - 1;
+    (void)unlockAchievements(progress, nullptr);
+    check(hasAchievement(progress, Achievement::FrequentFlyer), "suffering every injury type over time unlocks FREQUENT FLYER");
+}
+
+void testBrokenBonesLeaderboard() {
+    using namespace engine::brokenbones;
+    Leaderboard board;
+    std::vector<BoardRow> empty = boardStandings(board, BoardStat::Cash);
+    check(empty.size() == 8 && !empty.front().player && empty.front().value > empty.back().value,
+          "a fresh leaderboard lists the rivals, best first");
+    RunRecord small{1, 90, 9, 50.0f, 20.0f, 0, 1, MapTheme::Coast};
+    auto placed = submitRun(board, small);
+    check(placed.size() == 4, "a first run places on every board");
+    auto rankOf = [&](BoardStat stat) {
+        for (const auto& [s, rank] : placed) if (s == stat) return rank;
+        return 0;
+    };
+    check(rankOf(BoardStat::Cash) == 8 && rankOf(BoardStat::Bones) == 7,
+          "a small run slots in near the bottom (ties go to the player)");
+
+    RunRecord big{2, 50000, 450, 2700.0f, 300.0f, 6, 15, MapTheme::Volcano};
+    placed = submitRun(board, big);
+    check(rankOf(BoardStat::Cash) == 1 && rankOf(BoardStat::Speed) == 1, "a monster run takes first place");
+    std::vector<BoardRow> cash = boardStandings(board, BoardStat::Cash);
+    check(cash.size() == kBoardSize && cash.front().player && cash.front().record.run == 2,
+          "the board shows ten rows with the player on top");
+
+    for (int i = 0; i < 30; ++i) {
+        RunRecord r{10 + i, 10 * i, i, static_cast<float>(i), static_cast<float>(i), 0, 1, MapTheme::Coast};
+        (void)submitRun(board, r);
+    }
+    bool sorted = true;
+    for (const auto& list : board.best) {
+        check(list.size() <= kBoardSize, "each board keeps only the player's top ten runs");
+    }
+    const auto& bestCash = board.best[static_cast<size_t>(BoardStat::Cash)];
+    for (size_t i = 1; i < bestCash.size(); ++i) sorted = sorted && bestCash[i - 1].cash >= bestCash[i].cash;
+    check(sorted && bestCash.front().run == 2, "boards stay sorted and keep the best run");
+    RunRecord zero{99, 0, 0, 0.0f, 0.0f, 0, 1, MapTheme::Coast};
+    check(submitRun(board, zero).empty(), "an empty run doesn't clutter the boards");
+
+    Progress progress;
+    progress.leaderboard = board;
+    progress.injuriesSeen = 0x15;
+    progress.stats.injuries = 42;
+    progress.settings.music = 0.25f;
+    std::string path = (std::filesystem::temp_directory_path() / "kronos_bb_board_save.json").string();
+    std::string error;
+    Progress loaded;
+    check(saveProgress(progress, path, error) && loadProgress(loaded, path, error), "leaderboard saves and loads");
+    const auto& loadedCash = loaded.leaderboard.best[static_cast<size_t>(BoardStat::Cash)];
+    check(loadedCash.size() == bestCash.size() && loadedCash.front().run == 2 && loadedCash.front().map == MapTheme::Volcano &&
+              loadedCash.front().injuries == 6 && nearlyEqual(loadedCash.front().fall, 2700.0f),
+          "leaderboard runs survive a reload");
+    check(loaded.injuriesSeen == 0x15 && loaded.stats.injuries == 42 && nearlyEqual(loaded.settings.music, 0.25f),
+          "injury history and the music volume survive a reload");
+    progress.level = kRebirthLevel;
+    check(rebirth(progress) && progress.leaderboard.best[0].size() == bestCash.size() && progress.injuriesSeen == 0x15,
+          "rebirth keeps the leaderboard and injury history");
+    std::filesystem::remove(path);
+}
+
+void testBrokenBonesMusicLoops() {
+    using namespace engine::brokenbones;
+    std::set<size_t> lengths;
+    for (size_t t = 0; t < kTrackCount; ++t) {
+        auto track = static_cast<Track>(t);
+        auto start = std::chrono::steady_clock::now();
+        std::vector<float> music = synthesizeTrack(track);
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        float seconds = static_cast<float>(music.size()) / static_cast<float>(kSfxSampleRate);
+        float expected = 8.0f * 4.0f * 60.0f / trackBpm(track);
+        bool finite = true;
+        float peak = 0.0f;
+        double energy = 0.0;
+        float worstJump = 0.0f;
+        for (size_t i = 0; i < music.size(); ++i) {
+            finite = finite && std::isfinite(music[i]);
+            peak = std::max(peak, std::abs(music[i]));
+            energy += static_cast<double>(music[i]) * music[i];
+            if (i > 0) worstJump = std::max(worstJump, std::abs(music[i] - music[i - 1]));
+        }
+        float seam = std::abs(music.front() - music.back());
+        float rms = static_cast<float>(std::sqrt(energy / std::max<size_t>(music.size(), 1)));
+        std::fprintf(stdout, "  %s: %.1f s, peak %.2f, rms %.3f, seam %.3f (worst step %.3f), synth %.0f ms\n",
+                     trackName(track), seconds, peak, rms, seam, worstJump, ms);
+        check(finite && peak <= 0.86f && rms > 0.05f, "each music track is finite, audible and unclipped");
+        check(std::abs(seconds - expected) < 0.01f, "each track is exactly eight bars long");
+        check(seam <= std::max(worstJump, 0.02f), "the loop point is no bigger a jump than the music itself makes");
+        check(synthesizeTrack(track) == music, "music synthesis is deterministic");
+        lengths.insert(music.size());
+    }
+    check(lengths.size() == kTrackCount, "the title, cliff and freefall tracks are different pieces");
+    check(trackBpm(Track::Freefall) > trackBpm(Track::Cliff) && trackBpm(Track::Cliff) > trackBpm(Track::Title),
+          "the music speeds up from the title screen to the freefall");
+
+    MusicPlayer silent;
+    silent.play(Track::Freefall);
+    silent.update(1.0f);
+    check(silent.level(Track::Freefall) == 0.0f, "an unloaded music player is a safe no-op");
+}
+
+void testBrokenBonesEffects() {
+    using namespace engine::brokenbones;
+    auto soft = impactDust(glm::vec3(0.5f), 6.0f);
+    auto hard = impactDust(glm::vec3(0.5f), 60.0f);
+    check(!soft.looping && hard.emissionRate > soft.emissionRate && hard.velocityMax.x > soft.velocityMax.x,
+          "harder hits throw up more, faster dust");
+    check(splashColumn(120.0f, false).emissionRate > splashColumn(15.0f, false).emissionRate &&
+              splashColumn(120.0f, false).velocityMax.y > splashColumn(15.0f, false).velocityMax.y,
+          "faster water entries make bigger splashes");
+    check(splashColumn(50.0f, false).occlusion > 0.5f && splashColumn(50.0f, true).occlusion == 0.0f &&
+              splashColumn(50.0f, true).colorStart.r > 1.0f,
+          "water spray is opaque while lava spatter glows");
+    check(bloodBurst(30.0f).occlusion == 1.0f && explosionSmoke(1.0f).occlusion == 1.0f && bloodDrip().looping &&
+              !bloodDrip().enabled,
+          "blood and smoke paint over the scene rather than glow");
+    check(engine::core::ParticleEmitterSettings{}.occlusion == 0.0f, "particles still glow additively by default");
+    engine::core::MaterialLayers water;
+    water.waterWaves = 1.0f;
+    check(engine::core::MaterialLayers{}.isDefault() && !water.isDefault(), "animated water is an opt-in material layer");
+
+    engine::core::ECS ecs;
+    engine::core::ParticleSystem particles;
+    EffectsPool pool;
+    pool.attach(ecs);
+    pool.burst(glm::vec3(1.0f, 2.0f, 3.0f), bloodBurst(40.0f));
+    particles.update(0.016f, ecs);
+    size_t spawned = particles.liveCount();
+    check(spawned == static_cast<size_t>(bloodBurst(40.0f).emissionRate), "a burst spawns its particles once");
+    bool occluding = !particles.liveParticles().empty() && particles.liveParticles().front().occlusion == 1.0f;
+    check(occluding, "particles carry their emitter's occlusion");
+    pool.update(1.0f);
+    particles.update(0.016f, ecs);
+    check(pool.live() == 0 && particles.liveCount() <= spawned, "spent burst emitters are cleaned up and never re-fire");
+    for (size_t i = 0; i < EffectsPool::kMaxLive + 10; ++i) pool.burst(glm::vec3(0.0f), boneChips(1));
+    check(pool.live() == EffectsPool::kMaxLive, "the effects pool is capped");
+    pool.clear();
+    check(pool.live() == 0, "clearing the pool removes every emitter");
+}
+
+void testBrokenBonesCombosChainQuickBreaks() {
+    using namespace engine::brokenbones;
+    using engine::core::HumanoidRagdollPart;
+    CliffLayout layout = generateCliffLayout(9u, 1);
+    glm::vec3 midAir(0.0f, 50.0f, 40.0f);
+    RunTracker run;
+    run.begin(100.0f);
+    check(run.registerImpact(HumanoidRagdollPart::LowerLegL, 20.0f)->combo == 1, "the first break starts a chain");
+    (void)run.update(0.5f, midAir, 20.0f, layout);
+    check(run.registerImpact(HumanoidRagdollPart::LowerLegR, 20.0f)->combo == 2, "a break 0.5 s later chains");
+    (void)run.update(1.0f, midAir, 20.0f, layout);
+    check(run.registerImpact(HumanoidRagdollPart::Pelvis, 20.0f)->combo == 3 && run.liveCombo() == 3,
+          "a third break inside the window makes x3");
+    (void)run.update(2.0f, midAir, 20.0f, layout);
+    check(run.liveCombo() == 0, "the chain lapses after the window");
+    check(run.registerImpact(HumanoidRagdollPart::Head, 20.0f)->combo == 1 && run.bestCombo() == 3,
+          "a late break starts over but the best combo is kept");
+}
+
+void testBrokenBonesRunPayout() {
+    using namespace engine::brokenbones;
+    using engine::core::HumanoidRagdollPart;
+    CliffLayout layout = generateCliffLayout(9u, 1);
+    RunTracker run;
+    run.begin(100.0f);
+    (void)run.registerImpact(HumanoidRagdollPart::Head, 30.0f);
+    (void)run.registerImpact(HumanoidRagdollPart::LowerLegL, 12.0f);
+    (void)run.update(0.01f, glm::vec3(0.0f, 20.0f, layout.faceZ(0.0f, 20.0f)), 5.0f, layout);
+
+    RunPayout payout = computeRunPayout(run, 1, RunEndReason::CameToRest);
+    check(payout.bones == 40 && payout.combo == 3, "a skull and a tibia pay $30 + $10, with $3 for the x2 combo");
+    check(payout.hits == 2 && payout.distance == 16 && payout.bigHit == 5, "hits, distance and big hits pay out");
+    check(payout.total == 66 && payout.splash == 0, "level 1 pays the plain subtotal");
+    RunPayout splash = computeRunPayout(run, 3, RunEndReason::Splashdown);
+    check(splash.splash == 50 && splash.total == 151, "a splashdown adds $50 and level 3 multiplies by 1.3");
+    check(computeRunPayout(run, 1, RunEndReason::CameToRest, 1.15f).total == 76, "cash bonus multiplies the payout");
+    RunPayout abandoned = computeRunPayout(run, 1, RunEndReason::None, 1.45f);
+    check(abandoned.abandoned && abandoned.total == 20 && abandoned.distance == 0 && abandoned.hits == 0,
+          "an abandoned run only pays half its bone cash");
+    RunTracker nothing;
+    nothing.begin(300.0f);
+    (void)nothing.update(0.01f, glm::vec3(0.0f, 10.0f, 30.0f), 50.0f, layout);
+    check(computeRunPayout(nothing, 9, RunEndReason::None).total == 0,
+          "restarting mid-fall with no breaks pays nothing");
+    RunPayout skipped = computeRunPayout(run, 1, RunEndReason::EndedEarly);
+    check(!skipped.abandoned && skipped.total == 66, "skipping the wait after a real fall pays in full");
+}
+
+void testBrokenBonesContractsAndBests() {
+    using namespace engine::brokenbones;
+    using engine::core::HumanoidRagdollPart;
+    std::mt19937 rng(11u);
+    for (int level = 1; level <= 12; ++level) {
+        Progress progress;
+        progress.level = level;
+        refillContracts(progress, rng);
+        std::set<int> kinds;
+        bool sane = progress.contracts.size() == kActiveContracts;
+        for (const Contract& contract : progress.contracts) {
+            kinds.insert(static_cast<int>(contract.kind));
+            sane = sane && contract.reward > 0 && contract.target >= 1 && !contractText(contract).empty();
+            if (contract.kind == ContractKind::BreakBones || contract.kind == ContractKind::BonesAndSplash) {
+                sane = sane && contract.target <= static_cast<int>(engine::core::kHumanoidRagdollPartCount);
+            }
+            if (contract.kind == ContractKind::FallDistance) {
+                sane = sane && static_cast<float>(contract.target) < cliffHeightForLevel(level);
+            }
+        }
+        check(sane && kinds.size() == kActiveContracts, "contracts are three different, achievable goals");
+    }
+
+    CliffLayout layout = generateCliffLayout(9u, 1);
+    RunTracker run;
+    run.begin(100.0f);
+    (void)run.registerImpact(HumanoidRagdollPart::Head, 40.0f);
+    (void)run.registerImpact(HumanoidRagdollPart::Chest, 40.0f);
+    (void)run.update(0.01f, glm::vec3(0.0f, 20.0f, 40.0f), 5.0f, layout);
+    check(contractMet({ContractKind::BreakHead, 1, 100}, run, RunEndReason::CameToRest), "a cracked skull counts");
+    check(contractMet({ContractKind::HitSpeed, 35, 100}, run, RunEndReason::CameToRest), "a 40 m/s hit counts");
+    check(contractMet({ContractKind::Combo, 2, 100}, run, RunEndReason::CameToRest), "a x2 combo counts");
+    check(!contractMet({ContractKind::BreakBones, 3, 100}, run, RunEndReason::CameToRest), "two bones are not three");
+    check(!contractMet({ContractKind::Splashdown, 1, 100}, run, RunEndReason::CameToRest) &&
+              contractMet({ContractKind::BonesAndSplash, 2, 100}, run, RunEndReason::Splashdown),
+          "splash contracts need a splashdown");
+    check(!contractMet({ContractKind::BreakHead, 1, 100}, run, RunEndReason::None), "abandoned runs complete nothing");
+
+    PersonalBests bests;
+    check(updatePersonalBests(bests, run, 100).empty() && bests.bones == 2 && bests.payout == 100,
+          "the first run sets bests silently");
+    RunTracker better;
+    better.begin(100.0f);
+    for (int p = 0; p < 4; ++p) (void)better.registerImpact(static_cast<HumanoidRagdollPart>(p), 50.0f);
+    auto beaten = updatePersonalBests(bests, better, 50);
+    check(bests.bones == 4 && bests.payout == 100 &&
+              std::find(beaten.begin(), beaten.end(), "MOST BONES") != beaten.end() &&
+              std::find(beaten.begin(), beaten.end(), "BIGGEST PAYDAY") == beaten.end(),
+          "beating a best reports it and keeps the others");
+}
+
+void testBrokenBonesProgressSaveRoundTrip() {
+    using namespace engine::brokenbones;
+    const std::string path = "test_brokenbones_save.json";
+    Progress progress;
+    progress.cash = 1234;
+    progress.level = 4;
+    progress.bestLevel = 5;
+    progress.totalBones = 77;
+    progress.runs = 12;
+    progress.owned[static_cast<size_t>(ShopItem::Floats)] = 1;
+    progress.owned[static_cast<size_t>(ShopItem::Rocket)] = 3;
+    progress.owned[static_cast<size_t>(ShopItem::Bomb)] = 7;
+    progress.contracts = {{ContractKind::Combo, 3, 270}, {ContractKind::Splashdown, 1, 150}};
+    progress.bests.bones = 9;
+    progress.bests.fall = 212.5f;
+    std::string error;
+    check(saveProgress(progress, path, error), "Broken Bones progress saves");
+    Progress loaded;
+    int refund = -1;
+    check(loadProgress(loaded, path, error, &refund), "Broken Bones progress loads");
+    check(loaded.cash == 1234 && loaded.level == 4 && loaded.bestLevel == 5 && loaded.totalBones == 77 &&
+              loaded.runs == 12 && loaded.owned == progress.owned && refund == 0,
+          "saved cash, level and items round-trip");
+    check(loaded.contracts.size() == 2 && loaded.contracts[0].kind == ContractKind::Combo &&
+              loaded.contracts[0].reward == 270 && loaded.bests.bones == 9 && nearlyEqual(loaded.bests.fall, 212.5f),
+          "contracts and personal bests round-trip");
+
+    { std::ofstream(path) << R"({"version": 1, "cash": 100, "owned": {"jetpack": 1, "fuelTank": 2, "floats": 1, "bomb": 3}})"; }
+    Progress legacy;
+    check(loadProgress(legacy, path, error, &refund) && refund == 900 && legacy.cash == 1000 &&
+              legacy.has(ShopItem::Floats) && legacy.count(ShopItem::Bomb) == 3,
+          "an old save refunds the retired jetpack and fuel tanks and keeps everything else");
+
+    { std::ofstream(path) << R"({"cash": -50, "level": 0, "owned": {"bomb": 999, "rocket": "yes"}, "contracts": [{"kind": 99}]})"; }
+    Progress hostile;
+    bool loadedHostile = loadProgress(hostile, path, error);
+    check(!loadedHostile || (hostile.cash >= 0 && hostile.level >= 1 && hostile.count(ShopItem::Bomb) <= 10 &&
+                             hostile.contracts.empty()),
+          "a tampered save is rejected or clamped, never trusted");
+    { std::ofstream(path) << "not json"; }
+    check(!loadProgress(hostile, path, error), "a corrupt save is rejected");
+    std::remove(path.c_str());
+}
+
+// Ragdoll hanging in free fall, far from anything.
+struct AirborneRagdoll {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    engine::core::Physics::RagdollHandle handle = engine::core::Physics::kInvalidRagdoll;
+
+    explicit AirborneRagdoll(const engine::core::HumanoidRagdoll& humanoid, float height = 1000.0f) {
+        (void)physics.initialize();
+        handle = physics.createRagdoll(humanoid.desc, glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, height, 0.0f)),
+                                       nullptr, glm::vec3(0.0f), engine::core::CollisionLayer::Debris);
+    }
+    ~AirborneRagdoll() { physics.shutdown(); }
+    glm::vec3 velocity() { return physics.ragdollPartVelocity(handle, 0); }
+    glm::vec3 part(engine::core::HumanoidRagdollPart which) {
+        std::vector<glm::mat4> parts;
+        (void)physics.getRagdollPartTransforms(handle, parts);
+        return glm::vec3(parts[static_cast<size_t>(which)][3]);
+    }
+};
+
+void testBrokenBonesRocketNosedivesHeadFirst() {
+    using namespace engine::brokenbones;
+    using engine::core::HumanoidRagdollPart;
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    AirborneRagdoll air(humanoid);
+    AirborneRagdoll control(humanoid);
+    check(air.part(HumanoidRagdollPart::Head).y > air.part(HumanoidRagdollPart::Pelvis).y + 0.4f,
+          "the rocket test starts upright");
+
+    RocketController rocket;
+    rocket.ignite();
+    const glm::vec3 aim(0.0f, -0.2f, 1.0f);
+    const float dt = 1.0f / 120.0f;
+    bool fused = false;
+    int burningSteps = 0;
+    for (int i = 0; i < 120 * 2; ++i) {
+        if (rocket.burning()) ++burningSteps;
+        fused = rocket.update(dt, aim, air.physics, air.handle) || fused;
+        air.physics.step(dt, air.ecs);
+        control.physics.step(dt, control.ecs);
+    }
+    glm::vec3 head = air.part(HumanoidRagdollPart::Head);
+    glm::vec3 pelvis = air.part(HumanoidRagdollPart::Pelvis);
+    glm::vec3 spine = glm::normalize(head - pelvis);
+    glm::vec3 velocity = air.velocity();
+    std::fprintf(stdout, "  rocket after 2 s: velocity (%.1f, %.1f, %.1f) vs free fall %.1f, spine (%.2f, %.2f, %.2f)\n",
+                 velocity.x, velocity.y, velocity.z, control.velocity().y, spine.x, spine.y, spine.z);
+    check(std::abs(burningSteps - static_cast<int>(RocketController::kBurnSeconds * 120.0f + 0.5f)) <= 1 &&
+              !rocket.burning(),
+          "the rocket burns for exactly its burn time");
+    check(spine.y < -0.6f, "the rocket flips the body head-first");
+    check(velocity.y < control.velocity().y - 50.0f, "the rocket dives far faster than free fall");
+    check(velocity.z > 15.0f, "the dive heads where the camera looks");
+    check(!fused && rocket.live() && rocket.armed(), "the rocket stays armed after burning out");
+    for (int i = 0; i < 120 * 5 && !fused; ++i) {
+        fused = rocket.update(dt, aim, air.physics, air.handle);
+        air.physics.step(dt, air.ecs);
+    }
+    check(fused, "the fuse detonates a rocket that never hits anything");
+
+    RocketController delayed;
+    delayed.ignite(0.9f);
+    (void)delayed.update(0.5f, aim, control.physics, control.handle);
+    check(delayed.live() && !delayed.burning() && !delayed.armed(), "a delayed rocket waits before lighting");
+    (void)delayed.update(0.5f, aim, control.physics, control.handle);
+    check(delayed.burning(), "a delayed rocket lights after its delay");
+}
+
+void testBrokenBonesRocketUpgradesAndSuperBoost() {
+    using namespace engine::brokenbones;
+    Progress progress;
+    progress.cash = 100000;
+    check(buyItem(progress, ShopItem::RocketThrust) == BuyResult::Locked, "rocket thrust unlocks at level 2");
+    progress.bestLevel = 3;
+    check(buyItem(progress, ShopItem::RocketThrust) == BuyResult::Bought &&
+              buyItem(progress, ShopItem::RocketFuel) == BuyResult::Bought,
+          "rocket upgrades can be bought without owning a rocket right now");
+    check(shopPrice(progress, ShopItem::RocketThrust) == 700, "each rocket upgrade level costs more");
+
+    Progress base;
+    Progress maxed;
+    maxed.owned[static_cast<size_t>(ShopItem::RocketThrust)] = 3;
+    maxed.owned[static_cast<size_t>(ShopItem::RocketFuel)] = 3;
+    RocketTuning stock = rocketTuning(base, false);
+    RocketTuning upgraded = rocketTuning(maxed, false);
+    RocketTuning super = rocketTuning(maxed, true);
+    check(nearlyEqual(stock.thrust, RocketController::kThrust) && nearlyEqual(stock.burnSeconds, RocketController::kBurnSeconds),
+          "a stock rocket uses the base thrust and burn");
+    check(nearlyEqual(upgraded.thrust, 76.0f) && nearlyEqual(upgraded.burnSeconds, 3.6f),
+          "maxed upgrades nearly double thrust and burn time");
+    check(super.thrust > upgraded.thrust * 1.9f && super.burnSeconds > upgraded.burnSeconds * 1.3f,
+          "a super boost multiplies both");
+
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    const glm::vec3 aim(0.0f, -0.2f, 1.0f);
+    const float dt = 1.0f / 120.0f;
+    float speeds[3] = {};
+    int burnSteps[3] = {};
+    const RocketTuning tunings[3] = {stock, upgraded, super};
+    for (int t = 0; t < 3; ++t) {
+        AirborneRagdoll air(humanoid, 3000.0f);
+        RocketController rocket;
+        rocket.ignite(0.0f, tunings[t]);
+        for (int i = 0; i < 120 * 6; ++i) {
+            if (rocket.burning()) ++burnSteps[t];
+            (void)rocket.update(dt, aim, air.physics, air.handle);
+            air.physics.addRagdollVelocity(air.handle, airDragDeltaV(air.velocity(), dt));
+            air.physics.step(dt, air.ecs);
+            speeds[t] = std::max(speeds[t], glm::length(air.velocity()));
+        }
+    }
+    std::fprintf(stdout, "  rocket peak speed: stock %.0f, upgraded %.0f, super %.0f m/s\n", speeds[0], speeds[1],
+                 speeds[2]);
+    check(speeds[1] > speeds[0] + 15.0f && speeds[2] > speeds[1] + 15.0f, "upgrades and super boosts make the dive faster");
+    check(std::abs(burnSteps[1] - static_cast<int>(upgraded.burnSeconds * 120.0f + 0.5f)) <= 1,
+          "rocket fuel upgrades burn for longer");
+    check(speeds[0] > kTerminalSpeed + 10.0f, "even a stock rocket beats terminal velocity");
+}
+
+void testBrokenBonesRocketTimingGame() {
+    using namespace engine::brokenbones;
+    std::mt19937 rng(9u);
+    RocketTimingGame game;
+    check(!game.active() && game.lock() == TimingResult::Pending, "an idle timing game ignores presses");
+
+    bool sane = true;
+    float widestLevel1 = 0.0f;
+    float widestLevel12 = 0.0f;
+    for (int i = 0; i < 300; ++i) {
+        int level = i % 2 == 0 ? 1 : 12;
+        game.start(rng, level);
+        sane = sane && game.greenMin() >= 0.35f && game.greenMax() <= 1.0f && game.greenMax() > game.greenMin();
+        float width = game.greenMax() - game.greenMin();
+        (level == 1 ? widestLevel1 : widestLevel12) = std::max(level == 1 ? widestLevel1 : widestLevel12, width);
+        sane = sane && game.lock() == TimingResult::Miss;
+    }
+    check(sane, "the green zone always sits inside the bar, away from where the marker starts");
+    check(widestLevel12 < widestLevel1 && widestLevel12 >= 0.08f, "the green zone shrinks at higher levels");
+
+    const float dt = 1.0f / 120.0f;
+    game.start(rng, 1);
+    while (game.marker() < game.greenMin() + 0.01f) (void)game.update(dt);
+    check(game.lock() == TimingResult::Hit && !game.active(), "locking inside the green is a hit");
+
+    game.start(rng, 1);
+    while (game.marker() < game.greenMax() + 0.02f && game.marker() < 0.999f) (void)game.update(dt);
+    if (game.greenMax() > 0.98f) {
+        game.cancel();
+        game.start(rng, 1);
+        while (game.marker() < game.greenMin() - 0.05f) (void)game.update(dt);
+    }
+    check(game.lock() == TimingResult::Miss, "locking outside the green is a miss");
+
+    game.start(rng, 1);
+    (void)game.update(RocketTimingGame::kSweepSeconds * 1.5f);
+    float returning = game.marker();
+    (void)game.update(0.05f);
+    check(nearlyEqual(returning, 0.5f, 0.01f) && game.marker() < returning, "the marker sweeps back after reaching the end");
+    check(game.update(RocketTimingGame::kTimeoutSeconds) == TimingResult::TimedOut && !game.active(),
+          "waiting too long times out instead of exploding");
+}
+
+void testBrokenBonesAirDragAndMidAirBlast() {
+    using namespace engine::brokenbones;
+    glm::vec3 v(0.0f);
+    const float dt = 1.0f / 120.0f;
+    for (int i = 0; i < 120 * 40; ++i) v += glm::vec3(0.0f, -9.81f * dt, 0.0f) + airDragDeltaV(v, dt);
+    check(nearlyEqual(-v.y, kTerminalSpeed, 0.5f), "free fall levels off at terminal velocity");
+    check(glm::length(airDragDeltaV(glm::vec3(0.0f, -20.0f, 0.0f), 1.0f)) < 1.0f, "drag barely touches a slow fall");
+    check(glm::length(airDragDeltaV(glm::vec3(0.0f), dt)) == 0.0f, "no drag at rest");
+
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    AirborneRagdoll air(humanoid);
+    for (int i = 0; i < 120 * 15; ++i) {
+        air.physics.addRagdollVelocity(air.handle, airDragDeltaV(air.velocity(), dt));
+        air.physics.step(dt, air.ecs);
+    }
+    float fallSpeed = -air.velocity().y;
+    std::fprintf(stdout, "  ragdoll after 15 s of free fall with drag: %.1f m/s\n", fallSpeed);
+    check(fallSpeed > kTerminalSpeed - 8.0f && fallSpeed < kTerminalSpeed + 3.0f, "a falling ragdoll reaches terminal velocity");
+
+    // A mid-air rocket blast must not stop the fall like an invisible wall.
+    std::mt19937 rng(3u);
+    RunTracker run;
+    run.begin(1000.0f);
+    glm::vec3 chest = air.part(engine::core::HumanoidRagdollPart::Chest);
+    (void)applyBlast(air.physics, air.handle, run, chest, RocketController::kBlastSpeed, glm::vec3(6.0f, 5.0f, 0.0f), rng,
+                     0.0f);
+    air.physics.step(dt, air.ecs);
+    check(-air.velocity().y > fallSpeed - 8.0f, "a mid-air blast keeps the fall's momentum");
+}
+
+void testBrokenBonesRocketExplodesOnImpact() {
+    using namespace engine::brokenbones;
+    using engine::core::HumanoidRagdollPart;
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    AirborneRagdoll air(humanoid, 45.0f);
+    air.physics.createStaticBox(air.ecs, glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(200.0f, 1.0f, 200.0f),
+                                glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    air.physics.optimizeBroadPhase();
+    air.physics.setImpactRecording(true, 3.0f);
+
+    RocketController rocket;
+    rocket.ignite();
+    RunTracker run;
+    run.begin(46.0f);
+    std::mt19937 rng(5u);
+    const float dt = 1.0f / 120.0f;
+    std::vector<BoneBreak> blastBreaks;
+    bool exploded = false;
+    float launchVy = 0.0f;
+    for (int i = 0; i < 120 * 4 && !exploded; ++i) {
+        (void)rocket.update(dt, glm::vec3(0.0f, 0.0f, 1.0f), air.physics, air.handle);
+        air.physics.step(dt, air.ecs);
+        for (const auto& impact : air.physics.drainImpactEvents()) {
+            int a = air.physics.ragdollPartIndexForBody(air.handle, impact.bodyA);
+            int b = air.physics.ragdollPartIndexForBody(air.handle, impact.bodyB);
+            if ((a >= 0) == (b >= 0)) continue;
+            int part = a >= 0 ? a : b;
+            if (!exploded && rocket.armed() && impact.impactSpeed >= 6.0f) {
+                exploded = true;
+                rocket.reset();
+                blastBreaks = applyBlast(air.physics, air.handle, run, impact.point, RocketController::kBlastSpeed,
+                                         glm::vec3(0.0f, RocketController::kBlastLaunch, 0.0f), rng,
+                                         RocketController::kBlastAbsorb);
+            }
+            if (run.registerImpact(static_cast<HumanoidRagdollPart>(part), impact.impactSpeed)) {
+                air.physics.setRagdollJointLimp(air.handle, part);
+            }
+        }
+    }
+    for (int i = 0; i < 6; ++i) air.physics.step(dt, air.ecs);
+    launchVy = air.velocity().y;
+    std::fprintf(stdout, "  rocket impact: %zu bones from the blast, %d total, hardest %.1f m/s, pelvis vy %.1f\n",
+                 blastBreaks.size(), run.bonesBroken(), run.hardestImpact(), launchVy);
+    check(exploded && !rocket.live(), "the rocket explodes on its first hard impact");
+    check(blastBreaks.size() >= 3, "the explosion breaks several bones at once");
+    check(run.isBroken(HumanoidRagdollPart::Head), "a head-first rocket dive cracks the skull");
+    check(launchVy > 3.0f, "the blast throws the body back up");
+}
+
+
+void testBrokenBonesFloatsSlowTheFallThenPop() {
+    using namespace engine::brokenbones;
+    engine::core::HumanoidRagdoll humanoid = buildTestHumanoid();
+    AirborneRagdoll air(humanoid);
+    air.physics.addRagdollVelocity(air.handle, glm::vec3(0.0f, -40.0f, 0.0f));
+    Progress progress;
+    progress.owned[static_cast<size_t>(ShopItem::Floats)] = 1;
+    BoostController boosts;
+    boosts.beginRun(progress);
+
+    BoostInput input;
+    input.floats = true;
+    const float dt = 1.0f / 120.0f;
+    for (int i = 0; i < 120 * 3; ++i) {
+        (void)boosts.update(dt, input, air.physics, air.handle);
+        air.physics.step(dt, air.ecs);
+    }
+    glm::vec3 floating = air.velocity();
+    std::fprintf(stdout, "  floats after 3 s from a 40 m/s dive: velocity (%.1f, %.1f, %.1f)\n", floating.x,
+                 floating.y, floating.z);
+    check(floating.y > -3.0f, "floats brake a 40 m/s dive to a gentle descent");
+    check(floating.z > 8.0f, "floats glide the ragdoll forwards");
+    for (int i = 0; i < 120 * 3; ++i) {
+        (void)boosts.update(dt, input, air.physics, air.handle);
+        air.physics.step(dt, air.ecs);
+    }
+    check(boosts.helium().empty() && air.velocity().y < -5.0f, "after 5 s of helium the floats pop and the fall resumes");
+
+    Progress none;
+    BoostController unarmed;
+    unarmed.beginRun(none);
+    check(!unarmed.update(dt, input, air.physics, air.handle).floatsLifting, "floats do nothing unless owned");
+}
+
+void testBrokenBonesSoundEffectsAreCleanAndDistinct() {
+    using namespace engine::brokenbones;
+    std::set<size_t> lengths;
+    for (size_t s = 0; s < kSfxCount; ++s) {
+        auto sfx = static_cast<Sfx>(s);
+        std::vector<float> a = synthesizeSfx(sfx, 0);
+        std::vector<float> b = synthesizeSfx(sfx, 0);
+        float peak = 0.0f;
+        double energy = 0.0;
+        bool finite = true;
+        for (float x : a) {
+            finite = finite && std::isfinite(x);
+            peak = std::max(peak, std::abs(x));
+            energy += static_cast<double>(x) * x;
+        }
+        float rms = static_cast<float>(std::sqrt(energy / std::max<size_t>(a.size(), 1)));
+        bool ok = finite && !a.empty() && a == b && peak <= 1.0f && peak > 0.3f && rms > 0.01f;
+        float seconds = static_cast<float>(a.size()) / static_cast<float>(kSfxSampleRate);
+        ok = ok && seconds > 0.02f && seconds < 5.0f;
+        if (!sfxLoops(sfx)) ok = ok && std::abs(a.front()) < 0.05f && std::abs(a.back()) < 0.05f;
+        if (sfxLoops(sfx)) ok = ok && std::abs(a.front() - a.back()) < 0.2f;
+        if (!ok) std::fprintf(stdout, "  sfx %s: peak %.2f rms %.3f %.2f s\n", sfxName(sfx), peak, rms, seconds);
+        check(ok, "every Broken Bones sound effect is finite, deterministic, audible, unclipped and click-free");
+        lengths.insert(a.size());
+    }
+    check(lengths.size() >= 12, "the sound effects are genuinely different sounds");
+    check(synthesizeSfx(Sfx::Crack, 0) != synthesizeSfx(Sfx::Crack, 1), "bone cracks come in several variants");
+
+    const std::string path = "test_brokenbones_crack.wav";
+    std::vector<float> crack = synthesizeSfx(Sfx::Crack, 2);
+    std::vector<float> decoded;
+    uint32_t rate = 0;
+    check(engine::core::encodeFloatMonoToWavFile(path, crack, kSfxSampleRate) &&
+              engine::core::decodeAudioFileToFloatMono(path, decoded, rate) && rate == kSfxSampleRate &&
+              decoded.size() == crack.size(),
+          "a synthesized crack round-trips through a WAV file");
+    std::remove(path.c_str());
+
+    SoundBank silent;
+    silent.play(Sfx::Crack);
+    silent.setLoop(Sfx::Wind, 1.0f);
+    silent.stopAllLoops();
+    check(!silent.loaded(), "an unloaded sound bank is a safe no-op");
+}
+
+void testBrokenBonesBombLaunchClearsTheCliff() {
+    using namespace engine::brokenbones;
+    glm::vec3 launch = bombLaunchVelocity(glm::vec3(0.0f, -0.5f, 1.0f));
+    check(nearlyEqual(launch.x, 0.0f) && launch.z > 25.0f && launch.y > 12.0f,
+          "the bomb launches forward and up regardless of camera pitch");
+    CliffLayout layout = generateCliffLayout(3u, 1);
+    float airtime = 2.0f * launch.y / 9.81f;
+    check(layout.spawnPoint.z + launch.z * airtime > layout.faceZ(0.0f, layout.height) + 10.0f,
+          "a bomb from the spawn point carries the player well past the cliff lip");
+}
+
+} // namespace
+
 int main() {
     testKronosLaunchUriParsing();
     testGameSlugResolution();
@@ -39910,6 +41732,9 @@ int main() {
     testAnimationPlayerCrossfadeBlending();
     testAnimationPlayerEventFiring();
     testAvatarControllerStateMachine();
+    testRetargetClipTranslationsFollowsBodyProportions();
+    testAnimationPlayerPlaybackRate();
+    testAvatarControllerWalkRunHysteresis();
     testAvatarControllerBlendTreeTransitions();
     testAvatarControllerEmotePlayback();
     testAvatarControllerFallingAndLandingStates();
@@ -40045,10 +41870,10 @@ int main() {
     testApplyWeatherStormMeaningfullyDarkensAndDesaturates();
     testApplyWeatherNeverProducesNegativeFogDensity();
 
-    testIsSupportedShapeKindMatchesRealBoxPlaneScope();
-    testPackMaterialsProducesTwoVec4PerInstanceInOrder();
-    testPackMaterialsIsRealIdentityOnMixedOrderNotJustSorted();
-    testPackMaterialsHandlesEmptyInput();
+    testRtTransformIsRowMajorThreeByFour();
+    testRtMaterialPacking();
+    testRtInstanceMasks();
+    testMeshWithoutGpuUploadIsNotRayTracingReady();
     testBiomeNamesAreRealAndDistinct();
     testBiomePresetsAreRealAndDistinct();
     testCaveBiomeIsRealistcallyDimmerThanDesert();
@@ -40192,6 +42017,9 @@ int main() {
     testAudioDspGraphFailsOnUnconnectedInput();
     testAudioDspGraphDetectsCycle();
     testComputeWaveformPeaksBucketsCoverWholeBuffer();
+    testSpectrogramFftAndStft();
+    testRollbackSessionConvergesUnderLatency();
+    testRollbackSessionStallsAtWindowEdge();
     testComputePeakAndRmsDbfsRealValues();
     testDetectSpeechSegmentsFindsKnownSilenceGaps();
     testExtractVisemesFromTranscriptDistributesWordsProportionally();
@@ -41722,6 +43550,38 @@ int main() {
     testFacilityLayoutDuffelBagSearchesLongerThanAFootlocker();
     testFacilityLayoutCorridorDoorFrameGapIsOpenAtFloorLevel();
     testFacilityLayoutPlayerSpawnsInsideEntryHallAboveTheFloor();
+    testDeepStorageWingGridEveryRoomReachableFromEntrance();
+
+    testBrokenBonesCliffLayoutIsSeededAndGrowsWithLevel();
+    testBrokenBonesCliffsNeverOverlapAndVary();
+    testBrokenBonesRockMeshIsClosedAndFinite();
+    testBrokenBonesHumanoidRagdollDescIsValid();
+    testBrokenBonesRagdollSettlesOnGroundAndStaysConnected();
+    testBrokenBonesKneesAndElbowsBendTheRightWay();
+    testBrokenBonesRunTrackerRules();
+    testBrokenBonesFullRunOffGeneratedCliff();
+    testBrokenBonesEveryImpactIsOnVisibleGeometry();
+    testBrokenBonesShopPricesPrerequisitesAndLimits();
+    testBrokenBonesFuelIsFinite();
+    testBrokenBonesCombosChainQuickBreaks();
+    testBrokenBonesBiggerSkeletons();
+    testBrokenBonesMapsAndAltitude();
+    testBrokenBonesAchievementsTutorialAndRebirth();
+    testBrokenBonesInjuries();
+    testBrokenBonesLeaderboard();
+    testBrokenBonesMusicLoops();
+    testBrokenBonesEffects();
+    testBrokenBonesRunPayout();
+    testBrokenBonesContractsAndBests();
+    testBrokenBonesProgressSaveRoundTrip();
+    testBrokenBonesRocketNosedivesHeadFirst();
+    testBrokenBonesRocketExplodesOnImpact();
+    testBrokenBonesRocketUpgradesAndSuperBoost();
+    testBrokenBonesRocketTimingGame();
+    testBrokenBonesAirDragAndMidAirBlast();
+    testBrokenBonesFloatsSlowTheFallThenPop();
+    testBrokenBonesBombLaunchClearsTheCliff();
+    testBrokenBonesSoundEffectsAreCleanAndDistinct();
 
     std::fprintf(stdout, "%d/%d checks passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;

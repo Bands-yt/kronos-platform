@@ -112,7 +112,7 @@ void BlockBuilderPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
     ImGui::Checkbox("Snap to Surface##blockbuilder", &snapToSurfaceEnabled_);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    helpMarker("Overrides spawn Y with the real terrain height at that X/Z. Needs a terrain to exist first.");
+    helpMarker("Places the block on the terrain surface at that X/Z. Requires a terrain.");
     glm::vec3 effectivePosition = effectiveSpawnPosition();
     ImGui::TextDisabled("Effective: (%.2f, %.2f, %.2f)", effectivePosition.x, effectivePosition.y, effectivePosition.z);
 

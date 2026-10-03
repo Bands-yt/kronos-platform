@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/Spectrogram.hpp"
 #include "core/AssetMetadata.hpp"
 #include "core/Audio.hpp"
 #include "core/AudioDspGraph.hpp"
@@ -53,6 +54,8 @@ namespace engine::studio::plugins {
 // those functions' own header comments).
 class AudioPreviewPlugin final : public IStudioPlugin {
 public:
+    // Queues `path` to load on the next frame, as if typed and Loaded.
+    void openFile(const std::string& path);
     [[nodiscard]] bool initialize();
     void shutdown();
 
@@ -75,6 +78,7 @@ private:
     // ImGui::GetWindowDrawList() the same way every ViewportPanel debug
     // overlay already draws world-space lines into its own window.
     void drawWaveformBars(const char* childId, const std::vector<std::pair<float, float>>& peaks, float heightPx);
+    void drawSpectrogram(const char* childId, const core::Spectrogram& spectrogram, float heightPx);
     // One real channel strip (vertical fader + mute/solo + peak/RMS dBFS
     // readout) -- shared by the Track Mixer's Source/Processed/Master
     // strips rather than 3 independently-drifting copies of the same
@@ -94,6 +98,7 @@ private:
     core::SoundHandle loadedSound_ = core::kInvalidSoundHandle;
 
     char pathBuffer_[256] = "";
+    bool pendingLoad_ = false;
     std::string statusMessage_;
     core::AssetMetadata lastMetadata_;
 
@@ -111,6 +116,7 @@ private:
     uint32_t sourceSampleRate_ = 0;
     float sourceDurationSeconds_ = 0.0f;
     std::vector<std::pair<float, float>> sourceWaveformPeaks_;
+    core::Spectrogram sourceSpectrogram_;
     float sourcePeakDbfs_ = -100.0f;
     float sourceRmsDbfs_ = -100.0f;
     // Track Mixer's own Source-channel real state -- see
@@ -141,6 +147,8 @@ private:
     // needs to outlive that one call, unlike the Source channel (which
     // has no other buffer to read from on every later frame).
     std::vector<std::pair<float, float>> processedWaveformPeaks_;
+    core::Spectrogram processedSpectrogram_;
+    int inspectorView_ = 0;
     float processedPeakDbfs_ = -100.0f;
     float processedRmsDbfs_ = -100.0f;
     float processedGain_ = 1.0f;

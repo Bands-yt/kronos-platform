@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -24,6 +25,7 @@
 #include "core/Renderer.hpp"
 #include "core/ScenePicking.hpp"
 #include "core/Terrain.hpp"
+#include "core/UIWidgets.hpp"
 #include "core/WorldProp.hpp"
 #include "studio/CreatorToolsSpawning.hpp"
 #include "studio/StudioIcons.hpp"
@@ -514,7 +516,7 @@ std::vector<glm::vec3> circlePoints(glm::vec3 center, glm::vec3 axisA, glm::vec3
 // the viewport image rectangle; the plugin owns the rail. Same split, and
 // the same projection helpers, as drawPhysicsDebugOverlay() below.
 void ViewportPanel::drawCameraRailOverlay(plugins::MovieModePlugin& movieMode, ImVec2 imageOrigin, ImVec2 imageSize) {
-    if (!movieMode.showRailGizmo()) return;
+    if (!movieMode.isOpen() || !movieMode.showRailGizmo()) return;
     if (imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
 
     cinematic::CameraRail& rail = movieMode.rail();
@@ -1270,158 +1272,146 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         }
     }
 
-    // Drawn on a split channel so the background panel (whose size
-    // depends on the buttons' laid-out extent, not known until after
-    // EndGroup()) can still be painted *behind* content already recorded
-    // into the same window draw list -- the standard ImGui technique for
-    // "size a background to fit content I haven't measured yet" without
-    // a two-pass layout.
+    constexpr float kIconButtonSize = 28.0f;
+    constexpr float kToolbarPadding = 5.0f;
+    const ImVec2 iconSize(kIconButtonSize, kIconButtonSize);
+    const float rounding = ImGui::GetStyle().FrameRounding + 3.0f;
+
+    auto glassPanel = [&](ImVec2 min, ImVec2 max) {
+        ui::softShadow(drawList, min, max, rounding, 10.0f, ImVec4(0.0f, 0.0f, 0.0f, 0.35f));
+        drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_WindowBg, 0.82f), rounding);
+        drawList->AddRectFilledMultiColor(ImVec2(min.x + 1.0f, min.y + 1.0f), ImVec2(max.x - 1.0f, min.y + (max.y - min.y) * 0.5f),
+                                          IM_COL32(255, 255, 255, 10), IM_COL32(255, 255, 255, 10),
+                                          IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
+        drawList->AddRect(min, max, IM_COL32(255, 255, 255, 22), rounding);
+    };
+    auto separator = [&] {
+        ImGui::SameLine(0.0f, 6.0f);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        drawList->AddLine(ImVec2(p.x, p.y + 5.0f), ImVec2(p.x, p.y + kIconButtonSize - 5.0f),
+                          ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
+        ImGui::Dummy(ImVec2(1.0f, kIconButtonSize));
+        ImGui::SameLine(0.0f, 6.0f);
+    };
+    auto label = [&](const char* text) {
+        if (!advancedMode_) {
+            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("%s", text);
+        }
+        ImGui::SameLine(0.0f, 3.0f);
+    };
+    auto presetCombo = [&](const char* id, const char* preview, const char* tooltip, auto&& body) {
+        ImGui::SetNextItemWidth(advancedMode_ ? 62.0f : 72.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
+        if (ImGui::BeginCombo(id, preview)) {
+            body();
+            ImGui::EndCombo();
+        }
+        ImGui::PopStyleVar();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip);
+    };
+
     ImDrawListSplitter splitter;
     splitter.Split(drawList, 2);
     splitter.SetCurrentChannel(drawList, 1);
 
-    constexpr float kIconButtonSize = 28.0f;
-    constexpr float kToolbarPadding = 6.0f;
-    ImVec2 iconSize(kIconButtonSize, kIconButtonSize);
-
-    // Adobe-style persistent left tool column, not a horizontal bar --
-    // every control is always present in both modes (no feature gating);
-    // Beginner adds an inline text label after each control (clearer
-    // breakdown for newcomers), Advanced stays icon-only/compact to
-    // maximize viewport space.
-    auto beginnerLabel = [&](const char* text) {
-        if (!advancedMode_) {
-            ImGui::SameLine();
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(text);
-        }
-    };
-
-    ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 8.0f + kToolbarPadding, imageOrigin.y + 8.0f + kToolbarPadding));
+    ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 10.0f + kToolbarPadding, imageOrigin.y + 10.0f + kToolbarPadding));
     ImGui::BeginGroup();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 3.0f));
+
     if (iconButton("gizmo_translate", Icon::Translate, iconSize, gizmoOperation_ == GizmoOperation::Translate,
-                    "Translate (W) -- move the selected object.")) {
+                    "Move (W)")) {
         gizmoOperation_ = GizmoOperation::Translate;
     }
-    beginnerLabel("Move (W)");
-    if (iconButton("gizmo_rotate", Icon::Rotate, iconSize, gizmoOperation_ == GizmoOperation::Rotate,
-                    "Rotate (E) -- turn the selected object.")) {
+    ImGui::SameLine();
+    if (iconButton("gizmo_rotate", Icon::Rotate, iconSize, gizmoOperation_ == GizmoOperation::Rotate, "Rotate (E)")) {
         gizmoOperation_ = GizmoOperation::Rotate;
     }
-    beginnerLabel("Rotate (E)");
-    if (iconButton("gizmo_scale", Icon::Scale, iconSize, gizmoOperation_ == GizmoOperation::Scale,
-                    "Scale (R) -- resize the selected object.")) {
+    ImGui::SameLine();
+    if (iconButton("gizmo_scale", Icon::Scale, iconSize, gizmoOperation_ == GizmoOperation::Scale, "Scale (R)")) {
         gizmoOperation_ = GizmoOperation::Scale;
     }
-    beginnerLabel("Scale (R)");
 
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-
-    bool worldSpace = gizmoSpace_ == GizmoSpace::World;
+    separator();
+    const bool worldSpace = gizmoSpace_ == GizmoSpace::World;
     if (iconButton("gizmo_space", worldSpace ? Icon::WorldSpace : Icon::LocalSpace, iconSize, false,
-                    worldSpace ? "World Space -- gizmo axes stay aligned to the world (click for Local)"
-                               : "Local Space -- gizmo axes follow the object's own rotation (click for World)")) {
+                    worldSpace ? "World space (click for local)" : "Local space (click for world)")) {
         gizmoSpace_ = worldSpace ? GizmoSpace::Local : GizmoSpace::World;
     }
-    beginnerLabel(worldSpace ? "World Space" : "Local Space");
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    if (!advancedMode_) {
+        ImGui::SameLine(0.0f, 4.0f);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled(worldSpace ? "World" : "Local");
+    }
 
-    // Grid Snap and Angle Snap are independently toggleable and apply
-    // to Translate/Rotate respectively regardless of which is
-    // currently selected, so switching gizmo modes never silently
-    // changes what's snapping.
-    if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_,
-                    "Grid Snap -- while on, Translate moves in fixed steps instead of freely.")) {
+    separator();
+    if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_, "Grid snap for Move")) {
         gridSnapEnabled_ = !gridSnapEnabled_;
     }
-    beginnerLabel(gridSnapEnabled_ ? "Grid Snap: On" : "Grid Snap: Off");
-    ImGui::SetNextItemWidth(kIconButtonSize);
-    static constexpr float kGridSnapPresets[] = {0.25f, 1.0f, 5.0f};
+    label("Grid");
+    static constexpr float kGridSnapPresets[] = {0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 5.0f};
     char gridPresetLabel[16];
-    std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%.2fm", translateSnap_);
-    if (ImGui::BeginCombo("##grid_snap_preset", gridPresetLabel)) {
+    std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%gm", translateSnap_);
+    presetCombo("##grid_snap_preset", gridPresetLabel, "Grid snap increment (meters)", [&] {
         for (float preset : kGridSnapPresets) {
-            char label[16];
-            std::snprintf(label, sizeof(label), "%.2fm", preset);
-            bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
-            if (ImGui::Selectable(label, selected)) translateSnap_ = preset;
+            char text[16];
+            std::snprintf(text, sizeof(text), "%gm", preset);
+            const bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
+            if (ImGui::Selectable(text, selected)) translateSnap_ = preset;
             if (selected) ImGui::SetItemDefaultFocus();
         }
-        ImGui::EndCombo();
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("Grid Snap increment (meters) -- how far Translate moves per step while Grid Snap is on.");
-    }
-    beginnerLabel("Grid Snap step");
+    });
 
-    if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_,
-                    "Angle Snap -- while on, Rotate turns in fixed steps instead of freely.")) {
+    ImGui::SameLine(0.0f, 8.0f);
+    if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_, "Angle snap for Rotate")) {
         angleSnapEnabled_ = !angleSnapEnabled_;
     }
-    beginnerLabel(angleSnapEnabled_ ? "Angle Snap: On" : "Angle Snap: Off");
-    ImGui::SetNextItemWidth(kIconButtonSize);
-    static constexpr float kAngleSnapPresets[] = {15.0f, 45.0f, 90.0f};
+    label("Angle");
+    static constexpr float kAngleSnapPresets[] = {5.0f, 15.0f, 30.0f, 45.0f, 90.0f};
     char anglePresetLabel[16];
-    std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f%s", rotateSnapDegrees_, "\xc2\xb0"); // UTF-8 degree sign
-    if (ImGui::BeginCombo("##angle_snap_preset", anglePresetLabel)) {
+    std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f\xc2\xb0", rotateSnapDegrees_);
+    presetCombo("##angle_snap_preset", anglePresetLabel, "Angle snap increment (degrees)", [&] {
         for (float preset : kAngleSnapPresets) {
-            char label[16];
-            std::snprintf(label, sizeof(label), "%.0f%s", preset, "\xc2\xb0");
-            bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
-            if (ImGui::Selectable(label, selected)) rotateSnapDegrees_ = preset;
+            char text[16];
+            std::snprintf(text, sizeof(text), "%.0f\xc2\xb0", preset);
+            const bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
+            if (ImGui::Selectable(text, selected)) rotateSnapDegrees_ = preset;
             if (selected) ImGui::SetItemDefaultFocus();
         }
-        ImGui::EndCombo();
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("Angle Snap increment (degrees) -- how far Rotate turns per step while Angle Snap is on.");
-    }
-    beginnerLabel("Angle Snap step");
+    });
 
-    if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_,
-                    "Scale Snap -- while on, Scale changes in fixed steps instead of freely.")) {
+    ImGui::SameLine(0.0f, 8.0f);
+    if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_, "Scale snap")) {
         scaleSnapEnabled_ = !scaleSnapEnabled_;
     }
-    beginnerLabel(scaleSnapEnabled_ ? "Scale Snap: On" : "Scale Snap: Off");
-    ImGui::SetNextItemWidth(kIconButtonSize);
+    label("Scale");
+    ImGui::SetNextItemWidth(advancedMode_ ? 52.0f : 60.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
     ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("Scale Snap increment -- how far Scale changes per step while Scale Snap is on. Drag to adjust.");
-    }
-    beginnerLabel("Scale Snap step");
+    ImGui::PopStyleVar();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Scale snap increment (drag to adjust)");
 
-    // Kronos ("Clean Viewport & Mesh Import Pipeline"): real "Import 3D
-    // Asset..."/"Add Primitive" controls -- see setAssetTools()'s own
-    // header comment for exactly which modes enable this row at all.
     if (showAssetTools_) {
-        ImGui::Dummy(ImVec2(0.0f, 6.0f));
-
+        separator();
         if (modelImporterPlugin_ != nullptr) {
-            if (iconButton("import_asset", Icon::Folder, iconSize, false,
-                            "Import 3D Asset -- opens a real file browser for glTF/.OBJ/.FBX.")) {
+            if (iconButton("import_asset", Icon::Folder, iconSize, false, "Import 3D asset (glTF / OBJ / FBX)")) {
                 modelImporterPlugin_->setOpen(true);
                 modelImporterPlugin_->browseForFile();
             }
-            beginnerLabel("Import 3D Asset...");
+            ImGui::SameLine();
         }
-
-        ImGui::SetNextItemWidth(kIconButtonSize);
-        if (ImGui::BeginCombo("##add_primitive", "+", ImGuiComboFlags_NoArrowButton)) {
-            // Real, honest fallback spawn point: 4m in front of the
-            // camera, never below the y=0 ground grid -- so a repeated
-            // "Add Primitive" click doesn't keep stacking every new shape
-            // exactly on top of the last one at the world origin.
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(9.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
+        if (ui::button(advancedMode_ ? "+##add_primitive" : "+  Add##add_primitive", ui::ButtonKind::Ghost)) {
+            ImGui::OpenPopup("##add_primitive_menu");
+        }
+        ImGui::PopStyleVar();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Add primitive");
+        if (ImGui::BeginPopup("##add_primitive_menu")) {
+            // 4m in front of the camera, or onto the ground plane when the
+            // camera looks down at it from a sane distance.
             glm::vec3 spawnPos = camera_.position + camera_.forward() * 4.0f;
             spawnPos.y = std::max(spawnPos.y, 0.5f);
-            // Prefer landing on the actual y=0 ground plane the camera is
-            // looking at -- the fixed 4m-forward point above lands wherever
-            // that happens to be relative to the camera's current pitch,
-            // which is often well above the visible ground when looking
-            // down a long shot (e.g. framing a camera rail), leaving a new
-            // primitive's selection box floating with nothing visibly under
-            // it. Only used when the camera is actually looking down at the
-            // ground steeply enough for the hit point to be sane (not
-            // absurdly far away, not behind the camera).
             const glm::vec3 forward = camera_.forward();
             constexpr float kMaxGroundSpawnDistance = 40.0f;
             if (forward.y < -0.05f) {
@@ -1431,6 +1421,8 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                 }
             }
 
+            // Render-only on spawn: sub-object editing is opted into via
+            // Modeling Mode's "Start Editing".
             auto spawnPrimitive = [&](const char* entityName, uint32_t meshHandle, core::MeshSourceKind kind,
                                         glm::vec3 params, bool hasMeshSource) {
                 if (ecs == nullptr) return;
@@ -1448,21 +1440,11 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                     meshSource.kind = kind;
                     meshSource.params = params;
                 }
-                // Deliberately render-only on spawn -- no auto-attached
-                // EditableMeshComponent. Sub-object edit tools (Ctrl+Click
-                // vertex/edge/face pick + gizmo drag, sculpt brushes,
-                // Modeling Mode's extrude/inset/bevel/CSG) key off that
-                // component, so a plain "Add Primitive" shape stays a
-                // normal primitive until the user deliberately opts it into
-                // real 3D modeling via ModelingModePlugin's own "Start
-                // Editing" button -- see that plugin's header comment for
-                // why Box is the one shape it seeds identically today.
                 explorer.setSelected(entity);
             };
 
+            ui::sectionHeader("Add primitive");
             if (ImGui::Selectable("Sphere")) {
-                // See WorldPropSpawnMeshHandles::sphereMesh's own
-                // comment -- a real Capsule with halfHeight=0.
                 spawnPrimitive("Sphere", propSpawnMeshHandles_.sphereMesh, core::MeshSourceKind::Capsule,
                                 {0.5f, 0.0f, 0.0f}, true);
             }
@@ -1471,9 +1453,8 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                                 {0.5f, 0.5f, 0.5f}, true);
             }
             if (ImGui::Selectable("Cylinder")) {
-                // No MeshSourceKind::Cylinder -- see Mesh::createCylinder()'s
-                // own comment. radius=0.5, halfHeight=0.5, matching the GPU
-                // mesh built in StudioApp.cpp for propSpawnMeshHandles_.cylinderMesh.
+                // No MeshSourceKind::Cylinder; matches the GPU mesh built
+                // for propSpawnMeshHandles_.cylinderMesh.
                 spawnPrimitive("Cylinder", propSpawnMeshHandles_.cylinderMesh, core::MeshSourceKind::Box,
                                 {0.5f, 0.5f, 0.0f}, false);
             }
@@ -1485,110 +1466,81 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                 spawnPrimitive("Torus", propSpawnMeshHandles_.torusMesh, core::MeshSourceKind::Torus,
                                 {1.0f, 0.35f, 0.0f}, true);
             }
-            ImGui::EndCombo();
+            ImGui::EndPopup();
         }
-        beginnerLabel("Add Primitive");
     }
 
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    if (ImGui::SmallButton(advancedMode_ ? "Pro" : "Beg")) advancedMode_ = !advancedMode_;
-    beginnerLabel("Beginner Mode");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip(advancedMode_ ? "Professional mode -- compact icons only. Click for Beginner (adds "
-                                           "text labels and richer tooltips; every tool stays available in both)."
-                                         : "Beginner mode -- every tool labeled for clarity. Click for "
-                                           "Professional for a compact, icon-only layout (same tools, less space).");
-    }
+    ImGui::PopStyleVar();
     ImGui::EndGroup();
 
-    ImVec2 groupMin = ImGui::GetItemRectMin();
-    ImVec2 groupMax = ImGui::GetItemRectMax();
+    const ImVec2 groupMin = ImGui::GetItemRectMin();
+    const ImVec2 groupMax = ImGui::GetItemRectMax();
     splitter.SetCurrentChannel(drawList, 0);
-    ImVec2 bgMin(groupMin.x - kToolbarPadding, groupMin.y - kToolbarPadding);
-    ImVec2 bgMax(groupMax.x + kToolbarPadding, groupMax.y + kToolbarPadding);
-    float rounding = ImGui::GetStyle().FrameRounding + 2.0f;
-    drawList->AddRectFilled(bgMin, bgMax, ImGui::GetColorU32(ImGuiCol_WindowBg, 0.92f), rounding);
-    drawList->AddRect(bgMin, bgMax, ImGui::GetColorU32(ImGuiCol_Border), rounding);
+    glassPanel(ImVec2(groupMin.x - kToolbarPadding, groupMin.y - kToolbarPadding),
+               ImVec2(groupMax.x + kToolbarPadding, groupMax.y + kToolbarPadding));
     splitter.Merge(drawList);
 
-    // Advanced-only rows now sit to the RIGHT of the vertical tool
-    // column (not stacked beneath it -- the column is tall, so "beneath"
-    // would push these rows far down or off-screen). Same top Y as the
-    // column's own start.
-    float rightColumnX = bgMax.x + 6.0f;
-    float lastToolbarRowBottomY = imageOrigin.y + 8.0f;
-
-    if (advancedMode_ && physicsPreview != nullptr) {
-        ImDrawListSplitter splitter2;
-        splitter2.Split(drawList, 2);
-        splitter2.SetCurrentChannel(drawList, 1);
-
-        float row2Y = lastToolbarRowBottomY;
-        ImGui::SetCursorScreenPos(ImVec2(rightColumnX + kToolbarPadding, row2Y + kToolbarPadding));
+    // Top-right: view options popover and the beginner/pro density switch.
+    const bool hasOverlayOptions = physicsPreview != nullptr || showEngineDebugOverlays;
+    const char* modeLabel = advancedMode_ ? "Compact" : "Labels";
+    const ImVec2 modeSize(ImGui::CalcTextSize(modeLabel).x + 20.0f, kIconButtonSize);
+    const ImVec2 overlaysSize(ImGui::CalcTextSize("Overlays").x + 20.0f, kIconButtonSize);
+    float rightWidth = modeSize.x + (hasOverlayOptions ? overlaysSize.x + 3.0f : 0.0f);
+    ImVec2 rightMin(imageOrigin.x + imageSize.x - 10.0f - kToolbarPadding * 2.0f - rightWidth, imageOrigin.y + 10.0f);
+    if (rightMin.x > groupMax.x + kToolbarPadding + 8.0f) {
+        ImDrawListSplitter rightSplitter;
+        rightSplitter.Split(drawList, 2);
+        rightSplitter.SetCurrentChannel(drawList, 1);
+        ImGui::SetCursorScreenPos(ImVec2(rightMin.x + kToolbarPadding, rightMin.y + kToolbarPadding));
         ImGui::BeginGroup();
-        ImGui::TextUnformatted("Physics Debug:");
-        ImGui::SameLine();
-        ImGui::Checkbox("Colliders##physdbg", &physicsPreview->showColliders);
-        ImGui::SameLine();
-        ImGui::Checkbox("Contacts##physdbg", &physicsPreview->showContacts);
-        ImGui::SameLine();
-        ImGui::Checkbox("Raycasts##physdbg", &physicsPreview->showRaycasts);
-        ImGui::SameLine();
-        ImGui::Dummy(ImVec2(6.0f, 0.0f));
-        ImGui::SameLine();
-        bool canCastRay = physicsPreview->isPlaying();
-        ImGui::BeginDisabled(!canCastRay);
-        if (ImGui::Button("Cast Test Ray (Camera Forward)##physdbg")) {
-            physicsPreview->castTestRay(camera_.position, camera_.forward(), 1000.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 3.0f));
+        if (hasOverlayOptions) {
+            if (ui::button("Overlays", ui::ButtonKind::Ghost, overlaysSize)) ImGui::OpenPopup("##viewport_overlays");
+            ImGui::SameLine();
         }
-        ImGui::EndDisabled();
+        if (ui::button(modeLabel, ui::ButtonKind::Ghost, modeSize)) advancedMode_ = !advancedMode_;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip(advancedMode_ ? "Compact toolbar. Click to show text labels."
+                                            : "Labelled toolbar. Click for compact icons.");
+        }
+        ImGui::PopStyleVar();
         ImGui::EndGroup();
-
-        ImVec2 g2Min = ImGui::GetItemRectMin();
-        ImVec2 g2Max = ImGui::GetItemRectMax();
-        splitter2.SetCurrentChannel(drawList, 0);
-        ImVec2 bg2Min(g2Min.x - kToolbarPadding, g2Min.y - kToolbarPadding);
-        ImVec2 bg2Max(g2Max.x + kToolbarPadding, g2Max.y + kToolbarPadding);
-        drawList->AddRectFilled(bg2Min, bg2Max, ImGui::GetColorU32(ImGuiCol_WindowBg, 0.92f), rounding);
-        drawList->AddRect(bg2Min, bg2Max, ImGui::GetColorU32(ImGuiCol_Border), rounding);
-        splitter2.Merge(drawList);
-        lastToolbarRowBottomY = bg2Max.y + 6.0f;
+        const ImVec2 rMin = ImGui::GetItemRectMin();
+        const ImVec2 rMax = ImGui::GetItemRectMax();
+        rightSplitter.SetCurrentChannel(drawList, 0);
+        glassPanel(ImVec2(rMin.x - kToolbarPadding, rMin.y - kToolbarPadding),
+                   ImVec2(rMax.x + kToolbarPadding, rMax.y + kToolbarPadding));
+        rightSplitter.Merge(drawList);
     }
 
-    // Sprint 8 debug-overlay toolbar (task category 2) -- same
-    // right-of-column technique as the physics row above, stacked
-    // beneath it if drawn. Kronos ("Modular Executable Targets"): gated
-    // on showEngineDebugOverlays -- see that parameter's own header
-    // comment -- and now also on advancedMode_.
-    if (advancedMode_ && showEngineDebugOverlays) {
-        ImDrawListSplitter splitter3;
-        splitter3.Split(drawList, 2);
-        splitter3.SetCurrentChannel(drawList, 1);
-
-        float row3Y = lastToolbarRowBottomY;
-        ImGui::SetCursorScreenPos(ImVec2(rightColumnX + kToolbarPadding, row3Y + kToolbarPadding));
-        ImGui::BeginGroup();
-        ImGui::TextUnformatted("Debug Overlays:");
-        ImGui::SameLine();
-        ImGui::Checkbox("Bounds##sprint8dbg", &showBoundingBoxes_);
-        ImGui::SameLine();
-        ImGui::BeginDisabled(debugContext.terrain == nullptr);
-        ImGui::Checkbox("Terrain Streaming##sprint8dbg", &showTerrainStreaming_);
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(debugContext.renderer == nullptr);
-        ImGui::Checkbox("CSM Cascades##sprint8dbg", &showCascades_);
-        ImGui::EndDisabled();
-        ImGui::EndGroup();
-
-        ImVec2 g3Min = ImGui::GetItemRectMin();
-        ImVec2 g3Max = ImGui::GetItemRectMax();
-        splitter3.SetCurrentChannel(drawList, 0);
-        ImVec2 bg3Min(g3Min.x - kToolbarPadding, g3Min.y - kToolbarPadding);
-        ImVec2 bg3Max(g3Max.x + kToolbarPadding, g3Max.y + kToolbarPadding);
-        drawList->AddRectFilled(bg3Min, bg3Max, ImGui::GetColorU32(ImGuiCol_WindowBg, 0.92f), rounding);
-        drawList->AddRect(bg3Min, bg3Max, ImGui::GetColorU32(ImGuiCol_Border), rounding);
-        splitter3.Merge(drawList);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(240.0f, 0.0f), ImVec2(360.0f, FLT_MAX));
+    if (ImGui::BeginPopup("##viewport_overlays")) {
+        if (physicsPreview != nullptr) {
+            ui::sectionHeader("Physics");
+            ui::toggle("Colliders", &physicsPreview->showColliders);
+            ui::toggle("Contacts", &physicsPreview->showContacts);
+            ui::toggle("Raycasts", &physicsPreview->showRaycasts);
+            const bool canCastRay = physicsPreview->isPlaying();
+            ImGui::BeginDisabled(!canCastRay);
+            if (ui::button("Cast test ray", ui::ButtonKind::Secondary, ImVec2(-FLT_MIN, 0.0f))) {
+                physicsPreview->castTestRay(camera_.position, camera_.forward(), 1000.0f);
+            }
+            ImGui::EndDisabled();
+            if (!canCastRay && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("Start play mode to cast a ray from the camera.");
+            }
+        }
+        if (showEngineDebugOverlays) {
+            ui::sectionHeader("Engine");
+            ui::toggle("Bounding boxes", &showBoundingBoxes_);
+            ImGui::BeginDisabled(debugContext.terrain == nullptr);
+            ui::toggle("Terrain streaming", &showTerrainStreaming_);
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(debugContext.renderer == nullptr);
+            ui::toggle("Shadow cascades", &showCascades_);
+            ImGui::EndDisabled();
+        }
+        ImGui::EndPopup();
     }
 
     ImGui::End();

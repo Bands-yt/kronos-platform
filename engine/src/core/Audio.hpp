@@ -66,6 +66,11 @@ public:
     // natural end. A real, honest no-op on an invalid/already-stopped
     // handle.
     void stopSound(SoundHandle handle);
+    void setSoundLooping(SoundHandle handle, bool looping);
+    // Non-spatialized sounds play at full volume regardless of the listener (UI, first-person SFX).
+    void setSoundSpatialized(SoundHandle handle, bool spatialized);
+    // 1.0 is the recorded pitch; also changes playback speed.
+    void setSoundPitch(SoundHandle handle, float pitch);
 
     // Real, honest read of whether this handle is currently playing
     // (ma_sound_is_playing) -- lets a caller (NleTimelinePlugin's own

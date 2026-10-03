@@ -65,9 +65,9 @@ void PublishingPanel::drawMetadataSection() {
     if (!ImGui::CollapsingHeader("World Metadata", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     ImGui::InputText("World Id", worldIdBuffer_, sizeof(worldIdBuffer_));
-    helpMarker("A stable, creator-facing id -- never regenerated once published (same real convention Avatar Item ids already use).");
+    helpMarker("A stable ID that never changes once published.");
     ImGui::InputText("Version", versionBuffer_, sizeof(versionBuffer_));
-    helpMarker("Real semantic version, e.g. \"1.0\" or \"1.0.0\".");
+    helpMarker("Semantic version, e.g. \"1.0\" or \"1.0.0\".");
     ImGui::InputText("Title", titleBuffer_, sizeof(titleBuffer_));
     ImGui::InputTextMultiline("Description", descriptionBuffer_, sizeof(descriptionBuffer_), ImVec2(0, 80));
     ImGui::InputText("Tags (comma-separated)", tagsBuffer_, sizeof(tagsBuffer_));
@@ -81,7 +81,7 @@ void PublishingPanel::drawMetadataSection() {
 void PublishingPanel::drawThumbnailSection() {
     if (!ImGui::CollapsingHeader("Thumbnail Camera", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
-    ImGui::TextUnformatted("Real, independent camera -- does not move your edit viewport.");
+    ImGui::TextUnformatted("Independent camera; does not move your editing viewport.");
     ImGui::DragFloat3("Camera Position", &thumbnailRig_.camera.position.x, 0.1f);
     ImGui::DragFloat("Yaw", &thumbnailRig_.camera.yawDegrees, 1.0f);
     ImGui::DragFloat("Pitch", &thumbnailRig_.camera.pitchDegrees, 1.0f, -89.0f, 89.0f);
@@ -91,7 +91,7 @@ void PublishingPanel::drawThumbnailSection() {
     if (ImGui::Combo("Capture Mode", &modeIndex, modes, 2)) {
         captureMode_ = modeIndex == 0 ? publishing::ThumbnailCaptureMode::Auto : publishing::ThumbnailCaptureMode::Manual;
     }
-    helpMarker("Auto real-captures automatically once the camera has a real rendered frame ready. Manual waits for the button below.");
+    helpMarker("Auto captures as soon as the camera has rendered a frame. Manual waits for the button below.");
 
     ImGui::BeginChild("##thumbnail_preview", ImVec2(0, 260), true);
     if (thumbnailRig_.hasRenderedFrame()) {
@@ -134,7 +134,7 @@ void PublishingPanel::drawValidationSection(core::ECS& ecs) {
     if (result.valid) {
         ImGui::TextColored(ImVec4(0.35f, 0.80f, 0.40f, 1.0f), "Ready to publish.");
     } else {
-        ImGui::TextColored(ImVec4(0.90f, 0.30f, 0.30f, 1.0f), "%zu real validation error(s):", result.errors.size());
+        ImGui::TextColored(ImVec4(0.90f, 0.30f, 0.30f, 1.0f), "%zu validation error(s):", result.errors.size());
         for (const auto& error : result.errors) ImGui::BulletText("%s", error.c_str());
     }
 
@@ -279,11 +279,11 @@ void PublishingPanel::drawTestPublishSection(core::ECS& ecs) {
 void PublishingPanel::drawServerRegistrySection(core::ECS& ecs) {
     if (!ImGui::CollapsingHeader("Publish to Server Registry")) return;
     if (!networkSession_->isServer()) {
-        ImGui::TextDisabled("Host a server (Network Overlay) to publish into its real world registry.");
+        ImGui::TextDisabled("Host a server (Network Overlay) to publish to its world registry.");
         return;
     }
 
-    ImGui::Text("%zu world(s) currently in this server's real registry", networkSession_->worldRegistry().size());
+    ImGui::Text("%zu world(s) in this server\'s registry", networkSession_->worldRegistry().size());
     if (ImGui::Button("Publish to Registry")) {
         publishing::WorldPackage package = buildPackage(ecs);
         publishing::WorldListing listing;

@@ -154,9 +154,7 @@ void PhysicsPreviewPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/
     ImGui::Begin("Physics Preview");
 
     ImGui::TextWrapped(
-        "Play attaches a real Jolt body to every entity with a real ColliderShape + PhysicsMaterial (see "
-        "Inspector's \"Physics\" section on a selected entity to add one), steps it live, and Stop reverts every "
-        "entity back to its plain, physics-free authored state.");
+        "Play creates a Jolt body for every entity with a ColliderShape and PhysicsMaterial (add them in the Inspector\'s Physics section) and simulates live. Stop restores the authored state.");
 
     if (!playing_) {
         if (ImGui::Button("Play")) play(ecs);

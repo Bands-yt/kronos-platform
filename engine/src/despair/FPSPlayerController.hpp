@@ -33,6 +33,24 @@ struct FPSPlayerSettings {
     float walkNoiseLevel = 0.35f;
     float runNoiseLevel = 1.0f;
     float crouchNoiseLevel = 0.0f;
+
+    // Stamina drain/regen rates, in StaminaState::max units per second --
+    // see StaminaState's own comment for the exhaustion latch these drive.
+    float staminaDrainPerSecond = 25.0f;
+    float staminaRegenPerSecond = 12.0f;
+};
+
+// PROJECT: DESPAIR -- sprint gating. Same edge-latch convention SanityState::
+// hallucinating already uses (SanitySystem.hpp's own comment): `exhausted`
+// only flips true at empty and only flips back false once current has
+// recovered past kExhaustionRecoveryFraction of max, so brushing 0 doesn't
+// re-enable sprint for one tick before draining straight back down again.
+struct StaminaState {
+    float current = 100.0f;
+    float max = 100.0f;
+    bool exhausted = false;
+
+    static constexpr float kExhaustionRecoveryFraction = 0.3f;
 };
 
 // One-time-per-call, idempotent settings mutation that turns `controller`'s
@@ -86,14 +104,23 @@ inline constexpr float kInteractionRayOriginSkin = 0.05f;
 [[nodiscard]] float computeNoiseLevel(const FPSPlayerSettings& settings, float horizontalSpeed, float walkSpeed,
                                        float runSpeed, bool crouching);
 
+// Pure. Drains `state` while `sprinting` is true, regenerates it otherwise
+// (walking or idle both count -- there's no separate "idle" signal and none
+// is needed, since regen while still moving at walk speed is the intended
+// behavior, not a bug). Flips the exhausted latch on hitting empty, and
+// clears it only once `current` has recovered past
+// kExhaustionRecoveryFraction * max -- see StaminaState's own comment.
+void updateStamina(const FPSPlayerSettings& settings, StaminaState& state, bool sprinting, float dt);
+
 // Real ECS/Physics-touching glue. Call once per tick from the
 // postPhysicsHook -- after Physics::step()'s syncTransforms() has already
 // reset the capsule's Transform::rotation to yaw-only for this tick, and
 // before despairAiManager_.update() reads it (see this file's own .cpp
 // comment for why the ordering is load-bearing). A real, honest no-op if
-// `character` carries no FPSPlayerSettings.
+// `character` carries no FPSPlayerSettings. `dt` drives StaminaState's
+// drain/regen -- see updateStamina() above.
 void updateFirstPersonPlayer(core::ECS& ecs, core::Physics& physics, core::EntityId character,
                               const core::Camera& camera, const core::CharacterController::Settings& controllerSettings,
-                              bool crouching);
+                              bool crouching, float dt);
 
 } // namespace engine::despair

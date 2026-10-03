@@ -17,11 +17,13 @@ layout(location = 2) in vec2 inUV;
 layout(location = 4) in vec4 inInstancePositionSize; // xyz: world position, w: current size
 layout(location = 5) in vec4 inInstanceColor;
 layout(location = 6) in vec4 inInstancePrevPositionSize;
+layout(location = 7) in vec4 inInstanceParams;
 
 layout(location = 0) out vec2 outUV;
 layout(location = 1) out vec4 outColor;
 layout(location = 2) out vec4 outClipPos;
 layout(location = 3) out vec4 outPrevClipPos;
+layout(location = 4) flat out float outOcclusion;
 
 #include "kronos/scene_ubo.glsl"
 
@@ -41,6 +43,7 @@ void main() {
 
     outUV = inUV;
     outColor = inInstanceColor;
+    outOcclusion = inInstanceParams.x;
     outClipPos = scene.viewProjNoJitter * vec4(worldPos, 1.0);
     outPrevClipPos = scene.prevViewProjNoJitter * vec4(prevWorldPos, 1.0);
     gl_Position = scene.proj * scene.view * vec4(worldPos, 1.0);

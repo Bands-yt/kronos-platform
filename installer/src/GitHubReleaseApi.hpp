@@ -27,7 +27,11 @@ struct LatestRelease {
 // a real `Accept: application/vnd.github+json` header for the
 // documented v3 REST shape -- both real, sent here, not an accident of
 // a bare curl_easy_perform().
-[[nodiscard]] LatestRelease fetchLatestRelease(const std::string& owner, const std::string& repo);
+// Picks the highest-versioned published release that ships an asset ending
+// in `requiredAssetSuffix`, rather than trusting GitHub's /releases/latest
+// (which is simply the most recently published one).
+[[nodiscard]] LatestRelease fetchLatestRelease(const std::string& owner, const std::string& repo,
+                                               const std::string& requiredAssetSuffix);
 
 // Real, small helper -- finds the one real asset among `release.assets`
 // whose name matches `platformSuffix` (e.g. "linux-x64.tar.gz" or

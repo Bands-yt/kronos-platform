@@ -27,7 +27,7 @@ std::string readWholeFile(const std::string& path) {
 
 bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
     if (!game.parseSucceeded || game.manifest.launchKind != core::GameLaunchKind::ProjectPath) {
-        std::fprintf(stderr, "GameLoader: \"%s\" is not a real ProjectPath game -- refusing to load\n",
+        std::fprintf(stderr, "GameLoader: \"%s\" is not a ProjectPath game -- refusing to load\n",
                      game.manifest.name.c_str());
         return false;
     }
@@ -37,13 +37,13 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
 
     core::ProjectFile project;
     if (!project.loadFromFile(projectPath.string())) {
-        std::fprintf(stderr, "GameLoader: \"%s\"'s real project file \"%s\" failed to load\n",
+        std::fprintf(stderr, "GameLoader: \"%s\" project file \"%s\" failed to load\n",
                      game.manifest.name.c_str(), projectPath.string().c_str());
         return false;
     }
     if (project.scenePaths.empty() || project.activeSceneIndex < 0 ||
         static_cast<size_t>(project.activeSceneIndex) >= project.scenePaths.size()) {
-        std::fprintf(stderr, "GameLoader: \"%s\"'s real project has no valid active scene\n",
+        std::fprintf(stderr, "GameLoader: \"%s\" project has no valid active scene\n",
                      game.manifest.name.c_str());
         return false;
     }
@@ -59,7 +59,7 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
     physics.shutdown();
     scripting.shutdown();
     if (!physics.initialize() || !scripting.initialize()) {
-        std::fprintf(stderr, "GameLoader: \"%s\" failed to re-initialize Physics/Scripting during the real reset\n",
+        std::fprintf(stderr, "GameLoader: \"%s\" failed to re-initialize physics/scripting during reset\n",
                      game.manifest.name.c_str());
         return false;
     }
@@ -70,7 +70,7 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
                                           renderer.device(), renderer.commandPool(), renderer.graphicsQueue(),
                                           app.camera(), &physics);
     if (!loaded) {
-        std::fprintf(stderr, "GameLoader: \"%s\"'s real scene file \"%s\" failed to load\n",
+        std::fprintf(stderr, "GameLoader: \"%s\" scene file \"%s\" failed to load\n",
                      game.manifest.name.c_str(), scenePath.string().c_str());
         return false;
     }

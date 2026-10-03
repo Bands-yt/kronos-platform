@@ -1,10 +1,12 @@
 #include "core/AvatarController.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "core/Components.hpp"
+#include "core/RiggedAvatar.hpp"
 
 namespace engine::core {
 
@@ -51,34 +53,48 @@ AvatarController::AvatarController(Skeleton skeleton)
 AvatarController::AvatarController(Skeleton skeleton, Settings settings)
     : player_(std::move(skeleton)), settings_(settings), cachedBindPose_(player_.skeleton().bindPoseMatrices()) {}
 
+AnimationClip AvatarController::retargeted(AnimationClip clip) const {
+    static const Skeleton authoredFor = buildHumanoidSkeleton();
+    retargetClipTranslations(clip, authoredFor, player_.skeleton());
+    return clip;
+}
+
+AvatarLocomotionState AvatarController::desiredLocomotionState(float horizontalSpeed) const {
+    if (horizontalSpeed < settings_.walkSpeedThreshold) return AvatarLocomotionState::Idle;
+    float halfBand = 0.5f * settings_.locomotionHysteresis;
+    float runThreshold = state_ == AvatarLocomotionState::Run ? settings_.runSpeedThreshold - halfBand
+                                                               : settings_.runSpeedThreshold + halfBand;
+    return horizontalSpeed >= runThreshold ? AvatarLocomotionState::Run : AvatarLocomotionState::Walk;
+}
+
 void AvatarController::setIdleClip(AnimationClip clip) {
-    idleClip_ = std::move(clip);
+    idleClip_ = retargeted(std::move(clip));
     hasIdle_ = true;
 }
 void AvatarController::setWalkClip(AnimationClip clip) {
-    walkClip_ = std::move(clip);
+    walkClip_ = retargeted(std::move(clip));
     hasWalk_ = true;
 }
 void AvatarController::setRunClip(AnimationClip clip) {
-    runClip_ = std::move(clip);
+    runClip_ = retargeted(std::move(clip));
     hasRun_ = true;
 }
 void AvatarController::setJumpClip(AnimationClip clip) {
-    jumpClip_ = std::move(clip);
+    jumpClip_ = retargeted(std::move(clip));
     hasJump_ = true;
 }
 void AvatarController::setJumpAirClip(AnimationClip clip) {
-    jumpAirClip_ = std::move(clip);
+    jumpAirClip_ = retargeted(std::move(clip));
     hasJumpAir_ = true;
 }
 void AvatarController::setJumpLandClip(AnimationClip clip) {
-    jumpLandClip_ = std::move(clip);
+    jumpLandClip_ = retargeted(std::move(clip));
     hasJumpLand_ = true;
 }
 
 void AvatarController::playEmote(AnimationClip clip, bool looping, bool fullBody) {
     AnimationLayer layer = fullBody ? AnimationLayer::Base : AnimationLayer::UpperBody;
-    emoteHandle_ = player_.play(std::move(clip), layer, looping, settings_.emoteBlendSeconds);
+    emoteHandle_ = player_.play(retargeted(std::move(clip)), layer, looping, settings_.emoteBlendSeconds);
     emotePlaying_ = true;
     // A full-body emote plays on the same layer locomotion does -- it
     // stays up until tick()'s own state-change logic naturally crossfades
@@ -155,16 +171,7 @@ void AvatarController::tickAnimation(float dt, float horizontalSpeed, bool groun
     }
 
     if (evaluateLocomotion) {
-        AvatarLocomotionState desired = horizontalSpeed >= settings_.runSpeedThreshold ? AvatarLocomotionState::Run
-                                         : horizontalSpeed >= settings_.walkSpeedThreshold ? AvatarLocomotionState::Walk
-                                                                                            : AvatarLocomotionState::Idle;
-        // Re-trigger locomotion playback on an actual state change
-        // (Landing/Jump/Falling all differ from Idle/Walk/Run, so
-        // finishing any of them naturally re-triggers here too), or on
-        // the very first grounded tick ever (!locomotionStarted_ -- see
-        // its header comment) -- never on every matching tick, or a
-        // looping locomotion clip would restart its playhead every frame
-        // and never appear to loop.
+        AvatarLocomotionState desired = desiredLocomotionState(horizontalSpeed);
         if (desired != state_ || !locomotionStarted_) {
             const AnimationClip* clip = nullptr;
             bool has = false;
@@ -174,17 +181,25 @@ void AvatarController::tickAnimation(float dt, float horizontalSpeed, bool groun
                 default: clip = &idleClip_; has = hasIdle_; break;
             }
             if (has) {
-                // The very first locomotion clip ever played has nothing
-                // to crossfade *from* -- an actual state change (idle ->
-                // walk) uses the configured blend duration, but this
-                // first trigger cuts in instantly rather than fading up
-                // from silence.
+                // Walk and run both start on the left heel strike, so carrying
+                // the phase across keeps the feet in step through the blend.
+                bool gaitToGait = (state_ == AvatarLocomotionState::Walk || state_ == AvatarLocomotionState::Run) &&
+                                  desired != AvatarLocomotionState::Idle;
+                float phase = gaitToGait ? player_.normalizedPlayhead(locomotionHandle_) : 0.0f;
                 float fadeSeconds = locomotionStarted_ ? settings_.locomotionBlendSeconds : 0.0f;
-                player_.play(*clip, AnimationLayer::Base, true, fadeSeconds);
+                locomotionHandle_ = player_.play(*clip, AnimationLayer::Base, true, fadeSeconds);
+                if (phase > 0.0f) player_.seek(locomotionHandle_, phase * clip->duration);
                 locomotionStarted_ = true;
             }
             state_ = desired;
         }
+        float clipSpeed = state_ == AvatarLocomotionState::Run    ? settings_.runClipSpeed
+                          : state_ == AvatarLocomotionState::Walk ? settings_.walkClipSpeed
+                                                                  : 0.0f;
+        float rate = clipSpeed > 0.0f ? std::clamp(horizontalSpeed / clipSpeed, settings_.minPlaybackRate,
+                                                   settings_.maxPlaybackRate)
+                                      : 1.0f;
+        player_.setPlaybackRate(locomotionHandle_, rate);
     }
 
     wasGrounded_ = grounded;

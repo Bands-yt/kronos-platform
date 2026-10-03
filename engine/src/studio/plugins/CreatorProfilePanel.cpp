@@ -28,9 +28,9 @@ void CreatorProfilePanel::drawPanel(core::ECS&, core::EntityId, const std::vecto
     }
     ImGui::Text("Creator Id: %s", shownCreatorId.c_str());
     if (viewingSelf) {
-        ImGui::TextDisabled("Real, stable, and non-editable -- see core::LocalProfile::creatorId's own comment.");
+        ImGui::TextDisabled("Permanent and not editable.");
     } else {
-        ImGui::TextDisabled("Viewing another creator's real, public stats (read-only).");
+        ImGui::TextDisabled("Viewing another creator's public stats (read-only).");
     }
 
     ImGui::Separator();
@@ -77,8 +77,7 @@ void CreatorProfilePanel::drawPanel(core::ECS&, core::EntityId, const std::vecto
     }
     ImGui::Text("Total Earnings: %lld KronosCredits", static_cast<long long>(totalEarningsCredits));
     ImGui::TextDisabled(
-        "A real count of KronosCredits purchases crediting this creatorId (%d transaction%s) -- not a payout "
-        "ledger. No amount has actually been paid out; see marketplace::TransactionLog's own header comment.",
+        "KronosCredits purchases credited to this creator (%d transaction%s). This is not a payout ledger; nothing has been paid out yet.",
         transactionCount, transactionCount == 1 ? "" : "s");
 
     drawPluginFooter();

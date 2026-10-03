@@ -18,6 +18,8 @@ namespace engine::core {
 // Prefers real sRGB BGRA8 (the common desktop default) when the surface
 // offers it; falls back to whatever the surface's own first-listed
 // format is otherwise, rather than asserting or picking arbitrarily.
+[[nodiscard]] bool isSrgbFormat(VkFormat format);
+
 [[nodiscard]] VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats);
 
 // See choosePresentMode's own comment in the .cpp for the real fan-

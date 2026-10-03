@@ -1,7 +1,11 @@
 #include "studio/plugins/AudioPreviewPlugin.hpp"
 
+#include "core/UIWidgets.hpp"
+
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <iterator>
 
 #include <imgui.h>
 
@@ -67,14 +71,20 @@ void AudioPreviewPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*selected
     audio_.setMasterVolume(masterGain_);
 }
 
+void AudioPreviewPlugin::openFile(const std::string& path) {
+    std::snprintf(pathBuffer_, sizeof(pathBuffer_), "%s", path.c_str());
+    pendingLoad_ = true;
+}
+
 void AudioPreviewPlugin::drawAudioSourceWindow() {
     ImGui::Begin("Audio Source");
 
-    ImGui::TextWrapped("Load an audio file and play it back through Studio's own audio engine.");
+    ImGui::TextDisabled("Load a WAV, FLAC or MP3 file to audition and process.");
     ImGui::SetNextItemWidth(320.0f);
     ImGui::InputText("Path", pathBuffer_, sizeof(pathBuffer_));
     ImGui::SameLine();
-    if (ImGui::Button("Load")) {
+    if (ImGui::Button("Load") || pendingLoad_) {
+        pendingLoad_ = false;
         std::string path = pathBuffer_;
         lastMetadata_ = core::extractAssetMetadata(path);
 
@@ -102,6 +112,7 @@ void AudioPreviewPlugin::drawAudioSourceWindow() {
             std::vector<float> decoded;
             if (core::decodeAudioFileToFloatMono(path, decoded, sourceSampleRate_)) {
                 sourceWaveformPeaks_ = core::computeWaveformPeaks(decoded, 512);
+                sourceSpectrogram_ = core::computeSpectrogram(decoded, sourceSampleRate_);
                 sourcePeakDbfs_ = core::computePeakDbfs(decoded);
                 sourceRmsDbfs_ = core::computeRmsDbfs(decoded);
                 sourceDurationSeconds_ = sourceSampleRate_ > 0
@@ -109,6 +120,7 @@ void AudioPreviewPlugin::drawAudioSourceWindow() {
                     : 0.0f;
             } else {
                 sourceWaveformPeaks_.clear();
+                sourceSpectrogram_ = {};
                 sourcePeakDbfs_ = -100.0f;
                 sourceRmsDbfs_ = -100.0f;
                 sourceDurationSeconds_ = 0.0f;
@@ -181,24 +193,96 @@ void AudioPreviewPlugin::drawWaveformBars(const char* childId, const std::vector
     ImGui::EndChild();
 }
 
-void AudioPreviewPlugin::drawWaveformInspectorWindow() {
-    ImGui::Begin("Waveform Inspector");
-    ImGui::TextWrapped("Real PCM peaks from the actual decoded audio buffer -- one min/max bar per bucket, not a "
-                        "synthetic placeholder.");
-
-    ImGui::SeparatorText("Source");
-    drawWaveformBars("##waveform_source", sourceWaveformPeaks_, 140.0f);
-    if (!sourceWaveformPeaks_.empty()) {
-        ImGui::Text("Peak: %.1f dBFS  |  RMS: %.1f dBFS  |  %u Hz  |  %.2f s", sourcePeakDbfs_, sourceRmsDbfs_,
-                    sourceSampleRate_, sourceDurationSeconds_);
+void AudioPreviewPlugin::drawSpectrogram(const char* childId, const core::Spectrogram& spectrogram, float heightPx) {
+    if (spectrogram.empty()) {
+        ImGui::TextDisabled("No audio loaded yet.");
+        return;
     }
 
-    ImGui::SeparatorText("Processed (DSP Node Graph output)");
-    drawWaveformBars("##waveform_processed", processedWaveformPeaks_, 140.0f);
-    if (!processedWaveformPeaks_.empty()) {
-        ImGui::Text("Peak: %.1f dBFS  |  RMS: %.1f dBFS", processedPeakDbfs_, processedRmsDbfs_);
+    ImGui::BeginChild(childId, ImVec2(0.0f, heightPx), true, ImGuiWindowFlags_NoScrollbar);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 size(std::max(1.0f, ImGui::GetContentRegionAvail().x), std::max(1.0f, ImGui::GetContentRegionAvail().y));
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    // Magma-like ramp from silence to full scale.
+    static constexpr ImVec4 kStops[] = {{0.00f, 0.00f, 0.02f, 1.0f}, {0.23f, 0.06f, 0.44f, 1.0f},
+                                        {0.55f, 0.16f, 0.51f, 1.0f}, {0.87f, 0.32f, 0.39f, 1.0f},
+                                        {0.99f, 0.65f, 0.36f, 1.0f}, {0.99f, 0.99f, 0.75f, 1.0f}};
+    constexpr int kStopCount = static_cast<int>(std::size(kStops));
+    auto colorFor = [&](float db) {
+        const float t = std::clamp(1.0f - db / spectrogram.floorDb, 0.0f, 1.0f) * (kStopCount - 1);
+        const int i = std::min(static_cast<int>(t), kStopCount - 2);
+        const float f = t - static_cast<float>(i);
+        const ImVec4& a = kStops[i];
+        const ImVec4& b = kStops[i + 1];
+        return ImGui::GetColorU32(ImVec4(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f, 1.0f));
+    };
+
+    const uint32_t columns = std::min<uint32_t>(spectrogram.columns, static_cast<uint32_t>(size.x));
+    const float cellW = size.x / static_cast<float>(columns);
+    const float cellH = size.y / static_cast<float>(spectrogram.rows);
+    for (uint32_t c = 0; c < columns; ++c) {
+        const uint32_t src = static_cast<uint32_t>(static_cast<uint64_t>(c) * spectrogram.columns / columns);
+        const float x0 = origin.x + c * cellW;
+        for (uint32_t r = 0; r < spectrogram.rows; ++r) {
+            const float y1 = origin.y + size.y - r * cellH;
+            drawList->AddRectFilled(ImVec2(x0, y1 - cellH), ImVec2(x0 + cellW + 0.5f, y1 + 0.5f),
+                                    colorFor(spectrogram.at(src, r)));
+        }
+    }
+
+    const float logRange = std::log(spectrogram.maxFrequencyHz / spectrogram.minFrequencyHz);
+    for (float hz : {100.0f, 1000.0f, 10000.0f}) {
+        if (hz <= spectrogram.minFrequencyHz || hz >= spectrogram.maxFrequencyHz) continue;
+        const float y = origin.y + size.y * (1.0f - std::log(hz / spectrogram.minFrequencyHz) / logRange);
+        drawList->AddLine(ImVec2(origin.x, y), ImVec2(origin.x + size.x, y), IM_COL32(255, 255, 255, 40));
+        drawList->AddText(ImVec2(origin.x + 4.0f, y - ImGui::GetTextLineHeight() - 1.0f), IM_COL32(255, 255, 255, 150),
+                          hz >= 1000.0f ? (hz >= 10000.0f ? "10 kHz" : "1 kHz") : "100 Hz");
+    }
+
+    ImGui::InvisibleButton("##spectrogram_hit", size);
+    if (ImGui::IsItemHovered()) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const float u = std::clamp((mouse.x - origin.x) / size.x, 0.0f, 0.9999f);
+        const float v = std::clamp(1.0f - (mouse.y - origin.y) / size.y, 0.0f, 0.9999f);
+        const uint32_t c = static_cast<uint32_t>(u * spectrogram.columns);
+        const uint32_t r = static_cast<uint32_t>(v * spectrogram.rows);
+        drawList->AddLine(ImVec2(mouse.x, origin.y), ImVec2(mouse.x, origin.y + size.y), IM_COL32(255, 255, 255, 90));
+        ImGui::SetTooltip("%.2f s  |  %.0f Hz  |  %.1f dBFS", u * spectrogram.durationSeconds,
+                          spectrogram.rowCenterHz(r), spectrogram.at(c, r));
+    }
+    ImGui::EndChild();
+}
+
+void AudioPreviewPlugin::drawWaveformInspectorWindow() {
+    ImGui::Begin("Waveform Inspector");
+    static const char* const kViews[] = {"Waveform", "Spectrogram"};
+    ui::segmented("##inspector_view", kViews, 2, &inspectorView_);
+    const bool spectral = inspectorView_ == 1;
+    ImGui::TextDisabled(spectral ? "Short-time FFT (2048-point Hann), log frequency, dBFS."
+                                 : "Min/max peaks of the decoded PCM buffer.");
+
+    ui::sectionHeader("Source");
+    if (spectral) {
+        drawSpectrogram("##spectrogram_source", sourceSpectrogram_, 180.0f);
     } else {
-        ImGui::TextDisabled("Click Process (DSP Node Graph) to generate this.");
+        drawWaveformBars("##waveform_source", sourceWaveformPeaks_, 140.0f);
+    }
+    if (!sourceWaveformPeaks_.empty()) {
+        ImGui::TextDisabled("Peak %.1f dBFS  |  RMS %.1f dBFS  |  %u Hz  |  %.2f s", sourcePeakDbfs_, sourceRmsDbfs_,
+                            sourceSampleRate_, sourceDurationSeconds_);
+    }
+
+    ui::sectionHeader("Processed");
+    if (spectral) {
+        drawSpectrogram("##spectrogram_processed", processedSpectrogram_, 180.0f);
+    } else {
+        drawWaveformBars("##waveform_processed", processedWaveformPeaks_, 140.0f);
+    }
+    if (!processedWaveformPeaks_.empty()) {
+        ImGui::TextDisabled("Peak %.1f dBFS  |  RMS %.1f dBFS", processedPeakDbfs_, processedRmsDbfs_);
+    } else {
+        ImGui::TextDisabled("Run Process in the DSP graph to generate this.");
     }
 
     ImGui::End();
@@ -260,9 +344,7 @@ void AudioPreviewPlugin::drawMixerChannelStrip(const char* label, float& gain, b
 
 void AudioPreviewPlugin::drawTrackMixerWindow() {
     ImGui::Begin("Audio Track Mixer");
-    ImGui::TextWrapped("Real per-channel gain/mute/solo -- applied live to actual playback every frame. Meters are "
-                        "a real static peak/RMS reading of each loaded/processed clip, not a live VU needle (this "
-                        "engine's audio API has no per-frame playback-cursor readback to drive one).");
+    ImGui::TextDisabled("Gain, mute and solo apply live. Meters show each clip's peak / RMS.");
     ImGui::Spacing();
 
     ImGui::BeginGroup();
@@ -294,12 +376,13 @@ void AudioPreviewPlugin::drawDspGraphSection() {
     core::AudioNode* slice = dspGraph_.findNode(dspSliceNode_);
 
     ImGui::SliderFloat("Gain", &gain->gainLinear, 0.0f, 2.0f);
-    ImGui::Checkbox("High-Pass (unchecked = Low-Pass)", &filter->filterIsHighPass);
+    ImGui::Checkbox("High-pass (off = low-pass)", &filter->filterIsHighPass);
     ImGui::SliderFloat("Filter Cutoff (Hz)", &filter->cutoffHz, 50.0f, 20000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
     ImGui::SliderFloat("Filter Q", &filter->q, 0.1f, 5.0f);
     ImGui::SliderFloat("Pitch Ratio", &pitch->pitchRatio, 0.25f, 4.0f);
-    ImGui::TextWrapped("Pitch Ratio changes duration too (resample-based shift) -- see AudioDspGraph.hpp's own header comment.");
-    ImGui::DragFloatRange2("Slice Range (ms)", &slice->sliceStartMs, &slice->sliceEndMs, 10.0f, 0.0f, 1.0e9f);
+    ImGui::TextDisabled("Pitch ratio is resample-based, so it also changes duration.");
+    ImGui::DragFloatRange2("Slice Range (ms)", &slice->sliceStartMs, &slice->sliceEndMs, 10.0f, 0.0f, 1.0e9f, "%.0f",
+                           slice->sliceEndMs >= 1.0e8f ? "end of clip" : "%.0f");
 
     if (ImGui::Button("Process")) {
         std::vector<float> samples;
@@ -338,6 +421,7 @@ void AudioPreviewPlugin::drawDspGraphSection() {
                     // right after this reduction, so there's nothing to
                     // keep pinned as member state.
                     processedWaveformPeaks_ = core::computeWaveformPeaks(result.samples, 512);
+                    processedSpectrogram_ = core::computeSpectrogram(result.samples, sampleRate);
                     processedPeakDbfs_ = core::computePeakDbfs(result.samples);
                     processedRmsDbfs_ = core::computeRmsDbfs(result.samples);
                 }

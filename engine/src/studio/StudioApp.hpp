@@ -138,6 +138,9 @@ public:
     // caller that surfaces this in a native message box. Empty string
     // whenever initialize() hasn't failed (or hasn't run yet).
     [[nodiscard]] const std::string& lastInitError() const { return lastInitError_; }
+    // Opens a document passed on the command line: a .scene file, or an
+    // audio file in Kronos Audio. Call after initialize().
+    void openFileArgument(const std::string& path);
 
     // Sprint 7 ("Studio UI Revamp") task category 6 -- real, public so
     // any plugin/panel can push a real toast (save success/failure,
@@ -345,6 +348,8 @@ private:
     // scene always adds/selects it as a tab too rather than being a
     // separate, tab-unaware code path.
     void switchToScene(const std::string& path);
+    // Loads a shipped template as a new, untitled scene; never saves back into it.
+    void openTemplateScene(const std::string& path);
 
     // Kronos ("Game Catalogue Overhaul", Phase 7): real "Hidden Gems"
     // dev-notification check -- called from the real Open Project code
@@ -695,6 +700,10 @@ private:
     // drawDockspace()'s own first-launch detection -- see
     // drawWelcomePanel()'s own comment.
     bool welcomePanelOpen_ = false;
+    bool welcomeFocusPending_ = false;
+    bool openedFromCommandLine_ = false;
+    int defaultLayoutSettleFrames_ = 0;
+    ImVec2 defaultLayoutBuiltSize_{};
     // Kronos ("Studio Revamp" -- "flexible window docking layouts"): set
     // by the View menu's "Reset Layout to Default" item, consumed by
     // drawDockspace()'s own DockBuilder block on the very next frame --
@@ -714,6 +723,7 @@ private:
     // Renderer overlay callback -- see endFrame()'s comment for why
     // Render() cannot live inside the callback itself.
     ImDrawData* pendingDrawData_ = nullptr;
+    bool uiTargetIsSrgb_ = false;
     bool initialized_ = false;
     // See lastInitError()'s own comment above.
     std::string lastInitError_;

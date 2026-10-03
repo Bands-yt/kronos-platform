@@ -124,7 +124,7 @@ bool RiggedMesh::uploadFromHost(VmaAllocator allocator, VkDevice device, VkComma
     }
 
     if (!uploadToDeviceLocalBuffer(allocator, device, cmdPool, queue, gpuSkin.data(),
-                                    sizeof(GpuSkinVertex) * gpuSkin.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                    sizeof(GpuSkinVertex) * gpuSkin.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rayTracingGeometryUsage(),
                                     skinBuffer_, skinAllocation_)) {
         outError = "GPU upload failed for the skin-weight buffer";
         mesh_.destroy(allocator);

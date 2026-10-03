@@ -16,6 +16,14 @@ DoorUnlockResult tryEscapeThroughBlastDoor(LockedDoor& blastDoor, const KeycardI
     return DoorUnlockResult::Unlocked;
 }
 
+DoorUnlockResult tryUnlockExitWithObjective(LockedDoor& blastDoor, const ObjectiveManager& objective) {
+    if (!blastDoor.locked) return DoorUnlockResult::NotLocked;
+    if (objective.keycardsCollected < kKeycardsRequiredForExit) return DoorUnlockResult::DeniedMissingKeycard;
+
+    blastDoor.locked = false;
+    return DoorUnlockResult::Unlocked;
+}
+
 bool isPlayerCaught(glm::vec3 playerPos, glm::vec3 threatPos, float catchRadius) {
     return glm::distance(playerPos, threatPos) <= catchRadius;
 }

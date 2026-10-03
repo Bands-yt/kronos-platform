@@ -101,6 +101,8 @@ Window::~Window() {
 bool Window::initialize(const CreateInfo& info) {
     lastError_.clear(); // real, honest reset -- a retried initialize() after a fixed environment shouldn't report a stale error
 
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
         // report): real, specific diagnosis (see classifySdlFailure()'s
@@ -133,7 +135,7 @@ bool Window::initialize(const CreateInfo& info) {
     // Application::initialize()'s postRenderHook) -- the compositor then
     // has real, complete, already-cleared content the very first time
     // this window is ever mapped.
-    Uint32 flags = SDL_WINDOW_VULKAN;
+    Uint32 flags = SDL_WINDOW_VULKAN | SDL_WINDOW_ALLOW_HIGHDPI;
     if (info.resizable) {
         flags |= SDL_WINDOW_RESIZABLE;
     }
@@ -256,6 +258,20 @@ void Window::setFullscreen(bool enabled) {
 bool Window::isFullscreen() const {
     if (window_ == nullptr) return false;
     return (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+}
+
+uint32_t Window::pixelWidth() const {
+    if (window_ == nullptr) return width_;
+    int w = 0, h = 0;
+    SDL_Vulkan_GetDrawableSize(window_, &w, &h);
+    return w > 0 ? static_cast<uint32_t>(w) : width_;
+}
+
+uint32_t Window::pixelHeight() const {
+    if (window_ == nullptr) return height_;
+    int w = 0, h = 0;
+    SDL_Vulkan_GetDrawableSize(window_, &w, &h);
+    return h > 0 ? static_cast<uint32_t>(h) : height_;
 }
 
 void Window::setSize(uint32_t width, uint32_t height) {

@@ -1,5 +1,7 @@
 #include "studio/StudioIcons.hpp"
 
+#include "core/UIWidgets.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -258,21 +260,40 @@ const char* iconCategoryName(Icon icon) {
 
 bool iconButton(const char* strId, Icon icon, ImVec2 buttonSize, bool active, const char* tooltip) {
     ImGui::PushID(strId);
-    ImVec2 cursor = ImGui::GetCursorScreenPos();
-    bool clicked = ImGui::InvisibleButton("##icon_btn", buttonSize);
-    bool hovered = ImGui::IsItemHovered();
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const ImVec2 max(min.x + buttonSize.x, min.y + buttonSize.y);
+    const bool clicked = ImGui::InvisibleButton("##icon_btn", buttonSize);
+    const bool hovered = ImGui::IsItemHovered();
+    const ImGuiID id = ImGui::GetItemID();
+    const float hover = ui::animate(id, hovered ? 1.0f : 0.0f);
+    const float on = ui::animate(id + 1, active ? 1.0f : 0.0f);
+    const float press = ui::animate(id + 2, ImGui::IsItemActive() ? 1.0f : 0.0f, 24.0f);
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    ImU32 bgColor = active ? ImGui::GetColorU32(ImGuiCol_HeaderActive)
-                            : (hovered ? ImGui::GetColorU32(ImGuiCol_HeaderHovered) : ImGui::GetColorU32(ImGuiCol_FrameBg));
-    drawList->AddRectFilled(cursor, ImVec2(cursor.x + buttonSize.x, cursor.y + buttonSize.y), bgColor,
-                             ImGui::GetStyle().FrameRounding);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec4 accent = ui::accent();
+    const float inset = press * 1.0f;
+    const ImVec2 bgMin(min.x + inset, min.y + inset);
+    const ImVec2 bgMax(max.x - inset, max.y - inset);
+    if (hover > 0.01f) {
+        drawList->AddRectFilled(bgMin, bgMax, IM_COL32(255, 255, 255, static_cast<int>(16.0f * hover)), style.FrameRounding);
+    }
+    if (on > 0.01f) {
+        drawList->AddRectFilled(bgMin, bgMax, ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.22f * on)),
+                                style.FrameRounding);
+        drawList->AddRect(bgMin, bgMax, ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.55f * on)),
+                          style.FrameRounding);
+    }
 
-    ImVec2 center(cursor.x + buttonSize.x * 0.5f, cursor.y + buttonSize.y * 0.5f);
-    float iconSize = std::min(buttonSize.x, buttonSize.y) * 0.78f;
-    drawIcon(drawList, icon, center, iconSize, ImGui::GetColorU32(ImGuiCol_Text));
+    const ImVec4 text = style.Colors[ImGuiCol_Text];
+    const ImVec4 base(text.x * (0.78f + 0.22f * hover), text.y * (0.78f + 0.22f * hover),
+                      text.z * (0.8f + 0.2f * hover), 1.0f);
+    const ImVec4 iconColor(base.x + (accent.x - base.x) * on, base.y + (accent.y - base.y) * on,
+                           base.z + (accent.z - base.z) * on, 1.0f);
+    const ImVec2 center((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+    drawIcon(drawList, icon, center, std::min(buttonSize.x, buttonSize.y) * 0.62f, ImGui::GetColorU32(iconColor));
 
-    if (tooltip != nullptr && hovered) {
+    if (tooltip != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
         ImGui::SetTooltip("%s", tooltip);
     }
     ImGui::PopID();

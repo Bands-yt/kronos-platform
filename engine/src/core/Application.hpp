@@ -139,8 +139,16 @@ public:
     [[nodiscard]] TextureLibrary& textureLibrary() { return textureLibrary_; }
     [[nodiscard]] Camera& camera() { return camera_; }
     [[nodiscard]] platform_adapters::UnifiedInput& input() { return input_; }
+    // PROJECT: DESPAIR -- see despairRestartRequested_'s own comment.
+    // True only after run() has already returned (the postPhysicsHook
+    // that sets it also requests the real window close driving that
+    // return) -- main.cpp's despairMode block checks this right after
+    // app.run() to decide whether to re-exec instead of exiting normally.
+    [[nodiscard]] bool despairRestartRequested() const { return despairRestartRequested_; }
     [[nodiscard]] CharacterController& characterController() { return characterController_; }
     [[nodiscard]] RiggedMeshLibrary& riggedMeshLibrary() { return riggedMeshLibrary_; }
+    [[nodiscard]] UIRenderer& uiRenderer() { return uiRenderer_; }
+    [[nodiscard]] const std::vector<EntityId>& localPlayerSkinnedEntities() const { return skinnedAvatarEntities_; }
 
     // Kronos ("Avatar System" -- "replace the placeholder cylinder with a
     // real humanoid avatar"): the one real, shared spawn path for the
@@ -692,6 +700,13 @@ public:
     }
 
 private:
+    // Sets despairFloatingText_/despairFloatingTextTimer_ (drawn on-screen
+    // alongside the stamina bar/hotbar, see that block's own comment) and
+    // still prints the same "[floating text]" stdout line every call site
+    // already did, so nothing that previously relied on the terminal
+    // output regresses.
+    void showDespairFloatingText(const std::string& text);
+
     Window window_;
     Renderer renderer_;
     // Kronos ("User Interface" world-building) -- see UIRenderer.hpp's
@@ -826,12 +841,20 @@ private:
     // never calls windState() still gets a small, believable ambient
     // sway/drift rather than a dead-calm 0.
     core::WindState windState_;
-    // Tracks the last entity the interaction UI-hint stub reported, so
-    // the stdout stand-in for a real on-screen prompt (see
-    // Interactable.hpp's own comment on why it's a stub here) only
-    // prints on a real change (entering/leaving range or look-at),
-    // not every single tick while unchanged.
+    // Tracks the last entity the interaction UI-hint reported, so it
+    // only updates despairInteractionPrompt_ on a real change
+    // (entering/leaving range or look-at), not every single tick while
+    // unchanged.
     EntityId lastInteractionHintEntity_ = kNullEntity;
+    // Real on-screen text for the interaction prompt/floating-text
+    // system below (drawn via uiRenderer_ alongside the stamina
+    // bar/hotbar/death screen, same FPSPlayerSettings gate) -- mirrors
+    // the same strings every "[UI hint]"/"[floating text]" stdout call
+    // site already prints, so the player actually sees them in the game
+    // window instead of only a terminal nobody's watching.
+    std::string despairInteractionPrompt_;
+    std::string despairFloatingText_;
+    float despairFloatingTextTimer_ = 0.0f;
 
     // Sprint 5 ("Core Economy") state -- real per-run randomness (ore
     // drop-table rolls, bonus-gem chance), deliberately NOT the fixed
@@ -1046,6 +1069,29 @@ private:
     bool tntWarsSuitBaseSpeedCaptured_ = false;
     float tntWarsSuitBaseWalkSpeed_ = 0.0f;
     float tntWarsSuitBaseRunSpeed_ = 0.0f;
+    // PROJECT: DESPAIR -- stamina-gated sprint's captured-once base runSpeed;
+    // see the pre-tick hook's own comment in Application.cpp.
+    float despairBaseRunSpeed_ = 0.0f;
+    // PROJECT: DESPAIR -- real, honest elapsed-time-since-load clock,
+    // accumulated only while the character carries FPSPlayerSettings (same
+    // "component is the seam" convention as despairBaseRunSpeed_ above);
+    // gates the VHS static-noise burst's own grace period -- see the
+    // postPhysicsHook's own comment in Application.cpp.
+    float despairElapsedSeconds_ = 0.0f;
+    // PROJECT: DESPAIR -- Escape-to-restart. Edge-triggered in the same
+    // postPhysicsHook (see its own comment): on the rising edge of
+    // "ToggleMenu" this pushes a real SDL_QUIT so GameLoop::run()'s own
+    // pumpEvents() loop exits exactly as it would for a real window
+    // close, then sets this flag so main.cpp's despairMode block knows to
+    // re-exec the process instead of returning 0 -- a full fresh process
+    // (new Jolt/ECS/renderer state) rather than a partial in-place scene
+    // wipe, since neither ECS nor Physics expose a real "destroy every
+    // despair entity/body" primitive to rebuild onto safely.
+    bool despairRestartRequested_ = false;
+    bool despairToggleMenuWasDown_ = false;
+    // PROJECT: DESPAIR -- hotbar item-use edge detection, same
+    // "was-down" pattern as tntWarsClassKeyWasDown_ below.
+    bool despairHotbarUseKeyWasDown_[despair::kHotbarSlotCount] = {};
     // Kronos ("Sky Map Full Engine Specification") -- see tntWarsExtraDestructibles()'s own comment.
     std::vector<tntwars::DestructibleSegment> tntWarsExtraDestructibles_;
     std::vector<tntwars::DestructibleSegmentVisual> tntWarsExtraDestructibleVisuals_;

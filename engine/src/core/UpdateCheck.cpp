@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <string_view>
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -153,9 +154,24 @@ UpdateCheckResult checkForUpdate(const std::string& currentVersion, const std::s
         return result;
     }
 
+#if defined(_WIN32)
+    constexpr std::string_view kPlatformArchiveSuffix = "windows-x64.zip";
+#else
+    constexpr std::string_view kPlatformArchiveSuffix = "linux-x64.tar.gz";
+#endif
+    // Only offer releases the installer can actually install on this platform.
+    auto hasPlatformArchive = [&](const nlohmann::json& release) {
+        if (!release.contains("assets") || !release["assets"].is_array()) return false;
+        for (const auto& asset : release["assets"]) {
+            std::string name = asset.value("name", std::string());
+            if (name.ends_with(kPlatformArchiveSuffix)) return true;
+        }
+        return false;
+    };
+
     SemanticVersion best;
     for (const auto& release : releases) {
-        if (release.value("draft", false)) continue;
+        if (release.value("draft", false) || !hasPlatformArchive(release)) continue;
         std::string tag = release.value("tag_name", std::string());
         SemanticVersion candidate = parseVersion(tag);
         if (!candidate.valid) continue;

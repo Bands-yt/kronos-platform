@@ -55,11 +55,7 @@ layout(set = 1, binding = 4) uniform sampler2D aoTexture;
 #endif
 
 #ifdef KRONOS_RAY_TRACING
-layout(set = 0, binding = 2) uniform accelerationStructureEXT topLevelAS;
-// Two vec4 per TLAS instance: baseColor, (metallic, roughness, 0, 0).
-layout(set = 0, binding = 3) readonly buffer InstanceMaterials {
-    vec4 data[];
-} instanceMaterials;
+#include "raytracing.glsl"
 #endif
 
 const float kTriplanarScale = 0.12;
@@ -110,57 +106,19 @@ float shadingNoise() {
     return interleavedGradientNoise(pixel);
 }
 
-#ifdef KRONOS_RAY_TRACING
-float rayQueryShadow(vec3 origin, vec3 direction) {
-    rayQueryEXT rq;
-    rayQueryInitializeEXT(rq, topLevelAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF, origin,
-                          0.02, direction, 500.0);
-    while (rayQueryProceedEXT(rq)) {
-    }
-    return rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+vec2 shadingNoise2(float noise) {
+    vec2 pixel = gl_FragCoord.xy + vec2(47.0, 17.0);
+    if (scene.frameParams.y > 0.5) pixel += 3.236068 * mod(scene.frameParams.x, 64.0);
+    return vec2(noise, interleavedGradientNoise(pixel));
 }
 
-// Single-bounce hit shading: the hit's albedo under the sun (assuming an
-// up-facing surface) plus hemisphere ambient. Misses return `missRadiance`.
-vec3 traceRadiance(vec3 origin, vec3 direction, float tMax, vec3 missRadiance) {
-    rayQueryEXT rq;
-    rayQueryInitializeEXT(rq, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.02, direction, tMax);
-    while (rayQueryProceedEXT(rq)) {
-    }
-    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        return missRadiance;
-    }
-    int hitIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
-    vec3 hitAlbedo = instanceMaterials.data[hitIndex * 2].rgb;
-    float sunUp = clamp(-scene.lightDirectionWS.y, 0.2, 1.0);
-    vec3 sun = scene.lightColorIntensity.rgb * scene.lightColorIntensity.a * sunUp * INV_PI;
-    return hitAlbedo * (sun + hemisphereAmbient(vec3(0.0, 1.0, 0.0)));
-}
-
-// Cosine-weighted one-bounce irradiance (radiance-equivalent, E / PI):
-// with pdf = cos/PI the estimator reduces to the mean incoming radiance.
-vec3 traceIndirectIrradiance(vec3 origin, vec3 N, float noise) {
-    const int kSamples = 16;
-    vec3 T, B;
-    orthonormalBasis(N, T, B);
-    vec3 accum = vec3(0.0);
-    for (int i = 0; i < kSamples; ++i) {
-        vec2 u = fract(hammersley(uint(i), uint(kSamples)) + vec2(noise, fract(noise * 7.13)));
-        float r = sqrt(u.x);
-        float phi = 2.0 * PI * u.y;
-        vec3 dir = normalize(T * (r * cos(phi)) + B * (r * sin(phi)) + N * sqrt(max(0.0, 1.0 - u.x)));
-        accum += traceRadiance(origin, dir, 60.0, hemisphereAmbient(dir));
-    }
-    return accum / float(kSamples);
-}
-#endif
 
 float sunVisibility(vec3 Ngeo, vec3 L, float viewDepth, float noise) {
     float NoLgeo = saturate(dot(Ngeo, L));
     float visibility;
 #ifdef KRONOS_RAY_TRACING
     if (scene.renderFlags.x > 0.5) {
-        visibility = rayQueryShadow(inWorldPos + Ngeo * 0.02, L);
+        visibility = rtSunShadow(inWorldPos, Ngeo, L, shadingNoise2(noise));
     } else
 #endif
     {
@@ -170,6 +128,36 @@ float sunVisibility(vec3 Ngeo, vec3 L, float viewDepth, float noise) {
         visibility *= cloudShadowAt(inWorldPos, L, scene.cloudParams.y, scene.cloudParams.z, scene.cloudParams.w);
     }
     return visibility;
+}
+
+// Sum of travelling swells with sharpened crests (exp(sin - 1)), deep-water
+// dispersion so long waves outrun short ones. Octaves smaller than a few
+// pixels fade out so distant water doesn't shimmer. Returns the height
+// gradient (xy) and a 0..1 crest factor (z).
+vec3 waterSurface(vec2 p, float t) {
+    vec2 footprint = max(abs(dFdx(p)), abs(dFdy(p)));
+    float pixel = max(max(footprint.x, footprint.y), 1e-4);
+    vec2 dir = normalize(vec2(0.8, 0.6));
+    float wavelength = 11.0;
+    float amp = 0.14;
+    vec2 grad = vec2(0.0);
+    float height = 0.0;
+    float total = 0.0;
+    const mat2 kTurn = mat2(-0.737, 0.675, -0.675, -0.737);
+    for (int i = 0; i < 7; ++i) {
+        float k = 6.2831853 / wavelength;
+        float omega = sqrt(9.81 * k);
+        float phase = k * dot(dir, p) - omega * t + float(i) * 1.7;
+        float crest = exp(sin(phase) - 1.0);
+        float fade = saturate(wavelength / (8.0 * pixel) - 0.5);
+        grad += fade * amp * crest * cos(phase) * k * dir;
+        height += amp * crest;
+        total += amp;
+        dir = kTurn * dir;
+        wavelength *= 0.63;
+        amp *= 0.6;
+    }
+    return vec3(grad, saturate((height / total - 0.5) * 2.5));
 }
 
 void main() {
@@ -215,6 +203,15 @@ void main() {
         vec3 tn = texture(NORMAL_TEX, inUV).rgb * 2.0 - 1.0;
         tn.xy *= inMetallicRoughness.z;
         N = normalize(mat3(T, B, Ngeo) * normalize(tn));
+    }
+
+    if (record.misc.z > 0.0) {
+        vec3 wave = waterSurface(inWorldPos.xz, scene.cloudParams.w);
+        vec2 slope = wave.xy * record.misc.z;
+        N = normalize(vec3(-slope.x, 1.0, -slope.y));
+        float foam = wave.z * wave.z * record.misc.w;
+        albedo = mix(albedo, vec3(0.82, 0.88, 0.9), foam);
+        perceptualRoughness = mix(perceptualRoughness, 0.55, foam);
     }
 
     // Rain wetness: water fills micro-surface detail on up-facing surfaces.
@@ -278,17 +275,25 @@ void main() {
     }
 
 #ifdef KRONOS_RAY_TRACING
+    vec2 noise2 = shadingNoise2(noise);
     if (scene.reflectionParams.x > 0.5) {
         // Traced reflections replace the environment only where the lobe is
-        // narrow enough for one ray to be a fair estimate.
+        // narrow enough for one ray per pixel to be a fair estimate.
         float rtWeight = smoothstep(scene.reflectionParams.y, scene.reflectionParams.z, 1.0 - p.perceptualRoughness);
         if (rtWeight > 0.001) {
-            vec3 traced = traceRadiance(inWorldPos + Ngeo * 0.02, R, 200.0, specularRadiance);
-            specularRadiance = mix(specularRadiance, traced, rtWeight);
+            vec3 dir = rtGlossyDirection(s.N, s.V, p.roughness, noise2.yx);
+            if (dot(dir, Ngeo) > 0.0) {
+                vec3 traced = rtTraceRadiance(rtOffset(inWorldPos, Ngeo), dir, specularRadiance, true, 1.0);
+                specularRadiance = mix(specularRadiance, traced, rtWeight);
+            }
         }
     }
     if (scene.giParams.x > 0.5) {
-        irradiance += traceIndirectIrradiance(inWorldPos + Ngeo * 0.02, s.N, noise) * scene.giParams.y;
+        irradiance = rtIndirectIrradiance(inWorldPos, s.N, Ngeo, noise2, int(scene.giParams.z), scene.giParams.y);
+    } else if (scene.giParams.w > 0.0) {
+        float rtao = rtAmbientOcclusion(inWorldPos, s.N, Ngeo, noise2, scene.giParams.w,
+                                        scene.renderFlags.y > 0.5 ? 2 : 4);
+        ao *= mix(0.15, 1.0, rtao);
     }
 #endif
 

@@ -119,6 +119,21 @@ void Audio::stopSound(SoundHandle handle) {
     ma_sound_stop(sounds_[handle]);
 }
 
+void Audio::setSoundLooping(SoundHandle handle, bool looping) {
+    if (handle >= sounds_.size() || !sounds_[handle]) return;
+    ma_sound_set_looping(sounds_[handle], looping ? MA_TRUE : MA_FALSE);
+}
+
+void Audio::setSoundSpatialized(SoundHandle handle, bool spatialized) {
+    if (handle >= sounds_.size() || !sounds_[handle]) return;
+    ma_sound_set_spatialization_enabled(sounds_[handle], spatialized ? MA_TRUE : MA_FALSE);
+}
+
+void Audio::setSoundPitch(SoundHandle handle, float pitch) {
+    if (handle >= sounds_.size() || !sounds_[handle]) return;
+    ma_sound_set_pitch(sounds_[handle], std::max(pitch, 0.01f));
+}
+
 bool Audio::isSoundPlaying(SoundHandle handle) const {
     if (handle >= sounds_.size() || !sounds_[handle]) return false;
     return ma_sound_is_playing(sounds_[handle]) == MA_TRUE;

@@ -421,4 +421,20 @@ bool validateAnimationClipAgainstSkeleton(const AnimationClip& clip, const Skele
     return true;
 }
 
+void retargetClipTranslations(AnimationClip& clip, const Skeleton& authoredFor, const Skeleton& target) {
+    for (AnimationTrack& track : clip.tracks) {
+        int authoredIndex = authoredFor.findJointIndex(track.targetName());
+        int targetIndex = target.findJointIndex(track.targetName());
+        if (authoredIndex < 0 || targetIndex < 0) continue;
+        glm::vec3 authoredBind = authoredFor.joints[static_cast<size_t>(authoredIndex)].localPosition;
+        glm::vec3 targetBind = target.joints[static_cast<size_t>(targetIndex)].localPosition;
+        float authoredLength = glm::length(authoredBind);
+        float scale = authoredLength > 1e-5f ? glm::length(targetBind) / authoredLength : 1.0f;
+        for (size_t i = 0; i < track.keyframes().size(); ++i) {
+            Keyframe& key = track.keyframeAt(i);
+            key.position = targetBind + (key.position - authoredBind) * scale;
+        }
+    }
+}
+
 } // namespace engine::core

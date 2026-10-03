@@ -109,6 +109,10 @@ public:
     // Clears `ecs` and resets bookkeeping to "new, unsaved scene".
     void newScene(ECS& ecs);
 
+    // Keeps the loaded entities but forgets their source file, so a scene
+    // opened from a read-only template is saved only via Save As.
+    void detachFromFile(const ECS& ecs);
+
     [[nodiscard]] const std::string& currentScenePath() const { return currentScenePath_; }
     [[nodiscard]] bool isDirty() const { return dirty_; }
     void markDirty() { dirty_ = true; }

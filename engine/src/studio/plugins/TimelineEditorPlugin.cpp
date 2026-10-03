@@ -104,14 +104,13 @@ void TimelineEditorPlugin::drawPanel(core::ECS& ecs, core::EntityId selected, co
         return;
     }
 
-    ImGui::Text("Real, live-runtime hook: interacting with this entity in engine_runtime calls");
-    ImGui::TextUnformatted("core::togglePropAnimation() -- the real Open/Close/Toggle event this task asks for.");
+    ImGui::TextDisabled("Interacting with this entity in the client triggers its Open / Close / Toggle animation.");
     ImGui::Separator();
 
     drawKeyframeList(ecs, selected, *hook);
     drawScrubber(ecs, selected, *hook);
 
-    drawPluginFooter("Scrubbing previews the pose live; the real runtime tick (Application.cpp) drives actual playback.");
+    drawPluginFooter("Scrubbing previews the pose live; the runtime drives playback.");
     ImGui::End();
 }
 

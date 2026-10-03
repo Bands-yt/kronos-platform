@@ -1,7 +1,9 @@
 #include "despair/HorrorAIManager.hpp"
 
+#include <algorithm>
 #include <limits>
 
+#include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
 #include "despair/InteractionSystem.hpp"
 
@@ -42,10 +44,90 @@ bool isPlayerHidden(core::ECS& ecs, core::EntityId player) {
     return hiding != nullptr && hiding->currentSpot != core::kNullEntity;
 }
 
+// The "nothing left to do" settle point every non-hunting/investigating
+// path in tickTormentorState() below now shares: Idle when there's no
+// patrol route to walk (the untouched, pre-patrol behavior every existing
+// test's default-constructed TormentorAIState still gets), Patrolling
+// otherwise. Also advances patrolIndex (looping back to 0 past the last
+// waypoint) once tormentorPos has actually reached the current one, so
+// this same call re-evaluated every tick is what drives the whole route --
+// no separate "advance" step needed anywhere else.
+void settleToIdleOrPatrol(TormentorAIState& tormentor, glm::vec3 tormentorPos) {
+    if (tormentor.patrolWaypoints.empty()) {
+        tormentor.behavior = TormentorBehaviorState::Idle;
+        return;
+    }
+
+    tormentor.behavior = TormentorBehaviorState::Patrolling;
+    glm::vec3 currentWaypoint = tormentor.patrolWaypoints[tormentor.patrolIndex];
+    if (glm::length(currentWaypoint - tormentorPos) <= TormentorAIState::kPatrolArrivalEpsilon) {
+        tormentor.patrolIndex = (tormentor.patrolIndex + 1) % tormentor.patrolWaypoints.size();
+    }
+}
+
+// Shared write path for all three tiers' eye-glow color: looks up
+// AiEyeGlowRef on the AI entity itself (attached by FacilityMapBuilder.cpp's
+// spawnAiSilhouette()) and, if present, writes `color` into the eye child's
+// Renderable (base + emissive, so both the unlit glint and the bloom read
+// the new color) and its real core::Light. A real, honest no-op for any AI
+// entity a test constructs directly with no silhouette spawned -- exactly
+// how a color-only cosmetic effect should behave when the presentation
+// layer it drives doesn't exist.
+// AI entities carry no RigidBody of their own (see this file's own top
+// comment), so directLineStep()'s straight-line move has nothing to stop
+// it at a wall -- it needs an explicit check. Cast from roughly chest
+// height (clears the floor collider, same convention hasLineOfSight()
+// uses) toward the proposed step; a Static body hit before `to` clamps
+// the move to just short of it (by kWallSkin) instead of walking through.
+constexpr float kAiBodyHeight = kPlayerEyeHeight * 0.5f;
+constexpr float kWallSkin = 0.2f;
+
+glm::vec3 clampStepAgainstWalls(core::Physics& physics, core::ECS& ecs, glm::vec3 from, glm::vec3 to) {
+    glm::vec3 delta = to - from;
+    float distance = glm::length(delta);
+    if (distance <= 0.0001f) return to;
+
+    glm::vec3 direction = delta / distance;
+    glm::vec3 rayOrigin = from + glm::vec3(0.0f, kAiBodyHeight, 0.0f);
+    core::Physics::RaycastHit hit = physics.raycast(rayOrigin, direction, distance + kWallSkin);
+    if (!hit.hit || hit.distance >= distance) return to; // clear, or whatever it hit is past the destination anyway
+
+    // Only Static geometry (walls, closed/locked doors) blocks movement --
+    // a Dynamic/Kinematic body or an entity with no RigidBody at all (a
+    // sensor-only prop, e.g. a keycard) is never a real wall.
+    auto* rigidBody = ecs.tryGetComponent<core::RigidBody>(hit.entity);
+    if (rigidBody == nullptr || rigidBody->motionType != core::RigidBodyMotionType::Static) return to;
+
+    float clampedDistance = std::max(0.0f, hit.distance - kWallSkin);
+    return from + direction * clampedDistance;
+}
+
+void applyEyeGlowColor(core::ECS& ecs, core::EntityId aiEntity, glm::vec3 color) {
+    auto* ref = ecs.tryGetComponent<AiEyeGlowRef>(aiEntity);
+    if (ref == nullptr || ref->eyeEntity == core::kNullEntity) return;
+
+    if (auto* renderable = ecs.tryGetComponent<core::Renderable>(ref->eyeEntity)) {
+        renderable->baseColor = glm::vec4(color, 1.0f);
+        renderable->emissiveColor = color;
+    }
+    if (auto* light = ecs.tryGetComponent<core::Light>(ref->eyeEntity)) {
+        light->color = color;
+    }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------
 // StalkerAI
+
+glm::vec3 stalkerStateColor(StalkerBehaviorState state) {
+    switch (state) {
+        case StalkerBehaviorState::Dormant: return {0.0f, 1.0f, 0.0f};
+        case StalkerBehaviorState::Stalking: return {1.0f, 0.0f, 0.0f};
+        case StalkerBehaviorState::Frozen: return {1.0f, 1.0f, 0.0f};
+    }
+    return {1.0f, 1.0f, 1.0f};
+}
 
 void tickStalkerState(StalkerAIState& stalker, glm::vec3 stalkerPos, glm::vec3 playerPos, bool hasLineOfSight,
                        bool playerLooksAtStalker) {
@@ -82,6 +164,16 @@ glm::vec3 stalkerMovementStep(const StalkerAIState& stalker, glm::vec3 stalkerPo
 
 // ---------------------------------------------------------------------
 // TormentorAI
+
+glm::vec3 tormentorStateColor(TormentorBehaviorState state) {
+    switch (state) {
+        case TormentorBehaviorState::Idle:
+        case TormentorBehaviorState::Patrolling: return {0.0f, 1.0f, 0.0f};
+        case TormentorBehaviorState::Hunting: return {1.0f, 0.0f, 0.0f};
+        case TormentorBehaviorState::Investigating: return {1.0f, 1.0f, 0.0f};
+    }
+    return {1.0f, 1.0f, 1.0f};
+}
 
 void tickTormentorState(TormentorAIState& tormentor, float dt, glm::vec3 tormentorPos, glm::vec3 playerPos,
                          float playerNoiseLevel, bool hasLineOfSight) {
@@ -127,21 +219,34 @@ void tickTormentorState(TormentorAIState& tormentor, float dt, glm::vec3 torment
     if (tormentor.behavior == TormentorBehaviorState::Investigating) {
         tormentor.loseInterestTimer += dt;
         if (tormentor.loseInterestTimer >= TormentorAIState::kLoseInterestSeconds) {
-            tormentor.behavior = TormentorBehaviorState::Idle;
+            settleToIdleOrPatrol(tormentor, tormentorPos);
         }
         return;
     }
 
-    tormentor.behavior = TormentorBehaviorState::Idle;
+    settleToIdleOrPatrol(tormentor, tormentorPos);
 }
 
 glm::vec3 tormentorMovementStep(const TormentorAIState& tormentor, glm::vec3 tormentorPos, float dt) {
     if (tormentor.behavior == TormentorBehaviorState::Idle) return tormentorPos;
+    if (tormentor.behavior == TormentorBehaviorState::Patrolling) {
+        if (tormentor.patrolWaypoints.empty()) return tormentorPos;
+        return directLineStep(tormentorPos, tormentor.patrolWaypoints[tormentor.patrolIndex], tormentor.patrolSpeed,
+                               dt);
+    }
     return directLineStep(tormentorPos, tormentor.investigateTarget, tormentor.moveSpeed, dt);
 }
 
 // ---------------------------------------------------------------------
 // DespairCullerAI
+
+glm::vec3 cullerStateColor(CullerBehaviorState state) {
+    switch (state) {
+        case CullerBehaviorState::Dormant: return {0.0f, 1.0f, 0.0f};
+        case CullerBehaviorState::Hunting: return {1.0f, 0.0f, 0.0f};
+    }
+    return {1.0f, 1.0f, 1.0f};
+}
 
 void setCullerHunting(DespairCullerAIState& culler) { culler.behavior = CullerBehaviorState::Hunting; }
 
@@ -217,6 +322,7 @@ void HorrorAIManager::tickStalkers(float dt, core::ECS& ecs, core::Physics& phys
         glm::vec3 playerPos, playerForward;
         if (!findNearestPlayer(ecs, stalkerPos, player, playerPos, playerForward)) {
             stalker.behavior = StalkerBehaviorState::Dormant;
+            applyEyeGlowColor(ecs, entity, stalkerStateColor(stalker.behavior));
             continue;
         }
 
@@ -225,7 +331,9 @@ void HorrorAIManager::tickStalkers(float dt, core::ECS& ecs, core::Physics& phys
         bool playerLooksAtStalker = losClear && gazeDot >= kGazeCosThreshold;
 
         tickStalkerState(stalker, stalkerPos, playerPos, losClear, playerLooksAtStalker);
-        transform.position = stalkerMovementStep(stalker, stalkerPos, dt);
+        glm::vec3 proposedPos = stalkerMovementStep(stalker, stalkerPos, dt);
+        transform.position = clampStepAgainstWalls(physics, ecs, stalkerPos, proposedPos);
+        applyEyeGlowColor(ecs, entity, stalkerStateColor(stalker.behavior));
     }
 }
 
@@ -239,7 +347,15 @@ void HorrorAIManager::tickTormentors(float dt, core::ECS& ecs, core::Physics& ph
         core::EntityId player;
         glm::vec3 playerPos, playerForward;
         if (!findNearestPlayer(ecs, tormentorPos, player, playerPos, playerForward)) {
-            tormentor.behavior = TormentorBehaviorState::Idle;
+            // No live player entity to hunt/investigate/hear at all (not
+            // even out of range) -- same settle point as the pure
+            // tickTormentorState()'s own fallthrough, so a Tormentor with a
+            // real patrol route keeps walking it instead of freezing solid
+            // just because nothing else in this frame's ECS view qualifies.
+            settleToIdleOrPatrol(tormentor, tormentorPos);
+            glm::vec3 proposedPos = tormentorMovementStep(tormentor, tormentorPos, dt);
+            transform.position = clampStepAgainstWalls(physics, ecs, tormentorPos, proposedPos);
+            applyEyeGlowColor(ecs, entity, tormentorStateColor(tormentor.behavior));
             continue;
         }
 
@@ -250,11 +366,13 @@ void HorrorAIManager::tickTormentors(float dt, core::ECS& ecs, core::Physics& ph
         }
 
         tickTormentorState(tormentor, dt, tormentorPos, playerPos, playerNoiseLevel, losClear);
-        transform.position = tormentorMovementStep(tormentor, tormentorPos, dt);
+        glm::vec3 proposedPos = tormentorMovementStep(tormentor, tormentorPos, dt);
+        transform.position = clampStepAgainstWalls(physics, ecs, tormentorPos, proposedPos);
+        applyEyeGlowColor(ecs, entity, tormentorStateColor(tormentor.behavior));
     }
 }
 
-void HorrorAIManager::tickCullers(float dt, core::ECS& ecs) {
+void HorrorAIManager::tickCullers(float dt, core::ECS& ecs, core::Physics& physics) {
     if (!hallucinationActive_) return;
 
     auto* huntTargetTransform = ecs.tryGetComponent<core::Transform>(huntTarget_);
@@ -268,14 +386,16 @@ void HorrorAIManager::tickCullers(float dt, core::ECS& ecs) {
         glm::vec3 cullerPos = glm::vec3(core::hierarchy::computeWorldMatrix(ecs, entity)[3]);
 
         setCullerHunting(culler);
-        transform.position = cullerMovementStep(culler, cullerPos, huntTargetPos, dt);
+        glm::vec3 proposedPos = cullerMovementStep(culler, cullerPos, huntTargetPos, dt);
+        transform.position = clampStepAgainstWalls(physics, ecs, cullerPos, proposedPos);
+        applyEyeGlowColor(ecs, entity, cullerStateColor(culler.behavior));
     }
 }
 
 void HorrorAIManager::update(float dt, core::ECS& ecs, core::Physics& physics) {
     tickStalkers(dt, ecs, physics);
     tickTormentors(dt, ecs, physics);
-    tickCullers(dt, ecs);
+    tickCullers(dt, ecs, physics);
 }
 
 } // namespace engine::despair

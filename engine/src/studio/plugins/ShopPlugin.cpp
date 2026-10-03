@@ -21,9 +21,7 @@ void ShopPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*selected*/,
     drawPluginHeader("Shop");
 
     ImGui::TextWrapped(
-        "A real economy-tuning sandbox -- its own Wallet/Inventory/PlayerUpgrades, not tied to any live ECS "
-        "entity (Studio runs no gameplay session by default). Calls the exact same core::Economy/core::Inventory/"
-        "core::UpgradeSystem logic engine_runtime's real mining loop uses.");
+        "Economy tuning sandbox with its own wallet, inventory and upgrades, using the same economy, inventory and upgrade logic as the runtime mining loop.");
     ImGui::Separator();
 
     ImGui::Text("Wallet: %lld coins, %lld gems", static_cast<long long>(wallet_.coins),

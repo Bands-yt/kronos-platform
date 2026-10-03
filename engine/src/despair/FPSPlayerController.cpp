@@ -51,9 +51,23 @@ float computeNoiseLevel(const FPSPlayerSettings& settings, float horizontalSpeed
     return settings.walkNoiseLevel + t * (settings.runNoiseLevel - settings.walkNoiseLevel);
 }
 
+void updateStamina(const FPSPlayerSettings& settings, StaminaState& state, bool sprinting, float dt) {
+    if (sprinting) {
+        state.current = std::max(0.0f, state.current - settings.staminaDrainPerSecond * dt);
+    } else {
+        state.current = std::min(state.max, state.current + settings.staminaRegenPerSecond * dt);
+    }
+
+    if (state.current <= 0.0f) {
+        state.exhausted = true;
+    } else if (state.current >= state.max * StaminaState::kExhaustionRecoveryFraction) {
+        state.exhausted = false;
+    }
+}
+
 void updateFirstPersonPlayer(core::ECS& ecs, core::Physics& physics, core::EntityId character,
                               const core::Camera& camera, const core::CharacterController::Settings& controllerSettings,
-                              bool crouching) {
+                              bool crouching, float dt) {
     auto* fpsSettings = ecs.tryGetComponent<FPSPlayerSettings>(character);
     if (fpsSettings == nullptr) return;
 
@@ -65,6 +79,8 @@ void updateFirstPersonPlayer(core::ECS& ecs, core::Physics& physics, core::Entit
     auto* noise = ecs.tryGetComponent<PlayerNoiseLevel>(character);
     if (noise == nullptr) noise = &ecs.addComponent<PlayerNoiseLevel>(character);
     if (ecs.tryGetComponent<EscapeGameState>(character) == nullptr) ecs.addComponent<EscapeGameState>(character);
+    auto* stamina = ecs.tryGetComponent<StaminaState>(character);
+    if (stamina == nullptr) stamina = &ecs.addComponent<StaminaState>(character);
 
     // Raw ECS write, deliberately never routed through any
     // Physics::setRotation*() call: the capsule's Jolt body is pitch/roll-
@@ -84,6 +100,16 @@ void updateFirstPersonPlayer(core::ECS& ecs, core::Physics& physics, core::Entit
     float horizontalSpeed = glm::length(glm::vec2(velocity.x, velocity.z));
     noise->current = computeNoiseLevel(*fpsSettings, horizontalSpeed, controllerSettings.walkSpeed,
                                         controllerSettings.runSpeed, crouching);
+
+    // Same "resolved speed above walkSpeed" signal computeNoiseLevel already
+    // uses above, rather than re-reading the raw "Run" action -- keeps
+    // stamina draining in lockstep with what actually happened to movement
+    // this tick (e.g. still counts as sprinting while stamina-exhaustion's
+    // own runSpeed override in Application.cpp's pre-tick hook is still
+    // ramping down, and never drains while blocked against a wall at
+    // walkSpeed).
+    bool sprinting = horizontalSpeed > controllerSettings.walkSpeed;
+    updateStamina(*fpsSettings, *stamina, sprinting, dt);
 }
 
 } // namespace engine::despair

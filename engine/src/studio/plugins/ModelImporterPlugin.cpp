@@ -49,9 +49,7 @@ void ModelImporterPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
                                       const std::vector<core::EntityId>& /*selectedEntities*/) {
     ImGui::Begin("Model Importer");
 
-    ImGui::TextWrapped("Import a Wavefront .obj, glTF 2.0 (.gltf/.glb), or FBX (.fbx) file -- loads onto a real "
-                        "\"ModelPreview\" entity you can select and orbit in the Viewport panel, the same as any "
-                        "other entity.");
+    ImGui::TextWrapped("Import a Wavefront .obj, glTF 2.0 (.gltf/.glb) or FBX file. It loads onto a \"ModelPreview\" entity you can select and orbit in the Viewport.");
     ImGui::SetNextItemWidth(320.0f);
     ImGui::InputText("Path", pathBuffer_, sizeof(pathBuffer_));
     ImGui::SameLine();

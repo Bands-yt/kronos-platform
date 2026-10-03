@@ -373,6 +373,14 @@ void SceneManager::newScene(ECS& ecs) {
     lastSeenEntityCount_ = ecs.entityCount();
 }
 
+void SceneManager::detachFromFile(const ECS& ecs) {
+    currentScenePath_.clear();
+    dirty_ = false;
+    autosaveTimer_ = 0.0f;
+    activeTabIndex_ = -1;
+    lastSeenEntityCount_ = ecs.entityCount();
+}
+
 void SceneManager::tickAutosave(float dt, ECS& ecs, const Camera& camera, const cinematic::CameraRail* rail,
                                  const cinematic::Sequence* sequence) {
     size_t currentEntityCount = ecs.entityCount();

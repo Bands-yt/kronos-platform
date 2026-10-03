@@ -546,7 +546,7 @@ void ScriptEditorPanel::draw(core::ECS& ecs, core::EntityId selectedEntity, Noti
         return;
     }
 
-    ImGui::TextDisabled("Ctrl+S save * Ctrl+W close tab (real hot-reload while Playing)");
+    ImGui::TextDisabled("Ctrl+S save  |  Ctrl+W close tab  |  Hot-reloads while playing");
     ImGui::Separator();
     // Kronos ("Script Editor QoL" -- editor background contrast): a real
     // ImGuiCol_ChildBg push, VS Code's own #1E1E1E editor background --

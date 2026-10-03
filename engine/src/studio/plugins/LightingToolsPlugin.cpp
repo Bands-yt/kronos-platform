@@ -56,7 +56,7 @@ void LightingToolsPlugin::drawDirectionalLightSection(core::SceneLighting& light
     bool changed = false;
     changed |= ImGui::SliderFloat("Pitch (degrees)", &sunPitchDegrees_, -89.0f, 89.0f);
     ImGui::SameLine();
-    helpMarker("Negative pitch = sun traveling downward (a real overhead sun). 0 = sun on the horizon.");
+    helpMarker("Negative pitch points the sun downward. 0 puts it on the horizon.");
     changed |= ImGui::SliderFloat("Yaw (degrees)", &sunYawDegrees_, -180.0f, 180.0f);
     ImGui::SameLine();
     helpMarker("Compass direction the light travels toward, same convention as the Viewport camera's own yaw.");
@@ -153,7 +153,7 @@ void LightingToolsPlugin::drawCascadedShadowMapSection() {
         renderer_->setSunAngularRadiusDegrees(sunRadius);
     }
     ImGui::SameLine();
-    helpMarker("Drives PCSS penumbra width. The real sun is ~0.27 deg; larger values read as hazy or overcast.");
+    helpMarker("Controls PCSS penumbra width. The physical sun is about 0.27 deg; larger values look hazy or overcast.");
 }
 
 void LightingToolsPlugin::drawRenderingModeSection() {
@@ -168,8 +168,7 @@ void LightingToolsPlugin::drawRenderingModeSection() {
         }
         ImGui::SameLine();
         helpMarker(
-            "Real hardware ray query (VK_KHR_ray_query) against a real BLAS/TLAS built from MeshSource-described "
-            "Box/Plane shadow casters. Same real F6 toggle engine_runtime exposes.");
+            "Hardware ray queries (VK_KHR_ray_query) against a BLAS/TLAS built from the scene\'s shadow casters. Same as F6 in the client.");
     }
 
     bool perfEnabled = renderer_->isPerformanceModeEnabled();
@@ -178,8 +177,7 @@ void LightingToolsPlugin::drawRenderingModeSection() {
     }
     ImGui::SameLine();
     helpMarker(
-        "PCF instead of PCSS shadow filtering, bloom extract skipped, particle draw count capped -- and forces ray-traced "
-        "shadows off. Same real F7 toggle engine_runtime exposes.");
+        "PCF instead of PCSS shadows, no bloom extract, capped particle draws, and ray-traced shadows off. Same as F7 in the client.");
 
     bool taaEnabled = renderer_->isTemporalAAEnabled();
     if (ImGui::Checkbox("Temporal Anti-Aliasing", &taaEnabled)) {
@@ -194,9 +192,7 @@ void LightingToolsPlugin::drawRenderingModeSection() {
     }
     ImGui::SameLine();
     helpMarker(
-        "SSAO + depth-of-field + camera motion blur (one consolidated pass) plus vignette/chromatic "
-        "aberration/saturation grading/god rays in composite -- and forces Performance Mode off. Same real F9 "
-        "toggle engine_runtime exposes.");
+        "SSAO, depth of field and camera motion blur, plus vignette, chromatic aberration, grading and god rays. Turns Performance Mode off. Same as F9 in the client.");
     if (cinematicEnabled) {
         ImGui::Indent();
         ImGui::SliderFloat("SSAO Radius", &ssaoRadius_, 0.05f, 2.0f, "%.2f");
@@ -252,7 +248,7 @@ void LightingToolsPlugin::drawRenderingModeSection() {
         ImGui::SameLine();
         if (ImGui::Button("Reset to Identity")) {
             std::string error;
-            lutStatus_ = renderer_->resetColorGradingLutToIdentity(error) ? "Reset to a real, exact identity LUT."
+            lutStatus_ = renderer_->resetColorGradingLutToIdentity(error) ? "Reset to identity LUT."
                                                                             : "Failed: " + error;
         }
         if (!lutStatus_.empty()) ImGui::TextWrapped("%s", lutStatus_.c_str());

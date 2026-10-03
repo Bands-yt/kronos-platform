@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 
 #include "despair/InteractionSystem.hpp"
+#include "despair/LootSystem.hpp"
 
 namespace engine::despair {
 
@@ -32,6 +33,20 @@ struct EscapeGameState {
 // mechanic.
 struct PowerBreaker {
     bool activated = false;
+};
+
+// Pairs with a plain core::Light on the same entity so the facility's
+// showcase wing rooms genuinely go from dark to lit when the player finds
+// and flips the real breaker prop above, instead of PowerBreaker only ever
+// recoloring itself (see toggleBreaker()'s own comment -- that part was
+// already real). `litIntensity` is FacilityLightSpec::litIntensity carried
+// over so Application.cpp's breaker-toggle handler has something to write
+// back into Light::intensity without recomputing it; the Light itself
+// starts at intensity 0 (spawned dark, since PowerBreaker::activated
+// defaults false) and this component is the only thing that ever changes
+// that.
+struct BreakerPoweredLight {
+    float litIntensity = 1.4f;
 };
 
 // Marks the one blastDoor entity FacilityMapBuilder.cpp spawns, so
@@ -66,6 +81,14 @@ bool toggleBreaker(PowerBreaker& breaker);
 // to distinguish them.
 [[nodiscard]] DoorUnlockResult tryEscapeThroughBlastDoor(LockedDoor& blastDoor, const KeycardInventory& inventory,
                                                           const PowerBreaker& breaker);
+
+// Simplified exit gate for this vertical slice's showcase objective loop:
+// any kKeycardsRequiredForExit keycards (LootSystem.hpp's own
+// ObjectiveManager, any tier) instead of a specific tier plus the
+// facility breaker -- same NotLocked/Unlocked/DeniedMissingKeycard shape
+// as tryUnlockDoor()/tryEscapeThroughBlastDoor() above, so callers need
+// no new outcome to handle.
+[[nodiscard]] DoorUnlockResult tryUnlockExitWithObjective(LockedDoor& blastDoor, const ObjectiveManager& objective);
 
 // Real, honest proximity "caught" check. No attack/collision system
 // exists anywhere in this engine for AI creatures -- they're plain

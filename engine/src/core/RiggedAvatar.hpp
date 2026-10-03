@@ -285,7 +285,9 @@ constexpr glm::vec4 kDefaultShoeColor(0.06f, 0.06f, 0.07f, 1.0f);
 // black"): real, split off from kDefaultShirtColor -- see
 // resolveSegmentColorsForLoadout()'s own comment on why LeftArm/RightArm
 // get their own default now instead of sharing Torso's.
-constexpr glm::vec4 kDefaultArmColor(0.0f, 0.0f, 0.0f, 1.0f);
+// Distance from the foot joint down to the shoe sole.
+constexpr float kAvatarSoleDepth = 0.16f;
+constexpr glm::vec4 kDefaultArmColor(0.025f, 0.025f, 0.028f, 1.0f);
 
 // Resolves each HumanoidBodySegment's SkinnedRenderable::baseColor from
 // `loadout`'s equipped item in categoryForBodySegment(segment)'s category

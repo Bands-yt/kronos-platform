@@ -104,7 +104,7 @@ bool SecondaryViewport::createSurfaceAndSwapchain(core::Renderer& renderer) {
     // default), and this window's own idle-most-of-the-time usage
     // pattern is exactly the case that finding was about.
     VkPresentModeKHR presentMode = core::choosePresentMode(presentModes, /*vsyncEnabled=*/true);
-    extent_ = core::chooseExtent(caps, window_.width(), window_.height());
+    extent_ = core::chooseExtent(caps, window_.pixelWidth(), window_.pixelHeight());
     if (extent_.width == 0 || extent_.height == 0) return true; // minimized at creation -- real, honest no-op, renderFrame() re-checks every call
 
     uint32_t imageCount = caps.minImageCount + 1;
