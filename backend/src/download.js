@@ -31,21 +31,27 @@ const githubApiLatestReleaseUrl = `https://api.github.com/repos/${config.githubR
 // might refresh and retry in.
 const ASSET_CACHE_TTL_MS = 10 * 60 * 1000;
 
-let assetUrlCache = null; // { url: string, expiresAt: number }
+const assetUrlCache = new Map(); // assetKey -> { url, expiresAt }
 
-async function resolveGithubInstallerUrl() {
-  if (assetUrlCache && assetUrlCache.expiresAt > Date.now()) return assetUrlCache.url;
+const ASSET_MATCHERS = {
+  windows: (name) => name === 'KronosSetup.exe',
+  linux: (name) => /-linux-x64\.tar\.gz$/.test(name),
+};
+
+async function resolveGithubAssetUrl(assetKey) {
+  const cached = assetUrlCache.get(assetKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
 
   const res = await fetch(githubApiLatestReleaseUrl, {
     headers: { accept: 'application/vnd.github+json', 'user-agent': 'kronos-backend' },
   });
   if (!res.ok) throw new Error(`GitHub releases API returned ${res.status}`);
   const release = await res.json();
-  const asset = (release.assets || []).find((a) => a.name === 'KronosSetup.exe');
-  if (!asset) throw new Error('the latest release has no KronosSetup.exe asset (yet)');
+  const asset = (release.assets || []).find((a) => ASSET_MATCHERS[assetKey](a.name));
+  if (!asset) throw new Error(`the latest release has no ${assetKey} asset (yet)`);
 
-  assetUrlCache = { url: asset.browser_download_url, expiresAt: Date.now() + ASSET_CACHE_TTL_MS };
-  return assetUrlCache.url;
+  assetUrlCache.set(assetKey, { url: asset.browser_download_url, expiresAt: Date.now() + ASSET_CACHE_TTL_MS });
+  return asset.browser_download_url;
 }
 
 export async function downloadWindowsInstaller(_req, res) {
@@ -55,7 +61,7 @@ export async function downloadWindowsInstaller(_req, res) {
   }
 
   try {
-    const assetUrl = await resolveGithubInstallerUrl();
+    const assetUrl = await resolveGithubAssetUrl('windows');
     return res.redirect(302, assetUrl);
   } catch (err) {
     console.error('[download] could not resolve KronosSetup.exe from GitHub releases: %s', err.message);
@@ -64,5 +70,16 @@ export async function downloadWindowsInstaller(_req, res) {
   // Never worse than what the site already offered before this route
   // existed -- including the real, current gap where a release's Windows
   // installer job hasn't finished yet.
+  res.redirect(302, releasesPageUrl);
+}
+
+// Latest Linux build (kronos-<tag>-linux-x64.tar.gz from build.yml), with the
+// same releases-page fallback as the Windows route.
+export async function downloadLinuxBuild(_req, res) {
+  try {
+    return res.redirect(302, await resolveGithubAssetUrl('linux'));
+  } catch (err) {
+    console.error('[download] could not resolve the Linux build from GitHub releases: %s', err.message);
+  }
   res.redirect(302, releasesPageUrl);
 }

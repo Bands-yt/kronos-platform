@@ -596,7 +596,7 @@ elseif(UNIX)
     target_include_directories(engine_core PUBLIC ${LIBSECRET_INCLUDE_DIRS})
 endif()
 
-if(UNIX)
+if(TARGET PkgConfig::LIBAV)
     # Kronos ("CapCut/DaVinci Hybrid NLE Suite" -- real MP4 video
     # decoding): core::VideoDecoder (core/VideoDecoder.hpp/.cpp), see
     # cmake/Dependencies.cmake's own pkg_check_modules(... IMPORTED_TARGET)
@@ -606,6 +606,7 @@ if(UNIX)
     # matching this codebase's existing "engine_core is where shared
     # capability lives" shape).
     target_link_libraries(engine_core PUBLIC PkgConfig::LIBAV)
+    target_compile_definitions(engine_core PUBLIC KRONOS_HAS_LIBAV=1)
 endif()
 
 # ---------------------------------------------------------------------------

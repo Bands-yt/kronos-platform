@@ -137,10 +137,10 @@ add_dependencies(engine_tests hotreload_counter_module_v1 hotreload_counter_modu
 target_compile_definitions(engine_tests PRIVATE
     HOTRELOAD_MODULE_V1_PATH="$<TARGET_FILE:hotreload_counter_module_v1>"
     HOTRELOAD_MODULE_V2_PATH="$<TARGET_FILE:hotreload_counter_module_v2>"
-    # Real, checked-in, byte-exact-losslessly-encoded (libx264rgb, qp=0)
-    # 2-frame fixture (frame 0 = solid red @ t=0s, frame 1 = solid blue
-    # @ t=1s, 64x64) -- same "absolute source path baked in" convention
-    # as the HOTRELOAD_* paths above, for core::VideoDecoder's own real
-    # decode test.
-    VIDEO_DECODER_TEST_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/video_decoder_test.mp4"
 )
+# 2-frame lossless fixture (red @ 0s, blue @ 1s, 64x64); only meaningful
+# when the decoder is built with FFmpeg.
+if(TARGET PkgConfig::LIBAV)
+    target_compile_definitions(engine_tests PRIVATE
+        VIDEO_DECODER_TEST_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/video_decoder_test.mp4")
+endif()

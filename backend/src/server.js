@@ -7,7 +7,7 @@ import { config } from './config.js';
 import { pool } from './db.js';
 import { redis } from './redis.js';
 import { HttpError, asyncRoute } from './errors.js';
-import { downloadWindowsInstaller } from './download.js';
+import { downloadLinuxBuild, downloadWindowsInstaller } from './download.js';
 import { authRouter } from './auth/routes.js';
 import { avatarRouter } from './avatar/routes.js';
 import { catalogRouter } from './catalog/routes.js';
@@ -63,6 +63,8 @@ export function createApp() {
   // endpoint under /v1, the bare one for a plain marketing link.
   app.get('/download', asyncRoute(downloadWindowsInstaller));
   app.get('/v1/download/windows', asyncRoute(downloadWindowsInstaller));
+  app.get('/download/linux', asyncRoute(downloadLinuxBuild));
+  app.get('/v1/download/linux', asyncRoute(downloadLinuxBuild));
 
   // Kronos ("Desktop Client Catalog/Version Check"): the real desktop
   // client's own startup version-check/update-download request -- see

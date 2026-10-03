@@ -1,5 +1,7 @@
 #include "core/VideoDecoder.hpp"
 
+#if defined(KRONOS_HAS_LIBAV)
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -179,3 +181,33 @@ bool VideoDecoder::decodeFrameAt(double timeSeconds, std::vector<uint8_t>& outRg
 }
 
 } // namespace engine::core
+
+#else
+
+namespace engine::core {
+
+struct VideoDecoder::Impl {};
+
+VideoDecoder::VideoDecoder() : impl_(std::make_unique<Impl>()) {}
+VideoDecoder::~VideoDecoder() = default;
+VideoDecoder::VideoDecoder(VideoDecoder&& other) noexcept = default;
+VideoDecoder& VideoDecoder::operator=(VideoDecoder&& other) noexcept = default;
+
+bool VideoDecoder::open(const std::string& path, std::string& outError) {
+    outError = "Video import is not available in this build (FFmpeg not found): " + path;
+    return false;
+}
+void VideoDecoder::close() {}
+bool VideoDecoder::isOpen() const { return false; }
+int VideoDecoder::width() const { return 0; }
+int VideoDecoder::height() const { return 0; }
+double VideoDecoder::durationSeconds() const { return 0.0; }
+double VideoDecoder::frameRate() const { return 0.0; }
+bool VideoDecoder::decodeFrameAt(double, std::vector<uint8_t>&, std::string& outError) {
+    outError = "Video import is not available in this build (FFmpeg not found).";
+    return false;
+}
+
+} // namespace engine::core
+
+#endif

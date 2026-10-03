@@ -72,9 +72,16 @@ endif()
 #     (e.g. vcpkg's `ffmpeg` port, which does ship real CMake config
 #     files) before this REQUIRED call would succeed there; not attempted
 #     here since no Windows/macOS CI runs against this repo yet.
+# Required on Linux; optional elsewhere (video import reports itself as
+# unavailable when FFmpeg isn't found, e.g. on Windows CI without vcpkg ffmpeg).
 if(UNIX)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
+else()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBAV QUIET IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
+    endif()
 endif()
 
 # --- EnTT (ECS) ---------------------------------------------------------------
