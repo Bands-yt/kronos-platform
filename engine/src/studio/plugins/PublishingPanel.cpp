@@ -8,6 +8,8 @@
 
 #include <imgui.h>
 
+#include "publishing/GamePackage.hpp"
+#include "publishing/PackageArchive.hpp"
 #include "publishing/PublishValidation.hpp"
 #include "studio/PluginChrome.hpp"
 
@@ -175,21 +177,58 @@ void PublishingPanel::startCloudPublish(core::ECS& ecs) {
         return;
     }
 
+    const std::string projectPath = projectPathProvider_ ? projectPathProvider_() : std::string();
+    if (projectPath.empty()) {
+        cloudPublishSucceeded_ = false;
+        cloudPublishStatus_ = "Save this place as a project (File > Save Project) so players can download it.";
+        return;
+    }
+    if (sceneManager_->isDirty()) {
+        cloudPublishSucceeded_ = false;
+        cloudPublishStatus_ = "Save your changes first -- players get the saved project.";
+        return;
+    }
+
     core::PublishRequest request;
     request.slug = package.worldId;
     request.title = package.metadata.title;
     request.description = package.metadata.description;
+
+    core::GameManifest manifest;
+    manifest.name = package.metadata.title;
+    manifest.description = package.metadata.description;
+    manifest.launchKind = core::GameLaunchKind::ProjectPath;
+    manifest.projectPath = std::filesystem::path(projectPath).filename().string();
+    const std::string gameDirectory = std::filesystem::path(projectPath).parent_path().string();
 
     if (cloudPublishThread_.joinable()) cloudPublishThread_.join();
     cloudPublishInProgress_.store(true);
     cloudPublishSucceeded_ = false;
     cloudPublishStatus_ = "Publishing to Kronos...";
 
-    cloudPublishThread_ = std::thread([this, request]() {
+    cloudPublishThread_ = std::thread([this, request, manifest, gameDirectory]() {
         // Restore the launcher's saved session if this Studio process
         // does not already have one -- signing in once covers both.
         if (!kronosApi_.isSignedIn()) (void)kronosApi_.restoreSession();
         core::PublishResult result = kronosApi_.publishGame(request);
+        if (result.success) {
+            std::error_code ec;
+            std::string archivePath =
+                (std::filesystem::temp_directory_path(ec) / ("kronos_publish_" + request.slug + ".kronos")).string();
+            std::string error;
+            if (!publishing::writeGameFolderArchive(gameDirectory, manifest, archivePath, error)) {
+                result.success = false;
+                result.error = "Listed, but not playable yet: " + error;
+            } else {
+                core::PackageUploadResult upload =
+                    kronosApi_.uploadGamePackage(request.slug, archivePath, publishing::archiveSha256Hex(archivePath));
+                if (!upload.success) {
+                    result.success = false;
+                    result.error = "Listed, but the game upload failed: " + upload.error;
+                }
+            }
+            std::filesystem::remove(archivePath, ec);
+        }
         std::lock_guard<std::mutex> lock(cloudPublishMutex_);
         cloudPublishPendingResult_ = std::move(result);
         cloudPublishInProgress_.store(false);

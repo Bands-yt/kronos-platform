@@ -28,6 +28,12 @@ constexpr std::array<ShopItemInfo, kShopItemCount> kItems = {{
     {"GLACIER MAP", "Icy overhangs, pays x1.25  [M] switch map", 1500, 1, false, 3, kNoPrerequisite},
     {"CANYON MAP", "Packed with beams and rocks, pays x1.5", 3000, 1, false, 5, kNoPrerequisite},
     {"VOLCANO MAP", "Basalt and a lava pool, pays x2", 6000, 1, false, 7, kNoPrerequisite},
+    {"GOLDEN BONES", "+30% cash from everything, kept forever", 5000, 3, false, 1, kNoPrerequisite, 1},
+    {"GLASS SKELETON", "Bones break 8% easier, kept forever", 4000, 3, false, 1, kNoPrerequisite, 1},
+    {"NEST EGG", "Keep 20% of your cash when you rebirth", 6000, 3, false, 1, kNoPrerequisite, 1},
+    {"MEGA BLAST", "+40% bomb and rocket blast, kept forever", 8000, 3, false, 1, kNoPrerequisite, 2},
+    {"SKY HIGH", "Every cliff 30% taller again, kept forever", 10000, 3, false, 1, kNoPrerequisite, 2},
+    {"HEAD START", "Rebirth at level 4 / 7 / 10", 20000, 3, false, 1, kNoPrerequisite, 3},
 }};
 
 constexpr std::array<ShopPage, kShopPageCount> kPages = {{
@@ -37,12 +43,18 @@ constexpr std::array<ShopPage, kShopPageCount> kPages = {{
      7},
     {"BODY & CASH", {ShopItem::MoreBones, ShopItem::BrittleBones, ShopItem::BlastPower, ShopItem::CashBonus}, 4},
     {"MAPS", {ShopItem::Altitude, ShopItem::GlacierMap, ShopItem::CanyonMap, ShopItem::VolcanoMap}, 4},
+    {"REBIRTH",
+     {ShopItem::GoldenBones, ShopItem::GlassSkeleton, ShopItem::NestEgg, ShopItem::MegaBlast, ShopItem::SkyHigh,
+      ShopItem::HeadStart},
+     6},
 }};
 
 constexpr const char* kItemKeys[kShopItemCount] = {"floats",      "bigBalloons", "bomb",         "rocket",
                                                    "springShoes", "blastPower",  "brittleBones", "cashBonus",
                                                    "rocketThrust", "rocketFuel",  "moreBones",    "altitude",
-                                                   "glacierMap",   "canyonMap",   "volcanoMap"};
+                                                   "glacierMap",   "canyonMap",   "volcanoMap",
+                                                   "goldenBones",  "glassSkeleton", "nestEgg",    "megaBlast",
+                                                   "skyHigh",      "headStart"};
 
 glm::vec3 flatten(glm::vec3 aim) {
     glm::vec3 flat(aim.x, 0.0f, aim.z);
@@ -67,6 +79,7 @@ int shopPrice(const Progress& progress, ShopItem item) {
 
 BuyResult buyItem(Progress& progress, ShopItem item) {
     const ShopItemInfo& info = shopItemInfo(item);
+    if (progress.rebirths < info.rebirthsRequired) return BuyResult::NeedsRebirth;
     if (progress.bestLevel < info.unlockLevel) return BuyResult::Locked;
     if (progress.count(item) >= info.maxOwned) return BuyResult::MaxedOut;
     if (info.prerequisite != kNoPrerequisite && !progress.has(static_cast<ShopItem>(info.prerequisite))) {
@@ -88,6 +101,7 @@ std::string buyResultText(BuyResult result, ShopItem item) {
         case BuyResult::NeedsPrerequisite:
             return std::string("BUY ") + kItems[static_cast<size_t>(info.prerequisite)].name + " FIRST";
         case BuyResult::Locked: return "UNLOCKS AT LEVEL " + std::to_string(info.unlockLevel);
+        case BuyResult::NeedsRebirth: return "UNLOCKS AT REBIRTH " + std::to_string(info.rebirthsRequired);
     }
     return "";
 }
@@ -98,11 +112,13 @@ float floatsHeliumCapacity(const Progress& progress) {
 }
 
 float breakSpeedMultiplier(const Progress& progress) {
-    return 1.0f - 0.1f * static_cast<float>(progress.count(ShopItem::BrittleBones));
+    return std::max(0.3f, 1.0f - 0.1f * static_cast<float>(progress.count(ShopItem::BrittleBones)) -
+                              0.08f * static_cast<float>(progress.count(ShopItem::GlassSkeleton)));
 }
 
 float blastPowerMultiplier(const Progress& progress) {
-    return 1.0f + 0.25f * static_cast<float>(progress.count(ShopItem::BlastPower));
+    return 1.0f + 0.25f * static_cast<float>(progress.count(ShopItem::BlastPower)) +
+           0.4f * static_cast<float>(progress.count(ShopItem::MegaBlast));
 }
 
 float cashBonusMultiplier(const Progress& progress) {
@@ -115,7 +131,15 @@ float rocketThrustMultiplier(const Progress& progress) {
 
 float rebirthMultiplier(const Progress& progress) { return 1.0f + 0.5f * static_cast<float>(std::max(progress.rebirths, 0)); }
 
-bool canRebirth(const Progress& progress) { return progress.level >= kRebirthLevel; }
+int rebirthLevelRequired(const Progress& progress) { return 20 * (std::max(progress.rebirths, 0) + 1); }
+
+bool canRebirth(const Progress& progress) { return progress.level >= rebirthLevelRequired(progress); }
+
+bool isRebirthUpgrade(ShopItem item) { return shopItemInfo(item).rebirthsRequired > 0; }
+
+float goldenBonesMultiplier(const Progress& progress) {
+    return 1.0f + 0.3f * static_cast<float>(progress.count(ShopItem::GoldenBones));
+}
 
 bool rebirth(Progress& progress) {
     if (!canRebirth(progress)) return false;
@@ -130,9 +154,14 @@ bool rebirth(Progress& progress) {
     next.stats = progress.stats;
     next.injuriesSeen = progress.injuriesSeen;
     next.leaderboard = progress.leaderboard;
-    for (ShopItem keep : {ShopItem::GlacierMap, ShopItem::CanyonMap, ShopItem::VolcanoMap}) {
-        next.owned[static_cast<size_t>(keep)] = progress.count(keep);
+    for (size_t i = 0; i < kShopItemCount; ++i) {
+        auto item = static_cast<ShopItem>(i);
+        bool map = item == ShopItem::GlacierMap || item == ShopItem::CanyonMap || item == ShopItem::VolcanoMap;
+        if (map || isRebirthUpgrade(item)) next.owned[i] = progress.owned[i];
     }
+    next.cash = static_cast<int>(static_cast<float>(progress.cash) * 0.2f *
+                                 static_cast<float>(progress.count(ShopItem::NestEgg)));
+    next.level = next.bestLevel = 1 + 3 * progress.count(ShopItem::HeadStart);
     next.map = ownsMap(next, progress.map) ? progress.map : MapTheme::Coast;
     progress = next;
     return true;
@@ -143,7 +172,8 @@ int skeletonBoneCount(const Progress& progress) {
 }
 
 float altitudeMultiplier(const Progress& progress) {
-    return 1.0f + 0.25f * static_cast<float>(progress.count(ShopItem::Altitude));
+    return 1.0f + 0.25f * static_cast<float>(progress.count(ShopItem::Altitude)) +
+           0.3f * static_cast<float>(progress.count(ShopItem::SkyHigh));
 }
 
 bool ownsMap(const Progress& progress, MapTheme theme) {

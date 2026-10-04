@@ -63,6 +63,7 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ShaderGraphCodegen.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticleComputeGraph.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticleComputeCodegen.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/ColorTextEditBackendText.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine_core imgui::imgui)
 if(TARGET kronos::shaderc)

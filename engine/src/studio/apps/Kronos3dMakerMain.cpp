@@ -8,5 +8,5 @@
 
 int main(int argc, char** argv) {
     return engine::studio::apps::runStandaloneApp(engine::studio::StudioApp::StudioMode::ThreeDMaker,
-                                                   "kronos_3d_maker.log", "Kronos 3D Maker", argc, argv);
+                                                   "kronos_3d_maker.log", "Kronos 3D Tools", argc, argv);
 }

@@ -49,5 +49,6 @@ void loadKronosFonts(const std::string& fontsDir);
 // nullptr when the font failed to load; check before ImGui::PushFont().
 [[nodiscard]] ImFont* kronosBoldFont();
 [[nodiscard]] ImFont* kronosMediumFont();
+[[nodiscard]] ImFont* kronosCodeFont(); // JetBrains Mono, for code editors
 
 } // namespace engine::core

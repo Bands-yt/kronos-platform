@@ -15,3 +15,9 @@ Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
 License: SIL Open Font License, Version 1.1 -- full text in Inter-LICENSE.txt.
 Kronos's primary UI typeface; Noto Sans above is merged in as the fallback
 for glyphs Inter lacks.
+
+JetBrainsMono-Regular.ttf
+Font: JetBrains Mono 2.304 (https://www.jetbrains.com/lp/mono/)
+Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+License: SIL Open Font License, Version 1.1 -- full text in JetBrainsMono-LICENSE.txt.
+Studio's Script Editor code font.

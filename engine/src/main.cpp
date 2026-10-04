@@ -40,6 +40,7 @@
 #include "core/UpgradeSystem.hpp"
 #include "core/WorldProp.hpp"
 #include "publishing/AssetStreamingClient.hpp"
+#include "publishing/GamePackage.hpp"
 #include "runtime/GameLoader.hpp"
 #include "runtime/GameLoop.hpp"
 #include "runtime/RuntimeShell.hpp"
@@ -420,12 +421,15 @@ int main(int argc, char** argv) {
                                     ? std::string(gamesDirEnv)
                                     : engine::core::resolveResourceDir(engine::core::executableDirectory(), "games",
                                                                         ENGINE_GAMES_DIR);
-        requestedGame = engine::core::findGameBySlug(gamesDir, requestedGameSlug);
+        engine::core::KronosApi catalogApi(
+            engine::core::loadKronosClientConfig(engine::core::executableDirectory()).apiUrl);
+        std::string resolveError;
+        requestedGame = engine::publishing::resolveCatalogGame(catalogApi, requestedGameSlug, gamesDir,
+                                                               engine::publishing::packageCacheDirectory(), resolveError);
         if (!requestedGame.has_value()) {
-            std::fprintf(stderr,
-                          "engine_runtime: no local game found for slug \"%s\" in \"%s\" -- hosting the generic "
-                          "bring-up scene instead.\n",
-                          requestedGameSlug.c_str(), gamesDir.c_str());
+            std::fprintf(stderr, "engine_runtime: could not resolve game \"%s\" (%s) -- hosting the generic "
+                                 "bring-up scene instead.\n",
+                         requestedGameSlug.c_str(), resolveError.c_str());
         }
     }
 
@@ -458,7 +462,7 @@ int main(int argc, char** argv) {
     // used to say the generic "Engine Runtime" (this class's own
     // internal/legacy name), not the real product name a player actually
     // sees in their taskbar/window switcher.
-    info.title = "Kronos";
+    info.title = "Kronos Player";
     info.width = 1280;
     info.height = 720;
     info.enableValidation = true;

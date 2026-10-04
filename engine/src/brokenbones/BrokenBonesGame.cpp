@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -119,7 +120,13 @@ bool BrokenBonesGame::start(int level) {
     if (humanoid_.desc.parts.empty()) return false;
     if (!rebuildMap()) return false;
     respawnPlayer();
-    openMenu(Menu::Title);
+    // Dev capture hook: skip the title and flop off the top after N seconds.
+    if (const char* autoplay = std::getenv("KRONOS_BROKENBONES_AUTOPLAY")) {
+        autoFlopSeconds_ = std::max(0.5f, static_cast<float>(std::atof(autoplay)));
+        closeMenu();
+    } else {
+        openMenu(Menu::Title);
+    }
     return true;
 }
 
@@ -179,6 +186,34 @@ bool BrokenBonesGame::rebuildMap() {
     atmosphere.fogDensity = 0.0012f * std::sqrt(std::min(1.0f, 300.0f / layout_.height));
     atmosphere.skyZenithColor = theme.skyZenith;
     atmosphere.skyHorizonColor = theme.skyHorizon;
+    atmosphere.overrideSun = true;
+    atmosphere.sunDirectionWS = -layout_.sunDirection;
+    switch (layout_.theme) {
+    case MapTheme::Coast:
+        atmosphere.sunColor = {1.0f, 0.95f, 0.86f};
+        atmosphere.sunIntensity = 4.2f;
+        atmosphere.ambient = {0.20f, 0.23f, 0.29f};
+        atmosphere.ambientGround = {0.13f, 0.12f, 0.10f};
+        break;
+    case MapTheme::Glacier:
+        atmosphere.sunColor = {0.92f, 0.96f, 1.0f};
+        atmosphere.sunIntensity = 3.8f;
+        atmosphere.ambient = {0.22f, 0.26f, 0.33f};
+        atmosphere.ambientGround = {0.16f, 0.18f, 0.21f};
+        break;
+    case MapTheme::Canyon:
+        atmosphere.sunColor = {1.0f, 0.88f, 0.70f};
+        atmosphere.sunIntensity = 4.4f;
+        atmosphere.ambient = {0.22f, 0.20f, 0.20f};
+        atmosphere.ambientGround = {0.17f, 0.12f, 0.08f};
+        break;
+    case MapTheme::Volcano:
+        atmosphere.sunColor = {1.0f, 0.72f, 0.50f};
+        atmosphere.sunIntensity = 3.6f;
+        atmosphere.ambient = {0.22f, 0.15f, 0.13f};
+        atmosphere.ambientGround = {0.20f, 0.10f, 0.06f};
+        break;
+    }
     app_.setAtmosphereOverride(atmosphere);
     std::fprintf(stdout,
                  "brokenbones: level %d %s cliff built -- seed %u, %s, %.0f m tall, %zu ledges, %zu boulders, %zu beams, "
@@ -341,6 +376,13 @@ void BrokenBonesGame::tickWalking(float dt) {
     bool bombPressed = pressed("BrokenBonesBomb", bombWasDown_);
     bool rocketPressed = pressed("BrokenBonesRocket", rocketWasDown_);
     if (walkingSeconds_ < 0.3f) return;
+    if (autoFlopSeconds_ > 0.0f && walkingSeconds_ >= autoFlopSeconds_) {
+        const AxisBox& board = layout_.divingBoard;
+        app_.physics().setPosition(app_.characterController().entity(), app_.ecs(),
+                                   glm::vec3(board.center.x, layout_.height + 1.2f, board.center.z + board.halfExtents.z + 2.0f));
+        autoFlopSeconds_ = 0.0f;
+        return;
+    }
 
     core::EntityId character = app_.characterController().entity();
     auto* transform = app_.ecs().tryGetComponent<core::Transform>(character);
@@ -427,7 +469,8 @@ void BrokenBonesGame::switchMap(MapTheme theme) {
 }
 
 float BrokenBonesGame::payoutMultiplier() const {
-    return cashBonusMultiplier(progress_) * mapThemeInfo(layout_.theme).cashMultiplier * rebirthMultiplier(progress_);
+    return cashBonusMultiplier(progress_) * mapThemeInfo(layout_.theme).cashMultiplier * rebirthMultiplier(progress_) *
+           goldenBonesMultiplier(progress_);
 }
 
 bool BrokenBonesGame::startFalling() {
@@ -1033,7 +1076,8 @@ void BrokenBonesGame::drawShop() {
         bool levelLocked = progress_.bestLevel < info.unlockLevel;
         bool needsPrereq =
             info.prerequisite != kNoPrerequisite && !progress_.has(static_cast<ShopItem>(info.prerequisite));
-        bool locked = levelLocked || needsPrereq;
+        bool rebirthLocked = progress_.rebirths < info.rebirthsRequired;
+        bool locked = levelLocked || needsPrereq || rebirthLocked;
         bool affordable = progress_.cash >= price;
 
         ui.drawRect(glm::vec2(pos.x + 16.0f, y), glm::vec2(size.x - 32.0f, kRowHeight - 6.0f),
@@ -1042,7 +1086,9 @@ void BrokenBonesGame::drawShop() {
         ui.drawText(line, glm::vec2(pos.x + 28.0f, y + 2.0f), 0.65f, maxed || locked ? kDim : kWhite);
         ui.drawText(info.description, glm::vec2(pos.x + 28.0f, y + 23.0f), 0.48f, kDim);
 
-        if (levelLocked) {
+        if (rebirthLocked) {
+            std::snprintf(line, sizeof(line), "REBIRTH %d", info.rebirthsRequired);
+        } else if (levelLocked) {
             std::snprintf(line, sizeof(line), "LEVEL %d", info.unlockLevel);
         } else if (needsPrereq) {
             std::snprintf(line, sizeof(line), "NEEDS %s", shopItemInfo(static_cast<ShopItem>(info.prerequisite)).name);

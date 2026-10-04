@@ -171,6 +171,11 @@ bool CliffMap::build(const CliffLayout& layout, core::ECS& ecs, core::Physics& p
         return false;
     }
 
+    if (!buildStaticMesh("Rim", layout.rimVertices, layout.rimIndices, materials.stone, 0.9f, glm::vec3(1.0f))) {
+        std::fprintf(stderr, "brokenbones: failed to build the rim terrain.\n");
+        return false;
+    }
+
     const glm::quat identity(1.0f, 0.0f, 0.0f, 0.0f);
     buildStaticBox("Plateau", layout.plateau.center, layout.plateau.halfExtents, identity, materials.ground, 0.9f, 0.15f,
                    theme.groundTint);

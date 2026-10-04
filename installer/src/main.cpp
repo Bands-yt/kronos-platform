@@ -96,7 +96,7 @@ constexpr ComponentSpec kComponents[] = {
     {"player", "Player", nullptr, "engine_runtime", "engine_runtime.exe", "Game;"},
     {"studio", "Studio", "studio", "kronos_studio", "kronos_studio.exe", "Development;Graphics;3DGraphics;"},
     {"3d-tools", "3D Tools", "3d_maker", "kronos_3d_maker", "kronos_3d_maker.exe", "Graphics;3DGraphics;"},
-    {"movie-mode", "Movie Mode", "movie_maker", "kronos_movie_maker", "kronos_movie_maker.exe",
+    {"movie-mode", "Movie Maker", "movie_maker", "kronos_movie_maker", "kronos_movie_maker.exe",
      "AudioVideo;AudioVideoEditing;"},
     {"audio", "Audio", "audio", "kronos_audio", "kronos_audio.exe", "AudioVideo;Audio;"},
 };
@@ -301,7 +301,7 @@ bool installComponent(InstallerState& state, const ComponentSpec& component, con
     // integration always applies.
     setStatus(state, InstallStage::Integrating, "Setting up " + std::string(component.label) + "...");
     bool isPlayer = component.assetApp == nullptr;
-    std::string displayName = isPlayer ? "Kronos" : "Kronos " + std::string(component.label);
+    std::string displayName = isPlayer ? "Kronos Player" : "Kronos " + std::string(component.label);
     std::string desktopBasename = isPlayer ? "kronos" : "kronos-" + std::string(component.id);
 #if defined(_WIN32)
     // The target .exe already carries its own real, distinct icon

@@ -16,7 +16,7 @@ using namespace hud;
 
 namespace {
 
-constexpr const char* kTitleItems[] = {"PLAY", "LEADERBOARD", "ACHIEVEMENTS", "STATS", "SETTINGS", "QUIT"};
+constexpr const char* kTitleItems[] = {"PLAY", "LEADERBOARD", "ACHIEVEMENTS", "STATS", "REBIRTH", "SETTINGS", "QUIT"};
 constexpr const char* kPauseItems[] = {"RESUME", "SETTINGS",  "LEADERBOARD", "ACHIEVEMENTS",
                                        "STATS",  "REBIRTH",   "MAIN MENU",   "QUIT"};
 constexpr const char* kSettingsItems[] = {"VOLUME", "MUSIC", "MOUSE SENSITIVITY", "SLOW MOTION",
@@ -56,7 +56,8 @@ std::string formatPlayTime(double seconds) {
 int BrokenBonesGame::menuItemCount() const { return menuItems(menu_).count; }
 
 void BrokenBonesGame::openMenu(Menu menu) {
-    if (menu == Menu::Settings || menu == Menu::Achievements || menu == Menu::Stats || menu == Menu::Leaderboard) {
+    if (menu == Menu::Settings || menu == Menu::Achievements || menu == Menu::Stats || menu == Menu::Leaderboard ||
+        menu == Menu::Rebirth) {
         if (menu_ == Menu::Title || menu_ == Menu::Pause) settingsReturn_ = menu_;
     }
     menu_ = menu;
@@ -102,7 +103,7 @@ void BrokenBonesGame::tickMenu(bool backPressed) {
         case Menu::Achievements:
         case Menu::Leaderboard:
         case Menu::Stats: openMenu(settingsReturn_); break;
-        case Menu::Rebirth: openMenu(Menu::Pause); break;
+        case Menu::Rebirth: openMenu(settingsReturn_); break;
         case Menu::Title:
         case Menu::None: break;
     }
@@ -131,7 +132,7 @@ void BrokenBonesGame::activateMenuItem() {
         openMenu(settingsReturn_);
     } else if (item == "REBIRTH") {
         if (!canRebirth(progress_)) {
-            showToast("REACH LEVEL " + std::to_string(kRebirthLevel) + " TO REBIRTH", kRed, 2.0f);
+            showToast("REACH LEVEL " + std::to_string(rebirthLevelRequired(progress_)) + " TO REBIRTH", kRed, 2.0f);
             sounds_.play(Sfx::Denied, 0.6f);
         } else if (phase_ != Phase::Walking) {
             showToast("FINISH YOUR RUN FIRST", kRed, 2.0f);
@@ -140,10 +141,10 @@ void BrokenBonesGame::activateMenuItem() {
             openMenu(Menu::Rebirth);
         }
     } else if (item == "CANCEL") {
-        openMenu(Menu::Pause);
+        openMenu(settingsReturn_);
     } else if (item == "REBIRTH NOW") {
         if (!rebirth(progress_)) return;
-        level_ = 1;
+        level_ = progress_.level;
         refillContracts(progress_, contractRng_);
         grantAchievements(nullptr);
         save();
@@ -277,13 +278,18 @@ void BrokenBonesGame::drawMenu() {
         listTop = screen.y * 0.32f;
     } else if (menu_ == Menu::Rebirth) {
         centered("REBIRTH?", screen.y * 0.18f, 1.8f, kGold);
-        centered("You go back to level 1 with no cash, gear or upgrades.", screen.y * 0.18f + 70.0f, 0.7f, kWhite);
-        centered("You keep your maps, achievements and stats.", screen.y * 0.18f + 100.0f, 0.7f, kWhite);
+        std::snprintf(line, sizeof(line), "You go back to level %d with no gear or regular upgrades.",
+                      1 + 3 * progress_.count(ShopItem::HeadStart));
+        centered(line, screen.y * 0.18f + 70.0f, 0.7f, kWhite);
+        centered("You keep your maps, rebirth upgrades, achievements and stats.", screen.y * 0.18f + 100.0f, 0.7f, kWhite);
         Progress preview = progress_;
         preview.rebirths += 1;
         std::snprintf(line, sizeof(line), "Every run pays x%.1f forever (now x%.1f)", rebirthMultiplier(preview),
                       rebirthMultiplier(progress_));
         centered(line, screen.y * 0.18f + 136.0f, 0.8f, kGreen);
+        std::snprintf(line, sizeof(line), "Unlocks new upgrades on the REBIRTH shop page.  Next rebirth at level %d.",
+                      rebirthLevelRequired(preview));
+        centered(line, screen.y * 0.18f + 168.0f, 0.65f, kGold);
         listTop = screen.y * 0.5f;
     } else if (menu_ == Menu::Achievements) {
         std::snprintf(line, sizeof(line), "ACHIEVEMENTS  %d / %zu", achievementsUnlocked(progress_), kAchievementCount);
@@ -410,7 +416,7 @@ void BrokenBonesGame::drawMenu() {
         }
         bool selected = i == menuCursor_;
         bool disabled = label == "REBIRTH" && !canRebirth(progress_);
-        if (disabled) label += "  (LEVEL " + std::to_string(kRebirthLevel) + ")";
+        if (disabled) label += "  (LEVEL " + std::to_string(rebirthLevelRequired(progress_)) + ")";
         float y = listTop + 46.0f * static_cast<float>(i);
         glm::vec2 size = ui.measureText(label, 0.85f);
         if (selected) {

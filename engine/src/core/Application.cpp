@@ -802,6 +802,13 @@ bool Application::initialize(const CreateInfo& info) {
                 tickLighting.fogDensity = renderer_.isVolumetricFogEnabled() ? atmosphereOverride_.fogDensity : 0.0f;
                 tickLighting.skyZenithColor = atmosphereOverride_.skyZenithColor;
                 tickLighting.skyHorizonColor = atmosphereOverride_.skyHorizonColor;
+                if (atmosphereOverride_.overrideSun) {
+                    tickLighting.directionWS = atmosphereOverride_.sunDirectionWS;
+                    tickLighting.color = atmosphereOverride_.sunColor;
+                    tickLighting.intensity = atmosphereOverride_.sunIntensity;
+                    tickLighting.ambient = atmosphereOverride_.ambient;
+                    tickLighting.ambientGround = atmosphereOverride_.ambientGround;
+                }
             }
 
             // Kronos ("Lighting Polish" world-building): real, live zone-

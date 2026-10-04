@@ -30,6 +30,15 @@ enum class Icon {
     Physics,
     Lighting,
     Folder,
+    Undo,
+    Redo,
+    Search,
+    Comment,
+    Save,
+    Outline,
+    Warning,
+    Play,
+    Whitespace,
 };
 
 // Draws `icon` centered at `center`, sized to fit within a `size` x

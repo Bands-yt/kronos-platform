@@ -2,7 +2,10 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+#include <imgui.h>
 
 #include "studio/panels/ScriptEditorPanel.hpp"
 
@@ -12,30 +15,11 @@ namespace engine::studio::panels {
 
 struct LuauLiveAnalyzer;
 
-// Kronos ("Studio Revamp" -- "Native Syntax-Highlighting Editor"): the
-// real IScriptEditorBackend implementation the Monaco/webview seam
-// (see IScriptEditorBackend's own class comment) was always meant to be
-// swapped in for -- except this backend needs no embedded webview at
-// all. ImGuiColorTextEdit is a native ImGui widget (real line numbers,
-// syntax highlighting, an error-marker gutter it renders itself), and
-// Luau.Analysis -- already vendored via Dependencies.cmake's FetchContent
-// but unused until now -- is Luau's own real type-checker, not a
-// hand-rolled linter. Together: real-time error squiggles with no
-// Ultralight/CEF licensing dependency (see engine/external/ultralight-sdk/
-// README.md for why that path is shelved).
-//
-// Honesty note on scope: Luau.Analysis here checks the buffer in
-// isolation (Mode::Nonstrict, no `--!strict` requirement). This engine's
-// own script API globals (`world`, `avatar`, `network`, `ui`,
-// `TextChatService`, `events`, `task`, `engine`) ARE declared to the type
-// checker -- see assets/luau/kronos_globals.d.lua and
-// LuauLiveAnalyzer::loadKronosGlobalDefinitions() in
-// ColorTextEditBackend.cpp -- a real, honest transcription of what this
-// engine's C++ side actually registers, not Roblox's `game`/`workspace`/
-// `script` (those don't exist in this codebase). Real syntax/parse
-// errors, real type mismatches on annotated locals, and now real
-// unknown-global/wrong-argument-type errors against the engine's own API
-// all surface correctly.
+// The Studio script editor: ImGuiColorTextEdit for editing plus Luau.Analysis
+// for live type errors, lint warnings, autocomplete and signature help against
+// the engine API declared in assets/luau/kronos_globals.d.lua. The editor's
+// scroll region is owned here (SetImGuiChildIgnored) so popups, find
+// highlights and squiggles can be placed at real caret/line positions.
 class ColorTextEditBackend final : public IScriptEditorBackend {
 public:
     ColorTextEditBackend();
@@ -48,48 +32,148 @@ public:
     [[nodiscard]] const std::string& source() const override;
 
     void draw() override;
-    [[nodiscard]] const char* backendName() const override {
-        return "Native editor (ImGuiColorTextEdit + Luau.Analysis)";
-    }
+    [[nodiscard]] const char* backendName() const override { return "Kronos Script Editor (Luau)"; }
 
-    // Kronos ("Script Editor QoL" -- Engine Console click-to-jump): real
-    // caret placement via TextEditor::SetCursorPosition, unlike
-    // ImGuiFallbackEditor's plain InputTextMultiline (no addressable
-    // cursor API) -- this backend can seek to the exact line.
-    // SetCursorPosition() calls the editor's own EnsureCursorVisible()
-    // internally, so the jump also scrolls the target line into view.
     void moveCaretToLine(int oneBasedLine) override;
 
-private:
-    void reanalyze();
+    enum class CompletionKind { Keyword, Variable, Function, Method, Property, Table, Type, Module, Snippet };
 
-    // Ctrl+Space triggered (not per-keystroke) since Luau::autocomplete() re-typechecks the whole buffer.
-    // Fixed strip below the editor, not a caret-tracked popup: ImGuiColorTextEdit exposes no public API
-    // for caret pixel position or child-window scroll offset.
-    void updateCompletions();
-    // Re-filters completionRawEntries_ locally (no re-typecheck); dismisses the strip if the caret has
-    // drifted off completionAnchorLine_/Column_ since the last frame (e.g. a mouse click).
-    void refreshCompletionFilter();
-    void insertCompletion(const std::string& text);
+    struct CompletionItem {
+        std::string label;
+        std::string insertText;
+        std::string filterText;
+        std::string detail;
+        std::string doc;
+        CompletionKind kind = CompletionKind::Variable;
+        bool callable = false;
+        bool cursorInsideParens = false;
+        bool typeCorrect = false;
+        int score = 0;
+    };
 
-public:
-    // Pulled out for direct test coverage, same as InspectorPanel::hasInvalidComponents.
+    struct Diagnostic {
+        int line = 0; // 0-based
+        int column = 0; // byte offsets within the line
+        int endLine = 0;
+        int endColumn = 0;
+        std::string message;
+        bool warning = false;
+    };
+
+    struct CallContext {
+        bool active = false;
+        std::string callee;
+        int calleeEnd = 0; // byte index just past the callee name
+        int argumentIndex = 0;
+    };
+
+    struct Symbol {
+        std::string name;
+        int line = 0;
+    };
+
+    // Pure text helpers, exposed for tests.
     [[nodiscard]] static int identifierPrefixStart(const std::string& lineText, int column);
     [[nodiscard]] static bool completionAnchorValid(int anchorLine, int anchorColumn, int cursorLine, int cursorColumn,
                                                      const std::string& cursorLineText);
+    // Higher is better; -1 when `pattern` is not a (case-insensitive) subsequence of `candidate`.
+    [[nodiscard]] static int fuzzyScore(const std::string& candidate, const std::string& pattern);
+    [[nodiscard]] static int byteToColumn(const std::string& line, int byteIndex, int tabSize);
+    [[nodiscard]] static int columnToByte(const std::string& line, int column, int tabSize);
+    // Comments every line in [first, last] with "-- ", or uncomments them all when they already are.
+    static void toggleLineComments(std::vector<std::string>& lines, int first, int last);
+    // True when `byte` sits inside a string literal or after a line comment.
+    [[nodiscard]] static bool positionInCommentOrString(const std::string& line, int byte);
+    [[nodiscard]] static CallContext findCallContext(const std::string& lineText, int cursorByte);
+    [[nodiscard]] static std::vector<Symbol> findSymbols(const std::vector<std::string>& lines);
+    // "--- text" lines above `name:` members (or `declare function name`) in a definition file.
+    [[nodiscard]] static std::unordered_map<std::string, std::string> parseApiDocs(const std::string& definitions);
+    // Splits "(a: number, b: string?) -> number" into its top-level parameters and the trailing return part.
+    [[nodiscard]] static std::vector<std::string> splitSignatureParameters(const std::string& signature,
+                                                                            std::string& returnPart);
 
 private:
+    struct FindMatch {
+        int line = 0;
+        int byteStart = 0;
+        int byteEnd = 0;
+    };
+
+    void reanalyze();
+    void applyThemeIfChanged();
+    void drawToolbar();
+    void drawFindBar();
+    void drawEditor(ImVec2 size);
+    void drawOverlays(ImDrawList* drawList, ImVec2 origin, ImVec2 charAdvance, float textStart);
+    void drawCompletionPopup();
+    void drawSignaturePopup();
+    void drawProblems(float height);
+    void drawStatusBar();
+    void handleShortcuts(bool editorFocused);
+
+    void updateCompletions(bool explicitRequest);
+    void refreshCompletionFilter();
+    void insertCompletion(const CompletionItem& item);
+    void insertSnippet(const std::string& body);
+    void updateSignatureHelp();
+
+    void openFind(bool withReplace);
+    void recomputeMatches();
+    void goToMatch(int index);
+    void replaceCurrentMatch();
+    void replaceAllMatches();
+    void toggleCommentOnSelection();
+    void duplicateLine();
+    void selectRange(int line, int byteStart, int byteEnd);
+    [[nodiscard]] bool selectionLines(int& firstLine, int& lastLine) const;
+    [[nodiscard]] std::string memberContainerBefore(int line, int anchorByte) const;
+    [[nodiscard]] ImVec2 caretScreenPos() const;
+    [[nodiscard]] bool caretVisible() const;
+
     std::unique_ptr<TextEditor> editor_;
     std::unique_ptr<LuauLiveAnalyzer> analyzer_;
-    // source() must return a stable const&; TextEditor::GetText() returns by value.
     mutable std::string sourceCache_;
+    std::vector<std::string> lines_;
+    uint64_t textVersion_ = 0;
+
+    std::vector<Diagnostic> diagnostics_;
+    std::vector<Symbol> symbols_;
+    int appliedTheme_ = -1;
 
     bool showCompletions_ = false;
-    std::vector<std::string> completionRawEntries_; // unfiltered result of the last updateCompletions() fetch
-    std::vector<std::string> completionEntries_;
+    bool completionExplicit_ = false;
+    std::vector<CompletionItem> completionRawEntries_;
+    std::vector<CompletionItem> completionEntries_;
     int completionSelected_ = 0;
     int completionAnchorLine_ = 0;
     int completionAnchorColumn_ = 0;
+
+    CallContext callContext_;
+    std::string signatureKey_;
+    std::string signatureName_;
+    std::vector<std::string> signatureParams_;
+    std::string signatureReturn_;
+    std::string signatureDoc_;
+
+    bool findOpen_ = false;
+    bool replaceOpen_ = false;
+    bool focusFindInput_ = false;
+    bool matchCase_ = false;
+    bool wholeWord_ = false;
+    std::string findQuery_;
+    std::string replaceText_;
+    std::string matchedQuery_;
+    uint64_t matchedVersion_ = ~0ull;
+    std::vector<FindMatch> matches_;
+    int currentMatch_ = -1;
+
+    bool refocusEditor_ = false;
+    bool openSymbolPicker_ = false;
+    ImVec2 editorOrigin_{0.0f, 0.0f};
+    ImVec2 charAdvance_{8.0f, 16.0f};
+    float textStart_ = 0.0f;
+    ImVec2 editorClipMin_{0.0f, 0.0f};
+    ImVec2 editorClipMax_{0.0f, 0.0f};
 };
 
 } // namespace engine::studio::panels

@@ -657,6 +657,9 @@ private:
     std::atomic<bool> allocationInProgress_{false};
     std::mutex allocationMutex_;
     std::optional<core::ServerAllocation> allocationPendingResult_;
+    // The joined game's world, downloaded alongside the allocation so the
+    // client renders the same place the server is simulating.
+    std::optional<core::DiscoveredGame> allocationPendingGame_;
     std::string allocationGameTitle_;
     // The slug this in-flight/most-recent allocation was requested for
     // -- kept so a SUCCESSFUL allocation can look its own numeric game

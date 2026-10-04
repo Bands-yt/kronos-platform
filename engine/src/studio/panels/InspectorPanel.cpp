@@ -12,6 +12,8 @@
 #include "core/OreNode.hpp"
 #include "core/PhysicsMaterial.hpp"
 #include "core/SceneTypes.hpp"
+#include "core/UIWidgets.hpp"
+#include "studio/StudioIcons.hpp"
 
 namespace engine::studio::panels {
 
@@ -24,8 +26,24 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
     ImGui::Begin("Inspector");
 
     if (selected == core::kNullEntity) {
-        ImGui::TextDisabled("Nothing selected.");
-        ImGui::TextDisabled("Click an entity in the Viewport or Explorer to inspect it.");
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const ImVec2 start = ImGui::GetCursorPos();
+        const float iconSize = 36.0f;
+        ImGui::SetCursorPos(ImVec2(start.x + (avail.x - iconSize) * 0.5f, start.y + std::max(12.0f, avail.y * 0.3f)));
+        const ImVec2 iconMin = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(iconSize, iconSize));
+        const ImVec4 accent = ui::accent();
+        ImGui::GetWindowDrawList()->AddRectFilled(iconMin, ImVec2(iconMin.x + iconSize, iconMin.y + iconSize),
+                                                  ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.14f)), 9.0f);
+        drawIcon(ImGui::GetWindowDrawList(), Icon::Prop, ImVec2(iconMin.x + iconSize * 0.5f, iconMin.y + iconSize * 0.5f), 20.0f,
+                 ImGui::GetColorU32(accent));
+        const char* heading = "Nothing selected";
+        ImGui::SetCursorPosX(start.x + std::max(0.0f, (avail.x - ImGui::CalcTextSize(heading).x) * 0.5f));
+        ImGui::TextUnformatted(heading);
+        ImGui::PushTextWrapPos(start.x + avail.x - 12.0f);
+        ImGui::SetCursorPosX(start.x + 12.0f);
+        ImGui::TextDisabled("Pick an entity in the Viewport or Explorer to edit its properties.");
+        ImGui::PopTextWrapPos();
         ImGui::End();
         return;
     }

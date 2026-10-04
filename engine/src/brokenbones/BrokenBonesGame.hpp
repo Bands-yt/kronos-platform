@@ -174,6 +174,7 @@ private:
     Menu settingsReturn_ = Menu::Title;
     int menuCursor_ = 0;
     bool rebirthArmed_ = false;
+    float autoFlopSeconds_ = 0.0f;
     bool menuUpWasDown_ = false;
     bool menuDownWasDown_ = false;
     bool menuLeftWasDown_ = false;

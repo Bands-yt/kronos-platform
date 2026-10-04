@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
@@ -15,6 +16,9 @@
 
 #include "core/Components.hpp"
 #include "core/NativeFileDialog.hpp"
+#include "core/UITheme.hpp"
+#include "core/UIWidgets.hpp"
+#include "studio/StudioIcons.hpp"
 #include "studio/Notification.hpp"
 #include "studio/panels/ColorTextEditBackend.hpp"
 
@@ -326,13 +330,13 @@ void ScriptEditorPanel::saveTab(ScriptEditorTab& tab, core::ECS& ecs, Notificati
     notifications.push("Script saved -- will hot-reload on next tick", NotificationSeverity::Success);
 }
 
-int ScriptEditorPanel::newScriptTab(core::ECS& ecs) {
-    std::string candidate = "Script";
+int ScriptEditorPanel::newScriptTab(core::ECS& ecs, const std::string& baseName, const std::string& source) {
+    std::string candidate = baseName;
     for (int suffix = 2; entityNameTaken(ecs, candidate); ++suffix) {
-        candidate = "Script" + std::to_string(suffix);
+        candidate = baseName + std::to_string(suffix);
     }
     core::EntityId entity = ecs.createEntity(candidate);
-    ecs.addComponent<core::Script>(entity);
+    ecs.addComponent<core::Script>(entity).source = source;
     int index = openOrFocusTab(ecs, entity);
     forceFocusActiveTab_ = true;
     // Keeps draw()'s own outer-selection edge trigger in sync, same
@@ -425,63 +429,140 @@ void ScriptEditorPanel::drawTabBar(core::ECS& ecs, NotificationCenter& notificat
     ImGui::EndTabBar();
 }
 
+namespace {
+struct ScriptTemplate {
+    const char* title;
+    const char* blurb;
+    const char* entityName;
+    const char* source;
+};
+
+const ScriptTemplate kTemplates[] = {
+    {"Blank script", "An empty Luau script.", "Script", "print(\"Hello from Kronos!\")\n"},
+    {"Spinning part", "Rotates a part every frame.", "SpinScript",
+     "local part = world.findByName(\"Part\")\nlocal speed = 90 -- degrees per second\nlocal angle = 0\n\n"
+     "events.onUpdate(function(dt)\n\tif part == nil then return end\n\tangle = (angle + speed * dt) % 360\n"
+     "\tworld.setRotation(part, 0, angle, 0)\nend)\n"},
+    {"Player greeting", "Welcomes players as they join.", "GreetingScript",
+     "events.onPlayerJoin(function(playerId, displayName)\n\tprint(displayName .. \" joined the game\")\n"
+     "\tTextChatService.SendAsync(\"Welcome, \" .. displayName .. \"!\")\nend)\n\n"
+     "events.onPlayerLeave(function(playerId, displayName)\n\tprint(displayName .. \" left the game\")\nend)\n"},
+    {"Collision handler", "Reacts when two bodies touch.", "CollisionScript",
+     "local hits = 0\n\nevents.onCollision(function(entityA, entityB)\n\thits += 1\n"
+     "\tworld.setColor(entityA, math.random(), math.random(), math.random())\n"
+     "\tprint(\"Collision #\" .. hits .. \": \" .. entityA .. \" hit \" .. entityB)\nend)\n"},
+};
+} // namespace
+
 void ScriptEditorPanel::drawEmptyState(core::ECS& ecs, NotificationCenter& notifications) {
-    // Kronos ("Script Editor QoL" -- actionable empty state): replaces
-    // the old dead-end "Select an entity..." label with two real,
-    // working actions -- centered in whatever space is left below the
-    // (now-persistent) tab bar, rather than pinned to the window's
-    // top-left like a plain label would be.
-    // GetContentRegionAvail() measures from the *current cursor*
-    // (already below the tab bar drawn just above), but SetCursorPos()
-    // below places things in window-local coordinates measured from the
-    // window's content origin -- so `start` has to be folded back in, or
-    // the block would center against the whole window and sit too high,
-    // overlapping the tab bar.
     const ImVec2 start = ImGui::GetCursorPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const char* heading = "No scripts open";
-    const char* subheading = "Create a new script or import an existing .luau/.lua file.";
-    const ImVec2 buttonSize(190.0f, 36.0f);
-    constexpr float kSpacing = 10.0f;
+    const ImVec2 card(220.0f, 92.0f);
+    constexpr float kGap = 12.0f;
+    const int columns = avail.x >= card.x * 2.0f + kGap + 40.0f ? 2 : 1;
+    const int rows = (static_cast<int>(std::size(kTemplates)) + columns - 1) / columns;
+    const float blockWidth = card.x * static_cast<float>(columns) + kGap * static_cast<float>(columns - 1);
+    const float headerHeight = ImGui::GetTextLineHeight() * 3.0f + 26.0f;
+    const float blockHeight = headerHeight + rows * card.y + (rows - 1) * kGap + 56.0f;
+    const ImVec2 origin(start.x + std::max(16.0f, (avail.x - blockWidth) * 0.5f),
+                        start.y + std::max(16.0f, (avail.y - blockHeight) * 0.5f));
 
-    const float headingWidth = ImGui::CalcTextSize(heading).x;
-    const float subheadingWidth = ImGui::CalcTextSize(subheading).x;
-    const float buttonsWidth = buttonSize.x * 2.0f + kSpacing;
-    const float blockWidth = std::max({headingWidth, subheadingWidth, buttonsWidth});
-    const float lineSpacing = ImGui::GetStyle().ItemSpacing.y;
-    const float blockHeight =
-        ImGui::GetTextLineHeight() * 2.0f + lineSpacing * 2.0f + kSpacing + buttonSize.y;
-
-    // `origin` is the block's fixed top-left in window-local coordinates
-    // -- every line below centers itself against `origin.x + blockWidth`
-    // rather than against wherever the cursor happened to land after the
-    // previous item, since ImGui resets CursorPos.x back to the current
-    // line/group's own indent (not to a prior SetCursorPosX() call) after
-    // every item.
-    const ImVec2 origin(start.x + std::max(0.0f, (avail.x - blockWidth) * 0.5f),
-                         start.y + std::max(0.0f, (avail.y - blockHeight) * 0.5f));
-
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec4 accent = ui::accent();
     ImGui::SetCursorPos(origin);
+    const ImVec2 iconPos = ImGui::GetCursorScreenPos();
+    drawList->AddRectFilled(iconPos, ImVec2(iconPos.x + 40.0f, iconPos.y + 40.0f),
+                            ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.15f)), 10.0f);
+    drawIcon(drawList, Icon::Script, ImVec2(iconPos.x + 20.0f, iconPos.y + 20.0f), 22.0f, ImGui::GetColorU32(accent));
+    ImGui::SetCursorPos(ImVec2(origin.x + 52.0f, origin.y));
     ImGui::BeginGroup();
-    {
-        ImGui::SetCursorPosX(origin.x + std::max(0.0f, (blockWidth - headingWidth) * 0.5f));
-        ImGui::TextUnformatted(heading);
-
-        ImGui::SetCursorPosX(origin.x + std::max(0.0f, (blockWidth - subheadingWidth) * 0.5f));
-        ImGui::TextDisabled("%s", subheading);
-
-        ImGui::Dummy(ImVec2(1.0f, kSpacing));
-
-        ImGui::SetCursorPosX(origin.x + std::max(0.0f, (blockWidth - buttonsWidth) * 0.5f));
-        if (ImGui::Button("Create New Script", buttonSize)) {
-            newScriptTab(ecs);
-        }
-        ImGui::SameLine(0.0f, kSpacing);
-        if (ImGui::Button("Open File", buttonSize)) {
-            openScriptFromFile(ecs, notifications);
-        }
-    }
+    if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, ImGui::GetStyle().FontSizeBase * 1.3f);
+    ImGui::TextUnformatted("Start a script");
+    if (core::kronosBoldFont() != nullptr) ImGui::PopFont();
+    ImGui::TextDisabled("Pick a template, or select an entity in the Explorer.");
     ImGui::EndGroup();
+
+    const float gridTop = origin.y + headerHeight;
+    for (int i = 0; i < static_cast<int>(std::size(kTemplates)); ++i) {
+        const ScriptTemplate& entry = kTemplates[i];
+        const ImVec2 local(origin.x + static_cast<float>(i % columns) * (card.x + kGap),
+                           gridTop + static_cast<float>(i / columns) * (card.y + kGap));
+        ImGui::SetCursorPos(local);
+        ImGui::PushID(i);
+        const bool clicked = ImGui::InvisibleButton("##template", card);
+        const bool hovered = ImGui::IsItemHovered();
+        const float t = ui::animate(ImGui::GetItemID(), hovered ? 1.0f : 0.0f);
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+        const ImVec4 surface = ImGui::GetStyle().Colors[ImGuiCol_FrameBg];
+        ui::softShadow(drawList, min, max, 8.0f, 6.0f + 6.0f * t, ImVec4(0, 0, 0, 0.25f + 0.15f * t));
+        drawList->AddRectFilled(min, max, ui::mix(surface, ImGui::GetStyle().Colors[ImGuiCol_FrameBgHovered], t), 8.0f);
+        drawList->AddRect(min, max, ui::mix(ImGui::GetStyle().Colors[ImGuiCol_Border], accent, t), 8.0f, 0, 1.0f + t * 0.5f);
+        drawIcon(drawList, i == 0 ? Icon::Script : i == 1 ? Icon::Rotate : i == 2 ? Icon::Play : Icon::Physics,
+                 ImVec2(min.x + 22.0f, min.y + 24.0f), 18.0f, ImGui::GetColorU32(accent));
+        if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, 0.0f);
+        drawList->AddText(ImVec2(min.x + 42.0f, min.y + 15.0f), ImGui::GetColorU32(ImGuiCol_Text), entry.title);
+        if (core::kronosBoldFont() != nullptr) ImGui::PopFont();
+        drawList->AddText(nullptr, 0.0f, ImVec2(min.x + 14.0f, min.y + 46.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                          entry.blurb, nullptr, card.x - 28.0f);
+        if (clicked) newScriptTab(ecs, entry.entityName, entry.source);
+        ImGui::PopID();
+    }
+
+    ImGui::SetCursorPos(ImVec2(origin.x, gridTop + rows * card.y + (rows - 1) * kGap + 18.0f));
+    if (ui::button("Import .luau file...", ui::ButtonKind::Ghost)) openScriptFromFile(ecs, notifications);
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Scripts hot-reload while you play.");
+}
+
+void ScriptEditorPanel::drawHeader(ScriptEditorTab& tab, core::ECS& ecs, NotificationCenter& notifications) {
+    const core::Name* name = ecs.tryGetComponent<core::Name>(tab.entity);
+    const std::string title = (name != nullptr && !name->value.empty()) ? name->value : "(unnamed)";
+    const bool dirty = tab.backend->source() != tab.savedSource;
+
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const float height = ImGui::GetFrameHeight() + 12.0f;
+    const ImVec2 max(min.x + ImGui::GetContentRegionAvail().x, min.y + height);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_MenuBarBg));
+    drawList->AddLine(ImVec2(min.x, max.y - 1.0f), ImVec2(max.x, max.y - 1.0f), ImGui::GetColorU32(ImGuiCol_Separator));
+
+    const float centerY = min.y + height * 0.5f;
+    const ImVec4 accent = ui::accent();
+    drawIcon(drawList, Icon::Script, ImVec2(min.x + 20.0f, centerY), 16.0f, ImGui::GetColorU32(accent));
+    ImGui::SetCursorScreenPos(ImVec2(min.x + 34.0f, centerY - ImGui::GetTextLineHeight() * 0.5f));
+    ImGui::TextDisabled("Workspace  /");
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, 0.0f);
+    ImGui::TextUnformatted(title.c_str());
+    if (core::kronosBoldFont() != nullptr) ImGui::PopFont();
+    ImGui::SameLine(0.0f, 10.0f);
+    const ImVec2 chip = ImGui::GetCursorScreenPos();
+    const char* state = dirty ? "Unsaved" : "Saved";
+    const ImVec4 stateColor = dirty ? ImVec4(0.91f, 0.66f, 0.23f, 1.0f) : ImVec4(0.18f, 0.74f, 0.52f, 1.0f);
+    const ImVec2 stateSize = ImGui::CalcTextSize(state);
+    drawList->AddRectFilled(ImVec2(chip.x, chip.y - 2.0f), ImVec2(chip.x + stateSize.x + 22.0f, chip.y + stateSize.y + 2.0f),
+                            ImGui::GetColorU32(ImVec4(stateColor.x, stateColor.y, stateColor.z, 0.14f)), 9.0f);
+    drawList->AddCircleFilled(ImVec2(chip.x + 8.0f, chip.y + stateSize.y * 0.5f), 3.0f, ImGui::GetColorU32(stateColor));
+    drawList->AddText(ImVec2(chip.x + 15.0f, chip.y), ImGui::GetColorU32(stateColor), state);
+
+    const float saveWidth = 74.0f;
+    const float revertWidth = 74.0f;
+    const float buttonY = centerY - ImGui::GetFrameHeight() * 0.5f;
+    ImGui::SetCursorScreenPos(ImVec2(max.x - saveWidth - revertWidth - 18.0f, buttonY));
+    ImGui::BeginDisabled(!dirty);
+    if (ui::button("Revert", ui::ButtonKind::Ghost, ImVec2(revertWidth, 0.0f))) {
+        tab.backend->setSource(tab.savedSource);
+        notifications.push("Reverted to the last saved version", NotificationSeverity::Info);
+    }
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ui::button("Save", dirty ? ui::ButtonKind::Primary : ui::ButtonKind::Secondary, ImVec2(saveWidth, 0.0f))) saveTab(tab, ecs, notifications);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Save (Ctrl+S) -- the script hot-reloads on the next tick");
+    }
+    ImGui::SetCursorScreenPos(ImVec2(min.x, max.y));
 }
 
 void ScriptEditorPanel::openAndJumpToLine(core::ECS& ecs, core::EntityId entity, int oneBasedLine) {
@@ -531,38 +612,23 @@ void ScriptEditorPanel::draw(core::ECS& ecs, core::EntityId selectedEntity, Noti
     }
     ScriptEditorTab& tab = tabs_[activeTab_];
 
-    const core::Name* name = ecs.tryGetComponent<core::Name>(tab.entity);
-    ImGui::TextDisabled("Entity: %s", (name != nullptr && !name->value.empty()) ? name->value.c_str() : "(unnamed)");
-
     core::Script* script = ecs.tryGetComponent<core::Script>(tab.entity);
     if (script == nullptr) {
+        ImGui::SetCursorPos(ImVec2(16.0f, ImGui::GetCursorPosY() + 16.0f));
+        ImGui::BeginGroup();
         ImGui::TextWrapped("This entity has no Script component yet.");
-        if (ImGui::Button("Add Script Component")) {
+        if (ui::button("Add Script Component", ui::ButtonKind::Primary)) {
             ecs.addComponent<core::Script>(tab.entity);
             tab.backend->setSource("");
             tab.savedSource.clear();
         }
+        ImGui::EndGroup();
         ImGui::End();
         return;
     }
 
-    ImGui::TextDisabled("Ctrl+S save  |  Ctrl+W close tab  |  Hot-reloads while playing");
-    ImGui::Separator();
-    // Kronos ("Script Editor QoL" -- editor background contrast): a real
-    // ImGuiCol_ChildBg push, VS Code's own #1E1E1E editor background --
-    // gives the actual editing surface visible depth against the
-    // surrounding panel chrome (Ctrl+S/Ctrl+W hint line, tab bar) above
-    // it. Harmless, not redundant, for ColorTextEditBackend specifically:
-    // TextEditor::Render() pushes its own ImGuiCol_ChildBg from its
-    // palette right before its BeginChild() (already close to this same
-    // color by default) and pops it before returning, so this outer
-    // push/pop only ever affects backends -- like ImGuiFallbackEditor's
-    // plain BeginChild() calls -- that don't already override it
-    // themselves; the two pushes nest and unwind cleanly either way.
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(0x1E, 0x1E, 0x1E, 255));
+    drawHeader(tab, ecs, notifications);
     tab.backend->draw();
-    ImGui::PopStyleColor();
-
     // Checked here, not StudioApp's own global per-frame keybind block,
     // so these only fire while the Script Editor window genuinely has
     // keyboard focus -- Ctrl+S/Ctrl+W elsewhere in Studio keep their own

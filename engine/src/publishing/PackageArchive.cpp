@@ -16,6 +16,9 @@ namespace engine::publishing {
 namespace {
 constexpr char kMagic[4] = {'K', 'R', 'A', 'R'};
 constexpr uint32_t kVersion = 1;
+constexpr uint32_t kMaxEntries = 100000;
+constexpr uint64_t kMaxEntryBytes = 1ull << 30;
+constexpr uint64_t kMaxTotalBytes = 4ull << 30;
 
 // Real lower-case hex encoding of a raw byte string -- core::sha256()
 // itself returns the raw 32-byte digest (see its own header comment),
@@ -122,11 +125,14 @@ bool readArchive(const std::string& archivePath, std::vector<ArchiveFileEntry>& 
     uint32_t fileCount = 0;
     if (!readRaw(in, fileCount)) return false;
 
+    if (fileCount > kMaxEntries) return false;
+
     std::vector<ArchiveFileEntry> files;
     files.reserve(fileCount);
+    uint64_t totalBytes = 0;
     for (uint32_t i = 0; i < fileCount; ++i) {
         uint32_t nameLength = 0;
-        if (!readRaw(in, nameLength)) return false;
+        if (!readRaw(in, nameLength) || nameLength > 4096) return false;
         std::string name(nameLength, '\0');
         in.read(name.data(), nameLength);
         if (!in.good()) return false;
@@ -134,6 +140,9 @@ bool readArchive(const std::string& archivePath, std::vector<ArchiveFileEntry>& 
         uint64_t uncompressedSize = 0;
         uint64_t compressedSize = 0;
         if (!readRaw(in, uncompressedSize) || !readRaw(in, compressedSize)) return false;
+        if (uncompressedSize > kMaxEntryBytes || compressedSize > kMaxEntryBytes) return false;
+        totalBytes += uncompressedSize;
+        if (totalBytes > kMaxTotalBytes) return false;
 
         std::vector<uint8_t> compressed(compressedSize);
         if (compressedSize > 0) {
@@ -156,6 +165,22 @@ bool readArchive(const std::string& archivePath, std::vector<ArchiveFileEntry>& 
     }
 
     outFiles = std::move(files);
+    return true;
+}
+
+bool isSafeRelativePath(const std::string& path) {
+    if (path.empty() || path.front() == '/' || path.find('\\') != std::string::npos ||
+        path.find(':') != std::string::npos || path.find('\0') != std::string::npos) {
+        return false;
+    }
+    size_t start = 0;
+    while (start <= path.size()) {
+        size_t slash = path.find('/', start);
+        if (slash == std::string::npos) slash = path.size();
+        std::string part = path.substr(start, slash - start);
+        if (part.empty() || part == "." || part == "..") return false;
+        start = slash + 1;
+    }
     return true;
 }
 
@@ -248,8 +273,11 @@ bool extractWorldPackageArchive(const std::string& archivePath, const std::strin
     // separate pass below, once the manifest itself has been read back.
     std::unordered_map<std::string, const ArchiveFileEntry*> byName;
     for (const ArchiveFileEntry& file : files) {
+        if (!isSafeRelativePath(file.relativePath)) return false;
         byName.emplace(file.relativePath, &file);
-        std::ofstream out(outputDirectory + "/" + file.relativePath, std::ios::binary | std::ios::trunc);
+        std::filesystem::path destination = std::filesystem::path(outputDirectory) / file.relativePath;
+        std::filesystem::create_directories(destination.parent_path(), ec);
+        std::ofstream out(destination, std::ios::binary | std::ios::trunc);
         if (!out.is_open()) return false;
         if (!file.data.empty()) out.write(reinterpret_cast<const char*>(file.data.data()),
                                            static_cast<std::streamsize>(file.data.size()));
@@ -266,8 +294,10 @@ bool extractWorldPackageArchive(const std::string& archivePath, const std::strin
         if (line.empty()) continue;
         size_t tab = line.find('\t');
         if (tab == std::string::npos) continue;
-        std::string originalRelativePath = line.substr(0, tab);
+        std::string originalRelativePath =
+            std::filesystem::path(line.substr(0, tab)).lexically_normal().generic_string();
         std::string archivedName = line.substr(tab + 1);
+        if (!isSafeRelativePath(originalRelativePath)) return false;
         if (archivedName.empty()) continue; // this reference was never found at export time -- see its own comment above
 
         auto assetIt = byName.find(archivedName);

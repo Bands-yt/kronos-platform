@@ -37,6 +37,7 @@
 #include "marketplace/RatingSubmission.hpp"
 #include "marketplace/RecommendationEngine.hpp"
 #include "runtime/GameLoader.hpp"
+#include "publishing/GamePackage.hpp"
 #include "runtime/GameLoop.hpp"
 
 namespace engine::runtime {
@@ -1347,7 +1348,7 @@ struct ToolManagerEntry {
 constexpr ToolManagerEntry kToolManagerEntries[] = {
     {"studio", "Studio", "kronos_studio", "kronos_studio.exe"},
     {"3d-tools", "3D Tools", "kronos_3d_maker", "kronos_3d_maker.exe"},
-    {"movie-mode", "Movie Mode", "kronos_movie_maker", "kronos_movie_maker.exe"},
+    {"movie-mode", "Movie Maker", "kronos_movie_maker", "kronos_movie_maker.exe"},
     {"audio", "Audio", "kronos_audio", "kronos_audio.exe"},
 };
 } // namespace
@@ -3684,8 +3685,17 @@ void RuntimeShell::startServerAllocation(const std::string& gameSlug, const std:
     allocationGameSlug_ = gameSlug;
     allocationThread_ = std::thread([this, gameSlug]() {
         core::ServerAllocation result = kronosApi_.allocateServer(gameSlug);
+        std::optional<core::DiscoveredGame> game;
+        if (result.success) {
+            std::string error;
+            game = publishing::resolveCatalogGame(
+                kronosApi_, gameSlug, core::resolveResourceDir(core::executableDirectory(), "games", ENGINE_GAMES_DIR),
+                publishing::packageCacheDirectory(), error);
+            if (!game.has_value()) core::logWarn("Kronos", "joining \"%s\" without its world: %s", gameSlug.c_str(), error.c_str());
+        }
         std::lock_guard<std::mutex> lock(allocationMutex_);
         allocationPendingResult_ = std::move(result);
+        allocationPendingGame_ = std::move(game);
         allocationInProgress_.store(false);
     });
 }
@@ -3949,11 +3959,14 @@ void RuntimeShell::pollBackendResults() {
     // --- server allocation ---
     {
         std::optional<core::ServerAllocation> allocation;
+        std::optional<core::DiscoveredGame> allocationGame;
         {
             std::lock_guard<std::mutex> lock(allocationMutex_);
             if (allocationPendingResult_.has_value()) {
                 allocation = std::move(allocationPendingResult_);
                 allocationPendingResult_.reset();
+                allocationGame = std::move(allocationPendingGame_);
+                allocationPendingGame_.reset();
             }
         }
         if (allocation.has_value()) {
@@ -3976,6 +3989,10 @@ void RuntimeShell::pollBackendResults() {
                 // anyone. Without this the allocation would be advisory
                 // only -- a client could skip it and connect directly.
                 config.joinTicket = allocation->joinTicket;
+
+                if (allocationGame.has_value() && !loadGame(app_, *allocationGame)) {
+                    core::logWarn("Kronos", "\"%s\" downloaded but failed to load", allocationGame->manifest.name.c_str());
+                }
 
                 ensureLocalProfileLoaded();
                 app_.networkSession().setLocalDisplayName(localProfile_.displayName);

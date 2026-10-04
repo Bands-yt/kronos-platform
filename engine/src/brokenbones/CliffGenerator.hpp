@@ -108,6 +108,13 @@ struct CliffLayout {
     float waterY = -0.4f;
     float lagoonFloorY = -5.0f;
 
+    // Hills and mountains ringing the basin; at or below ground level inside it.
+    std::vector<core::Vertex> rimVertices;
+    std::vector<uint32_t> rimIndices;
+    glm::vec2 basinMin{0.0f}; // xz box the rim never rises inside
+    glm::vec2 basinMax{0.0f};
+    glm::vec3 sunDirection{0.0f, 1.0f, 0.0f}; // towards the sun; it lights the face from the lagoon side
+
     glm::vec3 spawnPoint{0.0f};
     float spawnYawDegrees = 90.0f; // camera yaw looking towards +Z
 

@@ -39,7 +39,7 @@ constexpr MapThemeInfo kThemes[kMapThemeCount] = {
      {1.6f, 1.7f, 1.85f}, {0.03f, 0.12f, 0.16f}, {0.0f, 0.0f, 0.0f}},
     {"CANYON", 1.5f, 1.8f, "RIVER DIVE", {0.92f, 0.78f, 0.62f}, {0.25f, 0.45f, 0.80f}, {0.98f, 0.86f, 0.70f},
      {1.25f, 0.85f, 0.6f}, {0.05f, 0.08f, 0.05f}, {0.0f, 0.0f, 0.0f}},
-    {"VOLCANO", 2.0f, 1.4f, "LAVA DIP", {0.42f, 0.30f, 0.26f}, {0.20f, 0.12f, 0.12f}, {0.70f, 0.38f, 0.22f},
+    {"VOLCANO", 2.0f, 1.4f, "LAVA DIP", {0.58f, 0.40f, 0.32f}, {0.24f, 0.14f, 0.13f}, {0.58f, 0.40f, 0.32f},
      {0.35f, 0.3f, 0.28f}, {0.35f, 0.08f, 0.01f}, {1.0f, 0.35f, 0.05f}},
 };
 
@@ -428,6 +428,109 @@ CliffLayout generateCliffLayout(uint32_t seed, int level, MapOptions options) {
         }, 30);
     }
 
+    // --- Sun ------------------------------------------------------------------------
+    // Always on the lagoon side so the face is lit; high enough that the rim can't shade the basin.
+    const float sunAzimuth = uniform(-0.9f, 0.9f);
+    const float sunElevation = uniform(0.70f, 1.0f);
+    layout.sunDirection = glm::vec3(std::sin(sunAzimuth) * std::cos(sunElevation), std::sin(sunElevation),
+                                    std::cos(sunAzimuth) * std::cos(sunElevation));
+
+    // --- Basin and rim -------------------------------------------------------------
+    float farthestGroundZ = layout.lagoonMax.y;
+    float widestGroundX = std::max(std::abs(layout.lagoonMin.x), std::abs(layout.lagoonMax.x));
+    for (const CliffBoulder& boulder : layout.boulders) {
+        if (boulder.position.y > 12.0f) continue;
+        float reach = boulder.radius * std::max({boulder.stretch.x, boulder.stretch.z}) * kRockBoundScale;
+        farthestGroundZ = std::max(farthestGroundZ, boulder.position.z + reach);
+        widestGroundX = std::max(widestGroundX, std::abs(boulder.position.x) + reach);
+    }
+    layout.basinMin = glm::vec2(-std::max(0.5f * kCliffWidth + 6.0f, widestGroundX + 8.0f) - uniform(0.0f, 30.0f), -10.0f);
+    layout.basinMax = glm::vec2(std::max(0.5f * kCliffWidth + 6.0f, widestGroundX + 8.0f) + uniform(0.0f, 30.0f),
+                                farthestGroundZ + uniform(20.0f, 60.0f));
+
+    const uint32_t rimSeed = seed * 31u + 101u;
+    const float rimPeak = std::min(H * uniform(0.3f, 0.7f), 520.0f);
+    const float rimRise = uniform(35.0f, 90.0f);
+    const float rimRoughness = uniform(0.6f, 1.4f);
+    const glm::vec2 basinCenter = 0.5f * (layout.basinMin + layout.basinMax);
+    const glm::vec2 sunFlat = glm::normalize(glm::vec2(layout.sunDirection.x, layout.sunDirection.z));
+    const float sunSlope = std::tan(sunElevation);
+    auto rimHeight = [&](float x, float z) {
+        glm::vec2 q = glm::abs(glm::vec2(x, z) - basinCenter) - 0.5f * (layout.basinMax - layout.basinMin);
+        float outside = glm::length(glm::max(q, 0.0f)) + std::min(std::max(q.x, q.y), 0.0f) - 12.0f;
+        glm::vec2 outward = glm::vec2(x, z) - basinCenter;
+        float angle = std::atan2(outward.y, outward.x);
+        glm::vec3 ring(std::cos(angle), std::sin(angle), 0.0f);
+        outside -= 18.0f * noise01(ring * 1.7f + glm::vec3(0.0f, 0.0f, 3.0f), rimSeed, 2);
+        if (outside <= 0.0f) return -0.6f;
+
+        float ridge = rimPeak * (0.45f + 0.75f * noise01(ring * 1.3f, rimSeed + 1u, 3));
+        float rise = rimRise * (0.6f + 0.9f * noise01(ring * 2.1f + glm::vec3(5.0f, 0.0f, 0.0f), rimSeed + 2u, 2));
+        float t = smooth01(outside / rise);
+        float peaks = 1.0f - std::abs(rockNoise3D(glm::vec3(x, z, 0.0f) * 0.004f, rimSeed + 3u, 4));
+        float rolling = noise01(glm::vec3(x, z, 9.0f) * 0.0015f, rimSeed + 4u, 2);
+        float h = ridge * t * (0.55f + 0.35f * peaks * peaks + 0.25f * rolling);
+        h += t * rimRoughness * (6.0f * rockNoise3D(glm::vec3(x, z, 2.0f) * 0.03f, rimSeed + 5u, 3) +
+                                 0.012f * ridge * rockNoise3D(glm::vec3(x, z, 4.0f) * 0.012f, rimSeed + 6u, 2));
+
+        // Shadows cast from here must not reach far into the basin.
+        float towardsSun = glm::dot(glm::normalize(outward), sunFlat);
+        if (towardsSun > 0.05f) h = std::min(h, (outside + 12.0f) * sunSlope / towardsSun);
+        // Soft ceiling below the plateau so tall ridges round off instead of flattening.
+        const float ceiling = H - 14.0f;
+        if (h > 0.7f * ceiling) h = 0.7f * ceiling + 0.3f * ceiling * std::tanh((h - 0.7f * ceiling) / (0.3f * ceiling));
+        return std::max(h, -0.6f);
+    };
+
+    const float rimExtent = std::max(520.0f, 1.4f * H);
+    constexpr int kRimCells = 176;
+    const float rimCell = 2.0f * rimExtent / static_cast<float>(kRimCells);
+    const glm::vec2 rimOrigin = basinCenter - glm::vec2(rimExtent);
+    const int rimRow = kRimCells + 1;
+    layout.rimVertices.resize(static_cast<size_t>(rimRow) * rimRow);
+    for (int j = 0; j < rimRow; ++j) {
+        for (int i = 0; i < rimRow; ++i) {
+            float x = rimOrigin.x + static_cast<float>(i) * rimCell;
+            float z = rimOrigin.y + static_cast<float>(j) * rimCell;
+            core::Vertex& v = layout.rimVertices[static_cast<size_t>(j) * rimRow + i];
+            v.position = glm::vec3(x, rimHeight(x, z), z);
+            v.uv = glm::vec2(x, z) * 0.05f;
+        }
+    }
+    auto rimAt = [&](int i, int j) -> const glm::vec3& {
+        i = std::clamp(i, 0, rimRow - 1);
+        j = std::clamp(j, 0, rimRow - 1);
+        return layout.rimVertices[static_cast<size_t>(j) * rimRow + i].position;
+    };
+    const float rimTop = std::max(rimPeak, 1.0f);
+    for (int j = 0; j < rimRow; ++j) {
+        for (int i = 0; i < rimRow; ++i) {
+            core::Vertex& v = layout.rimVertices[static_cast<size_t>(j) * rimRow + i];
+            v.normal = glm::normalize(glm::cross(rimAt(i, j + 1) - rimAt(i, j - 1), rimAt(i + 1, j) - rimAt(i - 1, j)));
+            float strata = 0.5f + 0.5f * std::sin(v.position.y * 0.35f +
+                                                  2.0f * rockNoise3D(v.position * 0.02f, rimSeed + 7u, 2));
+            glm::vec3 rock = glm::mix(palette.light, palette.dark, 0.25f + 0.45f * strata);
+            float flat = smooth01((v.normal.y - 0.72f) / 0.18f);
+            glm::vec3 color = glm::mix(rock, palette.shelf, flat * 0.75f);
+            if (options.theme == MapTheme::Glacier || options.theme == MapTheme::Coast) {
+                float snow = smooth01((v.position.y / rimTop - 0.78f) / 0.12f) * smooth01((v.normal.y - 0.5f) / 0.2f);
+                color = glm::mix(color, glm::vec3(0.96f, 0.97f, 1.0f), snow);
+            }
+            v.color = glm::vec4(color, 1.0f);
+        }
+    }
+    layout.rimIndices.reserve(static_cast<size_t>(kRimCells) * kRimCells * 6);
+    for (int j = 0; j < kRimCells; ++j) {
+        for (int i = 0; i < kRimCells; ++i) {
+            uint32_t a = static_cast<uint32_t>(j * rimRow + i);
+            uint32_t b = a + 1;
+            uint32_t c = a + static_cast<uint32_t>(rimRow) + 1;
+            uint32_t d = a + static_cast<uint32_t>(rimRow);
+            layout.rimIndices.insert(layout.rimIndices.end(), {a, d, c, a, c, b});
+        }
+    }
+    core::computeTangents(layout.rimVertices, layout.rimIndices);
+
     // --- Ground ------------------------------------------------------------------
     constexpr float kGroundThickness = 8.0f;
     constexpr float kGroundExtent = 150.0f;
@@ -476,6 +579,20 @@ std::vector<std::string> findLayoutProblems(const CliffLayout& layout) {
         if (layout.faceZ(x, 0.0f) >= layout.lagoonMin.y) {
             std::snprintf(text, sizeof(text), "cliff foot at x=%.1f reaches into the lagoon", x);
             problems.emplace_back(text);
+            break;
+        }
+    }
+    if (layout.rimVertices.empty()) problems.emplace_back("no rim terrain around the basin");
+    for (const core::Vertex& v : layout.rimVertices) {
+        glm::vec2 p(v.position.x, v.position.z);
+        bool inBasin = p.x > layout.basinMin.x && p.x < layout.basinMax.x && p.y > layout.basinMin.y && p.y < layout.basinMax.y;
+        if (inBasin && v.position.y > 0.0f) {
+            std::snprintf(text, sizeof(text), "rim rises to %.1f m inside the basin at (%.0f, %.0f)", v.position.y, p.x, p.y);
+            problems.emplace_back(text);
+            break;
+        }
+        if (v.position.y > layout.height - 12.0f) {
+            problems.emplace_back("rim pokes through the plateau");
             break;
         }
     }

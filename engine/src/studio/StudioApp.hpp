@@ -242,7 +242,7 @@ private:
     // "Kronos Studio" regardless of mode_.
     [[nodiscard]] const char* brandName() const {
         switch (mode_) {
-            case StudioMode::ThreeDMaker: return "Kronos 3D Maker";
+            case StudioMode::ThreeDMaker: return "Kronos 3D Tools";
             case StudioMode::MovieMaker: return "Kronos Movie Maker";
             case StudioMode::Audio: return "Kronos Audio";
             case StudioMode::Full: default: return "Kronos Studio";

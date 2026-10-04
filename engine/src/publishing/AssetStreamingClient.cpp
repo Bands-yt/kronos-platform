@@ -122,11 +122,20 @@ PackageFetchResult fetchGamePackage(core::KronosApi& api, const std::string& slu
     // with a real package.json inside it, was already extracted
     // correctly -- extracting it again would be real, wasted disk I/O
     // for identical output.
-    bool haveValidExtraction = std::filesystem::exists(extractedDirectory + "/package.json");
+    bool haveValidExtraction = std::filesystem::exists(extractedDirectory + "/package.json") ||
+                               std::filesystem::exists(extractedDirectory + "/game.gamemanifest");
     if (!haveValidExtraction) {
-        std::filesystem::remove_all(extractedDirectory, ec); // real, honest cleanup of any partial prior extraction
-        if (!extractWorldPackageArchive(archivePath, extractedDirectory)) {
+        std::string partialDirectory = extractedDirectory + ".partial";
+        std::filesystem::remove_all(extractedDirectory, ec);
+        std::filesystem::remove_all(partialDirectory, ec);
+        if (!extractWorldPackageArchive(archivePath, partialDirectory)) {
+            std::filesystem::remove_all(partialDirectory, ec);
             result.error = "The downloaded package archive could not be extracted.";
+            return result;
+        }
+        std::filesystem::rename(partialDirectory, extractedDirectory, ec);
+        if (ec) {
+            result.error = "Could not finalize the extracted package on disk.";
             return result;
         }
     }

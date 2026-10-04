@@ -30,15 +30,21 @@ enum class ShopItem {
     GlacierMap,
     CanyonMap,
     VolcanoMap,
+    GoldenBones,
+    GlassSkeleton,
+    NestEgg,
+    MegaBlast,
+    SkyHigh,
+    HeadStart,
 };
-inline constexpr size_t kShopItemCount = 15;
+inline constexpr size_t kShopItemCount = 21;
 
 struct ShopPage {
     const char* name;
     std::array<ShopItem, 9> items;
     size_t count;
 };
-inline constexpr size_t kShopPageCount = 3;
+inline constexpr size_t kShopPageCount = 4;
 [[nodiscard]] const ShopPage& shopPage(size_t page);
 inline constexpr int kNoPrerequisite = -1;
 
@@ -50,6 +56,7 @@ struct ShopItemInfo {
     bool consumable;
     int unlockLevel;
     int prerequisite; // ShopItem index or kNoPrerequisite
+    int rebirthsRequired = 0;
 };
 
 [[nodiscard]] const ShopItemInfo& shopItemInfo(ShopItem item);
@@ -137,7 +144,7 @@ struct Progress {
     [[nodiscard]] bool has(ShopItem item) const { return count(item) > 0; }
 };
 
-enum class BuyResult { Bought, NotEnoughCash, MaxedOut, NeedsPrerequisite, Locked };
+enum class BuyResult { Bought, NotEnoughCash, MaxedOut, NeedsPrerequisite, Locked, NeedsRebirth };
 
 [[nodiscard]] int shopPrice(const Progress& progress, ShopItem item);
 BuyResult buyItem(Progress& progress, ShopItem item);
@@ -147,11 +154,15 @@ BuyResult buyItem(Progress& progress, ShopItem item);
 [[nodiscard]] float breakSpeedMultiplier(const Progress& progress);
 [[nodiscard]] float blastPowerMultiplier(const Progress& progress);
 [[nodiscard]] float cashBonusMultiplier(const Progress& progress);
-inline constexpr int kRebirthLevel = 12;
+// Level needed for the next rebirth: 20, then 40, 60, ...
+[[nodiscard]] int rebirthLevelRequired(const Progress& progress);
 [[nodiscard]] float rebirthMultiplier(const Progress& progress);
 [[nodiscard]] bool canRebirth(const Progress& progress);
-// Starts over at level 1 with no cash or upgrades, keeping maps, achievements, stats and settings.
+// Starts over at level 1 (later with HEAD START) with no cash or regular upgrades, keeping maps,
+// rebirth upgrades, achievements, stats and settings.
 bool rebirth(Progress& progress);
+[[nodiscard]] bool isRebirthUpgrade(ShopItem item);
+[[nodiscard]] float goldenBonesMultiplier(const Progress& progress);
 [[nodiscard]] float rocketThrustMultiplier(const Progress& progress);
 [[nodiscard]] float rocketBurnSeconds(const Progress& progress);
 inline constexpr std::array<int, 8> kBoneTiers = {kBaseBoneCount, 25, 50, 100, 206, 300, 400, kMaxBoneCount};

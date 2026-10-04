@@ -1,6 +1,8 @@
 #include "core/KronosApi.hpp"
 
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <utility>
 
 #include <curl/curl.h>
@@ -963,6 +965,81 @@ PackageInfo KronosApi::fetchGamePackageInfo(const std::string& slug) {
         result.error = "The Kronos service reported no usable package for this game.";
         return result;
     }
+    result.success = true;
+    return result;
+}
+
+PackageUploadResult KronosApi::uploadGamePackage(const std::string& slug, const std::string& archivePath,
+                                                 const std::string& sha256) {
+    PackageUploadResult result;
+    auto fail = [&](const HttpResponse& response) {
+        result.error = !response.transportOk
+                           ? (response.error.empty() ? "Could not reach the Kronos service." : response.error)
+                           : extractError(response.body, response.status);
+        return result;
+    };
+    auto ok = [](const HttpResponse& response) {
+        return response.transportOk && response.status >= 200 && response.status < 300;
+    };
+
+    std::ifstream in(archivePath, std::ios::binary);
+    if (!in.is_open()) {
+        result.error = "Could not read the package archive.";
+        return result;
+    }
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    const std::string base = "/v1/catalog/games/" + slug + "/package";
+    nlohmann::json ticketBody{{"sha256", sha256}, {"size_bytes", bytes.size()}};
+    HttpResponse ticket = requestWithRefresh("POST", base + "/upload-url", ticketBody.dump());
+    if (!ok(ticket)) return fail(ticket);
+    nlohmann::json parsed = nlohmann::json::parse(ticket.body, nullptr, false);
+    std::string uploadUrl = parsed.is_discarded() ? std::string() : jsonStringOr(parsed, "upload_url");
+    if (uploadUrl.empty()) {
+        result.error = "The Kronos service did not return an upload location.";
+        return result;
+    }
+
+    HttpResponse put;
+    CURL* curl = curl_easy_init();
+    if (curl == nullptr) {
+        result.error = "curl_easy_init() failed";
+        return result;
+    }
+    std::string bearer;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // Presigned bucket URLs carry their own signature and reject a second auth header.
+        if (uploadUrl.rfind(baseUrl_, 0) == 0 && !accessToken_.empty()) bearer = "Authorization: Bearer " + accessToken_;
+    }
+    struct curl_slist* headers = curl_slist_append(nullptr, "Content-Type: application/octet-stream");
+    if (!bearer.empty()) headers = curl_slist_append(headers, bearer.c_str());
+    curl_easy_setopt(curl, CURLOPT_URL, uploadUrl.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bytes.data());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(bytes.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &put.body);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "kronos-client");
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
+    CURLcode code = curl_easy_perform(curl);
+    if (code == CURLE_OK) {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &put.status);
+        put.transportOk = true;
+    } else {
+        put.error = curl_easy_strerror(code);
+    }
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    if (!ok(put)) return fail(put);
+
+    HttpResponse confirm = requestWithRefresh("POST", base + "/confirm", nlohmann::json{{"sha256", sha256}}.dump());
+    if (!ok(confirm)) return fail(confirm);
     result.success = true;
     return result;
 }

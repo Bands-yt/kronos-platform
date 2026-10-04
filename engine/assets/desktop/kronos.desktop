@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kronos Player
+Comment=Kronos Platform -- game catalogue and player
+Exec=engine_runtime
+Icon=kronos
+Terminal=false
+Categories=Game;

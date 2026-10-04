@@ -11,6 +11,7 @@ namespace engine::core {
 namespace {
 ImFont* g_boldFont = nullptr;
 ImFont* g_mediumFont = nullptr;
+ImFont* g_codeFont = nullptr;
 
 ImVec4 rgba(const float (&c)[4], float alpha = 1.0f) { return ImVec4(c[0], c[1], c[2], alpha); }
 
@@ -172,10 +173,12 @@ void loadKronosFonts(const std::string& fontsDir) {
     g_boldFont = addFamilyFont(fontsDir, "Inter-SemiBold.ttf", kBaseSize);
     if (g_boldFont == nullptr) g_boldFont = addFont(fontsDir + "/NotoSans-Bold.ttf", kBaseSize + 1.0f, false);
     if (g_mediumFont == nullptr) g_mediumFont = g_boldFont;
+    g_codeFont = addFont(fontsDir + "/JetBrainsMono-Regular.ttf", kBaseSize, false);
 }
 
 ImFont* kronosBoldFont() { return g_boldFont; }
 ImFont* kronosMediumFont() { return g_mediumFont; }
+ImFont* kronosCodeFont() { return g_codeFont; }
 
 void linearizeDrawDataColors(ImDrawData* drawData) {
     static const std::array<unsigned char, 256> kToLinear = [] {

@@ -351,6 +351,7 @@ add_library(engine_core STATIC
     publishing/WorldPackage.cpp
     publishing/PackageArchive.cpp
     publishing/AssetStreamingClient.cpp
+    publishing/GamePackage.cpp
     publishing/WorldRegistry.cpp
     publishing/ThumbnailCapture.cpp
 
@@ -715,6 +716,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/panels/InspectorPanel.cpp
         studio/panels/ScriptEditorPanel.cpp
         studio/panels/ColorTextEditBackend.cpp
+        studio/panels/ColorTextEditBackendText.cpp
         studio/RuntimeShaderCompiler.cpp
         studio/ShaderGraph.cpp
         studio/ShaderGraphCodegen.cpp

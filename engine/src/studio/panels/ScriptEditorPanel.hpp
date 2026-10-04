@@ -158,7 +158,8 @@ private:
     // tab. Shared by the persistent tab bar's trailing "+" button and
     // the empty state's "Create New Script" button so both take the
     // exact same real path.
-    int newScriptTab(core::ECS& ecs);
+    int newScriptTab(core::ECS& ecs, const std::string& baseName = "Script", const std::string& source = "");
+    void drawHeader(ScriptEditorTab& tab, core::ECS& ecs, NotificationCenter& notifications);
     // Kronos ("Script Editor QoL" -- actionable empty state): real
     // native "Open File" dialog (core::openFileDialog, the same one
     // ModelImporterPlugin already uses) filtered to *.luau/*.lua, reads

@@ -18,7 +18,7 @@ namespace kronos_installer {
 // Kronos ("Installer Component Selection" -- "In-Player Tool Manager"):
 // the real, generalized form createPlatformShortcut() above is now a
 // thin wrapper around -- one real shortcut/launcher for ANY installed
-// component (Player, Studio, 3D Tools, Movie Mode, Audio), not just the
+// component (Player, Studio, 3D Tools, Movie Maker, Audio), not just the
 // base Player install. `desktopBasename` is the real, extension-less
 // filename this writes on Linux (e.g. "kronos-3d-maker" ->
 // ~/.local/share/applications/kronos-3d-maker.desktop, matching the

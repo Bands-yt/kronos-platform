@@ -26,10 +26,10 @@ BIN_DIR="${BUILD_DIR}/src"
 # is included alongside `kronos_studio` (the standalone Full-mode app)
 # since both are real, independently launchable binaries today.
 APPS=(
-    "Kronos (Player):engine_runtime"
+    "Player:engine_runtime"
     "Studio (legacy):studio"
     "Studio:kronos_studio"
-    "3D Maker:kronos_3d_maker"
+    "3D Tools:kronos_3d_maker"
     "Movie Maker:kronos_movie_maker"
     "Audio:kronos_audio"
 )

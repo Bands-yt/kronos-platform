@@ -163,11 +163,15 @@ bool StudioApp::initialize(StudioMode mode) {
     }
     windowInfo.width = 1600;
     windowInfo.height = 900;
-    // Kronos ("UI/UX Revamp" -- "App Icon"): same real icon, same real
-    // resolution convention as core::Application::initialize() -- one
-    // real asset, both real windows.
+    const char* iconFile = "kronos_studio_icon.png";
+    switch (mode_) {
+        case StudioMode::ThreeDMaker: iconFile = "kronos_3d_maker_icon.png"; break;
+        case StudioMode::MovieMaker: iconFile = "kronos_movie_maker_icon.png"; break;
+        case StudioMode::Audio: iconFile = "kronos_audio_icon.png"; break;
+        case StudioMode::Full: default: break;
+    }
     windowInfo.iconPath =
-        core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/icons/kronos_icon.png";
+        core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/icons/" + iconFile;
     if (!window_.initialize(windowInfo)) {
         // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
         // report): real, specific diagnosis from Window::initialize()
@@ -620,6 +624,7 @@ bool StudioApp::initialize(StudioMode mode) {
     auto publishingPanel = std::make_unique<plugins::PublishingPanel>(sceneManager_, viewportPanel_.camera(), meshLibrary_,
                                                                         textureLibrary_, networkSession_);
     publishingPanel_ = publishingPanel.get();
+    publishingPanel_->setProjectPathProvider([this]() { return currentProjectPath_; });
     pluginManager_.registerPlugin(std::move(publishingPanel));
 
     // Kronos ("Model Maker Alpha" -- tester declutter): TntWarsPlugin
@@ -1368,7 +1373,7 @@ void StudioApp::drawAboutPanel() {
         const char* blurb = nullptr;
         switch (mode_) {
             case StudioMode::ThreeDMaker:
-                blurb = "Kronos 3D Maker is the dedicated PBR material/texture painting workspace of the Kronos "
+                blurb = "Kronos 3D Tools is the dedicated PBR material/texture painting workspace of the Kronos "
                         "platform: live viewport, Material Editor, PBR Texture Inspector, and Brush & Stamp "
                         "compute-paint tools, all in one Alpha build.";
                 break;

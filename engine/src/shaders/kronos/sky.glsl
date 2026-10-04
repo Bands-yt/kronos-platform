@@ -179,7 +179,10 @@ vec3 skyBackground(SkyInputs s, vec3 dir) {
     float haze = 1.0 - smoothstep(0.0, 0.12, elevation);
     sky = mix(sky, s.horizon * 1.25, haze * 0.35);
     if (s.atmosphere.x > 0.5) {
-        sky += computeAtmosphere(s.origin, dir, s.sunDir, s.atmosphere.y, s.atmosphere.z);
+        // Below the horizon the ray hits the ground almost at once and comes out
+        // dark; hold the horizon value so gaps under distant terrain don't band.
+        vec3 scatterDir = normalize(vec3(dir.x, max(dir.y, 0.0), dir.z));
+        sky += computeAtmosphere(s.origin, scatterDir, s.sunDir, s.atmosphere.y, s.atmosphere.z);
     }
     return sky;
 }
@@ -187,7 +190,11 @@ vec3 skyBackground(SkyInputs s, vec3 dir) {
 vec3 compositeClouds(SkyInputs s, vec3 dir, vec3 background) {
     if (s.clouds.x < 0.5) return background;
     vec4 c = computeClouds(s.origin, dir, s.sunDir, s.clouds.y, s.clouds.z, s.clouds.w);
-    return mix(background, c.rgb, saturate(c.a));
+    // Distant clouds take on the horizon haze and thin out towards it, so the
+    // layer has no hard edge where it stops just above the horizon.
+    float lowness = 1.0 - smoothstep(0.0, 0.35, dir.y);
+    vec3 color = mix(c.rgb, s.horizon * 1.15, lowness * 0.65);
+    return mix(background, color, saturate(c.a) * smoothstep(0.01, 0.12, dir.y));
 }
 
 // Sky radiance along `dir`, excluding the sun disk (sky.frag adds that

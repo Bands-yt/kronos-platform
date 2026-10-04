@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Kronos Player"><defs>
+    <linearGradient id="g0" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5FB8F0"/><stop offset="1" stop-color="#2B6FE0"/></linearGradient>
+    <linearGradient id="t1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1A2029"/><stop offset="1" stop-color="#0D1015"/></linearGradient>
+    <linearGradient id="t1s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".18"/><stop offset=".55" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient></defs><rect x="8" y="8" width="240" height="240" rx="56" fill="url(#t1)"/>
+      <rect x="8.5" y="8.5" width="239" height="239" rx="55.5" fill="none" stroke="rgba(255,255,255,.07)"/>
+      <circle cx="128" cy="128" r="96" fill="none" stroke="#5FB8F0" stroke-opacity=".45" stroke-width="4" stroke-dasharray="210 90 150 154" transform="rotate(-150 128 128)"/>
+      <g transform="translate(-12 -10) scale(.94) translate(8 8)"><g fill="url(#g0)">
+    <rect x="78" y="62" width="30" height="132" rx="3"/>
+    <path d="M108 114 L172 62 H210 L108 152 Z"/>
+    <path d="M126 136 L150 116 L212 194 H172 Z"/></g></g>
+      <circle cx="186" cy="186" r="42" fill="url(#g0)" stroke="#0D1015" stroke-width="8"/>
+      <g transform="translate(186 186) scale(.36) translate(-128 -128)"><path d="M104 78 Q94 72 94 84 V172 Q94 184 104 178 L178 135 Q188 128 178 121 Z" fill="#FFFFFF"/></g></svg>

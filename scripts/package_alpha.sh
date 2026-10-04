@@ -125,7 +125,7 @@ cp "${REPO_ROOT}/README.md" "${OUT_DIR}/README.md"
 cat > "${OUT_DIR}/kronos.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Kronos
+Name=Kronos Player
 Comment=Kronos Platform -- Game Catalogue and Home Screen
 Exec=${OUT_DIR}/engine_runtime
 Icon=${OUT_DIR}/assets/icons/kronos_icon.png
@@ -138,14 +138,14 @@ Type=Application
 Name=Kronos Studio
 Comment=Kronos Platform -- Studio (creator tools)
 Exec=${OUT_DIR}/studio
-Icon=${OUT_DIR}/assets/icons/kronos_icon.png
+Icon=${OUT_DIR}/assets/icons/kronos_studio_icon.png
 Terminal=false
 Categories=Development;Game;
 EOF
 cat > "${OUT_DIR}/kronos-3d-maker.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Kronos 3D Maker
+Name=Kronos 3D Tools
 Exec=${OUT_DIR}/kronos_3d_maker
 Icon=${OUT_DIR}/assets/icons/kronos_3d_maker_icon.png
 Terminal=false

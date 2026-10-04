@@ -181,6 +181,11 @@ struct PackageInfo {
     std::string error;
 };
 
+struct PackageUploadResult {
+    bool success = false;
+    std::string error;
+};
+
 struct PublishRequest {
     std::string slug;
     std::string title;
@@ -369,6 +374,11 @@ public:
     // (success=false) when the game has no uploaded package yet, same
     // as any other "nothing real to report" case elsewhere in this file.
     [[nodiscard]] PackageInfo fetchGamePackageInfo(const std::string& slug);
+    // upload-url -> PUT the archive bytes -> confirm, against a game the
+    // signed-in user already published. The backend re-hashes what it
+    // received before the package becomes downloadable.
+    [[nodiscard]] PackageUploadResult uploadGamePackage(const std::string& slug, const std::string& archivePath,
+                                                        const std::string& sha256);
 
 private:
     struct HttpResponse {

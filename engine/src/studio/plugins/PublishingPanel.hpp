@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -60,6 +61,8 @@ public:
     // -- same real convention UploadAvatarItemPlugin's renderPreview()
     // already established.
     void renderPreview(VkCommandBuffer cmd, core::Renderer& renderer, core::ECS& ecs);
+    // The open project's .project file; its folder is what gets uploaded.
+    void setProjectPathProvider(std::function<std::string()> provider) { projectPathProvider_ = std::move(provider); }
     void shutdown(core::Renderer& renderer);
 
 private:
@@ -120,6 +123,7 @@ private:
     // refresh token the launcher already stored in the OS keychain, so
     // signing in once covers both applications.
     core::KronosApi kronosApi_;
+    std::function<std::string()> projectPathProvider_;
     std::thread cloudPublishThread_;
     std::atomic<bool> cloudPublishInProgress_{false};
     std::mutex cloudPublishMutex_;

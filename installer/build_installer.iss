@@ -89,7 +89,7 @@ Name: "core"; Description: "Kronos Engine core files (required by every app belo
 Name: "player"; Description: "Player (game client, kronos:// launch links)"; Types: full custom
 Name: "studio"; Description: "Studio (full creator suite)"; Types: full custom
 Name: "tools3d"; Description: "3D Tools"; Types: full custom
-Name: "moviemode"; Description: "Movie Mode"; Types: full custom
+Name: "moviemode"; Description: "Movie Maker"; Types: full custom
 Name: "audio"; Description: "Audio"; Types: full custom
 
 [Files]
@@ -127,13 +127,13 @@ Source: "{#SourceDir}\docs\*"; DestDir: "{app}\docs"; Components: core; Flags: r
 Source: "{#SourceDir}\plugins\*"; DestDir: "{app}\plugins"; Components: core; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{group}\Kronos"; Filename: "{app}\engine_runtime.exe"; WorkingDir: "{app}"; Components: player
+Name: "{group}\Kronos Player"; Filename: "{app}\engine_runtime.exe"; WorkingDir: "{app}"; Components: player
 Name: "{group}\Kronos Studio"; Filename: "{app}\kronos_studio.exe"; WorkingDir: "{app}"; Components: studio
 Name: "{group}\Kronos 3D Tools"; Filename: "{app}\kronos_3d_maker.exe"; WorkingDir: "{app}"; Components: tools3d
-Name: "{group}\Kronos Movie Mode"; Filename: "{app}\kronos_movie_maker.exe"; WorkingDir: "{app}"; Components: moviemode
+Name: "{group}\Kronos Movie Maker"; Filename: "{app}\kronos_movie_maker.exe"; WorkingDir: "{app}"; Components: moviemode
 Name: "{group}\Kronos Audio"; Filename: "{app}\kronos_audio.exe"; WorkingDir: "{app}"; Components: audio
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Kronos"; Filename: "{app}\engine_runtime.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Components: player
+Name: "{autodesktop}\Kronos Player"; Filename: "{app}\engine_runtime.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Components: player
 
 [Registry]
 ; kronos:// URI protocol -- HKCU (not HKLM/HKCR) so it needs no

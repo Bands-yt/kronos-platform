@@ -237,6 +237,8 @@
 #include "publishing/ThumbnailCapture.hpp"
 #include "publishing/WorldMetadata.hpp"
 #include "publishing/PackageArchive.hpp"
+#include "publishing/GamePackage.hpp"
+#include "studio/panels/ColorTextEditBackend.hpp"
 #include "publishing/WorldPackage.hpp"
 #include "publishing/WorldRegistry.hpp"
 #include "runtime/ShellState.hpp"
@@ -26450,6 +26452,141 @@ void testPackageArchiveWriteReadRoundTrip() {
     std::remove(archivePath);
 }
 
+void testScriptEditorTextHelpers() {
+    using E = engine::studio::panels::ColorTextEditBackend;
+    check(E::identifierPrefixStart("world.setPos", 12) == 6 && E::identifierPrefixStart("  abc", 5) == 2,
+          "identifier prefix starts after the last non-identifier char");
+    check(E::completionAnchorValid(3, 6, 3, 9, "world.set") && !E::completionAnchorValid(3, 6, 4, 9, "world.set") &&
+              !E::completionAnchorValid(3, 6, 3, 9, "worl d.se"),
+          "completion anchor survives only while the same identifier is typed");
+
+    check(E::fuzzyScore("setPosition", "set") > E::fuzzyScore("setPosition", "SET"), "exact-case prefix beats any-case prefix");
+    check(E::fuzzyScore("setPosition", "SET") > E::fuzzyScore("setPosition", "sp"), "prefix beats subsequence");
+    check(E::fuzzyScore("setPosition", "sp") > 0 && E::fuzzyScore("setPosition", "xyz") == -1, "subsequence matches, others fail");
+    check(E::fuzzyScore("getPosition", "gp") > E::fuzzyScore("ongoingPull", "gp"), "word-boundary hits rank higher");
+    check(E::fuzzyScore("anything", "") > 0, "an empty pattern matches everything");
+
+    check(E::byteToColumn("\tab", 1, 4) == 4 && E::byteToColumn("a\tb", 2, 4) == 4 && E::byteToColumn("abc", 99, 4) == 3,
+          "byteToColumn expands tabs to the next stop and clamps");
+    const std::string utf8 = "h\xC3\xA9llo";
+    check(E::byteToColumn(utf8, 3, 4) == 2 && E::columnToByte(utf8, 2, 4) == 3, "multi-byte UTF-8 counts as one column");
+    check(E::columnToByte("\tx", 4, 4) == 1 && E::columnToByte("\tx", 2, 4) == 0 && E::columnToByte("ab", 9, 4) == 2,
+          "columnToByte inverts tab expansion and clamps");
+
+    std::vector<std::string> lines = {"local a = 1", "    print(a)", "", "  -- done"};
+    E::toggleLineComments(lines, 0, 2);
+    check(lines[0] == "-- local a = 1" && lines[1] == "--     print(a)" && lines[2].empty(),
+          "commenting inserts at the block's shallowest indent and skips blank lines");
+    E::toggleLineComments(lines, 0, 2);
+    check(lines[0] == "local a = 1" && lines[1] == "    print(a)", "a fully commented block uncomments");
+    E::toggleLineComments(lines, 3, 3);
+    check(lines[3] == "  done", "an already commented line uncomments in place");
+
+    E::CallContext call = E::findCallContext("world.setPosition(id, 1, ", 25);
+    check(call.active && call.callee == "world.setPosition" && call.argumentIndex == 2 && call.calleeEnd == 17,
+          "call context finds the callee and active argument");
+    call = E::findCallContext("print(\"a, b\", f(x), ", 20);
+    check(call.active && call.callee == "print" && call.argumentIndex == 2, "commas in strings and nested calls are ignored");
+    call = E::findCallContext("obj:method(", 11);
+    check(call.active && call.callee == "obj:method" && call.argumentIndex == 0, "method calls are recognised");
+    check(!E::findCallContext("local function foo(a, ", 22).active && !E::findCallContext("if (x", 5).active &&
+              !E::findCallContext("print(1)", 8).active && !E::findCallContext("-- print(", 9).active,
+          "function declarations, keywords, closed calls and comments are not calls");
+    check(E::positionInCommentOrString("x = 'a -- b'", 9) && !E::positionInCommentOrString("x = 'a' -", 9) &&
+              E::positionInCommentOrString("x = 1 -- c", 10),
+          "comment/string detection respects quotes");
+
+    std::vector<E::Symbol> symbols = E::findSymbols({"local function spin(dt)", "x = 1", "function Foo.bar:baz()",
+                                                     "  local handler = function(a)", "events.onUpdate(function(dt)"});
+    check(symbols.size() == 4 && symbols[0].name == "spin" && symbols[0].line == 0 && symbols[1].name == "Foo.bar:baz" &&
+              symbols[2].name == "handler" && symbols[3].name == "events.onUpdate" && symbols[3].line == 4,
+          "symbols cover named, assigned and event-callback functions");
+
+    const std::string definitions = "--- Writes text.\ndeclare function print(...: any): ()\n\ndeclare world: {\n"
+                                    "    --- Makes a thing.\n    createEntity: (name: string?) -> number,\n"
+                                    "    destroy: (entity: number) -> (),\n}\n";
+    auto docs = E::parseApiDocs(definitions);
+    check(docs.count("print") == 1 && docs["print"] == "Writes text." && docs["world.createEntity"] == "Makes a thing." &&
+              docs.count("world.destroy") == 0,
+          "API docs attach to the next declaration only");
+
+    std::string returns;
+    std::vector<std::string> params = E::splitSignatureParameters("(entity: number, cb: (a: number, b: string) -> (), t: {[string]: any}?) -> number", returns);
+    check(params.size() == 3 && params[1] == "cb: (a: number, b: string) -> ()" && params[2] == "t: {[string]: any}?" &&
+              returns == "-> number",
+          "signature split respects nested parens and braces");
+    params = E::splitSignatureParameters("<T>(x: T) -> T", returns);
+    check(params.size() == 1 && params[0] == "x: T" && returns == "-> T", "generic prefixes are skipped");
+    params = E::splitSignatureParameters("() -> ()", returns);
+    check(params.empty() && returns == "-> ()", "empty parameter lists split cleanly");
+}
+
+void testCatalogGamePackages() {
+    namespace fs = std::filesystem;
+    using engine::publishing::isSafeRelativePath;
+    check(isSafeRelativePath("Scripts/Main.lua") && isSafeRelativePath("default.scene"), "plain relative paths are safe");
+    check(!isSafeRelativePath("../evil") && !isSafeRelativePath("a/../../evil") && !isSafeRelativePath("/etc/passwd") &&
+              !isSafeRelativePath("C:/x") && !isSafeRelativePath("a\\b") && !isSafeRelativePath("") &&
+              !isSafeRelativePath("a//b") && !isSafeRelativePath("./a"),
+          "traversal, absolute, drive and backslash paths are rejected");
+
+    const fs::path root = "test_catalog_game_pkg";
+    fs::remove_all(root);
+    fs::create_directories(root / "src" / "Scripts");
+    fs::create_directories(root / "src" / ".git");
+    { std::ofstream(root / "src" / "project.project") << "PROJECT 1\nNAME Hill\nVERSION 1.0.0\nCREATED 0\nMODIFIED 0\nACTIVESCENE 0\nSCENE default.scene\nEND\n"; }
+    { std::ofstream(root / "src" / "default.scene") << "SCENE 1\nEND\n"; }
+    { std::ofstream(root / "src" / "Scripts" / "Main.lua") << "print('hi')\n"; }
+    { std::ofstream(root / "src" / ".git" / "secret") << "token"; }
+
+    engine::core::GameManifest manifest;
+    manifest.name = "Hill Climb";
+    manifest.projectPath = "project.project";
+    const std::string archive = (root / "hill.kronos").string();
+    std::string error;
+    check(engine::publishing::writeGameFolderArchive((root / "src").string(), manifest, archive, error),
+          "a saved project folder packages into a catalog archive");
+    check(!fs::exists(root / "src" / "game.gamemanifest"), "packaging does not write into the creator's folder");
+
+    std::vector<engine::publishing::ArchiveFileEntry> entries;
+    check(engine::publishing::readArchive(archive, entries), "the game archive reads back");
+    bool hasScript = false, hasHidden = false, hasManifest = false;
+    for (const auto& entry : entries) {
+        hasScript |= entry.relativePath == "Scripts/Main.lua";
+        hasHidden |= entry.relativePath.find(".git") != std::string::npos;
+        hasManifest |= entry.relativePath == "game.gamemanifest";
+    }
+    check(hasScript && hasManifest && !hasHidden, "the archive keeps scripts in place, adds a manifest, skips hidden files");
+
+    const fs::path out = root / "out";
+    check(engine::publishing::extractWorldPackageArchive(archive, out.string()), "the game archive extracts");
+    check(fs::exists(out / "Scripts" / "Main.lua"), "nested files extract to their own subdirectories");
+    std::optional<engine::core::DiscoveredGame> game = engine::publishing::loadPackagedGame(out.string(), error);
+    check(game.has_value() && game->manifest.name == "Hill Climb", "an extracted package loads as a playable game");
+
+    engine::core::GameManifest flagGame = manifest;
+    flagGame.launchKind = engine::core::GameLaunchKind::CliFlag;
+    flagGame.cliFlag = "--server";
+    check(!engine::publishing::writeGameFolderArchive((root / "src").string(), flagGame, archive, error),
+          "CLI-flag games cannot be packaged for the catalog");
+    check(flagGame.saveToFile((out / "game.gamemanifest").string()), "a tampered manifest is written for the next check");
+    check(!engine::publishing::loadPackagedGame(out.string(), error).has_value(),
+          "a downloaded package that asks to relaunch with a CLI flag is refused");
+
+    { std::ofstream(out / "project.project") << "PROJECT 1\nNAME Hill\nVERSION 1.0.0\nCREATED 0\nMODIFIED 0\nACTIVESCENE 0\nSCENE ../../outside.scene\nEND\n"; }
+    check(manifest.saveToFile((out / "game.gamemanifest").string()), "the manifest is restored");
+    check(!engine::publishing::loadPackagedGame(out.string(), error).has_value(),
+          "a downloaded package whose scene points outside it is refused");
+
+    const std::string evil = (root / "evil.kronos").string();
+    check(engine::publishing::writeArchive(evil, {{"../escaped.txt", {'x'}}}), "a traversal archive can be crafted");
+    check(!engine::publishing::extractWorldPackageArchive(evil, (root / "evil_out").string()) &&
+              !fs::exists(root / "escaped.txt"),
+          "extraction refuses entries that would land outside the output directory");
+
+    fs::remove_all(root);
+}
+
 void testPackageArchiveReadRejectsGarbageFile() {
     const char* path = "test_package_archive_garbage.kronos";
     { std::ofstream out(path, std::ios::binary); out << "not a real archive"; }
@@ -39981,6 +40118,8 @@ void testBrokenBonesCliffsNeverOverlapAndVary() {
     float minLagoonX = 1e9f, maxLagoonX = -1e9f, minBoardX = 1e9f, maxBoardX = -1e9f;
     int withGullyOrButtress = 0, withOverhang = 0, withPartialLedge = 0, withStacks = 0;
     size_t minBeams = 1000, minBoulders = 1000;
+    float minRimShare = 1e9f, maxRimShare = 0.0f;
+    int sunBehindFace = 0;
     for (uint32_t seed = 0; seed < 120; ++seed) {
         for (int level : {1, 3, 6, 10}) {
             CliffLayout layout = generateCliffLayout(seed * 7717u + 3u, level);
@@ -40003,8 +40142,16 @@ void testBrokenBonesCliffsNeverOverlapAndVary() {
                                       [](const CliffBoulder& b) { return b.stretch.y > 2.0f; });
             minBeams = std::min(minBeams, layout.beams.size());
             minBoulders = std::min(minBoulders, layout.boulders.size());
+            float rimTop = 0.0f;
+            for (const engine::core::Vertex& v : layout.rimVertices) rimTop = std::max(rimTop, v.position.y);
+            minRimShare = std::min(minRimShare, rimTop / layout.height);
+            maxRimShare = std::max(maxRimShare, rimTop / layout.height);
+            sunBehindFace += layout.sunDirection.z < 0.3f || layout.sunDirection.y < 0.6f;
         }
     }
+    std::fprintf(stdout, "  rim peaks reach %.2f..%.2f of the cliff height\n", minRimShare, maxRimShare);
+    check(minRimShare > 0.1f && maxRimShare - minRimShare > 0.2f, "every basin is ringed by terrain of varying height");
+    check(sunBehindFace == 0, "the sun always sits high on the lagoon side, lighting the face");
     std::fprintf(stdout,
                  "  %d cliffs: %d with problems, %zu rock types, lagoon x %.0f..%.0f, board x %.0f..%.0f, "
                  "%d gully/buttress, %d overhang, %d partial ledge, %d sea stacks, min %zu beams / %zu boulders\n",
@@ -40711,9 +40858,9 @@ void testBrokenBonesAchievementsTutorialAndRebirth() {
     check(step == kTutorialDone && tutorialTip(step, false) == nullptr, "the tutorial finishes after a full loop");
 
     Progress veteran;
-    veteran.level = kRebirthLevel - 1;
-    check(!canRebirth(veteran) && !rebirth(veteran), "rebirth needs level 12");
-    veteran.level = kRebirthLevel;
+    veteran.level = 19;
+    check(rebirthLevelRequired(veteran) == 20 && !canRebirth(veteran) && !rebirth(veteran), "the first rebirth needs level 20");
+    veteran.level = 20;
     veteran.bestLevel = 14;
     veteran.cash = 50000;
     veteran.runs = 80;
@@ -40725,7 +40872,7 @@ void testBrokenBonesAchievementsTutorialAndRebirth() {
     veteran.map = MapTheme::Canyon;
     veteran.settings.volume = 0.3f;
     veteran.stats.cashEarned = 90000;
-    check(rebirth(veteran), "a level-12 player can rebirth");
+    check(rebirth(veteran), "a level-20 player can rebirth");
     check(veteran.level == 1 && veteran.bestLevel == 1 && veteran.cash == 0 && !veteran.has(ShopItem::Floats) &&
               skeletonBoneCount(veteran) == kBaseBoneCount,
           "rebirth resets level, cash, gear and bones");
@@ -40734,6 +40881,28 @@ void testBrokenBonesAchievementsTutorialAndRebirth() {
               nearlyEqual(veteran.settings.volume, 0.3f) && veteran.stats.cashEarned == 90000,
           "rebirth keeps maps, stats, achievements and settings");
     check(nearlyEqual(rebirthMultiplier(veteran), 1.5f), "each rebirth adds +50% cash forever");
+    check(rebirthLevelRequired(veteran) == 40, "the second rebirth needs level 40");
+
+    Progress reborn;
+    reborn.rebirths = 1;
+    reborn.cash = 1000000;
+    check(buyItem(reborn, ShopItem::GoldenBones) == BuyResult::Bought &&
+              buyItem(reborn, ShopItem::MegaBlast) == BuyResult::NeedsRebirth,
+          "rebirth upgrades unlock by rebirth count");
+    reborn.rebirths = 3;
+    for (ShopItem item : {ShopItem::NestEgg, ShopItem::HeadStart, ShopItem::GlassSkeleton, ShopItem::SkyHigh}) {
+        check(buyItem(reborn, item) == BuyResult::Bought, "a third-rebirth player can buy every rebirth upgrade");
+    }
+    reborn.owned[static_cast<size_t>(ShopItem::Floats)] = 1;
+    reborn.level = 80;
+    int cashBefore = reborn.cash;
+    check(rebirth(reborn), "a level-80 player on rebirth 3 can rebirth again");
+    check(reborn.has(ShopItem::GoldenBones) && reborn.has(ShopItem::HeadStart) && !reborn.has(ShopItem::Floats) &&
+              reborn.level == 4 && reborn.bestLevel == 4 && reborn.cash == cashBefore / 5,
+          "rebirth upgrades survive, HEAD START and NEST EGG apply");
+    check(nearlyEqual(goldenBonesMultiplier(reborn), 1.3f) && altitudeMultiplier(reborn) > 1.29f &&
+              breakSpeedMultiplier(reborn) < 0.93f,
+          "rebirth upgrades feed cash, altitude and bone strength");
 
     veteran.tutorialStep = kTutorialDone;
     veteran.settings.slowMotion = false;
@@ -40881,7 +41050,7 @@ void testBrokenBonesLeaderboard() {
           "leaderboard runs survive a reload");
     check(loaded.injuriesSeen == 0x15 && loaded.stats.injuries == 42 && nearlyEqual(loaded.settings.music, 0.25f),
           "injury history and the music volume survive a reload");
-    progress.level = kRebirthLevel;
+    progress.level = rebirthLevelRequired(progress);
     check(rebirth(progress) && progress.leaderboard.best[0].size() == bestCash.size() && progress.injuriesSeen == 0x15,
           "rebirth keeps the leaderboard and injury history");
     std::filesystem::remove(path);
@@ -42673,6 +42842,8 @@ int main() {
     testWorldPackageSaveLoadRoundTrip();
     testPackageArchiveWriteReadRoundTrip();
     testPackageArchiveReadRejectsGarbageFile();
+    testCatalogGamePackages();
+    testScriptEditorTextHelpers();
     testWriteWorldPackageArchiveProducesReadableArchive();
     testWriteWorldPackageArchiveBundlesRealThumbnail();
     testWriteWorldPackageArchiveBundlesRealAssetBytes();

@@ -384,6 +384,13 @@ public:
         float fogDensity = 0.0f;
         glm::vec3 skyZenithColor{0.25f, 0.45f, 0.85f};
         glm::vec3 skyHorizonColor{0.75f, 0.80f, 0.85f};
+        // When set, replaces the time-of-day sun and ambient.
+        bool overrideSun = false;
+        glm::vec3 sunDirectionWS{0.0f, -1.0f, 0.0f}; // direction the light travels
+        glm::vec3 sunColor{1.0f};
+        float sunIntensity = 4.0f;
+        glm::vec3 ambient{0.08f, 0.10f, 0.15f};
+        glm::vec3 ambientGround{0.06f, 0.05f, 0.045f};
     };
     void setAtmosphereOverride(const AtmosphereOverride& atmosphere) {
         atmosphereOverride_ = atmosphere;

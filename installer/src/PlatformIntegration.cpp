@@ -169,9 +169,17 @@ bool createComponentShortcut(const std::string& installedExePath, const std::str
         if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktopPath))) {
             std::wstring shortcutFileName(displayName.begin(), displayName.end());
             std::filesystem::path shortcutPath = std::filesystem::path(desktopPath) / (shortcutFileName + L".lnk");
+            const std::filesystem::path desktopDir(desktopPath);
             CoTaskMemFree(desktopPath);
             hr = persistFile->Save(shortcutPath.wstring().c_str(), TRUE);
             ok = SUCCEEDED(hr);
+            const wchar_t* legacyName = displayName == "Kronos Player"        ? L"Kronos.lnk"
+                                        : displayName == "Kronos Movie Maker" ? L"Kronos Movie Mode.lnk"
+                                                                              : nullptr;
+            if (ok && legacyName != nullptr) {
+                std::error_code ignored;
+                std::filesystem::remove(desktopDir / legacyName, ignored);
+            }
             if (!ok) outError = "IPersistFile::Save() failed writing the real .lnk shortcut";
         } else {
             outError = "could not resolve the real Desktop folder path";

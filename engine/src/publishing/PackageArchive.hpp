@@ -34,6 +34,11 @@ struct ArchiveFileEntry {
 // stated, separate future improvement (that needs the real ZIP
 // container format, not just deflate), not something silently implied
 // by the ".kronos" extension.
+// True for a non-empty, '/'-separated path that cannot leave the directory
+// it is joined onto: no absolute root, drive letter, backslash, or ".."/"."
+// component. Every archive entry is checked against this before extraction.
+[[nodiscard]] bool isSafeRelativePath(const std::string& path);
+
 [[nodiscard]] bool writeArchive(const std::string& archivePath, const std::vector<ArchiveFileEntry>& files);
 [[nodiscard]] bool readArchive(const std::string& archivePath, std::vector<ArchiveFileEntry>& outFiles);
 

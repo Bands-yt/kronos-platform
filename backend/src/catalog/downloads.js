@@ -1,5 +1,5 @@
 // Web Download portal: serves the creator-tool desktop apps (Kronos
-// Studio, 3D Maker, Movie Maker, Audio) for win64 and linux_x86_64.
+// Studio, 3D Tools, Movie Maker, Audio) for win64 and linux_x86_64.
 //
 // Unlike the game client's own installer (download.js, GitHub-Releases-
 // backed), these builds live content-addressed... except they are NOT
@@ -44,7 +44,7 @@ export const downloadsRouter = express.Router();
 
 const APPS = [
   { app: 'studio', name: 'Kronos Studio', assetName: 'studio' },
-  { app: '3d-maker', name: 'Kronos 3D Maker', assetName: '3d_maker' },
+  { app: '3d-maker', name: 'Kronos 3D Tools', assetName: '3d_maker' },
   { app: 'movie-maker', name: 'Kronos Movie Maker', assetName: 'movie_maker' },
   { app: 'audio', name: 'Kronos Audio', assetName: 'audio' },
 ];

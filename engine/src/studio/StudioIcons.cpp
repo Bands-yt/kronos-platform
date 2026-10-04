@@ -226,6 +226,74 @@ void drawIcon(ImDrawList* drawList, Icon icon, ImVec2 center, float size, ImU32 
             drawList->AddPolyline(pts, 8, color, ImDrawFlags_None, thickness);
             break;
         }
+        case Icon::Undo:
+        case Icon::Redo: {
+            const float dir = icon == Icon::Undo ? 1.0f : -1.0f;
+            const float radius = r * 0.62f;
+            const ImVec2 c(center.x, center.y + r * 0.12f);
+            const float start = icon == Icon::Undo ? kPi * 1.05f : -kPi * 0.05f;
+            const float end = icon == Icon::Undo ? kPi * 2.25f : -kPi * 1.25f;
+            drawList->PathArcTo(c, radius, start, end, 16);
+            drawList->PathStroke(color, ImDrawFlags_None, thickness);
+            const ImVec2 tip(c.x - dir * radius, c.y - r * 0.02f);
+            drawArrowHead(drawList, ImVec2(tip.x, tip.y + r * 0.28f), ImVec2(0.0f, 1.0f), r * 0.36f, r * 0.26f, color);
+            break;
+        }
+        case Icon::Search: {
+            const ImVec2 lens(center.x - r * 0.16f, center.y - r * 0.16f);
+            drawList->AddCircle(lens, r * 0.5f, color, 20, thickness);
+            drawList->AddLine(ImVec2(lens.x + r * 0.36f, lens.y + r * 0.36f), ImVec2(center.x + r * 0.78f, center.y + r * 0.78f),
+                              color, thickness * 1.3f);
+            break;
+        }
+        case Icon::Comment: {
+            drawList->AddLine(ImVec2(center.x - r * 0.15f, center.y + r * 0.75f), ImVec2(center.x + r * 0.35f, center.y - r * 0.75f),
+                              color, thickness);
+            drawList->AddLine(ImVec2(center.x - r * 0.75f, center.y + r * 0.75f), ImVec2(center.x - r * 0.25f, center.y - r * 0.75f),
+                              color, thickness);
+            break;
+        }
+        case Icon::Save: {
+            const ImVec2 mn(center.x - r * 0.72f, center.y - r * 0.72f);
+            const ImVec2 mx(center.x + r * 0.72f, center.y + r * 0.72f);
+            drawList->AddRect(mn, mx, color, r * 0.12f, ImDrawFlags_None, thickness);
+            drawList->AddRect(ImVec2(center.x - r * 0.38f, mn.y), ImVec2(center.x + r * 0.32f, center.y - r * 0.22f), color, 0.0f,
+                              ImDrawFlags_None, thickness * 0.8f);
+            drawList->AddRectFilled(ImVec2(center.x - r * 0.4f, center.y + r * 0.12f), ImVec2(center.x + r * 0.4f, mx.y - r * 0.18f),
+                                    color);
+            break;
+        }
+        case Icon::Outline: {
+            for (int i = 0; i < 3; ++i) {
+                const float y = center.y - r * 0.6f + static_cast<float>(i) * r * 0.6f;
+                const float indent = i == 0 ? 0.0f : r * 0.35f;
+                drawList->AddCircleFilled(ImVec2(center.x - r * 0.7f + indent, y), thickness * 0.9f, color);
+                drawList->AddLine(ImVec2(center.x - r * 0.4f + indent, y), ImVec2(center.x + r * 0.8f, y), color, thickness);
+            }
+            break;
+        }
+        case Icon::Warning: {
+            const ImVec2 a(center.x, center.y - r * 0.8f);
+            const ImVec2 b(center.x + r * 0.85f, center.y + r * 0.7f);
+            const ImVec2 c(center.x - r * 0.85f, center.y + r * 0.7f);
+            drawList->AddTriangle(a, b, c, color, thickness);
+            drawList->AddLine(ImVec2(center.x, center.y - r * 0.3f), ImVec2(center.x, center.y + r * 0.2f), color, thickness);
+            drawList->AddCircleFilled(ImVec2(center.x, center.y + r * 0.45f), thickness * 0.75f, color);
+            break;
+        }
+        case Icon::Play: {
+            drawList->AddTriangleFilled(ImVec2(center.x - r * 0.5f, center.y - r * 0.7f), ImVec2(center.x + r * 0.7f, center.y),
+                                        ImVec2(center.x - r * 0.5f, center.y + r * 0.7f), color);
+            break;
+        }
+        case Icon::Whitespace: {
+            drawList->AddCircleFilled(ImVec2(center.x - r * 0.45f, center.y + r * 0.1f), thickness, color);
+            drawList->AddCircleFilled(ImVec2(center.x + r * 0.05f, center.y + r * 0.1f), thickness, color);
+            drawList->AddLine(ImVec2(center.x + r * 0.35f, center.y + r * 0.1f), ImVec2(center.x + r * 0.85f, center.y + r * 0.1f),
+                              color, thickness);
+            drawArrowHead(drawList, ImVec2(center.x + r * 0.9f, center.y + r * 0.1f), ImVec2(1.0f, 0.0f), r * 0.3f, r * 0.22f, color);
+            break;
+        }
     }
 }
 
