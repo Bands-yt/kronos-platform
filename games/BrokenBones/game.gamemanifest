@@ -1,0 +1,13 @@
+GAMEMANIFEST 1
+NAME Broken Bones
+DESCRIPTION Jump off the cliff, fall, break everything and get paid. Buy boosts, climb the levels and top the leaderboard.
+GENRETAG Action
+GENRETAG Physics
+THUMBNAILCOLOR 0.86 0.42 0.2 1
+EFFORTSCORE 0.9
+LAUNCHKIND CliFlag
+PROJECTPATH 
+CLIFLAG --brokenbones
+SAFETYSTATUS Safe
+UNSAFEREASON 
+END

@@ -21,8 +21,8 @@ namespace {
 // six-segment split).
 void appendFeatureSphere(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, glm::vec3 center,
                           glm::vec3 radii, SkinWeights& skinWeights) {
-    constexpr uint32_t kSegments = 6;
-    constexpr uint32_t kRings = 3;
+    constexpr uint32_t kSegments = 16;
+    constexpr uint32_t kRings = 8;
     uint32_t base = static_cast<uint32_t>(vertices.size());
 
     for (uint32_t r = 0; r <= kRings; ++r) {
@@ -34,7 +34,7 @@ void appendFeatureSphere(std::vector<Vertex>& vertices, std::vector<uint32_t>& i
             glm::vec3 unit(std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta));
             Vertex vert;
             vert.position = center + unit * radii;
-            vert.normal = glm::normalize(unit);
+            vert.normal = glm::normalize(unit / radii);
             vert.uv = {u, v};
             vertices.push_back(vert);
             VertexSkinWeights sw;
@@ -91,6 +91,48 @@ void appendFeatureBox(std::vector<Vertex>& vertices, std::vector<uint32_t>& indi
     }
 }
 
+// A smile: a round tube bent into an upward-opening arc on the face.
+void appendFeatureSmile(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, glm::vec3 center,
+                         float halfWidth, float depth, float radius, SkinWeights& skinWeights) {
+    constexpr uint32_t kSteps = 14;
+    constexpr uint32_t kSides = 8;
+    uint32_t base = static_cast<uint32_t>(vertices.size());
+    for (uint32_t i = 0; i <= kSteps; ++i) {
+        float x = (static_cast<float>(i) / kSteps * 2.0f - 1.0f) * halfWidth;
+        float u = x / halfWidth;
+        glm::vec3 point = center + glm::vec3(x, depth * (u * u - 1.0f), -0.1f * halfWidth * u * u);
+        glm::vec3 tangent = glm::normalize(glm::vec3(1.0f, 2.0f * depth * u / halfWidth, -0.2f * u));
+        glm::vec3 normalA = glm::normalize(glm::cross(tangent, glm::vec3(0.0f, 0.0f, 1.0f)));
+        glm::vec3 normalB = glm::cross(normalA, tangent);
+        for (uint32_t k = 0; k < kSides; ++k) {
+            float a = static_cast<float>(k) / kSides * 2.0f * 3.14159265f;
+            glm::vec3 n = normalA * std::cos(a) + normalB * std::sin(a);
+            Vertex vert;
+            vert.position = point + n * radius;
+            vert.normal = n;
+            vert.uv = {static_cast<float>(i) / kSteps, static_cast<float>(k) / kSides};
+            vertices.push_back(vert);
+            VertexSkinWeights sw;
+            sw.jointIndices = {0, -1, -1, -1};
+            sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
+            skinWeights.perVertex.push_back(sw);
+        }
+    }
+    for (uint32_t i = 0; i < kSteps; ++i) {
+        for (uint32_t k = 0; k < kSides; ++k) {
+            uint32_t a = base + i * kSides + k;
+            uint32_t b = base + i * kSides + (k + 1) % kSides;
+            uint32_t c = base + (i + 1) * kSides + (k + 1) % kSides;
+            uint32_t d = base + (i + 1) * kSides + k;
+            indices.insert(indices.end(), {a, b, c, a, c, d});
+        }
+    }
+    for (uint32_t end : {0u, kSteps}) {
+        uint32_t ring = base + end * kSides;
+        for (uint32_t k = 1; k + 1 < kSides; ++k) indices.insert(indices.end(), {ring, ring + k, ring + k + 1});
+    }
+}
+
 void setJointIndex(SkinWeights& skinWeights, int jointIndex) {
     for (VertexSkinWeights& sw : skinWeights.perVertex) sw.jointIndices[0] = jointIndex;
 }
@@ -133,7 +175,7 @@ FacialFeatureTransform computeFacialFeatureTransform(FacialFeature feature, cons
         case FacialFeature::Mouth:
             // Base mesh is authored thin/closed (see spawnAvatarFace());
             // talk stretches it open, smile/frown shift it up/down.
-            t.scale.y = 0.4f + 1.3f * talk;
+            t.scale.y = 1.0f + 0.8f * talk;
             t.positionOffset.y = 0.02f * smile - 0.02f * frown;
             break;
     }
@@ -237,7 +279,7 @@ bool spawnAvatarFace(ECS& ecs, const Skeleton& skeleton, glm::vec4 skinTone, Rig
     // deliberate, fixed pure black now instead, matching hair/arms in
     // this same pass.
     constexpr glm::vec4 kEyeColor(0.08f, 0.08f, 0.1f, 1.0f);
-    constexpr glm::vec4 kMouthColor(0.5f, 0.28f, 0.28f, 1.0f);
+    constexpr glm::vec4 kMouthColor(0.1f, 0.08f, 0.08f, 1.0f);
     constexpr glm::vec4 browColor(0.0f, 0.0f, 0.0f, 1.0f);
 
     // Real bind-pose world (rig-space) position for each joint -- a
@@ -284,7 +326,7 @@ bool spawnAvatarFace(ECS& ecs, const Skeleton& skeleton, glm::vec4 skinTone, Rig
                 return false;
             }
             size_t vertsBefore = vertices.size();
-            appendFeatureSphere(vertices, indices, pos, glm::vec3(0.018f, 0.018f, 0.014f), skinWeights);
+            appendFeatureSphere(vertices, indices, pos, glm::vec3(0.024f, 0.042f, 0.016f), skinWeights);
             setJointIndexRange(skinWeights, vertsBefore, jointIndex);
         }
         EntityId entity;
@@ -309,7 +351,7 @@ bool spawnAvatarFace(ECS& ecs, const Skeleton& skeleton, glm::vec4 skinTone, Rig
                 return false;
             }
             size_t vertsBefore = vertices.size();
-            appendFeatureBox(vertices, indices, pos, glm::vec3(0.028f, 0.008f, 0.006f), skinWeights);
+            appendFeatureBox(vertices, indices, pos, glm::vec3(0.034f, 0.009f, 0.008f), skinWeights);
             setJointIndexRange(skinWeights, vertsBefore, jointIndex);
         }
         EntityId entity;
@@ -332,7 +374,7 @@ bool spawnAvatarFace(ECS& ecs, const Skeleton& skeleton, glm::vec4 skinTone, Rig
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
         SkinWeights skinWeights;
-        appendFeatureBox(vertices, indices, pos, glm::vec3(0.032f, 0.008f, 0.006f), skinWeights);
+        appendFeatureSmile(vertices, indices, pos, 0.07f, 0.03f, 0.009f, skinWeights);
         setJointIndex(skinWeights, jointIndex);
         EntityId entity;
         if (!uploadFacePiece(ecs, skeleton, vertices, indices, skinWeights, kMouthColor, "FaceMouth", riggedMeshLibrary,

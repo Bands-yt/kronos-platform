@@ -57,9 +57,20 @@ edit, and a File menu with Save/Load Scene and Save/Open Project.
 **Launch Studio** (opens the editor as a separate process), **Game
 Catalogue** (browse and play real local games — see below), and
 **Sessions** (join a real LAN multiplayer session someone else is
-hosting). Once in a game, WASD moves, mouse looks, Space jumps, E
-interacts (mouse is captured on entering; Escape returns to the Home
-Screen).
+hosting). Once in a game the controls work like Roblox:
+
+| Input | What it does |
+|---|---|
+| WASD | Move (the character turns to face where it walks) |
+| Space | Jump |
+| Left Ctrl (hold) | Run |
+| Right mouse (hold) and drag | Look around; the cursor hides while you drag and comes back where it was |
+| Mouse wheel | Zoom in and out |
+| Shift | Shift lock on/off: the mouse turns the camera and the character faces where you look, with the camera over the right shoulder |
+| E | Interact |
+| Escape | Pause menu |
+
+The camera stops in front of walls and floors instead of going through them.
 
 ### Game Catalogue and the `games/` folder
 
@@ -73,9 +84,32 @@ modes in the table below for the still-hardcoded rich modes (TNT
 Wars/Mining Sim/House Demo). Two real example games ship in the repo:
 `games/DefaultWorld` (the original bring-up scene) and `games/SkyGarden`
 (a small floating sandbox) — copy either folder as a starting point for
-a new one. Ranking (Featured/genre rows/Hidden Gems) is computed from a
-real local play-log (`game_play_log.playlog`) that both `studio` and
-`engine_runtime` write/read from the same working directory.
+a new one. Built-in modes such as Broken Bones are listed with a
+`CLIFLAG` manifest so they appear and count plays like any other game.
+
+### My Games
+
+Like Roblox's Create page, every game you save from Studio shows up in
+the Player under **Create → My Games**:
+
+- **File → Save Game** (Ctrl+S) asks for a name the first time and saves
+  the game into its own folder in `Documents/Kronos/<Name>/`
+  (`default.scene`, `project.project` and `game.gamemanifest`). Later
+  Ctrl+S saves go back to the same game.
+- Projects saved anywhere else are remembered in a small list
+  (`~/.local/share/kronos/my_games.list`, or
+  `%LOCALAPPDATA%\Kronos\my_games.list` on Windows), so they still show up.
+- Clicking a game opens its page with **Play** and **Edit in Studio**.
+  **File → Open My Game** in Studio lists the same games.
+- `KRONOS_MY_GAMES_DIR` and `KRONOS_MY_GAMES_REGISTRY` override both
+  locations (used by tests).
+
+### Parts are solid
+
+Parts inserted from Studio's **Part** button are solid and anchored, like
+Roblox parts: they get a static collider that matches their shape, and it
+follows the part when you resize it. Edit the collider by hand in the
+Inspector's Physics section and Studio leaves it alone after that.
 
 `engine_runtime` also accepts these launch modes:
 

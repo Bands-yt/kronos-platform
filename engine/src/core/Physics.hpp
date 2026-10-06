@@ -322,6 +322,8 @@ public:
     // normalized; `maxDistance` is the ray's length regardless of
     // `direction`'s own magnitude.
     [[nodiscard]] RaycastHit raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance) const;
+    // Same, but passes straight through `ignore`'s own body.
+    [[nodiscard]] RaycastHit raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance, EntityId ignore) const;
 
     struct CollisionEvent {
         EntityId first = kNullEntity;

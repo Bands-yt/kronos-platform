@@ -144,6 +144,8 @@
 #include "core/ProjectReadmeGenerator.hpp"
 #include "core/GameManifest.hpp"
 #include "core/LocalGameDirectory.hpp"
+#include "core/MyGames.hpp"
+#include "core/PartCollider.hpp"
 #include "core/MathExpression.hpp"
 #include "core/ProcessLaunch.hpp"
 #include "core/GameCatalogueAggregate.hpp"
@@ -4415,8 +4417,10 @@ void testShippedGamesDiscoverAndLoadReal() {
         if (!game.parseSucceeded) continue;
 
         std::filesystem::path gameDir = std::filesystem::path(game.manifestPath).parent_path();
-        check(game.manifest.launchKind == engine::core::GameLaunchKind::ProjectPath,
-              "each real shipped example game is a genuine ProjectPath game, not a CliFlag stand-in");
+        if (game.manifest.launchKind == engine::core::GameLaunchKind::CliFlag) {
+            check(game.manifest.cliFlag.rfind("--", 0) == 0, "a built-in game mode in the catalogue names its launch flag");
+            continue;
+        }
 
         engine::core::ProjectFile project;
         check(project.loadFromFile((gameDir / game.manifest.projectPath).string()),
@@ -9958,6 +9962,130 @@ void testAnimationPlayerPlaybackRate() {
     check(nearlyEqual(player.playhead(handle), 0.5f), "a negative rate is clamped to a paused playhead, never reversed");
 }
 
+void setTestEnv(const char* name, const std::string& value) {
+#if defined(_WIN32)
+    _putenv_s(name, value.c_str());
+#else
+    if (value.empty()) unsetenv(name);
+    else setenv(name, value.c_str(), 1);
+#endif
+}
+
+void testMyGamesSaveAndScan() {
+    namespace fs = std::filesystem;
+    fs::path root = fs::absolute("test_my_games");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "Elsewhere", ec);
+    setTestEnv("KRONOS_MY_GAMES_DIR", (root / "Kronos").string());
+    setTestEnv("KRONOS_MY_GAMES_REGISTRY", (root / "my_games.list").string());
+
+    std::string error;
+    std::string first = engine::core::createMyGameFolder("Lava: Run", error);
+    std::string second = engine::core::createMyGameFolder("Lava: Run", error);
+    check(fs::path(first).filename() == "Lava Run" && fs::is_directory(first), "My Games: a new game gets a folder-safe folder");
+    check(fs::path(second).filename() == "Lava Run 2", "My Games: a second game with the same name gets \" 2\"");
+
+    std::string project = (fs::path(first) / "project.project").string();
+    { std::ofstream(project) << "x"; }
+    check(engine::core::writeGameManifestForProject(project, "Lava Run"), "My Games: the manifest is written");
+    engine::core::GameManifest manifest;
+    check(manifest.loadFromFile((fs::path(first) / "game.gamemanifest").string()) && manifest.name == "Lava Run" &&
+              manifest.launchKind == engine::core::GameLaunchKind::ProjectPath && manifest.projectPath == "project.project" &&
+              manifest.description == "Made in Kronos Studio.",
+          "My Games: a new manifest points at the project file");
+    manifest.description = "Don't touch the lava.";
+    check(manifest.saveToFile((fs::path(first) / "game.gamemanifest").string()), "the manifest saves");
+    engine::core::writeGameManifestForProject(project, "Lava Run Deluxe");
+    engine::core::GameManifest renamed;
+    check(renamed.loadFromFile((fs::path(first) / "game.gamemanifest").string()), "the renamed manifest loads");
+    check(renamed.name == "Lava Run Deluxe" && renamed.description == "Don't touch the lava.",
+          "My Games: saving again renames the game but keeps its description");
+
+    std::string outside = (root / "Elsewhere" / "project.project").string();
+    { std::ofstream(outside) << "x"; }
+    engine::core::writeGameManifestForProject(outside, "Elsewhere Game");
+    engine::core::registerMyGame(outside);
+    engine::core::registerMyGame(outside);
+    std::ifstream registry(root / "my_games.list");
+    int lines = 0;
+    for (std::string line; std::getline(registry, line);) lines += line.empty() ? 0 : 1;
+    check(lines == 1, "My Games: registering the same project twice keeps one entry");
+
+    std::vector<engine::core::DiscoveredGame> games = engine::core::scanMyGames();
+    bool foundInside = false, foundOutside = false;
+    for (const auto& game : games) {
+        foundInside = foundInside || game.manifest.name == "Lava Run Deluxe";
+        foundOutside = foundOutside || game.manifest.name == "Elsewhere Game";
+    }
+    check(games.size() == 2 && foundInside && foundOutside,
+          "My Games: the scan finds games in the folder and registered ones elsewhere, once each");
+
+    std::vector<std::string> relative = engine::core::projectRelativeScenePaths(
+        project, {(fs::path(first) / "levels" / "one.scene").string(), (root / "Elsewhere" / "two.scene").string()});
+    check(relative.size() == 2 && relative[0] == "levels/one.scene", "My Games: scenes inside the project are saved relative");
+    check(fs::path(relative[1]).is_absolute(), "My Games: scenes outside the project stay absolute");
+    fs::create_directories(fs::path(first) / "levels", ec);
+    { std::ofstream(fs::path(first) / "levels" / "one.scene") << "x"; }
+    check(fs::path(engine::core::resolveProjectScenePath(project, "levels/one.scene")) ==
+              (fs::path(first) / "levels" / "one.scene").lexically_normal(),
+          "My Games: a relative scene path opens from the project folder");
+
+    setTestEnv("KRONOS_MY_GAMES_DIR", "");
+    setTestEnv("KRONOS_MY_GAMES_REGISTRY", "");
+    fs::remove_all(root, ec);
+}
+
+void testAnimationPlayerReversed() {
+    engine::core::Skeleton skeleton = makeTwoJointTestSkeleton();
+    engine::core::AnimationPlayer player(skeleton);
+    engine::core::AnimationClip clip = makeHoldPoseClip("child", skeleton.joints[1].localPosition, 0.0f);
+    clip.duration = 2.0f;
+    auto handle = player.play(clip, engine::core::AnimationLayer::Base, true);
+    player.setReversed(handle, true);
+    player.tick(0.5f);
+    check(nearlyEqual(player.playhead(handle), 1.5f), "a reversed looping clip wraps back from the end");
+    player.setReversed(handle, false);
+    player.tick(0.25f);
+    check(nearlyEqual(player.playhead(handle), 1.75f), "turning reverse off plays forwards again");
+}
+
+void testPartColliderFitsAndFollowsScale() {
+    using namespace engine::core;
+    MeshSource box;
+    box.kind = MeshSourceKind::Box;
+    box.params = {0.5f, 0.5f, 0.5f};
+    auto fit = colliderForMeshSource(box, {2.0f, 1.0f, 3.0f});
+    check(fit && fit->kind == ColliderShapeKind::Box && glm::length(fit->params - glm::vec3(1.0f, 0.5f, 1.5f)) < 1e-5f,
+          "part collider: a box part's collider is its half size times its scale");
+    MeshSource sphere;
+    sphere.kind = MeshSourceKind::Capsule;
+    sphere.params = {0.5f, 0.0f, 0.0f};
+    auto ball = colliderForMeshSource(sphere, glm::vec3(2.0f));
+    check(ball && ball->kind == ColliderShapeKind::Sphere && std::fabs(ball->params.x - 1.0f) < 1e-5f,
+          "part collider: a sphere part gets a sphere collider");
+    MeshSource torus;
+    torus.kind = MeshSourceKind::Torus;
+    check(!colliderForMeshSource(torus, glm::vec3(1.0f)), "part collider: shapes without a simple match get none");
+
+    ECS ecs;
+    EntityId part = ecs.createEntity("Part");
+    ecs.addComponent<MeshSource>(part, box);
+    ecs.addComponent<ColliderShape>(part, *colliderForMeshSource(box, glm::vec3(1.0f)));
+    PartColliderSync sync;
+    sync.update(ecs);
+    ecs.tryGetComponent<Transform>(part)->scale = {4.0f, 1.0f, 1.0f};
+    sync.update(ecs);
+    check(std::fabs(ecs.tryGetComponent<ColliderShape>(part)->params.x - 2.0f) < 1e-5f,
+          "part collider: resizing a part resizes its fitted collider");
+    ecs.tryGetComponent<ColliderShape>(part)->params = {0.2f, 0.2f, 0.2f};
+    sync.update(ecs);
+    ecs.tryGetComponent<Transform>(part)->scale = {8.0f, 1.0f, 1.0f};
+    sync.update(ecs);
+    check(std::fabs(ecs.tryGetComponent<ColliderShape>(part)->params.x - 0.2f) < 1e-5f,
+          "part collider: a collider edited by hand is left alone");
+}
+
 void testAvatarControllerWalkRunHysteresis() {
     engine::core::Skeleton skeleton = makeTwoJointTestSkeleton();
     glm::vec3 childBind = skeleton.joints[1].localPosition;
@@ -10545,7 +10673,7 @@ void testLoadoutToRiggedMeshGeneration() {
         }
     }
     check(headVertexCount > 0, "the procedural head produces real geometry");
-    check(neckVertexCount > 0, "the real neck cylinder real-produces real geometry tagged into the Head segment");
+    check(neckVertexCount == 0, "the blocky head sits straight on the torso with no neck tube");
     check(allHeadVerticesBoundToHeadOrNeckJoint,
           "every Head-segment vertex is rigidly bound (100%, possibly split across multiple weight slots pointing "
           "at the same joint) to either the real head joint or the real neck joint");
@@ -10690,13 +10818,9 @@ void testResolveSegmentColorsForLoadoutDefaultsToBakedInClothing() {
           "the Head segment real-defaults to the real, passed-in skin color -- a head has no baked-in clothing");
     check(colors[static_cast<size_t>(engine::core::HumanoidBodySegment::Torso)] == engine::core::kDefaultShirtColor,
           "Torso real-defaults to the real, honest baked-in shirt color when nothing is equipped");
-    // Kronos ("Final Visual Refinements" -- "Set ... arms ... color to
-    // pure black"): LeftArm/RightArm now real-default to their own
-    // kDefaultArmColor, split off from Torso's kDefaultShirtColor -- see
-    // resolveSegmentColorsForLoadout()'s own comment.
     for (auto segment : {engine::core::HumanoidBodySegment::LeftArm, engine::core::HumanoidBodySegment::RightArm}) {
-        check(colors[static_cast<size_t>(segment)] == engine::core::kDefaultArmColor,
-              "LeftArm/RightArm real-default to the real, honest baked-in arm color when nothing is equipped");
+        check(colors[static_cast<size_t>(segment)] == skinColor,
+              "LeftArm/RightArm default to skin (the default shirt shell has short sleeves)");
     }
     for (auto segment : {engine::core::HumanoidBodySegment::LeftLeg, engine::core::HumanoidBodySegment::RightLeg}) {
         check(colors[static_cast<size_t>(segment)] == engine::core::kDefaultTrouserColor,
@@ -10778,7 +10902,7 @@ void testBuildHumanoidMeshDataTorsoIsNotABox() {
 // the exact same "vertex-to-joint-position distance at a ring that sits
 // exactly at that joint" reasoning testBuildHumanoidMeshDataAppliesWidthAndLimbScaleToMeshDimensions()
 // already established for limbScale.
-void testBuildHumanoidMeshDataArmTapersFromShoulderToElbow() {
+void testBuildHumanoidMeshDataArmIsEvenBlock() {
     engine::core::Skeleton skeleton = engine::core::buildHumanoidSkeleton();
     engine::core::HumanoidMeshData data = engine::core::buildHumanoidMeshData(skeleton);
     std::vector<glm::mat4> world = skeleton.bindPoseMatrices();
@@ -10801,23 +10925,20 @@ void testBuildHumanoidMeshDataArmTapersFromShoulderToElbow() {
     // theta=90/270 "side" vertex (whose own offset is pure Z) survives,
     // and its Z distance from the joint is exactly that ring's own real
     // cross-section radius.
-    auto ringRadiusAt = [&](glm::vec3 jointPos) {
-        float maxRadius = 0.0f;
+    auto thicknessAt = [&](glm::vec3 jointPos) {
+        float maxZ = 0.0f;
         for (size_t i = 0; i < data.vertices.size(); ++i) {
             if (data.vertexSegments[i] != engine::core::HumanoidBodySegment::LeftArm) continue;
             const glm::vec3& p = data.vertices[i].position;
-            if (std::abs(p.x - jointPos.x) > 0.005f || std::abs(p.y - jointPos.y) > 0.005f) continue;
-            maxRadius = std::max(maxRadius, std::abs(p.z - jointPos.z));
+            if (std::abs(p.x - jointPos.x) > 0.04f) continue;
+            maxZ = std::max(maxZ, std::abs(p.z - jointPos.z));
         }
-        return maxRadius;
+        return maxZ;
     };
-
-    float shoulderRadius = ringRadiusAt(shoulderPos);
-    float elbowRadius = ringRadiusAt(elbowPos);
-    check(shoulderRadius > 0.0f && elbowRadius > 0.0f, "real ring geometry real-exists at both the shoulder and elbow");
-    check(shoulderRadius > elbowRadius + 0.005f,
-          "the real, generated arm is real-thicker at the shoulder than at the elbow -- a genuine, real taper, not a "
-          "uniform tube");
+    float shoulderThickness = thicknessAt(shoulderPos);
+    float elbowThickness = thicknessAt(elbowPos);
+    check(shoulderThickness > 0.1f && elbowThickness > 0.1f, "the arm is a chunky block at the shoulder and elbow");
+    check(std::abs(shoulderThickness - elbowThickness) < 0.01f, "the blocky arm keeps the same thickness along its length");
 }
 
 // Kronos ("Avatar Visual Silhouette Pass" -- "Arms, Legs, and Feet"):
@@ -10840,9 +10961,9 @@ void testAvatarSilhouettePassArmLengthenedAndLegTotalLengthPreserved() {
     };
 
     float armReach = std::abs(localX("arm_L_lower")) + std::abs(localX("hand_L"));
-    check(armReach > 0.6f + 0.2f,
-          "the real, new arm (upper + lower segment length) real-reaches meaningfully farther than the original "
-          "0.32+0.28=0.6 rig -- the real 'land just below mid-thigh' silhouette change");
+    float torsoHeight = localY("spine_lower") + localY("spine_upper") + localY("neck");
+    check(armReach > 0.5f && armReach < torsoHeight,
+          "the arm (shoulder to wrist) is shorter than the torso, so the hands hang near the hips");
     check(nearlyEqual(std::abs(localX("arm_L_lower")) + std::abs(localX("hand_L")),
                        std::abs(localX("arm_R_lower")) + std::abs(localX("hand_R"))),
           "left/right arm real length stays symmetric in the real, structural skeleton (asymmetry is a real, "
@@ -10962,17 +11083,16 @@ void testSpawnAvatarDefaultHairSkipsWhenHairItemEquipped() {
 // over core::HeadShape's own real, small resolver functions.
 void testHeadShapeRadiiAndNameAndIndexConversions() {
     glm::vec3 ovalRadii = engine::core::headShapeRadii(engine::core::HeadShape::Oval);
-    check(nearlyEqual(ovalRadii.x, ovalRadii.z), "Oval's real X/Z radii are equal -- elongation is vertical only");
-    check(ovalRadii.y > ovalRadii.x,
-          "Oval's real Y radius is real-taller than its X/Z radii -- a real, R15-style vertical elongation");
+    check(ovalRadii.x >= ovalRadii.z, "the Classic head is at least as wide as it is deep");
+    check(ovalRadii.y >= 0.2f && ovalRadii.x >= 0.2f, "the Classic head is big, Roblox style");
 
     glm::vec3 sphereRadii = engine::core::headShapeRadii(engine::core::HeadShape::Sphere);
     check(nearlyEqual(sphereRadii.x, sphereRadii.y) && nearlyEqual(sphereRadii.y, sphereRadii.z),
           "Sphere's real X/Y/Z radii are all equal -- a real, perfect sphere, the 'classic' shape");
 
-    check(std::string(engine::core::headShapeName(engine::core::HeadShape::Oval)) == "Oval", "headShapeName(Oval) is real \"Oval\"");
-    check(std::string(engine::core::headShapeName(engine::core::HeadShape::Sphere)) == "Sphere",
-          "headShapeName(Sphere) is real \"Sphere\"");
+    check(std::string(engine::core::headShapeName(engine::core::HeadShape::Oval)) == "Classic", "headShapeName(Oval) is \"Classic\"");
+    check(std::string(engine::core::headShapeName(engine::core::HeadShape::Sphere)) == "Round",
+          "headShapeName(Sphere) is \"Round\"");
 
     check(engine::core::headShapeFromIndex(0) == engine::core::HeadShape::Oval, "index 0 real-resolves to Oval");
     check(engine::core::headShapeFromIndex(1) == engine::core::HeadShape::Sphere, "index 1 real-resolves to Sphere");
@@ -11016,9 +11136,7 @@ void testBuildHumanoidMeshDataProducesDistinctOvalAndSphereHeads() {
     glm::vec3 ovalExtent = headExtents(engine::core::HeadShape::Oval);
     glm::vec3 sphereExtent = headExtents(engine::core::HeadShape::Sphere);
 
-    check(ovalExtent.y > ovalExtent.x + 0.01f,
-          "the real, generated Oval head's own vertices are real-taller than they are wide -- not just a claim, the "
-          "actual geometry");
+    check(ovalExtent.x > ovalExtent.z + 0.01f, "the generated Classic head is wider than it is deep");
     check(nearlyEqual(sphereExtent.x, sphereExtent.y, 0.01f) && nearlyEqual(sphereExtent.y, sphereExtent.z, 0.01f),
           "the real, generated Sphere head's own vertices are real-equal in width/height/depth");
     check(!nearlyEqual(ovalExtent.y, sphereExtent.y, 0.01f),
@@ -11155,8 +11273,7 @@ void testBuildHumanoidMeshDataAppliesWidthAndLimbScaleToMeshDimensions() {
 
     glm::vec3 thinArm = segmentExtent({1.0f, 1.0f, 0.85f}, engine::core::HumanoidBodySegment::RightArm);
     glm::vec3 thickArm = segmentExtent({1.0f, 1.0f, 1.15f}, engine::core::HumanoidBodySegment::RightArm);
-    check(thickArm.x > thinArm.x + 0.01f,
-          "a real, larger `limbScale` real-produces a real, thicker generated right-arm bounding box");
+    check(thickArm.y > thinArm.y + 0.01f, "a larger `limbScale` makes the right arm thicker");
 }
 
 // Kronos ("Avatar Phase" -- "AvatarEditor: Body Sliders"): real, pure
@@ -28626,7 +28743,11 @@ void testAudioMixerConfig() {
 }
 
 void testSilentAudioMode() {
+#if defined(_WIN32)
+    _putenv_s("KRONOS_SILENT_AUDIO", "1");
+#else
     setenv("KRONOS_SILENT_AUDIO", "1", 1);
+#endif
     {
         engine::core::Audio audio;
         check(audio.initialize(), "KRONOS_SILENT_AUDIO=1: Audio initializes on the null output device");
@@ -28634,7 +28755,11 @@ void testSilentAudioMode() {
         float buffer[64] = {};
         check(!audio.renderOffline(buffer, 32), "KRONOS_SILENT_AUDIO=1: it is a live device, not offline rendering");
     }
+#if defined(_WIN32)
+    _putenv_s("KRONOS_SILENT_AUDIO", "");
+#else
     unsetenv("KRONOS_SILENT_AUDIO");
+#endif
 }
 
 void testAudioMixerPlugin() {
@@ -44721,7 +44846,7 @@ int main() {
     testApplySegmentShadingGradientDarkensExtremitiesButPreservesHeadAndAlpha();
     testClothingFitConversionsAndScaleMultiplier();
     testBuildHumanoidMeshDataTorsoIsNotABox();
-    testBuildHumanoidMeshDataArmTapersFromShoulderToElbow();
+    testBuildHumanoidMeshDataArmIsEvenBlock();
     testAvatarSilhouettePassArmLengthenedAndLegTotalLengthPreserved();
     testBuildHumanoidMeshDataHandHasRealFingerGeometry();
     testBuildHumanoidMeshDataFootIsWiderThanOriginal();
@@ -44804,6 +44929,9 @@ int main() {
     testAvatarControllerStateMachine();
     testRetargetClipTranslationsFollowsBodyProportions();
     testAnimationPlayerPlaybackRate();
+    testAnimationPlayerReversed();
+    testMyGamesSaveAndScan();
+    testPartColliderFitsAndFollowsScale();
     testAvatarControllerWalkRunHysteresis();
     testAvatarControllerBlendTreeTransitions();
     testAvatarControllerEmotePlayback();

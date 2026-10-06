@@ -20,6 +20,7 @@
 #include "core/RenderResourceLoaders.hpp"
 #include "core/EditableMeshComponent.hpp"
 #include "core/GameCatalogueAggregate.hpp"
+#include "core/MyGames.hpp"
 #include "core/GameManifest.hpp"
 #include "core/HiddenGemsSelector.hpp"
 #include "core/Hierarchy.hpp"
@@ -1673,8 +1674,19 @@ void StudioApp::drawFileMenu() {
         explorerPanel_.setSelected(core::kNullEntity);
     }
 
+    if (ImGui::MenuItem("Save Game", "Ctrl+S")) saveGame();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip(currentProjectPath_.empty() ? "Name your game and save it to My Games.\nIt shows up in the Kronos Player under Create."
+                                                      : "Saves %s.", currentProject_.name.c_str());
+    }
+    if (ImGui::MenuItem("Save as New Game...")) {
+        std::snprintf(filePathBuffer_, sizeof(filePathBuffer_), "%s", currentProject_.name.c_str());
+        pendingFileAction_ = PendingFileAction::NameGame;
+    }
+    ImGui::Separator();
+
     bool canSaveDirect = !sceneManager_.currentScenePath().empty();
-    if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, canSaveDirect)) {
+    if (ImGui::MenuItem("Save Scene", nullptr, false, canSaveDirect)) {
         bool saveOk = sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
                                                 &movieModePlugin_->rail(), &movieModePlugin_->sequence());
         fileActionStatus_ = saveOk ? "Saved " + sceneManager_.currentScenePath() : "Save failed: " + sceneManager_.currentScenePath();
@@ -1696,6 +1708,21 @@ void StudioApp::drawFileMenu() {
         std::string suggested = currentProjectPath_.empty() ? "project.project" : currentProjectPath_;
         std::snprintf(filePathBuffer_, sizeof(filePathBuffer_), "%s", suggested.c_str());
         pendingFileAction_ = PendingFileAction::SaveProject;
+    }
+    if (ImGui::BeginMenu("Open My Game")) {
+        std::vector<core::DiscoveredGame> myGames = core::scanMyGames();
+        std::sort(myGames.begin(), myGames.end(),
+                  [](const core::DiscoveredGame& a, const core::DiscoveredGame& b) { return a.manifest.name < b.manifest.name; });
+        if (myGames.empty()) ImGui::TextDisabled("No games yet. Press Ctrl+S to save this one.");
+        for (const core::DiscoveredGame& game : myGames) {
+            if (!game.parseSucceeded) continue;
+            ImGui::PushID(game.manifestPath.c_str());
+            if (ImGui::MenuItem(game.manifest.name.c_str())) {
+                (void)openProject((std::filesystem::path(game.manifestPath).parent_path() / game.manifest.projectPath).string());
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Open Project...")) {
         std::string suggested = currentProjectPath_.empty() ? "project.project" : currentProjectPath_;
@@ -1754,14 +1781,26 @@ void StudioApp::drawPendingFileActionPopup() {
         case PendingFileAction::LoadScene: title = "Load Scene"; verb = "Load"; break;
         case PendingFileAction::SaveProject: title = "Save Project As"; verb = "Save"; break;
         case PendingFileAction::OpenProject: title = "Open Project"; verb = "Open"; break;
+        case PendingFileAction::NameGame: title = "Save Game"; verb = "Save"; break;
         case PendingFileAction::None: return;
     }
 
     ImGui::OpenPopup(title);
     ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::SetNextItemWidth(380.0f);
-        ImGui::InputText("##file_action_path", filePathBuffer_, sizeof(filePathBuffer_));
+        if (pendingFileAction_ == PendingFileAction::NameGame) {
+            ImGui::TextUnformatted("What's your game called?");
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(380.0f);
+            ImGui::InputTextWithHint("##file_action_path", "My Awesome Game", filePathBuffer_, sizeof(filePathBuffer_));
+            ImGui::PushTextWrapPos(400.0f);
+            ImGui::TextDisabled("It's saved in %s and shows up in the Kronos Player under Create.",
+                                core::myGamesDirectory().c_str());
+            ImGui::PopTextWrapPos();
+        } else {
+            ImGui::SetNextItemWidth(380.0f);
+            ImGui::InputText("##file_action_path", filePathBuffer_, sizeof(filePathBuffer_));
+        }
         if (pendingFileAction_ == PendingFileAction::LoadScene) {
             browseButton("scene", filePathBuffer_, sizeof(filePathBuffer_), {"Load Scene", {"*.scene"}, "Kronos scenes"});
         } else if (pendingFileAction_ == PendingFileAction::OpenProject) {
@@ -1792,49 +1831,15 @@ void StudioApp::drawPendingFileActionPopup() {
                 case PendingFileAction::LoadScene:
                     switchToScene(path);
                     break;
-                case PendingFileAction::SaveProject: {
-                    currentProject_.scenePaths = sceneManager_.openScenePaths();
-                    currentProject_.activeSceneIndex = sceneManager_.activeTabIndex();
-                    currentProject_.touch();
-                    fileActionStatus_ = currentProject_.saveToFile(path) ? "Saved project " + path : "Save failed: " + path;
-                    if (fileActionStatus_.rfind("Saved", 0) == 0) {
-                        currentProjectPath_ = path;
-                        // A deliberate Save supersedes any pending project
-                        // recovery snapshot -- same "explicit save wins"
-                        // rule SceneManager::saveScene() already applies
-                        // to its own .autosave file.
-                        (void)std::filesystem::remove(core::ProjectFile::recoveryPathFor(path));
-                        lastAutosavedSceneCount_ = static_cast<size_t>(-1);
-                        lastAutosavedActiveSceneIndex_ = -2;
-                    }
+                case PendingFileAction::SaveProject:
+                    fileActionStatus_ = saveProjectTo(path) ? "Saved project " + path : "Save failed: " + path;
                     break;
-                }
-                case PendingFileAction::OpenProject: {
-                    core::ProjectFile loaded;
-                    if (loaded.loadFromFile(path)) {
-                        currentProject_ = loaded;
-                        currentProjectPath_ = path;
-                        sceneManager_.openScenePaths() = loaded.scenePaths;
-                        sceneManager_.setActiveTabIndex(loaded.activeSceneIndex);
-                        if (loaded.activeSceneIndex >= 0 &&
-                            static_cast<size_t>(loaded.activeSceneIndex) < loaded.scenePaths.size()) {
-                            switchToScene(loaded.scenePaths[static_cast<size_t>(loaded.activeSceneIndex)]);
-                        }
-                        fileActionStatus_ = loaded.isCompatibleVersion()
-                                                 ? "Opened project " + path
-                                                 : "Opened project " + path + " (warning: saved by project format version " +
-                                                       loaded.version + ", this build writes " +
-                                                       std::string(core::kProjectFormatVersion) + ")";
-                        projectRecoveryOfferPath_ = core::ProjectFile::hasRecoveryFile(path) ? path : std::string();
-                        lastAutosavedSceneCount_ = static_cast<size_t>(-1);
-                        lastAutosavedActiveSceneIndex_ = -2;
-                        checkHiddenGemsEligibilityAndNotify(path);
-                        checkCrashPatternAndWarn(path);
-                    } else {
-                        fileActionStatus_ = "Open failed: " + path;
-                    }
+                case PendingFileAction::OpenProject:
+                    (void)openProject(path);
                     break;
-                }
+                case PendingFileAction::NameGame:
+                    (void)saveNewGame(path);
+                    break;
                 case PendingFileAction::None: break;
             }
             pendingFileAction_ = PendingFileAction::None;
@@ -2248,7 +2253,10 @@ void StudioApp::openFileArgument(const std::string& path) {
         return std::equal(ext.rbegin(), ext.rend(), path.rbegin(),
                           [](char a, char b) { return a == std::tolower(static_cast<unsigned char>(b)); });
     };
-    if (endsWith(".scene")) {
+    if (endsWith(".project")) {
+        openedFromCommandLine_ = true;
+        (void)openProject(path);
+    } else if (endsWith(".scene")) {
         openedFromCommandLine_ = true;
         openTemplateScene(path);
     } else if (audioPreviewPlugin_ != nullptr &&
@@ -2306,6 +2314,125 @@ void StudioApp::switchToScene(const std::string& path) {
     } else {
         sceneManager_.setActiveTabIndex(static_cast<int>(std::distance(tabs.begin(), it)));
     }
+}
+
+bool StudioApp::openProject(const std::string& path) {
+    core::ProjectFile loaded;
+    if (!loaded.loadFromFile(path)) {
+        fileActionStatus_ = "Open failed: " + path;
+        notifications_.push(fileActionStatus_, NotificationSeverity::Error);
+        return false;
+    }
+    for (std::string& scenePath : loaded.scenePaths) scenePath = core::resolveProjectScenePath(path, scenePath);
+    currentProject_ = loaded;
+    currentProjectPath_ = path;
+    sceneManager_.openScenePaths() = loaded.scenePaths;
+    sceneManager_.setActiveTabIndex(loaded.activeSceneIndex);
+    if (loaded.activeSceneIndex >= 0 && static_cast<size_t>(loaded.activeSceneIndex) < loaded.scenePaths.size()) {
+        switchToScene(loaded.scenePaths[static_cast<size_t>(loaded.activeSceneIndex)]);
+    }
+    fileActionStatus_ = loaded.isCompatibleVersion()
+                             ? "Opened " + loaded.name
+                             : "Opened " + loaded.name + " (warning: saved by project format version " + loaded.version +
+                                   ", this build writes " + std::string(core::kProjectFormatVersion) + ")";
+    projectRecoveryOfferPath_ = core::ProjectFile::hasRecoveryFile(path) ? path : std::string();
+    lastAutosavedSceneCount_ = static_cast<size_t>(-1);
+    lastAutosavedActiveSceneIndex_ = -2;
+    checkHiddenGemsEligibilityAndNotify(path);
+    checkCrashPatternAndWarn(path);
+    return true;
+}
+
+bool StudioApp::saveProjectTo(const std::string& path) {
+    namespace fs = std::filesystem;
+    if (currentProject_.name.empty() || currentProject_.name == core::ProjectFile{}.name) {
+        std::string folder = fs::absolute(fs::path(path)).parent_path().filename().string();
+        if (!folder.empty()) currentProject_.name = folder;
+    }
+    currentProject_.scenePaths = core::projectRelativeScenePaths(path, sceneManager_.openScenePaths());
+    currentProject_.activeSceneIndex = sceneManager_.activeTabIndex();
+    currentProject_.touch();
+    if (!currentProject_.saveToFile(path)) return false;
+
+    currentProjectPath_ = path;
+    // An explicit save wins over any pending recovery snapshot.
+    std::error_code ec;
+    fs::remove(core::ProjectFile::recoveryPathFor(path), ec);
+    lastAutosavedSceneCount_ = static_cast<size_t>(-1);
+    lastAutosavedActiveSceneIndex_ = -2;
+    if (!core::writeGameManifestForProject(path, currentProject_.name)) {
+        notifications_.push("Saved, but couldn't write game.gamemanifest, so the Player won't list it.",
+                            NotificationSeverity::Warning);
+    }
+    core::registerMyGame(fs::absolute(fs::path(path)).string());
+    return true;
+}
+
+void StudioApp::saveGame() {
+    if (currentProjectPath_.empty()) {
+        std::snprintf(filePathBuffer_, sizeof(filePathBuffer_), "%s", "");
+        pendingFileAction_ = PendingFileAction::NameGame;
+        return;
+    }
+    namespace fs = std::filesystem;
+    if (sceneManager_.currentScenePath().empty()) {
+        const fs::path projectDir = fs::path(currentProjectPath_).parent_path();
+        fs::path scenePath = projectDir / "scene.scene";
+        for (int n = 2; fs::exists(scenePath); ++n) scenePath = projectDir / ("scene " + std::to_string(n) + ".scene");
+        if (!saveCurrentSceneAs(scenePath.string())) return;
+    } else if (!sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
+                                          &movieModePlugin_->rail(), &movieModePlugin_->sequence())) {
+        fileActionStatus_ = "Save failed: " + sceneManager_.currentScenePath();
+        notifications_.push(fileActionStatus_, NotificationSeverity::Error);
+        return;
+    }
+    const bool ok = saveProjectTo(currentProjectPath_);
+    fileActionStatus_ = ok ? "Saved " + currentProject_.name : "Save failed: " + currentProjectPath_;
+    notifications_.push(fileActionStatus_, ok ? NotificationSeverity::Success : NotificationSeverity::Error);
+}
+
+bool StudioApp::saveNewGame(const std::string& name) {
+    namespace fs = std::filesystem;
+    std::string error;
+    const std::string folder = core::createMyGameFolder(name, error);
+    if (folder.empty()) {
+        fileActionStatus_ = error;
+        notifications_.push(error, NotificationSeverity::Error);
+        return false;
+    }
+    if (!saveCurrentSceneAs((fs::path(folder) / "default.scene").string())) return false;
+
+    currentProject_ = core::ProjectFile{};
+    currentProject_.name = name;
+    currentProject_.createdAtUnixSeconds =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::string projectPath = (fs::path(folder) / "project.project").string();
+    const bool ok = saveProjectTo(projectPath);
+    fileActionStatus_ = ok ? "Saved \"" + name + "\" to My Games. It's in the Kronos Player under Create."
+                           : "Save failed: " + projectPath;
+    notifications_.push(fileActionStatus_, ok ? NotificationSeverity::Success : NotificationSeverity::Error);
+    return ok;
+}
+
+bool StudioApp::saveCurrentSceneAs(const std::string& path) {
+    if (!sceneManager_.saveScene(path, ecs_, viewportPanel_.camera(), &movieModePlugin_->rail(),
+                                  &movieModePlugin_->sequence())) {
+        fileActionStatus_ = "Save failed: " + path;
+        notifications_.push(fileActionStatus_, NotificationSeverity::Error);
+        return false;
+    }
+    auto& tabs = sceneManager_.openScenePaths();
+    const int active = sceneManager_.activeTabIndex();
+    auto existing = std::find(tabs.begin(), tabs.end(), path);
+    if (existing != tabs.end()) {
+        sceneManager_.setActiveTabIndex(static_cast<int>(std::distance(tabs.begin(), existing)));
+    } else if (active >= 0 && static_cast<size_t>(active) < tabs.size()) {
+        tabs[static_cast<size_t>(active)] = path;
+    } else {
+        tabs.push_back(path);
+        sceneManager_.setActiveTabIndex(static_cast<int>(tabs.size()) - 1);
+    }
+    return true;
 }
 
 void StudioApp::checkHiddenGemsEligibilityAndNotify(const std::string& projectPath) {
@@ -2462,11 +2589,8 @@ void StudioApp::run() {
                 }
             } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
                 undoStack_.redo();
-            } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && !sceneManager_.currentScenePath().empty()) {
-                bool saveOk = sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
-                                                        &movieModePlugin_->rail(), &movieModePlugin_->sequence());
-                fileActionStatus_ = saveOk ? "Saved " + sceneManager_.currentScenePath() : "Save failed: " + sceneManager_.currentScenePath();
-                notifications_.push(fileActionStatus_, saveOk ? NotificationSeverity::Success : NotificationSeverity::Error);
+            } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+                saveGame();
             } else if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_K, false) || ImGui::IsKeyPressed(ImGuiKey_P, false))) {
                 // Kronos ("Studio QoL Sprint" -- "VS Code-Style Command
                 // Palette"): real, either shortcut opens the same real
@@ -2508,6 +2632,7 @@ void StudioApp::run() {
         sceneManager_.tickAutosave(deltaTime, ecs_, viewportPanel_.camera(), &movieModePlugin_->rail(),
                                     &movieModePlugin_->sequence());
         tickProjectAutosave(deltaTime);
+        if (physicsPreviewPlugin_ == nullptr || !physicsPreviewPlugin_->isPlaying()) partColliderSync_.update(ecs_);
 
         panels::ViewportDebugContext viewportDebugContext;
         if (terrainEditorPlugin_ != nullptr && terrainEditorPlugin_->hasTerrain()) {

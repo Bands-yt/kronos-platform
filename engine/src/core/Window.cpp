@@ -227,6 +227,13 @@ bool Window::pumpEvents() {
                     resized_ = true;
                 }
                 break;
+            case SDL_MOUSEWHEEL:
+                if (event.wheel.windowID == SDL_GetWindowID(window_)) {
+                    float y = event.wheel.preciseY;
+                    if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) y = -y;
+                    mouseWheel_ += y;
+                }
+                break;
             default:
                 break;
         }

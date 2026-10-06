@@ -12,6 +12,7 @@ namespace engine::core {
 
 namespace {
 constexpr float kTwoPi = 6.28318530718f;
+constexpr float kMaxLegYaw = 0.87f; // about 50 degrees
 }
 
 float computeSecondaryHeadBobDegrees(AvatarLocomotionState state, float phase, float idleSwayDegrees,
@@ -206,6 +207,22 @@ void AvatarController::tickAnimation(float dt, float horizontalSpeed, bool groun
     player_.tick(dt);
 }
 
+void AvatarController::applyLegYaw(std::vector<glm::mat4>& skinningMatrices, float yawRadians) const {
+    if (std::fabs(yawRadians) < 1e-4f) return;
+    const Skeleton& skeleton = player_.skeleton();
+    int pelvis = skeleton.findJointIndex("pelvis");
+    if (pelvis < 0 || static_cast<size_t>(pelvis) >= skinningMatrices.size()) return;
+    glm::vec3 pivot = glm::vec3(skinningMatrices[static_cast<size_t>(pelvis)] *
+                                glm::vec4(glm::vec3(cachedBindPose_[static_cast<size_t>(pelvis)][3]), 1.0f));
+    glm::mat4 turn = glm::translate(glm::mat4(1.0f), pivot) *
+                     glm::rotate(glm::mat4(1.0f), yawRadians, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                     glm::translate(glm::mat4(1.0f), -pivot);
+    for (size_t i = 0; i < skeleton.joints.size() && i < skinningMatrices.size(); ++i) {
+        const std::string& name = skeleton.joints[i].name;
+        if (name.rfind("leg_", 0) == 0 || name.rfind("foot_", 0) == 0) skinningMatrices[i] = turn * skinningMatrices[i];
+    }
+}
+
 void AvatarController::tick(float dt, ECS& ecs, Physics& physics, EntityId character,
                              const std::vector<EntityId>& skinnedEntities) {
     bool grounded = physics.isGrounded(character, ecs, settings_.capsuleHalfHeight, settings_.capsuleRadius);
@@ -219,6 +236,26 @@ void AvatarController::tick(float dt, ECS& ecs, EntityId character, const std::v
 
     tickAnimation(dt, horizontalSpeed, grounded, velocity.y);
 
+    Transform characterTransform;
+    if (auto* t = ecs.tryGetComponent<Transform>(character)) characterTransform = *t;
+
+    float targetLegYaw = 0.0f;
+    bool gait = state_ == AvatarLocomotionState::Walk || state_ == AvatarLocomotionState::Run;
+    if (gait && horizontalSpeed > settings_.walkSpeedThreshold) {
+        glm::vec3 facing = characterTransform.rotation * glm::vec3(0.0f, 0.0f, 1.0f);
+        float relative = std::atan2(velocity.x, velocity.z) - std::atan2(facing.x, facing.z);
+        relative = std::remainder(relative, kTwoPi);
+        float away = std::fabs(relative);
+        if (away > glm::radians(110.0f)) walkingBackwards_ = true;
+        else if (away < glm::radians(70.0f)) walkingBackwards_ = false;
+        if (walkingBackwards_) relative = std::remainder(relative - kTwoPi * 0.5f, kTwoPi);
+        targetLegYaw = std::clamp(relative, -kMaxLegYaw, kMaxLegYaw);
+    } else {
+        walkingBackwards_ = false;
+    }
+    player_.setReversed(locomotionHandle_, walkingBackwards_);
+    legYawRadians_ += (targetLegYaw - legYawRadians_) * (1.0f - std::exp(-14.0f * dt));
+
     // Kronos ("Avatar 2.0" -- "Animation Polish: secondary motion"): real
     // phase advance, wrapped to [0, 2*pi) so it never grows unbounded
     // over a long play session (float precision would eventually suffer
@@ -227,9 +264,6 @@ void AvatarController::tick(float dt, ECS& ecs, EntityId character, const std::v
     secondaryMotionPhase_ += dt * kTwoPi *
                              secondaryHeadBobHzForState(state_, settings_.idleSwayHz, settings_.walkBobHz, settings_.runBobHz);
     secondaryMotionPhase_ = std::fmod(secondaryMotionPhase_, kTwoPi);
-
-    Transform characterTransform;
-    if (auto* t = ecs.tryGetComponent<Transform>(character)) characterTransform = *t;
 
     // Kronos ("Avatar Preview Rendering" pre-launch fix -- real,
     // confirmed via live debug output): the physics capsule's own
@@ -353,6 +387,8 @@ void AvatarController::tick(float dt, ECS& ecs, EntityId character, const std::v
     // accumulator for one more small effect.
     applyAccessoryDynamicsToSkinningMatrices(skinningMatrices, player_.skeleton(), cachedBindPose_,
                                               secondaryMotionPhase_);
+
+    applyLegYaw(skinningMatrices, legYawRadians_);
 
     for (EntityId entity : skinnedEntities) {
         if (auto* t = ecs.tryGetComponent<Transform>(entity)) *t = meshTransform;

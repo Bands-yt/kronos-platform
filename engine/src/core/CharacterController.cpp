@@ -27,10 +27,11 @@ void CharacterController::configureInput(platform_adapters::UnifiedInput& input)
     input.bindAction("MoveLeft", InputBinding{PhysicalInputKind::KeyboardKey, SDL_SCANCODE_A});
     input.bindAction("MoveRight", InputBinding{PhysicalInputKind::KeyboardKey, SDL_SCANCODE_D});
     input.bindAction("Jump", InputBinding{PhysicalInputKind::KeyboardKey, SDL_SCANCODE_SPACE});
-    // Held (not toggled) -- the standard "sprint while holding Shift"
-    // scheme, real walk/run distinction driving Settings::runSpeed
-    // instead of Settings::walkSpeed while down.
-    input.bindAction("Run", InputBinding{PhysicalInputKind::KeyboardKey, SDL_SCANCODE_LSHIFT});
+    // Shift is shift lock (see RuntimeShell), so running is on Ctrl.
+    input.bindAction("Run", InputBinding{PhysicalInputKind::KeyboardKey, SDL_SCANCODE_LCTRL});
+    input.bindAction("ShiftLock", InputBinding{PhysicalInputKind::KeyboardKey, SDL_SCANCODE_LSHIFT});
+    input.bindAction("ShiftLock", InputBinding{PhysicalInputKind::KeyboardKey, SDL_SCANCODE_RSHIFT});
+    input.bindAction("CameraOrbit", InputBinding{PhysicalInputKind::MouseButton, SDL_BUTTON_RIGHT});
 }
 
 EntityId CharacterController::spawn(ECS& ecs, Physics& physics, glm::vec3 spawnPosition, uint32_t noseMeshHandle) {
@@ -175,6 +176,10 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
     cameraYawDegrees_ += mouseDelta.x * settings_.mouseSensitivity;
     cameraPitchDegrees_ -= mouseDelta.y * settings_.mouseSensitivity;
     cameraPitchDegrees_ = std::clamp(cameraPitchDegrees_, -80.0f, 80.0f);
+    if (float wheel = input.mouseWheel(); wheel != 0.0f) {
+        cameraZoom_ = std::clamp(cameraZoom_ * std::pow(0.85f, wheel), settings_.minCameraZoom, settings_.maxCameraZoom);
+    }
+    const bool shiftLocked = input.isShiftLocked();
 
     // Movement is relative to the camera's yaw (standard third-person
     // scheme -- press W to run away from the camera, not along the
@@ -229,12 +234,14 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
 
         physics.setHorizontalVelocity(entity_, ecs, newVelocity);
 
-        if (hasInput) {
-            // Face the direction of movement (Roblox's default character
-            // behavior) -- only updated while actually moving, so the
-            // character holds its last facing when you stop rather than
-            // snapping back to some default.
-            facingYawRadians_ = std::atan2(moveDir.x, moveDir.z);
+        // Face where you're going, or where the camera looks in shift lock.
+        // Turning is smoothed so a sudden change of direction doesn't snap
+        // the body around (the legs lead the turn, see AvatarController).
+        if (shiftLocked || hasInput) {
+            float target = shiftLocked ? std::atan2(camForward.x, camForward.z) : std::atan2(moveDir.x, moveDir.z);
+            float delta = std::remainder(target - facingYawRadians_, 6.28318530718f);
+            float t = shiftLocked ? 1.0f : 1.0f - std::exp(-settings_.turnSmoothing * dt);
+            facingYawRadians_ = std::remainder(facingYawRadians_ + delta * t, 6.28318530718f);
         }
         physics.setRotationY(entity_, ecs, facingYawRadians_);
 
@@ -319,7 +326,30 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
         smoothedCameraFocus_ = glm::mix(smoothedCameraFocus_, targetFocus, t);
     }
 
-    camera.position = smoothedCameraFocus_ - camera.forward() * settings_.cameraDistance;
+    shoulderBlend_ += ((shiftLocked ? 1.0f : 0.0f) - shoulderBlend_) * (1.0f - std::exp(-10.0f * dt));
+    glm::vec3 desired = smoothedCameraFocus_ - camera.forward() * (settings_.cameraDistance * cameraZoom_) +
+                        camRight * (settings_.shiftLockShoulderOffset * shoulderBlend_);
+    camera.position = keepCameraOutOfWalls(physics, smoothedCameraFocus_, desired, entity_);
+
+    // A camera squeezed right up against the character would sit inside its
+    // head, so hide the avatar then, as Roblox does.
+    if (skinnedEntities != nullptr && glm::distance(camera.position, smoothedCameraFocus_) < 1.0f) {
+        for (EntityId e : *skinnedEntities) {
+            if (auto* skinned = ecs.tryGetComponent<SkinnedRenderable>(e)) skinned->visible = false;
+        }
+    }
+}
+
+glm::vec3 CharacterController::keepCameraOutOfWalls(const Physics& physics, glm::vec3 focus, glm::vec3 desired,
+                                                    EntityId ignore) {
+    constexpr float kPadding = 0.3f;
+    glm::vec3 toCamera = desired - focus;
+    float distance = glm::length(toCamera);
+    if (distance < 0.01f) return desired;
+    glm::vec3 dir = toCamera / distance;
+    Physics::RaycastHit hit = physics.raycast(focus, dir, distance + kPadding, ignore);
+    if (!hit.hit) return desired;
+    return focus + dir * std::clamp(hit.distance - kPadding, 0.2f, distance);
 }
 
 } // namespace engine::core

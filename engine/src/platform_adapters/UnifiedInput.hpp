@@ -68,6 +68,22 @@ public:
     // it to be true everywhere at once.
     [[nodiscard]] glm::vec2 mouseDelta() const { return mouseDelta_; }
 
+    // Roblox-style camera. Holding the "CameraOrbit" action (right mouse
+    // button) hides the cursor and turns mouse motion into mouseDelta()
+    // until it is released, when the cursor reappears where it was.
+    // setPointerOverUi(true) stops a new drag (and wheel zoom) from
+    // starting while the pointer is over a menu.
+    void setPointerOverUi(bool overUi) { pointerOverUi_ = overUi; }
+    void setOrbitDragEnabled(bool enabled);
+    [[nodiscard]] bool isOrbitDragging() const { return orbitDragging_; }
+    // Shift lock: the cursor is captured and the character faces where
+    // the camera looks. Set by whoever owns the toggle (the Player shell).
+    void setShiftLock(bool enabled) { shiftLock_ = enabled; }
+    [[nodiscard]] bool isShiftLocked() const { return shiftLock_; }
+    void addMouseWheel(float wheel) { pendingWheel_ += wheel; }
+    // Wheel movement since the last update(); 0 while over a menu.
+    [[nodiscard]] float mouseWheel() const { return mouseWheel_; }
+
     // Kronos ("Active Joining UI" -- engine_runtime ImGui + input
     // integration): real, absolute window-space cursor position, updated
     // every update() call same as mouseDelta_. Only meaningful outside
@@ -100,6 +116,16 @@ private:
     glm::vec2 mousePosition_{0.0f};
     bool relativeMouseModeEnabled_ = false;
     bool initialized_ = false;
+    bool pointerOverUi_ = false;
+    bool orbitDragEnabled_ = true;
+    bool orbitDragging_ = false;
+    bool orbitButtonWasDown_ = false;
+    glm::ivec2 orbitStartCursor_{0};
+    bool shiftLock_ = false;
+    float pendingWheel_ = 0.0f;
+    float mouseWheel_ = 0.0f;
+
+    void endOrbitDrag();
 };
 
 } // namespace engine::platform_adapters

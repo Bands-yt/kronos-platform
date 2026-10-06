@@ -93,6 +93,8 @@ public:
 
     // Scales how fast `handle`'s playhead advances (fades are unaffected).
     void setPlaybackRate(Handle handle, float rate);
+    // Plays the clip backwards (e.g. walking backwards). Looping clips wrap.
+    void setReversed(Handle handle, bool reversed);
 
     // Advances every active clip's playhead + fade weight by dt, then
     // recomputes this tick's pose (see the .cpp's header comment on
@@ -124,6 +126,7 @@ private:
         float rate = 1.0f;
         bool looping = true;
         bool paused = false;
+        bool reversed = false;
         bool alive = true;
 
         float weight = 1.0f;

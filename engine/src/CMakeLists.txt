@@ -222,6 +222,8 @@ add_library(engine_core STATIC
     core/ProjectFile.cpp
     core/GameManifest.cpp
     core/LocalGameDirectory.cpp
+    core/MyGames.cpp
+    core/PartCollider.cpp
     core/SceneManager.cpp
     core/SceneHistory.cpp
     core/ProcessLaunch.cpp

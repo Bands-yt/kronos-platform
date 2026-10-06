@@ -101,7 +101,7 @@ public:
         float walkClipSpeed = 1.5f;
         float runClipSpeed = 5.0f;
         float minPlaybackRate = 0.5f;
-        float maxPlaybackRate = 1.6f;
+        float maxPlaybackRate = 2.2f;
         float locomotionBlendSeconds = 0.25f;
         float jumpBlendSeconds = 0.1f;
         float emoteBlendSeconds = 0.15f;
@@ -235,6 +235,7 @@ public:
     // exactly as it did under the old single-Jump-state model -- real,
     // additive, not a breaking change.
     void tickAnimation(float dt, float horizontalSpeed, bool grounded, float verticalVelocity = 0.0f);
+    void applyLegYaw(std::vector<glm::mat4>& skinningMatrices, float yawRadians) const;
     [[nodiscard]] AvatarLocomotionState desiredLocomotionState(float horizontalSpeed) const;
     // Shipped clips are authored against buildHumanoidSkeleton(); this maps
     // them onto this avatar's (possibly re-proportioned) skeleton.
@@ -299,6 +300,11 @@ private:
     // secondaryHeadBobHzForState()'s own rate for whichever state is
     // currently active.
     float secondaryMotionPhase_ = 0.0f;
+    // Strafing and backpedalling: the legs turn toward the direction of
+    // travel (up to kMaxLegYaw) and the gait plays backwards when moving
+    // away from where the body faces, so the feet never moonwalk.
+    float legYawRadians_ = 0.0f;
+    bool walkingBackwards_ = false;
 
     // Kronos ("Avatar 2.0" -- "Facial System"): real expression state --
     // see setFacialExpression()'s own comment. autoBlinkTimer_ counts

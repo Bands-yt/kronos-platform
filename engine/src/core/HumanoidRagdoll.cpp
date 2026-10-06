@@ -129,8 +129,8 @@ HumanoidRagdoll buildHumanoidRagdoll(const Skeleton& skeleton, std::string& outE
     setSwingTwist(chest, spineUpper, up, right, 0.3f, 0.3f, 0.3f);
 
     auto& head = parts[idx(HumanoidRagdollPart::Head)];
-    head.from = head.to = headJoint + up * 0.1f;
-    head.radius = 0.2f;
+    head.from = head.to = headJoint;
+    head.radius = 0.22f;
     head.mass = 5.0f;
     setSwingTwist(head, neck, up, right, 0.6f, 0.5f, 0.7f);
 
@@ -140,14 +140,14 @@ HumanoidRagdoll buildHumanoidRagdoll(const Skeleton& skeleton, std::string& outE
         auto& upper = parts[idx(upperPart)];
         upper.from = shoulder;
         upper.to = elbow;
-        upper.radius = 0.09f;
+        upper.radius = 0.11f;
         upper.mass = 2.5f;
         setSwingTwist(upper, shoulder, outward, forward, 1.5f, 1.5f, 0.8f);
 
         auto& lower = parts[idx(lowerPart)];
         lower.from = elbow;
-        lower.to = hand + outward * 0.12f; // the hand rides on the forearm
-        lower.radius = 0.075f;
+        lower.to = hand + outward * 0.14f; // the hand rides on the forearm
+        lower.radius = 0.1f;
         lower.mass = 2.0f;
         // Positive rotation about this axis swings the forearm towards +Z.
         setHinge(lower, elbow, up * side * -1.0f, outward, 2.5f);

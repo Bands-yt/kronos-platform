@@ -65,10 +65,10 @@ struct AccessorySlotSpec {
 // "handheld" category -- rigged to the real, already-existing hand_R
 // joint (a right-hand-by-convention default, not a new joint).
 const std::array<AccessorySlotSpec, 5> kAccessorySlots = {{
-    {AvatarItemCategory::Head, "attach_hat", {0.11f, 0.05f, 0.11f}, "AccessoryHat"},
-    {AvatarItemCategory::Hair, "attach_hair", {0.1f, 0.04f, 0.09f}, "AccessoryHair"},
-    {AvatarItemCategory::Face, "attach_face_accessory", {0.09f, 0.015f, 0.01f}, "AccessoryFace"},
-    {AvatarItemCategory::Back, "attach_back", {0.12f, 0.14f, 0.03f}, "AccessoryBack"},
+    {AvatarItemCategory::Head, "attach_hat", {0.2f, 0.06f, 0.2f}, "AccessoryHat"},
+    {AvatarItemCategory::Hair, "attach_hair", {0.2f, 0.05f, 0.17f}, "AccessoryHair"},
+    {AvatarItemCategory::Face, "attach_face_accessory", {0.13f, 0.02f, 0.012f}, "AccessoryFace"},
+    {AvatarItemCategory::Back, "attach_back", {0.17f, 0.2f, 0.04f}, "AccessoryBack"},
     {AvatarItemCategory::Accessory, "hand_R", {0.03f, 0.03f, 0.09f}, "AccessoryHandheld"},
 }};
 

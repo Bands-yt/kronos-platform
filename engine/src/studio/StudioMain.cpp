@@ -58,8 +58,6 @@ void showFatalErrorDialog(const std::string& message) {
 } // namespace
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
 
     // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
     // report): the real, persistent counterpart to the message box below
@@ -96,6 +94,7 @@ int main(int argc, char** argv) {
             showFatalErrorDialog(message);
             return 1;
         }
+        if (argc > 1 && argv[1] != nullptr) app.openFileArgument(argv[1]);
 
         app.run();
         app.shutdown();

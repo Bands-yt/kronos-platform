@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 #include <SDL2/SDL.h>
 
@@ -93,6 +94,7 @@ bool UnifiedInput::sampleBinding(const InputBinding& binding, float& outAxisValu
 }
 
 void UnifiedInput::setRelativeMouseMode(bool enabled) {
+    if (orbitDragging_) endOrbitDrag();
     SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE);
     relativeMouseModeEnabled_ = enabled;
     if (enabled) {
@@ -102,6 +104,19 @@ void UnifiedInput::setRelativeMouseMode(bool enabled) {
         // large, spurious look-snap.
         int dx = 0, dy = 0;
         SDL_GetRelativeMouseState(&dx, &dy);
+    }
+}
+
+void UnifiedInput::setOrbitDragEnabled(bool enabled) {
+    orbitDragEnabled_ = enabled;
+    if (!enabled && orbitDragging_) endOrbitDrag();
+}
+
+void UnifiedInput::endOrbitDrag() {
+    orbitDragging_ = false;
+    SDL_SetRelativeMouseMode(relativeMouseModeEnabled_ ? SDL_TRUE : SDL_FALSE);
+    if (!relativeMouseModeEnabled_) {
+        if (SDL_Window* window = SDL_GetMouseFocus()) SDL_WarpMouseInWindow(window, orbitStartCursor_.x, orbitStartCursor_.y);
     }
 }
 
@@ -119,7 +134,10 @@ void UnifiedInput::update() {
     // zeroing it here, in the one real place it's computed, is what
     // makes "cursor free -> camera doesn't spin" true everywhere at once
     // instead of threading a lock flag through every consumer.
-    mouseDelta_ = relativeMouseModeEnabled_ ? glm::vec2(static_cast<float>(dx), static_cast<float>(dy)) : glm::vec2(0.0f);
+    mouseDelta_ = relativeMouseModeEnabled_ || orbitDragging_ ? glm::vec2(static_cast<float>(dx), static_cast<float>(dy))
+                                                              : glm::vec2(0.0f);
+    mouseWheel_ = pointerOverUi_ && !orbitDragging_ ? 0.0f : pendingWheel_;
+    pendingWheel_ = 0.0f;
 
     int x = 0, y = 0;
     SDL_GetMouseState(&x, &y);
@@ -137,9 +155,28 @@ void UnifiedInput::update() {
         }
         state_[actionName] = combined;
     }
+
+    bool orbitButtonDown = isActionDown("CameraOrbit");
+    bool canStartOrbit = orbitDragEnabled_ && !pointerOverUi_ && !relativeMouseModeEnabled_;
+    if (orbitDragging_ && !orbitButtonDown) {
+        endOrbitDrag();
+    } else if (!orbitDragging_ && orbitButtonDown && !orbitButtonWasDown_ && canStartOrbit) {
+        orbitDragging_ = true;
+        orbitStartCursor_ = {x, y};
+        SDL_SetRelativeMouseMode(SDL_TRUE);
+        SDL_GetRelativeMouseState(nullptr, nullptr);
+    }
+    // A press that couldn't start a drag (over a menu) counts once the pointer leaves it.
+    orbitButtonWasDown_ = orbitButtonDown && (canStartOrbit || orbitDragging_);
 }
 
 bool UnifiedInput::isActionDown(const std::string& actionName) const {
+    // Automated visual tests: KRONOS_HOLD_ACTIONS="MoveRight,Run" holds those actions down.
+    static const std::string held = [] {
+        const char* env = std::getenv("KRONOS_HOLD_ACTIONS");
+        return env ? "," + std::string(env) + "," : std::string();
+    }();
+    if (!held.empty() && held.find("," + actionName + ",") != std::string::npos) return true;
     auto it = state_.find(actionName);
     return it != state_.end() && it->second.down;
 }

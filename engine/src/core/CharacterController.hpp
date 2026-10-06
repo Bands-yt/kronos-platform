@@ -94,6 +94,15 @@ public:
         // disables smoothing entirely (instant snap, this class's
         // original pre-this-pass behavior).
         float cameraPositionSmoothing = 12.0f;
+        // How fast the character turns to face where it's going (or, in
+        // shift lock, where the camera looks). Higher is snappier.
+        float turnSmoothing = 16.0f;
+        // Shift lock moves the camera this far to the right, over the
+        // character's shoulder.
+        float shiftLockShoulderOffset = 1.0f;
+        // Mouse-wheel zoom range, as a multiple of cameraDistance.
+        float minCameraZoom = 0.35f;
+        float maxCameraZoom = 3.0f;
     };
 
     // Two constructors rather than one with `Settings settings = {}`: a
@@ -194,6 +203,10 @@ public:
     // tick().
     bool tryStepUp(ECS& ecs, Physics& physics, glm::vec3 moveDir);
     static bool stepUp(ECS& ecs, Physics& physics, EntityId entity, const Settings& settings, glm::vec3 moveDir);
+    // Pulls the camera in front of anything between it and the character
+    // (walls, the floor when looking up), like Roblox's camera.
+    [[nodiscard]] static glm::vec3 keepCameraOutOfWalls(const Physics& physics, glm::vec3 focus, glm::vec3 desired,
+                                                        EntityId ignore);
 
 private:
     Settings settings_;
@@ -203,6 +216,8 @@ private:
     float cameraPitchDegrees_ = -15.0f;
     float facingYawRadians_ = 0.0f;
     bool externallyMoved_ = false;
+    float cameraZoom_ = 1.0f;
+    float shoulderBlend_ = 0.0f;
     // Real per-tick smoothed camera focus position -- see
     // Settings::cameraPositionSmoothing. Starts uninitialized-but-unused:
     // the very first tick() call snaps it directly to that tick's target

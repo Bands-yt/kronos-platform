@@ -22,6 +22,8 @@
 #include "core/EditableMeshComponent.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/Mesh.hpp"
+#include "core/PartCollider.hpp"
+#include "core/PhysicsMaterial.hpp"
 #include "core/Renderer.hpp"
 #include "core/ScenePicking.hpp"
 #include "core/Terrain.hpp"
@@ -1585,10 +1587,20 @@ core::EntityId ViewportPanel::spawnPrimitive(core::ECS& ecs, core::MeshLibrary* 
     renderable.baseColor = {0.64f, 0.64f, 0.66f, 1.0f};
     renderable.metallic = 0.0f;
     renderable.roughness = 0.7f;
+    std::optional<core::ColliderShape> collider;
     if (spec.hasMeshSource) {
         auto& meshSource = ecs.addComponent<core::MeshSource>(entity);
         meshSource.kind = spec.sourceKind;
         meshSource.params = spec.params;
+        collider = core::colliderForMeshSource(meshSource, glm::vec3(1.0f));
+    } else if (kind == Primitive::Cylinder) {
+        collider = core::ColliderShape{};
+    }
+    // Like Roblox parts: solid and anchored until you change it in the Inspector.
+    if (collider) {
+        ecs.addComponent<core::ColliderShape>(entity, *collider);
+        ecs.addComponent<core::PhysicsMaterial>(entity, core::PhysicsMaterial{});
+        ecs.addComponent<core::RigidBody>(entity, core::RigidBody{core::RigidBody::kInvalidBodyId, core::RigidBodyMotionType::Static});
     }
     explorer.setSelected(entity);
     return entity;

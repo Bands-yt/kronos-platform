@@ -33,34 +33,24 @@ class CatalogueIndex;
 // built alongside it, not a retrofit.
 [[nodiscard]] Skeleton buildHumanoidSkeleton();
 
-// Kronos ("Avatar Phase" -- "Avatar Head System"): the real, only two
-// real head geometries this rig generates -- both are the exact same
-// low-poly lat/long ellipsoid appendSphere() already generates (see
-// that function's own header comment), just with different real radii
-// (headShapeRadii() below), not two separate mesh-generation code paths.
-// Oval is the real, new default (R15-style: noticeably taller than
-// wide, soft/rounded silhouette from the same real low-poly sphere
-// geometry -- "soft edges" here means "still a smooth ellipsoid," not a
-// higher-poly/sculpted mesh, matching this rig's own existing
-// deliberately-low-poly, procedural-not-authored precedent throughout).
-// Sphere is the real, honest "classic block-engine" alternative -- equal
-// radii on all three axes.
+// Oval is the classic rounded-cylinder head ("Classic" in the UI); Sphere is
+// a ball ("Round").
 enum class HeadShape { Oval, Sphere };
 
 [[nodiscard]] inline glm::vec3 headShapeRadii(HeadShape shape) {
     switch (shape) {
-        case HeadShape::Oval: return glm::vec3(0.155f, 0.21f, 0.155f);
-        case HeadShape::Sphere: return glm::vec3(0.18f, 0.18f, 0.18f);
+        case HeadShape::Oval: return glm::vec3(0.25f, 0.24f, 0.235f);
+        case HeadShape::Sphere: return glm::vec3(0.25f, 0.25f, 0.25f);
     }
-    return glm::vec3(0.155f, 0.21f, 0.155f);
+    return glm::vec3(0.25f, 0.24f, 0.235f);
 }
 
 [[nodiscard]] inline const char* headShapeName(HeadShape shape) {
     switch (shape) {
-        case HeadShape::Oval: return "Oval";
-        case HeadShape::Sphere: return "Sphere";
+        case HeadShape::Oval: return "Classic";
+        case HeadShape::Sphere: return "Round";
     }
-    return "Oval";
+    return "Classic";
 }
 
 // Real, bounds-checked resolution from core::LocalProfile::headShapeIndex
@@ -272,22 +262,17 @@ struct HumanoidMeshData {
 // as a real, distinct color from the trousers rather than the same gray.
 // kDefaultTrouserColor is unchanged -- it already real-matches the
 // requested "Dark Slate Pants" value.
-constexpr glm::vec4 kDefaultShirtColor(0.07f, 0.14f, 0.19f, 1.0f);
-constexpr glm::vec4 kDefaultTrouserColor(0.15f, 0.16f, 0.20f, 1.0f);
+constexpr glm::vec4 kDefaultShirtColor(0.16f, 0.45f, 0.85f, 1.0f);
+constexpr glm::vec4 kDefaultTrouserColor(0.17f, 0.19f, 0.27f, 1.0f);
 // Kronos ("Multi-Region Clothing Shader & Palette System" -- "Default
 // Clothing Palette" -- "White/Black Shoes"): real, dark near-black --
 // LeftHand/RightHand have no equivalent default constant here (they
 // always render as real skin tone, never a clothing default -- see
 // resolveSegmentColorsForLoadout()'s own comment on why they're
 // deliberately excluded from the equipped-item override loop).
-constexpr glm::vec4 kDefaultShoeColor(0.06f, 0.06f, 0.07f, 1.0f);
-// Kronos ("Final Visual Refinements" -- "Set ... arms ... color to pure
-// black"): real, split off from kDefaultShirtColor -- see
-// resolveSegmentColorsForLoadout()'s own comment on why LeftArm/RightArm
-// get their own default now instead of sharing Torso's.
+constexpr glm::vec4 kDefaultShoeColor(0.14f, 0.14f, 0.16f, 1.0f);
 // Distance from the foot joint down to the shoe sole.
 constexpr float kAvatarSoleDepth = 0.16f;
-constexpr glm::vec4 kDefaultArmColor(0.025f, 0.025f, 0.028f, 1.0f);
 
 // Resolves each HumanoidBodySegment's SkinnedRenderable::baseColor from
 // `loadout`'s equipped item in categoryForBodySegment(segment)'s category

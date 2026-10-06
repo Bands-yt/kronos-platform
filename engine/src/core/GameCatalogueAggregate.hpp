@@ -23,6 +23,8 @@ struct GameCatalogueEntry {
     GamePlayStats stats;
     float qualityScore = 0.0f;
     int64_t launchCount = 0;
+    bool mine = false; // made by this user in Studio (core::scanMyGames())
+    int64_t lastPlayedUnixSeconds = 0;
 };
 
 // Real, honest aggregation: scans `gamesDir` (core::scanLocalGameDirectory()),
@@ -37,6 +39,11 @@ struct GameCatalogueEntry {
 [[nodiscard]] std::vector<GameCatalogueEntry> buildGameCatalogueEntries(const std::string& gamesDir,
                                                                           const std::string& playLogPath,
                                                                           int64_t nowUnixSeconds);
+
+// The shipped games in `gamesDir` plus the user's own games (core::scanMyGames()).
+[[nodiscard]] std::vector<GameCatalogueEntry> buildFullGameCatalogue(const std::string& gamesDir,
+                                                                       const std::string& playLogPath,
+                                                                       int64_t nowUnixSeconds);
 
 // Kronos ("Moderation Architecture v2", "Catalogue Safety Integration"):
 // real, pure "Catalogue hides unsafe games from minors" -- built directly

@@ -114,6 +114,10 @@ void AnimationPlayer::setPlaybackRate(Handle handle, float rate) {
     if (ActiveClip* active = findActive(handle)) active->rate = std::max(rate, 0.0f);
 }
 
+void AnimationPlayer::setReversed(Handle handle, bool reversed) {
+    if (ActiveClip* active = findActive(handle)) active->reversed = reversed;
+}
+
 void AnimationPlayer::tickLayer(std::vector<ActiveClip>& clips, float dt) {
     for (auto& active : clips) {
         if (!active.alive) continue;
@@ -121,13 +125,19 @@ void AnimationPlayer::tickLayer(std::vector<ActiveClip>& clips, float dt) {
         float previousTime = active.playheadTime;
         if (!active.paused) {
             float duration = active.clip.duration;
-            float newTime = active.playheadTime + dt * active.rate;
+            float newTime = active.playheadTime + dt * active.rate * (active.reversed ? -1.0f : 1.0f);
             bool wrapped = false;
             if (active.looping && duration > 0.0f) {
                 while (newTime >= duration) {
                     newTime -= duration;
                     wrapped = true;
                 }
+                while (newTime < 0.0f) {
+                    newTime += duration;
+                    wrapped = true;
+                }
+            } else if (active.reversed) {
+                newTime = std::max(newTime, 0.0f);
             } else if (!active.looping && duration > 0.0f) {
                 // Holds the last frame past duration rather than
                 // auto-removing -- an AnimationPlayer clip participates in
@@ -142,7 +152,14 @@ void AnimationPlayer::tickLayer(std::vector<ActiveClip>& clips, float dt) {
             // Event crossing -- fires only for an audibly/visibly blended
             // clip (weight above a small epsilon), so a fully-faded-out
             // crossfade partner never fires a stray event on its way out.
-            if (active.weight > 1e-3f) {
+            if (active.weight > 1e-3f && active.reversed) {
+                for (const auto& event : active.clip.events) {
+                    bool crossed = wrapped ? (event.time < previousTime && event.time >= 0.0f) ||
+                                                  (event.time >= active.playheadTime && event.time <= duration)
+                                            : (event.time < previousTime && event.time >= active.playheadTime);
+                    if (crossed) firedEvents_.push_back(event.name);
+                }
+            } else if (active.weight > 1e-3f) {
                 for (const auto& event : active.clip.events) {
                     bool crossed = wrapped ? (event.time > previousTime && event.time <= duration) ||
                                                   (event.time >= 0.0f && event.time <= active.playheadTime)

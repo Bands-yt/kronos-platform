@@ -468,6 +468,7 @@ bool Application::initialize(const CreateInfo& info) {
     gameLoop_->setPreTickHook([this](float dt) {
         updateWorldStreaming();
         if (headless_) return;
+        input_.addMouseWheel(window_.takeMouseWheel());
         input_.update();
         tickRollbackMatch(dt);
         // Sprint 14: accumulate this sim tick's real mouse delta for the
@@ -476,6 +477,7 @@ bool Application::initialize(const CreateInfo& info) {
         // just defensive: UnifiedInput::mouseDelta() resets every real
         // update() call above, and update() runs every sim tick.
         networkMouseDeltaAccumulator_ += input_.mouseDelta();
+        networkWheelAccumulator_ += input_.mouseWheel();
 
         // Sprint 14 ("RTX Upgrade" Phase 2 / "Performance Mode"): real,
         // live runtime toggles -- F6 flips real ray-traced shadows
@@ -2479,19 +2481,39 @@ bool Application::initialize(const CreateInfo& info) {
 
             if (auto* transform = ecs_.tryGetComponent<Transform>(networkedLocalPlayerEntity_)) {
                 constexpr float kCameraDistance = 6.0f;
-                camera_.position = transform->position - camera_.forward() * kCameraDistance +
-                                    glm::vec3(0.0f, 1.7f, 0.0f);
+                const bool shiftLocked = input_.isShiftLocked();
+                if (networkWheelAccumulator_ != 0.0f) {
+                    networkCameraZoom_ =
+                        std::clamp(networkCameraZoom_ * std::pow(0.85f, networkWheelAccumulator_), 0.35f, 3.0f);
+                    networkWheelAccumulator_ = 0.0f;
+                }
+                networkShoulderBlend_ += ((shiftLocked ? 1.0f : 0.0f) - networkShoulderBlend_) * (1.0f - std::exp(-10.0f * dt));
+                float yawRad = glm::radians(camera_.yawDegrees);
+                glm::vec3 camRight(-std::sin(yawRad), 0.0f, std::cos(yawRad));
+                glm::vec3 focus = transform->position + glm::vec3(0.0f, 1.7f, 0.0f);
+                camera_.position = CharacterController::keepCameraOutOfWalls(
+                    physics_, focus,
+                    focus - camera_.forward() * (kCameraDistance * networkCameraZoom_) + camRight * networkShoulderBlend_,
+                    networkedLocalPlayerEntity_);
 
-                // Real grounded/velocity now, from applyNetworkedMovement()'s
-                // own gravity+raycast state (net::NetworkedVerticalMotion),
-                // not a hardcoded/approximated stand-in -- drives the same
-                // Jump/Falling/Landing states the offline avatar gets.
                 if (networkedAvatarController_ && dt > 0.0f) {
                     auto* vertical = ecs_.tryGetComponent<net::NetworkedVerticalMotion>(networkedLocalPlayerEntity_);
                     glm::vec3 horizontalVelocity = (transform->position - networkedAvatarLastPosition_) / dt;
                     networkedAvatarLastPosition_ = transform->position;
                     glm::vec3 velocity(horizontalVelocity.x, vertical ? vertical->velocityY : 0.0f, horizontalVelocity.z);
                     bool grounded = vertical ? vertical->grounded : true;
+
+                    bool moving = glm::length(moveAxis) > 0.0001f;
+                    if (shiftLocked) {
+                        networkedFacingYaw_ = std::atan2(std::cos(yawRad), std::sin(yawRad));
+                    } else if (moving) {
+                        glm::vec3 forward(std::cos(yawRad), 0.0f, std::sin(yawRad));
+                        glm::vec3 worldMove = forward * moveAxis.z + camRight * moveAxis.x;
+                        float target = std::atan2(worldMove.x, worldMove.z);
+                        float delta = std::remainder(target - networkedFacingYaw_, 6.28318530718f);
+                        networkedFacingYaw_ += delta * (1.0f - std::exp(-16.0f * dt));
+                    }
+                    transform->rotation = glm::angleAxis(networkedFacingYaw_, glm::vec3(0.0f, 1.0f, 0.0f));
                     networkedAvatarController_->tick(dt, ecs_, networkedLocalPlayerEntity_,
                                                        networkedAvatarSkinnedEntities_, grounded, velocity);
                 }

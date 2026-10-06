@@ -95,6 +95,12 @@ public:
     [[nodiscard]] uint32_t pixelHeight() const;
     [[nodiscard]] bool wasResized() const { return resized_; }
     void clearResizedFlag() { resized_ = false; }
+    // Mouse wheel movement since the last call (positive = away from you).
+    [[nodiscard]] float takeMouseWheel() {
+        float wheel = mouseWheel_;
+        mouseWheel_ = 0.0f;
+        return wheel;
+    }
 
     // Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real
     // runtime mode switch, closing the gap RuntimeShell::drawSettingsPanel()'s
@@ -121,6 +127,7 @@ private:
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     bool resized_ = false;
+    float mouseWheel_ = 0.0f;
     RawEventCallback rawEventCallback_;
     std::string lastError_;
 };

@@ -21,6 +21,7 @@
 #include "core/CredentialStore.hpp"
 #include "core/Components.hpp"
 #include "core/HiddenGemsSelector.hpp"
+#include "core/MyGames.hpp"
 #include "core/KronosVersion.hpp"
 #include "core/ProcessLaunch.hpp"
 #include "core/Logger.hpp"
@@ -606,6 +607,7 @@ void RuntimeShell::leaveSession() {
         gamePlayLog_.recordSessionEnd(currentGameId_, nowUnixSeconds(), /*crashed=*/false);
         (void)gamePlayLog_.saveToFile(kGamePlayLogPath);
         currentGameId_.clear();
+        gamesScanned_ = false;
     }
 
     state_ = computeNextState(state_, ShellEvent::SessionEnded);
@@ -646,15 +648,7 @@ void RuntimeShell::openGameCatalogue() {
     // (a deliberate user action, not a hot path) -- not cached across a
     // whole session, so Featured/Hidden-Gems ranking reflects whatever
     // was just played, not stale first-launch data.
-    std::string gamesDir = core::resolveResourceDir(core::executableDirectory(), "games", ENGINE_GAMES_DIR);
-    discoveredGames_ = core::buildGameCatalogueEntries(gamesDir, kGamePlayLogPath, nowUnixSeconds());
-    // Kronos ("Moderation Architecture v2", "Catalogue Safety
-    // Integration"): real "Catalogue hides unsafe games from minors" --
-    // ensureLocalProfileLoaded() has already real-loaded localProfile_ by
-    // the time the Home Screen (and thus this button) is reachable.
-    ensureLocalProfileLoaded();
-    discoveredGames_ = core::filterCatalogueEntriesForAgeGroup(discoveredGames_, effectiveAgeGroup());
-    gamesScanned_ = true;
+    refreshLocalGames();
     // Kronos ("Merged Game Catalogue & Sessions View"): real, same guarded
     // start showSessionBrowser() already does -- so a card's own
     // expanded live-session list (drawGameCataloguePanel()) has real,
@@ -687,6 +681,11 @@ void RuntimeShell::selectGame(const core::GameCatalogueEntry& game) {
     }
 
     if (game.manifest.launchKind == core::GameLaunchKind::CliFlag) {
+        ensureGamePlayLogLoaded();
+        gamePlayLog_.recordSessionStart(game.manifest.name, nowUnixSeconds());
+        gamePlayLog_.recordSessionEnd(game.manifest.name, nowUnixSeconds(), /*crashed=*/false);
+        (void)gamePlayLog_.saveToFile(kGamePlayLogPath);
+        gamesScanned_ = false;
         // A still-hardcoded rich mode (TNT Wars/Mining Sim/House Demo) --
         // relaunch this same binary with its real flag and leave this
         // process's own shell state untouched (the new process owns its
@@ -803,10 +802,25 @@ void RuntimeShell::finishPendingGameLoad() {
     state_ = computeNextState(state_, ShellEvent::GameLoadFinished);
 }
 
-void RuntimeShell::launchStudio() {
+void RuntimeShell::launchStudio(const std::string& fileToOpen) {
     studioLaunchError_.clear();
-    std::string studioPath = core::executableDirectory() + "/studio";
-    if (!core::launchProcess(studioPath, {})) {
+    const std::filesystem::path exeDir(core::executableDirectory());
+#if defined(_WIN32)
+    const char* kCandidates[] = {"kronos_studio.exe", "studio.exe"};
+#else
+    const char* kCandidates[] = {"kronos_studio", "studio"};
+#endif
+    std::error_code ec;
+    std::string studioPath = (exeDir / kCandidates[1]).string();
+    for (const char* candidate : kCandidates) {
+        if (std::filesystem::exists(exeDir / candidate, ec)) {
+            studioPath = (exeDir / candidate).string();
+            break;
+        }
+    }
+    std::vector<std::string> args;
+    if (!fileToOpen.empty()) args.push_back(fileToOpen);
+    if (!core::launchProcess(studioPath, args)) {
         // Surfaced in the Create tab, not just stderr: a button that
         // silently does nothing is worse than one that says why.
         studioLaunchError_ = "Could not start Kronos Studio (expected it next to this executable at \"" +
@@ -972,25 +986,18 @@ void RuntimeShell::tick(float dt) {
     }
     escapeKeyWasDown_ = escapeDown;
 
-    // Kronos ("Shift Lock" mouse-lock toggle): real, player-controlled --
-    // Shift both drives the existing real "Run" action
-    // (CharacterController::configureInput(), continuous -- "is it down
-    // right now", real walk/run speed) and, on its own press-edge here,
-    // toggles this real preference (discrete -- "was it just pressed") --
-    // the two read the same physical key without conflicting, the same
-    // way a single key drives both "hold to run" and "tap to toggle" in
-    // many real games. Gated off while the pause menu/chat panel is open
-    // (or any real ImGui text field wants keyboard input) so it can't
-    // fire while the player is typing a chat message or a report
-    // description.
+    // Roblox controls: Shift toggles shift lock, right-drag looks around
+    // with the cursor hidden, the wheel zooms. Not while typing or in menus.
     ImGuiIO& shiftLockIo = ImGui::GetIO();
-    bool mouseLockKeyDown = state_ == ShellState::InGame && !showPauseMenuOverlay_ && !showChatPanel_ &&
-                             !shiftLockIo.WantTextInput && app_.input().isActionDown("Run");
-    if (mouseLockKeyDown && !mouseLockKeyWasDown_) {
+    bool playing = state_ == ShellState::InGame && !showPauseMenuOverlay_ && !showChatPanel_;
+    bool shiftLockKeyDown = playing && !shiftLockIo.WantTextInput && app_.input().isActionDown("ShiftLock");
+    if (shiftLockKeyDown && !mouseLockKeyWasDown_) {
         mouseLockEnabled_ = !mouseLockEnabled_;
         app_.input().setRelativeMouseMode(mouseLockEnabled_);
     }
-    mouseLockKeyWasDown_ = mouseLockKeyDown;
+    mouseLockKeyWasDown_ = shiftLockKeyDown;
+    app_.input().setShiftLock(state_ == ShellState::InGame && mouseLockEnabled_ && !showPauseMenuOverlay_);
+    app_.input().setPointerOverUi(!playing || (shiftLockIo.WantCaptureMouse && !app_.input().isOrbitDragging()));
 
     tickToasts(dt);
     // Kronos ("Load Testing and Telemetry" / "Simple Recommendation
@@ -1299,17 +1306,26 @@ void RuntimeShell::drawHomePanel() {
     drawFriendsCarousel();
 
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
-    ui::sectionHeader("Jump back in");
-    ImGui::TextColored(paletteColor(kTextMuted),
-                       "Browse published games under Discover, or open your own local projects under Create.");
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    if (!gamesScanned_) refreshLocalGames();
+    std::vector<const core::GameCatalogueEntry*> recent;
+    for (const auto& g : discoveredGames_) {
+        if (g.lastPlayedUnixSeconds > 0) recent.push_back(&g);
+    }
+    std::sort(recent.begin(), recent.end(), [](const core::GameCatalogueEntry* a, const core::GameCatalogueEntry* b) {
+        return a->lastPlayedUnixSeconds > b->lastPlayedUnixSeconds;
+    });
+    if (recent.empty()) recent = localGames(false);
+    if (recent.size() > 6) recent.resize(6);
+    ui::sectionHeader(recent.empty() || recent.front()->lastPlayedUnixSeconds == 0 ? "Play something" : "Jump back in");
+    if (!recent.empty()) drawGameTileGrid(recent, "home_recent");
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
     if (ui::button("Browse games", ui::ButtonKind::Primary)) {
         catalogueTab_ = CatalogueTab::Discover;
         state_ = ShellState::GameCatalogue;
         openGameCatalogue();
     }
     ImGui::SameLine();
-    if (ui::button("Local projects", ui::ButtonKind::Secondary)) {
+    if (ui::button("My Games", ui::ButtonKind::Secondary)) {
         catalogueTab_ = CatalogueTab::Create;
         state_ = ShellState::GameCatalogue;
         openGameCatalogue();
@@ -1328,6 +1344,7 @@ void RuntimeShell::drawHomePanel() {
     // Modals are drawn outside the canvas so they centre on the whole
     // viewport rather than inside the content inset.
     drawAddFriendsModal();
+    drawGameDetailsPopup();
 }
 
 namespace {
@@ -2170,274 +2187,327 @@ void RuntimeShell::drawSessionBrowserPanel() {
 }
 
 namespace {
-// Kronos ("Game Catalogue Overhaul", Phase 5): one real card -- title,
-// a flat color-swatch thumbnail (core::GameManifest::thumbnailColor --
-// the same honest "no image pipeline exists" answer
-// studio::plugins::CataloguePanel's own item cards already give, see
-// that class's header comment), truncated description, genre tags,
-// real recent-player count (from the real local play log, not a
-// fabricated live online count -- this is a local Alpha), and a real
-// QualityScore badge. Returns true if this card's own "Play" was
-// clicked.
-constexpr float kCardWidth = 220.0f;
-constexpr float kCardHeight = 170.0f;
+constexpr float kTileWidth = 172.0f;
+constexpr float kTileThumbHeight = 172.0f;
+constexpr float kTileGap = 16.0f;
 
-// Kronos ("Merged Game Catalogue & Sessions View"): real result --
-// either the card's own "Play" button (launch this game locally) or a
-// specific live session picked from the card's own expanded session
-// list (join it directly), never both from a single card interaction.
-struct GameCardResult {
-    const core::GameCatalogueEntry* toPlay = nullptr;
-    const net::DiscoveredSession* toJoin = nullptr;
-};
+ImU32 toColor(const glm::vec4& c, float scale = 1.0f, float alpha = 1.0f) {
+    auto channel = [&](float v) { return static_cast<int>(std::clamp(v * scale, 0.0f, 1.0f) * 255.0f); };
+    return IM_COL32(channel(c.x), channel(c.y), channel(c.z), static_cast<int>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f));
+}
 
-GameCardResult drawGameCard(const core::GameCatalogueEntry& game,
-                             const std::vector<net::DiscoveredSession>& allDiscoveredSessions) {
-    GameCardResult result;
-    ImGui::PushID(game.manifestPath.c_str());
-    ImGui::BeginGroup();
-
-    ImVec2 origin = ImGui::GetCursorScreenPos();
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    const glm::vec4& c = game.manifest.thumbnailColor;
-    drawList->AddRectFilled(origin, ImVec2(origin.x + kCardWidth, origin.y + 90.0f),
-                             IM_COL32(static_cast<int>(c.x * 255.0f), static_cast<int>(c.y * 255.0f),
-                                      static_cast<int>(c.z * 255.0f), static_cast<int>(c.w * 255.0f)));
-    ImGui::Dummy(ImVec2(kCardWidth, 90.0f));
-
-    ImGui::TextWrapped("%s", game.manifest.name.c_str());
-    if (!game.manifest.description.empty()) {
-        ImGui::PushTextWrapPos(origin.x + kCardWidth);
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", game.manifest.description.c_str());
-        ImGui::PopTextWrapPos();
-    }
-    if (!game.manifest.genreTags.empty()) {
-        std::string tags;
-        for (size_t i = 0; i < game.manifest.genreTags.size(); ++i) {
-            if (i > 0) tags += ", ";
-            tags += game.manifest.genreTags[i];
+std::string gameInitials(const std::string& name) {
+    std::string initials;
+    bool atWordStart = true;
+    for (char ch : name) {
+        const bool alnum = std::isalnum(static_cast<unsigned char>(ch)) != 0;
+        if (alnum && atWordStart && initials.size() < 2) {
+            initials.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
         }
-        ImGui::TextDisabled("%s", tags.c_str());
+        atWordStart = !alnum;
     }
-    ImGui::Text("Quality %.2f", static_cast<double>(game.qualityScore));
-    ImGui::SameLine();
-    ImGui::TextDisabled("%lld played", static_cast<long long>(game.launchCount));
+    return initials.empty() ? std::string("?") : initials;
+}
 
-    // Kronos ("Moderation Architecture v2", "Catalogue Safety
-    // Integration"): a real, honest badge -- a viewer only ever reaches
-    // this card for an Unsafe game at all if they're a self-declared
-    // Adult (openGameCatalogue() already real-filters it out otherwise),
-    // so seeing this badge here is real, not a dead code path.
+// The game's colour as a soft diagonal gradient with its initials in the middle.
+void drawGameThumbnail(ImDrawList* drawList, ImVec2 min, ImVec2 max, const core::GameManifest& manifest,
+                       float rounding, float letterSize) {
+    const glm::vec4& c = manifest.thumbnailColor;
+    const float w = max.x - min.x;
+    const float h = max.y - min.y;
+    drawList->AddRectFilled(min, max, toColor(c, 0.92f), rounding);
+    drawList->PushClipRect(min, max, true);
+    drawList->AddCircleFilled(ImVec2(min.x + w * 0.62f, min.y - h * 0.04f), w * 0.30f, IM_COL32(255, 255, 255, 26));
+    drawList->AddCircleFilled(ImVec2(min.x + w * 0.34f, max.y + h * 0.06f), w * 0.24f, IM_COL32(0, 0, 0, 30));
+    drawList->PopClipRect();
+    drawList->AddRect(min, max, IM_COL32(255, 255, 255, 30), rounding, 0, 1.0f);
+
+    ImFont* font = core::kronosBoldFont() ? core::kronosBoldFont() : ImGui::GetFont();
+    const std::string initials = gameInitials(manifest.name);
+    const ImVec2 size = font->CalcTextSizeA(letterSize, FLT_MAX, 0.0f, initials.c_str());
+    const ImVec2 pos(min.x + (w - size.x) * 0.5f, min.y + (h - size.y) * 0.5f);
+    drawList->AddText(font, letterSize, ImVec2(pos.x + 2.0f, pos.y + 3.0f), IM_COL32(0, 0, 0, 70), initials.c_str());
+    drawList->AddText(font, letterSize, pos, IM_COL32(255, 255, 255, 240), initials.c_str());
+}
+
+std::string playCountLabel(int64_t plays) {
+    if (plays <= 0) return "New";
+    return std::to_string(plays) + (plays == 1 ? " play" : " plays");
+}
+} // namespace
+
+std::vector<const core::GameCatalogueEntry*> RuntimeShell::localGames(bool mine) const {
+    std::vector<const core::GameCatalogueEntry*> games;
+    for (const auto& g : discoveredGames_) {
+        if (g.mine == mine) games.push_back(&g);
+    }
+    std::sort(games.begin(), games.end(), [](const core::GameCatalogueEntry* a, const core::GameCatalogueEntry* b) {
+        if (a->lastPlayedUnixSeconds != b->lastPlayedUnixSeconds) return a->lastPlayedUnixSeconds > b->lastPlayedUnixSeconds;
+        if (a->qualityScore != b->qualityScore) return a->qualityScore > b->qualityScore;
+        return a->manifest.name < b->manifest.name;
+    });
+    return games;
+}
+
+void RuntimeShell::refreshLocalGames() {
+    std::string gamesDir = core::resolveResourceDir(core::executableDirectory(), "games", ENGINE_GAMES_DIR);
+    discoveredGames_ = core::buildFullGameCatalogue(gamesDir, kGamePlayLogPath, nowUnixSeconds());
+    ensureLocalProfileLoaded();
+    discoveredGames_ = core::filterCatalogueEntriesForAgeGroup(discoveredGames_, effectiveAgeGroup());
+    gamesScanned_ = true;
+}
+
+void RuntimeShell::playLocalGame(const core::GameCatalogueEntry& game) {
+    const core::GameCatalogueEntry chosen = game;
+    state_ = ShellState::GameCatalogue;
+    selectGame(chosen);
+}
+
+void RuntimeShell::drawGameTileGrid(const std::vector<const core::GameCatalogueEntry*>& games, const char* id) {
+    using namespace core::kronos_palette;
+    ImGui::PushID(id);
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const int columns = std::max(1, static_cast<int>((avail + kTileGap) / (kTileWidth + kTileGap)));
+    const core::GameCatalogueEntry* toOpen = nullptr;
+    const core::GameCatalogueEntry* toPlay = nullptr;
+    const float textHeight = ImGui::GetTextLineHeightWithSpacing();
+    const float tileHeight = kTileThumbHeight + 10.0f + textHeight * 2.0f;
+
+    for (size_t i = 0; i < games.size(); ++i) {
+        const core::GameCatalogueEntry& game = *games[i];
+        if (i % static_cast<size_t>(columns) != 0) ImGui::SameLine(0.0f, kTileGap);
+        ImGui::PushID(game.manifestPath.c_str());
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("tile", ImVec2(kTileWidth, tileHeight));
+        const bool hovered = ImGui::IsItemHovered();
+        const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+        const float lift = hovered ? -3.0f : 0.0f;
+        const ImVec2 thumbMin(origin.x, origin.y + lift);
+        const ImVec2 thumbMax(origin.x + kTileWidth, origin.y + kTileThumbHeight + lift);
+        if (hovered) {
+            drawList->AddRectFilled(ImVec2(thumbMin.x + 2.0f, thumbMin.y + 6.0f), ImVec2(thumbMax.x + 2.0f, thumbMax.y + 6.0f),
+                                    IM_COL32(0, 0, 0, 90), 14.0f);
+        }
+        drawGameThumbnail(drawList, thumbMin, thumbMax, game.manifest, 14.0f, 62.0f);
+
+        bool overPlay = false;
+        if (hovered) {
+            drawList->AddRect(thumbMin, thumbMax, ImGui::GetColorU32(paletteColor(kTextBright)), 14.0f, 0, 2.0f);
+            const ImVec2 playMin(thumbMax.x - 74.0f, thumbMax.y - 40.0f);
+            const ImVec2 playMax(thumbMax.x - 10.0f, thumbMax.y - 10.0f);
+            overPlay = ImGui::IsMouseHoveringRect(playMin, playMax);
+            drawList->AddRectFilled(playMin, playMax, ImGui::GetColorU32(paletteColor(overPlay ? kGreenHover : kGreen)), 15.0f);
+            const float cy = (playMin.y + playMax.y) * 0.5f;
+            drawList->AddTriangleFilled(ImVec2(playMin.x + 12.0f, cy - 7.0f), ImVec2(playMin.x + 12.0f, cy + 7.0f),
+                                        ImVec2(playMin.x + 24.0f, cy), IM_COL32(255, 255, 255, 255));
+            drawList->AddText(ImVec2(playMin.x + 29.0f, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(255, 255, 255, 255), "Play");
+        }
+
+        ImFont* bold = core::kronosBoldFont() ? core::kronosBoldFont() : ImGui::GetFont();
+        const float nameSize = ImGui::GetFontSize() * 1.05f;
+        std::string name = game.manifest.name;
+        while (name.size() > 1 && bold->CalcTextSizeA(nameSize, FLT_MAX, 0.0f, name.c_str()).x > kTileWidth) {
+            name.pop_back();
+            while (name.size() > 1 && (static_cast<unsigned char>(name.back()) & 0xC0) == 0x80) name.pop_back();
+            if (bold->CalcTextSizeA(nameSize, FLT_MAX, 0.0f, (name + "...").c_str()).x <= kTileWidth) {
+                name += "...";
+                break;
+            }
+        }
+        const float nameY = origin.y + kTileThumbHeight + 8.0f;
+        drawList->AddText(bold, nameSize, ImVec2(origin.x + 2.0f, nameY), ImGui::GetColorU32(paletteColor(kTextBright)), name.c_str());
+        std::string meta = game.mine ? "By you" : playCountLabel(game.launchCount);
+        if (game.mine && game.launchCount > 0) meta += "  ·  " + playCountLabel(game.launchCount);
+        if (game.manifest.safetyStatus == core::GameSafetyStatus::UnderReview) meta += "  ·  Under review";
+        drawList->AddText(ImVec2(origin.x + 2.0f, nameY + textHeight), ImGui::GetColorU32(paletteColor(kTextMuted)), meta.c_str());
+
+        if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (clicked) (overPlay ? toPlay : toOpen) = &game;
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+
+    if (toPlay) {
+        playLocalGame(*toPlay);
+    } else if (toOpen) {
+        detailsGame_ = *toOpen;
+        detailsPopupRequested_ = true;
+    }
+}
+
+void RuntimeShell::drawGameDetailsPopup() {
+    using namespace core::kronos_palette;
+    if (detailsPopupRequested_) {
+        ImGui::OpenPopup("##game_details");
+        detailsPopupRequested_ = false;
+    }
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(720.0f, viewport->WorkSize.x - 40.0f), 0.0f), ImGuiCond_Appearing);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22.0f, 22.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, paletteColor(kSurface));
+    const bool open = ImGui::BeginPopupModal("##game_details", nullptr,
+                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    if (!open) return;
+    if (!detailsGame_) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    const core::GameCatalogueEntry game = *detailsGame_;
+    bool close = false;
+
+    const float thumb = 260.0f;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    drawGameThumbnail(ImGui::GetWindowDrawList(), origin, ImVec2(origin.x + thumb, origin.y + thumb), game.manifest, 18.0f, 96.0f);
+    ImGui::Dummy(ImVec2(thumb, thumb));
+    ImGui::SameLine(0.0f, 24.0f);
+
+    ImGui::BeginGroup();
+    const float columnWidth = 380.0f;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + columnWidth);
+    if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, 26.0f);
+    ImGui::TextUnformatted(game.manifest.name.c_str());
+    if (core::kronosBoldFont()) ImGui::PopFont();
+    ImGui::TextColored(paletteColor(kTextMuted), "%s", game.mine ? "By you  ·  made in Kronos Studio" : "By Kronos");
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+
+    if (!game.manifest.genreTags.empty()) {
+        for (size_t i = 0; i < game.manifest.genreTags.size(); ++i) {
+            if (i > 0) ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, paletteColor(kRaised));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, paletteColor(kRaised));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, paletteColor(kRaised));
+            ImGui::SmallButton(game.manifest.genreTags[i].c_str());
+            ImGui::PopStyleColor(3);
+        }
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    }
+    if (!game.manifest.description.empty()) {
+        ImGui::TextColored(paletteColor(kTextBright), "%s", game.manifest.description.c_str());
+    }
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ImGui::TextColored(paletteColor(kTextMuted), "%s", playCountLabel(game.launchCount).c_str());
     if (game.manifest.safetyStatus == core::GameSafetyStatus::UnderReview) {
-        ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.2f, 1.0f), "Under Review");
-    } else if (game.manifest.safetyStatus == core::GameSafetyStatus::Unsafe) {
-        ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "Unsafe");
+        ImGui::TextColored(paletteColor(kWarning), "Under review");
     }
+    ImGui::PopTextWrapPos();
 
-    // Kronos ("UI Theme Cleanup" -- "green accent buttons"): real, same
-    // shared primary-action green as Home's own Game Catalogue/Launch
-    // Studio buttons -- Play is this card's own real primary action.
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
     pushPrimaryActionButtonColors();
-    if (ImGui::Button("Play", ImVec2(kCardWidth, 0.0f))) result.toPlay = &game;
+    if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, 18.0f);
+    const bool play = ImGui::Button("Play", ImVec2(columnWidth, 48.0f));
+    if (core::kronosBoldFont()) ImGui::PopFont();
     popPrimaryActionButtonColors();
+    if (play) {
+        close = true;
+        playLocalGame(game);
+    }
+    const bool editable = game.manifest.launchKind == core::GameLaunchKind::ProjectPath;
+    if (editable) {
+        if (ui::button(game.mine ? "Edit in Studio" : "Open a copy in Studio", ui::ButtonKind::Secondary,
+                       ImVec2(columnWidth * 0.5f - 4.0f, 34.0f))) {
+            launchStudio((std::filesystem::path(game.manifestPath).parent_path() / game.manifest.projectPath).string());
+            close = true;
+        }
+        ImGui::SameLine(0.0f, 8.0f);
+    }
+    if (ui::button("Close", ui::ButtonKind::Ghost, ImVec2(editable ? columnWidth * 0.5f - 4.0f : columnWidth, 34.0f)) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        close = true;
+    }
 
-    // Kronos ("Merged Game Catalogue & Sessions View"): real, live
-    // sessions currently running *this* game -- filtered from the full
-    // discovery list by the same real gameName identity
-    // LanSessionAnnouncement/DiscoveredSession already carry (see those
-    // structs' own comments), matched against this card's own
-    // core::GameManifest::name (the same identity key
-    // net::GamePlayLog/core::HiddenGemsSelector already use). A real,
-    // honest "no sessions" state when the count is 0 -- no fabricated
-    // placeholder rows.
-    std::vector<const net::DiscoveredSession*> liveSessions;
-    for (const auto& session : allDiscoveredSessions) {
-        if (session.gameName == game.manifest.name) liveSessions.push_back(&session);
+    std::vector<net::DiscoveredSession> sessions;
+    for (const auto& session : lanBrowser_.discoveredSessions()) {
+        if (session.gameName == game.manifest.name) sessions.push_back(session);
     }
-    ImGui::BeginDisabled(liveSessions.empty());
-    if (ImGui::Button(liveSessions.empty() ? "No live sessions" : "Live Sessions", ImVec2(kCardWidth, 0.0f))) {
-        ImGui::OpenPopup("LiveSessions");
-    }
-    ImGui::EndDisabled();
-    if (!liveSessions.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%d)", static_cast<int>(liveSessions.size()));
-    }
-    if (ImGui::BeginPopup("LiveSessions")) {
-        ImGui::TextDisabled("Live sessions for %s", game.manifest.name.c_str());
-        ImGui::Separator();
-        for (const net::DiscoveredSession* session : liveSessions) {
-            ImGui::PushID(static_cast<int>(session->sessionId));
-            ImGui::Text("%s", session->sessionName.empty() ? session->hostDisplayName.c_str() : session->sessionName.c_str());
+    if (!sessions.empty()) {
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        ui::sectionHeader("Live sessions");
+        for (const auto& session : sessions) {
+            ImGui::PushID(static_cast<int>(session.sessionId));
+            ImGui::Text("%s", session.sessionName.empty() ? session.hostDisplayName.c_str() : session.sessionName.c_str());
             ImGui::SameLine();
-            ImGui::TextDisabled("%d/%d players", session->currentPlayerCount, session->maxPlayerCount);
+            ImGui::TextDisabled("%d/%d players", session.currentPlayerCount, session.maxPlayerCount);
             ImGui::SameLine();
             pushPrimaryActionButtonColors();
             if (ImGui::SmallButton("Join")) {
-                result.toJoin = session;
-                ImGui::CloseCurrentPopup();
+                close = true;
+                joinSession(session);
             }
             popPrimaryActionButtonColors();
             ImGui::PopID();
         }
-        ImGui::EndPopup();
     }
-
     ImGui::EndGroup();
-    ImGui::PopID();
-    return result;
-}
 
-// One horizontally-scrolling strip of cards -- the real "row" the
-// Featured/genre/Hidden-Gems sections below all share, same
-// `ImGui::SameLine()`-based wrapping/layout technique
-// studio::plugins::CataloguePanel::drawGrid() already established,
-// adapted to a fixed-height horizontal strip (a real front-page "row"
-// convention) instead of a wrapping grid.
-GameCardResult drawGameRow(const std::vector<const core::GameCatalogueEntry*>& games, const char* rowId,
-                            const std::vector<net::DiscoveredSession>& allDiscoveredSessions) {
-    GameCardResult result;
-    ImGui::PushID(rowId);
-    ImGui::BeginChild("row", ImVec2(0.0f, kCardHeight + 16.0f), false, ImGuiWindowFlags_HorizontalScrollbar);
-    for (size_t i = 0; i < games.size(); ++i) {
-        if (i > 0) ImGui::SameLine();
-        GameCardResult cardResult = drawGameCard(*games[i], allDiscoveredSessions);
-        if (cardResult.toPlay) result.toPlay = cardResult.toPlay;
-        if (cardResult.toJoin) result.toJoin = cardResult.toJoin;
+    if (close) {
+        detailsGame_.reset();
+        ImGui::CloseCurrentPopup();
     }
-    ImGui::EndChild();
-    ImGui::PopID();
-    return result;
-}
-} // namespace
-
-// Kronos ("separate local games from the online feed"): the real
-// disk-discovered games, now in their own tab rather than mixed into the
-// main catalogue. Everything below is the same real scan/sort/row logic
-// as before -- only where it is drawn changed.
-void RuntimeShell::drawLocalGamesTab() {
-    if (discoveredGames_.empty()) {
-        ImGui::TextDisabled(
-            "No games found in games/. See docs/QUICKSTART.md for the games/<Name>/game.gamemanifest layout.");
-        return;
-    }
-
-    const core::GameCatalogueEntry* toPlay = nullptr;
-    const net::DiscoveredSession* toJoin = nullptr;
-
-    // Kronos ("Merged Game Catalogue & Sessions View"): real, built once
-    // per frame -- every row below shares this same, real, live list
-    // (openGameCatalogue() already started lanBrowser_ ticking). A
-    // *copy*, not a reference into lanBrowser_'s own internal state, so
-    // the `toJoin` pointer any card below hands back stays valid for the
-    // rest of this function even if lanBrowser_'s own list changes on a
-    // later tick.
-    std::vector<net::DiscoveredSession> liveDiscoveredSessions = lanBrowser_.discoveredSessions();
-
-    // Featured -- real, algorithm-selected: top real QualityScore
-    // entries, not raw player count (per the user's own spec).
-    std::vector<const core::GameCatalogueEntry*> sortedByQuality;
-    sortedByQuality.reserve(discoveredGames_.size());
-    for (const auto& g : discoveredGames_) sortedByQuality.push_back(&g);
-    std::sort(sortedByQuality.begin(), sortedByQuality.end(),
-              [](const core::GameCatalogueEntry* a, const core::GameCatalogueEntry* b) {
-                  return a->qualityScore > b->qualityScore;
-              });
-    std::vector<const core::GameCatalogueEntry*> featured(
-        sortedByQuality.begin(), sortedByQuality.begin() + static_cast<long>(std::min<size_t>(5, sortedByQuality.size())));
-    ui::sectionHeader("Featured");
-    {
-        GameCardResult rowResult = drawGameRow(featured, "featured", liveDiscoveredSessions);
-        if (rowResult.toPlay) toPlay = rowResult.toPlay;
-        if (rowResult.toJoin) toJoin = rowResult.toJoin;
-    }
-
-    // Genre rows -- one real row per distinct genre tag actually present
-    // across the real scanned games, sorted the same way Featured is.
-    std::vector<std::string> genres;
-    for (const auto& g : discoveredGames_) {
-        for (const auto& tag : g.manifest.genreTags) {
-            if (std::find(genres.begin(), genres.end(), tag) == genres.end()) genres.push_back(tag);
-        }
-    }
-    for (const auto& genre : genres) {
-        std::vector<const core::GameCatalogueEntry*> inGenre;
-        for (const auto* g : sortedByQuality) {
-            if (std::find(g->manifest.genreTags.begin(), g->manifest.genreTags.end(), genre) !=
-                g->manifest.genreTags.end()) {
-                inGenre.push_back(g);
-            }
-        }
-        ui::sectionHeader(genre.c_str());
-        GameCardResult rowResult = drawGameRow(inGenre, genre.c_str(), liveDiscoveredSessions);
-        if (rowResult.toPlay) toPlay = rowResult.toPlay;
-        if (rowResult.toJoin) toJoin = rowResult.toJoin;
-    }
-
-    // Hidden Gems -- real selection (core::selectHiddenGems(),
-    // core/HiddenGemsSelector.hpp), the exact same real function
-    // studio::StudioApp's own dev-notification check uses, so "eligible
-    // for the front page" means the real same thing in both places.
-    std::vector<core::HiddenGemCandidate> candidates;
-    candidates.reserve(discoveredGames_.size());
-    for (const auto& g : discoveredGames_) candidates.push_back(core::HiddenGemCandidate{g.manifest, g.qualityScore, g.launchCount});
-    std::vector<core::GameManifest> hiddenGemManifests = core::selectHiddenGems(candidates);
-    std::vector<const core::GameCatalogueEntry*> hiddenGems;
-    for (const auto& manifest : hiddenGemManifests) {
-        for (const auto& g : discoveredGames_) {
-            if (g.manifest.name == manifest.name) {
-                hiddenGems.push_back(&g);
-                break;
-            }
-        }
-    }
-    if (!hiddenGems.empty()) {
-        ui::sectionHeader("Hidden Gems");
-        GameCardResult rowResult = drawGameRow(hiddenGems, "hidden_gems", liveDiscoveredSessions);
-        if (rowResult.toPlay) toPlay = rowResult.toPlay;
-        if (rowResult.toJoin) toJoin = rowResult.toJoin;
-    }
-
-    if (toPlay) selectGame(*toPlay);
-    if (toJoin) joinSession(*toJoin);
+    ImGui::EndPopup();
 }
 
 void RuntimeShell::drawGameCataloguePanel() {
     using namespace core::kronos_palette;
+    if (!gamesScanned_) refreshLocalGames();
     beginContentCanvas("Catalogue");
 
-    // No Back button and no nested Discover/Create tab bar: the left
-    // sidebar is the only navigation, and duplicating it inside the
-    // canvas was exactly the clutter this removes.
-    if (catalogueTab_ == CatalogueTab::Create) {
-        ImGui::TextColored(paletteColor(kTextBright), "Create");
-        ImGui::TextColored(paletteColor(kTextMuted),
-                            "Your local projects and Kronos Studio. Everything here works with no network.");
-        ImGui::Dummy(ImVec2(0.0f, 12.0f));
+    auto pageTitle = [](const char* title) {
+        if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, 24.0f);
+        ImGui::TextColored(paletteColor(kTextBright), "%s", title);
+        if (core::kronosBoldFont()) ImGui::PopFont();
+    };
 
-        // Prominent, first: opening Studio is the primary action of this
-        // tab, so it is not buried under a project list.
+    // No Back button and no nested Discover/Create tab bar: the left
+    // sidebar is the only navigation.
+    if (catalogueTab_ == CatalogueTab::Create) {
+        pageTitle("Create");
+        ImGui::TextColored(paletteColor(kTextMuted), "Build games in Kronos Studio. Everything you save shows up here.");
+        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+
         pushPrimaryActionButtonColors();
         if (ImGui::Button("Launch Kronos Studio", ImVec2(240.0f, 42.0f))) launchStudio();
         popPrimaryActionButtonColors();
+        ImGui::SameLine();
+        if (ui::button("Refresh", ui::ButtonKind::Ghost, ImVec2(0.0f, 42.0f))) refreshLocalGames();
         if (!studioLaunchError_.empty()) {
-            ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.30f, 1.0f), "%s", studioLaunchError_.c_str());
+            ImGui::TextColored(paletteColor(kDanger), "%s", studioLaunchError_.c_str());
         }
 
-        ImGui::Dummy(ImVec2(0.0f, 16.0f));
-        ui::sectionHeader("Local projects");
-        ImGui::TextColored(paletteColor(kTextMuted),
-                            "Discovered in this machine's games/ folder. Not published to Kronos -- nobody else can "
-                            "see them. Play launches locally, with no join ticket and no server allocation.");
+        ImGui::Dummy(ImVec2(0.0f, 14.0f));
+        ui::sectionHeader("My Games");
+        std::vector<const core::GameCatalogueEntry*> mine = localGames(true);
+        if (mine.empty()) {
+            ui::beginCard("##my_games_empty");
+            ImGui::TextColored(paletteColor(kTextBright), "No games yet");
+            ImGui::TextColored(paletteColor(kTextMuted),
+                               "Open Kronos Studio, build something and press Ctrl+S. Give it a name and it appears here.");
+            ui::endCard();
+        } else {
+            drawGameTileGrid(mine, "my_games");
+        }
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
-        drawLocalGamesTab();
+        ImGui::TextColored(paletteColor(kTextFaint), "Saved in %s", core::myGamesDirectory().c_str());
     } else {
-        ImGui::TextColored(paletteColor(kTextBright), "Discover");
+        pageTitle("Discover");
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        std::vector<const core::GameCatalogueEntry*> kronosGames = localGames(false);
+        if (!kronosGames.empty()) {
+            ui::sectionHeader("Kronos Games");
+            drawGameTileGrid(kronosGames, "kronos_games");
+            ImGui::Dummy(ImVec2(0.0f, 12.0f));
+        }
         drawOnlineCatalogueSection();
     }
 
     endContentCanvas();
+    drawGameDetailsPopup();
 }
 
 namespace {
@@ -4120,7 +4190,14 @@ void RuntimeShell::drawOnlineCatalogueSection() {
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
         ImGui::BeginDisabled(allocationInProgress_.load());
         pushPrimaryActionButtonColors();
-        if (ImGui::Button("Play##online", ImVec2(70.0f, 0.0f))) startServerAllocation(game.slug, game.title);
+        if (ImGui::Button("Play##online", ImVec2(70.0f, 0.0f))) {
+            if (kronosApi_.isSignedIn()) {
+                startServerAllocation(game.slug, game.title);
+            } else {
+                notify(core::NotificationKind::SystemMessage, "Sign in to play online",
+                       "Online games need a Kronos account. Press Sign In at the top right. Kronos Games and My Games work without one.");
+            }
+        }
         popPrimaryActionButtonColors();
         ImGui::EndDisabled();
 

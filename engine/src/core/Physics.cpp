@@ -909,7 +909,24 @@ Physics::GroundInfo Physics::checkGround(EntityId entity, ECS& ecs, float capsul
     return info;
 }
 
+namespace {
+class IgnoreEntityBodyFilter final : public JPH::BodyFilter {
+public:
+    explicit IgnoreEntityBodyFilter(EntityId ignore) : ignore_(ignore) {}
+    bool ShouldCollideLocked(const JPH::Body& body) const override {
+        return static_cast<EntityId>(static_cast<uint32_t>(body.GetUserData())) != ignore_;
+    }
+
+private:
+    EntityId ignore_;
+};
+} // namespace
+
 Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance) const {
+    return raycast(origin, direction, maxDistance, kNullEntity);
+}
+
+Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance, EntityId ignore) const {
     RaycastHit result;
     if (!initialized_) return result;
 
@@ -920,7 +937,14 @@ Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, floa
     JPH::RRayCast ray(JPH::RVec3(origin.x, origin.y, origin.z), toJolt(unitDir * maxDistance));
 
     JPH::RayCastResult hit;
-    if (!physicsSystem_->GetNarrowPhaseQuery().CastRay(ray, hit)) return result;
+    bool found = false;
+    if (ignore == kNullEntity) {
+        found = physicsSystem_->GetNarrowPhaseQuery().CastRay(ray, hit);
+    } else {
+        IgnoreEntityBodyFilter filter(ignore);
+        found = physicsSystem_->GetNarrowPhaseQuery().CastRay(ray, hit, {}, {}, filter);
+    }
+    if (!found) return result;
 
     result.hit = true;
     result.distance = hit.mFraction * maxDistance;

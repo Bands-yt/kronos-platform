@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "core/PartCollider.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueDatabase.hpp"
@@ -382,6 +383,13 @@ private:
     // scene always adds/selects it as a tab too rather than being a
     // separate, tab-unaware code path.
     void switchToScene(const std::string& path);
+    bool openProject(const std::string& path);
+    bool saveProjectTo(const std::string& path);
+    // Ctrl+S: saves the scene and project. The first save asks for a name and
+    // puts the game in My Games, so the Player's catalogue lists it.
+    void saveGame();
+    bool saveNewGame(const std::string& name);
+    bool saveCurrentSceneAs(const std::string& path);
     // Loads a shipped template as a new, untitled scene; never saves back into it.
     void openTemplateScene(const std::string& path);
 
@@ -423,6 +431,7 @@ private:
     core::Audio audio_;
     core::ResourceManager resources_{2};
     core::ECS ecs_;
+    core::PartColliderSync partColliderSync_;
     core::MeshLibrary meshLibrary_;
     core::WorldStreamer worldStreamer_; // after ecs_/resources_/meshLibrary_: closes before they go
     core::TextureLibrary textureLibrary_;
@@ -708,7 +717,7 @@ private:
     int lastAutosavedActiveSceneIndex_ = -2; // -2 (not a real index) forces the first tick to always write once
     size_t lastAutosavedSceneCount_ = static_cast<size_t>(-1);
 
-    enum class PendingFileAction { None, SaveScene, LoadScene, SaveProject, OpenProject };
+    enum class PendingFileAction { None, SaveScene, LoadScene, SaveProject, OpenProject, NameGame };
     PendingFileAction pendingFileAction_ = PendingFileAction::None;
     char filePathBuffer_[256] = "";
     std::string fileActionStatus_;

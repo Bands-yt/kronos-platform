@@ -1,15 +1,17 @@
 # Kronos Roadmap
 
-The next three releases after `4.0.0-beta`. Work that is already done locally
-but held back from a public release is listed under the release that will
-ship it. Estimates are for one engineer working full time, and they are
-honest ones: most of the big items are weeks to months of work each, not hours.
+What comes after `4.0.0-beta`, in the order we're building it. Every step
+says when it counts as done, so progress is something you can check, not a
+feeling. Estimates are rough, and the big ones are weeks, not hours.
 
-| Release | Theme | Rough size |
+| Release | Theme | Status |
 |---|---|---|
-| 4.1 | Creators: publishing, scripting, held-back fixes | 2–3 months |
-| 4.2 | Scale: culling, batching, streaming, determinism, audio mixer | 4–6 months |
-| 5.0 | Next-gen: GI, upscaling, web, collaboration, media tools | 12+ months, best split across several people |
+| 4.1 | Creators: publishing, scripting, held-back fixes | Done locally, ships in the public beta |
+| 4.2 | Scale: culling, batching, streaming, determinism, audio mixer | Done locally, ships in the public beta |
+| Launch | Public beta `4.1.0-beta`, first Reddit post (Friday 9 October 2026) | This week |
+| 4.3 | Roblox bridge: import a Roblox place and play it in Kronos | Next, the main track |
+| 4.4 | Polish from launch feedback, plus the small 4.2 leftovers | Alongside 4.3 |
+| Later | Next-gen graphics, web player, collaboration, media tools | Parked until the bridge works |
 
 ## Already in the engine
 
@@ -20,6 +22,86 @@ These items from the AAA spec need hardening rather than building from scratch:
 - **Plugin registry.** `core/PluginRegistry` and `NativePluginManager` load Studio and native plugins.
 - **Script hot reload.** Saving a script reloads it on the next tick.
 - **Rollback netcode foundation** (`net/RollbackSession`) and the **audio spectrogram**, both from 0.4.0.
+
+---
+
+## Launch — public beta (this week)
+
+Goal: someone on Reddit downloads Kronos on Friday, it opens on the first
+try, and they make or play something within five minutes. No new features
+until the post is up; this week is about making what exists work for a
+stranger.
+
+| Step | Done when | Who |
+|---|---|---|
+| Windows build passes CI with the MSVC runtime fix | `build.yml` is green on `4.1-creators` and the zip contains `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` | Claude |
+| Fresh-PC test | The Windows zip and installer start on a PC that never had Kronos or the VC++ redistributable, and the Linux download runs | Owner (Claude walks through it) |
+| First-run check | A new project opens from the template, Play works, closing Studio leaves no crash report, Broken Bones starts | Claude |
+| Version bump and release `4.1.0-beta` | The three version numbers match, the tag is pushed, and the GitHub Release has every download | Claude, only after the owner says OK |
+| Licence decision | `LICENSE` and the website say the same thing (today `LICENSE` says "All Rights Reserved"; don't call Kronos "open source" unless that changes) | Owner decides |
+| Online or offline | Decide whether the post includes publishing and playing online. If yes: staging deploy with migration 011, publish → package → play verified, then production | Owner decides; deploys only with OK |
+| Launch kit | A 30–60 s video (`marketing/pipeline`), 3–4 screenshots, `marketing/site` download links pointing at the release, a short README "what is this / how to start" | Claude makes, owner approves |
+| Feedback channel | GitHub issue templates for bugs and ideas, linked from the post and the site | Claude |
+| Pick where to post | Each subreddit's rules read first (r/gaming is for players and strict about self-promotion; r/IndieDev, r/indiegames, r/playmygame and r/gamedev's showcase threads fit better) | Owner |
+
+### Done locally (2026-10-06), waiting for release
+- **My Games catalogue**: Studio's Save Game puts every project in the Player's Create page, with game pages (Play / Edit in Studio), play counts and "Jump back in" on Home. Broken Bones is listed and counts plays. See QUICKSTART "My Games".
+- **Roblox controls**: hold right mouse to look, Shift for shift lock, wheel zoom, Ctrl to run, a camera that stays out of walls, smooth turning, and legs that turn toward strafes and walk backwards (fixes the moonwalk). Online play uses the same facing logic on the client.
+- **Solid parts**: inserted parts get a matching anchored collider that follows resizing.
+- **Blocky avatar**: a Roblox-style body: big rounded head with a smile, box torso, chunky arms and legs, T-shirt with short sleeves, hair cap. Shorter arms and neck (the shipped `.anim` files were converted to match). Works in the Avatar page, games, Studio and the Broken Bones ragdoll.
+
+After the post: collect what people actually hit (crashes, confusing UI,
+missing features) into the 4.4 list below before starting anything new.
+
+---
+
+## 4.3 — Roblox bridge
+
+The idea: a Roblox creator should be able to bring a place over and see it
+run. Kronos already has the importer's front half
+(`engine/src/migration/`: `.rbxlx` parsing, property decoding, a hydrator
+that spawns parts, lights and scripts into the scene, and a scanner that
+lists unsupported Roblox APIs). What's missing is the part that makes the
+imported scripts run: Roblox's object model and services in Luau.
+
+Rules for this track:
+- Build the most-used API first, measured by the compatibility score, not
+  by guessing.
+- Only test with places we made ourselves or that are clearly licensed for
+  it. Never ship someone else's game, and don't use Roblox logos in
+  marketing; describing the feature plainly ("imports `.rbxlx` places") is
+  fine.
+- Every step ends with tests, a visual check in Studio, and a doc section.
+
+| # | Step | Done when | Size |
+|---|---|---|---|
+| 1 | **Compatibility score and test corpus** | A folder of small test places (obby, tycoon button, door, leaderboard, GUI shop) plus a headless `kronos_compat` tool that imports each one, runs it for N seconds and prints % of instances mapped, % of API calls supported and script errors. Studio's import report shows the same score. | 1 week |
+| 2 | **Datatypes** | `Vector3`, `CFrame`, `Color3`, `BrickColor`, `UDim`/`UDim2`, `Enum` (common items), `TweenInfo`, `NumberRange` work in Luau with Roblox's constructors, operators and common methods, checked against known values | 1–2 weeks |
+| 3 | **Instance tree** | `game`, `workspace`, `script`, `Instance.new`, `.Name`, `.Parent`, `:FindFirstChild`, `:WaitForChild`, `:GetChildren`, `:GetDescendants`, `:Clone`, `:Destroy`, `:IsA`, attributes. Part properties (`Position`, `Size`, `CFrame`, `Color`, `Anchored`, `CanCollide`, `Transparency`, `Material`) read and write the real ECS entity | 3–4 weeks |
+| 4 | **Events** | `:Connect`/`:Disconnect`/`:Once`/`:Wait`, `.Touched`/`.TouchEnded`, `.Changed`, `:GetPropertyChangedSignal`, `RunService.Heartbeat`/`Stepped`/`RenderStepped`, `wait`/`spawn`/`delay` mapped onto `task` | 1–2 weeks |
+| 5 | **Players and characters** | `Players`, `LocalPlayer`, `PlayerAdded`/`PlayerRemoving`, `Character`/`CharacterAdded`, `Humanoid` (`WalkSpeed`, `JumpPower`, `Health`, `Died`, `MoveTo`) on the Kronos avatar; leaderstats show in the player list. The obby test place is playable start to finish | 3–4 weeks |
+| 6 | **Client/server** | `RemoteEvent`/`RemoteFunction`, `ReplicatedStorage`, `ServerScriptService`, `StarterPlayerScripts`, LocalScripts running only on clients, on top of the existing `network` layer | 2–3 weeks |
+| 7 | **DataStore** | `DataStoreService:GetDataStore`, `GetAsync`/`SetAsync`/`UpdateAsync`/`RemoveAsync`/`IncrementAsync` with Roblox-like limits. A local emulator file in Studio, and a backend table plus API for published games (backend deploy needs OK) | 2–3 weeks |
+| 8 | **Common services** | `TweenService`, `Debris`, `SoundService`/`Sound` (on the 4.2 mixer), `Lighting` basics, `CollectionService` tags | 2 weeks |
+| 9 | **GUI** | `ScreenGui`, `Frame`, `TextLabel`, `TextButton`, `ImageLabel`, `UIListLayout` subset, drawn by the existing UI layer with clicks wired up. The GUI shop test place works | 3–4 weeks |
+| 10 | **Binary `.rbxl`/`.rbxm`** | Places saved in Roblox Studio's default binary format import the same as `.rbxlx` | 2 weeks |
+| 11 | **Flagship demo** | A Roblox-made obby or tycoon imported, played with friends in Kronos, published to the Kronos catalog, and shown in a video | 1 week |
+
+Done means: the test corpus scores at least 90%, and the flagship demo runs
+start to finish without hand edits.
+
+---
+
+## 4.4 — Polish (alongside 4.3)
+
+Small, high-value items, picked up between bridge steps:
+
+- **Launch feedback**: the crashes and confusing spots people report after Friday, fixed first.
+- **Per-source sound instances**: two entities using the same sound file can play at the same time (each `AudioSource` gets its own `ma_sound` via `ma_sound_init_copy`).
+- **Keyframe-bound audio** (from 4.2): timeline events play sounds at exact sample times, through the shared mixer. 2–3 weeks.
+- **Build cache** (from 4.2): a `KRONOS_COMPILER_CACHE` CMake option for sccache/ccache, and a content-hash cache for compiled shaders. 1 week. Distributed builds across machines only if build times become a real problem.
+- **Third-party plugin sandbox on Windows** (Linux has it; Windows skips third-party plugins today).
+- **Rollback-aware Luau**: scripts that run inside rollback matches.
 
 ---
 
@@ -84,14 +166,15 @@ Engine internals so large worlds run well. This is mostly the ROLE & MANDATE spe
 
 ### Still to build
 
-| Item | Notes | Estimate |
-|---|---|---|
-| Keyframe-bound audio | Timeline (Movie Maker/trailer) nodes trigger audio events with sample-accurate scheduling | 2–3 weeks |
-| Distributed compilation | Integrate `sccache`/`icecream` for C++ and a networked shader-compile cache rather than writing our own scheduler | 1–2 weeks |
+Keyframe-bound audio and the build cache moved to 4.4 above.
 
 ---
 
-## 5.0 — Next-gen
+## Later — next-gen (parked)
+
+These stay on the list but wait until the Roblox bridge works, because a
+creator moving their game over matters more right now than new rendering
+tech. Several also need vendor SDKs or licence decisions first.
 
 Large, independent tracks. Each could be its own release, and several need vendor SDKs or licensing decisions first.
 

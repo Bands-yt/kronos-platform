@@ -182,7 +182,8 @@ public:
     // found as a real sibling of this running executable via
     // core::executableDirectory()) -- does not exit engine_runtime, since
     // a solo creator plausibly wants both running at once.
-    void launchStudio();
+    // Prefers kronos_studio, falls back to the older studio binary. `fileToOpen` may be a .project.
+    void launchStudio(const std::string& fileToOpen = std::string());
 
     // Kronos ("Moderation Architecture v2", "Tester Safety Mode"): a
     // real, pre-launch safety default for an unverified tester build --
@@ -429,9 +430,12 @@ private:
     // process.
     void startBrowserSignIn();
     [[nodiscard]] std::string backendStatusLine() const;
-    // The real disk-discovered games, drawn in their own "Local / Dev"
-    // tab so they are never mistaken for published Kronos content.
-    void drawLocalGamesTab();
+    void refreshLocalGames();
+    // Roblox-style tile grid; clicking a tile opens the game's page.
+    void drawGameTileGrid(const std::vector<const core::GameCatalogueEntry*>& games, const char* id);
+    void drawGameDetailsPopup();
+    void playLocalGame(const core::GameCatalogueEntry& game);
+    std::vector<const core::GameCatalogueEntry*> localGames(bool mine) const;
 
     void startUpdateCheck();
     // Real, non-blocking; called once per real tick() alongside
@@ -832,6 +836,8 @@ private:
     // already establishes.
     std::vector<core::GameCatalogueEntry> discoveredGames_;
     bool gamesScanned_ = false;
+    std::optional<core::GameCatalogueEntry> detailsGame_;
+    bool detailsPopupRequested_ = false;
 
     // Kronos ("Animated Hourglass Loading Screen" -- "scene loads"):
     // real, deferred game-load state -- selectGame() used to call
@@ -890,8 +896,7 @@ private:
     // cursor was permanently captured/hidden at screen center the whole
     // time InGame, which made the pause menu -- and every other overlay
     // -- unusable with a real mouse): real, player-controlled toggle
-    // (Shift, edge-detected via mouseLockKeyWasDown_ same as every other
-    // real key-edge check in this file) -- see tick()'s own handling and
+    // (Shift) -- see tick()'s own handling and
     // finishPendingGameLoad()'s own comment for the new real default
     // (unlocked/free cursor) this replaces. Independent of
     // showPauseMenuOverlay_: the pause menu always forces the actual

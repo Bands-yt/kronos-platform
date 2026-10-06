@@ -553,7 +553,10 @@ public:
     // ImGui) sets this explicitly instead while its own real chat input
     // box has focus, so WASD/mouse-look don't also drive the character
     // while a player is typing a chat message.
-    void setMovementInputSuspended(bool suspended) { movementInputSuspended_ = suspended; }
+    void setMovementInputSuspended(bool suspended) {
+        movementInputSuspended_ = suspended;
+        input_.setOrbitDragEnabled(!suspended);
+    }
 
     // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
     // Layer" -- "Accessibility: Reduced motion mode"): real, same "caller
@@ -1183,6 +1186,13 @@ private:
     // tick" instead and feeds that to the new physics-free tick()
     // overload directly.
     glm::vec3 networkedAvatarLastPosition_{0.0f};
+    // The local online player's facing is drawn from how it actually moves
+    // (or the camera in shift lock), not the server's rotation, so an older
+    // server can't make the character face the wrong way.
+    float networkedFacingYaw_ = 0.0f;
+    float networkCameraZoom_ = 1.0f;
+    float networkWheelAccumulator_ = 0.0f;
+    float networkShoulderBlend_ = 0.0f;
 
     // Kronos (beta-blocking fix -- "rigged avatar turns into a capsule on
     // rejoin"): what actually happened wasn't a degrade at all --

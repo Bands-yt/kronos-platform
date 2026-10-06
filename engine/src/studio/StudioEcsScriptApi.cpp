@@ -52,6 +52,14 @@ int luaSetPosition(lua_State* L) {
     return 0;
 }
 
+int luaSetScale(lua_State* L) {
+    core::EntityId entity = idFromLua(L, 1);
+    glm::vec3 scale(luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4));
+    core::ECS& ecs = ecsFromUpvalue(L);
+    if (auto* transform = ecs.tryGetComponent<core::Transform>(entity)) transform->scale = scale;
+    return 0;
+}
+
 int luaSetColor(lua_State* L) {
     core::EntityId entity = idFromLua(L, 1);
     glm::vec4 color(luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4), luaL_optnumber(L, 5, 1.0));
@@ -93,6 +101,7 @@ void registerStudioEcsBindings(lua_State* L, core::ECS& ecs) {
         {"findByName", &luaFindByName},
         {"getPosition", &luaGetPosition},
         {"setPosition", &luaSetPosition},
+        {"setScale", &luaSetScale},
         {"setColor", &luaSetColor},
         {"setParent", &luaSetParent},
         {"unparent", &luaUnparent},
