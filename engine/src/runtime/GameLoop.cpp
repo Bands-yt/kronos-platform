@@ -7,6 +7,8 @@
 
 #include "core/Logger.hpp"
 
+#include <SDL2/SDL.h>
+
 namespace engine::runtime {
 
 using namespace engine::core;
@@ -42,6 +44,7 @@ void GameLoop::simTick(float dt) {
     } else {
         subsystems_.audio->mix(*subsystems_.ecs, glm::vec3{0.0f}, glm::vec3{0.0f, 0.0f, -1.0f}, glm::vec3{0.0f, 1.0f, 0.0f});
     }
+    subsystems_.audio->update(dt);
 }
 
 void GameLoop::networkTick(float dt) {
@@ -101,7 +104,14 @@ void GameLoop::run(RunConfig config) {
     constexpr int kMaxSimStepsPerFrame = 16;
     constexpr int kMaxNetworkStepsPerFrame = 8;
 
-    while (subsystems_.window == nullptr || subsystems_.window->pumpEvents()) {
+    // Headless runs have no window to pump, but SDL still turns SIGTERM/SIGINT
+    // into SDL_QUIT, so poll for it or the process can never be stopped.
+    auto keepRunning = [this] {
+        if (subsystems_.window != nullptr) return subsystems_.window->pumpEvents();
+        SDL_PumpEvents();
+        return !SDL_QuitRequested();
+    };
+    while (keepRunning()) {
         auto frameStart = Clock::now();
         float frameTime = std::chrono::duration<float>(frameStart - previous).count();
         previous = frameStart;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 
 #include <volk.h>
@@ -8,6 +9,7 @@
 #include "core/AssetCache.hpp"
 #include "core/AssetMetadata.hpp"
 #include "core/Mesh.hpp"
+#include "core/ResourceManager.hpp"
 #include "studio/IStudioPlugin.hpp"
 
 namespace engine::studio::plugins {
@@ -37,12 +39,24 @@ public:
 
     void drawPanel(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities) override;
 
-    // Opens a real native file-open dialog (core::openFileDialog()) and
-    // fills pathBuffer_ on success -- called by the "Browse..." button
-    // here and by ViewportPanel's own "Import 3D Asset..." toolbar
-    // button, so that one skips straight to the dialog instead of just
-    // opening this panel.
-    void browseForFile();
+    void update(float dt, core::ECS& ecs, core::EntityId selected,
+                const std::vector<core::EntityId>& selectedEntities) override;
+
+    // Opens a native file dialog without blocking the frame. With
+    // `importWhenPicked` the chosen model is added to the scene as a new
+    // entity on the next update() and reported through the import callback.
+    void browseForFile(bool importWhenPicked = true);
+
+    // With a resource manager the file decodes on a worker and the entity
+    // appears (and onImported fires) from update() once it is on the GPU;
+    // this returns kNullEntity in that case.
+    core::EntityId importModel(core::ECS& ecs, const std::string& path, bool asNewEntity);
+    void setResources(core::ResourceManager* resources) { resources_ = resources; }
+    [[nodiscard]] bool importInProgress() const { return !pending_.empty(); }
+
+    void setOnImported(std::function<void(core::EntityId, const std::string&)> callback) {
+        onImported_ = std::move(callback);
+    }
 
 private:
     VmaAllocator allocator_;
@@ -51,11 +65,23 @@ private:
     VkQueue queue_;
     core::MeshLibrary* meshLibrary_;
     core::AssetCache<uint32_t> meshCache_;
+    core::ResourceManager* resources_ = nullptr;
+    struct PendingImport {
+        core::ResourceHandle resource;
+        bool asNewEntity = false;
+    };
+    std::vector<PendingImport> pending_;
+    [[nodiscard]] bool asyncImports() const;
 
     char pathBuffer_[256] = "";
     std::string statusMessage_;
     core::AssetMetadata lastMetadata_;
     bool hasPreview_ = false;
+    std::string pendingImport_;
+    std::function<void(core::EntityId, const std::string&)> onImported_;
+
+    core::EntityId placeEntity(core::ECS& ecs, const std::string& path, uint32_t meshHandle, bool asNewEntity);
+    void finishPendingImport(core::ECS& ecs);
 };
 
 } // namespace engine::studio::plugins

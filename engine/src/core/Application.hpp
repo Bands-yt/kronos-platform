@@ -5,6 +5,8 @@
 #include <deque>
 #include <string>
 
+#include "core/ResourceManager.hpp"
+#include "core/WorldStreaming.hpp"
 #include "core/Audio.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/AvatarController.hpp"
@@ -18,6 +20,7 @@
 #include "core/Interactable.hpp"
 #include "core/Mesh.hpp"
 #include "core/NativePluginManager.hpp"
+#include "plugin/PluginHost.hpp"
 #include "core/Navigation.hpp"
 #include "core/ParticleSystem.hpp"
 #include "core/PerformanceDiagnostics.hpp"
@@ -28,12 +31,14 @@
 #include "core/RiggedAvatar.hpp"
 #include "core/RiggedMesh.hpp"
 #include "net/NetworkSession.hpp"
+#include "net/RollbackNetSession.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/ScriptAvatarApi.hpp"
 #include "core/ScriptChatApi.hpp"
 #include "safety/GeminiModerationClient.hpp"
 #include "core/ScriptNetworkApi.hpp"
 #include "core/ScriptUiApi.hpp"
+#include "core/ScriptAudioApi.hpp"
 #include "core/ScriptUiLayoutApi.hpp"
 #include "core/ScriptWorldApi.hpp"
 #include "core/TrailerScriptApi.hpp"
@@ -125,6 +130,7 @@ public:
 
     [[nodiscard]] Window& window() { return window_; }
     [[nodiscard]] Renderer& renderer() { return renderer_; }
+    [[nodiscard]] bool isHeadless() const { return headless_; }
     [[nodiscard]] ECS& ecs() { return ecs_; }
     [[nodiscard]] Physics& physics() { return physics_; }
     [[nodiscard]] Audio& audio() { return audio_; }
@@ -135,7 +141,10 @@ public:
     // every frame alongside tickScriptHotReload() below. See
     // NativePluginManager.hpp's own class comment for the full contract.
     [[nodiscard]] NativePluginManager& nativePlugins() { return nativePlugins_; }
+    [[nodiscard]] plugin::PluginHost& pluginApi() { return pluginApi_; }
     [[nodiscard]] MeshLibrary& meshLibrary() { return meshLibrary_; }
+    [[nodiscard]] ResourceManager& resources() { return resources_; }
+    [[nodiscard]] WorldStreamer& worldStreamer() { return worldStreamer_; }
     [[nodiscard]] TextureLibrary& textureLibrary() { return textureLibrary_; }
     [[nodiscard]] Camera& camera() { return camera_; }
     [[nodiscard]] platform_adapters::UnifiedInput& input() { return input_; }
@@ -429,6 +438,16 @@ public:
     [[nodiscard]] bool startNetworking(const net::NetworkSession::Config& config);
     [[nodiscard]] net::NetworkSession& networkSession() { return networkSession_; }
 
+    // Peer-to-peer rollback match on the loaded scene: physics is frozen
+    // until every player has joined, then each player gets a character
+    // capsule and the whole world is simulated on every machine, with
+    // rollback hiding the network delay. Needs a window. Scripts must not
+    // push physics objects around during a match (only the rollback
+    // simulation may), or the players' games drift apart and the match ends.
+    bool startRollbackMatch(const net::RollbackNetSession::Config& config, std::string* error = nullptr);
+    [[nodiscard]] net::RollbackNetSession& rollbackMatch() { return rollbackNet_; }
+    [[nodiscard]] const std::vector<EntityId>& rollbackPlayers() const { return rollbackPlayers_; }
+
     // The real, simple (Transform + Name + Renderable, no physics
     // capsule) networked-player entity this process's own local input
     // drives in Client mode -- see startNetworking()'s implementation
@@ -719,12 +738,19 @@ private:
     // Kronos ("User Interface" world-building) -- see UIRenderer.hpp's
     // own header comment.
     UIRenderer uiRenderer_;
+    ResourceManager resources_{2};
     ECS ecs_;
     Physics physics_;
     Audio audio_;
     Scripting scripting_;
     NativePluginManager nativePlugins_;
+    plugin::PluginHost pluginApi_;
     MeshLibrary meshLibrary_;
+    void updateWorldStreaming();
+    void tickRollbackMatch(float dt);
+    PhysicsRollback* beginRollbackMatch(uint32_t players, uint32_t localPlayer);
+    void showRollbackStatus();
+    WorldStreamer worldStreamer_; // after ecs_/resources_/meshLibrary_: closes before they go
     TextureLibrary textureLibrary_;
     Camera camera_;
     platform_adapters::UnifiedInput input_;
@@ -804,6 +830,7 @@ private:
     // scripting_ already constructed first; built in initialize(), same
     // deferred-construction shape scriptAvatarApi_ above uses.
     std::unique_ptr<ScriptUiLayoutApi> scriptUiLayoutApi_;
+    std::unique_ptr<ScriptAudioApi> scriptAudioApi_;
     // Edge-detection for the "Interact" input action (UnifiedInput only
     // exposes level state via isActionDown(), see its header) -- so
     // events.onInteract fires once per press, not once per tick while held.
@@ -1123,6 +1150,15 @@ private:
     // Sprint 11 ("Networking Foundation") state -- see startNetworking()'s
     // own comment.
     net::NetworkSession networkSession_;
+
+    std::unique_ptr<PhysicsRollback> rollback_;
+    net::RollbackNetSession rollbackNet_; // after rollback_: holds a pointer to it
+    std::vector<EntityId> rollbackPlayers_;
+    float rollbackFrameDt_ = 1.0f / 120.0f;
+    net::RollbackNetSession::Phase rollbackShownPhase_ = net::RollbackNetSession::Phase::Idle;
+    float rollbackTitleTimer_ = 0.0f;
+    std::string baseWindowTitle_;
+    uint32_t rollbackCapsuleMesh_ = Renderable::kInvalidHandle;
     EntityId networkedLocalPlayerEntity_ = kNullEntity;
 
     // Kronos (beta, "restore the 18-bone humanoid for online play"): the

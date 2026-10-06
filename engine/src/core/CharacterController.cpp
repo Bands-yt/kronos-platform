@@ -6,6 +6,7 @@
 #include <SDL2/SDL.h>
 
 #include "core/AvatarLOD.hpp"
+#include "core/DeterministicMath.hpp"
 
 namespace engine::core {
 
@@ -34,6 +35,7 @@ void CharacterController::configureInput(platform_adapters::UnifiedInput& input)
 
 EntityId CharacterController::spawn(ECS& ecs, Physics& physics, glm::vec3 spawnPosition, uint32_t noseMeshHandle) {
     entity_ = physics.createCharacterCapsule(ecs, spawnPosition, settings_.capsuleRadius, settings_.capsuleHalfHeight, 70.0f);
+    ecs.addComponent<StreamingSource>(entity_);
 
     if (noseMeshHandle != Renderable::kInvalidHandle) {
         noseEntity_ = ecs.createEntity("CharacterFacingMarker");
@@ -48,8 +50,14 @@ EntityId CharacterController::spawn(ECS& ecs, Physics& physics, glm::vec3 spawnP
 }
 
 bool CharacterController::tryStepUp(ECS& ecs, Physics& physics, glm::vec3 moveDir) {
+    return stepUp(ecs, physics, entity_, settings_, moveDir);
+}
+
+bool CharacterController::stepUp(ECS& ecs, Physics& physics, EntityId entity, const Settings& settings,
+                                 glm::vec3 moveDir) {
+    const Settings& settings_ = settings;
     if (glm::length(moveDir) < 0.0001f || settings_.stepHeight <= 0.0f) return false;
-    auto* transform = ecs.tryGetComponent<Transform>(entity_);
+    auto* transform = ecs.tryGetComponent<Transform>(entity);
     if (!transform) return false;
 
     glm::vec3 dir = glm::normalize(glm::vec3(moveDir.x, 0.0f, moveDir.z));
@@ -105,8 +113,57 @@ bool CharacterController::tryStepUp(ECS& ecs, Physics& physics, glm::vec3 moveDi
     // reposition reads as smooth climbing rather than a visible teleport
     // (the same assumption real "step offset" features in other engines
     // make -- this isn't a smoothed climb over multiple ticks).
-    physics.setPosition(entity_, ecs, center + glm::vec3(0.0f, settings_.stepHeight, 0.0f));
+    physics.setPosition(entity, ecs, center + glm::vec3(0.0f, settings_.stepHeight, 0.0f));
     return true;
+}
+
+void CharacterController::attachExternallyMoved(EntityId entity) {
+    entity_ = entity;
+    externallyMoved_ = true;
+    cameraFocusInitialized_ = false;
+}
+
+RollbackInput CharacterController::sampleRollbackInput(platform_adapters::UnifiedInput& input) const {
+    glm::vec2 move(0.0f);
+    if (input.isActionDown("MoveForward")) move.y += 1.0f;
+    if (input.isActionDown("MoveBackward")) move.y -= 1.0f;
+    if (input.isActionDown("MoveRight")) move.x += 1.0f;
+    if (input.isActionDown("MoveLeft")) move.x -= 1.0f;
+    if (glm::length(move) > 1.0f) move = glm::normalize(move);
+    uint16_t buttons = 0;
+    if (input.isActionDown("Jump")) buttons |= RollbackInput::Jump;
+    if (input.isActionDown("Run")) buttons |= RollbackInput::Sprint;
+    return RollbackInput::make(move, glm::radians(cameraYawDegrees_), glm::radians(cameraPitchDegrees_), buttons);
+}
+
+void CharacterController::simulateRollback(Physics& physics, ECS& ecs, EntityId entity, const Settings& settings,
+                                           const RollbackInput& input, float dt, float& facingYaw) {
+    const float yaw = input.yawRadians();
+    const glm::vec3 forward(det::cos(yaw), 0.0f, det::sin(yaw));
+    const glm::vec3 right(-forward.z, 0.0f, forward.x);
+    const glm::vec2 axis = input.move();
+    glm::vec3 moveDir = forward * axis.y + right * axis.x;
+    const float amount = glm::length(moveDir);
+    const bool hasInput = amount > 0.0001f;
+    if (amount > 1.0f) moveDir /= amount;
+
+    const Physics::GroundInfo ground = physics.checkGround(entity, ecs, settings.capsuleHalfHeight, settings.capsuleRadius);
+    const float minGroundNormalY = det::cos(glm::radians(settings.maxSlopeDegrees));
+    const bool standableGround = ground.grounded && ground.normal.y >= minGroundNormalY;
+
+    const float targetSpeed = input.held(RollbackInput::Sprint) ? settings.runSpeed : settings.walkSpeed;
+    const glm::vec2 targetVelocity = glm::vec2(moveDir.x, moveDir.z) * targetSpeed;
+    const glm::vec3 current3 = physics.getLinearVelocity(entity, ecs);
+    const glm::vec2 current(current3.x, current3.z);
+    float rate = glm::length(targetVelocity) > glm::length(current) ? settings.groundAcceleration
+                                                                     : settings.groundDeceleration;
+    if (!standableGround) rate *= settings.airControlMultiplier;
+    physics.setHorizontalVelocity(entity, ecs, rampVelocityTowardTarget(current, targetVelocity, rate, dt));
+
+    if (hasInput) facingYaw = det::atan2(moveDir.x, moveDir.z);
+    physics.setRotationY(entity, ecs, facingYaw);
+    if (standableGround && hasInput) stepUp(ecs, physics, entity, settings, moveDir);
+    if (input.held(RollbackInput::Jump) && standableGround) physics.setVerticalVelocity(entity, ecs, settings.jumpSpeed);
 }
 
 void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_adapters::UnifiedInput& input,
@@ -127,68 +184,70 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
     glm::vec3 camForward = glm::normalize(glm::vec3(std::cos(yawRad), 0.0f, std::sin(yawRad)));
     glm::vec3 camRight = glm::normalize(glm::cross(camForward, glm::vec3(0.0f, 1.0f, 0.0f)));
 
-    // Animation -> movement sync: a playing full-body emote takes over
-    // the character the same way Roblox's own client blocks WASD input
-    // during one -- see tick()'s header comment on why this isn't a full
-    // root-motion system.
-    bool emoteSuppressesMovement = avatarController != nullptr && avatarController->isEmotePlaying();
+    if (!externallyMoved_) {
+        // Animation -> movement sync: a playing full-body emote takes over
+        // the character the same way Roblox's own client blocks WASD input
+        // during one -- see tick()'s header comment on why this isn't a full
+        // root-motion system.
+        bool emoteSuppressesMovement = avatarController != nullptr && avatarController->isEmotePlaying();
 
-    glm::vec3 moveDir(0.0f);
-    if (!emoteSuppressesMovement) {
-        if (input.isActionDown("MoveForward")) moveDir += camForward;
-        if (input.isActionDown("MoveBackward")) moveDir -= camForward;
-        if (input.isActionDown("MoveRight")) moveDir += camRight;
-        if (input.isActionDown("MoveLeft")) moveDir -= camRight;
-    }
-    bool hasInput = glm::length(moveDir) > 0.0001f;
-    if (hasInput) moveDir = glm::normalize(moveDir);
+        glm::vec3 moveDir(0.0f);
+        if (!emoteSuppressesMovement) {
+            if (input.isActionDown("MoveForward")) moveDir += camForward;
+            if (input.isActionDown("MoveBackward")) moveDir -= camForward;
+            if (input.isActionDown("MoveRight")) moveDir += camRight;
+            if (input.isActionDown("MoveLeft")) moveDir -= camRight;
+        }
+        bool hasInput = glm::length(moveDir) > 0.0001f;
+        if (hasInput) moveDir = glm::normalize(moveDir);
 
-    // Real slope limit: isGrounded()'s raw raycast-hit-something bool
-    // can't tell a walkable floor from a too-steep wall/ramp -- checkGround()
-    // also resolves the real surface normal, and the angle between that
-    // and world-up is what actually decides "standable" here.
-    Physics::GroundInfo ground =
-        physics.checkGround(entity_, ecs, settings_.capsuleHalfHeight, settings_.capsuleRadius);
-    float slopeDegrees = glm::degrees(std::acos(std::clamp(ground.normal.y, -1.0f, 1.0f)));
-    bool standableGround = ground.grounded && slopeDegrees <= settings_.maxSlopeDegrees;
+        // Real slope limit: isGrounded()'s raw raycast-hit-something bool
+        // can't tell a walkable floor from a too-steep wall/ramp -- checkGround()
+        // also resolves the real surface normal, and the angle between that
+        // and world-up is what actually decides "standable" here.
+        Physics::GroundInfo ground =
+            physics.checkGround(entity_, ecs, settings_.capsuleHalfHeight, settings_.capsuleRadius);
+        float slopeDegrees = glm::degrees(std::acos(std::clamp(ground.normal.y, -1.0f, 1.0f)));
+        bool standableGround = ground.grounded && slopeDegrees <= settings_.maxSlopeDegrees;
 
-    bool running = input.isActionDown("Run");
-    float targetSpeed = running ? settings_.runSpeed : settings_.walkSpeed;
-    glm::vec2 targetVelocity = hasInput ? glm::vec2(moveDir.x, moveDir.z) * targetSpeed : glm::vec2(0.0f);
+        bool running = input.isActionDown("Run");
+        float targetSpeed = running ? settings_.runSpeed : settings_.walkSpeed;
+        glm::vec2 targetVelocity = hasInput ? glm::vec2(moveDir.x, moveDir.z) * targetSpeed : glm::vec2(0.0f);
 
-    // Real acceleration model (see Settings::groundAcceleration's
-    // comment): ramp the *current* horizontal velocity toward the target
-    // instead of snapping to it. Accelerating and decelerating use
-    // different rates (starting to move vs. grinding to a halt feel
-    // different), and airControlMultiplier scales down how much
-    // authority input has while airborne.
-    glm::vec3 currentVelocity3 = physics.getLinearVelocity(entity_, ecs);
-    glm::vec2 currentVelocity(currentVelocity3.x, currentVelocity3.z);
-    bool accelerating = glm::length(targetVelocity) > glm::length(currentVelocity);
-    float rate = accelerating ? settings_.groundAcceleration : settings_.groundDeceleration;
-    if (!standableGround) rate *= settings_.airControlMultiplier;
-    glm::vec2 newVelocity = rampVelocityTowardTarget(currentVelocity, targetVelocity, rate, dt);
+        // Real acceleration model (see Settings::groundAcceleration's
+        // comment): ramp the *current* horizontal velocity toward the target
+        // instead of snapping to it. Accelerating and decelerating use
+        // different rates (starting to move vs. grinding to a halt feel
+        // different), and airControlMultiplier scales down how much
+        // authority input has while airborne.
+        glm::vec3 currentVelocity3 = physics.getLinearVelocity(entity_, ecs);
+        glm::vec2 currentVelocity(currentVelocity3.x, currentVelocity3.z);
+        bool accelerating = glm::length(targetVelocity) > glm::length(currentVelocity);
+        float rate = accelerating ? settings_.groundAcceleration : settings_.groundDeceleration;
+        if (!standableGround) rate *= settings_.airControlMultiplier;
+        glm::vec2 newVelocity = rampVelocityTowardTarget(currentVelocity, targetVelocity, rate, dt);
 
-    physics.setHorizontalVelocity(entity_, ecs, newVelocity);
+        physics.setHorizontalVelocity(entity_, ecs, newVelocity);
 
-    if (hasInput) {
-        // Face the direction of movement (Roblox's default character
-        // behavior) -- only updated while actually moving, so the
-        // character holds its last facing when you stop rather than
-        // snapping back to some default.
-        facingYawRadians_ = std::atan2(moveDir.x, moveDir.z);
-    }
-    physics.setRotationY(entity_, ecs, facingYawRadians_);
+        if (hasInput) {
+            // Face the direction of movement (Roblox's default character
+            // behavior) -- only updated while actually moving, so the
+            // character holds its last facing when you stop rather than
+            // snapping back to some default.
+            facingYawRadians_ = std::atan2(moveDir.x, moveDir.z);
+        }
+        physics.setRotationY(entity_, ecs, facingYawRadians_);
 
-    // Real step-offset: only worth checking while grounded and actually
-    // trying to move somewhere -- an airborne or stationary character has
-    // nothing to step onto.
-    if (standableGround && hasInput) {
-        tryStepUp(ecs, physics, moveDir);
-    }
+        // Real step-offset: only worth checking while grounded and actually
+        // trying to move somewhere -- an airborne or stationary character has
+        // nothing to step onto.
+        if (standableGround && hasInput) {
+            tryStepUp(ecs, physics, moveDir);
+        }
 
-    if (input.isActionDown("Jump") && standableGround) {
-        physics.setVerticalVelocity(entity_, ecs, settings_.jumpSpeed);
+        if (input.isActionDown("Jump") && standableGround) {
+            physics.setVerticalVelocity(entity_, ecs, settings_.jumpSpeed);
+        }
     }
 
     glm::vec3 characterPos(0.0f);

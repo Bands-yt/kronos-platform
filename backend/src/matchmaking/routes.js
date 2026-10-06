@@ -38,7 +38,8 @@ matchmakingRouter.post(
   requireAuth,
   asyncRoute(async (req, res) => {
     const { rows: games } = await query(
-      `SELECT id, slug, title, mature FROM games WHERE slug = $1 AND published = TRUE`,
+      // Dedicated servers fetch packages anonymously, so only reviewed games can be hosted.
+      `SELECT id, slug, title, mature FROM games WHERE slug = $1 AND published = TRUE AND review_status = 'approved'`,
       [req.params.slug],
     );
     if (games.length === 0) throw notFound('No such published game.');

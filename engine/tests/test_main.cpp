@@ -1,3 +1,5 @@
+#include "plugin/PluginHost.hpp"
+#include "plugin/PluginSandbox.hpp"
 #include <set>
 // Assertion-based checks over pure logic in engine_core -- no window, no
 // GPU, no Audio/Scripting init. See tests/CMakeLists.txt's header comment
@@ -16,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <atomic>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -79,6 +82,7 @@
 #include "core/TextureBaker.hpp"
 #include "core/Audio.hpp"
 #include "core/AudioDspGraph.hpp"
+#include "core/ScriptAudioApi.hpp"
 #include "core/PhonemeLipSync.hpp"
 #include "core/AvatarAttachment.hpp"
 #include "core/AvatarController.hpp"
@@ -93,6 +97,8 @@
 #include "core/CatalogueDatabase.hpp"
 #include "core/CharacterController.hpp"
 #include "core/Components.hpp"
+#include "core/RenderResourceLoaders.hpp"
+#include "core/ResourceManager.hpp"
 #include "core/CatalogueIndex.hpp"
 #include "core/CollisionLayers.hpp"
 #include "core/ECS.hpp"
@@ -157,6 +163,15 @@
 #include "core/NativePluginManager.hpp"
 #include "core/ScriptHotReload.hpp"
 #include "hotreload_fixtures/CounterComponent.hpp"
+#include "hotreload_fixtures/StatefulState.hpp"
+#include "core/Bvh.hpp"
+#include "core/SceneSpatialIndex.hpp"
+#include "core/StaticBatching.hpp"
+#include "core/WorldStreaming.hpp"
+#include "core/PhysicsRollback.hpp"
+#include "net/RollbackProtocol.hpp"
+#include "net/RollbackNetSession.hpp"
+#include "core/GpuFeatures.hpp"
 #include "core/ScriptNetworkApi.hpp"
 #include "core/InverseKinematics.hpp"
 #include "core/PhysicalCamera.hpp"
@@ -175,6 +190,7 @@
 #include "core/TerrainLod.hpp"
 #include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
+#include "studio/panels/LuauSymbolIndex.hpp"
 #include "core/ScriptUiApi.hpp"
 #include "core/ScriptMeshApi.hpp"
 #include "core/ScriptWorldApi.hpp"
@@ -237,6 +253,7 @@
 #include "publishing/ThumbnailCapture.hpp"
 #include "publishing/WorldMetadata.hpp"
 #include "publishing/PackageArchive.hpp"
+#include "core/KronosApi.hpp"
 #include "publishing/GamePackage.hpp"
 #include "studio/panels/ColorTextEditBackend.hpp"
 #include "publishing/WorldPackage.hpp"
@@ -293,11 +310,15 @@
 #include "studio/KronosPluginHost.hpp"
 #include "studio/plugins/ModelingModePlugin.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
+#include "studio/plugins/AudioMixerPlugin.hpp"
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
 #include "studio/RuntimeShaderCompiler.hpp"
 #include "studio/ShaderGraph.hpp"
 #include "studio/ShaderGraphCodegen.hpp"
+#include "studio/SurfaceGraphMaterials.hpp"
+#include "studio/VisualScript.hpp"
+#include "studio/VisualScriptCompiler.hpp"
 #include "studio/ParticleComputeGraph.hpp"
 #include "studio/ParticleComputeCodegen.hpp"
 #include "core/GpuParticleCompute.hpp"
@@ -925,6 +946,793 @@ void testShaderGraphCodegenEndToEndCompilesToRealSpirv() {
               "shader-graph-generated SPIR-V starts with the real SPIR-V magic number");
     }
 #endif
+}
+
+namespace {
+
+// Every node kind, each with its first output folded into a running sum
+// that reaches PBR Output, so codegen and compilation cover all of them.
+engine::studio::ShaderGraph makeEveryNodeSurfaceGraph() {
+    using engine::studio::ShaderDataType;
+    using engine::studio::ShaderNodeKind;
+    engine::studio::ShaderGraph graph;
+    std::string error;
+    const int output = graph.addNode(ShaderNodeKind::PbrOutput, 0.0f, 0.0f);
+    int floatSum = -1; // output pin id of the running float sum
+    int colorSum = -1;
+    auto connect = [&](int fromPin, int toPin) { check(graph.addLink(fromPin, toPin, error), "every-node graph link accepted"); };
+    auto accumulate = [&](int& sum, ShaderNodeKind addKind, int pin) {
+        if (sum < 0) {
+            sum = pin;
+            return;
+        }
+        const int add = graph.addNode(addKind, 0.0f, 0.0f);
+        connect(sum, graph.findNode(add)->pinIds[0]);
+        connect(pin, graph.findNode(add)->pinIds[1]);
+        sum = graph.findNode(add)->pinIds[2];
+    };
+    for (int i = 0; i < engine::studio::kShaderNodeKindCount; ++i) {
+        const auto kind = static_cast<ShaderNodeKind>(i);
+        if (kind == ShaderNodeKind::PbrOutput) continue;
+        const int node = graph.addNode(kind, 0.0f, 0.0f);
+        int firstOutput = 0;
+        for (int pinId : graph.findNode(node)->pinIds) {
+            if (graph.findPin(pinId)->isOutput) {
+                firstOutput = pinId;
+                break;
+            }
+        }
+        switch (graph.findPin(firstOutput)->type) {
+            case ShaderDataType::Float: accumulate(floatSum, ShaderNodeKind::AddFloat, firstOutput); break;
+            case ShaderDataType::Vec4: accumulate(colorSum, ShaderNodeKind::AddVec4, firstOutput); break;
+            case ShaderDataType::Vec3: {
+                const int widen = graph.addNode(ShaderNodeKind::Vec3ToVec4, 0.0f, 0.0f);
+                connect(firstOutput, graph.findNode(widen)->pinIds[0]);
+                accumulate(colorSum, ShaderNodeKind::AddVec4, graph.findNode(widen)->pinIds[1]);
+                break;
+            }
+            case ShaderDataType::Vec2: {
+                const int split = graph.addNode(ShaderNodeKind::SplitVec2, 0.0f, 0.0f);
+                connect(firstOutput, graph.findNode(split)->pinIds[0]);
+                accumulate(floatSum, ShaderNodeKind::AddFloat, graph.findNode(split)->pinIds[2]);
+                break;
+            }
+        }
+    }
+    const int saturate = graph.addNode(ShaderNodeKind::Saturate, 0.0f, 0.0f);
+    connect(floatSum, graph.findNode(saturate)->pinIds[0]);
+    connect(graph.findNode(saturate)->pinIds[1], graph.findNode(output)->pinIds[2]); // Roughness
+    connect(colorSum, graph.findNode(output)->pinIds[0]);                            // Base Color
+    const int normal = graph.addNode(ShaderNodeKind::InputWorldNormal, 0.0f, 0.0f);
+    connect(graph.findNode(normal)->pinIds[0], graph.findNode(output)->pinIds[3]); // Emissive
+    return graph;
+}
+
+} // namespace
+
+void testShaderGraphSerializationRoundTrip() {
+    using engine::studio::ShaderGraph;
+    using engine::studio::ShaderNodeKind;
+    ShaderGraph graph;
+    const int constant = graph.addNode(ShaderNodeKind::ConstantVec4, 12.5f, -40.0f);
+    const int split = graph.addNode(ShaderNodeKind::SplitVec4, 200.0f, 10.0f);
+    const int combine = graph.addNode(ShaderNodeKind::CombineVec4, 400.0f, 10.0f);
+    const int output = graph.addNode(ShaderNodeKind::PbrOutput, 600.0f, 0.0f);
+    float* value = graph.findNode(constant)->constantValue;
+    value[0] = 0.125f;
+    value[1] = 1.0f / 3.0f;
+    value[2] = 7.5f;
+    value[3] = 0.5f;
+    std::string error;
+    check(graph.addLink(graph.findNode(constant)->pinIds[0], graph.findNode(split)->pinIds[0], error), "constant -> split");
+    check(graph.addLink(graph.findNode(split)->pinIds[3], graph.findNode(combine)->pinIds[0], error), "split.B -> combine.R");
+    check(graph.addLink(graph.findNode(combine)->pinIds[4], graph.findNode(output)->pinIds[0], error), "combine -> base color");
+
+    const std::string text = graph.serialize();
+    ShaderGraph loaded;
+    check(ShaderGraph::deserialize(text, loaded, error), "serialized graph deserializes");
+    check(loaded.nodes().size() == 4 && loaded.links().size() == 3, "node and link counts survive the round trip");
+    check(loaded.serialize() == text, "re-serializing a loaded graph reproduces the same text");
+    const engine::studio::ShaderNode* loadedConstant = nullptr;
+    for (const auto& node : loaded.nodes()) {
+        if (node.kind == ShaderNodeKind::ConstantVec4) loadedConstant = &node;
+    }
+    check(loadedConstant != nullptr && loadedConstant->constantValue[1] == 1.0f / 3.0f &&
+              loadedConstant->positionX == 12.5f && loadedConstant->positionY == -40.0f,
+          "constant values and node positions round-trip exactly");
+    bool splitBlueLinked = false;
+    for (const auto& link : loaded.links()) {
+        if (loaded.pinIndex(link.outputPinId) == 3 && loaded.findPin(link.outputPinId)->label == "B") splitBlueLinked = true;
+    }
+    check(splitBlueLinked, "a link from the third output of a multi-output node keeps its pin");
+
+    ShaderGraph rejected;
+    check(!ShaderGraph::deserialize("not a graph\n", rejected, error), "text without the header is rejected");
+    check(!ShaderGraph::deserialize("kronos-shader-graph 1\nnode 1 nonsense 0 0 0 0 0 1\n", rejected, error),
+          "unknown node kinds are rejected");
+    check(!ShaderGraph::deserialize("kronos-shader-graph 1\nnode 1 const_float 0 0 0 0 0 1\nnode 2 pbr_output 0 0 0 0 0 1\n"
+                                    "link 1 0 2 0\n",
+                                    rejected, error),
+          "a type-mismatched link (Float into Base Color) is rejected on load");
+    check(error.find("type mismatch") != std::string::npos, "the load error names the link problem");
+
+    for (int i = 0; i < engine::studio::kShaderNodeKindCount; ++i) {
+        ShaderNodeKind kind{};
+        const auto expected = static_cast<ShaderNodeKind>(i);
+        check(engine::studio::shaderNodeKindFromKey(engine::studio::shaderNodeKindKey(expected), kind) && kind == expected,
+              "every node kind's key maps back to the same kind");
+    }
+}
+
+void testShaderGraphSurfaceCodegen() {
+    using engine::studio::ShaderNodeKind;
+    engine::studio::ShaderGraph defaultGraph = engine::studio::ShaderGraph::makeDefault();
+    engine::studio::ShaderGraphCodegenResult plain = engine::studio::generateSurfaceShaderGlsl(defaultGraph, {});
+    check(plain.success, "the default graph generates a surface shader");
+    check(plain.glsl.find("#define KRONOS_SURFACE_GRAPH") != std::string::npos &&
+              plain.glsl.find("#include \"kronos/forward_main.glsl\"") != std::string::npos,
+          "surface shader splices into the shared forward shader");
+    check(plain.glsl.find("albedo = ") != std::string::npos, "a connected Base Color overrides the albedo");
+    check(plain.glsl.find("metallic = ") == std::string::npos && plain.glsl.find("roughness = ") == std::string::npos,
+          "unconnected PBR inputs leave the material's own metallic/roughness alone");
+    check(plain.glsl.find("KRONOS_BINDLESS") == std::string::npos && plain.glsl.find("ray_query") == std::string::npos,
+          "the plain target enables neither bindless nor ray queries");
+
+    engine::studio::ShaderGraphCodegenResult rt = engine::studio::generateSurfaceShaderGlsl(defaultGraph, {true, true});
+    check(rt.success && rt.glsl.rfind("#version 460", 0) == 0 && rt.glsl.find("#define KRONOS_RAY_TRACING") != std::string::npos &&
+              rt.glsl.find("#define KRONOS_BINDLESS") != std::string::npos,
+          "the ray-traced bindless target matches scene_rt.frag's preamble");
+
+    engine::studio::ShaderGraph everything = makeEveryNodeSurfaceGraph();
+    engine::studio::ShaderGraphCodegenResult full = engine::studio::generateSurfaceShaderGlsl(everything, {});
+    check(full.success, "a graph using every node kind generates");
+    if (!full.success) std::fprintf(stderr, "[test] surface codegen error: %s\n", full.errorMessage.c_str());
+    check(full.glsl.find("kgNoise(") != std::string::npos && full.glsl.find("float kgNoise(vec3 x)") != std::string::npos,
+          "noise helper is emitted when a Noise node is used");
+    check(full.glsl.find("scene.cloudParams.w") != std::string::npos, "Time reads the scene clock");
+    check(full.glsl.find("roughness = ") != std::string::npos && full.glsl.find("emissive = ") != std::string::npos,
+          "connected roughness and emissive are written");
+
+#ifdef KRONOS_WITH_SHADERC
+    engine::studio::RuntimeShaderCompiler compiler;
+    const engine::studio::SurfaceShaderTarget targets[] = {{false, false}, {false, true}, {true, false}, {true, true}};
+    for (const auto& target : targets) {
+        auto compiled = engine::studio::SurfaceGraphMaterials::compile(everything.serialize(), target, ENGINE_SHADER_DIR, compiler);
+        check(compiled.success, "every-node surface graph compiles against the real forward shader (all four variants)");
+        if (!compiled.success) {
+            std::fprintf(stderr, "[test] surface compile (rt=%d bindless=%d) failed:\n%s\n", target.rayTracing,
+                         target.bindless, compiled.error.c_str());
+        } else {
+            check(compiled.spirv.front() == 0x07230203u, "surface shader output is SPIR-V");
+        }
+    }
+    auto broken = engine::studio::SurfaceGraphMaterials::compile("garbage", {}, ENGINE_SHADER_DIR, compiler);
+    check(!broken.success && !broken.error.empty(), "a corrupt graph reports an error instead of compiling");
+#endif
+}
+
+void testSceneFileSurfaceGraphRoundTrip() {
+    const std::string graphText = engine::studio::ShaderGraph::makeDefault().serialize();
+    engine::core::SceneFile file;
+    engine::core::SceneEntityRecord record;
+    record.name = "Graph Cube";
+    record.hasRenderable = true;
+    record.surfaceGraph = graphText;
+    file.entities.push_back(record);
+    engine::core::SceneEntityRecord plain;
+    plain.name = "Plain Cube";
+    plain.hasRenderable = true;
+    file.entities.push_back(plain);
+
+    for (const char* extension : {".kscene", ".kronos"}) {
+        const std::string path =
+            (std::filesystem::temp_directory_path() / (std::string("kronos_surface_graph_scene") + extension)).string();
+        check(file.saveToFile(path), "scene with a graph material saves");
+        engine::core::SceneFile loaded;
+        check(loaded.loadFromFile(path), "scene with a graph material loads");
+        check(loaded.entities.size() == 2 && loaded.entities[0].surfaceGraph == graphText,
+              "the graph material survives the save/load round trip (multi-line text intact)");
+        check(loaded.entities.size() == 2 && loaded.entities[1].surfaceGraph.empty(),
+              "entities without a graph material stay plain");
+        std::filesystem::remove(path);
+    }
+}
+
+namespace vs = engine::studio;
+
+bool vsLink(vs::VisualScriptGraph& graph, int fromNode, size_t fromPin, int toNode, size_t toPin) {
+    std::string error;
+    return graph.addLink(graph.findNode(fromNode)->pinIds[fromPin], graph.findNode(toNode)->pinIds[toPin], error);
+}
+
+int vsFirstPin(const vs::VisualScriptGraph& graph, int nodeId, bool output, bool exec) {
+    const vs::VsNode* node = graph.findNode(nodeId);
+    for (size_t i = 0; i < node->pinIds.size(); ++i) {
+        const vs::VsPin* pin = graph.findPin(node->pinIds[i]);
+        if (pin->isOutput == output && (pin->type == vs::VsType::Exec) == exec) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+// Every node kind wired so it is reachable from an event: actions in one
+// On Start chain, values fed into Print nodes, other events into Prints.
+vs::VisualScriptGraph makeEveryNodeVisualScript() {
+    vs::VisualScriptGraph graph;
+    const int start = graph.addNode(vs::VsNodeKind::OnStart, 0, 0);
+    int prevNode = start;
+    size_t prevPin = 0;
+    auto appendPrint = [&](int valueNode, int valuePin) {
+        const int print = graph.addNode(vs::VsNodeKind::Print, 0, 0);
+        vsLink(graph, prevNode, prevPin, print, 0);
+        if (valuePin >= 0) vsLink(graph, valueNode, static_cast<size_t>(valuePin), print, 1);
+        prevNode = print;
+        prevPin = 2;
+    };
+    for (int i = 0; i < vs::kVsNodeKindCount; ++i) {
+        const auto kind = static_cast<vs::VsNodeKind>(i);
+        if (kind == vs::VsNodeKind::OnStart) continue;
+        const int node = graph.addNode(kind, 0, 0);
+        if (vs::vsNodeKindIsEvent(kind)) {
+            const int print = graph.addNode(vs::VsNodeKind::Print, 0, 0);
+            vsLink(graph, node, static_cast<size_t>(vsFirstPin(graph, node, true, true)), print, 0);
+            const int value = vsFirstPin(graph, node, true, false);
+            if (value >= 0) vsLink(graph, node, static_cast<size_t>(value), print, 1);
+        } else if (vsFirstPin(graph, node, false, true) >= 0) {
+            vsLink(graph, prevNode, prevPin, node, 0);
+            prevNode = node;
+            if (kind == vs::VsNodeKind::Branch) prevPin = 2;
+            else if (kind == vs::VsNodeKind::ForLoop) prevPin = 5;
+            else prevPin = static_cast<size_t>(vsFirstPin(graph, node, true, true));
+            const int value = vsFirstPin(graph, node, true, false);
+            if (value >= 0) appendPrint(node, value);
+        } else {
+            appendPrint(node, vsFirstPin(graph, node, true, false));
+        }
+    }
+    return graph;
+}
+
+void testVisualScriptGraphModel() {
+    std::set<std::string> keys;
+    for (int i = 0; i < vs::kVsNodeKindCount; ++i) {
+        const auto kind = static_cast<vs::VsNodeKind>(i);
+        vs::VsNodeKind parsed{};
+        keys.insert(vs::vsNodeKindKey(kind));
+        check(vs::vsNodeKindFromKey(vs::vsNodeKindKey(kind), parsed) && parsed == kind,
+              "every visual script node kind round-trips through its key");
+        check(std::string(vs::vsNodeKindName(kind)).size() > 0 && std::string(vs::vsNodeKindDescription(kind)).size() > 0,
+              "every visual script node kind has a name and a description");
+    }
+    check(static_cast<int>(keys.size()) == vs::kVsNodeKindCount, "visual script node keys are unique");
+
+    vs::VisualScriptGraph graph;
+    const int start = graph.addNode(vs::VsNodeKind::OnStart, 10, 20);
+    const int print = graph.addNode(vs::VsNodeKind::Print, 200, 20);
+    const int setVar = graph.addNode(vs::VsNodeKind::SetVariable, 400, 20);
+    const int number = graph.addNode(vs::VsNodeKind::Number, 0, 200);
+    graph.findNode(print)->literals[1].text = "two words\nand \"quotes\"";
+    graph.findNode(setVar)->field = "high score";
+    graph.findNode(number)->literals[0].x = 0.0f;
+    check(vsLink(graph, start, 0, print, 0) && vsLink(graph, print, 2, setVar, 0) && vsLink(graph, number, 0, setVar, 1),
+          "visual script links connect exec and data pins");
+    check(!vsLink(graph, number, 0, print, 0), "a value pin cannot drive an exec pin");
+    const int other = graph.addNode(vs::VsNodeKind::Print, 0, 0);
+    check(vsLink(graph, start, 0, other, 0) && graph.links().size() == 3,
+          "linking an exec output again replaces its old link");
+
+    std::string error;
+    vs::VisualScriptGraph loaded;
+    check(vs::VisualScriptGraph::deserialize(graph.serialize(), loaded, error), "visual script graph deserializes");
+    vs::VisualScriptGraph reloaded;
+    check(vs::VisualScriptGraph::deserialize(loaded.serialize(), reloaded, error) &&
+              reloaded.serialize() == loaded.serialize() && loaded.links().size() == graph.links().size(),
+          "visual script serialization is stable across reloads");
+    check(loaded.nodes().size() == 5 && loaded.nodes()[1].literals[1].text == "two words\nand \"quotes\"" &&
+              loaded.nodes()[2].field == "high score" && loaded.nodes()[3].literals[0].x == 0.0f,
+          "typed values, variable names and a zeroed constant survive the round trip");
+    check(!vs::VisualScriptGraph::deserialize("kronos-visual-script 1\nnode 1 nope 0 0 -\n", loaded, error) &&
+              error.find("line 2") != std::string::npos,
+          "a bad visual script reports the line it failed on");
+}
+
+void testVisualScriptEveryNodeCompiles() {
+    const vs::VisualScriptGraph graph = makeEveryNodeVisualScript();
+    const vs::VisualScriptCompileResult result = vs::compileVisualScript(graph);
+    check(result.success, ("every visual script node compiles to Luau bytecode: " + result.error).c_str());
+    check(!result.bytecode.empty(), "compiling produces Luau bytecode");
+    check(vs::isGeneratedVisualScriptSource(result.luau), "generated Luau starts with the visual script header");
+    for (const char* expected : {"world.rotateBy", "__spawnBox", "events.onCollision", "events.onInteract",
+                                 "events.onPlayerJoin", "events.onPlayerLeave", "events.onUpdate", "task.wait",
+                                 "vector.magnitude", "math.random", "world.findByName", "__startTime"}) {
+        check(result.luau.find(expected) != std::string::npos,
+              (std::string("generated Luau uses ") + expected).c_str());
+    }
+    check(result.warnings.empty(), "a fully connected visual script has no warnings");
+}
+
+void testVisualScriptCompileErrors() {
+    {
+        vs::VisualScriptGraph graph;
+        const int start = graph.addNode(vs::VsNodeKind::OnStart, 0, 0);
+        const int a = graph.addNode(vs::VsNodeKind::Print, 0, 0);
+        const int b = graph.addNode(vs::VsNodeKind::Print, 0, 0);
+        vsLink(graph, start, 0, a, 0);
+        vsLink(graph, a, 2, b, 0);
+        vsLink(graph, b, 2, a, 0);
+        const auto result = vs::compileVisualScript(graph);
+        check(!result.success && result.errorNodeId == a && result.error.find("loops back") != std::string::npos,
+              "an exec path that loops back is reported on the node it returns to");
+    }
+    {
+        vs::VisualScriptGraph graph;
+        const int start = graph.addNode(vs::VsNodeKind::OnStart, 0, 0);
+        const int update = graph.addNode(vs::VsNodeKind::OnUpdate, 0, 0);
+        const int print = graph.addNode(vs::VsNodeKind::Print, 0, 0);
+        vsLink(graph, start, 0, print, 0);
+        vsLink(graph, update, 1, print, 1);
+        const auto result = vs::compileVisualScript(graph);
+        check(!result.success && result.errorNodeId == print && result.error.find("only exists") != std::string::npos,
+              "using another event's output is a compile error on the node that uses it");
+    }
+    {
+        vs::VisualScriptGraph graph;
+        const int add = graph.addNode(vs::VsNodeKind::Add, 0, 0);
+        const int other = graph.addNode(vs::VsNodeKind::Add, 0, 0);
+        const int start = graph.addNode(vs::VsNodeKind::OnStart, 0, 0);
+        const int print = graph.addNode(vs::VsNodeKind::Print, 0, 0);
+        vsLink(graph, add, 2, other, 0);
+        vsLink(graph, other, 2, add, 0);
+        vsLink(graph, start, 0, print, 0);
+        vsLink(graph, add, 2, print, 1);
+        const auto result = vs::compileVisualScript(graph);
+        check(!result.success && result.error.find("depends on itself") != std::string::npos,
+              "a loop of value nodes is a compile error, not a hang");
+    }
+    {
+        vs::VisualScriptGraph graph;
+        (void)graph.addNode(vs::VsNodeKind::Print, 0, 0);
+        const auto result = vs::compileVisualScript(graph);
+        check(result.success && result.warnings.size() == 2,
+              "a graph with no events compiles but warns that nothing runs");
+    }
+}
+
+void testVisualScriptRunsInLuauVm() {
+    engine::core::ECS ecs;
+    engine::core::Physics physics;
+    check(physics.initialize(), "visual script VM test: physics initializes");
+    engine::core::RuntimeAnimationPlayer animationPlayer;
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "visual script VM test: scripting initializes");
+    engine::core::ScriptWorldApi worldApi(ecs, physics, animationPlayer);
+    scripting.setBindingsHook([&](lua_State* L) { worldApi.registerInto(L); });
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+
+    using K = vs::VsNodeKind;
+    vs::VisualScriptGraph graph;
+    const int start = graph.addNode(K::OnStart, 0, 0);
+    const int sequence = graph.addNode(K::Sequence, 0, 0);
+    const int reset = graph.addNode(K::SetVariable, 0, 0);
+    const int loop = graph.addNode(K::ForLoop, 0, 0);
+    const int add = graph.addNode(K::Add, 0, 0);
+    const int readSum = graph.addNode(K::GetVariable, 0, 0);
+    const int store = graph.addNode(K::SetVariable, 0, 0);
+    const int readFinal = graph.addNode(K::GetVariable, 0, 0);
+    const int makeVector = graph.addNode(K::MakeVector, 0, 0);
+    const int setPosition = graph.addNode(K::SetPosition, 0, 0);
+    const int join = graph.addNode(K::JoinText, 0, 0);
+    const int print = graph.addNode(K::Print, 0, 0);
+    const int wait = graph.addNode(K::Wait, 0, 0);
+    const int setScale = graph.addNode(K::SetScale, 0, 0);
+    const int update = graph.addNode(K::OnUpdate, 0, 0);
+    const int spin = graph.addNode(K::ScaleVector, 0, 0);
+    const int rotate = graph.addNode(K::RotateBy, 0, 0);
+    for (int id : {reset, readSum, store, readFinal}) graph.findNode(id)->field = "sum";
+    graph.findNode(loop)->literals[2].x = 5.0f;
+    graph.findNode(makeVector)->literals[1].x = 2.0f;
+    graph.findNode(join)->literals[0].text = "sum=";
+    graph.findNode(wait)->literals[1].x = 0.5f;
+    graph.findNode(setScale)->literals[2] = vs::VsLiteral{2.0f, 2.0f, 2.0f, false, {}};
+    graph.findNode(spin)->literals[0] = vs::VsLiteral{0.0f, 90.0f, 0.0f, false, {}};
+    check(vsLink(graph, start, 0, sequence, 0) && vsLink(graph, sequence, 1, reset, 0) &&
+              vsLink(graph, sequence, 2, loop, 0) && vsLink(graph, readSum, 0, add, 0) && vsLink(graph, loop, 4, add, 1) &&
+              vsLink(graph, loop, 3, store, 0) && vsLink(graph, add, 2, store, 1) &&
+              vsLink(graph, readFinal, 0, makeVector, 0) && vsLink(graph, loop, 5, setPosition, 0) &&
+              vsLink(graph, makeVector, 3, setPosition, 2) && vsLink(graph, setPosition, 3, print, 0) &&
+              vsLink(graph, readFinal, 0, join, 1) && vsLink(graph, join, 2, print, 1) &&
+              vsLink(graph, sequence, 3, wait, 0) && vsLink(graph, wait, 2, setScale, 0) &&
+              vsLink(graph, update, 0, rotate, 0) && vsLink(graph, update, 1, spin, 1) && vsLink(graph, spin, 2, rotate, 2),
+          "visual script VM test graph wires up");
+    const vs::VisualScriptCompileResult compiled = vs::compileVisualScript(graph);
+    check(compiled.success, ("visual script VM test graph compiles: " + compiled.error).c_str());
+
+    const engine::core::EntityId entity = ecs.createEntity("Spinner");
+    ecs.createEntity("Bystander");
+    ecs.addComponent<engine::core::Script>(entity).source = compiled.luau;
+    engine::core::tickScriptHotReload(ecs, scripting);
+
+    const auto& transform = *ecs.tryGetComponent<engine::core::Transform>(entity);
+    check(nearlyEqual(transform.position.x, 15.0f) && nearlyEqual(transform.position.y, 2.0f),
+          "For Loop, variables and Set Position on Self ran in the VM (1+2+3+4+5 = 15)");
+    check(std::find(output.begin(), output.end(), "sum=15") != output.end(), "Print and Join Text wrote \"sum=15\"");
+    check(nearlyEqual(transform.scale.x, 1.0f), "Wait holds back the nodes after it");
+
+    scripting.tick(0.1f);
+    scripting.tick(0.1f);
+    check(nearlyEqual(transform.scale.x, 1.0f), "still waiting after 0.2 s of a 0.5 s Wait");
+    const float spun = glm::degrees(2.0f * std::acos(std::clamp(std::fabs(transform.rotation.w), 0.0f, 1.0f)));
+    check(nearlyEqual(spun, 18.0f, 0.05f), "On Update -> Rotate By spun Self 90 deg/s for 0.2 s (18 deg)");
+    scripting.tick(0.2f);
+    scripting.tick(0.2f);
+    check(nearlyEqual(transform.scale.x, 2.0f) && nearlyEqual(transform.scale.z, 2.0f),
+          "Set Size ran once the Wait finished");
+
+    for (const std::string& line : output) {
+        check(line.find("error") == std::string::npos, ("visual script ran without errors: " + line).c_str());
+    }
+    scripting.shutdown();
+}
+
+void testSceneFileVisualScriptRoundTrip() {
+    const std::string graphText = vs::VisualScriptGraph::makeDefault().serialize();
+    engine::core::SceneFile file;
+    engine::core::SceneEntityRecord record;
+    record.name = "Scripted";
+    record.hasScript = true;
+    record.scriptSource = "print(1)";
+    record.visualScript = graphText;
+    file.entities.push_back(record);
+    for (const char* extension : {".kscene", ".kronos"}) {
+        const std::string path =
+            (std::filesystem::temp_directory_path() / (std::string("kronos_visual_script_scene") + extension)).string();
+        check(file.saveToFile(path), "scene with a visual script saves");
+        engine::core::SceneFile loaded;
+        check(loaded.loadFromFile(path), "scene with a visual script loads");
+        check(loaded.entities.size() == 1 && loaded.entities[0].visualScript == graphText &&
+                  loaded.entities[0].scriptSource == "print(1)",
+              "the visual script graph and its compiled script survive the save/load round trip");
+        std::filesystem::remove(path);
+    }
+}
+
+namespace res = engine::core;
+
+struct FakeTextPayload final : res::ResourcePayload {
+    std::string text;
+};
+
+struct FakeResourceBackend {
+    std::vector<std::string> slots;
+    std::vector<uint32_t> released;
+    int commits = 0;
+    std::atomic<int> decodes{0};
+    std::atomic<int> decodeDelayMs{0};
+
+    res::ResourceLoader loader() {
+        res::ResourceLoader loader;
+        loader.reserve = [this] {
+            slots.emplace_back();
+            return static_cast<uint32_t>(slots.size() - 1);
+        };
+        loader.decode = [this](const std::string& path, std::string& error) -> std::unique_ptr<res::ResourcePayload> {
+            ++decodes;
+            if (decodeDelayMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(decodeDelayMs.load()));
+            std::ifstream file(path, std::ios::binary);
+            if (!file) {
+                error = "missing file";
+                return nullptr;
+            }
+            std::ostringstream content;
+            content << file.rdbuf();
+            if (content.str().rfind("BAD", 0) == 0) {
+                error = "corrupt file";
+                return nullptr;
+            }
+            auto payload = std::make_unique<FakeTextPayload>();
+            payload->text = content.str();
+            return payload;
+        };
+        loader.commit = [this](res::ResourcePayload& payload, uint32_t handle, bool, std::string&) {
+            slots[handle] = static_cast<FakeTextPayload&>(payload).text;
+            ++commits;
+            return true;
+        };
+        loader.release = [this](uint32_t handle) {
+            released.push_back(handle);
+            slots[handle].clear();
+        };
+        return loader;
+    }
+};
+
+std::filesystem::path resourceTestDir() {
+    const auto dir = std::filesystem::temp_directory_path() / "kronos_resource_tests";
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+void writeTextFile(const std::filesystem::path& path, const std::string& text) {
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << text;
+}
+
+void bumpWriteTime(const std::filesystem::path& path) {
+    std::filesystem::last_write_time(path, std::filesystem::last_write_time(path) + std::chrono::seconds(2));
+}
+
+void testResourceManagerLoadsAsyncAndShares() {
+    const auto dir = resourceTestDir();
+    writeTextFile(dir / "a.txt", "alpha");
+    FakeResourceBackend backend;
+    backend.decodeDelayMs = 30;
+    res::ResourceManager manager(2);
+    manager.setLoader(res::ResourceKind::Mesh, backend.loader());
+
+    res::ResourceHandle first = manager.acquire(res::ResourceKind::Mesh, (dir / "a.txt").string());
+    check(first.valid() && first.state() == res::ResourceState::Loading,
+          "a freshly acquired resource is valid and still loading (decode runs on a worker)");
+    check(first.get() == 0, "the library handle is reserved immediately, before the file has decoded");
+    res::ResourceHandle second = manager.acquire(res::ResourceKind::Mesh, (dir / "." / "a.txt").string());
+    check(second == first && second.get() == first.get(), "the same file acquired twice (any spelling) is one resource");
+    res::ResourceHandle asTexture = manager.acquire(res::ResourceKind::Texture, (dir / "a.txt").string());
+    check(asTexture.state() == res::ResourceState::Failed && asTexture.error().find("no loader") != std::string::npos,
+          "a kind with no loader fails with a clear error instead of loading forever");
+
+    check(manager.waitUntilIdle(5.0), "the load finishes");
+    check(first.ready() && backend.slots[first.get()] == "alpha", "the decoded payload was committed into the reserved slot");
+    check(backend.decodes == 1, "two handles to one file decode it once");
+    check(manager.stats().cacheHits >= 1, "the second acquire counts as a cache hit");
+
+    std::vector<res::ResourceHandle> many;
+    for (int i = 0; i < 6; ++i) {
+        writeTextFile(dir / ("m" + std::to_string(i) + ".txt"), "file" + std::to_string(i));
+        many.push_back(manager.acquire(res::ResourceKind::Mesh, (dir / ("m" + std::to_string(i) + ".txt")).string()));
+    }
+    manager.setCommitBudget(2);
+    manager.update();
+    check(manager.waitUntilIdle(5.0), "several files load in parallel and all finish");
+    bool allReady = true;
+    for (size_t i = 0; i < many.size(); ++i) allReady = allReady && many[i].ready() && backend.slots[many[i].get()] == "file" + std::to_string(i);
+    check(allReady, "every file ends up in its own slot with its own contents");
+}
+
+void testResourceManagerRefCountingAndUnload() {
+    const auto dir = resourceTestDir();
+    writeTextFile(dir / "b.txt", "bravo");
+    FakeResourceBackend backend;
+    res::ResourceManager manager(1);
+    manager.setLoader(res::ResourceKind::Mesh, backend.loader());
+    manager.setUnloadDelay(2);
+
+    uint32_t libraryHandle = 0;
+    {
+        res::ResourceHandle a = manager.acquire(res::ResourceKind::Mesh, (dir / "b.txt").string());
+        res::ResourceHandle b = a;
+        res::ResourceHandle c = std::move(b);
+        check(manager.waitUntilIdle(5.0) && a.ready(), "loaded");
+        libraryHandle = a.get();
+        auto info = manager.snapshot();
+        check(info.size() == 1 && info[0].references == 2, "copying adds a reference, moving does not");
+    }
+    manager.update();
+    check(backend.released.empty() && manager.snapshot().size() == 1, "the last handle going away does not unload at once");
+    res::ResourceHandle revived = manager.find(res::ResourceKind::Mesh, (dir / "b.txt").string());
+    check(revived.ready() && revived.get() == libraryHandle, "re-acquiring during the grace period reuses the loaded data");
+    const int decodesBefore = backend.decodes;
+    revived.reset();
+    for (int i = 0; i < 4; ++i) manager.update();
+    check(backend.released.size() == 1 && backend.released[0] == libraryHandle,
+          "after the unload delay the loader releases the data exactly once");
+    check(manager.snapshot().empty() && manager.stats().unloads == 1, "the record is gone");
+    check(backend.decodes == decodesBefore, "nothing was decoded again while the resource was only pending unload");
+
+    res::ResourceHandle stale;
+    {
+        res::ResourceHandle again = manager.acquire(res::ResourceKind::Mesh, (dir / "b.txt").string());
+        stale = again;
+    }
+    stale.reset();
+    for (int i = 0; i < 4; ++i) manager.update();
+    res::ResourceHandle fresh = manager.acquire(res::ResourceKind::Mesh, (dir / "b.txt").string());
+    check(manager.waitUntilIdle(5.0) && fresh.ready(), "a resource can load again after it was unloaded");
+
+    res::ResourceHandle orphan;
+    {
+        res::ResourceHandle temp = manager.acquire(res::ResourceKind::Mesh, (dir / "missing.txt").string());
+        check(manager.waitUntilIdle(5.0), "missing file finishes");
+        check(temp.state() == res::ResourceState::Failed && temp.error() == "missing file", "a decode error marks the resource failed with the decoder's message");
+        orphan = temp;
+    }
+    manager.shutdown();
+    check(!orphan.valid() && !fresh.valid(), "shutdown invalidates outstanding handles");
+    check(orphan.get() == res::kNoResourceHandle, "an invalid handle reports no library handle");
+}
+
+void testResourceManagerHotReload() {
+    const auto dir = resourceTestDir();
+    const auto file = dir / "hot.txt";
+    writeTextFile(file, "version one");
+    FakeResourceBackend backend;
+    res::ResourceManager manager(1);
+    manager.setLoader(res::ResourceKind::Mesh, backend.loader());
+    writeTextFile(dir / "dep.txt", "dependency");
+
+    res::ResourceHandle texture = manager.acquire(res::ResourceKind::Mesh, (dir / "dep.txt").string());
+    res::ResourceHandle model = manager.acquire(res::ResourceKind::Mesh, file.string());
+    check(manager.waitUntilIdle(5.0), "loaded");
+    check(manager.addDependency(model, texture), "a model can depend on a texture");
+    check(manager.dependentsOf(texture).size() == 1 && manager.dependentsOf(texture)[0] == model, "dependents are tracked");
+    std::string error;
+    check(!manager.addDependency(texture, model, &error) && error.find("cycle") != std::string::npos,
+          "a dependency cycle is refused");
+    check(!manager.addDependency(model, model, &error), "a resource cannot depend on itself");
+
+    std::vector<std::string> reloaded;
+    const int listener = manager.addReloadListener([&](const res::ResourceHandle& handle) { reloaded.push_back(handle.path()); });
+
+    const uint32_t handleBefore = model.get();
+    check(manager.checkForChanges() == 0, "an untouched file is not reloaded");
+    writeTextFile(file, "version two");
+    bumpWriteTime(file);
+    check(manager.checkForChanges() == 1, "an edited file is queued for reload");
+    check(model.ready(), "the old version keeps serving while the new one decodes");
+    check(manager.waitUntilIdle(5.0), "reload finishes");
+    check(model.get() == handleBefore && backend.slots[handleBefore] == "version two",
+          "hot reload replaces the data in place, behind the same handle");
+    check(reloaded.size() == 1 && reloaded[0] == model.path(), "listeners hear about the reload");
+
+    reloaded.clear();
+    writeTextFile(dir / "dep.txt", "dependency v2");
+    bumpWriteTime(dir / "dep.txt");
+    manager.checkForChanges();
+    check(manager.waitUntilIdle(5.0), "dependency reload finishes");
+    check(reloaded.size() == 2 && reloaded[0] == texture.path() && reloaded[1] == model.path(),
+          "reloading a dependency also reports everything that depends on it");
+
+    writeTextFile(file, "BAD data");
+    bumpWriteTime(file);
+    manager.checkForChanges();
+    check(manager.waitUntilIdle(5.0), "broken reload finishes");
+    check(model.ready() && backend.slots[model.get()] == "version two" && model.error() == "corrupt file",
+          "a broken save keeps the last good version and reports the error");
+    writeTextFile(file, "version three");
+    bumpWriteTime(file);
+    check(manager.reload(model) && manager.waitUntilIdle(5.0) && backend.slots[model.get()] == "version three" &&
+              model.error().empty(),
+          "fixing the file recovers on the next reload");
+
+    manager.removeReloadListener(listener);
+    texture.reset();
+    for (int i = 0; i < 5; ++i) manager.update();
+    check(manager.snapshot().size() == 2, "a dependency stays loaded while something depends on it");
+    model.reset();
+    for (int i = 0; i < 10; ++i) manager.update();
+    check(manager.snapshot().empty(), "once the dependent unloads, the dependency unloads too");
+
+    manager.setHotReload(true, 0.0);
+    res::ResourceHandle polled = manager.acquire(res::ResourceKind::Mesh, file.string());
+    check(manager.waitUntilIdle(5.0), "loaded for polling");
+    writeTextFile(file, "polled change");
+    bumpWriteTime(file);
+    manager.update();
+    check(manager.waitUntilIdle(5.0) && backend.slots[polled.get()] == "polled change",
+          "with hot reload on, update() notices edits by itself");
+}
+
+void testResourceBundles() {
+    const auto dir = resourceTestDir() / "bundles";
+    std::filesystem::create_directories(dir / "shared");
+    writeTextFile(dir / "shared" / "rock.txt", "rock");
+    writeTextFile(dir / "tree.txt", "tree");
+    writeTextFile(dir / "bark.txt", "bark");
+    writeTextFile(dir / "wind.txt", "wind");
+    writeTextFile(dir / "shared" / "common.kbundle", "kronos-bundle 1\nmesh rock.txt\n");
+    writeTextFile(dir / "forest.kbundle",
+                  "kronos-bundle 1\n# a comment\nrequires shared/common.kbundle\nmesh tree.txt\ntexture bark.txt\n"
+                  "audio wind.txt\ndepends tree.txt bark.txt\n");
+    writeTextFile(dir / "desert.kbundle", "kronos-bundle 1\nrequires shared/common.kbundle\n");
+
+    res::BundleManifest manifest;
+    std::string error;
+    check(res::parseBundleManifest("kronos-bundle 1\nmesh \"with space.obj\"\n", dir.string(), manifest, error) &&
+              manifest.resources.size() == 1 &&
+              manifest.resources[0].path == res::ResourceManager::normalizePath((dir / "with space.obj").string()),
+          "manifest paths are resolved relative to the manifest, quotes allow spaces");
+    check(!res::parseBundleManifest("kronos-bundle 1\nshader x.glsl\n", dir.string(), manifest, error) &&
+              error.find("line 2") != std::string::npos,
+          "an unknown entry is rejected with its line number");
+    check(!res::parseBundleManifest("kronos-bundle 1\nmesh a.obj\ndepends a.obj b.png\n", dir.string(), manifest, error),
+          "depends may only name files the bundle lists");
+    check(!res::parseBundleManifest("mesh a.obj\n", dir.string(), manifest, error), "the header is required");
+
+    std::ifstream forestFile(dir / "forest.kbundle");
+    std::stringstream forestText;
+    forestText << forestFile.rdbuf();
+    check(res::parseBundleManifest(forestText.str(), dir.string(), manifest, error), "forest manifest parses");
+    res::BundleManifest reparsed;
+    check(res::parseBundleManifest(res::serializeBundleManifest(manifest, dir.string()), dir.string(), reparsed, error) &&
+              reparsed.resources.size() == manifest.resources.size() && reparsed.requires_ == manifest.requires_ &&
+              reparsed.dependencies == manifest.dependencies,
+          "a manifest survives serialize -> parse");
+
+    FakeResourceBackend backend;
+    res::ResourceManager manager(2);
+    for (auto kind : {res::ResourceKind::Mesh, res::ResourceKind::Texture, res::ResourceKind::Audio}) {
+        manager.setLoader(kind, backend.loader());
+    }
+    manager.setUnloadDelay(1);
+
+    res::BundleHandle forest = manager.loadBundle((dir / "forest.kbundle").string());
+    check(forest.valid() && forest.error().empty(), "the forest bundle loads without errors");
+    check(!forest.ready() || forest.progress() == 1.0f, "progress and readiness agree");
+    check(manager.waitUntilIdle(5.0) && forest.ready() && forest.progress() == 1.0f, "every resource, including required bundles, finishes");
+    check(forest.find((dir / "shared" / "rock.txt").string()).ready(), "a bundle finds resources from the bundles it requires");
+    res::ResourceHandle tree = forest.find((dir / "tree.txt").string());
+    check(manager.dependentsOf(forest.find((dir / "bark.txt").string())).size() == 1 &&
+              manager.dependentsOf(forest.find((dir / "bark.txt").string()))[0] == tree,
+          "depends lines become resource dependencies");
+
+    res::BundleHandle desert = manager.loadBundle((dir / "desert.kbundle").string());
+    res::BundleHandle forestAgain = manager.loadBundle((dir / "forest.kbundle").string());
+    check(forestAgain.resources().size() == forest.resources().size() && forestAgain.find((dir / "tree.txt").string()) == tree,
+          "loading a bundle that is already loaded shares it");
+    const int decodes = backend.decodes;
+    check(decodes == 4, "the shared bundle's rock decodes once even with two bundles requiring it");
+
+    forest.reset();
+    forestAgain.reset();
+    tree.reset();
+    for (int i = 0; i < 6; ++i) manager.update();
+    check(manager.snapshot().size() == 1 && manager.snapshot()[0].path == res::ResourceManager::normalizePath((dir / "shared" / "rock.txt").string()),
+          "unloading the forest keeps only the shared rock the desert still needs");
+    desert.reset();
+    for (int i = 0; i < 6; ++i) manager.update();
+    check(manager.snapshot().empty(), "unloading the last bundle unloads everything");
+
+    writeTextFile(dir / "loop_a.kbundle", "kronos-bundle 1\nrequires loop_b.kbundle\n");
+    writeTextFile(dir / "loop_b.kbundle", "kronos-bundle 1\nrequires loop_a.kbundle\n");
+    res::BundleHandle loop = manager.loadBundle((dir / "loop_a.kbundle").string());
+    check(loop.failed() && loop.error().find("requires itself") != std::string::npos, "a bundle require cycle is reported, not followed forever");
+    res::BundleHandle missing = manager.loadBundle((dir / "nope.kbundle").string());
+    check(missing.failed() && missing.error().find("could not open") != std::string::npos, "a missing manifest fails clearly");
+}
+
+void testResourceFileDecoders() {
+    const auto dir = resourceTestDir();
+    std::string error;
+
+    writeTextFile(dir / "tri.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    auto mesh = res::decodeMeshFile((dir / "tri.obj").string(), error);
+    check(mesh != nullptr && static_cast<res::DecodedMesh&>(*mesh).indices.size() == 3,
+          "decodeMeshFile reads an OBJ off the main thread's code path");
+    check(res::decodeMeshFile((dir / "tri.xyz").string(), error) == nullptr && error.find(".xyz") != std::string::npos,
+          "decodeMeshFile names the unsupported extension");
+
+    {
+        std::ofstream ppm(dir / "pixel.ppm", std::ios::binary);
+        ppm << "P6\n2 1\n255\n";
+        const unsigned char pixels[6] = {255, 0, 0, 0, 255, 0};
+        ppm.write(reinterpret_cast<const char*>(pixels), 6);
+    }
+    auto image = res::decodeImageFile((dir / "pixel.ppm").string(), error);
+    const auto* decodedImage = image ? &static_cast<res::DecodedImage&>(*image) : nullptr;
+    check(decodedImage != nullptr && decodedImage->width == 2 && decodedImage->height == 1 && decodedImage->rgba.size() == 8 &&
+              decodedImage->rgba[0] == 255 && decodedImage->rgba[5] == 255 && decodedImage->rgba[7] == 255,
+          "decodeImageFile expands to tightly packed RGBA");
+    check(res::decodeImageFile((dir / "tri.obj").string(), error) == nullptr && !error.empty(),
+          "decodeImageFile reports why a non-image fails");
+
+    std::vector<float> tone(4800);
+    for (size_t i = 0; i < tone.size(); ++i) tone[i] = 0.5f * std::sin(static_cast<float>(i) * 0.05f);
+    check(res::encodeFloatMonoToWavFile((dir / "tone.wav").string(), tone, 48000), "wrote a test wav");
+    auto audio = res::decodeAudioResource((dir / "tone.wav").string(), error);
+    const auto* decodedAudio = audio ? &static_cast<res::DecodedAudio&>(*audio) : nullptr;
+    check(decodedAudio != nullptr && decodedAudio->channels == 1 && decodedAudio->sampleRate == 48000 &&
+              decodedAudio->interleaved.size() == tone.size() &&
+              std::abs(decodedAudio->interleaved[100] - tone[100]) < 1e-4f,
+          "decodeAudioResource keeps the file's channels, rate and samples");
+    check(res::decodeAudioResource((dir / "pixel.ppm").string(), error) == nullptr && !error.empty(),
+          "decodeAudioResource rejects non-audio");
 }
 
 void testParticleComputeCodegenRequiresExactlyOneOutput() {
@@ -3733,6 +4541,187 @@ void testScriptingOnUpdateFiresEveryTickWithRealDt() {
     check(tickCount == 2, "two real tick() calls really fire the real handler exactly twice, not once and not zero");
 
     scripting.shutdown();
+}
+
+namespace {
+const engine::core::ScriptDebugVariable* findDebugVariable(const engine::core::ScriptDebugFrame& frame, const std::string& name) {
+    for (const auto& variable : frame.variables)
+        if (variable.name == name) return &variable;
+    return nullptr;
+}
+} // namespace
+
+void testScriptDebuggerBreakpointsAndStepping() {
+    using Action = engine::core::ScriptDebugger::Action;
+    engine::core::Scripting scripting;
+    engine::core::ScriptDebugger debugger;
+    scripting.setDebugger(&debugger);
+    check(scripting.initialize(), "debugger: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto printed = [&](const std::string& text) {
+        for (const auto& line : output)
+            if (line.find(text) != std::string::npos) return true;
+        return false;
+    };
+
+    debugger.setBreakpoints("Dbg", {4});
+    const char* source = "local total = 0\n"
+                         "local function add(n)\n"
+                         "  local doubled = n * 2\n"
+                         "  total = total + doubled\n"
+                         "  return total\n"
+                         "end\n"
+                         "events.onUpdate(function(dt)\n"
+                         "  local result = add(21)\n"
+                         "  print(\"result=\" .. result)\n"
+                         "end)\n";
+    check(scripting.loadAndRun("Dbg", source) != engine::core::kInvalidScript, "debugger: script loads");
+    check(!debugger.paused(), "debugger: a breakpoint inside a function nobody called yet does not stop");
+
+    scripting.tick(0.016f);
+    check(debugger.paused(), "debugger: a breakpoint inside an onUpdate handler's callee pauses");
+    const engine::core::ScriptPauseState& state = debugger.pauseState();
+    check(state.chunk == "Dbg" && state.line == 4 && state.reason == "Breakpoint", "debugger: pause reports chunk, line and reason");
+    check(state.frames.size() >= 2 && state.frames[0].function == "add" && state.frames[1].line == 8,
+          "debugger: call stack has the callee on top and the caller at its call line");
+    const auto* doubled = state.frames.empty() ? nullptr : findDebugVariable(state.frames[0], "doubled");
+    const auto* n = state.frames.empty() ? nullptr : findDebugVariable(state.frames[0], "n");
+    const auto* total = state.frames.empty() ? nullptr : findDebugVariable(state.frames[0], "total");
+    check(doubled != nullptr && doubled->value == "42" && doubled->type == "number", "debugger: locals carry live values");
+    check(n != nullptr && n->value == "21", "debugger: parameters are listed as locals");
+    check(total != nullptr && total->upvalue && total->value == "0", "debugger: captured upvalues are listed");
+
+    scripting.tick(0.016f);
+    check(debugger.paused() && !printed("result="), "debugger: while paused, tick() runs no script code");
+
+    debugger.resume(Action::StepOver);
+    scripting.tick(0.016f);
+    check(debugger.paused() && debugger.pauseState().line == 5 && debugger.pauseState().reason == "Step",
+          "debugger: step over stops on the next line");
+
+    debugger.resume(Action::StepOut);
+    scripting.tick(0.016f);
+    check(debugger.paused() && !debugger.pauseState().frames.empty() && debugger.pauseState().frames[0].function != "add" &&
+              debugger.pauseState().line >= 8,
+          "debugger: step out stops back in the caller");
+
+    debugger.resume(Action::Continue);
+    scripting.tick(0.016f);
+    check(printed("result=42"), "debugger: continue finishes the stopped handler");
+    check(debugger.paused() && debugger.pauseState().line == 4,
+          "debugger: the same tick then runs this frame's onUpdate, which hits the breakpoint again");
+    const auto* totalAgain = findDebugVariable(debugger.pauseState().frames[0], "total");
+    check(totalAgain != nullptr && totalAgain->value == "42", "debugger: values reflect state from earlier runs");
+
+    debugger.setBreakpoints("Dbg", {});
+    debugger.resume(Action::Continue);
+    output.clear();
+    scripting.tick(0.016f);
+    scripting.tick(0.016f);
+    check(!debugger.paused() && printed("result=126"), "debugger: removing a breakpoint during play takes effect");
+
+    debugger.resume(Action::StepInto);
+    debugger.requestPause();
+    scripting.tick(0.016f);
+    check(debugger.paused() && debugger.pauseState().reason == "Paused", "debugger: Pause stops the next running script");
+    debugger.resume(Action::Continue);
+    scripting.tick(0.016f);
+    check(!debugger.paused(), "debugger: continue after Pause resumes");
+
+    debugger.setBreakpoints("Body", {2});
+    check(scripting.loadAndRun("Body", "local a = 1\nlocal b = a + 1\nprint(\"body b=\" .. b)\n") != engine::core::kInvalidScript,
+          "debugger: second script loads");
+    check(debugger.paused() && debugger.pauseState().chunk == "Body" && debugger.pauseState().line == 2,
+          "debugger: a breakpoint in a script's top-level body stops during load");
+    debugger.resume(Action::Continue);
+    scripting.tick(0.016f);
+    check(!debugger.paused() && printed("body b=2"), "debugger: the script body finishes after continue");
+
+    scripting.shutdown();
+}
+
+void testCrossScriptDefinitionLookup() {
+    namespace ls = engine::studio::luau_symbols;
+    const std::string defining = "Utils = {}\n\nfunction Utils.double(x)\n\treturn x * 2\nend\n";
+    const std::string using_ = "local function add(n)\n\tlocal doubled = Utils.double(n)\n\treturn doubled\nend\n";
+    auto use = ls::symbolAt(using_, 1, 23);
+    check(use && use->globalRef && use->globalRef->global == "Utils" && use->globalRef->member == "double" && !use->definition,
+          "cross-script: Utils.double in the caller resolves to a global member without a local definition");
+    auto definition = ls::definitionOf(defining, ls::GlobalRef{"Utils", "double"});
+    check(definition && definition->line == 2 && definition->column == 15 && definition->endColumn == 21,
+          "cross-script: function Utils.double(...) is found as the definition");
+}
+
+void testMultiCursorApplyEdits() {
+    using Backend = engine::studio::panels::ColorTextEditBackend;
+    std::vector<Backend::Caret> carets{{3, 3}, {7, 7}, {11, 11}};
+    std::string out = Backend::applyEdits("abc\ndef\nghi", {{3, 3, "!"}, {7, 7, "!"}, {11, 11, "!"}}, carets);
+    check(out == "abc!\ndef!\nghi!", "multi-cursor: typing at three line ends inserts at each");
+    check(carets[0].position == 4 && carets[1].position == 9 && carets[2].position == 14, "multi-cursor: carets advance past their inserts");
+
+    carets = {{1, 1}, {5, 5}};
+    out = Backend::applyEdits("abc\ndef", {{4, 5, ""}, {0, 1, ""}}, carets);
+    check(out == "bc\nef", "multi-cursor: backspace at two carets, edits given out of order");
+    check(carets[0].position == 0 && carets[1].position == 3, "multi-cursor: carets land where the deleted chars were");
+
+    carets = {{0, 3}, {4, 7}};
+    out = Backend::applyEdits("foo foo", {{0, 3, "barbaz"}, {4, 7, "barbaz"}}, carets);
+    check(out == "barbaz barbaz", "multi-cursor: replacing two selections");
+    check(carets[0].anchor == 6 && carets[0].position == 6 && carets[1].position == 13, "multi-cursor: selections collapse after replace");
+
+    carets = {{2, 2}};
+    out = Backend::applyEdits("abcdef", {{1, 4, "X"}, {2, 5, "Y"}}, carets);
+    check(out == "aXef", "multi-cursor: overlapping edits keep the first");
+}
+
+void testLuauSymbolIndex() {
+    namespace ls = engine::studio::luau_symbols;
+    const std::string source = "local count = 1\n"                    // 0
+                               "local function bump(count)\n"          // 1
+                               "  return count + 1\n"                  // 2
+                               "end\n"                                 // 3
+                               "count = bump(count)\n"                 // 4
+                               "Utils = { lerp = function(a, b, t) return a end }\n" // 5
+                               "function Utils.clamp(x) return x end\n" // 6
+                               "print(Utils.lerp(1, 2, 0.5), Utils.clamp(3), count)\n"; // 7
+
+    auto outer = ls::symbolAt(source, 4, 0);
+    check(outer && outer->name == "count" && outer->definition && outer->definition->line == 0 && outer->definition->column == 6,
+          "symbol index: an outer local resolves to its declaration");
+    check(outer && outer->occurrences.size() == 4 && !outer->globalRef,
+          "symbol index: the outer local's uses skip the shadowing parameter (decl, assignment, argument, print)");
+
+    auto param = ls::symbolAt(source, 2, 9);
+    check(param && param->definition && param->definition->line == 1 && param->occurrences.size() == 2,
+          "symbol index: a shadowing parameter is its own symbol");
+
+    auto fn = ls::symbolAt(source, 4, 9);
+    check(fn && fn->name == "bump" && fn->definition && fn->definition->line == 1, "symbol index: a call resolves to its local function");
+
+    auto lerp = ls::symbolAt(source, 7, 13);
+    check(lerp && lerp->name == "lerp" && lerp->definition && lerp->definition->line == 5 && lerp->globalRef &&
+              lerp->globalRef->global == "Utils" && lerp->globalRef->member == "lerp",
+          "symbol index: a member of a global table resolves to its table-constructor field");
+    auto clamp = ls::symbolAt(source, 7, 35);
+    check(clamp && clamp->definition && clamp->definition->line == 6, "symbol index: `function Utils.clamp` defines the member");
+
+    auto utilsDef = ls::definitionOf(source, {"Utils", ""});
+    check(utilsDef && utilsDef->line == 5 && utilsDef->column == 0, "symbol index: a global's first assignment is its definition");
+    check(ls::occurrencesOf(source, {"Utils", ""}).size() == 4, "symbol index: every use of a global is found");
+
+    const std::string renamed = ls::replaceRanges(source, param->occurrences, "value");
+    check(renamed.find("local function bump(value)\n  return value + 1") != std::string::npos &&
+              renamed.find("count = bump(count)") != std::string::npos,
+          "symbol index: renaming the parameter leaves the outer local alone");
+
+    check(ls::isValidIdentifier("newName_2") && !ls::isValidIdentifier("2x") && !ls::isValidIdentifier("end") &&
+              !ls::isValidIdentifier("a-b"),
+          "symbol index: identifier validation rejects keywords and bad characters");
+
+    const auto hits = ls::findText("Count count\nrecount", "count", false, true);
+    check(hits.size() == 2 && hits[1].line == 0 && hits[1].byteStart == 6, "find text: whole word, case-insensitive");
+    check(ls::findText("Count count\nrecount", "count", true, false).size() == 2, "find text: match case, substring");
 }
 
 void testScriptingFireCollisionReachesRegisteredHandler() {
@@ -7841,10 +8830,8 @@ void testSceneManagerLoadSceneAttachesRealPhysicsBodies() {
     const char* path = "test_scene_physics_load.scene";
     check(file.saveToFile(path), "a real scene file with physics data saves");
 
-    // Without a real Physics* (every existing Studio call site), physics
-    // data is parsed but no live body is created -- the entity still
-    // gets real RigidBody/ColliderShape components are NOT added, since
-    // nothing attached them.
+    // Without a Physics* (Studio edit mode) no live body is created, but the
+    // authored RigidBody/ColliderShape data is kept so a later save keeps it.
     {
         engine::core::ECS ecs;
         engine::core::MeshLibrary meshLibrary;
@@ -7858,9 +8845,13 @@ void testSceneManagerLoadSceneAttachesRealPhysicsBodies() {
             if (ecs.tryGetComponent<engine::core::Name>(entity)->value == "Ground") groundEntity = entity;
         }
         check(groundEntity != engine::core::kNullEntity, "the entity itself is still real-created");
-        check(ecs.tryGetComponent<engine::core::RigidBody>(groundEntity) == nullptr,
-              "with no real Physics* passed, no real RigidBody component is attached -- matches every existing "
-              "Studio call site's real, unchanged behavior");
+        const auto* body = ecs.tryGetComponent<engine::core::RigidBody>(groundEntity);
+        check(body != nullptr && body->joltBodyId == engine::core::RigidBody::kInvalidBodyId &&
+                  body->motionType == engine::core::RigidBodyMotionType::Static,
+              "with no Physics* passed, the authored RigidBody is kept without a live body");
+        const auto* shape = ecs.tryGetComponent<engine::core::ColliderShape>(groundEntity);
+        check(shape != nullptr && shape->params == glm::vec3(5.0f, 0.5f, 5.0f),
+              "with no Physics* passed, the authored ColliderShape is kept");
     }
 
     // With a real, live, headlessly-initialized Physics world, the
@@ -26377,6 +27368,1746 @@ void testNativePluginManagerDiscoversLoadsAndUnloadsRealPlugins() {
     check(counter.value == 1 + 100, "ticking after unload is a real no-op -- no plugin left to run");
 }
 
+void testHotReloadStateStaysInPlace() {
+    using engine::core::HotReloadStateTransfer;
+    engine::core::ECS ecs;
+    auto entity = ecs.createEntity("Probe");
+    ecs.addComponent<StatefulProbe>(entity);
+    auto probe = [&]() -> const StatefulProbe& { return ecs.raw().get<StatefulProbe>(entity); };
+
+    engine::core::CppHotReloadHost host;
+    std::string error;
+    check(host.load("game", HOTRELOAD_STATEFUL_A_PATH, ecs, error), ("stateful module A loads: " + error).c_str());
+    auto status = host.status("game");
+    check(status && status->hasState && status->transfer == HotReloadStateTransfer::Created,
+          "first load constructs the module state");
+    check(status->stateBytes == sizeof(StatefulCounter) && status->stateVersion == 1, "status reports the state layout");
+    const void* address = status->state;
+    for (int i = 0; i < 3; ++i) host.tick(0.016f, ecs);
+    check(probe().ticks == 3 && probe().historySize == 3 && probe().label == "A", "module A ticks its own state");
+
+    check(host.load("game", HOTRELOAD_STATEFUL_B_PATH, ecs, error), ("stateful module B hot-swaps in: " + error).c_str());
+    status = host.status("game");
+    check(status->transfer == HotReloadStateTransfer::Kept, "same layout keeps the state");
+    check(status->state == address, "the new code is handed the very same state memory");
+    check(status->reloadCount == 1, "status counts the reload");
+    host.tick(0.016f, ecs);
+    check(probe().ticks == 13 && probe().historySize == 4,
+          "B's code continues from A's counter and vector without a copy");
+    check(probe().label == "AB", "B's onLoad sees the state A left behind");
+
+    check(host.load("game", HOTRELOAD_STATEFUL_C_PATH, ecs, error), ("stateful module C hot-swaps in: " + error).c_str());
+    status = host.status("game");
+    check(status->transfer == HotReloadStateTransfer::Migrated, "a changed layout runs the module's migrate function");
+    check(status->stateVersion == 2 && status->stateBytes == sizeof(StatefulCounterV2), "the migrated state has the new layout");
+    host.tick(0.016f, ecs);
+    check(probe().ticks == 1013 && probe().historySize == 5 && probe().label == "AB+v1",
+          "migrated values carry over into the new layout");
+
+    check(host.load("game", HOTRELOAD_STATEFUL_A_PATH, ecs, error), ("module A reloads over C: " + error).c_str());
+    check(host.status("game")->transfer == HotReloadStateTransfer::Reset,
+          "without a migrate function a changed layout starts from fresh state");
+    host.tick(0.016f, ecs);
+    check(probe().ticks == 1 && probe().historySize == 1 && probe().label == "A", "reset state is default constructed");
+
+    check(host.load("game", HOTRELOAD_MODULE_V1_PATH, ecs, error), ("stateless module replaces a stateful one: " + error).c_str());
+    status = host.status("game");
+    check(!status->hasState && status->state == nullptr && status->transfer == HotReloadStateTransfer::None,
+          "a module without state releases the previous state");
+
+    check(host.load("other", HOTRELOAD_STATEFUL_A_PATH, ecs, error), ("second slot loads A: " + error).c_str());
+    check(host.load("third", HOTRELOAD_STATEFUL_B_PATH, ecs, error), ("third slot loads B: " + error).c_str());
+    check(host.status("other")->state != host.status("third")->state, "each slot owns its own state");
+    check(!host.status("missing"), "status of an empty slot is empty");
+}
+
+void testNativePluginAutoReload() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "kronos_native_reload_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const fs::path plugin = dir / (std::string("spinner") + engine::core::NativePluginManager::nativeLibraryExtension());
+    auto install = [&](const char* source) {
+        fs::copy_file(source, plugin, fs::copy_options::overwrite_existing);
+        bumpWriteTime(plugin);
+    };
+    install(HOTRELOAD_STATEFUL_A_PATH);
+
+    engine::core::ECS ecs;
+    auto entity = ecs.createEntity("Probe");
+    ecs.addComponent<StatefulProbe>(entity);
+    auto probe = [&]() -> const StatefulProbe& { return ecs.raw().get<StatefulProbe>(entity); };
+
+    engine::core::NativePluginManager manager;
+    std::string error;
+    check(manager.loadPlugin("spinner", plugin.string(), ecs, error), ("plugin loads from its install path: " + error).c_str());
+    manager.tick(0.016f, ecs);
+    check(manager.checkForChanges(ecs) == 0, "an unchanged library does not reload");
+
+    install(HOTRELOAD_STATEFUL_B_PATH);
+    check(manager.checkForChanges(ecs) == 1, "a rebuilt library reloads");
+    check(manager.status("spinner")->transfer == engine::core::HotReloadStateTransfer::Kept, "the reload keeps state");
+    manager.tick(0.016f, ecs);
+    check(probe().ticks == 11 && probe().label == "AB", "the reloaded plugin continues from the old state");
+
+    writeTextFile(plugin, "not a shared library");
+    bumpWriteTime(plugin);
+    check(manager.checkForChanges(ecs) == 0, "a broken build does not count as reloaded");
+    check(!manager.listLoadedPlugins()[0].lastError.empty(), "the failed reload is reported");
+    manager.tick(0.016f, ecs);
+    check(probe().ticks == 21, "the previous build keeps running after a failed reload");
+    check(manager.checkForChanges(ecs) == 0, "a failed build is not retried until it changes again");
+
+    manager.setAutoReload(true, 0.01);
+    install(HOTRELOAD_STATEFUL_C_PATH);
+    check(manager.update(ecs) == 0, "auto reload waits for the file to settle");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    check(manager.update(ecs) == 1, "auto reload picks up the settled file");
+    check(manager.listLoadedPlugins()[0].lastError.empty(), "a good reload clears the previous error");
+    check(manager.status("spinner")->transfer == engine::core::HotReloadStateTransfer::Migrated,
+          "auto reload migrates a changed layout");
+    manager.tick(0.016f, ecs);
+    check(probe().ticks == 1021 && probe().label == "AB+v1", "migrated plugin state carries the old values");
+
+    manager.unloadPlugin("spinner");
+    std::size_t leftovers = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) leftovers += entry.path().filename() != plugin.filename();
+    check(leftovers == 0, "unloading removes every temporary library copy");
+    fs::remove_all(dir);
+}
+
+engine::core::Aabb randomBox(std::mt19937& rng, float worldSize) {
+    std::uniform_real_distribution<float> position(-worldSize, worldSize);
+    std::uniform_real_distribution<float> size(0.1f, 4.0f);
+    const glm::vec3 min(position(rng), position(rng), position(rng));
+    return {min, min + glm::vec3(size(rng), size(rng), size(rng))};
+}
+
+void testDynamicAabbTreeMatchesBruteForce() {
+    using engine::core::Aabb;
+    using engine::core::DynamicAabbTree;
+    std::mt19937 rng(1234);
+    DynamicAabbTree tree(0.1f);
+    std::vector<int32_t> proxies;
+    std::vector<Aabb> boxes;
+    for (int i = 0; i < 2000; ++i) {
+        boxes.push_back(randomBox(rng, 200.0f));
+        proxies.push_back(tree.insert(boxes.back(), static_cast<uint32_t>(i)));
+    }
+    check(tree.validate(), "BVH is consistent after 2000 inserts");
+    check(tree.proxyCount() == 2000, "BVH counts its proxies");
+    check(tree.height() <= 30, ("BVH stays balanced after inserts (height " + std::to_string(tree.height()) + ")").c_str());
+
+    std::uniform_real_distribution<float> nudge(-0.05f, 0.05f);
+    size_t moved = 0;
+    for (int i = 0; i < 2000; i += 2) {
+        const glm::vec3 offset = i % 4 == 0 ? glm::vec3(nudge(rng), 0.0f, nudge(rng)) : glm::vec3(25.0f, -10.0f, 5.0f);
+        boxes[static_cast<size_t>(i)].min += offset;
+        boxes[static_cast<size_t>(i)].max += offset;
+        moved += tree.update(proxies[static_cast<size_t>(i)], boxes[static_cast<size_t>(i)]) ? 1 : 0;
+    }
+    check(moved > 0 && moved < 1000, "small moves stay inside the fat box, large ones reinsert");
+    std::vector<bool> alive(2000, true);
+    for (int i = 1; i < 2000; i += 3) {
+        tree.remove(proxies[static_cast<size_t>(i)]);
+        alive[static_cast<size_t>(i)] = false;
+    }
+    check(tree.validate(), "BVH is consistent after moves and removals");
+    check(tree.height() <= 30, "BVH stays balanced after moves and removals");
+
+    bool aabbMatches = true;
+    bool frustumMatches = true;
+    bool rayMatches = true;
+    for (int q = 0; q < 50; ++q) {
+        const Aabb query = randomBox(rng, 200.0f);
+        const Aabb big{query.min - glm::vec3(15.0f), query.max + glm::vec3(15.0f)};
+        std::set<uint32_t> fromTree;
+        tree.queryAabb(big, [&](int32_t proxy) {
+            if (boxes[tree.userData(proxy)].overlaps(big)) fromTree.insert(tree.userData(proxy));
+            return true;
+        });
+        std::set<uint32_t> brute;
+        for (uint32_t i = 0; i < 2000; ++i) {
+            if (alive[i] && boxes[i].overlaps(big)) brute.insert(i);
+        }
+        aabbMatches = aabbMatches && fromTree == brute;
+
+        const glm::vec3 eye = query.center();
+        const glm::vec3 target = randomBox(rng, 200.0f).center();
+        const glm::mat4 viewProj = glm::perspective(glm::radians(60.0f), 1.6f, 0.1f, 150.0f) *
+                                   glm::lookAt(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
+        const auto frustum = engine::core::Frustum::fromViewProjection(viewProj);
+        std::set<uint32_t> culled;
+        tree.queryFrustum(frustum, [&](int32_t proxy) {
+            if (frustum.intersects(boxes[tree.userData(proxy)])) culled.insert(tree.userData(proxy));
+        });
+        std::set<uint32_t> bruteCulled;
+        for (uint32_t i = 0; i < 2000; ++i) {
+            if (alive[i] && frustum.intersects(boxes[i])) bruteCulled.insert(i);
+        }
+        frustumMatches = frustumMatches && culled == bruteCulled;
+
+        const glm::vec3 direction = glm::normalize(target - eye);
+        const glm::vec3 inverse = 1.0f / direction;
+        float bruteNearest = 400.0f;
+        int bruteIndex = -1;
+        for (uint32_t i = 0; i < 2000; ++i) {
+            float enter = 0.0f;
+            if (alive[i] && engine::core::rayAabb(eye, inverse, boxes[i], bruteNearest, enter) && enter < bruteNearest) {
+                bruteNearest = enter;
+                bruteIndex = static_cast<int>(i);
+            }
+        }
+        float nearest = 400.0f;
+        int nearestIndex = -1;
+        tree.raycast(eye, direction, 400.0f, [&](int32_t proxy, float) {
+            float enter = 0.0f;
+            const uint32_t i = tree.userData(proxy);
+            if (engine::core::rayAabb(eye, inverse, boxes[i], nearest, enter) && enter < nearest) {
+                nearest = enter;
+                nearestIndex = static_cast<int>(i);
+            }
+            return nearest;
+        });
+        rayMatches = rayMatches && nearestIndex == bruteIndex;
+    }
+    check(aabbMatches, "BVH box queries match brute force");
+    check(frustumMatches, "BVH frustum culling matches brute force");
+    check(rayMatches, "BVH raycasts find the same nearest box as brute force");
+
+    tree.clear();
+    check(tree.proxyCount() == 0 && tree.height() == 0 && tree.validate(), "a cleared BVH is empty");
+}
+
+void testFrustumAndBoxTransforms() {
+    using engine::core::Aabb;
+    using engine::core::Frustum;
+    using engine::core::FrustumTest;
+    const glm::mat4 viewProj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 100.0f) *
+                               glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const Frustum frustum = Frustum::fromViewProjection(viewProj);
+    check(frustum.test({glm::vec3(-1.0f, -1.0f, -11.0f), glm::vec3(1.0f, 1.0f, -9.0f)}) == FrustumTest::Inside,
+          "a box straight ahead is inside the frustum");
+    check(frustum.test({glm::vec3(-1.0f, -1.0f, 9.0f), glm::vec3(1.0f, 1.0f, 11.0f)}) == FrustumTest::Outside,
+          "a box behind the camera is culled");
+    check(frustum.test({glm::vec3(30.0f, -1.0f, -11.0f), glm::vec3(32.0f, 1.0f, -9.0f)}) == FrustumTest::Outside,
+          "a box far to the side is culled");
+    check(frustum.test({glm::vec3(-1.0f, -1.0f, -200.0f), glm::vec3(1.0f, 1.0f, -150.0f)}) == FrustumTest::Outside,
+          "a box beyond the far plane is culled");
+    check(frustum.test({glm::vec3(9.0f, -1.0f, -11.0f), glm::vec3(12.0f, 1.0f, -9.0f)}) == FrustumTest::Intersects,
+          "a box on the frustum edge intersects");
+
+    const Aabb local{glm::vec3(-1.0f, -2.0f, -0.5f), glm::vec3(1.0f, 2.0f, 0.5f)};
+    const glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 1.0f, -3.0f)) *
+                                glm::mat4_cast(glm::angleAxis(0.7f, glm::normalize(glm::vec3(0.3f, 1.0f, 0.2f)))) *
+                                glm::scale(glm::mat4(1.0f), glm::vec3(2.0f, 0.5f, 1.5f));
+    Aabb corners{glm::vec3(1e9f), glm::vec3(-1e9f)};
+    for (int i = 0; i < 8; ++i) {
+        const glm::vec3 corner((i & 1) ? local.max.x : local.min.x, (i & 2) ? local.max.y : local.min.y,
+                               (i & 4) ? local.max.z : local.min.z);
+        const glm::vec3 world(transform * glm::vec4(corner, 1.0f));
+        corners.min = glm::min(corners.min, world);
+        corners.max = glm::max(corners.max, world);
+    }
+    const Aabb fast = Aabb::transformed(local, transform);
+    check(glm::all(glm::lessThan(glm::abs(fast.min - corners.min), glm::vec3(1e-4f))) &&
+              glm::all(glm::lessThan(glm::abs(fast.max - corners.max), glm::vec3(1e-4f))),
+          "Aabb::transformed matches the transformed corners exactly");
+}
+
+void testSceneSpatialIndexTracksEntities() {
+    using engine::core::Renderable;
+    using engine::core::Transform;
+    engine::core::ECS ecs;
+    auto unitBounds = [](uint32_t handle, glm::vec3& min, glm::vec3& max) {
+        if (handle != 7) return false;
+        min = glm::vec3(-0.5f);
+        max = glm::vec3(0.5f);
+        return true;
+    };
+    std::vector<engine::core::EntityId> boxes;
+    for (int i = 0; i < 100; ++i) {
+        auto entity = ecs.createEntity("Box");
+        ecs.addComponent<Transform>(entity).position = glm::vec3(static_cast<float>(i) * 3.0f, 0.0f, -10.0f);
+        ecs.addComponent<Renderable>(entity).meshHandle = 7;
+        boxes.push_back(entity);
+    }
+    auto noMesh = ecs.createEntity("No mesh");
+    ecs.addComponent<Transform>(noMesh);
+    ecs.addComponent<Renderable>(noMesh).meshHandle = 99;
+
+    engine::core::SceneSpatialIndex index;
+    index.sync(ecs, unitBounds);
+    check(index.stats().objects == 100 && index.stats().inserted == 100, "index holds every renderable with a mesh");
+    check(!index.contains(noMesh), "entities without a mesh are skipped");
+
+    index.sync(ecs, unitBounds);
+    check(index.stats().inserted == 0 && index.stats().moved == 0, "an unchanged scene costs no tree updates");
+
+    const glm::mat4 viewProj = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 1000.0f) *
+                               glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -10.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    std::vector<engine::core::EntityId> visible;
+    index.cull(viewProj, visible);
+    check(!visible.empty() && visible.size() < 10, "culling keeps only boxes in front of the camera");
+    check(index.wasVisible(boxes[0]) && !index.wasVisible(boxes[50]), "wasVisible reflects the last cull");
+
+    ecs.raw().get<Transform>(boxes[50]).position = glm::vec3(0.0f, 0.0f, -20.0f);
+    ecs.raw().get<Renderable>(boxes[99]).visible = false;
+    ecs.destroyEntity(boxes[98]);
+    index.sync(ecs, unitBounds);
+    check(index.stats().moved == 1, "a moved entity updates its leaf");
+    check(index.stats().removed == 2 && !index.contains(boxes[99]), "hidden and destroyed entities leave the index");
+    check(index.tree().validate(), "index tree stays consistent");
+    visible.clear();
+    index.cull(viewProj, visible);
+    check(index.wasVisible(boxes[50]), "a box moved into view is drawn");
+
+    std::vector<engine::core::EntityId> hits;
+    index.raycast(glm::vec3(30.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 100.0f,
+                  [&](engine::core::EntityId entity, float enter) {
+                      hits.push_back(entity);
+                      return enter;
+                  });
+    check(hits.size() == 1 && hits[0] == boxes[10], "index raycast finds the box under the ray");
+
+    auto child = ecs.createEntity("Child");
+    ecs.addComponent<Transform>(child).position = glm::vec3(0.0f, 5.0f, 0.0f);
+    ecs.addComponent<Renderable>(child).meshHandle = 7;
+    engine::core::hierarchy::setParent(ecs, child, boxes[0]);
+    index.sync(ecs, unitBounds);
+    check(index.worldBounds(child) != nullptr && std::abs(index.worldBounds(child)->center().y - 5.0f) < 1e-4f &&
+              std::abs(index.worldBounds(child)->center().z + 10.0f) < 1e-4f,
+          "children are placed through their parent");
+    ecs.raw().get<Transform>(boxes[0]).position.y = 2.0f;
+    index.sync(ecs, unitBounds);
+    check(std::abs(index.worldBounds(child)->center().y - 7.0f) < 1e-4f, "moving a parent moves its children's bounds");
+}
+
+void testStaticBatchingMergesStillObjects() {
+    using engine::core::Renderable;
+    using engine::core::StaticBatchSet;
+    using engine::core::Transform;
+    engine::core::ECS ecs;
+
+    auto triangle = std::make_shared<engine::core::HostMesh>();
+    triangle->vertices.resize(3);
+    triangle->vertices[0].position = {0.0f, 0.0f, 0.0f};
+    triangle->vertices[1].position = {1.0f, 0.0f, 0.0f};
+    triangle->vertices[2].position = {0.0f, 1.0f, 0.0f};
+    for (auto& v : triangle->vertices) v.normal = {0.0f, 0.0f, 1.0f};
+    triangle->indices = {0, 1, 2};
+
+    uint64_t meshVersion = 1;
+    int fetches = 0;
+    uint32_t nextHandle = 100;
+    std::map<uint32_t, engine::core::HostMesh> live;
+    std::vector<uint32_t> released;
+    engine::core::StaticBatchBackend backend;
+    backend.meshVersion = [&](uint32_t handle) -> uint64_t { return handle == 7 ? meshVersion : 0; };
+    backend.fetch = [&](uint32_t) {
+        ++fetches;
+        return std::shared_ptr<const engine::core::HostMesh>(triangle);
+    };
+    backend.upload = [&](const engine::core::HostMesh& merged) {
+        live[nextHandle] = merged;
+        return nextHandle++;
+    };
+    backend.release = [&](uint32_t handle) {
+        released.push_back(handle);
+        live.erase(handle);
+    };
+
+    StaticBatchSet batching;
+    engine::core::StaticBatchSettings settings;
+    settings.stableUpdates = 2;
+    settings.releaseDelayUpdates = 1;
+    batching.setSettings(settings);
+    batching.setBackend(backend);
+
+    std::vector<engine::core::EntityId> boxes;
+    for (int i = 0; i < 10; ++i) {
+        auto entity = ecs.createEntity("Box");
+        ecs.addComponent<Transform>(entity).position = glm::vec3(static_cast<float>(i) * 2.0f, 0.0f, 0.0f);
+        ecs.addComponent<Renderable>(entity).meshHandle = 7;
+        boxes.push_back(entity);
+    }
+    auto red = ecs.createEntity("Red");
+    ecs.addComponent<Transform>(red).position = glm::vec3(1.0f, 5.0f, 0.0f);
+    ecs.addComponent<Renderable>(red).meshHandle = 7;
+    ecs.raw().get<Renderable>(red).baseColor = {1.0f, 0.0f, 0.0f, 1.0f};
+    auto falling = ecs.createEntity("Falling");
+    ecs.addComponent<Transform>(falling).position = glm::vec3(3.0f, 3.0f, 0.0f);
+    ecs.addComponent<Renderable>(falling).meshHandle = 7;
+    ecs.addComponent<engine::core::RigidBody>(falling).motionType = engine::core::RigidBodyMotionType::Dynamic;
+    auto far = ecs.createEntity("Far");
+    ecs.addComponent<Transform>(far).position = glm::vec3(500.0f, 0.0f, 0.0f);
+    ecs.addComponent<Renderable>(far).meshHandle = 7;
+
+    uint64_t frame = 0;
+    auto run = [&](int updates) {
+        for (int i = 0; i < updates; ++i) batching.update(ecs, ++frame);
+    };
+    run(2);
+    check(batching.stats().batches == 0, "objects are not batched before they have been still long enough");
+    run(2);
+    check(batching.stats().batches == 1 && batching.stats().batchedObjects == 10, "still boxes sharing a material merge into one batch");
+    check(fetches == 1, "each source mesh is downloaded once");
+    for (auto entity : boxes) check(batching.isBatched(entity), "every box joins the batch");
+    check(!batching.isBatched(red) && !batching.isBatched(falling) && !batching.isBatched(far),
+          "lone materials, dynamic bodies and lone cells stay unbatched");
+
+    const StaticBatchSet::Batch* batch = nullptr;
+    for (const auto& b : batching.batches()) {
+        if (b.active) batch = &b;
+    }
+    check(batch != nullptr && batch->vertexCount == 30 && batch->indexCount == 30, "the batch holds every member's geometry");
+    const auto& merged = live.at(batch->meshHandle);
+    bool baked = true;
+    for (int i = 0; i < 10; ++i) {
+        baked = baked && std::any_of(merged.vertices.begin(), merged.vertices.end(), [&](const auto& v) {
+                    return glm::length(v.position - glm::vec3(2.0f * static_cast<float>(i) + 1.0f, 0.0f, 0.0f)) < 1e-5f;
+                });
+    }
+    check(baked, "member geometry is baked into world space");
+    check(merged.indices[3] == 3, "member indices are offset into the merged buffer");
+    check(std::abs(batch->bounds.max.x - 19.0f) < 1e-5f, "batch bounds cover every member");
+
+    batching.update(ecs, frame);
+    check(batching.stats().rebuilds == 1, "a second update in the same frame does nothing");
+
+    const uint32_t firstHandle = batch->meshHandle;
+    ecs.raw().get<Transform>(boxes[3]).position.y = 1.0f;
+    run(1);
+    check(!batching.isBatched(boxes[3]), "a moved object leaves its batch");
+    check(batching.stats().batchedObjects == 9 && batching.stats().batches == 1, "the batch is rebuilt without it");
+    run(2);
+    check(std::find(released.begin(), released.end(), firstHandle) != released.end(), "the replaced batch mesh is released");
+
+    run(2 * 4 + 1);
+    check(batching.isBatched(boxes[3]), "a moved object rejoins once still again, after a longer wait");
+
+    auto& mirrored = ecs.raw().get<Transform>(boxes[1]);
+    mirrored.scale = glm::vec3(-1.0f, 1.0f, 1.0f);
+    run(40);
+    for (const auto& b : batching.batches()) {
+        if (b.active) batch = &b;
+    }
+    const auto& withMirror = live.at(batch->meshHandle);
+    bool flipped = false;
+    for (size_t i = 0; i + 2 < withMirror.indices.size(); i += 3) {
+        const glm::vec3 a = withMirror.vertices[withMirror.indices[i]].position;
+        const glm::vec3 b = withMirror.vertices[withMirror.indices[i + 1]].position;
+        const glm::vec3 c = withMirror.vertices[withMirror.indices[i + 2]].position;
+        const float lo = std::min({a.x, b.x, c.x});
+        const float hi = std::max({a.x, b.x, c.x});
+        if (lo > 0.5f && hi < 2.5f) flipped = glm::cross(b - a, c - a).z > 0.0f;
+    }
+    check(batching.isBatched(boxes[1]) && flipped, "mirrored members keep their front faces");
+
+    meshVersion = 2;
+    run(1);
+    check(batching.stats().batches == 0, "replacing the source mesh empties its batches");
+    run(40);
+    check(batching.stats().batches == 1 && batching.stats().batchedObjects == 10 && fetches == 2,
+          "batches rebuild from the new mesh");
+
+    ecs.destroyEntity(boxes[9]);
+    run(1);
+    check(batching.stats().batchedObjects == 9, "destroyed objects leave their batch");
+
+    for (int i = 0; i < 4; ++i) {
+        ecs.raw().get<Transform>(boxes[5]).position.z += 1.0f;
+        run(400);
+    }
+    ecs.raw().get<Transform>(boxes[5]).position.z += 1.0f;
+    run(2000);
+    check(!batching.isBatched(boxes[5]), "an object that keeps moving stops being batched");
+
+    batching.clear();
+    run(2);
+    check(live.empty(), "clear releases every batch mesh");
+}
+
+namespace rollback_physics_test {
+
+struct World {
+    engine::core::Physics physics;
+    engine::core::ECS ecs;
+    std::vector<engine::core::EntityId> players;
+};
+
+bool build(World& world, int workers = 1) {
+    using namespace engine::core;
+    if (!world.physics.initialize(workers)) return false;
+    world.physics.createGroundPlane(world.ecs, 40.0f, 40.0f);
+    for (int layer = 0; layer < 5; ++layer) {
+        for (int i = 0; i < 5 - layer; ++i) {
+            world.physics.createDynamicBox(world.ecs, glm::vec3(-2.0f + i * 1.01f + layer * 0.5f, 0.5f + layer * 1.0f, 4.0f),
+                                           glm::vec3(0.5f), 0.0f);
+        }
+    }
+    for (int i = 0; i < 6; ++i) {
+        world.physics.createSphereBody(world.ecs, glm::vec3(-5.0f + i * 2.0f, 6.0f + i * 0.7f, -3.0f), 0.4f, 0.0f);
+    }
+    world.players.push_back(world.physics.createDynamicBox(world.ecs, glm::vec3(-4, 0.5f, 0), glm::vec3(0.5f), 0.0f));
+    world.players.push_back(world.physics.createDynamicBox(world.ecs, glm::vec3(4, 0.5f, 0), glm::vec3(0.5f), 0.0f));
+    world.physics.optimizeBroadPhase();
+    return true;
+}
+
+// Players push their box around and jump; gameState counts jumps and contacts.
+engine::core::RollbackStepFn stepFor(World& world, int sabotageFrame = -1) {
+    return [&world, sabotageFrame](engine::core::RollbackFrameContext& frame) {
+        using namespace engine::core;
+        if (frame.gameState.size() < 12) frame.gameState.resize(12, 0);
+        for (uint32_t p = 0; p < frame.playerCount && p < world.players.size(); ++p) {
+            const RollbackInput& input = frame.inputs[p];
+            const EntityId body = world.players[p];
+            frame.physics.setHorizontalVelocity(body, frame.ecs, input.move() * 6.0f);
+            if (input.held(RollbackInput::Jump) && std::abs(frame.physics.getLinearVelocity(body, frame.ecs).y) < 0.05f) {
+                frame.physics.setVerticalVelocity(body, frame.ecs, 5.0f);
+                ++frame.gameState[p * 4];
+            }
+        }
+        frame.gameState[8] = static_cast<uint8_t>(frame.gameState[8] + frame.contacts.size());
+        if (static_cast<int>(frame.frame) == sabotageFrame) {
+            frame.physics.applyImpulse(world.players[0], frame.ecs, glm::vec3(0.0f, 0.001f, 0.0f));
+        }
+    };
+}
+
+std::vector<engine::core::RollbackInput> script(uint32_t seed, uint32_t frames) {
+    using engine::core::RollbackInput;
+    std::vector<RollbackInput> inputs;
+    uint32_t rng = seed;
+    auto next = [&] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+    RollbackInput held;
+    for (uint32_t f = 0; f < frames; ++f) {
+        if (next() % 9 == 0) {
+            const float angle = static_cast<float>(next() % 628) / 100.0f;
+            held = RollbackInput::make(glm::vec2(std::cos(angle), std::sin(angle)) * (next() % 2 ? 1.0f : 0.4f),
+                                       angle, 0.0f, next() % 4 == 0 ? RollbackInput::Jump : 0);
+        }
+        inputs.push_back(held);
+    }
+    return inputs;
+}
+
+} // namespace rollback_physics_test
+
+void testPhysicsDeterminism() {
+    using namespace rollback_physics_test;
+    using engine::core::Physics;
+    auto run = [](int workers, std::vector<uint64_t>& hashes) {
+        World world;
+        if (!build(world, workers)) return false;
+        auto inputs = script(17, 240);
+        for (uint32_t f = 0; f < 240; ++f) {
+            world.physics.setHorizontalVelocity(world.players[0], world.ecs, inputs[f].move() * 6.0f);
+            world.physics.step(1.0f / 60.0f, world.ecs);
+            if (f % 20 == 19) hashes.push_back(world.physics.stateHash());
+        }
+        return true;
+    };
+    std::vector<uint64_t> single, threaded;
+    check(run(0, single) && run(7, threaded), "determinism: worlds with 0 and 7 worker threads initialize");
+    check(!single.empty() && single == threaded, "determinism: identical state hashes with 0 and 7 worker threads");
+
+    World world;
+    check(build(world), "determinism: save/restore world builds");
+    for (int f = 0; f < 90; ++f) world.physics.step(1.0f / 60.0f, world.ecs);
+    std::vector<uint8_t> saved;
+    world.physics.saveState(saved);
+    const glm::vec3 savedPosition = world.ecs.raw().get<engine::core::Transform>(world.players[1]).position;
+    for (int f = 0; f < 60; ++f) world.physics.step(1.0f / 60.0f, world.ecs);
+    const uint64_t first = world.physics.stateHash();
+    check(world.physics.restoreState(saved, &world.ecs), "determinism: snapshot restores");
+    check(world.ecs.raw().get<engine::core::Transform>(world.players[1]).position == savedPosition,
+          "determinism: restore writes Transforms back");
+    for (int f = 0; f < 60; ++f) world.physics.step(1.0f / 60.0f, world.ecs);
+    check(world.physics.stateHash() == first, "determinism: resimulating from a snapshot reproduces the same state");
+    check(!world.physics.restoreState({1, 2, 3}), "determinism: a malformed snapshot is rejected");
+    check(Physics::hashStateBytes(saved) != Physics::hashStateBytes({}), "determinism: hash depends on content");
+
+    using engine::core::RollbackInput;
+    const RollbackInput input = RollbackInput::make({1.0f, -0.5f}, 3.0f, -0.4f, RollbackInput::Jump);
+    check(input.moveX == 127 && input.moveZ == -64 && input.held(RollbackInput::Jump), "determinism: input quantizes");
+    check(std::abs(input.yawRadians() - 3.0f) < 0.001f && std::abs(input.pitchRadians() + 0.4f) < 0.001f,
+          "determinism: angles survive quantizing");
+    check(RollbackInput::make({}, 3.0f + 6.2831853f, 0, 0).yaw == input.yaw, "determinism: yaw wraps per turn");
+}
+
+void testPhysicsRollbackPeers() {
+    using namespace rollback_physics_test;
+    using engine::core::PhysicsRollback;
+    using engine::core::RollbackInput;
+    constexpr uint32_t kFrames = 300;
+    const std::vector<RollbackInput> scripted[2] = {script(3, kFrames), script(11, kFrames)};
+
+    World referenceWorld;
+    check(build(referenceWorld), "rollback: reference world builds");
+    PhysicsRollback reference(referenceWorld.physics, referenceWorld.ecs, {2, 0, 8, 1.0f / 60.0f, true},
+                              stepFor(referenceWorld));
+    for (uint32_t f = 0; f < kFrames; ++f) {
+        reference.addRemoteInput(1, f, scripted[1][f]);
+        reference.advance(scripted[0][f]);
+    }
+    reference.synchronize();
+    const auto referenceSum = reference.checksum(kFrames);
+    check(referenceSum.has_value() && reference.stats().rollbacks == 0, "rollback: reference run never rolls back");
+
+    auto runPeers = [&](uint32_t seed, int sabotage, uint64_t& rollbacks, std::optional<uint32_t>& desync,
+                        engine::core::PhysicsReplay* replayOut) {
+        World worlds[2];
+        if (!build(worlds[0]) || !build(worlds[1])) return false;
+        PhysicsRollback sessions[2] = {
+            PhysicsRollback(worlds[0].physics, worlds[0].ecs, {2, 0, 8, 1.0f / 60.0f, true}, stepFor(worlds[0])),
+            PhysicsRollback(worlds[1].physics, worlds[1].ecs, {2, 1, 8, 1.0f / 60.0f}, stepFor(worlds[1], sabotage))};
+        engine::net::RollbackPeer peers[2] = {engine::net::RollbackPeer(sessions[0]),
+                                              engine::net::RollbackPeer(sessions[1])};
+        uint32_t rng = seed;
+        auto next = [&] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+        struct Packet { uint32_t deliverTick; int to; std::vector<uint8_t> bytes; };
+        std::vector<Packet> inFlight;
+        for (uint32_t tick = 0; tick < 3000; ++tick) {
+            for (int p = 0; p < 2; ++p) {
+                const uint32_t f = sessions[p].currentFrame();
+                if (f < kFrames) peers[p].tick(scripted[p][f]);
+                if (next() % 100 < 20) continue; // 20% loss
+                inFlight.push_back({tick + 2 + next() % 6, 1 - p, peers[p].buildPacket()});
+            }
+            for (size_t i = 0; i < inFlight.size();) {
+                if (inFlight[i].deliverTick <= tick) {
+                    peers[inFlight[i].to].receive(inFlight[i].bytes.data(), inFlight[i].bytes.size());
+                    inFlight[i] = std::move(inFlight.back());
+                    inFlight.pop_back();
+                } else {
+                    ++i;
+                }
+            }
+            if (sessions[0].confirmedFrame() == kFrames - 1 && sessions[1].confirmedFrame() == kFrames - 1 &&
+                sessions[0].checksum(kFrames) && sessions[1].checksum(kFrames) && sessions[0].desyncFrame()) {
+                break;
+            }
+            if (sessions[0].confirmedFrame() == kFrames - 1 && sessions[1].confirmedFrame() == kFrames - 1 &&
+                tick > kFrames + 200) {
+                break;
+            }
+        }
+        for (auto& session : sessions) session.synchronize();
+        rollbacks = sessions[0].stats().rollbacks + sessions[1].stats().rollbacks;
+        desync = sessions[0].desyncFrame() ? sessions[0].desyncFrame() : sessions[1].desyncFrame();
+        if (replayOut) *replayOut = sessions[0].replay();
+        if (sabotage >= 0) return true;
+        return sessions[0].checksum(kFrames) == referenceSum && sessions[1].checksum(kFrames) == referenceSum &&
+               !sessions[0].restoreFailed() && !sessions[1].restoreFailed() &&
+               sessions[0].gameState() == reference.gameState() && sessions[1].gameState() == reference.gameState();
+    };
+
+    bool converged = true;
+    uint64_t totalRollbacks = 0;
+    bool anyDesync = false;
+    engine::core::PhysicsReplay replay;
+    for (uint32_t seed = 1; seed <= 4; ++seed) {
+        uint64_t rollbacks = 0;
+        std::optional<uint32_t> desync;
+        converged = runPeers(seed * 7919u, -1, rollbacks, desync, seed == 1 ? &replay : nullptr) && converged;
+        anyDesync = anyDesync || desync.has_value();
+        totalRollbacks += rollbacks;
+    }
+    check(converged, "rollback: two physics peers over a lossy, jittery link end bit-identical to the reference");
+    check(totalRollbacks > 0, "rollback: late inputs really trigger physics rollbacks");
+    check(!anyDesync, "rollback: matching peers report no desync");
+
+    uint64_t rollbacks = 0;
+    std::optional<uint32_t> desync;
+    runPeers(5, 120, rollbacks, desync, nullptr);
+    check(desync.has_value() && *desync >= 121 && *desync < 160, "rollback: a peer that simulates differently is caught within a few frames");
+
+    check(replay.frames.size() == kFrames && replay.players == 2, "replay: every confirmed frame is recorded");
+    std::string error;
+    engine::core::PhysicsReplay parsed;
+    check(parsed.parse(replay.serialize(), error) && parsed.frames.size() == kFrames &&
+              parsed.frames.back().checksum == replay.frames.back().checksum &&
+              parsed.frames[57].inputs == replay.frames[57].inputs,
+          "replay: serialize/parse roundtrip");
+    std::vector<uint8_t> truncated = replay.serialize();
+    truncated.resize(truncated.size() - 3);
+    check(!parsed.parse(truncated, error), "replay: truncated file rejected");
+
+    World replayWorld;
+    check(build(replayWorld, 3), "replay: fresh world builds");
+    auto verification = replay.verify(replayWorld.physics, replayWorld.ecs, stepFor(replayWorld));
+    check(verification.restored && verification.firstMismatch == -1 && verification.framesChecked == kFrames &&
+              verification.finalGame == reference.gameState(),
+          "replay: a fresh world (different thread count) replays every frame bit-identically");
+    engine::core::PhysicsReplay tampered = replay;
+    tampered.frames[200].inputs[1].moveX = static_cast<int8_t>(tampered.frames[200].inputs[1].moveX ^ 0x40);
+    World tamperedWorld;
+    check(build(tamperedWorld), "replay: second fresh world builds");
+    verification = tampered.verify(tamperedWorld.physics, tamperedWorld.ecs, stepFor(tamperedWorld));
+    check(verification.firstMismatch == 200, "replay: a changed input is caught at its frame");
+}
+
+void testRollbackPacketCodec() {
+    using namespace engine::net;
+    RollbackPacket packet;
+    packet.player = 2;
+    packet.players = 3;
+    packet.advantage = -3;
+    packet.startFrame = 4000000000u;
+    packet.inputs = {engine::core::RollbackInput::make({0.5f, 0}, 1, 0, 1), {}};
+    packet.received = {7, 8, 9};
+    packet.checksumFrame = 41;
+    packet.checksum = 0x1234567890ABCDEFull;
+    const auto bytes = encodeRollbackPacket(packet);
+    RollbackPacket decoded;
+    check(decodeRollbackPacket(bytes.data(), bytes.size(), decoded) && decoded.player == 2 && decoded.players == 3 &&
+              decoded.advantage == -3 && decoded.startFrame == 4000000000u && decoded.inputs == packet.inputs &&
+              decoded.received[2] == 9 && decoded.checksumFrame == 41 && decoded.checksum == packet.checksum,
+          "rollback packet: roundtrip");
+    check(bytes.size() == 4 + 4 + 1 + 16 + 12 + 12, "rollback packet: compact encoding");
+    for (size_t cut = 0; cut < bytes.size(); ++cut) {
+        if (decodeRollbackPacket(bytes.data(), cut, decoded)) {
+            check(false, "rollback packet: truncated packet rejected");
+            return;
+        }
+    }
+    auto bad = bytes;
+    bad[1] = 5; // player >= players
+    check(!decodeRollbackPacket(bad.data(), bad.size(), decoded), "rollback packet: out-of-range player rejected");
+}
+
+void testRollbackNetSessionLoopback() {
+    using namespace rollback_physics_test;
+    using engine::core::PhysicsRollback;
+    using engine::net::RollbackNetSession;
+    using Phase = RollbackNetSession::Phase;
+
+    auto runMatch = [](bool clientExtraBox, uint16_t port, std::string& clientEnd, uint64_t& hostSum,
+                       uint64_t& clientSum, uint32_t& framesReached) {
+        World worlds[2];
+        if (!build(worlds[0]) || !build(worlds[1])) return false;
+        if (clientExtraBox) worlds[1].physics.createDynamicBox(worlds[1].ecs, glm::vec3(9, 3, 9), glm::vec3(0.5f), 0.0f);
+        std::unique_ptr<PhysicsRollback> rollbacks[2];
+        RollbackNetSession sessions[2];
+        auto starter = [&](int side) {
+            return [&, side](uint32_t players, uint32_t local) {
+                PhysicsRollback::Settings settings{players, local, 8, 1.0f / 60.0f, false};
+                rollbacks[side] = std::make_unique<PhysicsRollback>(worlds[side].physics, worlds[side].ecs, settings,
+                                                                    stepFor(worlds[side]));
+                return rollbacks[side].get();
+            };
+        };
+        RollbackNetSession::Config hostConfig;
+        hostConfig.port = port;
+        hostConfig.players = 2;
+        hostConfig.simulatedLatencyMs = 15;
+        hostConfig.simulatedLossPercent = 10;
+        RollbackNetSession::Config joinConfig = hostConfig;
+        joinConfig.host = false;
+        if (!sessions[0].start(hostConfig, starter(0)) || !sessions[1].start(joinConfig, starter(1))) return false;
+        const auto inputs0 = script(5, 400);
+        const auto inputs1 = script(6, 400);
+        constexpr uint32_t kTarget = 240;
+        for (int tick = 0; tick < 4000; ++tick) {
+            for (int side = 0; side < 2; ++side) {
+                const auto& script = side == 0 ? inputs0 : inputs1;
+                const uint32_t frame = rollbacks[side] ? rollbacks[side]->currentFrame() : 0;
+                sessions[side].tick(frame < kTarget ? script[frame] : engine::core::RollbackInput{});
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (sessions[1].phase() == Phase::Ended) break;
+            if (rollbacks[0] && rollbacks[1] && rollbacks[0]->confirmedFrame() >= kTarget &&
+                rollbacks[1]->confirmedFrame() >= kTarget) {
+                break;
+            }
+        }
+        clientEnd = sessions[1].phase() == Phase::Ended ? sessions[1].endReason() : "";
+        framesReached = rollbacks[1] ? rollbacks[1]->currentFrame() : 0;
+        if (rollbacks[0] && rollbacks[1]) {
+            rollbacks[0]->synchronize();
+            rollbacks[1]->synchronize();
+            hostSum = rollbacks[0]->checksum(kTarget).value_or(1);
+            clientSum = rollbacks[1]->checksum(kTarget).value_or(2);
+        }
+        const bool running = sessions[0].phase() == Phase::Running && sessions[1].phase() == Phase::Running &&
+                             sessions[1].localPlayer() == 1u;
+        for (auto& session : sessions) session.shutdown();
+        return running;
+    };
+
+    std::string clientEnd;
+    uint64_t hostSum = 0;
+    uint64_t clientSum = 0;
+    uint32_t frames = 0;
+    check(runMatch(false, 17960, clientEnd, hostSum, clientSum, frames) && clientEnd.empty(),
+          "rollback match: host and joiner connect over ENet and run");
+    check(frames >= 240 && hostSum == clientSum, "rollback match: both players reach the same state through 10% loss");
+
+    hostSum = clientSum = 0;
+    runMatch(true, 17961, clientEnd, hostSum, clientSum, frames);
+    check(clientEnd.find("differs from the host") != std::string::npos,
+          "rollback match: a joiner whose scene differs is stopped before the match starts");
+}
+
+void testRollbackCharacterMovement() {
+    using engine::core::CharacterController;
+    using engine::core::RollbackInput;
+    auto run = [](int workers, glm::vec3& endPosition, float& peakY, float& facing) {
+        engine::core::Physics physics;
+        engine::core::ECS ecs;
+        if (!physics.initialize(workers)) return false;
+        physics.createGroundPlane(ecs, 30.0f, 30.0f);
+        const CharacterController::Settings settings;
+        const auto body = physics.createCharacterCapsule(ecs, glm::vec3(0, 0.95f, 0), settings.capsuleRadius,
+                                                         settings.capsuleHalfHeight, 70.0f);
+        facing = 0.0f;
+        peakY = 0.0f;
+        for (int f = 0; f < 30; ++f) physics.step(1.0f / 60.0f, ecs);
+        for (int f = 0; f < 120; ++f) {
+            // Camera yaw -90 degrees looks down -Z; W walks that way, jumping once at frame 60.
+            const RollbackInput input = RollbackInput::make({0.0f, 1.0f}, glm::radians(-90.0f), 0.0f,
+                                                            f == 60 ? RollbackInput::Jump : 0);
+            CharacterController::simulateRollback(physics, ecs, body, settings, input, 1.0f / 60.0f, facing);
+            physics.step(1.0f / 60.0f, ecs);
+            peakY = std::max(peakY, ecs.raw().get<engine::core::Transform>(body).position.y);
+        }
+        endPosition = ecs.raw().get<engine::core::Transform>(body).position;
+        return true;
+    };
+    glm::vec3 a{}, b{};
+    float peakA = 0, peakB = 0, facingA = 0, facingB = 0;
+    check(run(0, a, peakA, facingA) && run(5, b, peakB, facingB), "rollback character: worlds initialize");
+    check(a.z < -10.0f && std::abs(a.x) < 0.01f, "rollback character: W walks away from a camera looking down -Z");
+    check(peakA > 1.6f, "rollback character: the jump input jumps");
+    check(std::abs(std::abs(facingA) - 3.14159265f) < 0.01f, "rollback character: faces the way it walks");
+    check(a == b && peakA == peakB && facingA == facingB, "rollback character: bit-identical across thread counts");
+}
+
+namespace plugin_api_test {
+
+struct RecordingUi {
+    std::vector<std::string> texts;
+    std::vector<std::string> widgets;
+    std::string click;        // button to press
+    std::string toggle;       // checkbox to flip
+    std::string slide;        // slider to set to 7.5
+    std::string type;         // input to set to "crate"
+
+    KronosUi table() {
+        KronosUi ui{};
+        ui.struct_size = sizeof(KronosUi);
+        ui.context = this;
+        ui.text = [](void* c, const char* t) { self(c).texts.emplace_back(t); };
+        ui.button = [](void* c, const char* label) -> int32_t {
+            self(c).widgets.emplace_back(label);
+            return self(c).click == label ? 1 : 0;
+        };
+        ui.checkbox = [](void* c, const char* label, int32_t* v) -> int32_t {
+            self(c).widgets.emplace_back(label);
+            if (self(c).toggle != label) return 0;
+            *v = !*v;
+            return 1;
+        };
+        ui.slider_float = [](void* c, const char* label, float* v, float, float) -> int32_t {
+            self(c).widgets.emplace_back(label);
+            if (self(c).slide != label) return 0;
+            *v = 7.5f;
+            return 1;
+        };
+        ui.input_text = [](void* c, const char* label, char* buffer, uint32_t capacity) -> int32_t {
+            self(c).widgets.emplace_back(label);
+            if (self(c).type != label) return 0;
+            std::snprintf(buffer, capacity, "crate");
+            return 1;
+        };
+        ui.separator = [](void*) {};
+        ui.same_line = [](void*) {};
+        return ui;
+    }
+    static RecordingUi& self(void* c) { return *static_cast<RecordingUi*>(c); }
+    void reset() {
+        texts.clear();
+        widgets.clear();
+        click.clear();
+        toggle.clear();
+        slide.clear();
+        type.clear();
+    }
+};
+
+std::string text(const std::vector<uint8_t>& bytes) { return std::string(bytes.begin(), bytes.end()); }
+std::vector<uint8_t> bytes(const std::string& s) { return std::vector<uint8_t>(s.begin(), s.end()); }
+
+bool logged(const engine::plugin::PluginHost& host, const std::string& needle) {
+    for (const auto& line : host.log()) {
+        if (line.text.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
+uint64_t counterValue(const engine::plugin::PluginHost& host) {
+    const auto channel = host.channel("test.counter");
+    return channel ? *static_cast<const uint64_t*>(channel->data) : 0;
+}
+
+} // namespace plugin_api_test
+
+void testPluginApiInProcess() {
+    using namespace plugin_api_test;
+    using engine::plugin::PluginHost;
+    engine::core::ECS ecs;
+    const auto box = ecs.createEntity("Box");
+    PluginHost host;
+    host.setScene(&ecs);
+    std::string error;
+    std::string id;
+    check(host.load(TEST_PLUGIN_PATH, {}, error, &id) && id == "test.plugin", "plugin api: C plugin loads");
+    const auto info = host.plugin("test.plugin");
+    check(info && info->running && info->name == "Test Plugin" && info->apiMajor == KRONOS_PLUGIN_API_MAJOR &&
+              info->granted == info->requested,
+          "plugin api: query info read");
+    check(logged(host, "loaded importer=0 panel=0 channel=0 sandboxed=0"), "plugin api: registrations succeed");
+
+    std::vector<uint8_t> out;
+    std::string ext;
+    check(host.importAsset("notes.lower", bytes("hello"), out, ext, error) && text(out) == "HELLO" && ext == ".txt",
+          "plugin api: importer converts");
+    check(host.importerFor("SHOUT.LOW") && !host.importerFor("x.png"), "plugin api: importer lookup by extension");
+    check(!host.importAsset("fail.lower", bytes("x"), out, ext, error) && error.find("couldn't import") != std::string::npos,
+          "plugin api: importer failure reported");
+
+    const auto dir = std::filesystem::temp_directory_path() / ("kronos_plugin_api_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream(dir / "story.lower") << "once upon";
+    }
+    std::string outputPath;
+    check(host.importFile((dir / "story.lower").string(), outputPath, error) &&
+              outputPath == (dir / "story.txt").string(),
+          "plugin api: importFile writes next to the source");
+    std::ifstream written(outputPath);
+    std::string writtenText((std::istreambuf_iterator<char>(written)), std::istreambuf_iterator<char>());
+    check(writtenText == "ONCE UPON", "plugin api: imported file contents");
+
+    RecordingUi ui;
+    KronosUi table = ui.table();
+    check(host.panels().size() == 1 && host.drawPanel("test.panel", table) && !ui.texts.empty() &&
+              ui.texts.front() == "hello from test.plugin" && ui.widgets.size() == 4,
+          "plugin api: panel draws");
+    ui.reset();
+    ui.click = "Bump";
+    host.drawPanel("test.panel", table);
+    ui.reset();
+    host.drawPanel("test.panel", table);
+    check(!ui.texts.empty() && ui.texts.back().find("bumps=1") == 0, "plugin api: panel button");
+
+    for (int i = 0; i < 3; ++i) host.tick(1.0f / 60.0f);
+    check(ecs.tryGetComponent<engine::core::Transform>(box)->position.x == 3.0f, "plugin api: plugin moves the scene");
+    check(counterValue(host) == 3, "plugin api: channel shared with the engine");
+
+    check(host.reload("test.plugin", error) && host.plugin("test.plugin")->reloadCount == 1 &&
+              logged(host, "unloaded"),
+          "plugin api: reload");
+    host.tick(1.0f / 60.0f);
+    check(counterValue(host) == 4, "plugin api: channel survives a reload");
+    check(host.importers().size() == 1 && host.panels().size() == 1, "plugin api: reload doesn't duplicate registrations");
+
+    // Versioned registries.
+    check(host.load(TEST_PLUGIN_V2_PATH, {}, error), "plugin api: second plugin loads");
+    auto importers = host.importers();
+    check(importers.size() == 2 && importers[0].version == 1 && !importers[0].active && importers[1].active,
+          "plugin api: newer importer version wins");
+    check(host.importAsset("a.lower", bytes("b"), out, ext, error) && text(out) == "V2:B", "plugin api: v2 imports");
+    host.unload("test.plugin.v2");
+    check(host.importAsset("a.lower", bytes("b"), out, ext, error) && text(out) == "B",
+          "plugin api: older version returns when the newer plugin unloads");
+    check(host.load(TEST_PLUGIN_DUP_PATH, {}, error) &&
+              logged(host, "loaded importer=" + std::to_string(KRONOS_CONFLICT) + " panel=" +
+                               std::to_string(KRONOS_CONFLICT) + " channel=0"),
+          "plugin api: same name and version is a conflict");
+    check(host.importers().size() == 1, "plugin api: conflicting registration not added");
+    host.unload("test.plugin.dup");
+
+    // Capabilities.
+    check(host.load(TEST_PLUGIN_LIMITED_PATH, {}, error) &&
+              logged(host, "loaded importer=" + std::to_string(KRONOS_DENIED)),
+          "plugin api: ungranted importer denied");
+    ecs.tryGetComponent<engine::core::Transform>(box)->position.x = 0.0f;
+    host.unload("test.plugin");
+    host.tick(1.0f / 60.0f);
+    const auto limited = host.plugin("test.plugin.limited");
+    check(ecs.tryGetComponent<engine::core::Transform>(box)->position.x == 0.0f && limited && limited->deniedCalls >= 2 &&
+              logged(host, "tried to change the scene without permission"),
+          "plugin api: scene write denied without the capability");
+    host.unload("test.plugin.limited");
+    PluginHost::LoadOptions narrow;
+    narrow.allowedCapabilities = KRONOS_CAP_EDITOR_PANELS;
+    check(host.load(TEST_PLUGIN_PATH, narrow, error) && host.plugin("test.plugin")->granted == KRONOS_CAP_EDITOR_PANELS &&
+              host.importers().empty() && host.panels().size() == 1,
+          "plugin api: host can narrow what a plugin gets");
+    host.unloadAll();
+
+    // Refusals.
+    check(!host.load(TEST_PLUGIN_FUTURE_PATH, {}, error) && error.find("plugin API 2") != std::string::npos,
+          "plugin api: other major version refused");
+    check(!host.load(HOTRELOAD_MODULE_V1_PATH, {}, error) && error.find("kronos_plugin_query") != std::string::npos,
+          "plugin api: library without the exports refused");
+    check(!host.load("/nonexistent/plugin.so", {}, error), "plugin api: missing file refused");
+    check(PluginHost::exportsPluginApi(TEST_PLUGIN_PATH) && !PluginHost::exportsPluginApi(HOTRELOAD_MODULE_V1_PATH),
+          "plugin api: export detection");
+    check(host.plugins().empty(), "plugin api: refused plugins aren't listed");
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+void testSamplePluginApiPlugin() {
+#if defined(SAMPLE_C_PLUGIN_PATH)
+    using namespace plugin_api_test;
+    using engine::plugin::PluginHost;
+    for (const bool sandbox : {false, true}) {
+#if !defined(KRONOS_PLUGIN_SANDBOX_PATH)
+        if (sandbox) break;
+#else
+        PluginHost::LoadOptions options;
+        if (sandbox) {
+            options.isolation = engine::plugin::Isolation::Sandboxed;
+            options.sandboxExecutable = KRONOS_PLUGIN_SANDBOX_PATH;
+        }
+#endif
+        engine::core::ECS ecs;
+        const auto a = ecs.createEntity("A");
+        const auto b = ecs.createEntity("B");
+        ecs.tryGetComponent<engine::core::Transform>(a)->position = {0.4f, 2.3f, -1.6f};
+        ecs.tryGetComponent<engine::core::Transform>(b)->position = {3.0f, 0.0f, 5.0f};
+        PluginHost host;
+        host.setScene(&ecs);
+        std::string error;
+#if defined(KRONOS_PLUGIN_SANDBOX_PATH)
+        if (!host.load(SAMPLE_C_PLUGIN_PATH, options, error)) {
+#else
+        if (!host.load(SAMPLE_C_PLUGIN_PATH, {}, error)) {
+#endif
+            check(sandbox && error.find("Landlock") != std::string::npos, "sample plugin: loads");
+            continue;
+        }
+        RecordingUi ui;
+        KronosUi table = ui.table();
+        host.drawPanel("kronos.sample.grid-snap", table);
+        ui.reset();
+        ui.click = "Snap everything";
+        host.drawPanel("kronos.sample.grid-snap", table);
+        if (sandbox) {
+            ui.reset();
+            host.drawPanel("kronos.sample.grid-snap", table);
+        }
+        const auto pa = ecs.tryGetComponent<engine::core::Transform>(a)->position;
+        check(pa == glm::vec3(0.0f, 2.3f, -2.0f) && !ui.texts.empty() && ui.texts.back() == "Snapped 1 of 2 objects.",
+              sandbox ? "sample plugin: grid snap (sandboxed)" : "sample plugin: grid snap");
+        std::vector<uint8_t> out;
+        std::string ext;
+        check(host.importAsset("hill.pgm", bytes("P2\n# tiny\n2 2\n255\n0 255\n51 0\n"), out, ext, error) &&
+                  ext == ".obj" &&
+                  text(out).find("v -0.500 0.000 -0.500\nv 0.500 10.000 -0.500\nv -0.500 2.000 0.500\n") !=
+                      std::string::npos &&
+                  text(out).find("f 1 3 2\nf 2 3 4\n") != std::string::npos,
+              sandbox ? "sample plugin: heightmap to OBJ (sandboxed)" : "sample plugin: heightmap to OBJ");
+        check(!host.importAsset("bad.pgm", bytes("P2 1 1 255 0"), out, ext, error), "sample plugin: bad heightmap refused");
+    }
+#endif
+}
+
+void testPluginApiSandbox() {
+#if defined(KRONOS_PLUGIN_SANDBOX_PATH)
+    using namespace plugin_api_test;
+    using engine::plugin::PluginHost;
+    engine::core::ECS ecs;
+    const auto box = ecs.createEntity("Box");
+    PluginHost host;
+    host.setScene(&ecs);
+    PluginHost::LoadOptions sandboxed;
+    sandboxed.isolation = engine::plugin::Isolation::Sandboxed;
+    sandboxed.sandboxExecutable = KRONOS_PLUGIN_SANDBOX_PATH;
+    std::string error;
+    if (!host.load(TEST_PLUGIN_PATH, sandboxed, error)) {
+        check(error.find("Landlock") != std::string::npos, "plugin sandbox: loads");
+        std::printf("  plugin sandbox skipped: %s\n", error.c_str());
+        return;
+    }
+    check(logged(host, "loaded importer=0 panel=0 channel=0 sandboxed=1"), "plugin sandbox: registrations over IPC");
+
+    std::vector<uint8_t> out;
+    std::string ext;
+    check(host.importAsset("notes.lower", bytes("hello"), out, ext, error) && text(out) == "HELLO",
+          "plugin sandbox: importer runs in the sandbox");
+
+    for (int i = 0; i < 3; ++i) host.tick(1.0f / 60.0f);
+    check(ecs.tryGetComponent<engine::core::Transform>(box)->position.x == 3.0f, "plugin sandbox: scene calls over IPC");
+    check(counterValue(host) == 3, "plugin sandbox: channel is shared memory");
+
+    RecordingUi ui;
+    KronosUi table = ui.table();
+    check(host.drawPanel("test.panel", table) && ui.texts.size() == 2 && ui.texts[0] == "hello from test.plugin" &&
+              ui.widgets == std::vector<std::string>{"Bump", "Enabled", "Speed", "Name"},
+          "plugin sandbox: panel commands replayed");
+    ui.reset();
+    ui.click = "Bump";
+    ui.toggle = "Enabled";
+    ui.slide = "Speed";
+    ui.type = "Name";
+    host.drawPanel("test.panel", table);
+    ui.reset();
+    host.drawPanel("test.panel", table);
+    check(ui.texts.size() == 2 && ui.texts[1] == "bumps=1 enabled=0 speed=7.5 name=crate",
+          "plugin sandbox: panel input reaches the plugin");
+
+    const auto dir = std::filesystem::temp_directory_path() / ("kronos_plugin_sandbox_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    const auto secret = dir / "secret.txt";
+    const auto written = dir / "written.txt";
+    {
+        std::ofstream(secret) << "secret";
+    }
+    const std::string probe = written.string() + "\n" + secret.string();
+    check(host.importAsset("probe.lower", bytes(probe), out, ext, error) &&
+              text(out) == "socket:denied fork:denied write:denied read:denied signal:denied" &&
+              !std::filesystem::exists(written),
+          "plugin sandbox: network, processes, files and signals blocked");
+
+    {
+        PluginHost trusted;
+        trusted.setScene(&ecs);
+        check(trusted.load(TEST_PLUGIN_PATH, {}, error) &&
+                  trusted.importAsset("probe.lower", bytes(probe), out, ext, error) &&
+                  text(out) == "socket:ok fork:ok write:ok read:ok signal:ok",
+              "plugin sandbox: the same probe succeeds in-process");
+    }
+
+    check(!host.importAsset("crash.lower", bytes("x"), out, ext, error) &&
+              error.find("crashed (Segmentation fault)") != std::string::npos,
+          "plugin sandbox: crash contained");
+    const auto crashed = host.plugin("test.plugin");
+    check(crashed && !crashed->running && host.importers().empty() && host.panels().empty() &&
+              !host.drawPanel("test.panel", table),
+          "plugin sandbox: crashed plugin's registrations removed");
+    host.tick(1.0f / 60.0f);
+    check(host.reload("test.plugin", error) && host.plugin("test.plugin")->running, "plugin sandbox: restart after crash");
+    check(counterValue(host) == 3, "plugin sandbox: channel survives the crash");
+
+    host.unload("test.plugin");
+    sandboxed.importTimeoutMs = 300;
+    check(host.load(TEST_PLUGIN_PATH, sandboxed, error), "plugin sandbox: load with short timeout");
+    const auto start = std::chrono::steady_clock::now();
+    check(!host.importAsset("hang.lower", bytes("x"), out, ext, error) &&
+              error.find("stopped responding") != std::string::npos &&
+              std::chrono::steady_clock::now() - start < std::chrono::seconds(3),
+          "plugin sandbox: hung plugin stopped");
+
+    check(host.load(TEST_PLUGIN_LIMITED_PATH, sandboxed, error), "plugin sandbox: limited plugin loads");
+    ecs.tryGetComponent<engine::core::Transform>(box)->position.x = 0.0f;
+    host.tick(1.0f / 60.0f);
+    check(ecs.tryGetComponent<engine::core::Transform>(box)->position.x == 0.0f &&
+              host.plugin("test.plugin.limited")->deniedCalls >= 1,
+          "plugin sandbox: capabilities enforced by the engine");
+    host.unloadAll();
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+#endif
+}
+
+namespace mixer_test {
+
+std::vector<float> tone(float hz, float amplitude, float seconds, uint32_t rate = 48000) {
+    const auto frames = static_cast<size_t>(seconds * rate);
+    std::vector<float> pcm(frames * 2);
+    for (size_t i = 0; i < frames; ++i) {
+        const float v = amplitude * std::sin(2.0f * 3.14159265f * hz * static_cast<float>(i) / rate);
+        pcm[i * 2] = v;
+        pcm[i * 2 + 1] = v;
+    }
+    return pcm;
+}
+
+engine::core::SoundHandle playTone(engine::core::Audio& audio, float hz, float amplitude, const std::string& bus) {
+    const auto pcm = tone(hz, amplitude, 1.0f);
+    const auto handle = audio.reserveSound();
+    audio.setSoundPcm(handle, pcm.data(), pcm.size() / 2, 2, 48000);
+    audio.setSoundSpatialized(handle, false);
+    audio.setSoundLooping(handle, true);
+    audio.setSoundBus(handle, bus);
+    audio.playOneShot(handle);
+    return handle;
+}
+
+float render(engine::core::Audio& audio, float seconds) {
+    const auto frames = static_cast<uint64_t>(seconds * 48000);
+    std::vector<float> out(frames * 2);
+    float settle[480 * 2];
+    for (int i = 0; i < 10; ++i) audio.renderOffline(settle, 480);
+    double sum = 0.0;
+    for (uint64_t done = 0; done < frames; done += 480) {
+        const uint64_t n = std::min<uint64_t>(480, frames - done);
+        audio.renderOffline(out.data() + done * 2, n);
+    }
+    for (float v : out) sum += static_cast<double>(v) * v;
+    return static_cast<float>(std::sqrt(sum / out.size()));
+}
+
+void advance(engine::core::Audio& audio, float seconds) {
+    float block[480 * 2];
+    for (float t = 0.0f; t < seconds; t += 0.01f) {
+        audio.renderOffline(block, 480);
+        audio.update(0.01f);
+    }
+}
+
+bool near(float a, float b, float tolerance) { return std::abs(a - b) <= tolerance; }
+
+} // namespace mixer_test
+
+void testAudioMixerConfig() {
+    using namespace engine::core;
+    std::printf("\n-- audio mixer config --\n");
+    MixerConfig config = MixerConfig::defaults();
+    check(config.validate().empty(), "default mixer is valid");
+    check(config.masterIndex() >= 0 && config.buses[config.masterIndex()].name == "Master", "default master bus");
+    check(config.bus("Music") && !config.bus("Music")->ducks.empty(), "music ducks under voice by default");
+
+    config.bus("SFX")->sends.push_back({"Voice", -12.0f, true});
+    config.bus("Music")->volumeDb = -3.5f;
+    config.bus("UI")->reverbMix = 0.25f;
+    config.snapshots[0].values.push_back({"SFX", MixerParam::Send, "Voice", -30.0f});
+    MixerBus spaced;
+    spaced.name = "Big \"Hall\"";
+    spaced.parent = "Master";
+    config.buses.push_back(spaced);
+    MixerConfig parsed;
+    std::string error;
+    check(parsed.parse(config.serialize(), &error), "mixer file parses");
+    check(parsed.serialize() == config.serialize(), "mixer file round-trips exactly");
+    check(parsed.bus("Big \"Hall\"") != nullptr, "quoted bus names survive");
+    check(parsed.bus("SFX")->sends.size() == 1 && parsed.bus("SFX")->sends[0].preFader, "send survives");
+
+    check(!parsed.parse("kronos-mixer 2\nbus \"Master\"\n", &error) && error.find("newer") != std::string::npos,
+          "newer mixer format refused");
+    check(!parsed.parse("hello\n", &error), "garbage refused");
+    check(!parsed.parse("kronos-mixer 1\nbus \"Master\" volume loud\n", &error), "bad number refused");
+
+    MixerConfig loop = MixerConfig::defaults();
+    loop.bus("Music")->sends.push_back({"SFX", 0.0f, false});
+    loop.bus("SFX")->sends.push_back({"Music", 0.0f, false});
+    check(loop.validate().find("loop") != std::string::npos, "send loop refused");
+    MixerConfig parentLoop = MixerConfig::defaults();
+    parentLoop.bus("Master")->sends.push_back({"Music", 0.0f, false});
+    check(parentLoop.validate().find("loop") != std::string::npos, "send back down into a child refused");
+    MixerConfig twoMasters = MixerConfig::defaults();
+    twoMasters.bus("UI")->parent.clear();
+    check(!twoMasters.validate().empty(), "two masters refused");
+    MixerConfig selfDuck = MixerConfig::defaults();
+    selfDuck.bus("UI")->ducks.push_back({"UI"});
+    check(!selfDuck.validate().empty(), "ducking under itself refused");
+
+    MixerConfig edit = MixerConfig::defaults();
+    edit.bus("SFX")->sends.push_back({"Voice", -6.0f, false});
+    check(edit.renameBus("Voice", "Dialogue"), "rename bus");
+    check(edit.bus("Music")->ducks[0].trigger == "Dialogue" && edit.bus("SFX")->sends[0].target == "Dialogue",
+          "rename updates ducks and sends");
+    check(edit.validate().empty(), "renamed mixer valid");
+    MixerBus child;
+    child.name = "Footsteps";
+    child.parent = "SFX";
+    edit.buses.push_back(child);
+    check(edit.removeBus("SFX") && edit.bus("Footsteps")->parent == "Master", "removing a bus moves children up");
+    check(!edit.removeBus("Master"), "master can't be removed");
+    check(edit.validate().empty(), "mixer valid after removal");
+}
+
+void testSilentAudioMode() {
+    setenv("KRONOS_SILENT_AUDIO", "1", 1);
+    {
+        engine::core::Audio audio;
+        check(audio.initialize(), "KRONOS_SILENT_AUDIO=1: Audio initializes on the null output device");
+        check(audio.sampleRate() > 0 && audio.channels() > 0, "KRONOS_SILENT_AUDIO=1: the engine reports a real format");
+        float buffer[64] = {};
+        check(!audio.renderOffline(buffer, 32), "KRONOS_SILENT_AUDIO=1: it is a live device, not offline rendering");
+    }
+    unsetenv("KRONOS_SILENT_AUDIO");
+}
+
+void testAudioMixerPlugin() {
+    using namespace engine::core;
+    std::printf("\n-- audio mixer panel --\n");
+    Audio audio;
+    check(audio.initializeOffline(2, 48000), "offline audio for the mixer panel");
+    const auto dir = std::filesystem::temp_directory_path() / "kronos_mixer_panel_test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::string project;
+    bool playing = false;
+    engine::studio::plugins::AudioMixerPlugin panel(audio, [&] { return project; }, [&] { return playing; });
+    ECS ecs;
+    panel.update(0.016f, ecs, kNullEntity, {});
+    check(!panel.isOpen(), "mixer panel starts closed");
+    check(panel.mixerPath().empty(), "no mixer file without a project");
+    check(!panel.save(), "saving without a project is refused");
+
+    project = dir.string();
+    panel.update(0.016f, ecs, kNullEntity, {});
+    check(panel.mixerPath() == (dir / "mixer.kmixer").string(), "mixer file sits next to the project");
+    check(panel.config().serialize() == MixerConfig::defaults().serialize(), "new project starts with the default mixer");
+
+    MixerConfig custom = MixerConfig::defaults();
+    custom.bus("Music")->volumeDb = -7.0f;
+    MixerBus ambience;
+    ambience.name = "Ambience";
+    ambience.parent = "SFX";
+    custom.buses.push_back(ambience);
+    std::string error;
+    check(custom.saveToFile((dir / "mixer.kmixer").string(), &error), "write a project mixer");
+    panel.reload();
+    check(panel.config().bus("Ambience") != nullptr, "panel loads the project's mixer");
+    check(audio.mixer().config().bus("Ambience") != nullptr, "loaded mixer is applied live");
+    check(!panel.dirty(), "freshly loaded mixer isn't dirty");
+
+    MixerConfig gameplay = audio.mixer().config();
+    gameplay.bus("Music")->volumeDb = -30.0f;
+    playing = true;
+    audio.mixer().setConfig(gameplay);
+    panel.update(0.016f, ecs, kNullEntity, {});
+    check(std::abs(audio.mixer().config().bus("Music")->volumeDb + 30.0f) < 0.01f, "script changes survive while playing");
+    playing = false;
+    panel.update(0.016f, ecs, kNullEntity, {});
+    check(std::abs(audio.mixer().config().bus("Music")->volumeDb + 7.0f) < 0.01f, "editor mixer comes back after Play stops");
+
+    check(panel.save(&error), "save the mixer");
+    MixerConfig reread;
+    check(reread.loadFromFile((dir / "mixer.kmixer").string(), &error) && reread.bus("Ambience"), "saved mixer reads back");
+
+    std::ofstream((dir / "mixer.kmixer")) << "not a mixer";
+    panel.reload();
+    check(panel.config().serialize() == MixerConfig::defaults().serialize(), "broken mixer file falls back to the default");
+
+    project.clear();
+    panel.update(0.016f, ecs, kNullEntity, {});
+    check(panel.config().bus("Ambience") == nullptr, "closing the project resets the mixer");
+    audio.shutdown();
+    std::filesystem::remove_all(dir);
+}
+
+void testSoundSavedInScenes() {
+    using namespace engine::core;
+    std::printf("\n-- sounds in scene files --\n");
+    ECS ecs;
+    const auto speaker = ecs.createEntity("Campfire");
+    AudioSource source;
+    source.path = "assets/sounds/fire crackle.ogg";
+    source.bus = "Ambience Bus";
+    source.volume = 0.6f;
+    source.pitch = 1.25f;
+    source.minDistance = 2.0f;
+    source.maxDistance = 30.0f;
+    source.looping = true;
+    source.playOnStart = true;
+    source.spatial = true;
+    source.category = AudioCategory::Music;
+    source.playing = true;
+    source.soundHandle = 7;
+    ecs.addComponent<AudioSource>(speaker, source);
+    SceneEntityRecord record;
+    check(captureSceneEntity(ecs, speaker, record) && record.hasSound, "sound captured");
+    check(!record.sound.playing && record.sound.soundHandle == AudioSource::kInvalidHandle,
+          "live playback state isn't saved");
+    SceneFile file;
+    file.entities.push_back(record);
+    SceneEntityRecord quiet;
+    quiet.name = "Quiet";
+    quiet.hasSound = true;
+    quiet.sound.spatial = false;
+    file.entities.push_back(quiet);
+    for (const char* extension : {".kscene", ".kronos"}) {
+        const std::string path = (std::filesystem::temp_directory_path() / (std::string("kronos_sound_scene") + extension)).string();
+        check(file.saveToFile(path), "scene with sounds saves");
+        SceneFile loaded;
+        check(loaded.loadFromFile(path) && loaded.entities.size() == 2, "scene with sounds loads");
+        if (loaded.entities.size() == 2) {
+            const AudioSource& a = loaded.entities[0].sound;
+            check(loaded.entities[0].hasSound && a.path == source.path && a.bus == source.bus && a.volume == 0.6f &&
+                      a.pitch == 1.25f && a.minDistance == 2.0f && a.maxDistance == 30.0f && a.looping &&
+                      a.playOnStart && a.spatial && a.category == AudioCategory::Music,
+                  "every sound setting survives the round trip");
+            const AudioSource& b = loaded.entities[1].sound;
+            check(loaded.entities[1].hasSound && b.path.empty() && b.bus.empty() && !b.spatial && !b.looping,
+                  "a sound with no file round-trips");
+        }
+        std::filesystem::remove(path);
+    }
+    ECS rebuilt;
+    instantiateSceneEntities(file.entities, rebuilt, SceneBuildContext{});
+    bool found = false;
+    for (auto [entity, sound] : rebuilt.raw().view<AudioSource>().each()) {
+        if (sound.path == source.path) found = !sound.playing && sound.soundHandle == AudioSource::kInvalidHandle;
+    }
+    check(found, "loading a scene adds the sound without playing it");
+}
+
+void testScriptAudioApi() {
+    using namespace engine::core;
+    std::printf("\n-- script audio api --\n");
+    Audio audio;
+    if (!audio.initializeOffline(2, 48000)) {
+        std::printf("  skipped: offline audio engine unavailable\n");
+        return;
+    }
+    ECS ecs;
+    const auto speaker = ecs.createEntity("Speaker");
+    AudioSource source;
+    source.soundHandle = audio.reserveSound();
+    const auto pcm = mixer_test::tone(300.0f, 0.3f, 0.1f);
+    audio.setSoundPcm(source.soundHandle, pcm.data(), pcm.size() / 2, 2, 48000);
+    source.spatial = false;
+    ecs.addComponent<AudioSource>(speaker, source);
+
+    Scripting scripting;
+    check(scripting.initialize(), "script audio: scripting initializes");
+    ScriptAudioApi api(audio, ecs);
+    scripting.setBindingsHook([&](lua_State* L) { api.registerInto(L); });
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    const std::string id = std::to_string(static_cast<uint32_t>(speaker));
+    scripting.loadAndRun("audio_test", "print(audio.snapshot('Underwater', 0.5, 0))\n"
+                                       "print(audio.snapshot('Nope'))\n"
+                                       "print(audio.snapshotIntensity('Underwater'))\n"
+                                       "print(audio.setBusVolume('Music', -12))\n"
+                                       "print(audio.busVolume('Music'))\n"
+                                       "print(audio.setBusVolume('Nope', 0))\n"
+                                       "audio.setBusMuted('UI', true)\n"
+                                       "audio.setBus(" + id + ", 'UI')\n"
+                                       "audio.setVolume(" + id + ", 0.25)\n"
+                                       "audio.setPitch(" + id + ", 2)\n"
+                                       "print(audio.play(" + id + "))\n"
+                                       "print(audio.play(123456))\n");
+    auto has = [&](size_t i, const char* text) { return i < output.size() && output[i] == text; };
+    check(has(0, "true") && has(1, "false"), "audio.snapshot reports unknown snapshots");
+    check(has(2, "0.5"), "audio.snapshotIntensity");
+    check(has(3, "true") && has(4, "-12") && has(5, "false"), "audio.setBusVolume / busVolume");
+    check(audio.mixer().config().bus("UI")->muted, "audio.setBusMuted");
+    const AudioSource& after = *ecs.tryGetComponent<AudioSource>(speaker);
+    check(after.bus == "UI" && after.volume == 0.25f && after.pitch == 2.0f && after.playing, "entity sound controls");
+    check(has(6, "true") && has(7, "") && output.size() == 8, "audio.play ignores entities without a sound");
+    audio.mix(ecs, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    check(audio.soundBus(after.soundHandle) == "UI", "script bus choice reaches the mixer");
+    float block[480 * 2];
+    for (int i = 0; i < 30; ++i) {
+        audio.renderOffline(block, 480);
+        audio.mix(ecs, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    }
+    check(!ecs.tryGetComponent<AudioSource>(speaker)->playing, "a finished one-shot stops instead of repeating");
+    scripting.loadAndRun("audio_test2", "audio.play(" + id + ")\nprint(audio.isPlaying(" + id + "))\n");
+    check(output.size() == 9 && output[8] == "true", "audio.play restarts a finished sound");
+    scripting.shutdown();
+}
+
+void testAudioMixerRuntime() {
+    using namespace engine::core;
+    using namespace mixer_test;
+    std::printf("\n-- audio mixer runtime --\n");
+    Audio audio;
+    if (!audio.initializeOffline(2, 48000)) {
+        std::printf("  skipped: offline audio engine unavailable\n");
+        return;
+    }
+    AudioMixer& mixer = audio.mixer();
+    check(mixer.attached(), "mixer attached to the engine");
+
+    const auto music = playTone(audio, 440.0f, 0.5f, "Music");
+    check(audio.soundBus(music) == "Music", "sound routed to Music");
+    const float base = render(audio, 0.5f);
+    check(near(base, 0.3536f, 0.01f), "unity mix passes the tone through");
+
+    MixerConfig config = mixer.config();
+    config.bus("Music")->volumeDb = -6.0f;
+    check(mixer.setConfig(config), "volume change accepted");
+    check(near(render(audio, 0.5f) / base, 0.501f, 0.01f), "-6 dB halves the level");
+    config.bus("Music")->muted = true;
+    mixer.setConfig(config);
+    check(render(audio, 0.2f) < 0.001f, "mute silences the bus");
+    config.bus("Music")->muted = false;
+    config.bus("Music")->volumeDb = 0.0f;
+    mixer.setConfig(config);
+
+    audio.setCategoryVolume(AudioCategory::Music, 0.5f);
+    check(near(render(audio, 0.5f) / base, 0.5f, 0.01f), "player music volume scales the Music bus");
+    audio.setCategoryVolume(AudioCategory::Music, 1.0f);
+
+    mixer.setSolo("SFX", true);
+    check(render(audio, 0.2f) < 0.001f, "soloing another bus silences Music");
+    mixer.setSolo("SFX", false);
+    mixer.setSolo("Music", true);
+    check(near(render(audio, 0.2f), base, 0.01f), "soloed bus plays");
+    mixer.setSolo("Music", false);
+
+    advance(audio, 0.2f);
+    check(near(mixer.meter("Music").rmsDb, mixerGainToDb(0.3536f), 0.5f), "meter reads the bus level");
+    check(mixer.meter("Master").peakDb > -7.0f, "master peak meter");
+    check(mixer.meter("Master").peakDb <= kMixerSilenceDb, "peak hold resets when read");
+
+    const auto voice = playTone(audio, 300.0f, 0.5f, "Voice");
+    advance(audio, 1.0f);
+    check(near(mixer.meter("Music").duckDb, -9.0f, 0.2f), "music ducks under voice");
+    audio.stopSound(voice);
+    advance(audio, 0.1f);
+    check(mixer.meter("Music").duckDb < -4.0f, "duck releases slowly");
+    advance(audio, 4.0f);
+    check(mixer.meter("Music").duckDb > -0.2f, "duck recovers after voice stops");
+
+    MixerConfig sends = mixer.config();
+    MixerBus aux;
+    aux.name = "Aux";
+    aux.parent = "Master";
+    sends.buses.push_back(aux);
+    sends.bus("Music")->sends.push_back({"Aux", -6.0f, false});
+    check(mixer.setConfig(sends), "adding a bus and a send rebuilds the graph");
+    check(audio.soundBus(music) == "Music", "sound keeps its bus across a rebuild");
+    advance(audio, 0.3f);
+    const float musicDb = mixer.meter("Music").rmsDb;
+    check(near(mixer.meter("Aux").rmsDb, musicDb - 6.0f, 0.5f), "post-fader send at -6 dB");
+    sends.bus("Music")->volumeDb = -20.0f;
+    mixer.setConfig(sends);
+    advance(audio, 0.3f);
+    check(near(mixer.meter("Aux").rmsDb, musicDb - 26.0f, 0.5f), "post-fader send follows the fader");
+    sends.bus("Music")->sends[0].preFader = true;
+    mixer.setConfig(sends);
+    advance(audio, 0.3f);
+    check(near(mixer.meter("Aux").rmsDb, musicDb - 6.0f, 0.5f), "pre-fader send ignores the fader");
+    sends.bus("Music")->volumeDb = 0.0f;
+    sends.bus("Music")->sends.clear();
+    mixer.setConfig(sends);
+
+    MixerConfig bad = mixer.config();
+    bad.bus("Aux")->parent = "Nowhere";
+    std::string error;
+    check(!mixer.setConfig(bad, &error) && !error.empty(), "invalid config refused");
+    check(mixer.config().bus("Aux")->parent == "Master", "refused config leaves the mix alone");
+
+    audio.stopSound(music);
+    const auto bright = playTone(audio, 6000.0f, 0.5f, "SFX");
+    const float open = render(audio, 0.3f);
+    MixerConfig filtered = mixer.config();
+    filtered.bus("SFX")->lowpassHz = 400.0f;
+    mixer.setConfig(filtered);
+    check(mixerGainToDb(render(audio, 0.3f)) < mixerGainToDb(open) - 20.0f, "lowpass cuts high tones");
+    filtered.bus("SFX")->lowpassHz = kMixerFilterOpenLowpassHz;
+    mixer.setConfig(filtered);
+    audio.stopSound(bright);
+    const auto low = playTone(audio, 80.0f, 0.5f, "SFX");
+    const float lowOpen = render(audio, 0.3f);
+    filtered.bus("SFX")->highpassHz = 2000.0f;
+    mixer.setConfig(filtered);
+    check(mixerGainToDb(render(audio, 0.3f)) < mixerGainToDb(lowOpen) - 20.0f, "highpass cuts low tones");
+    filtered.bus("SFX")->highpassHz = kMixerFilterOpenHighpassHz;
+    mixer.setConfig(filtered);
+
+    check(mixer.setSnapshot("Paused", 1.0f, 1.0f), "snapshot starts");
+    check(!mixer.setSnapshot("Nope", 1.0f), "unknown snapshot refused");
+    audio.update(0.5f);
+    check(near(mixer.snapshotIntensity("Paused"), 0.5f, 0.001f), "snapshot fades in");
+    check(near(mixer.effectiveValue("SFX", MixerParam::Volume), -10.0f, 0.01f), "half-faded snapshot is halfway");
+    check(near(mixer.effectiveValue("Music", MixerParam::Lowpass), std::sqrt(20000.0f * 1500.0f), 1.0f),
+          "filter snapshots blend on a log scale");
+    audio.update(0.6f);
+    check(near(mixer.effectiveValue("SFX", MixerParam::Volume), -20.0f, 0.01f), "snapshot fully applied");
+    const float pausedLevel = render(audio, 0.3f);
+    check(near(pausedLevel / lowOpen, mixerDbToGain(-20.0f), 0.01f), "snapshot reaches the audio");
+    mixer.setSnapshot("Underwater", 1.0f);
+    check(near(mixer.effectiveValue("SFX", MixerParam::Lowpass), 700.0f, 1.0f), "later snapshot layers on top");
+    mixer.setSnapshot("Paused", 0.0f, 0.5f);
+    audio.update(0.25f);
+    check(near(mixer.snapshotIntensity("Paused"), 0.5f, 0.001f), "snapshot fades out");
+    audio.update(0.3f);
+    check(mixer.snapshotIntensity("Paused") == 0.0f, "faded-out snapshot is gone");
+    mixer.clearSnapshots();
+    check(near(mixer.effectiveValue("SFX", MixerParam::Volume), 0.0f, 0.001f), "clearing snapshots restores the mix");
+
+    MixerConfig removed = mixer.config();
+    removed.removeBus("SFX");
+    mixer.setConfig(removed);
+    check(audio.soundBus(low) == "Master", "sound on a removed bus falls back to the master");
+    check(near(render(audio, 0.3f), lowOpen, 0.01f), "and keeps playing");
+    audio.stopSound(low);
+
+    ECS ecs;
+    const auto entity = ecs.createEntity("Speaker");
+    AudioSource source;
+    source.soundHandle = audio.reserveSound();
+    const auto pcm = tone(200.0f, 0.1f, 0.5f);
+    audio.setSoundPcm(source.soundHandle, pcm.data(), pcm.size() / 2, 2, 48000);
+    source.bus = "UI";
+    ecs.addComponent<AudioSource>(entity, source);
+    audio.mix(ecs, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    check(audio.soundBus(source.soundHandle) == "UI", "AudioSource picks its bus");
+    ecs.tryGetComponent<AudioSource>(entity)->bus.clear();
+    ecs.tryGetComponent<AudioSource>(entity)->category = AudioCategory::Music;
+    audio.mix(ecs, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    check(audio.soundBus(source.soundHandle) == "Music", "music sources default to the Music bus");
+    audio.shutdown();
+    check(!mixer.attached(), "shutdown detaches the mixer");
+}
+
+
+void testWorldStreamingCells() {
+    namespace fs = std::filesystem;
+    using engine::core::WorldManifest;
+    using engine::core::WorldStreamer;
+    using engine::core::WorldCellState;
+    using engine::core::StreamedCell;
+    using engine::core::Renderable;
+    using engine::core::Transform;
+
+    WorldManifest parsed;
+    std::string error;
+    check(!parsed.parse("nonsense", error), "a world manifest needs its header");
+    check(parsed.parse("KWORLD 1\ncell_size 8\nload_radius 4\nunload_radius 2\ncell 1 -2 3 1 0 0 0 1 1 1 cell_1_-2.scene\n", error) &&
+              parsed.cellSize == 8.0f && parsed.cells.size() == 1 && parsed.cells[0].coord.z == -2 &&
+              parsed.unloadRadius == 4.0f,
+          "world manifests parse, and the unload radius is never inside the load radius");
+    WorldManifest again;
+    check(again.parse(parsed.serialize(), error) && again.cells[0].file == "cell_1_-2.scene" && again.cells[0].hasBounds,
+          "world manifests round-trip");
+    check(!again.parse("KWORLD 1\ncell 0 0 1 0 0 0 0 0 0 0 ../escape.scene\n", error), "cell files can't leave the world folder");
+    check(WorldManifest::cellOf({-0.5f, 0.0f, 10.5f}, 10.0f) == engine::core::WorldCellCoord{-1, 1}, "negative positions round down");
+
+    const fs::path dir = fs::temp_directory_path() / "kronos_world_streaming_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string scenePath = (dir / "main.scene").string();
+
+    engine::core::ECS ecs;
+    engine::core::ResourceManager resources(1);
+    resources.setUnloadDelay(1);
+    engine::core::SceneBuildContext context; // headless: no device, no meshes
+
+    auto spawn = [&](const std::string& name, glm::vec3 position) {
+        auto entity = ecs.createEntity(name);
+        ecs.raw().get<Transform>(entity).position = position;
+        ecs.addComponent<Renderable>(entity);
+        return entity;
+    };
+    auto nearA = spawn("near_a", {1.0f, 0.0f, 1.0f});
+    spawn("near_b", {4.0f, 0.0f, 3.0f});
+    spawn("far", {55.0f, 0.0f, 2.0f});
+    auto scripted = spawn("scripted", {2.0f, 0.0f, 2.0f});
+    ecs.addComponent<engine::core::Script>(scripted);
+    auto child = spawn("child", {0.5f, 0.0f, 0.0f});
+    engine::core::hierarchy::setParent(ecs, child, nearA);
+
+    WorldStreamer streamer;
+    WorldManifest settings;
+    settings.cellSize = 10.0f;
+    settings.loadRadius = 5.0f;
+    settings.unloadRadius = 8.0f;
+    check(streamer.create(scenePath, settings, ecs, resources, context, &error), "a new world starts");
+    const size_t adopted = streamer.adopt(ecs);
+    check(adopted == 4, "named roots move into cells with their children, scripted ones stay");
+    check(ecs.raw().valid(scripted) && ecs.entityCount() == 1, "adopted entities leave the scene until their cell streams in");
+    check(streamer.manifest().cells.size() == 2, "one cell per occupied grid square");
+    check(streamer.saveCells(&error), "cells save");
+    check(fs::exists(WorldManifest::pathFor(scenePath)) && fs::exists(dir / "main.scene.world" / "cell_5_0.scene"),
+          "the manifest and cell files are written next to the scene");
+    streamer.close();
+
+    auto pump = [&](const std::vector<glm::vec3>& sources) {
+        for (int i = 0; i < 8; ++i) {
+            streamer.update(sources);
+            resources.waitUntilIdle(5.0);
+        }
+    };
+    auto countNamed = [&](const std::string& name) {
+        int found = 0;
+        for (auto entity : ecs.view<engine::core::Name>()) {
+            if (ecs.raw().get<engine::core::Name>(entity).value == name) ++found;
+        }
+        return found;
+    };
+
+    check(streamer.open(scenePath, ecs, resources, context, &error), "the world reopens from its manifest");
+    pump({{0.0f, 0.0f, 0.0f}});
+    const int nearCell = streamer.manifest().find({0, 0});
+    const int farCell = streamer.manifest().find({5, 0});
+    check(streamer.cellState(static_cast<size_t>(nearCell)) == WorldCellState::Loaded &&
+              streamer.cellState(static_cast<size_t>(farCell)) == WorldCellState::Unloaded,
+          "only the cell near the source loads");
+    check(countNamed("near_a") == 1 && countNamed("child") == 1 && countNamed("far") == 0, "the near cell's entities exist");
+    bool tagged = true;
+    for (auto entity : ecs.view<Renderable>()) tagged = tagged && (entity == scripted || ecs.hasComponent<StreamedCell>(entity));
+    check(tagged, "streamed entities are tagged");
+    engine::core::SceneManager scenes;
+    engine::core::Camera camera;
+    check(scenes.captureScene(ecs, camera).entities.size() == 1, "scene saves leave streamed entities to their cells");
+    for (auto entity : ecs.view<engine::core::Name>()) {
+        if (ecs.raw().get<engine::core::Name>(entity).value != "child") continue;
+        const auto* links = ecs.tryGetComponent<engine::core::Hierarchy>(entity);
+        check(links != nullptr && links->parent != engine::core::kNullEntity, "parents resolve inside a cell");
+    }
+
+    pump({{56.0f, 0.0f, 0.0f}});
+    check(countNamed("near_a") == 0 && countNamed("far") == 1, "moving the source swaps which cell is loaded");
+    check(streamer.stats().unloads == 1 && streamer.stats().loads == 2, "every load and unload is counted");
+
+    streamer.setEditing(true);
+    for (auto entity : ecs.view<engine::core::Name>()) {
+        if (ecs.raw().get<engine::core::Name>(entity).value == "far") ecs.raw().get<Transform>(entity).scale = glm::vec3(3.0f);
+    }
+    pump({{0.0f, 0.0f, 0.0f}});
+    check(streamer.stats().editedCells == 1, "an edited cell keeps its changes when it unloads");
+    pump({{56.0f, 0.0f, 0.0f}});
+    bool kept = false;
+    for (auto entity : ecs.view<engine::core::Name>()) {
+        if (ecs.raw().get<engine::core::Name>(entity).value == "far") kept = ecs.raw().get<Transform>(entity).scale.x == 3.0f;
+    }
+    check(kept, "edits come back when the cell streams in again");
+    check(streamer.saveCells(&error) && !streamer.hasUnsavedCells(), "saving writes the edits out");
+    engine::core::SceneFile farFile;
+    check(farFile.loadFromFile((dir / "main.scene.world" / "cell_5_0.scene").string()) && farFile.entities.size() == 1 &&
+              farFile.entities[0].scale.x == 3.0f,
+          "the cell file has the edit");
+
+    engine::core::SceneFile whole;
+    streamer.appendAllCells(whole);
+    check(whole.entities.size() == 4, "exports can gather every cell, loaded or not");
+
+    streamer.close();
+    check(ecs.entityCount() == 1 && ecs.raw().valid(scripted), "closing the world removes every streamed entity");
+    fs::remove_all(dir);
+}
+
+void testGpuFeatureTierSelection() {
+    using engine::core::selectGpuFeatures;
+    const std::vector<std::string> all{VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME,
+                                       VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME, VK_KHR_SHADER_CLOCK_EXTENSION_NAME};
+    auto full = selectGpuFeatures(all, true, true, true, true, true, true, VK_API_VERSION_1_4);
+    check(full.fragmentShadingRate && full.hostImageCopy && full.hostCopyToShaderReadLayout && full.computeDerivatives &&
+              full.shaderClock && !full.computeDerivativesNv,
+          "a GPU with every extension and feature gets the whole tier");
+    auto none = selectGpuFeatures({}, true, true, true, true, true, true, VK_API_VERSION_1_3);
+    check(!none.fragmentShadingRate && !none.hostImageCopy && !none.computeDerivatives && !none.shaderClock,
+          "features without their extension stay off");
+    auto noFeatureBits = selectGpuFeatures(all, false, false, true, true, false, false, VK_API_VERSION_1_4);
+    check(!noFeatureBits.fragmentShadingRate && !noFeatureBits.hostImageCopy && !noFeatureBits.shaderClock,
+          "extensions without their feature bits stay off");
+    auto noRgba = selectGpuFeatures(all, true, true, false, true, true, true, VK_API_VERSION_1_4);
+    check(!noRgba.hostImageCopy && !noRgba.hostCopyToShaderReadLayout, "host copy needs RGBA8 support");
+    auto otherLayout = selectGpuFeatures(all, true, true, true, false, true, true, VK_API_VERSION_1_4);
+    check(otherLayout.hostImageCopy && !otherLayout.hostCopyToShaderReadLayout,
+          "textures only use host copy when it can write the sampled layout");
+    auto nv = selectGpuFeatures({VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME}, false, false, false, false, true, false,
+                                VK_API_VERSION_1_3);
+    check(nv.computeDerivatives && nv.computeDerivativesNv, "the NV compute derivatives extension is a fallback");
+    check(full.summary().find("Vulkan 1.4") != std::string::npos, "the summary names the API version");
+}
+
 // --- WorldPackage --------------------------------------------------------------
 
 void testWorldPackagePathHelpersUseRealFixedNames() {
@@ -26584,6 +29315,159 @@ void testCatalogGamePackages() {
               !fs::exists(root / "escaped.txt"),
           "extraction refuses entries that would land outside the output directory");
 
+    fs::remove_all(root);
+}
+
+void testHeadlessSceneLoadKeepsPhysicsWithoutGpu() {
+    engine::core::SceneFile file;
+    engine::core::SceneEntityRecord crate;
+    crate.name = "Crate";
+    crate.position = {0.0f, 3.0f, 0.0f};
+    crate.hasRenderable = true;
+    crate.hasMeshSource = true;
+    crate.meshSource.kind = engine::core::MeshSourceKind::Box;
+    crate.meshSource.params = {0.5f, 0.5f, 0.5f};
+    crate.hasRigidBody = true;
+    crate.motionType = engine::core::RigidBodyMotionType::Dynamic;
+    crate.hasColliderShape = true;
+    file.entities.push_back(crate);
+    const char* path = "test_headless_scene.scene";
+    check(file.saveToFile(path), "headless scene: the scene file saves");
+
+    engine::core::ECS ecs;
+    engine::core::MeshLibrary meshLibrary;
+    engine::core::Camera camera;
+    engine::core::Physics physics;
+    check(physics.initialize(), "headless scene: physics initializes");
+    engine::core::SceneManager sceneManager;
+    check(sceneManager.loadScene(path, ecs, meshLibrary, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                 camera, &physics),
+          "headless scene: loads with no GPU");
+
+    bool found = false;
+    for (auto entity : ecs.view<engine::core::Name>()) {
+        if (ecs.tryGetComponent<engine::core::Name>(entity)->value != "Crate") continue;
+        found = true;
+        auto* renderable = ecs.tryGetComponent<engine::core::Renderable>(entity);
+        check(renderable != nullptr && renderable->meshHandle == engine::core::Renderable::kInvalidHandle,
+              "headless scene: the Renderable stays, with no GPU mesh");
+        check(ecs.tryGetComponent<engine::core::MeshSource>(entity) != nullptr,
+              "headless scene: the MeshSource is kept for replication");
+        check(ecs.tryGetComponent<engine::core::RigidBody>(entity) != nullptr,
+              "headless scene: the physics body attaches");
+    }
+    check(found, "headless scene: the entity is recreated");
+    physics.shutdown();
+    std::remove(path);
+}
+
+// Live publish -> package -> play round trip against a real backend. Skipped
+// unless KRONOS_E2E_API_URL is set (see backend/README.md for a local stack).
+void testCatalogPublishRoundTripLive() {
+    namespace fs = std::filesystem;
+    const char* apiUrl = std::getenv("KRONOS_E2E_API_URL");
+    if (apiUrl == nullptr || *apiUrl == '\0') {
+        std::fprintf(stdout, "  catalog e2e: skipped (KRONOS_E2E_API_URL unset)\n");
+        return;
+    }
+
+    const std::string suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count() % 1000000007);
+    const std::string slug = "e2e-" + suffix;
+    const fs::path root = fs::path("test_catalog_e2e_" + suffix);
+    fs::remove_all(root);
+    fs::create_directories(root / "src" / "Scripts");
+    { std::ofstream(root / "src" / "project.project") << "PROJECT 1\nNAME E2E\nVERSION 1.0.0\nCREATED 0\nMODIFIED 0\nACTIVESCENE 0\nSCENE default.scene\nEND\n"; }
+    { std::ofstream(root / "src" / "default.scene") << "SCENE 1\nEND\n"; }
+    { std::ofstream(root / "src" / "Scripts" / "Main.lua") << "print('e2e " << suffix << "')\n"; }
+
+    engine::core::KronosApi creator(apiUrl);
+    creator.setPersistSession(false);
+    engine::core::KronosAuthResult auth =
+        creator.signUp("e2e_" + suffix + "@example.com", "a reasonable passphrase", "E2E Creator");
+    check(auth.success, "e2e: a creator account signs up against the live backend");
+    if (!auth.success) {
+        std::fprintf(stdout, "  catalog e2e: sign-up failed: %s\n", auth.error.c_str());
+        fs::remove_all(root);
+        return;
+    }
+
+    engine::core::PublishRequest request;
+    request.slug = slug;
+    request.title = "E2E " + suffix;
+    engine::core::PublishResult published = creator.publishGame(request);
+    check(published.success, "e2e: publishing lists the game");
+
+    engine::core::GameManifest manifest;
+    manifest.name = request.title;
+    manifest.projectPath = "project.project";
+    const std::string archive = (root / "upload.kronos").string();
+    std::string error;
+    check(engine::publishing::writeGameFolderArchive((root / "src").string(), manifest, archive, error),
+          "e2e: the project folder packages");
+    engine::core::PackageUploadResult upload =
+        creator.uploadGamePackage(slug, archive, engine::publishing::archiveSha256Hex(archive));
+    check(upload.success, "e2e: the package uploads and the backend verifies its hash");
+    if (!upload.success) std::fprintf(stdout, "  catalog e2e: upload failed: %s\n", upload.error.c_str());
+
+    engine::core::KronosApi player(apiUrl);
+    player.setPersistSession(false);
+    const fs::path emptyGames = root / "no_local_games";
+    fs::create_directories(emptyGames);
+    std::optional<engine::core::DiscoveredGame> game = engine::publishing::resolveCatalogGame(
+        player, slug, emptyGames.string(), (root / "cache").string(), error);
+    check(game.has_value() && game->manifest.name == request.title,
+          "e2e: an anonymous player resolves the game by slug from the download alone");
+    if (game.has_value()) {
+        std::ifstream script(fs::path(game->manifestPath).parent_path() / "Scripts" / "Main.lua");
+        std::string text((std::istreambuf_iterator<char>(script)), std::istreambuf_iterator<char>());
+        check(text.find(suffix) != std::string::npos, "e2e: the downloaded script is the creator's exact file");
+    } else {
+        std::fprintf(stdout, "  catalog e2e: resolve failed: %s\n", error.c_str());
+    }
+
+    { std::ofstream(root / "src" / "Scripts" / "Main.lua") << "print('v2 " << suffix << "')\n"; }
+    check(engine::publishing::writeGameFolderArchive((root / "src").string(), manifest, archive, error),
+          "e2e: the edited project packages again");
+    engine::core::PackageUploadResult second =
+        creator.uploadGamePackage(slug, archive, engine::publishing::archiveSha256Hex(archive));
+    check(second.success && second.versionNumber == 2 && second.reviewStatus == "approved",
+          "e2e: a second upload becomes version 2");
+    engine::core::PackageVersionList versions = creator.fetchPackageVersions(slug);
+    check(versions.success && versions.versions.size() == 2 && versions.versions[0].current &&
+              versions.versions[0].versionNumber == 2,
+          "e2e: the version list shows v2 live above v1");
+    check(versions.storage.usedBytes > 0 && versions.storage.quotaBytes > versions.storage.usedBytes,
+          "e2e: the version list reports real storage usage");
+    check(creator.activatePackageVersion(slug, 1).success, "e2e: rolling back to v1 succeeds");
+    check(!creator.activatePackageVersion(slug, 7).success, "e2e: activating a version that does not exist fails");
+    std::optional<engine::core::DiscoveredGame> rolledBack = engine::publishing::resolveCatalogGame(
+        player, slug, emptyGames.string(), (root / "cache2").string(), error);
+    if (rolledBack.has_value()) {
+        std::ifstream script(fs::path(rolledBack->manifestPath).parent_path() / "Scripts" / "Main.lua");
+        std::string text((std::istreambuf_iterator<char>(script)), std::istreambuf_iterator<char>());
+        check(text.find("e2e " + suffix) != std::string::npos, "e2e: after rollback players download v1 again");
+    } else {
+        check(false, "e2e: after rollback players download v1 again");
+    }
+    check(creator.deletePackageVersion(slug, 2).success, "e2e: a version that is not live can be deleted");
+
+    std::vector<uint8_t> pixels(64 * 48 * 4, 200);
+    const std::string thumbnail = (root / "thumb.png").string();
+    check(engine::trailer::writePngRgba8(pixels.data(), 64, 48, false, thumbnail), "e2e: a thumbnail PNG is written");
+    engine::core::GameImageUploadResult image =
+        creator.uploadGameImage(slug, "thumbnail", thumbnail, engine::publishing::archiveSha256Hex(thumbnail));
+    check(image.success && image.image.width == 64 && image.image.height == 48 && !image.image.url.empty(),
+          "e2e: a thumbnail uploads and the backend reads its real dimensions");
+    if (!image.success) std::fprintf(stdout, "  catalog e2e: image upload failed: %s\n", image.error.c_str());
+    engine::core::GameImageList images = creator.fetchGameImages(slug);
+    check(images.success && images.images.size() == 1 && images.images[0].kind == "thumbnail",
+          "e2e: the store page lists the thumbnail");
+    const std::string notAnImage = (root / "src" / "default.scene").string();
+    check(!creator.uploadGameImage(slug, "screenshot", notAnImage, engine::publishing::archiveSha256Hex(notAnImage)).success,
+          "e2e: a non-image file is refused before upload");
+    if (image.success) check(creator.deleteGameImage(slug, image.image.id).success, "e2e: the thumbnail can be removed");
+
+    std::fprintf(stdout, "  catalog e2e: published, rolled back and played back \"%s\"\n", slug.c_str());
     fs::remove_all(root);
 }
 
@@ -41672,6 +44556,19 @@ int main() {
     testShaderGraphCodegenRequiresExactlyOnePbrOutput();
     testShaderGraphCodegenDetectsCycle();
     testShaderGraphCodegenEndToEndCompilesToRealSpirv();
+    testShaderGraphSerializationRoundTrip();
+    testShaderGraphSurfaceCodegen();
+    testSceneFileSurfaceGraphRoundTrip();
+    testVisualScriptGraphModel();
+    testVisualScriptEveryNodeCompiles();
+    testVisualScriptCompileErrors();
+    testVisualScriptRunsInLuauVm();
+    testSceneFileVisualScriptRoundTrip();
+    testResourceManagerLoadsAsyncAndShares();
+    testResourceManagerRefCountingAndUnload();
+    testResourceManagerHotReload();
+    testResourceBundles();
+    testResourceFileDecoders();
     testParticleComputeCodegenRequiresExactlyOneOutput();
     testParticleComputeCodegenDetectsCycle();
     testParticleComputeCodegenEndToEndCompilesToRealSpirv();
@@ -41760,6 +44657,10 @@ int main() {
     testBuildGameCatalogueEntriesAggregatesRealShippedGames();
     testLaunchProcessRealSpawnSucceedsAndFailsHonestly();
     testScriptingOnUpdateFiresEveryTickWithRealDt();
+    testScriptDebuggerBreakpointsAndStepping();
+    testLuauSymbolIndex();
+    testMultiCursorApplyEdits();
+    testCrossScriptDefinitionLookup();
     testScriptingFireCollisionReachesRegisteredHandler();
     testScriptingFireInteractReachesRegisteredHandler();
     testScriptingOnUnloadFiresOnShutdown();
@@ -42837,12 +45738,36 @@ int main() {
     testCppHotReloadHostSwapsCodeWhileEcsStatePersists();
     testCppHotReloadHostSlotsAreIndependent();
     testNativePluginManagerDiscoversLoadsAndUnloadsRealPlugins();
+    testHotReloadStateStaysInPlace();
+    testNativePluginAutoReload();
+    testDynamicAabbTreeMatchesBruteForce();
+    testFrustumAndBoxTransforms();
+    testSceneSpatialIndexTracksEntities();
+    testStaticBatchingMergesStillObjects();
+    testGpuFeatureTierSelection();
+    testWorldStreamingCells();
+    testPhysicsDeterminism();
+    testPhysicsRollbackPeers();
+    testRollbackPacketCodec();
+    testRollbackNetSessionLoopback();
+    testRollbackCharacterMovement();
+    testPluginApiInProcess();
+    testPluginApiSandbox();
+    testSamplePluginApiPlugin();
+    testAudioMixerConfig();
+    testAudioMixerRuntime();
+    testScriptAudioApi();
+    testSoundSavedInScenes();
+    testSilentAudioMode();
+    testAudioMixerPlugin();
     testWorldPackagePathHelpersUseRealFixedNames();
     testWorldPackageSaveToDirectoryCreatesRealFiles();
     testWorldPackageSaveLoadRoundTrip();
     testPackageArchiveWriteReadRoundTrip();
     testPackageArchiveReadRejectsGarbageFile();
     testCatalogGamePackages();
+    testCatalogPublishRoundTripLive();
+    testHeadlessSceneLoadKeepsPhysicsWithoutGpu();
     testScriptEditorTextHelpers();
     testWriteWorldPackageArchiveProducesReadableArchive();
     testWriteWorldPackageArchiveBundlesRealThumbnail();

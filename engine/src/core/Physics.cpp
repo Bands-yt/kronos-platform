@@ -1,4 +1,5 @@
 #include "core/Physics.hpp"
+#include "core/DeterministicMath.hpp"
 
 #include <cstdarg>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
+#include <Jolt/Physics/StateRecorder.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/AllowedDOFs.h>
 #include <Jolt/Physics/Body/MotionProperties.h>
@@ -36,6 +38,9 @@
 #include <Jolt/Physics/Ragdoll/Ragdoll.h>
 #include <Jolt/Skeleton/Skeleton.h>
 
+#include <algorithm>
+#include <cstring>
+#include <tuple>
 #include <unordered_map>
 
 #include <glm/gtc/quaternion.hpp>
@@ -255,16 +260,26 @@ struct Physics::RagdollStore {
 Physics::Physics() = default;
 Physics::~Physics() { shutdown(); }
 
-bool Physics::initialize() {
-    JPH::RegisterDefaultAllocator();
+namespace {
+std::mutex joltTypesMutex;
+int joltTypesUsers = 0;
+} // namespace
 
-    JPH::Factory::sInstance = new JPH::Factory();
-    JPH::RegisterTypes();
+bool Physics::initialize(int workerThreadCount) {
+    {
+        std::lock_guard<std::mutex> lock(joltTypesMutex);
+        if (joltTypesUsers++ == 0) {
+            JPH::RegisterDefaultAllocator();
+            JPH::Factory::sInstance = new JPH::Factory();
+            JPH::RegisterTypes();
+        }
+    }
 
     tempAllocator_ = std::make_unique<JPH::TempAllocatorImpl>(10 * 1024 * 1024);
 
     unsigned int hwThreads = std::thread::hardware_concurrency();
     int workerThreads = hwThreads > 1 ? static_cast<int>(hwThreads) - 1 : 1;
+    if (workerThreadCount >= 0) workerThreads = workerThreadCount;
     jobSystem_ = std::make_unique<JPH::JobSystemThreadPool>(
         JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, workerThreads);
 
@@ -290,10 +305,93 @@ bool Physics::initialize() {
 }
 
 std::vector<Physics::CollisionEvent> Physics::drainCollisionEvents() {
-    std::lock_guard<std::mutex> lock(collisionEventsMutex_);
     std::vector<CollisionEvent> drained;
-    drained.swap(pendingCollisionEvents_);
+    {
+        std::lock_guard<std::mutex> lock(collisionEventsMutex_);
+        drained.swap(pendingCollisionEvents_);
+    }
+    // Worker threads report contacts in whatever order they finish.
+    auto key = [](const CollisionEvent& e) {
+        return std::make_tuple(static_cast<uint32_t>(e.first), static_cast<uint32_t>(e.second), e.point.x, e.point.y,
+                               e.point.z, e.normal.x, e.normal.y, e.normal.z);
+    };
+    std::sort(drained.begin(), drained.end(),
+              [&](const CollisionEvent& a, const CollisionEvent& b) { return key(a) < key(b); });
     return drained;
+}
+
+namespace {
+
+class ByteStateRecorder final : public JPH::StateRecorder {
+public:
+    explicit ByteStateRecorder(std::vector<uint8_t>& out) : out_(&out) {}
+    explicit ByteStateRecorder(const std::vector<uint8_t>& in) : in_(&in) {}
+    void WriteBytes(const void* data, size_t size) override {
+        if (!out_) {
+            failed_ = true;
+            return;
+        }
+        const auto* begin = static_cast<const uint8_t*>(data);
+        out_->insert(out_->end(), begin, begin + size);
+    }
+    void ReadBytes(void* data, size_t size) override {
+        if (failed_ || !in_ || read_ + size > in_->size()) {
+            failed_ = true;
+            std::memset(data, 0, size);
+            return;
+        }
+        std::memcpy(data, in_->data() + read_, size);
+        read_ += size;
+    }
+    bool IsEOF() const override { return !in_ || read_ >= in_->size(); }
+    bool IsFailed() const override { return failed_; }
+    [[nodiscard]] bool consumedAll() const { return in_ && read_ == in_->size(); }
+
+private:
+    std::vector<uint8_t>* out_ = nullptr;
+    const std::vector<uint8_t>* in_ = nullptr;
+    size_t read_ = 0;
+    bool failed_ = false;
+};
+
+// Static bodies never change during a step, so snapshots leave them out.
+class MovingBodiesFilter final : public JPH::StateRecorderFilter {
+public:
+    bool ShouldSaveBody(const JPH::Body& body) const override { return !body.IsStatic(); }
+};
+
+} // namespace
+
+void Physics::saveState(std::vector<uint8_t>& out) const {
+    out.clear();
+    if (!initialized_) return;
+    ByteStateRecorder recorder(out);
+    MovingBodiesFilter filter;
+    physicsSystem_->SaveState(recorder, JPH::EStateRecorderState::All, &filter);
+}
+
+bool Physics::restoreState(const std::vector<uint8_t>& state, ECS* ecs) {
+    if (!initialized_ || state.empty()) return false;
+    ByteStateRecorder recorder(state);
+    if (!physicsSystem_->RestoreState(recorder) || recorder.IsFailed() || !recorder.consumedAll()) return false;
+    if (ecs) syncTransforms(*ecs);
+    return true;
+}
+
+uint64_t Physics::stateHash() const {
+    std::vector<uint8_t> bytes;
+    saveState(bytes);
+    return hashStateBytes(bytes);
+}
+
+float det::sin(float radians) { return JPH::Sin(radians); }
+float det::cos(float radians) { return JPH::Cos(radians); }
+float det::atan2(float y, float x) { return JPH::ATan2(y, x); }
+
+uint64_t Physics::hashStateBytes(const std::vector<uint8_t>& bytes) {
+    uint64_t hash = 14695981039346656037ull;
+    for (uint8_t byte : bytes) hash = (hash ^ byte) * 1099511628211ull;
+    return hash;
 }
 
 void Physics::shutdown() {
@@ -309,9 +407,14 @@ void Physics::shutdown() {
     objectVsBroadPhaseLayerFilter_.reset();
     objectLayerPairFilter_.reset();
 
-    JPH::UnregisterTypes();
-    delete JPH::Factory::sInstance;
-    JPH::Factory::sInstance = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(joltTypesMutex);
+        if (--joltTypesUsers == 0) {
+            JPH::UnregisterTypes();
+            delete JPH::Factory::sInstance;
+            JPH::Factory::sInstance = nullptr;
+        }
+    }
 
     initialized_ = false;
 }
@@ -842,9 +945,16 @@ void Physics::setImpactRecording(bool enabled, float minImpactSpeed) {
 }
 
 std::vector<Physics::ImpactEvent> Physics::drainImpactEvents() {
-    std::lock_guard<std::mutex> lock(impactEventsMutex_);
     std::vector<ImpactEvent> drained;
-    drained.swap(pendingImpactEvents_);
+    {
+        std::lock_guard<std::mutex> lock(impactEventsMutex_);
+        drained.swap(pendingImpactEvents_);
+    }
+    auto key = [](const ImpactEvent& e) {
+        return std::make_tuple(e.bodyA, e.bodyB, e.point.x, e.point.y, e.point.z, e.impactSpeed);
+    };
+    std::sort(drained.begin(), drained.end(),
+              [&](const ImpactEvent& a, const ImpactEvent& b) { return key(a) < key(b); });
     return drained;
 }
 

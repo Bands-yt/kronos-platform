@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "studio/IStudioPlugin.hpp"
@@ -48,6 +49,13 @@ public:
     void drawPanels(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& selectedEntities);
 
     [[nodiscard]] const std::vector<std::unique_ptr<IStudioPlugin>>& plugins() const { return plugins_; }
+
+    [[nodiscard]] IStudioPlugin* find(std::string_view name) const {
+        for (const auto& plugin : plugins_) {
+            if (name == plugin->name()) return plugin.get();
+        }
+        return nullptr;
+    }
 
 private:
     std::vector<std::unique_ptr<IStudioPlugin>> plugins_;

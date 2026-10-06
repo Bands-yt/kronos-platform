@@ -12,14 +12,17 @@ import test, { after, before } from 'node:test';
 import { createApp } from '../src/server.js';
 import { config } from '../src/config.js';
 import { pool, query } from '../src/db.js';
-import { redis } from '../src/redis.js';
+import { closeRedis, redis } from '../src/redis.js';
 import { setEmailTransport } from '../src/email/mailer.js';
+import { minimalGameArchive } from '../src/catalog/packageArchive.js';
 
 let server;
 let baseUrl;
 let localStorageTestDir;
 
 before(async () => {
+  // Written before catalog review existed; review has its own tests.
+  config.gameReviewRequired = false;
   setEmailTransport(async () => {});
   // Isolated from the repo's own real data/packages default -- a test run
   // must never write real files into a real checkout, and must never
@@ -40,7 +43,7 @@ before(async () => {
 after(async () => {
   server.close();
   await pool.end();
-  redis.disconnect();
+  closeRedis();
   await fsp.rm(localStorageTestDir, { recursive: true, force: true });
 });
 
@@ -108,7 +111,7 @@ test('package routes fall back to real local disk storage when S3 is not configu
   const slug = `pkg-${crypto.randomBytes(4).toString('hex')}`;
   await publishGame(creator.token, slug);
 
-  const archiveBytes = Buffer.from(`a real local-disk .kronos archive body -- ${crypto.randomBytes(16).toString('hex')}`);
+  const archiveBytes = minimalGameArchive({ name: `Local ${crypto.randomBytes(8).toString('hex')}` });
   const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
 
   const uploadUrlRes = await api('POST', `/v1/catalog/games/${slug}/package/upload-url`,
@@ -204,7 +207,7 @@ test('a real presigned upload, a real confirm, and a real download round-trip by
     const slug = `pkg-${crypto.randomBytes(4).toString('hex')}`;
     await publishGame(creator.token, slug);
 
-    const archiveBytes = Buffer.from(`a real .kronos archive body, not a placeholder -- ${crypto.randomBytes(16).toString('hex')}`);
+    const archiveBytes = minimalGameArchive({ name: `S3 ${crypto.randomBytes(8).toString('hex')}` });
     const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
 
     const uploadUrlRes = await api('POST', `/v1/catalog/games/${slug}/package/upload-url`,

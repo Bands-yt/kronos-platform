@@ -1,10 +1,20 @@
 #pragma once
 
+#include <functional>
+#include <map>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/ECS.hpp"
+#include "studio/panels/LuauSymbolIndex.hpp"
+
+namespace engine::core {
+class ScriptDebugger;
+}
 
 namespace engine::studio {
 class NotificationCenter;
@@ -20,6 +30,15 @@ namespace engine::studio::panels {
 // ScriptEditorPanel talks to this interface, never to ImGui widgets or a
 // webview directly, so swapping the backend is a one-class change, not a
 // panel rewrite.
+// Cross-script services the panel gives each editor tab. They run after
+// the tab finishes drawing.
+struct ScriptEditorHooks {
+    std::function<void(const luau_symbols::GlobalRef& ref)> goToGlobalDefinition;
+    std::function<void(const std::string& query)> findInAllScripts;
+    // Renames `ref` in every other script (left unsaved for review).
+    std::function<void(const luau_symbols::GlobalRef& ref, const std::string& newName)> renameGlobalElsewhere;
+};
+
 class IScriptEditorBackend {
 public:
     virtual ~IScriptEditorBackend() = default;
@@ -39,6 +58,15 @@ public:
     // of its own (ImGuiFallbackEditor's plain InputTextMultiline exposes
     // none) rather than forcing every backend to implement it.
     virtual void moveCaretToLine(int /*oneBasedLine*/) {}
+
+    virtual void setHooks(ScriptEditorHooks /*hooks*/) {}
+    // 0-based line, byte columns.
+    virtual void selectSourceRange(int line, int /*byteStart*/, int /*byteEnd*/) { moveCaretToLine(line + 1); }
+    // 1-based lines.
+    [[nodiscard]] virtual std::set<int> breakpoints() const { return {}; }
+    virtual void setBreakpoints(const std::set<int>& /*lines*/) {}
+    // The line the debugger is stopped on, 0 for none.
+    virtual void setExecutionLine(int /*oneBasedLine*/) {}
 };
 
 // The only backend that actually works today: a plain ImGui multiline
@@ -143,6 +171,10 @@ public:
     // entity (see DebugConsolePanel::takePendingScriptJump()).
     void openAndJumpToLine(core::ECS& ecs, core::EntityId entity, int oneBasedLine);
 
+    void setDebugger(core::ScriptDebugger* debugger) { debugger_ = debugger; }
+    // Debugger window and Find in Scripts; call after draw().
+    void drawAuxiliaryWindows(core::ECS& ecs, bool playing);
+
 private:
     static std::unique_ptr<IScriptEditorBackend> createBackend();
     [[nodiscard]] int findTabIndex(core::EntityId entity) const;
@@ -170,10 +202,41 @@ private:
     // ScriptEditorTab's own class comment). No-ops on cancel or read
     // failure, with a real notification either way.
     void openScriptFromFile(core::ECS& ecs, NotificationCenter& notifications);
+    void importScriptFile(core::ECS& ecs, NotificationCenter& notifications, const std::string& path);
+    std::string pendingScriptPath_;
     void drawEmptyState(core::ECS& ecs, NotificationCenter& notifications);
+
+    struct PendingRename {
+        luau_symbols::GlobalRef ref;
+        std::string newName;
+        core::EntityId origin = core::kNullEntity;
+    };
+
+    ScriptEditorHooks makeHooks(core::EntityId owner);
+    void runPendingRequests(core::ECS& ecs, NotificationCenter& notifications);
+    [[nodiscard]] std::string liveSource(core::ECS& ecs, core::EntityId entity) const;
+    [[nodiscard]] static std::string chunkNameOf(core::ECS& ecs, core::EntityId entity);
+    void syncDebugger(core::ECS& ecs);
+    void handleDebuggerShortcuts();
+    void drawDebuggerWindow(core::ECS& ecs, bool playing);
+    void drawFindInScripts(core::ECS& ecs);
+    void jumpTo(core::ECS& ecs, core::EntityId entity, int line, int byteStart, int byteEnd);
 
     std::vector<ScriptEditorTab> tabs_;
     int activeTab_ = -1;
+    core::ScriptDebugger* debugger_ = nullptr;
+    uint64_t seenPauseSerial_ = 0;
+    bool debuggerWindowOpen_ = false;
+    bool focusDebuggerWindow_ = false;
+    int selectedFrame_ = 0;
+    std::unordered_map<core::EntityId, std::set<int>> breakpointsByEntity_;
+    bool findInScriptsOpen_ = false;
+    bool focusFindInScripts_ = false;
+    std::string globalQuery_;
+    bool globalMatchCase_ = false;
+    bool globalWholeWord_ = false;
+    std::optional<luau_symbols::GlobalRef> pendingDefinition_;
+    std::optional<PendingRename> pendingRename_;
     // Real, honest "only auto-open a tab the instant outer selection
     // lands on a new entity" edge trigger -- without this, every frame
     // the same entity stays selected would re-run openOrFocusTab()'s

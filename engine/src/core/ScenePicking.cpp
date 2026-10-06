@@ -6,6 +6,7 @@
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/Mesh.hpp"
+#include "core/SceneSpatialIndex.hpp"
 
 namespace engine::core {
 
@@ -40,22 +41,13 @@ ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin,
     glm::vec3 worldEnd = origin + unitDir * maxDistance;
 
     float closestT = 1.0f; // t in [0,1] along origin->worldEnd; 1.0 = "nothing closer than maxDistance yet"
-    auto view = ecs.view<Transform, Renderable>();
-    for (auto entity : view) {
-        if (entity == excludeEntity) continue;
-        auto& renderable = view.get<Renderable>(entity);
-        if (!renderable.visible) continue;
-        const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
-        if (mesh == nullptr) continue;
+    auto testEntity = [&](EntityId entity, const glm::mat4& world) {
+        const Renderable* renderable = ecs.tryGetComponent<Renderable>(entity);
+        if (renderable == nullptr || !renderable->visible) return;
+        const Mesh* mesh = meshLibrary.get(renderable->meshHandle);
+        if (mesh == nullptr) return;
 
-        // Real world matrix, not the entity's own local Transform::matrix()
-        // -- an entity parented under another (Hierarchy::parent set, e.g.
-        // via ExplorerPanel's drag-to-parent) renders at
-        // hierarchy::computeWorldMatrix()'s result (Renderer.cpp's
-        // push.model), so picking against the raw local matrix alone would
-        // test against the wrong space for any parented entity, byte-
-        // identical to transform.matrix() for the common unparented case.
-        glm::mat4 invModel = glm::inverse(hierarchy::computeWorldMatrix(ecs, entity));
+        glm::mat4 invModel = glm::inverse(world);
         glm::vec3 localOrigin = glm::vec3(invModel * glm::vec4(origin, 1.0f));
         glm::vec3 localEnd = glm::vec3(invModel * glm::vec4(worldEnd, 1.0f));
 
@@ -67,6 +59,23 @@ ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin,
             result.distance = t * maxDistance;
             result.point = origin + unitDir * result.distance;
         }
+    };
+
+    if (auto* index = ecs.raw().ctx().find<SceneSpatialIndex>()) {
+        index->sync(ecs, meshLibrary);
+        index->raycast(origin, unitDir, maxDistance, [&](EntityId entity, float) {
+            if (entity != excludeEntity) {
+                if (const glm::mat4* world = index->worldMatrix(entity)) testEntity(entity, *world);
+            }
+            return closestT * maxDistance;
+        });
+        return result;
+    }
+
+    auto view = ecs.view<Transform, Renderable>();
+    for (auto entity : view) {
+        if (entity == excludeEntity) continue;
+        testEntity(entity, hierarchy::computeWorldMatrix(ecs, entity));
     }
     return result;
 }

@@ -14,7 +14,8 @@ void tickScriptHotReload(ECS& ecs, Scripting& scripting) {
             if (script.scriptId != kInvalidScript) scripting.unload(script.scriptId);
             const Name* name = ecs.tryGetComponent<Name>(entity);
             std::string chunkName = (name != nullptr && !name->value.empty()) ? name->value : "Script";
-            script.scriptId = scripting.loadAndRun(chunkName, script.source);
+            script.scriptId = scripting.loadAndRun(chunkName, script.source, SecurityIdentity::UserScript,
+                                                   static_cast<uint32_t>(entity));
             script.loadedSource = script.source;
         }
     }

@@ -39,6 +39,22 @@ enum class Icon {
     Warning,
     Play,
     Whitespace,
+    Select,
+    Part,
+    Copy,
+    Paste,
+    Duplicate,
+    Delete,
+    Group,
+    Color,
+    Anchor,
+    Stop,
+    Focus,
+    Grid,
+    Import,
+    Layout,
+    Gauge,
+    Eye,
 };
 
 // Draws `icon` centered at `center`, sized to fit within a `size` x

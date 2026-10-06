@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import { query } from '../db.js';
+import { revokeAllForUser } from '../auth/tokens.js';
 
 // Values are hashed before storage and before lookup. An email address and
 // an IP address are both personal data, and this subsystem only ever needs
@@ -79,6 +80,8 @@ export async function terminateAccount(userId, { reason = '', hwid = null, ip = 
       WHERE id = $1`,
     [userId],
   );
+
+  await revokeAllForUser(userId);
 
   const identifiers = [];
   if (user.email) identifiers.push(['email', hashIdentifier(user.email)]);

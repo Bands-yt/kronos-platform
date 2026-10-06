@@ -203,7 +203,63 @@ bool uploadToDeviceLocalBuffer(VmaAllocator allocator, VkDevice device, VkComman
     return true;
 }
 
+bool readDeviceBuffers(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                       VkBuffer vertexSource, VkDeviceSize vertexBytes, VkBuffer indexSource, VkDeviceSize indexBytes,
+                       void* vertexOut, void* indexOut) {
+    VkBuffer staging = VK_NULL_HANDLE;
+    VmaAllocation stagingAllocation = nullptr;
+    if (!createBuffer(allocator, vertexBytes + indexBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+                       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, staging,
+                       stagingAllocation)) {
+        return false;
+    }
+    VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmdAllocInfo.commandPool = cmdPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device, &cmdAllocInfo, &cmd) != VK_SUCCESS) {
+        vmaDestroyBuffer(allocator, staging, stagingAllocation);
+        return false;
+    }
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+    const VkBufferCopy vertexCopy{0, 0, vertexBytes};
+    vkCmdCopyBuffer(cmd, vertexSource, staging, 1, &vertexCopy);
+    const VkBufferCopy indexCopy{0, vertexBytes, indexBytes};
+    vkCmdCopyBuffer(cmd, indexSource, staging, 1, &indexCopy);
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    const bool submitted = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE) == VK_SUCCESS;
+    vkQueueWaitIdle(queue);
+    vkFreeCommandBuffers(device, cmdPool, 1, &cmd);
+    if (submitted) {
+        vmaInvalidateAllocation(allocator, stagingAllocation, 0, VK_WHOLE_SIZE);
+        VmaAllocationInfo info{};
+        vmaGetAllocationInfo(allocator, stagingAllocation, &info);
+        std::memcpy(vertexOut, info.pMappedData, static_cast<size_t>(vertexBytes));
+        std::memcpy(indexOut, static_cast<const char*>(info.pMappedData) + vertexBytes, static_cast<size_t>(indexBytes));
+    }
+    vmaDestroyBuffer(allocator, staging, stagingAllocation);
+    return submitted;
+}
+
 } // namespace
+
+bool Mesh::downloadToHost(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                          std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) const {
+    if (vertexBuffer_ == VK_NULL_HANDLE || indexBuffer_ == VK_NULL_HANDLE || vertexCount_ == 0 || indexCount_ == 0) {
+        return false;
+    }
+    vertices.resize(vertexCount_);
+    indices.resize(indexCount_);
+    return readDeviceBuffers(allocator, device, cmdPool, queue, vertexBuffer_, sizeof(Vertex) * vertexCount_, indexBuffer_,
+                             sizeof(uint32_t) * indexCount_, vertices.data(), indices.data());
+}
 
 bool Mesh::uploadFromHost(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
                            const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
@@ -232,12 +288,14 @@ bool Mesh::uploadFromHost(VmaAllocator allocator, VkDevice device, VkCommandPool
 
     const VkBufferUsageFlags rtUsage = rayTracingGeometryUsage();
     if (!uploadToDeviceLocalBuffer(allocator, device, cmdPool, queue, tangentSpaceVertices.data(), vertexBytes,
-                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rtUsage, vertexBuffer_, vertexAllocation_)) {
+                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | rtUsage,
+                                    vertexBuffer_, vertexAllocation_)) {
         logError("Mesh", "vertex buffer upload failed.");
         return false;
     }
     if (!uploadToDeviceLocalBuffer(allocator, device, cmdPool, queue, indices.data(), indexBytes,
-                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rtUsage, indexBuffer_, indexAllocation_)) {
+                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | rtUsage,
+                                    indexBuffer_, indexAllocation_)) {
         logError("Mesh", "index buffer upload failed.");
         vmaDestroyBuffer(allocator, vertexBuffer_, vertexAllocation_);
         return false;
@@ -591,7 +649,7 @@ uint32_t MeshLibrary::registerMesh(Mesh mesh) {
 }
 
 const Mesh* MeshLibrary::get(uint32_t handle) const {
-    if (handle >= meshes_.size()) return nullptr;
+    if (handle >= meshes_.size() || meshes_[handle].vertexBuffer() == VK_NULL_HANDLE) return nullptr;
     return &meshes_[handle];
 }
 
@@ -599,6 +657,12 @@ void MeshLibrary::replaceMesh(uint32_t handle, Mesh newMesh, VmaAllocator alloca
     if (handle >= meshes_.size()) return;
     meshes_[handle].destroy(allocator);
     meshes_[handle] = std::move(newMesh);
+}
+
+void MeshLibrary::destroyMesh(uint32_t handle, VmaAllocator allocator) {
+    if (handle >= meshes_.size()) return;
+    meshes_[handle].destroy(allocator);
+    meshes_[handle] = Mesh{};
 }
 
 void MeshLibrary::destroyAll(VmaAllocator allocator) {

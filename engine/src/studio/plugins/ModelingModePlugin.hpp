@@ -51,6 +51,9 @@ namespace engine::studio::plugins {
 // In-Studio 3D Modeling Pipeline" additions.
 class ModelingModePlugin final : public IStudioPlugin {
 public:
+    // A copied editable mesh must not share its GPU mesh with the original.
+    void giveOwnMesh(core::ECS& ecs, core::EntityId entity);
+
     ModelingModePlugin(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
                         core::MeshLibrary& meshLibrary);
 

@@ -116,6 +116,16 @@ int ScriptWorldApi::luaSetRotation(lua_State* L) {
     return 0;
 }
 
+int ScriptWorldApi::luaRotateBy(lua_State* L) {
+    EntityId entity = idFromLua(L, 1);
+    glm::vec3 deltaDegrees(luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4));
+    ECS& ecs = selfFromUpvalue(L)->ecs_;
+    if (auto* transform = ecs.tryGetComponent<Transform>(entity)) {
+        transform->rotation = glm::normalize(glm::quat(glm::radians(deltaDegrees)) * transform->rotation);
+    }
+    return 0;
+}
+
 int ScriptWorldApi::luaSetScale(lua_State* L) {
     EntityId entity = idFromLua(L, 1);
     glm::vec3 scale(luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4));
@@ -293,6 +303,7 @@ void ScriptWorldApi::registerInto(lua_State* L) {
         {"setPosition", &ScriptWorldApi::luaSetPosition},
         {"getRotation", &ScriptWorldApi::luaGetRotation},
         {"setRotation", &ScriptWorldApi::luaSetRotation},
+        {"rotateBy", &ScriptWorldApi::luaRotateBy},
         {"setScale", &ScriptWorldApi::luaSetScale},
         {"setColor", &ScriptWorldApi::luaSetColor},
         {"setMaterial", &ScriptWorldApi::luaSetMaterial},

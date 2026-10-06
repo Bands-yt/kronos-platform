@@ -94,6 +94,25 @@ public:
     // state() reflects every input received so far.
     void synchronize() { resolvePendingRollback(); }
 
+    // The state after `frame` frames while it is still in the window, or
+    // null. Stale until synchronize() if late inputs are pending.
+    [[nodiscard]] const State* stateAt(uint32_t frame) const {
+        const Snapshot& snapshot = snapshots_[frame % snapshots_.size()];
+        return frame <= frame_ && snapshot.frame == frame ? &snapshot.state : nullptr;
+    }
+
+    // Every player's confirmed input for `frame`, if all are known and still in the window.
+    [[nodiscard]] bool confirmedInputs(uint32_t frame, Inputs& out) const {
+        if (static_cast<int64_t>(frame) > confirmedFrame()) return false;
+        out = Inputs{};
+        for (uint32_t p = 0; p < playerCount_; ++p) {
+            const Slot& slot = inputs_[p][frame % inputs_[p].size()];
+            if (slot.frame != static_cast<int64_t>(frame) || !slot.confirmed) return false;
+            out[p] = slot.input;
+        }
+        return true;
+    }
+
 private:
     // Holds the confirmed input for a frame, or the prediction it was last
     // simulated with, so late inputs are compared against what was used.

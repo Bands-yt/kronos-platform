@@ -5,9 +5,15 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/Components.hpp"
 #include "core/ECS.hpp"
 #include "studio/MathExpressionPopup.hpp"
 #include "studio/UndoStack.hpp"
+
+namespace engine::core {
+class Audio;
+class ResourceManager;
+} // namespace engine::core
 
 namespace engine::studio::panels {
 
@@ -50,6 +56,12 @@ public:
     // function no test here can call.
     [[nodiscard]] static bool hasInvalidComponents(glm::vec3 v);
 
+    // Enables the Sound section's file loading, bus list and preview.
+    void setAudio(core::Audio* audio, core::ResourceManager* resources) {
+        audio_ = audio;
+        resources_ = resources;
+    }
+
 private:
     void drawPhysicsSection(core::ECS& ecs, core::EntityId selected);
     // Sprint 6 ("World Systems & Environment") task category 4's "Studio"
@@ -74,6 +86,13 @@ private:
     // (Alpha Roadmap Phase 3) -- enabled/color/intensity/radius, the
     // exact fields Renderer.cpp's own point-light UBO fill reads.
     void drawLightSection(core::ECS& ecs, core::EntityId selected);
+    void drawSoundSection(core::ECS& ecs, core::EntityId selected, UndoStack& undoStack);
+
+    core::Audio* audio_ = nullptr;
+    core::ResourceManager* resources_ = nullptr;
+    core::AudioSource soundBeforeEdit_;
+    char soundPath_[512] = {};
+    core::EntityId soundPathEntity_ = core::kNullEntity;
 
 
     // "Before" snapshots, captured on IsItemActivated() -- members, not

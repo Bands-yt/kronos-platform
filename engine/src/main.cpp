@@ -196,6 +196,9 @@ int main(int argc, char** argv) {
     // invocation prior to this feature).
     std::string requestedGameSlug;
     std::string serverKeyArg;
+    // --rollback-host <players> / --rollback-join <address>: a
+    // peer-to-peer rollback match (Application::startRollbackMatch).
+    std::optional<engine::net::RollbackNetSession::Config> rollbackConfig;
     // Kronos ("Dynamic Asset Streaming"): a real, headless utility mode
     // -- fetches (or confirms already-cached) a published game's real
     // package and exits, touching no Window/Renderer/ECS/Physics at
@@ -251,6 +254,20 @@ int main(int argc, char** argv) {
             if (i + 1 < argc) networkConfig.port = static_cast<uint16_t>(std::atoi(argv[++i]));
         } else if (arg == "--game" && i + 1 < argc) {
             requestedGameSlug = argv[++i];
+        } else if ((arg == "--rollback-host" || arg == "--rollback-join") && i + 1 < argc) {
+            if (!rollbackConfig) rollbackConfig.emplace();
+            rollbackConfig->host = arg == "--rollback-host";
+            if (rollbackConfig->host) rollbackConfig->players = static_cast<uint32_t>(std::max(1, std::atoi(argv[++i])));
+            else rollbackConfig->address = argv[++i];
+        } else if (arg == "--rollback-port" && i + 1 < argc) {
+            if (!rollbackConfig) rollbackConfig.emplace();
+            rollbackConfig->port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        } else if (arg == "--rollback-latency" && i + 1 < argc) {
+            if (!rollbackConfig) rollbackConfig.emplace();
+            rollbackConfig->simulatedLatencyMs = static_cast<uint32_t>(std::max(0, std::atoi(argv[++i])));
+        } else if (arg == "--rollback-loss" && i + 1 < argc) {
+            if (!rollbackConfig) rollbackConfig.emplace();
+            rollbackConfig->simulatedLossPercent = static_cast<uint8_t>(std::clamp(std::atoi(argv[++i]), 0, 100));
         } else if (arg == "--server-key" && i + 1 < argc) {
             serverKeyArg = argv[++i];
         } else if (arg == "--fetch-package" && i + 1 < argc) {
@@ -453,7 +470,7 @@ int main(int argc, char** argv) {
     // which is what was actually breaking mouse-look, not a missing
     // cursor-lock call.
     bool homeScreenMode = networkConfig.mode == engine::net::NetworkMode::Offline && !trailerMode && !miningSimMode && !brokenBonesMode &&
-                           !renderShowcaseMode && !tntWarsMode && !houseDemoMode && !despairMode;
+                           !renderShowcaseMode && !tntWarsMode && !houseDemoMode && !despairMode && !rollbackConfig;
 
     engine::core::Application app;
 
@@ -1912,7 +1929,19 @@ int main(int argc, char** argv) {
         // via reconciliation. Same 25x25 ground plane the windowed bring-up
         // scene creates below, minus the makeRenderable() call this
         // headless run has no Renderer to satisfy.
-        if (networkConfig.mode == engine::net::NetworkMode::Server) {
+        bool hostingGame = false;
+        if (networkConfig.mode == engine::net::NetworkMode::Server && requestedGame.has_value()) {
+            hostingGame = engine::runtime::loadGame(app, *requestedGame);
+            if (hostingGame) {
+                std::fprintf(stdout, "engine_runtime: dedicated server now hosting \"%s\" (slug \"%s\").\n",
+                             requestedGame->manifest.name.c_str(), requestedGameSlug.c_str());
+            } else {
+                std::fprintf(stderr, "engine_runtime: failed to load requested game slug \"%s\" -- hosting an "
+                                     "empty ground plane instead.\n",
+                             requestedGameSlug.c_str());
+            }
+        }
+        if (networkConfig.mode == engine::net::NetworkMode::Server && !hostingGame) {
             app.physics().createGroundPlane(app.ecs(), 25.0f, 25.0f);
         }
         std::fprintf(stdout, "engine_runtime: headless mode started (%s)\n",
@@ -2631,6 +2660,21 @@ int main(int argc, char** argv) {
                           "engine_runtime: failed to load requested game slug \"%s\" -- hosting the generic "
                           "bring-up scene instead.\n",
                           requestedGameSlug.c_str());
+        }
+    }
+
+    if (rollbackConfig) {
+        if (requestedGame.has_value() && !engine::runtime::loadGame(app, *requestedGame)) {
+            std::fprintf(stderr, "engine_runtime: failed to load \"%s\" for the rollback match.\n",
+                         requestedGameSlug.c_str());
+        }
+        std::string rollbackError;
+        if (app.startRollbackMatch(*rollbackConfig, &rollbackError)) {
+            std::fprintf(stdout, "engine_runtime: rollback match %s on port %u\n",
+                         rollbackConfig->host ? "hosted" : "joining", rollbackConfig->port);
+        } else {
+            std::fprintf(stderr, "engine_runtime: rollback match failed to start (playing alone): %s\n",
+                         rollbackError.c_str());
         }
     }
 

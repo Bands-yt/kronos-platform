@@ -58,10 +58,12 @@ struct MaterialLayers {
     // Animated wave normals for flat, up-facing water: 0 off, 1 a choppy lagoon.
     float waterWaves = 0.0f;
     float waterFoam = 0.0f; // whitens wave crests
+    // World-space grid lines every `gridSize` units (a baseplate); 0 is off.
+    float gridSize = 0.0f;
 
     [[nodiscard]] bool isDefault() const {
         return clearcoat == 0.0f && anisotropy == 0.0f && sheenColor == glm::vec3(0.0f) && specular == 0.5f &&
-               waterWaves == 0.0f;
+               waterWaves == 0.0f && gridSize == 0.0f;
     }
 };
 
@@ -164,7 +166,25 @@ struct Renderable {
     // white == "fully unoccluded", a no-op multiply).
     uint32_t aoTexture = kInvalidHandle;
 
+    // Renderer::createSurfacePipeline() handle for a shader-graph material;
+    // kInvalidHandle draws with the standard scene pipeline. Studio sets it
+    // from SurfaceGraphMaterial below.
+    uint32_t surfacePipeline = kInvalidHandle;
+
     static constexpr uint32_t kInvalidHandle = ~0u;
+};
+
+// A shader-graph material, stored as ShaderGraph::serialize() text so it
+// round-trips through scene files. Compiled to Renderable::surfacePipeline
+// by Studio (studio/SurfaceGraphMaterials).
+struct SurfaceGraphMaterial {
+    std::string graph;
+};
+
+// A visual script, stored as VisualScriptGraph::serialize() text. Studio
+// compiles it into the entity's Script::source; only that source runs.
+struct VisualScript {
+    std::string graph;
 };
 
 // Static never moves; Kinematic is moved directly by code (script/
@@ -273,12 +293,17 @@ enum class AudioCategory { Music, SFX };
 
 struct AudioSource {
     uint32_t soundHandle = kInvalidHandle;
+    std::string path; // the sound file, as saved in the scene
+    bool playOnStart = false;
     float volume = 1.0f;
+    float pitch = 1.0f;
     float minDistance = 1.0f;
     float maxDistance = 50.0f;
     bool looping = false;
-    bool playing = false;
+    bool playing = false; // a sound that isn't looping sets this back to false when it ends
+    bool spatial = true;
     AudioCategory category = AudioCategory::SFX;
+    std::string bus; // mixer bus; empty uses the category's bus (Music or SFX)
 
     static constexpr uint32_t kInvalidHandle = ~0u;
 };
@@ -500,6 +525,17 @@ struct Script {
     // scripts -- this is that same real capability for inline-source
     // gameplay scripts, which have no file to watch.
     std::string loadedSource;
+};
+
+// Marks an entity that came from a streamed world cell (core::WorldStreamer);
+// scene saves leave it out because the cell file owns it.
+struct StreamedCell {
+    uint32_t cell = 0;
+};
+
+// World cells load around every entity carrying this, as well as the camera.
+struct StreamingSource {
+    float radiusScale = 1.0f;
 };
 
 } // namespace engine::core

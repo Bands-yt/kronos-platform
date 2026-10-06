@@ -40,13 +40,25 @@ public:
     Physics(const Physics&) = delete;
     Physics& operator=(const Physics&) = delete;
 
-    [[nodiscard]] bool initialize();
+    // `workerThreadCount` < 0 picks one per core minus one. Results do not
+    // depend on the count: the simulation is deterministic, also across
+    // machines (Jolt is built with CROSS_PLATFORM_DETERMINISTIC).
+    [[nodiscard]] bool initialize(int workerThreadCount = -1);
     void shutdown();
 
     // Advances the simulation by exactly `dt` (the fixed tick from
     // GameLoop, not a variable render dt) and writes the results into every
     // entity with both RigidBody and Transform.
     void step(float dt, ECS& ecs);
+
+    // Snapshot of everything a step changes (moving bodies, contact cache,
+    // constraints, global state) for rollback and replays. Restoring needs
+    // the same bodies to exist as when the snapshot was taken; with `ecs`,
+    // Transforms are updated to match right away.
+    void saveState(std::vector<uint8_t>& out) const;
+    [[nodiscard]] bool restoreState(const std::vector<uint8_t>& state, ECS* ecs = nullptr);
+    [[nodiscard]] uint64_t stateHash() const;
+    [[nodiscard]] static uint64_t hashStateBytes(const std::vector<uint8_t>& bytes);
 
     // Real Jolt broadphase-tree rebuild -- worth calling after bulk-adding
     // many static bodies at once (e.g. loading a whole scene's worth of

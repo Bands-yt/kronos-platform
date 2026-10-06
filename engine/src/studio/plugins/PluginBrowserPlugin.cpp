@@ -10,6 +10,7 @@
 #include "studio/PluginChrome.hpp"
 #include "studio/PluginManager.hpp"
 #include "studio/plugins/ScriptedPlugin.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -63,8 +64,10 @@ void PluginBrowserPlugin::drawLocalPluginsSection() {
     ImGui::TextUnformatted("Local Plugins");
     ImGui::TextDisabled("Finds *.manifest files in a local directory.");
 
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 160.0f);
     ImGui::InputText("##plugin_directory", &pluginDirectoryBuffer_);
+    ImGui::SameLine();
+    browseButton("plugin_dir", pluginDirectoryBuffer_, {"Choose Plugin Folder", {}, "", true});
     ImGui::SameLine();
     if (ImGui::Button("Scan")) {
         scanNow();
@@ -133,8 +136,10 @@ void PluginBrowserPlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
     ImGui::TextWrapped(
         "Load a third-party plugin from its manifest file, which names the plugin and its entry Luau script. The script runs in a sandboxed Luau VM with the same memory and time budgets as gameplay scripts, plus a `world` table for the ECS and a `network` table for client/server RPC.");
 
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 90.0f);
     ImGui::InputTextWithHint("##manifest_path", "path/to/plugin.manifest", &manifestPathBuffer_);
+    ImGui::SameLine();
+    browseButton("manifest", manifestPathBuffer_, {"Load Plugin Manifest", {"*.manifest"}, "Plugin manifests"});
 
     if (ImGui::Button("Load Plugin") && !manifestPathBuffer_.empty()) {
         loadFromManifestPath(manifestPathBuffer_);

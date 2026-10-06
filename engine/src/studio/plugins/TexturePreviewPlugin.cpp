@@ -1,4 +1,5 @@
 #include "studio/plugins/TexturePreviewPlugin.hpp"
+#include "studio/FileBrowse.hpp"
 
 #include <algorithm>
 
@@ -46,6 +47,9 @@ void TexturePreviewPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*select
                         "Editor's texture slots would.");
     ImGui::SetNextItemWidth(320.0f);
     ImGui::InputText("Path", pathBuffer_, sizeof(pathBuffer_));
+    ImGui::SameLine();
+    browseButton("texture", pathBuffer_, sizeof(pathBuffer_),
+                 {"Load Image", {"*.png", "*.jpg", "*.jpeg", "*.tga", "*.bmp", "*.hdr", "*.ktx2"}, "Images"});
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
         std::string path = pathBuffer_;

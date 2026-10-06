@@ -149,6 +149,17 @@ export const config = {
   // handing out a presigned URL for it.
   packageMaxSizeBytes: Number(process.env.PACKAGE_MAX_SIZE_BYTES || 500 * 1024 * 1024),
 
+  // Total bytes of package versions and catalog images one account may
+  // keep stored; users.storage_quota_bytes overrides it per account.
+  packageQuotaBytes: Number(process.env.PACKAGE_QUOTA_BYTES || 2 * 1024 * 1024 * 1024),
+  // New games, new package versions and new images wait for a moderator
+  // before players see them. Set GAME_REVIEW_REQUIRED=false to publish
+  // straight through (local development, trusted private deployments).
+  gameReviewRequired: (process.env.GAME_REVIEW_REQUIRED || 'true') !== 'false',
+  mediaMaxSizeBytes: Number(process.env.MEDIA_MAX_SIZE_BYTES || 8 * 1024 * 1024),
+  mediaMaxDimension: Number(process.env.MEDIA_MAX_DIMENSION || 4096),
+  maxScreenshotsPerGame: Number(process.env.MAX_SCREENSHOTS_PER_GAME || 8),
+
   // Where package archives land when s3Bucket above is unset (see
   // storage/local.js) -- a real, working default so a deployment with no
   // S3 credentials at all still has somewhere on disk to put them,

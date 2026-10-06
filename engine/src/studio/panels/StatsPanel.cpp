@@ -40,6 +40,9 @@ void StatsPanel::draw(const core::PerformanceMetrics& metrics) {
                       static_cast<int>(drawCallHistory_.samples().size()), 0, nullptr, 0.0f,
                       std::max(1.0f, drawCallHistory_.max()), ImVec2(0.0f, 40.0f));
     ImGui::Text("Triangles: %llu", static_cast<unsigned long long>(metrics.triangleCount));
+    ImGui::Text("Objects: %u drawn, %u culled", metrics.objectsVisible, metrics.objectsCulled);
+    ImGui::Text("Static batches: %u (%u objects)", metrics.staticBatches, metrics.staticBatchedObjects);
+    ImGui::Text("Instanced draws: %u (%u objects)", metrics.instancedDraws, metrics.instancedObjects);
 
     ImGui::Separator();
     double usedMb = static_cast<double>(metrics.gpuMemoryUsedBytes) / (1024.0 * 1024.0);

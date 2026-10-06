@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace engine::core {
 
@@ -13,23 +15,78 @@ Audio::Audio() = default;
 Audio::~Audio() { shutdown(); }
 
 bool Audio::initialize() {
+    ma_engine_config config = ma_engine_config_init();
+    const char* silent = std::getenv("KRONOS_SILENT_AUDIO");
+    if (silent != nullptr && silent[0] != '\0' && std::strcmp(silent, "0") != 0) {
+        // Plays in real time (meters, timing) but nothing reaches the speakers.
+        silentContext_ = new ma_context();
+        const ma_backend nullBackend = ma_backend_null;
+        if (ma_context_init(&nullBackend, 1, nullptr, silentContext_) == MA_SUCCESS) {
+            config.pContext = silentContext_;
+            std::fprintf(stdout, "Audio: KRONOS_SILENT_AUDIO set, using the null output device\n");
+        } else {
+            delete silentContext_;
+            silentContext_ = nullptr;
+        }
+    }
     engine_ = new ma_engine();
-    ma_result result = ma_engine_init(nullptr, engine_);
+    ma_result result = ma_engine_init(&config, engine_);
     if (result != MA_SUCCESS) {
         std::fprintf(stderr, "Audio: ma_engine_init failed (%d) -- is an audio backend (ALSA/PulseAudio) available?\n", result);
         delete engine_;
         engine_ = nullptr;
+        releaseSilentContext();
         return false;
     }
-    initialized_ = true;
     std::fprintf(stdout, "Audio: miniaudio engine initialized (%u channels @ %u Hz)\n",
                  ma_engine_get_channels(engine_), ma_engine_get_sample_rate(engine_));
-    // Real-reapplies whatever master volume was set (or left at its real
-    // default of 1.0f) before initialize() ran -- see setMasterVolume()'s
-    // own comment.
+    return finishInitialize();
+}
+
+bool Audio::initializeOffline(uint32_t channels, uint32_t sampleRate) {
+    if (initialized_) return false;
+    ma_engine_config config = ma_engine_config_init();
+    config.noDevice = MA_TRUE;
+    config.channels = channels;
+    config.sampleRate = sampleRate;
+    engine_ = new ma_engine();
+    if (ma_engine_init(&config, engine_) != MA_SUCCESS) {
+        delete engine_;
+        engine_ = nullptr;
+        return false;
+    }
+    return finishInitialize();
+}
+
+bool Audio::finishInitialize() {
+    initialized_ = true;
     ma_engine_set_volume(engine_, masterVolume_);
+    std::string error;
+    if (!mixer_.attach(engine_, &error)) std::fprintf(stderr, "Audio: mixer unavailable: %s\n", error.c_str());
     return true;
 }
+
+bool Audio::renderOffline(float* interleaved, uint64_t frameCount) {
+    if (!initialized_ || engine_->pDevice != nullptr) return false;
+    ma_uint64 read = 0;
+    return ma_engine_read_pcm_frames(engine_, interleaved, frameCount, &read) == MA_SUCCESS && read == frameCount;
+}
+
+uint32_t Audio::channels() const { return initialized_ ? ma_engine_get_channels(engine_) : 0; }
+
+uint32_t Audio::sampleRate() const { return initialized_ ? ma_engine_get_sample_rate(engine_) : 0; }
+
+void Audio::setSoundBus(SoundHandle handle, const std::string& bus) {
+    if (handle >= sounds_.size() || !sounds_[handle]) return;
+    mixer_.route(sounds_[handle], bus);
+}
+
+std::string Audio::soundBus(SoundHandle handle) const {
+    if (handle >= sounds_.size() || !sounds_[handle]) return {};
+    return mixer_.busOf(sounds_[handle]);
+}
+
+void Audio::update(float dt) { mixer_.update(dt); }
 
 void Audio::setMasterVolume(float volume01) {
     masterVolume_ = volume01;
@@ -37,28 +94,29 @@ void Audio::setMasterVolume(float volume01) {
 }
 
 void Audio::setCategoryVolume(AudioCategory category, float volume01) {
-    if (category == AudioCategory::Music) {
-        musicVolume_ = volume01;
-    } else {
-        sfxVolume_ = volume01;
-    }
+    mixer_.setUserVolume(category == AudioCategory::Music ? "Music" : "SFX", volume01);
 }
 
 void Audio::shutdown() {
     if (!initialized_) return;
 
-    for (ma_sound* sound : sounds_) {
-        if (sound) {
-            ma_sound_uninit(sound);
-            delete sound;
-        }
-    }
+    for (SoundHandle handle = 0; handle < sounds_.size(); ++handle) unloadSound(handle);
     sounds_.clear();
+    buffers_.clear();
+    mixer_.detach();
 
     ma_engine_uninit(engine_);
     delete engine_;
     engine_ = nullptr;
+    releaseSilentContext();
     initialized_ = false;
+}
+
+void Audio::releaseSilentContext() {
+    if (silentContext_ == nullptr) return;
+    ma_context_uninit(silentContext_);
+    delete silentContext_;
+    silentContext_ = nullptr;
 }
 
 SoundHandle Audio::loadSound(const std::string& path) {
@@ -73,14 +131,81 @@ SoundHandle Audio::loadSound(const std::string& path) {
     }
 
     sounds_.push_back(sound);
+    buffers_.push_back(nullptr);
+    mixer_.route(sound, {});
     return static_cast<SoundHandle>(sounds_.size() - 1);
 }
 
 void Audio::unloadSound(SoundHandle handle) {
-    if (handle >= sounds_.size() || !sounds_[handle]) return;
-    ma_sound_uninit(sounds_[handle]);
-    delete sounds_[handle];
-    sounds_[handle] = nullptr;
+    if (handle >= sounds_.size()) return;
+    if (sounds_[handle]) {
+        mixer_.forget(sounds_[handle]);
+        ma_sound_uninit(sounds_[handle]);
+        delete sounds_[handle];
+        sounds_[handle] = nullptr;
+    }
+    if (handle < buffers_.size() && buffers_[handle]) {
+        ma_audio_buffer_uninit_and_free(static_cast<ma_audio_buffer*>(buffers_[handle]));
+        buffers_[handle] = nullptr;
+    }
+}
+
+SoundHandle Audio::reserveSound() {
+    sounds_.push_back(nullptr);
+    buffers_.push_back(nullptr);
+    return static_cast<SoundHandle>(sounds_.size() - 1);
+}
+
+bool Audio::setSoundPcm(SoundHandle handle, const float* interleaved, uint64_t frameCount, uint32_t channels,
+                        uint32_t sampleRate) {
+    if (!initialized_ || handle >= sounds_.size() || interleaved == nullptr || frameCount == 0 || channels == 0 ||
+        sampleRate == 0) {
+        return false;
+    }
+
+    ma_audio_buffer_config bufferConfig = ma_audio_buffer_config_init(ma_format_f32, channels, frameCount, interleaved, nullptr);
+    bufferConfig.sampleRate = sampleRate;
+    ma_audio_buffer* buffer = nullptr;
+    if (ma_audio_buffer_alloc_and_init(&bufferConfig, &buffer) != MA_SUCCESS) return false;
+
+    auto* sound = new ma_sound();
+    if (ma_sound_init_from_data_source(engine_, buffer, 0, nullptr, sound) != MA_SUCCESS) {
+        delete sound;
+        ma_audio_buffer_uninit_and_free(buffer);
+        return false;
+    }
+
+    double resumeSeconds = -1.0;
+    std::string bus;
+    if (ma_sound* old = sounds_[handle]) {
+        bus = mixer_.busOf(old);
+        ma_sound_set_looping(sound, ma_sound_is_looping(old));
+        ma_sound_set_volume(sound, ma_sound_get_volume(old));
+        ma_sound_set_pitch(sound, ma_sound_get_pitch(old));
+        ma_sound_set_spatialization_enabled(sound, ma_sound_is_spatialization_enabled(old));
+        ma_sound_set_min_distance(sound, ma_sound_get_min_distance(old));
+        ma_sound_set_max_distance(sound, ma_sound_get_max_distance(old));
+        const ma_vec3f position = ma_sound_get_position(old);
+        ma_sound_set_position(sound, position.x, position.y, position.z);
+        if (ma_sound_is_playing(old) == MA_TRUE) {
+            float cursor = 0.0f;
+            if (ma_sound_get_cursor_in_seconds(old, &cursor) == MA_SUCCESS) resumeSeconds = cursor;
+        }
+    }
+    unloadSound(handle);
+    sounds_[handle] = sound;
+    buffers_[handle] = buffer;
+    mixer_.route(sound, bus);
+
+    if (resumeSeconds >= 0.0) {
+        const double lengthSeconds = static_cast<double>(frameCount) / sampleRate;
+        if (resumeSeconds < lengthSeconds || ma_sound_is_looping(sound)) {
+            const auto frame = static_cast<ma_uint64>(std::fmod(resumeSeconds, lengthSeconds) * sampleRate);
+            ma_sound_seek_to_pcm_frame(sound, frame);
+            ma_sound_start(sound);
+        }
+    }
+    return true;
 }
 
 void Audio::playOneShot(SoundHandle handle) {
@@ -157,17 +282,58 @@ void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward,
         ma_sound_set_position(sound, transform.position.x, transform.position.y, transform.position.z);
         ma_sound_set_min_distance(sound, source.minDistance);
         ma_sound_set_max_distance(sound, source.maxDistance);
-        float categoryVolume = source.category == AudioCategory::Music ? musicVolume_ : sfxVolume_;
-        ma_sound_set_volume(sound, source.volume * categoryVolume);
+        ma_sound_set_volume(sound, source.volume);
+        ma_sound_set_pitch(sound, std::max(source.pitch, 0.01f));
+        ma_sound_set_spatialization_enabled(sound, source.spatial ? MA_TRUE : MA_FALSE);
         ma_sound_set_looping(sound, source.looping ? MA_TRUE : MA_FALSE);
+        mixer_.route(sound, !source.bus.empty() ? source.bus : source.category == AudioCategory::Music ? "Music" : "SFX");
 
-        bool isPlaying = ma_sound_is_playing(sound) == MA_TRUE;
+        const bool isPlaying = ma_sound_is_playing(sound) == MA_TRUE;
         if (source.playing && !isPlaying) {
-            ma_sound_start(sound);
+            if (!source.looping && ma_sound_at_end(sound) == MA_TRUE) {
+                source.playing = false;
+            } else {
+                ma_sound_start(sound);
+            }
         } else if (!source.playing && isPlaying) {
             ma_sound_stop(sound);
         }
     }
+}
+
+bool decodeAudioFileToFloat(const std::string& path, std::vector<float>& outInterleaved, uint32_t& outChannels,
+                            uint32_t& outSampleRate, std::string* error) {
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
+    ma_decoder decoder;
+    if (ma_decoder_init_file(path.c_str(), &config, &decoder) != MA_SUCCESS) {
+        if (error) *error = "unsupported or unreadable audio file";
+        return false;
+    }
+    const uint32_t channels = decoder.outputChannels;
+    std::vector<float> samples;
+    constexpr ma_uint64 kChunkFrames = 16384;
+    for (;;) {
+        const size_t offset = samples.size();
+        samples.resize(offset + kChunkFrames * channels);
+        ma_uint64 framesRead = 0;
+        const ma_result result = ma_decoder_read_pcm_frames(&decoder, samples.data() + offset, kChunkFrames, &framesRead);
+        samples.resize(offset + framesRead * channels);
+        if (result == MA_AT_END || framesRead < kChunkFrames) break;
+        if (result != MA_SUCCESS) {
+            ma_decoder_uninit(&decoder);
+            if (error) *error = "decode error";
+            return false;
+        }
+    }
+    outSampleRate = decoder.outputSampleRate;
+    ma_decoder_uninit(&decoder);
+    if (samples.empty() || channels == 0) {
+        if (error) *error = "audio file has no samples";
+        return false;
+    }
+    outChannels = channels;
+    outInterleaved = std::move(samples);
+    return true;
 }
 
 bool decodeAudioFileToFloatMono(const std::string& path, std::vector<float>& outSamples, uint32_t& outSampleRate) {

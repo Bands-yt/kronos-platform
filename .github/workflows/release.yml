@@ -103,6 +103,7 @@ jobs:
             pkgDir="kronos_${assetName}_linux_x86_64"
             mkdir -p "$pkgDir/shaders"
             cp "$BUILD_DIR/src/$target" "$pkgDir/"
+            cp "$BUILD_DIR/src/kronos_plugin_sandbox" "$pkgDir/"
             cp "$BUILD_DIR"/shaders/*.spv "$pkgDir/shaders/"
             cp -r "$ENGINE_DIR/assets" "$pkgDir/"
             cp -r games "$pkgDir/"
@@ -192,6 +193,8 @@ jobs:
             Copy-Item -Recurse "$env:ENGINE_DIR\assets" "$pkgDir\"
             Copy-Item -Recurse "games" "$pkgDir\"
             Copy-Item "$vcpkgBin\*.dll" "$pkgDir\"
+            & "$env:GITHUB_WORKSPACE\scripts\windows\copy-msvc-runtime.ps1" -Destination $pkgDir
+            if ($LASTEXITCODE) { exit 1 }
 
             foreach ($required in @("assets\textures\ui_font_atlas.png", "assets\animations\idle.anim", "games", "SDL2.dll", "libcurl.dll", "z.dll")) {
               if (-not (Test-Path "$pkgDir\$required")) {

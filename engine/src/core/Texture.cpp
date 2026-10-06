@@ -48,8 +48,68 @@ void transitionImageLayout(VkCommandBuffer cmd, VkImage image, VkImageLayout old
 
 } // namespace
 
+Texture Texture::uploadPixelsFromHost(const uint8_t* rgba, int width, int height, bool srgb, VmaAllocator allocator,
+                                       VkDevice device) {
+    Texture result;
+    const VkFormat format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = format;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // TRANSFER_DST stays so updatePixels() can still use its staging path.
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    if (vmaCreateImage(allocator, &imageInfo, &allocInfo, &result.image_, &result.allocation_, nullptr) != VK_SUCCESS) {
+        return Texture{};
+    }
+
+    VkHostImageLayoutTransitionInfoEXT transition{VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT};
+    transition.image = result.image_;
+    transition.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    transition.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    transition.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkMemoryToImageCopyEXT region{VK_STRUCTURE_TYPE_MEMORY_TO_IMAGE_COPY_EXT};
+    region.pHostPointer = rgba;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = imageInfo.extent;
+    VkCopyMemoryToImageInfoEXT copy{VK_STRUCTURE_TYPE_COPY_MEMORY_TO_IMAGE_INFO_EXT};
+    copy.dstImage = result.image_;
+    copy.dstImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    copy.regionCount = 1;
+    copy.pRegions = &region;
+
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = result.image_;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkTransitionImageLayoutEXT(device, 1, &transition) != VK_SUCCESS ||
+        vkCopyMemoryToImageEXT(device, &copy) != VK_SUCCESS ||
+        vkCreateImageView(device, &viewInfo, nullptr, &result.view_) != VK_SUCCESS) {
+        vmaDestroyImage(allocator, result.image_, result.allocation_);
+        return Texture{};
+    }
+    result.width_ = width;
+    result.height_ = height;
+    ++hostCopiedUploads_;
+    return result;
+}
+
 Texture Texture::uploadPixels(const uint8_t* rgba, int width, int height, bool srgb, VmaAllocator allocator,
                                VkDevice device, VkCommandPool cmdPool, VkQueue queue) {
+    if (hostImageCopy_) {
+        Texture hostCopied = uploadPixelsFromHost(rgba, width, height, srgb, allocator, device);
+        if (hostCopied.isValid()) return hostCopied;
+        logError("Texture", "host image copy failed -- falling back to a staging upload.");
+    }
     Texture result;
     VkDeviceSize imageBytes = static_cast<VkDeviceSize>(width) * static_cast<VkDeviceSize>(height) * 4;
 
@@ -378,6 +438,18 @@ const Texture* TextureLibrary::get(uint32_t handle) const {
 Texture* TextureLibrary::get(uint32_t handle) {
     if (handle >= textures_.size()) return nullptr;
     return &textures_[handle];
+}
+
+void TextureLibrary::replaceTexture(uint32_t handle, Texture texture, VmaAllocator allocator, VkDevice device) {
+    if (handle >= textures_.size()) return;
+    textures_[handle].destroy(allocator, device);
+    textures_[handle] = std::move(texture);
+}
+
+void TextureLibrary::destroyTexture(uint32_t handle, VmaAllocator allocator, VkDevice device) {
+    if (handle >= textures_.size()) return;
+    textures_[handle].destroy(allocator, device);
+    textures_[handle] = Texture{};
 }
 
 void TextureLibrary::destroyAll(VmaAllocator allocator, VkDevice device) {

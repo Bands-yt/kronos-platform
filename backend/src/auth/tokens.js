@@ -141,6 +141,23 @@ export async function revokeAllForUser(userId) {
   return rowCount;
 }
 
+// Every refresh writes a new row, so expired rows must be removed or the
+// table grows forever. A day's grace keeps a just-expired token answering
+// "expired" rather than "unknown" for clients that were offline overnight.
+const EXPIRING_TOKEN_TABLES = ['refresh_tokens', 'email_verification_tokens', 'password_reset_tokens', 'launch_handoff_tokens'];
+
+export async function purgeExpiredTokens({ graceHours = 24 } = {}) {
+  const removed = {};
+  for (const table of EXPIRING_TOKEN_TABLES) {
+    const { rowCount } = await query(
+      `DELETE FROM ${table} WHERE expires_at < NOW() - make_interval(hours => $1)`,
+      [graceHours],
+    );
+    removed[table] = rowCount;
+  }
+  return removed;
+}
+
 // ---------------------------------------------------------------------------
 // One-shot tokens (password reset, email verification)
 // ---------------------------------------------------------------------------

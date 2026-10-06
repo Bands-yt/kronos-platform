@@ -79,6 +79,10 @@ type RaycastResult = {
 -- ScriptUiApi.cpp's own luaJoinSession() comment on this same
 -- convention), not a dedicated userdata/class type -- there is no
 -- Instance hierarchy yet for one to belong to.
+declare script: {
+    entity: number,
+}
+
 declare world: {
     --- Creates an empty entity and returns its id.
     createEntity: (name: string?) -> number,
@@ -98,6 +102,7 @@ declare world: {
     getRotation: (entity: number) -> (number, number, number),
     --- Sets an entity's rotation from Euler degrees.
     setRotation: (entity: number, x: number, y: number, z: number) -> (),
+    rotateBy: (entity: number, x: number, y: number, z: number) -> (),
     --- Sets an entity's scale on each axis.
     setScale: (entity: number, x: number, y: number, z: number) -> (),
     --- Tints an entity's material (0-1 channels).
@@ -144,6 +149,33 @@ declare network: {
     onServerEvent: (name: string, fn: (sender: number, payload: {[string]: any}) -> ()) -> (),
     --- Client only: handles a named event sent by fireAllClients.
     onClientEvent: (name: string, fn: (payload: {[string]: any}) -> ()) -> (),
+}
+
+declare audio: {
+    --- Fades a mixer snapshot to intensity (0-1, default 1) over fadeSeconds. False if it doesn't exist.
+    snapshot: (name: string, intensity: number?, fadeSeconds: number?) -> boolean,
+    --- How strongly a snapshot is applied right now (0-1).
+    snapshotIntensity: (name: string) -> number,
+    --- Sets a bus volume in dB (-80 to 24). False if the bus doesn't exist.
+    setBusVolume: (bus: string, db: number) -> boolean,
+    --- A bus volume in dB, after snapshots.
+    busVolume: (bus: string) -> number,
+    --- Mutes or unmutes a bus. False if the bus doesn't exist.
+    setBusMuted: (bus: string, muted: boolean) -> boolean,
+    --- How loud a bus is right now, in dB (-80 is silent).
+    busLevel: (bus: string) -> number,
+    --- Plays the entity's sound from the start. Nil if it has no sound.
+    play: (entity: number) -> boolean?,
+    --- Stops the entity's sound.
+    stop: (entity: number) -> (),
+    --- True while the entity's sound is playing.
+    isPlaying: (entity: number) -> boolean,
+    --- Sound volume, 0 to 4 (1 is normal).
+    setVolume: (entity: number, volume: number) -> (),
+    --- Playback speed and pitch, 0.05 to 8 (1 is normal).
+    setPitch: (entity: number, pitch: number) -> (),
+    --- Moves the entity's sound to another mixer bus.
+    setBus: (entity: number, bus: string) -> (),
 }
 
 declare ui: {

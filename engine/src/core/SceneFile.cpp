@@ -177,7 +177,7 @@ std::string base64Decode(const std::string& input) {
 constexpr uint32_t kBinaryMagic = 0x4E435343; // "KSCN" as a little-endian u32 (bytes 'K','S','C','N')
 // v2 adds MaterialLayers after the renderable block and spot fields after the light block.
 // v3 appends Light::castsShadow.
-constexpr uint32_t kBinaryVersion = 3;
+constexpr uint32_t kBinaryVersion = 7;
 
 bool hasKronosExtension(const std::string& path) {
     constexpr std::string_view kExt = ".kronos";
@@ -197,7 +197,10 @@ bool SceneFile::saveToFile(const std::string& path, const polyglot::VirtualFileS
 
     std::ofstream out(realPath, std::ios::trunc);
     if (!out.is_open()) return false;
+    return writeText(out);
+}
 
+bool SceneFile::writeText(std::ostream& out) const {
     out << "SCENE 1\n";
     out << "CAMERA " << cameraPosition.x << ' ' << cameraPosition.y << ' ' << cameraPosition.z << ' '
         << cameraYawDegrees << ' ' << cameraPitchDegrees << ' ' << cameraFovDegrees << "\n";
@@ -258,8 +261,10 @@ bool SceneFile::saveToFile(const std::string& path, const polyglot::VirtualFileS
                 const auto& m = e.layers;
                 out << "MATERIALEXT " << m.clearcoat << ' ' << m.clearcoatRoughness << ' ' << m.anisotropy << ' '
                     << m.anisotropyRotation << ' ' << m.sheenColor.x << ' ' << m.sheenColor.y << ' ' << m.sheenColor.z
-                    << ' ' << m.sheenRoughness << ' ' << m.specular << "\n";
+                    << ' ' << m.sheenRoughness << ' ' << m.specular << ' ' << m.gridSize << "\n";
             }
+
+            if (!e.surfaceGraph.empty()) out << "SURFACEGRAPH " << base64Encode(e.surfaceGraph) << "\n";
 
             if (e.hasMeshSource) {
                 // path is last on the line (never quoted -- loadFromFile
@@ -304,9 +309,17 @@ bool SceneFile::saveToFile(const std::string& path, const polyglot::VirtualFileS
             }
         }
 
+        if (e.hasSound) {
+            const AudioSource& a = e.sound;
+            out << "SOUND " << a.volume << ' ' << a.pitch << ' ' << a.minDistance << ' ' << a.maxDistance << ' '
+                << (a.looping ? 1 : 0) << ' ' << (a.playOnStart ? 1 : 0) << ' ' << (a.spatial ? 1 : 0) << ' '
+                << (a.category == AudioCategory::Music ? 1 : 0) << ' ' << (a.bus.empty() ? "-" : base64Encode(a.bus))
+                << ' ' << (a.path.empty() ? "-" : a.path) << "\n";
+        }
         if (e.hasScript) {
             out << "SCRIPT " << (e.scriptAutoRun ? 1 : 0) << ' ' << base64Encode(e.scriptSource) << "\n";
         }
+        if (!e.visualScript.empty()) out << "VISUALSCRIPT " << base64Encode(e.visualScript) << "\n";
     }
 
     out << "END\n";
@@ -421,6 +434,8 @@ bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFil
             MaterialLayers m;
             if (iss >> m.clearcoat >> m.clearcoatRoughness >> m.anisotropy >> m.anisotropyRotation >> m.sheenColor.x >>
                 m.sheenColor.y >> m.sheenColor.z >> m.sheenRoughness >> m.specular) {
+                float gridSize = 0.0f;
+                if (iss >> gridSize) m.gridSize = gridSize;
                 current->layers = m;
             }
         } else if (line.rfind("MESHSOURCE ", 0) == 0 && current != nullptr) {
@@ -481,6 +496,26 @@ bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFil
             std::getline(iss, rest);
             if (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
             current->colliderShape.path = (rest.empty() || rest == "-") ? std::string() : rest;
+        } else if (line.rfind("SURFACEGRAPH ", 0) == 0 && current != nullptr) {
+            current->surfaceGraph = base64Decode(line.substr(13));
+        } else if (line.rfind("VISUALSCRIPT ", 0) == 0 && current != nullptr) {
+            current->visualScript = base64Decode(line.substr(13));
+        } else if (line.rfind("SOUND ", 0) == 0 && current != nullptr) {
+            current->hasSound = true;
+            AudioSource& a = current->sound;
+            std::istringstream iss(line.substr(6));
+            int loop = 0, autoplay = 0, spatial = 1, music = 0;
+            std::string bus;
+            iss >> a.volume >> a.pitch >> a.minDistance >> a.maxDistance >> loop >> autoplay >> spatial >> music >> bus;
+            a.looping = loop != 0;
+            a.playOnStart = autoplay != 0;
+            a.spatial = spatial != 0;
+            a.category = music != 0 ? AudioCategory::Music : AudioCategory::SFX;
+            a.bus = bus == "-" ? std::string() : base64Decode(bus);
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
+            a.path = (rest.empty() || rest == "-") ? std::string() : rest;
         } else if (line.rfind("SCRIPT ", 0) == 0 && current != nullptr) {
             current->hasScript = true;
             std::string rest = line.substr(7);
@@ -601,6 +636,8 @@ bool SceneFile::saveToBinaryFile(const std::string& path) const {
             w.writeVec3(e.layers.sheenColor);
             w.writeFloat(e.layers.sheenRoughness);
             w.writeFloat(e.layers.specular);
+            w.writeFloat(e.layers.gridSize);
+            w.writeString(e.surfaceGraph);
 
             w.writeBool(e.hasMeshSource);
             if (e.hasMeshSource) {
@@ -658,6 +695,19 @@ bool SceneFile::saveToBinaryFile(const std::string& path) const {
             // embedded newlines/arbitrary bytes natively, no base64
             // workaround needed here.
             w.writeString(e.scriptSource);
+        }
+        w.writeString(e.visualScript);
+        w.writeBool(e.hasSound);
+        if (e.hasSound) {
+            const AudioSource& a = e.sound;
+            w.writeString(a.path);
+            w.writeString(a.bus);
+            w.writeFloat(a.volume);
+            w.writeFloat(a.pitch);
+            w.writeFloat(a.minDistance);
+            w.writeFloat(a.maxDistance);
+            w.writeU8(static_cast<uint8_t>((a.looping ? 1 : 0) | (a.playOnStart ? 2 : 0) | (a.spatial ? 4 : 0) |
+                                           (a.category == AudioCategory::Music ? 8 : 0)));
         }
     }
 
@@ -806,6 +856,8 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
                 e.layers.sheenRoughness = r.readFloat();
                 e.layers.specular = r.readFloat();
             }
+            if (version >= 4) e.layers.gridSize = r.readFloat();
+            if (version >= 5) e.surfaceGraph = r.readString();
 
             e.hasMeshSource = r.readBool();
             if (e.hasMeshSource) {
@@ -861,6 +913,24 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
         if (e.hasScript) {
             e.scriptAutoRun = r.readBool();
             e.scriptSource = r.readString();
+        }
+        if (version >= 6) e.visualScript = r.readString();
+        if (version >= 7) {
+            e.hasSound = r.readBool();
+            if (e.hasSound) {
+                AudioSource& a = e.sound;
+                a.path = r.readString();
+                a.bus = r.readString();
+                a.volume = r.readFloat();
+                a.pitch = r.readFloat();
+                a.minDistance = r.readFloat();
+                a.maxDistance = r.readFloat();
+                const uint8_t flags = r.readU8();
+                a.looping = (flags & 1) != 0;
+                a.playOnStart = (flags & 2) != 0;
+                a.spatial = (flags & 4) != 0;
+                a.category = (flags & 8) != 0 ? AudioCategory::Music : AudioCategory::SFX;
+            }
         }
 
         loaded.entities.push_back(std::move(e));

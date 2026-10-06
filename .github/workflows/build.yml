@@ -244,6 +244,9 @@ jobs:
             exit 1
           }
 
+          & "$env:GITHUB_WORKSPACE\scripts\windows\copy-msvc-runtime.ps1" -Destination $pkgDir
+          if ($LASTEXITCODE) { exit 1 }
+
           # Fail loudly rather than publishing another archive that cannot
           # start: every real imported DLL that isn't a Windows system/CRT
           # library must actually be present in the package.

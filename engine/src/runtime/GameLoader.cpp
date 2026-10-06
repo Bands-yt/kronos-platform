@@ -5,6 +5,8 @@
 #include <fstream>
 #include <sstream>
 
+#include "core/Application.hpp"
+#include "core/Audio.hpp"
 #include "core/ProjectFile.hpp"
 #include "core/SceneManager.hpp"
 
@@ -65,15 +67,34 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
     }
 
     core::Renderer& renderer = app.renderer();
+    const bool gpu = !app.isHeadless();
     core::SceneManager sceneManager;
-    bool loaded = sceneManager.loadScene(scenePath.string(), app.ecs(), app.meshLibrary(), renderer.allocator(),
-                                          renderer.device(), renderer.commandPool(), renderer.graphicsQueue(),
-                                          app.camera(), &physics);
+    if (gpu) sceneManager.setResources(&app.resources());
+    sceneManager.setWorldStreamer(&app.worldStreamer(), &app.resources());
+    bool loaded = sceneManager.loadScene(scenePath.string(), app.ecs(), app.meshLibrary(),
+                                          gpu ? renderer.allocator() : VK_NULL_HANDLE,
+                                          gpu ? renderer.device() : VK_NULL_HANDLE,
+                                          gpu ? renderer.commandPool() : VK_NULL_HANDLE,
+                                          gpu ? renderer.graphicsQueue() : VK_NULL_HANDLE, app.camera(), &physics);
     if (!loaded) {
         std::fprintf(stderr, "GameLoader: \"%s\" scene file \"%s\" failed to load\n",
                      game.manifest.name.c_str(), scenePath.string().c_str());
         return false;
     }
+
+    core::MixerConfig mixer = core::MixerConfig::defaults();
+    const std::filesystem::path mixerPath = projectPath.parent_path() / "mixer.kmixer";
+    std::error_code ec;
+    if (std::filesystem::exists(mixerPath, ec)) {
+        std::string mixerError;
+        if (!mixer.loadFromFile(mixerPath.string(), &mixerError)) {
+            std::fprintf(stderr, "GameLoader: \"%s\" mixer ignored: %s\n", game.manifest.name.c_str(), mixerError.c_str());
+            mixer = core::MixerConfig::defaults();
+        }
+    }
+    app.audio().mixer().clearSnapshots();
+    (void)app.audio().mixer().setConfig(mixer);
+    for (auto [entity, sound] : app.ecs().raw().view<core::AudioSource>().each()) sound.playing = sound.playOnStart;
 
     // Real, honest convention (Kronos "Game Catalogue Overhaul", Phase
     // 2): Scripts/Main.lua sitting next to the project file, mirroring

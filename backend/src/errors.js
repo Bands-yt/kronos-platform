@@ -12,6 +12,7 @@ export const unauthorized = (msg = 'Authentication required.') => new HttpError(
 export const forbidden = (msg = 'Not permitted.') => new HttpError(403, 'forbidden', msg);
 export const notFound = (msg = 'Not found.') => new HttpError(404, 'not_found', msg);
 export const conflict = (msg) => new HttpError(409, 'conflict', msg);
+export const quotaExceeded = (msg) => new HttpError(413, 'quota_exceeded', msg);
 export const tooManyRequests = (msg = 'Too many requests.') => new HttpError(429, 'rate_limited', msg);
 export const serviceUnavailable = (msg) => new HttpError(503, 'unavailable', msg);
 

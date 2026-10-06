@@ -5,14 +5,17 @@ import crypto from 'node:crypto';
 import test, { after, before } from 'node:test';
 
 import { createApp } from '../src/server.js';
+import { config } from '../src/config.js';
 import { pool, query } from '../src/db.js';
-import { redis } from '../src/redis.js';
+import { closeRedis, redis } from '../src/redis.js';
 import { setEmailTransport } from '../src/email/mailer.js';
 
 let server;
 let baseUrl;
 
 before(async () => {
+  // Written before catalog review existed; review has its own tests.
+  config.gameReviewRequired = false;
   setEmailTransport(async () => {});
   server = createApp().listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -22,7 +25,7 @@ before(async () => {
 after(async () => {
   server.close();
   await pool.end();
-  redis.disconnect();
+  closeRedis();
 });
 
 async function api(method, path, { body, token } = {}) {
@@ -101,7 +104,9 @@ test('the account directory paginates and reports live presence', async () => {
   const other = await makeUser('dir');
   await api('POST', '/v1/presence/heartbeat', { body: { status: 'in_studio' }, token: other.token });
 
-  const res = await api('GET', '/v1/users?limit=200', { token: viewer.token });
+  // Ids ascend, so starting just before `other` keeps it on the first page
+  // no matter how many accounts earlier tests created.
+  const res = await api('GET', `/v1/users?limit=200&cursor=${Number(other.id) - 1}`, { token: viewer.token });
   assert.equal(res.status, 200);
   assert.equal(res.body.presence_available, true);
 
@@ -123,7 +128,7 @@ test('a brand-new account without a username appears immediately under its displ
   const fresh = await api('POST', '/v1/auth/signup', { body: { email, password: 'a reasonable passphrase' } });
   assert.equal(fresh.status, 201);
 
-  const res = await api('GET', '/v1/users?limit=200', { token: viewer.token });
+  const res = await api('GET', `/v1/users?limit=200&cursor=${Number(viewer.id) - 1}`, { token: viewer.token });
   const found = res.body.users.find((u) => u.id === fresh.body.user.id);
   assert.ok(found, 'a handle-less account really shows up in the directory right away');
   assert.equal(found.username, null, 'its username is really still null');

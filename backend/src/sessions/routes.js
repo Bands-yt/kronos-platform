@@ -149,7 +149,8 @@ sessionRouter.post(
     if (!slug) throw badRequest('game_slug is required.');
 
     const { rows: games } = await query(
-      `SELECT id, slug, title, mature FROM games WHERE slug = $1 AND published = TRUE`,
+      // Dedicated servers fetch packages anonymously, so only reviewed games can be hosted.
+      `SELECT id, slug, title, mature FROM games WHERE slug = $1 AND published = TRUE AND review_status = 'approved'`,
       [slug],
     );
     if (games.length === 0) throw notFound('No such published game.');

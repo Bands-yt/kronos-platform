@@ -166,6 +166,9 @@ set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
 # engine_runtime.exe) -- a no-op on non-MSVC platforms, since Jolt's own
 # cmake_dependent_option only applies the static-runtime logic under MSVC.
 set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
+# Same results on every machine (no FMA, Jolt's own trig), so rollback
+# peers and replays agree bit for bit.
+set(CROSS_PLATFORM_DETERMINISTIC ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
     joltphysics
     GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git

@@ -7,6 +7,7 @@
 
 #include "core/Components.hpp"
 #include "core/ResourcePaths.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -255,6 +256,8 @@ void AnimationPreviewerPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*se
         ImGui::EndCombo();
     }
     ImGui::InputText("File", clipPathBuffer_, sizeof(clipPathBuffer_));
+    ImGui::SameLine();
+    browseButton("clip", clipPathBuffer_, sizeof(clipPathBuffer_), {"Load Animation Clip", {"*.anim"}, "Animation clips"});
     ImGui::SameLine();
     if (ImGui::Button("Load Clip File")) {
         core::AnimationClip imported;

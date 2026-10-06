@@ -1,4 +1,7 @@
 #version 450
+#ifdef KRONOS_SHADER_CLOCK
+#extension GL_ARB_shader_clock : require
+#endif
 #ifdef KRONOS_BINDLESS
 #extension GL_EXT_nonuniform_qualifier : require
 #endif

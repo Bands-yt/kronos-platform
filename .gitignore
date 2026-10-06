@@ -46,3 +46,13 @@ test_logger_file_sink.log
 # Local game saves and Python caches
 brokenbones_save.json
 __pycache__/
+native_plugins/SampleCPlugin.so
+
+# Local moderation/chat logs written by the backend and server
+*.chatlog
+*.dmlog
+*.accountmod
+*.appeallog
+*.escalationlog
+*.reportlog
+*.reviewqueue

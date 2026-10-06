@@ -7,11 +7,13 @@
 
 #include <glm/glm.hpp>
 
+#include "core/AudioMixer.hpp"
 #include "core/ECS.hpp"
 
 // Opaque forward declaration -- miniaudio.h (and its MINIAUDIO_IMPLEMENTATION
 // translation unit) are only included in Audio.cpp, so nothing else in the
 // engine has to compile against a 90k-line single header.
+struct ma_context;
 struct ma_engine;
 struct ma_sound;
 
@@ -35,7 +37,23 @@ public:
     Audio& operator=(const Audio&) = delete;
 
     [[nodiscard]] bool initialize();
+    // No audio device: renderOffline() pulls the mix instead. Used by tests
+    // and for rendering audio to a file.
+    [[nodiscard]] bool initializeOffline(uint32_t channels, uint32_t sampleRate);
     void shutdown();
+    // Mixes the next frameCount frames into `interleaved` (offline only).
+    bool renderOffline(float* interleaved, uint64_t frameCount);
+    [[nodiscard]] uint32_t channels() const;
+    [[nodiscard]] uint32_t sampleRate() const;
+
+    // Buses, sends, ducking and snapshots (see AudioMixer.hpp). Every
+    // sound starts on the master bus.
+    [[nodiscard]] AudioMixer& mixer() { return mixer_; }
+    [[nodiscard]] const AudioMixer& mixer() const { return mixer_; }
+    void setSoundBus(SoundHandle handle, const std::string& bus);
+    [[nodiscard]] std::string soundBus(SoundHandle handle) const;
+    // Advances snapshot fades.
+    void update(float dt);
 
     // Decodes fully into memory -- appropriate for short SFX. Streaming
     // playback (music/ambience) is the same call with
@@ -43,6 +61,17 @@ public:
     // (§7 migration asset converter) has real paths to hand it.
     [[nodiscard]] SoundHandle loadSound(const std::string& path);
     void unloadSound(SoundHandle handle);
+
+    // A silent slot that setSoundPcm() fills later; every call on it is a
+    // no-op until then. Used by the resource layer to hand out a handle
+    // before the file has finished decoding on a worker.
+    [[nodiscard]] SoundHandle reserveSound();
+    // Creates or replaces the sound at `handle` from interleaved float
+    // PCM. Replacing keeps looping, volume, pitch and spatialization, and
+    // a sound that was playing resumes from the same time.
+    bool setSoundPcm(SoundHandle handle, const float* interleaved, uint64_t frameCount, uint32_t channels,
+                     uint32_t sampleRate);
+    [[nodiscard]] bool isInitialized() const { return initialized_; }
 
     // Fire-and-forget, non-positional playback (UI sounds, StarterGui click
     // feedback, etc).
@@ -108,20 +137,20 @@ public:
     // before startNetworking()/audio init still takes effect once audio
     // actually comes up.
     void setMasterVolume(float volume01);
-    // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
-    // Layer" -- "Audio: Music volume, SFX volume"): real, immediate --
-    // takes effect on this category's every AudioSource the very next
-    // mix() call (no per-sound bookkeeping needed since mix() already
-    // re-applies every AudioSource's own volume every frame).
+    // The player's volume setting for the Music or SFX bus.
     void setCategoryVolume(AudioCategory category, float volume01);
 
 private:
+    bool finishInitialize();
+    void releaseSilentContext();
+
+    ma_context* silentContext_ = nullptr; // set when KRONOS_SILENT_AUDIO=1
     ma_engine* engine_ = nullptr;
+    AudioMixer mixer_;
     std::vector<ma_sound*> sounds_;
+    std::vector<void*> buffers_; // ma_audio_buffer*, parallel to sounds_, set for PCM-backed sounds
     bool initialized_ = false;
     float masterVolume_ = 1.0f;
-    float musicVolume_ = 1.0f;
-    float sfxVolume_ = 1.0f;
 };
 
 // Kronos ("Node-Based Audio DSP" -- v0.4.0 Creator Suite): real, full-file
@@ -139,6 +168,11 @@ private:
 // Returns false (and leaves outSamples/outSampleRate untouched) if the
 // file can't be opened or decoded -- the same "real, honest failure,
 // not a partial result" contract Texture::loadFromFile() already uses.
+// Full decode at the file's own channel count and sample rate,
+// interleaved. Safe to call from any thread.
+[[nodiscard]] bool decodeAudioFileToFloat(const std::string& path, std::vector<float>& outInterleaved,
+                                          uint32_t& outChannels, uint32_t& outSampleRate, std::string* error = nullptr);
+
 [[nodiscard]] bool decodeAudioFileToFloatMono(const std::string& path, std::vector<float>& outSamples,
                                                uint32_t& outSampleRate);
 

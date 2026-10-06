@@ -18,6 +18,12 @@ struct PerformanceMetrics {
     float fps = 0.0f;
     uint32_t drawCalls = 0;
     uint64_t triangleCount = 0;
+    uint32_t objectsVisible = 0; // after BVH frustum culling, summed over every scene view drawn this frame
+    uint32_t objectsCulled = 0;
+    uint32_t staticBatches = 0;
+    uint32_t staticBatchedObjects = 0;
+    uint32_t instancedDraws = 0;
+    uint32_t instancedObjects = 0;
     uint64_t gpuMemoryUsedBytes = 0;
     uint64_t gpuMemoryBudgetBytes = 0;
 

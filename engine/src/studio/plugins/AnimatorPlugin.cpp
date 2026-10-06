@@ -7,6 +7,7 @@
 #include <imgui.h>
 
 #include "core/Components.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -366,6 +367,8 @@ void AnimatorPlugin::drawTransport(core::AnimationClip& clip) {
 
 void AnimatorPlugin::drawFileControls() {
     ImGui::InputText("File", clipPathBuffer_, sizeof(clipPathBuffer_));
+    ImGui::SameLine();
+    browseButton("clip", clipPathBuffer_, sizeof(clipPathBuffer_), {"Import Animation Clip", {"*.anim"}, "Animation clips"});
     ImGui::SameLine();
     if (ImGui::Button("Export")) {
         bool ok = library_[static_cast<size_t>(activeClipIndex_)].saveToFile(clipPathBuffer_);

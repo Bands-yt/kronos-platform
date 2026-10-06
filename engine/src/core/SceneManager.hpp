@@ -1,6 +1,8 @@
 #pragma once
 
+#include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <volk.h>
@@ -15,6 +17,32 @@
 #include "core/SceneFile.hpp"
 
 namespace engine::core {
+
+class ResourceManager;
+class WorldStreamer;
+
+struct SceneBuildContext {
+    MeshLibrary* meshLibrary = nullptr;
+    VmaAllocator allocator = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE; // null: headless, no meshes are built
+    VkCommandPool cmdPool = VK_NULL_HANDLE;
+    VkQueue queue = VK_NULL_HANDLE;
+    Physics* physics = nullptr;
+    ResourceManager* resources = nullptr;
+    // Procedural meshes by meshSourceKey(); when null the call shares only within itself.
+    std::unordered_map<std::string, uint32_t>* sharedMeshes = nullptr;
+    std::function<uint32_t(Mesh&&)> registerMesh; // defaults to meshLibrary->registerMesh
+};
+
+[[nodiscard]] std::string meshSourceKey(const MeshSource& source);
+[[nodiscard]] bool meshSourceFileBacked(MeshSourceKind kind);
+
+// Creates `records` in `ecs`. Parents resolve within `records` first, then
+// against named entities already in `ecs`.
+void instantiateSceneEntities(const std::vector<SceneEntityRecord>& records, ECS& ecs, const SceneBuildContext& context,
+                              std::vector<EntityId>* created = nullptr);
+// False for unnamed entities, which can't round-trip.
+[[nodiscard]] bool captureSceneEntity(ECS& ecs, EntityId entity, SceneEntityRecord& out);
 
 // Captures a live ECS into a core::SceneFile and rebuilds a live ECS from
 // one -- the GPU/ECS-touching half of scene persistence (core::SceneFile
@@ -106,6 +134,18 @@ public:
                                   Physics* physics = nullptr, cinematic::CameraRail* rail = nullptr,
                                   cinematic::Sequence* sequence = nullptr);
 
+    // When set, file-backed meshes (.obj/.gltf/.glb/.fbx) load through the
+    // resource layer: each file is decoded once on a worker however many
+    // entities use it, entities get the handle immediately and the mesh
+    // appears when the upload lands, and hot reload applies to it.
+    void setResources(ResourceManager* resources) { resources_ = resources; }
+    // When set, a scene with a `<scene>.world` folder streams its cells
+    // through `streamer`, and saving the scene saves its cells too.
+    void setWorldStreamer(WorldStreamer* streamer, ResourceManager* resources) {
+        world_ = streamer;
+        worldResources_ = resources;
+    }
+
     // Clears `ecs` and resets bookkeeping to "new, unsaved scene".
     void newScene(ECS& ecs);
 
@@ -161,7 +201,13 @@ public:
     [[nodiscard]] SceneFile captureScene(ECS& ecs, const Camera& camera, const cinematic::CameraRail* rail = nullptr,
                                           const cinematic::Sequence* sequence = nullptr) const;
 
+    // captureScene() plus every streamed cell, for exports that need the whole world.
+    [[nodiscard]] SceneFile captureWholeWorld(ECS& ecs, const Camera& camera) const;
+
 private:
+    ResourceManager* resources_ = nullptr;
+    WorldStreamer* world_ = nullptr;
+    ResourceManager* worldResources_ = nullptr;
     std::string currentScenePath_;
     bool dirty_ = false;
     std::vector<std::string> openScenePaths_;

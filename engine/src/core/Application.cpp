@@ -1,4 +1,9 @@
 #include "core/Application.hpp"
+#include "core/Hierarchy.hpp"
+
+#include <cstdlib>
+
+#include "core/RenderResourceLoaders.hpp"
 
 #include "core/ScriptChatApi.hpp"
 #include "core/Utf8.hpp"
@@ -24,6 +29,7 @@
 #include "core/PropAnimation.hpp"
 #include "core/ScriptHotReload.hpp"
 #include "core/Shop.hpp"
+#include "core/DeterministicMath.hpp"
 #include "core/Terrain.hpp"
 #include "core/UpgradeSystem.hpp"
 #include "core/VisualFeedback.hpp"
@@ -156,6 +162,13 @@ bool Application::initialize(const CreateInfo& info) {
         std::fprintf(stderr, "Application: Audio::initialize failed -- continuing without audio.\n");
     }
 
+    if (!info.headless) {
+        installRenderResourceLoaders(resources_, {&renderer_, &meshLibrary_, &textureLibrary_, &audio_});
+        if (const char* hot = std::getenv("KRONOS_HOT_RELOAD"); hot != nullptr && hot[0] == '1') {
+            resources_.setHotReload(true, 0.5);
+        }
+    }
+
     if (!scripting_.initialize()) {
         std::fprintf(stderr, "Application: Scripting::initialize failed.\n");
         return false;
@@ -210,12 +223,14 @@ bool Application::initialize(const CreateInfo& info) {
     // scriptWorldApi_ above has.
     scriptAvatarApi_ = std::make_unique<ScriptAvatarApi>(*this);
     scriptUiLayoutApi_ = std::make_unique<ScriptUiLayoutApi>(scripting_);
+    scriptAudioApi_ = std::make_unique<ScriptAudioApi>(audio_, ecs_);
     scripting_.setBindingsHook([this](lua_State* L) {
         scriptWorldApi_->registerInto(L);
         scriptNetworkApi_->registerInto(L);
         scriptChatApi_->registerInto(L);
         scriptUiApi_.registerInto(L);
         scriptUiLayoutApi_->registerInto(L);
+        scriptAudioApi_->registerInto(L);
         // Must run after scriptWorldApi_->registerInto(L) above --
         // ScriptAvatarApi::registerInto() appends world.spawnPlayer onto
         // the `world` global table scriptWorldApi_ just created, it
@@ -438,9 +453,23 @@ bool Application::initialize(const CreateInfo& info) {
     // *sim* rate (120Hz by default), not the network rate -- the real
     // networked-client tick (below) is a separate hook at its own,
     // independent 60Hz cadence.
+    worldStreamer_.beforeDestroy = [this](ECS& ecs, EntityId entity) {
+        if (const auto* script = ecs.tryGetComponent<Script>(entity); script != nullptr && script->scriptId != kInvalidScript) {
+            scripting_.unload(script->scriptId);
+        }
+    };
+    worldStreamer_.waitForGpu = [this] {
+        if (!headless_) renderer_.waitIdle();
+    };
+    worldStreamer_.deferDestroy = [this](std::function<void()> destroy) {
+        if (headless_) destroy();
+        else renderer_.deferDestroy(std::move(destroy));
+    };
     gameLoop_->setPreTickHook([this](float dt) {
+        updateWorldStreaming();
         if (headless_) return;
         input_.update();
+        tickRollbackMatch(dt);
         // Sprint 14: accumulate this sim tick's real mouse delta for the
         // (slower) network hook to drain -- see networkMouseDeltaAccumulator_'s
         // own comment in Application.hpp for why this is necessary, not
@@ -690,6 +719,7 @@ bool Application::initialize(const CreateInfo& info) {
             }
         }
 
+        resources_.update();
         particleSystem_.update(gameLoop_ ? dt * gameLoop_->timeScale() : dt, ecs_);
         animationPlayer_.tick(dt, ecs_);
         // PROJECT: DESPAIR -- unconditional, same as the two systems right
@@ -726,7 +756,10 @@ bool Application::initialize(const CreateInfo& info) {
         // every currently loaded native plugin -- see
         // NativePluginManager::tick()'s own comment. An honest no-op when
         // nativePlugins_ has nothing loaded (today's default).
+        nativePlugins_.update(ecs_);
         nativePlugins_.tick(dt, ecs_);
+        pluginApi_.update();
+        pluginApi_.tick(dt);
 
         totalSimTime_ += dt;
 
@@ -744,8 +777,12 @@ bool Application::initialize(const CreateInfo& info) {
         // trigger below entirely (nothing needs to interact with it, the
         // player just needs to be able to jump onto/off of it while it
         // moves).
+        // In a rollback match the rollback simulation moves them instead.
+        const bool rollbackOwnsPhysics = rollbackNet_.phase() == net::RollbackNetSession::Phase::Lobby ||
+                                         rollbackNet_.phase() == net::RollbackNetSession::Phase::Running;
         auto movingPlatforms = ecs_.view<MovingPlatform, Transform>();
         for (auto entity : movingPlatforms) {
+            if (rollbackOwnsPhysics) break;
             auto& platform = movingPlatforms.get<MovingPlatform>(entity);
             auto& transform = movingPlatforms.get<Transform>(entity);
             physics_.moveKinematic(entity, ecs_, movingPlatformTarget(platform, totalSimTime_), transform.rotation, dt);
@@ -2842,13 +2879,24 @@ bool Application::initialize(const CreateInfo& info) {
     // plugin that fails to load (missing symbols, ABI mismatch) is
     // skipped with a real, specific stderr diagnosis rather than aborting
     // startup -- one bad plugin shouldn't take down the whole engine.
+    pluginApi_.setScene(&ecs_);
     for (const auto& found : NativePluginManager::discover(
              resolveResourceDir(executableDirectory(), "native_plugins", ENGINE_NATIVE_PLUGIN_DIR))) {
         std::string pluginError;
+        if (plugin::PluginHost::exportsPluginApi(found.libraryPath)) {
+            if (!pluginApi_.load(found.libraryPath, {}, pluginError)) {
+                std::fprintf(stderr, "Application: plugin '%s': %s\n", found.name.c_str(), pluginError.c_str());
+            }
+            continue;
+        }
         if (!nativePlugins_.loadPlugin(found.name, found.libraryPath, ecs_, pluginError)) {
             std::fprintf(stderr, "Application: failed to load native plugin '%s': %s\n", found.name.c_str(),
                          pluginError.c_str());
         }
+    }
+    if (const char* hot = std::getenv("KRONOS_HOT_RELOAD"); hot != nullptr && std::string(hot) == "1") {
+        nativePlugins_.setAutoReload(true, 0.5);
+        pluginApi_.setAutoReload(true, 0.5);
     }
 
     headless_ = info.headless;
@@ -3200,6 +3248,173 @@ bool Application::startNetworking(const net::NetworkSession::Config& config) {
     return networkSession_.initialize(config);
 }
 
+bool Application::startRollbackMatch(const net::RollbackNetSession::Config& config, std::string* error) {
+    if (headless_) {
+        if (error) *error = "rollback matches need a window";
+        return false;
+    }
+    rollbackPlayers_.clear();
+    rollback_.reset();
+    if (!rollbackNet_.start(config, [this](uint32_t players, uint32_t local) { return beginRollbackMatch(players, local); },
+                            error)) {
+        return false;
+    }
+    // Frozen until everyone has joined, so every player starts from the same state.
+    if (gameLoop_) gameLoop_->setTimeScale(0.0f);
+    if (characterController_.entity() != kNullEntity) characterController_.attachExternallyMoved(characterController_.entity());
+    if (const char* title = SDL_GetWindowTitle(window_.handle()); title && baseWindowTitle_.empty()) baseWindowTitle_ = title;
+    rollbackShownPhase_ = net::RollbackNetSession::Phase::Idle;
+    showRollbackStatus();
+    return true;
+}
+
+PhysicsRollback* Application::beginRollbackMatch(uint32_t players, uint32_t localPlayer) {
+    if (worldStreamer_.isOpen()) {
+        const WorldStreamingStats stats = worldStreamer_.stats();
+        if (stats.loaded != stats.cells) return nullptr;
+    }
+    glm::vec3 spawn(0.0f, 1.0f, -6.0f);
+    const EntityId previous = characterController_.entity();
+    if (previous != kNullEntity) {
+        if (const auto* transform = ecs_.tryGetComponent<Transform>(previous)) spawn = transform->position;
+        physics_.detachBody(previous, ecs_);
+        ecs_.raw().remove<StreamingSource>(previous);
+    }
+
+    const CharacterController::Settings settings = characterController_.settings();
+    if (rollbackCapsuleMesh_ == Renderable::kInvalidHandle) {
+        rollbackCapsuleMesh_ = meshLibrary_.registerMesh(Mesh::createCapsule(renderer_.allocator(), renderer_.device(),
+                                                                             renderer_.commandPool(), renderer_.graphicsQueue(),
+                                                                             settings.capsuleRadius, settings.capsuleHalfHeight));
+    }
+    static const glm::vec4 kPlayerColors[kMaxRollbackPlayers] = {
+        {0.20f, 0.55f, 0.95f, 1.0f}, {0.95f, 0.35f, 0.25f, 1.0f}, {0.30f, 0.80f, 0.35f, 1.0f}, {0.95f, 0.80f, 0.20f, 1.0f},
+        {0.70f, 0.40f, 0.90f, 1.0f}, {0.20f, 0.85f, 0.85f, 1.0f}, {0.95f, 0.55f, 0.80f, 1.0f}, {0.60f, 0.60f, 0.60f, 1.0f}};
+    const bool localHasAvatar = !skinnedAvatarEntities_.empty();
+    rollbackPlayers_.clear();
+    for (uint32_t p = 0; p < players; ++p) {
+        const glm::vec3 position = spawn + glm::vec3((static_cast<float>(p) - (players - 1) * 0.5f) * 2.0f, 0.0f, 0.0f);
+        const EntityId body =
+            physics_.createCharacterCapsule(ecs_, position, settings.capsuleRadius, settings.capsuleHalfHeight, 70.0f);
+        ecs_.addComponent<StreamingSource>(body);
+        ecs_.raw().emplace_or_replace<Name>(body, Name{"Player " + std::to_string(p + 1)});
+        if (p != localPlayer || !localHasAvatar) {
+            auto& renderable = ecs_.addComponent<Renderable>(body);
+            renderable.meshHandle = rollbackCapsuleMesh_;
+            renderable.baseColor = kPlayerColors[p];
+            renderable.roughness = 0.5f;
+        }
+        rollbackPlayers_.push_back(body);
+    }
+    characterController_.attachExternallyMoved(rollbackPlayers_[localPlayer]);
+
+    PhysicsRollback::Settings rollbackSettings;
+    rollbackSettings.players = players;
+    rollbackSettings.localPlayer = localPlayer;
+    rollbackSettings.maxRollbackFrames = 16;
+    rollbackSettings.frameDt = rollbackFrameDt_;
+    std::vector<uint8_t> facing(players * sizeof(float), 0);
+    std::vector<EntityId> platforms;
+    for (auto entity : ecs_.view<MovingPlatform, RigidBody>()) platforms.push_back(entity);
+    std::sort(platforms.begin(), platforms.end());
+    rollback_ = std::make_unique<PhysicsRollback>(
+        physics_, ecs_, rollbackSettings,
+        [characters = rollbackPlayers_, settings, platforms](RollbackFrameContext& frame) {
+            for (EntityId entity : platforms) {
+                const auto* platform = frame.ecs.tryGetComponent<MovingPlatform>(entity);
+                const auto* transform = frame.ecs.tryGetComponent<Transform>(entity);
+                if (!platform || !transform || platform->period <= 0.0f) continue;
+                float cycle = static_cast<float>(frame.frame + 1) * frame.dt / platform->period;
+                cycle -= std::floor(cycle);
+                const glm::vec3 target =
+                    platform->basePosition + platform->axis * (platform->amplitude * det::sin(6.28318530718f * cycle));
+                frame.physics.moveKinematic(entity, frame.ecs, target, transform->rotation, frame.dt);
+            }
+            for (uint32_t p = 0; p < frame.playerCount; ++p) {
+                float yaw = 0.0f;
+                std::memcpy(&yaw, frame.gameState.data() + p * sizeof(float), sizeof(float));
+                CharacterController::simulateRollback(frame.physics, frame.ecs, characters[p], settings, frame.inputs[p],
+                                                      frame.dt, yaw);
+                std::memcpy(frame.gameState.data() + p * sizeof(float), &yaw, sizeof(float));
+            }
+        },
+        std::move(facing));
+    return rollback_.get();
+}
+
+void Application::tickRollbackMatch(float dt) {
+    using Phase = net::RollbackNetSession::Phase;
+    if (rollbackNet_.phase() == Phase::Idle) return;
+    rollbackFrameDt_ = dt;
+    RollbackInput local;
+    if (rollback_ && !movementInputSuspended_) local = characterController_.sampleRollbackInput(input_);
+    rollbackNet_.tick(local);
+
+    if (rollbackNet_.phase() == Phase::Ended && rollbackShownPhase_ != Phase::Ended) {
+        // Carry on alone: the world unfreezes and the local character walks normally again.
+        std::fprintf(stderr, "Application: rollback match ended: %s\n", rollbackNet_.endReason().c_str());
+        if (gameLoop_) gameLoop_->setTimeScale(1.0f);
+        if (characterController_.entity() != kNullEntity) characterController_.setExternallyMoved(false);
+    }
+    rollbackTitleTimer_ -= dt;
+    if (rollbackNet_.phase() != rollbackShownPhase_ || rollbackTitleTimer_ <= 0.0f) showRollbackStatus();
+}
+
+void Application::showRollbackStatus() {
+    using Phase = net::RollbackNetSession::Phase;
+    const Phase phase = rollbackNet_.phase();
+    if (phase != rollbackShownPhase_) {
+        if (phase == Phase::Running) {
+            std::fprintf(stdout, "Application: rollback match started, %u players, you are player %u\n",
+                         rollbackNet_.players(), rollbackNet_.localPlayer().value_or(0) + 1);
+        }
+        rollbackShownPhase_ = phase;
+    }
+    rollbackTitleTimer_ = 0.5f;
+    char status[160];
+    switch (phase) {
+        case Phase::Lobby:
+            if (rollbackNet_.isHost()) {
+                std::snprintf(status, sizeof(status), "Rollback match: waiting for players (%u/%u)",
+                              rollbackNet_.connectedPlayers(), rollbackNet_.players());
+            } else {
+                std::snprintf(status, sizeof(status), "Rollback match: joining...");
+            }
+            break;
+        case Phase::Running:
+            std::snprintf(status, sizeof(status), "Rollback match: player %u of %u, ping %.0f ms, %llu rollbacks",
+                          rollbackNet_.localPlayer().value_or(0) + 1, rollbackNet_.players(), rollbackNet_.roundTripMs(),
+                          static_cast<unsigned long long>(rollback_ ? rollback_->stats().rollbacks : 0));
+            break;
+        case Phase::Ended:
+            std::snprintf(status, sizeof(status), "Rollback match ended: %s", rollbackNet_.endReason().c_str());
+            break;
+        case Phase::Idle:
+            status[0] = '\0';
+            break;
+    }
+    const std::string title = status[0] ? baseWindowTitle_ + " - " + status : baseWindowTitle_;
+    if (!headless_ && window_.handle()) SDL_SetWindowTitle(window_.handle(), title.c_str());
+}
+
+void Application::updateWorldStreaming() {
+    if (!worldStreamer_.isOpen()) return;
+    std::vector<glm::vec3> sources;
+    std::vector<float> scales;
+    if (!headless_) {
+        sources.push_back(camera_.position);
+        scales.push_back(1.0f);
+    }
+    for (auto [entity, source] : ecs_.raw().view<StreamingSource>().each()) {
+        sources.emplace_back(hierarchy::computeWorldMatrix(ecs_, entity)[3]);
+        scales.push_back(source.radiusScale);
+    }
+    // A server with nobody to stream around keeps the whole world, so nothing it simulates goes missing.
+    worldStreamer_.setLoadAll((headless_ && sources.empty()) || rollbackNet_.phase() != net::RollbackNetSession::Phase::Idle);
+    worldStreamer_.update(sources, scales);
+    if (headless_) resources_.update(); // the render tick pumps it otherwise
+}
+
 void Application::shutdown() {
     if (!initialized_) return;
 
@@ -3210,6 +3425,9 @@ void Application::shutdown() {
     networkSession_.setChatModerationClient(nullptr);
 
     networkSession_.shutdown();
+    rollbackNet_.shutdown();
+    rollback_.reset();
+    worldStreamer_.close();
     gameLoop_.reset();
     input_.shutdown();
         if (!headless_) {
@@ -3223,6 +3441,7 @@ void Application::shutdown() {
             // allocations being released here. StudioApp::shutdown() already
             // waits in exactly this position; this is the same fix.
             if (renderer_.device() != VK_NULL_HANDLE) vkDeviceWaitIdle(renderer_.device());
+            resources_.shutdown();
             meshLibrary_.destroyAll(renderer_.allocator());
             // riggedMeshLibrary_ owns its own vertex/index/skin buffers against the
             // same allocator and was never being torn down -- its meshes

@@ -6,14 +6,17 @@ import crypto from 'node:crypto';
 import test, { after, before } from 'node:test';
 
 import { createApp } from '../src/server.js';
+import { config } from '../src/config.js';
 import { pool, query } from '../src/db.js';
-import { redis, keys } from '../src/redis.js';
+import { closeRedis, redis, keys } from '../src/redis.js';
 import { setEmailTransport } from '../src/email/mailer.js';
 
 let server;
 let baseUrl;
 
 before(async () => {
+  // Written before catalog review existed; review has its own tests.
+  config.gameReviewRequired = false;
   setEmailTransport(async () => {});
   server = createApp().listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -23,7 +26,7 @@ before(async () => {
 after(async () => {
   server.close();
   await pool.end();
-  redis.disconnect();
+  closeRedis();
 });
 
 async function api(method, path, { body, token } = {}) {
@@ -48,7 +51,7 @@ async function makeUser() {
   const email = uniqueEmail();
   const signup = await api('POST', '/v1/auth/signup', { body: { email, password: 'a reasonable passphrase' } });
   assert.equal(signup.status, 201, `signup failed: ${JSON.stringify(signup.body)}`);
-  return { id: signup.body.user.id, token: signup.body.access_token };
+  return { id: signup.body.user.id, token: signup.body.access_token, refresh: signup.body.refresh_token, email };
 }
 
 // There is no self-service "become an admin" route (correctly, since
@@ -202,6 +205,24 @@ test('terminating an account really uses the existing bans.js logic, and is real
   const targetEmail = (await query(`SELECT email FROM users WHERE id = $1`, [target.id])).rows[0].email;
   const login = await api('POST', '/v1/auth/login', { body: { email: targetEmail, password: 'a reasonable passphrase' } });
   assert.notEqual(login.status, 200, 'a terminated account cannot sign back in');
+});
+
+test('termination ends existing sessions, even once the identifier ban is lifted', async () => {
+  const admin = await makeAdmin();
+  const target = await makeUser();
+  const res = await api('POST', `/v1/admin/users/${target.id}/terminate`, { body: { reason: 'x' }, token: admin.token });
+  assert.equal(res.status, 200);
+
+  const { rows } = await query(
+    `SELECT count(*)::int AS live FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL`, [target.id],
+  );
+  assert.equal(rows[0].live, 0, 'every refresh token is revoked at termination');
+  assert.equal((await api('POST', '/v1/auth/refresh', { body: { refresh_token: target.refresh } })).status, 401);
+
+  await query(`UPDATE banned_identifiers SET lifted_at = NOW() WHERE user_id = $1`, [target.id]);
+  await clearRateLimits();
+  const login = await api('POST', '/v1/auth/login', { body: { email: target.email, password: 'a reasonable passphrase' } });
+  assert.equal(login.status, 401, 'the account state alone keeps a terminated user out');
 });
 
 test('an admin cannot terminate another admin without demoting them first', async () => {

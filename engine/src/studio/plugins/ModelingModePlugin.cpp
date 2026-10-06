@@ -14,6 +14,7 @@
 #include "core/ObjLoader.hpp"
 #include "core/UvTools.hpp"
 #include "studio/PluginChrome.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -33,6 +34,15 @@ void ModelingModePlugin::reuploadMesh(core::EditableMeshComponent& component, co
     core::Mesh newMesh;
     (void)newMesh.uploadFromHost(allocator_, device_, cmdPool_, queue_, evaluated.vertices(), evaluated.indices());
     meshLibrary_->replaceMesh(renderable.meshHandle, std::move(newMesh), allocator_);
+}
+
+void ModelingModePlugin::giveOwnMesh(core::ECS& ecs, core::EntityId entity) {
+    auto* component = ecs.tryGetComponent<core::EditableMeshComponent>(entity);
+    auto* renderable = ecs.tryGetComponent<core::Renderable>(entity);
+    if (component == nullptr || renderable == nullptr) return;
+    renderable->meshHandle = meshLibrary_->registerMesh(core::Mesh{});
+    reuploadMesh(*component, *renderable);
+    lastAppliedEditVersion_[entity] = component->editVersion;
 }
 
 void ModelingModePlugin::update(float /*dt*/, core::ECS& ecs, core::EntityId /*selected*/,
@@ -570,6 +580,8 @@ void ModelingModePlugin::drawPanel(core::ECS& ecs, core::EntityId selected,
 
     ImGui::SetNextItemWidth(220.0f);
     ImGui::InputText("##ImportPath", &importPathBuffer_);
+    ImGui::SameLine();
+    browseButton("kmesh", importPathBuffer_, {"Import Mesh", {"*.kmesh"}, "Kronos meshes"});
     ImGui::SameLine();
     if (ImGui::Button("Import .kmesh")) {
         core::KMeshLoadResult loaded = core::loadKMesh(importPathBuffer_);

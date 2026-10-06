@@ -262,22 +262,26 @@ void NleTimelinePlugin::drawPanel(core::ECS&, core::EntityId, const std::vector<
 }
 
 void NleTimelinePlugin::importFromDialog() {
-    auto path = core::openFileDialog("Import Media",
-                                      {"*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.wav", "*.mp3",
-                                       "*.flac", "*.ogg", "*.mp4", "*.mov", "*.mkv", "*.webm"});
-    if (!path.has_value()) return;
-
-    std::string error;
-    if (mediaBin_.importAsset(*path, allocator_, device_, cmdPool_, queue_, *textureLibrary_, audio_, error)) {
-        importStatus_ = "Imported " + std::filesystem::path(*path).filename().string();
-    } else {
-        importStatus_ = "Import failed: " + error;
-    }
+    core::FileDialogOptions options{"Import Media",
+                                    {"*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.wav", "*.mp3", "*.flac",
+                                     "*.ogg", "*.mp4", "*.mov", "*.mkv", "*.webm"},
+                                    "Images, audio and video"};
+    const bool started = core::openFileDialogAsync(options, [this](const std::string& path) {
+        std::string error;
+        if (mediaBin_.importAsset(path, allocator_, device_, cmdPool_, queue_, *textureLibrary_, audio_, error)) {
+            importStatus_ = "Imported " + std::filesystem::path(path).filename().string();
+        } else {
+            importStatus_ = "Import failed: " + error;
+        }
+    });
+    if (!started) importStatus_ = "Could not open a file dialog: " + core::fileDialogError();
 }
 
 void NleTimelinePlugin::drawMediaBinWindow() {
     ImGui::Begin("Media Bin");
+    ImGui::BeginDisabled(core::fileDialogOpen());
     if (ImGui::Button("Import Media...")) importFromDialog();
+    ImGui::EndDisabled();
     if (!importStatus_.empty()) ImGui::TextWrapped("%s", importStatus_.c_str());
     ImGui::Separator();
     ImGui::TextDisabled("Drag an item onto a timeline track to place it.");

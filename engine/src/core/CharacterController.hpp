@@ -6,6 +6,7 @@
 #include "core/Camera.hpp"
 #include "core/ECS.hpp"
 #include "core/Physics.hpp"
+#include "core/PhysicsRollback.hpp"
 #include "platform_adapters/UnifiedInput.hpp"
 
 namespace engine::core {
@@ -168,6 +169,18 @@ public:
 
     [[nodiscard]] EntityId entity() const { return entity_; }
 
+    // Rollback matches: the character's body is moved by the rollback
+    // simulation (simulateRollback), so tick() only handles mouse look,
+    // the follow camera and animation for `entity`.
+    void attachExternallyMoved(EntityId entity);
+    void setExternallyMoved(bool externallyMoved) { externallyMoved_ = externallyMoved; }
+    // This frame's movement keys, run key, jump and camera yaw as a rollback input.
+    [[nodiscard]] RollbackInput sampleRollbackInput(platform_adapters::UnifiedInput& input) const;
+    // The same movement rules as tick() for one character driven by
+    // `input`, using only deterministic math. `facingYaw` is kept by the caller.
+    static void simulateRollback(Physics& physics, ECS& ecs, EntityId entity, const Settings& settings,
+                                 const RollbackInput& input, float dt, float& facingYaw);
+
     // Real two-raycast step-offset check (see Settings::stepHeight's
     // comment): if movement is blocked at foot height but clear at
     // step height directly ahead, nudges the character straight up via
@@ -180,6 +193,7 @@ public:
     // over a known obstacle) without going through the full input-driven
     // tick().
     bool tryStepUp(ECS& ecs, Physics& physics, glm::vec3 moveDir);
+    static bool stepUp(ECS& ecs, Physics& physics, EntityId entity, const Settings& settings, glm::vec3 moveDir);
 
 private:
     Settings settings_;
@@ -188,6 +202,7 @@ private:
     float cameraYawDegrees_ = -90.0f;
     float cameraPitchDegrees_ = -15.0f;
     float facingYawRadians_ = 0.0f;
+    bool externallyMoved_ = false;
     // Real per-tick smoothed camera focus position -- see
     // Settings::cameraPositionSmoothing. Starts uninitialized-but-unused:
     // the very first tick() call snaps it directly to that tick's target

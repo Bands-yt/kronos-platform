@@ -6,7 +6,7 @@ import test, { after, before } from 'node:test';
 
 import { createApp } from '../src/server.js';
 import { pool, query } from '../src/db.js';
-import { redis } from '../src/redis.js';
+import { closeRedis, redis } from '../src/redis.js';
 import { setEmailTransport } from '../src/email/mailer.js';
 
 let server;
@@ -22,7 +22,7 @@ before(async () => {
 after(async () => {
   server.close();
   await pool.end();
-  redis.disconnect();
+  closeRedis();
 });
 
 async function api(method, path, { body, token } = {}) {

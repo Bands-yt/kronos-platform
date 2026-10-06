@@ -11,13 +11,20 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+
+#include <glm/gtc/quaternion.hpp>
 
 #include "core/Baseplate.hpp"
 #include "core/Components.hpp"
+#include "core/RenderResourceLoaders.hpp"
+#include "core/EditableMeshComponent.hpp"
 #include "core/GameCatalogueAggregate.hpp"
 #include "core/GameManifest.hpp"
 #include "core/HiddenGemsSelector.hpp"
+#include "core/Hierarchy.hpp"
 #include "core/Logger.hpp"
+#include "core/PhysicsMaterial.hpp"
 #include "core/KronosVersion.hpp"
 #include "core/ProjectReadmeGenerator.hpp"
 #include "core/QualityScore.hpp"
@@ -30,8 +37,10 @@
 #include "publishing/PublishValidation.hpp"
 #include "publishing/ThumbnailCapture.hpp"
 #include "studio/NativePluginAdapter.hpp"
+#include "studio/PluginApiPanel.hpp"
 #include "studio/plugins/AlignPlugin.hpp"
 #include "studio/plugins/AnimatorPlugin.hpp"
+#include "studio/plugins/AudioMixerPlugin.hpp"
 #include "studio/plugins/AudioPreviewPlugin.hpp"
 #include "studio/plugins/AnimationPreviewerPlugin.hpp"
 #include "studio/plugins/AvatarEditor.hpp"
@@ -49,6 +58,11 @@
 #include "studio/plugins/CreatorConsolePlugin.hpp"
 #include "studio/plugins/LightingToolsPlugin.hpp"
 #include "studio/plugins/ShaderGraphPlugin.hpp"
+#include "studio/plugins/VisualScriptPlugin.hpp"
+#include "studio/plugins/ResourcesPlugin.hpp"
+#include "studio/plugins/WorldStreamingPlugin.hpp"
+#include <imnodes.h>
+#include "studio/SurfaceGraphMaterials.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "studio/PluginChrome.hpp"
 #include "migration/ProjectImporter.hpp"
@@ -74,6 +88,8 @@
 #include "studio/plugins/CreatorProfilePanel.hpp"
 #include "studio/plugins/UploadAvatarItemPlugin.hpp"
 #include "studio/StudioStyle.hpp"
+#include "studio/FileBrowse.hpp"
+#include "core/NativeFileDialog.hpp"
 
 #include <imgui.h>
 // Sprint 7 ("Studio UI Revamp") task category 3: DockBuilder (used only
@@ -211,6 +227,16 @@ bool StudioApp::initialize(StudioMode mode) {
         std::fprintf(stderr, "StudioApp: %s\n", lastInitError_.c_str());
         return false;
     }
+
+    if (!audio_.initialize()) std::fprintf(stderr, "StudioApp: no audio device, sounds will be silent\n");
+    core::installRenderResourceLoaders(resources_, {&renderer_, &meshLibrary_, &textureLibrary_, &audio_});
+    inspectorPanel_.setAudio(&audio_, &resources_);
+    sceneManager_.setWorldStreamer(&worldStreamer_, &resources_);
+    worldStreamer_.setEditing(true);
+    worldStreamer_.waitForGpu = [this] { renderer_.waitIdle(); };
+    worldStreamer_.deferDestroy = [this](std::function<void()> destroy) { renderer_.deferDestroy(std::move(destroy)); };
+    resources_.setHotReload(true, 0.5);
+    sceneManager_.setResources(&resources_);
 
     if (!initImGuiVulkanBackend()) {
         lastInitError_ = "ImGui Vulkan backend init failed.";
@@ -466,6 +492,7 @@ bool StudioApp::initialize(StudioMode mode) {
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_));
     auto modelImporter = std::make_unique<plugins::ModelImporterPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), meshLibrary_);
+    modelImporter->setResources(&resources_);
     modelImporterPlugin_ = modelImporter.get();
     pluginManager_.registerPlugin(std::move(modelImporter));
 
@@ -576,6 +603,9 @@ bool StudioApp::initialize(StudioMode mode) {
     // see play()'s lazy physics_.initialize()).
     auto physicsPreview = std::make_unique<plugins::PhysicsPreviewPlugin>();
     physicsPreviewPlugin_ = physicsPreview.get();
+    physicsPreviewPlugin_->setScriptDebugger(&scriptDebugger_);
+    physicsPreviewPlugin_->setAudio(&audio_);
+    scriptEditorPanel_.setDebugger(&scriptDebugger_);
     pluginManager_.registerPlugin(std::move(physicsPreview));
 
     // Shop (task category 4) -- default-constructible, its own sandboxed
@@ -666,11 +696,31 @@ bool StudioApp::initialize(StudioMode mode) {
     // default-constructible beyond the real Renderer& it edits live.
     pluginManager_.registerPlugin(std::make_unique<plugins::LightingToolsPlugin>(renderer_));
 
-    // Shader Graph (Studio Revamp, Phase 3) -- default-constructible;
-    // owns its own imnodes editor context and RuntimeShaderCompiler,
-    // not wired to core::Renderer yet (see ShaderGraphPlugin.hpp's own
-    // class comment).
-    pluginManager_.registerPlugin(std::make_unique<plugins::ShaderGraphPlugin>());
+    {
+        auto shaderGraph = std::make_unique<plugins::ShaderGraphPlugin>();
+        shaderGraph->setMaterials(&surfaceGraphMaterials_, &renderer_);
+        pluginManager_.registerPlugin(std::move(shaderGraph));
+    }
+    pluginManager_.registerPlugin(std::make_unique<plugins::VisualScriptPlugin>());
+    {
+        auto resourcesPlugin = std::make_unique<plugins::ResourcesPlugin>(resources_);
+        resourcesPlugin->setNativePlugins(&nativePlugins_);
+        resourcesPlugin->setPluginApi(&pluginApi_);
+        pluginManager_.registerPlugin(std::move(resourcesPlugin));
+    }
+    pluginManager_.registerPlugin(std::make_unique<plugins::WorldStreamingPlugin>(
+        worldStreamer_, viewportPanel_.camera(),
+        [this](const core::WorldManifest& settings, std::string& error) {
+            core::SceneBuildContext context;
+            context.meshLibrary = &meshLibrary_;
+            context.allocator = renderer_.allocator();
+            context.device = renderer_.device();
+            context.cmdPool = renderer_.commandPool();
+            context.queue = renderer_.graphicsQueue();
+            context.resources = &resources_;
+            return worldStreamer_.create(sceneManager_.currentScenePath(), settings, ecs_, resources_, context, &error);
+        },
+        [this] { sceneManager_.markDirty(); }));
 
     // Creator Console (Sprint 9 task category 5) -- needs terrainEditorPlugin_
     // (already captured above) to know whether a terrain exists for its
@@ -742,6 +792,7 @@ bool StudioApp::initialize(StudioMode mode) {
     }
     audioPreviewPlugin_ = audioPreview.get();
     pluginManager_.registerPlugin(std::move(audioPreview));
+    pluginManager_.registerPlugin(makeAudioMixerPlugin());
 
     // The one plugin that lets a user load *more* plugins at runtime --
     // see PluginBrowserPlugin.hpp. Registered last among first-party
@@ -796,6 +847,7 @@ bool StudioApp::initialize(StudioMode mode) {
             auto modelImporter = std::make_unique<plugins::ModelImporterPlugin>(
                 renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
                 meshLibrary_);
+            modelImporter->setResources(&resources_);
             modelImporterPlugin_ = modelImporter.get();
             pluginManager_.registerPlugin(std::move(modelImporter));
 
@@ -843,6 +895,7 @@ bool StudioApp::initialize(StudioMode mode) {
             }
             audioPreviewPlugin_ = audioPreview.get();
             pluginManager_.registerPlugin(std::move(audioPreview));
+            pluginManager_.registerPlugin(makeAudioMixerPlugin());
         }
     }
 
@@ -855,9 +908,15 @@ bool StudioApp::initialize(StudioMode mode) {
     // core::NativePluginManager::queryExtension()) gets a real
     // NativePluginAdapter registered into pluginManager_ so its panel/menu
     // entry shows up exactly like a first-party plugin's.
+    nativePlugins_.setBeforeUnload([this](const std::string& name) {
+        for (NativePluginAdapter* adapter : nativeAdapters_) {
+            if (adapter->pluginName() == name) adapter->onPluginUnloading();
+        }
+    });
     for (const auto& found :
          core::NativePluginManager::discover(core::resolveResourceDir(core::executableDirectory(), "native_plugins",
                                                                         ENGINE_NATIVE_PLUGIN_DIR))) {
+        if (plugin::PluginHost::exportsPluginApi(found.libraryPath)) continue;
         std::string pluginError;
         if (nativePlugins_.loadPlugin(found.name, found.libraryPath, ecs_, pluginError)) {
             registerNativePluginAdapterIfNeeded(found.name);
@@ -866,6 +925,8 @@ bool StudioApp::initialize(StudioMode mode) {
                          pluginError.c_str());
         }
     }
+    nativePlugins_.setAutoReload(true, 0.5);
+    loadPluginApiPlugins();
 
     // Kronos ("Studio Asset Drag-and-Drop" + "Clean Viewport & Mesh
     // Import Pipeline"): real mesh handles ViewportPanel needs to spawn
@@ -897,6 +958,7 @@ bool StudioApp::initialize(StudioMode mode) {
     propSpawnMeshHandles.torusMesh = meshLibrary_.registerMesh(core::Mesh::createTorus(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 1.0f, 0.35f));
     viewportPanel_.setPropSpawnMeshHandles(propSpawnMeshHandles);
+    if (physicsPreviewPlugin_ != nullptr) physicsPreviewPlugin_->setSpawnBoxMesh(propSpawnMeshHandles.boxMesh);
 
     // Kronos ("Clean Viewport & Mesh Import Pipeline" -- "Add prominent
     // 'Import 3D Asset...' buttons ... and 'Add Primitive' menus ... in
@@ -904,6 +966,41 @@ bool StudioApp::initialize(StudioMode mode) {
     // 2 modes the brief names -- Movie Maker/Audio's own Viewport (Movie
     // Maker's only; Audio has none) never grows this toolbar row.
     viewportPanel_.setAssetTools(mode_ == StudioMode::Full || mode_ == StudioMode::ThreeDMaker, modelImporterPlugin_);
+    viewportPanel_.setRibbonMode(showRibbon());
+    if (modelImporterPlugin_ != nullptr) {
+        modelImporterPlugin_->setOnImported([this](core::EntityId entity, const std::string& status) {
+            if (entity == core::kNullEntity) {
+                notifications_.push(status, NotificationSeverity::Error);
+                return;
+            }
+            if (auto* transform = ecs_.tryGetComponent<core::Transform>(entity)) {
+                glm::vec3 boundsMin(0.0f);
+                glm::vec3 boundsMax(0.0f);
+                if (const auto* renderable = ecs_.tryGetComponent<core::Renderable>(entity)) {
+                    if (const core::Mesh* mesh = meshLibrary_.get(renderable->meshHandle)) {
+                        boundsMin = mesh->localBoundsMin() * transform->scale;
+                        boundsMax = mesh->localBoundsMax() * transform->scale;
+                    }
+                }
+                transform->position = viewportPanel_.spawnPointInFront(ecs_, &meshLibrary_, boundsMin, boundsMax, entity);
+            }
+            pushCreationUndo("Import Model", {entity});
+            explorerPanel_.setSelected(entity);
+            viewportPanel_.focusOn(ecs_, meshLibrary_, {entity});
+            notifications_.push(status, NotificationSeverity::Success);
+        });
+    }
+    if (showRibbon()) {
+        core::SceneLighting lighting = renderer_.lighting();
+        lighting.skyZenithColor = {0.12f, 0.36f, 0.86f};
+        lighting.skyHorizonColor = {0.55f, 0.74f, 0.96f};
+        lighting.ambient = {0.34f, 0.38f, 0.46f};
+        lighting.ambientGround = {0.22f, 0.21f, 0.2f};
+        renderer_.setLighting(lighting);
+        renderer_.setCloudsEnabled(true);
+        renderer_.setAutoExposureEnabled(false);
+        renderer_.setExposure(1.0f);
+    }
 
     // Real bug fix (found via a live playtest): every first-party plugin's
     // own `open_` default is `true` (IStudioPlugin.hpp), so a fresh launch
@@ -952,12 +1049,36 @@ bool StudioApp::initialize(StudioMode mode) {
 
 void StudioApp::handleFileDrop(const std::string& path) {
     if (creatorAssetBrowserPlugin_ == nullptr) return; // real, honest guard -- see that member's own declaration comment
+    if (const auto importer = pluginApi_.importerFor(path)) {
+        std::error_code ec;
+        const auto outputDir = std::filesystem::temp_directory_path(ec) / "kronos-plugin-imports";
+        std::string converted;
+        std::string error;
+        if (!pluginApi_.importFile(path, converted, error, outputDir.string())) {
+            notifications_.push("Couldn't import \"" + path + "\": " + error, NotificationSeverity::Warning);
+            return;
+        }
+        notifications_.push("Converted with " + importer->type, NotificationSeverity::Info);
+        creatorAssetBrowserPlugin_->submitDroppedFile(converted);
+        notifications_.push("Importing \"" + converted + "\" (see Asset Browser)", NotificationSeverity::Info);
+        return;
+    }
     creatorAssetBrowserPlugin_->submitDroppedFile(path);
     // Real, discoverable feedback -- a creator who drags a file in
     // deserves to see where it landed, not silently wonder whether
     // anything happened. Same real notify() mechanism every other
     // real Studio action already surfaces through.
     notifications_.push("Importing \"" + path + "\" (see Asset Browser)", NotificationSeverity::Info);
+}
+
+std::unique_ptr<IStudioPlugin> StudioApp::makeAudioMixerPlugin() {
+    return std::make_unique<plugins::AudioMixerPlugin>(
+        audio_,
+        [this] {
+            return currentProjectPath_.empty() ? std::string()
+                                               : std::filesystem::path(currentProjectPath_).parent_path().string();
+        },
+        [this] { return physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying(); });
 }
 
 void StudioApp::buildBringUpScene() {
@@ -983,6 +1104,7 @@ void StudioApp::buildBringUpScene() {
 bool StudioApp::initImGuiVulkanBackend() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImNodes::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // docking branch -- see cmake/Dependencies.cmake
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -1211,6 +1333,8 @@ void StudioApp::drawDockspace() {
         ImGui::EndMenuBar();
     }
 
+    if (showRibbon()) drawRibbon();
+
     drawAboutPanel();
     drawSceneTabsBar();
     drawRecoveryBanner();
@@ -1417,9 +1541,10 @@ std::vector<PaletteCommand> StudioApp::buildCommandPaletteCommands() {
                              auto entity = ecs_.createEntity("Baseplate");
                              auto& renderable = ecs_.addComponent<core::Renderable>(entity);
                              renderable.meshHandle = planeMesh;
-                             renderable.baseColor = {0.35f, 0.36f, 0.4f, 1.0f};
+                             renderable.baseColor = {0.2f, 0.205f, 0.215f, 1.0f};
                              renderable.metallic = 0.0f;
                              renderable.roughness = 0.85f;
+                             renderable.layers.gridSize = 1.0f;
                              auto& meshSource = ecs_.addComponent<core::MeshSource>(entity);
                              meshSource.kind = core::MeshSourceKind::Plane;
                              meshSource.params = {25.0f, 0.0f, 25.0f};
@@ -1543,7 +1668,7 @@ void StudioApp::drawFileMenu() {
                                             &movieModePlugin_->rail(), &movieModePlugin_->sequence());
         }
         sceneManager_.newScene(ecs_);
-        (void)core::spawnDefaultBaseplate(ecs_, meshLibrary_, textureLibrary_, renderer_.allocator(),
+        (void)core::spawnDefaultBaseplate(ecs_, meshLibrary_, renderer_.allocator(),
                                            renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue());
         explorerPanel_.setSelected(core::kNullEntity);
     }
@@ -1637,6 +1762,12 @@ void StudioApp::drawPendingFileActionPopup() {
     if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::SetNextItemWidth(380.0f);
         ImGui::InputText("##file_action_path", filePathBuffer_, sizeof(filePathBuffer_));
+        if (pendingFileAction_ == PendingFileAction::LoadScene) {
+            browseButton("scene", filePathBuffer_, sizeof(filePathBuffer_), {"Load Scene", {"*.scene"}, "Kronos scenes"});
+        } else if (pendingFileAction_ == PendingFileAction::OpenProject) {
+            browseButton("project", filePathBuffer_, sizeof(filePathBuffer_),
+                         {"Open Project", {"*.project"}, "Kronos projects"});
+        }
 
         bool confirmed = ImGui::Button(verb) || (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false));
         ImGui::SameLine();
@@ -1727,7 +1858,7 @@ void StudioApp::exportPackageWorldNow(const std::string& thumbnailPath) {
     package.version = "1.0.0";
     package.metadata.title = worldId;
     if (!thumbnailPath.empty()) package.metadata.thumbnailPath = publishing::thumbnailFileName();
-    package.scene = sceneManager_.captureScene(ecs_, viewportPanel_.camera());
+    package.scene = sceneManager_.captureWholeWorld(ecs_, viewportPanel_.camera());
 
     // Real relative asset manifest -- the same real, pure function
     // PublishingPanel's own orphan-scan already established (Kronos
@@ -1821,7 +1952,43 @@ void StudioApp::registerNativePluginAdapterIfNeeded(const std::string& name) {
         return; // this plugin doesn't implement the Studio extension -- nothing to bridge
     }
     nativePluginsWithAdapter_.push_back(name);
-    pluginManager_.registerPlugin(std::make_unique<NativePluginAdapter>(name, nativePlugins_, renderer_));
+    auto adapter = std::make_unique<NativePluginAdapter>(name, nativePlugins_, renderer_);
+    nativeAdapters_.push_back(adapter.get());
+    pluginManager_.registerPlugin(std::move(adapter));
+}
+
+void StudioApp::loadPluginApiPlugins() {
+    pluginApi_.setScene(&ecs_);
+    const std::string trustedDir =
+        core::resolveResourceDir(core::executableDirectory(), "native_plugins", ENGINE_NATIVE_PLUGIN_DIR);
+    for (const auto& found : core::NativePluginManager::discover(trustedDir)) {
+        if (!plugin::PluginHost::exportsPluginApi(found.libraryPath)) continue;
+        std::string error;
+        if (!pluginApi_.load(found.libraryPath, {}, error)) {
+            std::fprintf(stderr, "StudioApp: plugin %s: %s\n", found.name.c_str(), error.c_str());
+        }
+    }
+    plugin::PluginHost::LoadOptions thirdParty;
+    thirdParty.isolation = plugin::Isolation::Sandboxed;
+    for (const std::string& path : plugin::PluginHost::findLibraries(plugin::PluginHost::thirdPartyDirectory())) {
+        std::string error;
+        if (!pluginApi_.load(path, thirdParty, error)) {
+            notifications_.push("Plugin " + std::filesystem::path(path).filename().string() + " wasn't loaded: " + error,
+                                NotificationSeverity::Warning);
+        }
+    }
+    pluginApi_.setAutoReload(true, 0.5);
+    registerPluginApiPanels();
+}
+
+void StudioApp::registerPluginApiPanels() {
+    for (const auto& panel : pluginApi_.panels()) {
+        if (!panel.active || std::find(pluginApiPanels_.begin(), pluginApiPanels_.end(), panel.id) != pluginApiPanels_.end()) {
+            continue;
+        }
+        pluginApiPanels_.push_back(panel.id);
+        pluginManager_.registerPlugin(std::make_unique<PluginApiPanel>(pluginApi_, panel.id, panel.title));
+    }
 }
 
 void StudioApp::tickProjectAutosave(float dt) {
@@ -2321,6 +2488,12 @@ void StudioApp::run() {
                 performanceOverlay_.toggle();
             }
         }
+        core::pollFileDialogs();
+        if (const std::string& dialogError = core::fileDialogError(); dialogError != lastFileDialogError_) {
+            lastFileDialogError_ = dialogError;
+            if (!dialogError.empty()) notifications_.push(dialogError, NotificationSeverity::Error);
+        }
+        handleEditShortcuts();
         commandPalette_.draw(buildCommandPaletteCommands(),
                               [this](const std::string& query) { return searchEntitiesForPalette(query); });
 
@@ -2358,6 +2531,7 @@ void StudioApp::run() {
                                  terrainEditorPlugin_);
         }
         if (showScriptEditor()) scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
+        scriptEditorPanel_.drawAuxiliaryWindows(ecs_, physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying());
         // debugConsolePanel_.tick() above still runs unconditionally in
         // every mode (see its own call site comment) -- only draw() (the
         // "REPL Console" window itself) is gated; DebugConsolePanel owns a
@@ -2430,7 +2604,16 @@ void StudioApp::run() {
         // its window is open (see IStudioPlugin.hpp) -- e.g. the Animator
         // plugin keeps advancing playback even while its panel is closed.
         // drawPanel() only runs for the ones currently toggled open.
+        if (physicsPreviewPlugin_ == nullptr || !physicsPreviewPlugin_->isPlaying()) {
+            worldStreamer_.update({viewportPanel_.camera().position});
+        }
+        resources_.update();
         pluginManager_.update(deltaTime, ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
+        if (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying()) {
+            const core::Camera& camera = viewportPanel_.camera();
+            audio_.mix(ecs_, camera.position, camera.forward(), glm::vec3(0.0f, 1.0f, 0.0f));
+        }
+        audio_.update(deltaTime);
         pluginManager_.drawPanels(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
 
         // Kronos ("Native Plugin Architecture"): real per-tick forward to
@@ -2440,7 +2623,13 @@ void StudioApp::run() {
         // via its NativePluginAdapter; this is the separate, plain
         // gameplay tick() every native plugin also gets, same as
         // core::Application's own tick loop.
+        if (nativePlugins_.update(ecs_) > 0) {
+            for (const auto& plugin : nativePlugins_.listLoadedPlugins()) registerNativePluginAdapterIfNeeded(plugin.name);
+        }
         nativePlugins_.tick(deltaTime, ecs_);
+        pluginApi_.update();
+        pluginApi_.tick(deltaTime);
+        registerPluginApiPanels();
 
         // IKronosPlugin sibling of the two calls above -- see
         // KronosPluginHost.hpp's own comment for why this only ticks/
@@ -2460,6 +2649,7 @@ void StudioApp::run() {
 
         endFrame();
 
+        surfaceGraphMaterials_.update(ecs_, renderer_);
         if (!renderer_.renderFrame()) {
             std::fprintf(stderr, "StudioApp: renderFrame() reported an unrecoverable error.\n");
             break;
@@ -2517,6 +2707,11 @@ void StudioApp::shutdown() {
     if (trailerPanel_ != nullptr) trailerPanel_->shutdown(renderer_);
     if (movieModePlugin_ != nullptr) movieModePlugin_->shutdown(renderer_);
     kronosPluginHost_.shutdown(renderer_);
+    // Native plugin libraries are unloaded after nativeAdapters_ is gone, so drop
+    // their overlays and the unload hook now.
+    for (NativePluginAdapter* adapter : nativeAdapters_) adapter->onPluginUnloading();
+    nativeAdapters_.clear();
+    nativePlugins_.setBeforeUnload(nullptr);
 
     vkDeviceWaitIdle(renderer_.device());
 
@@ -2537,6 +2732,7 @@ void StudioApp::shutdown() {
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL2_Shutdown();
+    ImNodes::DestroyContext();
     ImGui::DestroyContext();
 
     if (imguiDescriptorPool_) {
@@ -2544,9 +2740,12 @@ void StudioApp::shutdown() {
         imguiDescriptorPool_ = nullptr;
     }
 
+    worldStreamer_.close();
+    resources_.shutdown();
     meshLibrary_.destroyAll(renderer_.allocator());
     textureLibrary_.destroyAll(renderer_.allocator(), renderer_.device());
     riggedMeshLibrary_.destroyAll(renderer_.allocator());
+    surfaceGraphMaterials_.shutdown(renderer_);
     renderer_.shutdown();
     window_.shutdown();
     initialized_ = false;
@@ -2573,8 +2772,11 @@ void StudioApp::drawImportDialog() {
                              "different container and are not supported.");
         ImGui::Separator();
 
-        ImGui::SetNextItemWidth(-110.0f);
+        ImGui::SetNextItemWidth(-200.0f);
         ImGui::InputText("##importpath", importPathBuffer_, sizeof(importPathBuffer_));
+        ImGui::SameLine();
+        browseButton("rbxlx", importPathBuffer_, sizeof(importPathBuffer_),
+                     {"Import Roblox Place", {"*.rbxlx", "*.rbxmx"}, "Roblox XML files"});
         ImGui::SameLine();
         const bool hasPath = importPathBuffer_[0] != '\0';
         ImGui::BeginDisabled(!hasPath);
@@ -2702,6 +2904,351 @@ void StudioApp::hydrateImportedTree() {
             migration::InstanceHydrator redoHydrator;
             (void)redoHydrator.hydrate(tree, ecs_, meshes, options);
         }});
+}
+
+bool StudioApp::showRibbon() const { return mode_ == StudioMode::Full || mode_ == StudioMode::ThreeDMaker; }
+
+bool StudioApp::editingLocked() const { return physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying(); }
+
+void StudioApp::drawRibbon() {
+    RibbonActions actions;
+    actions.copy = [this] { copySelection(); };
+    actions.paste = [this] { pasteClipboard(); };
+    actions.duplicate = [this] { duplicateSelection(); };
+    actions.remove = [this] { deleteSelection(); };
+    actions.group = [this] { groupSelection(); };
+    actions.ungroup = [this] { ungroupSelection(); };
+    actions.toggleAnchor = [this] { toggleAnchorSelection(); };
+    actions.insertPrimitive = [this](panels::ViewportPanel::Primitive kind) { insertPrimitive(kind); };
+    actions.togglePlay = [this] { togglePlay(); };
+    actions.togglePerformanceOverlay = [this] { performanceOverlay_.toggle(); };
+    actions.resetLayout = [this] { layoutResetRequested_ = true; };
+    actions.save = [this] {
+        const bool ok = sceneManager_.saveScene(sceneManager_.currentScenePath(), ecs_, viewportPanel_.camera(),
+                                                &movieModePlugin_->rail(), &movieModePlugin_->sequence());
+        fileActionStatus_ = ok ? "Saved " + sceneManager_.currentScenePath() : "Save failed: " + sceneManager_.currentScenePath();
+        notifications_.push(fileActionStatus_, ok ? NotificationSeverity::Success : NotificationSeverity::Error);
+    };
+
+    RibbonState state;
+    state.canPaste = !clipboard_.empty();
+    state.anchored = selectionAnchored();
+    state.performanceOverlayOpen = performanceOverlay_.isOpen();
+    state.canSave = !sceneManager_.currentScenePath().empty();
+    state.showEngineOverlays = showEngineDebugOverlays();
+    state.terrainAvailable = terrainEditorPlugin_ != nullptr && terrainEditorPlugin_->hasTerrain();
+
+    ribbon_.draw(RibbonContext{ecs_, meshLibrary_, explorerPanel_, viewportPanel_, undoStack_, pluginManager_,
+                               physicsPreviewPlugin_, modelImporterPlugin_, actions, state});
+}
+
+void StudioApp::handleEditShortcuts() {
+    if (!showRibbon()) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.WantTextInput) return;
+    ImGuiWindow* focused = ImGui::GetCurrentContext()->NavWindow;
+    if (focused == nullptr) return;
+    const std::string root = focused->RootWindow != nullptr ? focused->RootWindow->Name : focused->Name;
+    if (root != "Viewport" && root != "Explorer" && root != "StudioDockHost") return;
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) deleteSelection();
+    if (!io.KeyCtrl) return;
+    if (ImGui::IsKeyPressed(ImGuiKey_C, false)) copySelection();
+    if (ImGui::IsKeyPressed(ImGuiKey_V, false)) pasteClipboard();
+    if (ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicateSelection();
+    if (ImGui::IsKeyPressed(ImGuiKey_G, false)) groupSelection();
+    if (ImGui::IsKeyPressed(ImGuiKey_U, false)) ungroupSelection();
+}
+
+void StudioApp::giveClonesOwnMeshes(core::EntityId root) {
+    if (modelingModePlugin_ == nullptr || !ecs_.raw().valid(root)) return;
+    if (ecs_.hasComponent<core::EditableMeshComponent>(root)) modelingModePlugin_->giveOwnMesh(ecs_, root);
+    if (auto* hierarchy = ecs_.tryGetComponent<core::Hierarchy>(root)) {
+        const std::vector<core::EntityId> children = hierarchy->children;
+        for (core::EntityId child : children) giveClonesOwnMeshes(child);
+    }
+}
+
+void StudioApp::pushCreationUndo(const char* label, std::vector<core::EntityId> created) {
+    struct State {
+        std::vector<core::EntityId> ids;
+        EntitySnapshot snapshot;
+    };
+    auto state = std::make_shared<State>();
+    state->ids = std::move(created);
+    undoStack_.push({label,
+                     [this, state] {
+                         state->snapshot = EntitySnapshot::capture(ecs_, state->ids);
+                         for (core::EntityId e : state->ids) core::hierarchy::destroyEntityRecursive(ecs_, e);
+                         explorerPanel_.setSelected(core::kNullEntity);
+                     },
+                     [this, state] {
+                         state->ids = state->snapshot.restore(ecs_);
+                         explorerPanel_.setSelectedMultiple(state->ids);
+                     }});
+}
+
+void StudioApp::copySelection() {
+    const auto roots = topLevelEntities(ecs_, explorerPanel_.selectedEntities());
+    if (roots.empty()) return;
+    clipboard_ = EntitySnapshot::capture(ecs_, roots);
+    notifications_.push(roots.size() == 1 ? "Copied 1 object" : "Copied " + std::to_string(roots.size()) + " objects",
+                        NotificationSeverity::Info);
+}
+
+void StudioApp::pasteClipboard() {
+    if (clipboard_.empty() || editingLocked()) return;
+    std::vector<core::EntityId> roots = clipboard_.restore(ecs_);
+    for (core::EntityId root : roots) {
+        if (auto* name = ecs_.tryGetComponent<core::Name>(root)) {
+            int sameName = 0;
+            for (auto [entity, other] : ecs_.raw().view<core::Name>().each()) sameName += other.value == name->value ? 1 : 0;
+            if (sameName > 1) name->value = nextUniqueName(ecs_, name->value);
+        }
+        giveClonesOwnMeshes(root);
+    }
+    explorerPanel_.setSelectedMultiple(roots);
+    pushCreationUndo("Paste", roots);
+}
+
+void StudioApp::duplicateSelection() {
+    if (editingLocked()) return;
+    const auto roots = topLevelEntities(ecs_, explorerPanel_.selectedEntities());
+    if (roots.empty()) return;
+    std::vector<core::EntityId> clones;
+    for (core::EntityId root : roots) {
+        core::EntityId clone = duplicateEntity(ecs_, root);
+        if (clone == core::kNullEntity) continue;
+        giveClonesOwnMeshes(clone);
+        clones.push_back(clone);
+    }
+    explorerPanel_.setSelectedMultiple(clones);
+    pushCreationUndo("Duplicate", clones);
+}
+
+void StudioApp::deleteSelection() {
+    if (editingLocked()) return;
+    struct State {
+        std::vector<core::EntityId> ids;
+        EntitySnapshot snapshot;
+    };
+    auto state = std::make_shared<State>();
+    state->ids = topLevelEntities(ecs_, explorerPanel_.selectedEntities());
+    if (state->ids.empty()) return;
+    auto destroy = [this, state] {
+        state->snapshot = EntitySnapshot::capture(ecs_, state->ids);
+        for (core::EntityId e : state->ids) core::hierarchy::destroyEntityRecursive(ecs_, e);
+        explorerPanel_.setSelected(core::kNullEntity);
+    };
+    destroy();
+    undoStack_.push({"Delete",
+                     [this, state] {
+                         state->ids = state->snapshot.restore(ecs_);
+                         explorerPanel_.setSelectedMultiple(state->ids);
+                     },
+                     destroy});
+}
+
+void StudioApp::groupSelection() {
+    if (editingLocked()) return;
+    const auto roots = topLevelEntities(ecs_, explorerPanel_.selectedEntities());
+    if (roots.empty()) return;
+    auto parentOf = [this](core::EntityId e) {
+        auto* h = ecs_.tryGetComponent<core::Hierarchy>(e);
+        return h != nullptr ? h->parent : core::kNullEntity;
+    };
+    const core::EntityId parent = parentOf(roots.front());
+    for (core::EntityId e : roots) {
+        if (parentOf(e) != parent) {
+            notifications_.push("Group needs objects that share the same parent", NotificationSeverity::Warning);
+            return;
+        }
+    }
+
+    auto group = std::make_shared<core::EntityId>(core::kNullEntity);
+    const std::string name = nextUniqueName(ecs_, "Model1");
+    auto apply = [this, group, roots, parent, name] {
+        entt::registry& registry = ecs_.raw();
+        *group = *group != core::kNullEntity && !registry.valid(*group) ? registry.create(*group) : registry.create();
+        registry.emplace_or_replace<core::Transform>(*group);
+        registry.emplace_or_replace<core::Name>(*group, core::Name{name});
+        if (parent != core::kNullEntity) core::hierarchy::setParent(ecs_, *group, parent);
+        for (core::EntityId e : roots) {
+            if (registry.valid(e)) core::hierarchy::setParent(ecs_, e, *group);
+        }
+        explorerPanel_.setSelected(*group);
+    };
+    apply();
+    undoStack_.push({"Group",
+                     [this, group, roots, parent] {
+                         for (core::EntityId e : roots) {
+                             if (!ecs_.raw().valid(e)) continue;
+                             if (parent != core::kNullEntity) {
+                                 core::hierarchy::setParent(ecs_, e, parent);
+                             } else {
+                                 core::hierarchy::unparent(ecs_, e);
+                             }
+                         }
+                         core::hierarchy::destroyEntityRecursive(ecs_, *group);
+                         explorerPanel_.setSelectedMultiple(roots);
+                     },
+                     apply});
+}
+
+void StudioApp::ungroupSelection() {
+    if (editingLocked()) return;
+    struct Child {
+        core::EntityId entity;
+        core::Transform transform;
+    };
+    struct Group {
+        core::EntityId entity;
+        core::EntityId parent;
+        core::Transform transform;
+        std::string name;
+        std::vector<Child> children;
+        bool removed;
+    };
+    auto groups = std::make_shared<std::vector<Group>>();
+    for (core::EntityId e : topLevelEntities(ecs_, explorerPanel_.selectedEntities())) {
+        auto* h = ecs_.tryGetComponent<core::Hierarchy>(e);
+        auto* t = ecs_.tryGetComponent<core::Transform>(e);
+        if (h == nullptr || h->children.empty() || t == nullptr) continue;
+        Group g{e, h->parent, *t, "", {}, false};
+        if (auto* n = ecs_.tryGetComponent<core::Name>(e)) g.name = n->value;
+        for (core::EntityId child : h->children) {
+            if (auto* ct = ecs_.tryGetComponent<core::Transform>(child)) g.children.push_back({child, *ct});
+        }
+        g.removed = !ecs_.hasComponent<core::Renderable>(e) && !ecs_.hasComponent<core::Light>(e) &&
+                    !ecs_.hasComponent<core::Script>(e) && !ecs_.hasComponent<core::AudioSource>(e) &&
+                    !ecs_.hasComponent<core::ParticleEmitter>(e) && !ecs_.hasComponent<core::ColliderShape>(e);
+        groups->push_back(std::move(g));
+    }
+    if (groups->empty()) return;
+
+    auto apply = [this, groups] {
+        std::vector<core::EntityId> freed;
+        for (const Group& g : *groups) {
+            const glm::mat4 groupMatrix = g.transform.matrix();
+            for (const Child& c : g.children) {
+                if (!ecs_.raw().valid(c.entity)) continue;
+                if (g.parent != core::kNullEntity) {
+                    core::hierarchy::setParent(ecs_, c.entity, g.parent);
+                } else {
+                    core::hierarchy::unparent(ecs_, c.entity);
+                }
+                const glm::mat4 world = groupMatrix * c.transform.matrix();
+                core::Transform& t = *ecs_.tryGetComponent<core::Transform>(c.entity);
+                t.position = glm::vec3(world[3]);
+                t.scale = {glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2]))};
+                const glm::mat3 basis(glm::vec3(world[0]) / t.scale.x, glm::vec3(world[1]) / t.scale.y, glm::vec3(world[2]) / t.scale.z);
+                t.rotation = glm::quat_cast(basis);
+                freed.push_back(c.entity);
+            }
+            if (g.removed) core::hierarchy::destroyEntityRecursive(ecs_, g.entity);
+        }
+        explorerPanel_.setSelectedMultiple(freed);
+    };
+    apply();
+    undoStack_.push({"Ungroup",
+                     [this, groups] {
+                         entt::registry& registry = ecs_.raw();
+                         for (Group& g : *groups) {
+                             if (g.removed) {
+                                 g.entity = registry.valid(g.entity) ? registry.create() : registry.create(g.entity);
+                                 registry.emplace_or_replace<core::Transform>(g.entity, g.transform);
+                                 if (!g.name.empty()) registry.emplace_or_replace<core::Name>(g.entity, core::Name{g.name});
+                                 if (g.parent != core::kNullEntity) core::hierarchy::setParent(ecs_, g.entity, g.parent);
+                             }
+                             for (const Child& c : g.children) {
+                                 if (!registry.valid(c.entity)) continue;
+                                 core::hierarchy::setParent(ecs_, c.entity, g.entity);
+                                 *ecs_.tryGetComponent<core::Transform>(c.entity) = c.transform;
+                             }
+                         }
+                         explorerPanel_.setSelected(groups->front().entity);
+                     },
+                     apply});
+}
+
+bool StudioApp::selectionAnchored() {
+    bool any = false;
+    for (core::EntityId e : explorerPanel_.selectedEntities()) {
+        if (!ecs_.raw().valid(e) || !ecs_.hasComponent<core::Renderable>(e)) continue;
+        any = true;
+        if (!ecs_.hasComponent<core::ColliderShape>(e)) continue;
+        auto* body = ecs_.tryGetComponent<core::RigidBody>(e);
+        if (body == nullptr || body->motionType != core::RigidBodyMotionType::Static) return false;
+    }
+    return any;
+}
+
+void StudioApp::toggleAnchorSelection() {
+    if (editingLocked()) return;
+    struct PhysicsState {
+        core::EntityId entity;
+        std::optional<core::ColliderShape> shape;
+        std::optional<core::PhysicsMaterial> material;
+        std::optional<core::RigidBody> body;
+    };
+    auto read = [this](core::EntityId e) {
+        PhysicsState s{e, {}, {}, {}};
+        if (auto* c = ecs_.tryGetComponent<core::ColliderShape>(e)) s.shape = *c;
+        if (auto* m = ecs_.tryGetComponent<core::PhysicsMaterial>(e)) s.material = *m;
+        if (auto* b = ecs_.tryGetComponent<core::RigidBody>(e)) s.body = *b;
+        return s;
+    };
+    auto write = [this](const std::vector<PhysicsState>& states) {
+        for (const PhysicsState& s : states) {
+            if (!ecs_.raw().valid(s.entity)) continue;
+            if (s.shape) ecs_.addComponent<core::ColliderShape>(s.entity, *s.shape); else ecs_.removeComponent<core::ColliderShape>(s.entity);
+            if (s.material) ecs_.addComponent<core::PhysicsMaterial>(s.entity, *s.material); else ecs_.removeComponent<core::PhysicsMaterial>(s.entity);
+            if (s.body) ecs_.addComponent<core::RigidBody>(s.entity, *s.body); else ecs_.removeComponent<core::RigidBody>(s.entity);
+        }
+    };
+
+    const bool anchor = !selectionAnchored();
+    std::vector<PhysicsState> before, after;
+    for (core::EntityId e : explorerPanel_.selectedEntities()) {
+        if (!ecs_.raw().valid(e) || !ecs_.hasComponent<core::Renderable>(e)) continue;
+        PhysicsState s = read(e);
+        before.push_back(s);
+        if (!s.shape) {
+            glm::vec3 half(0.5f);
+            if (const core::Mesh* mesh = meshLibrary_.get(ecs_.tryGetComponent<core::Renderable>(e)->meshHandle)) {
+                half = glm::max((mesh->localBoundsMax() - mesh->localBoundsMin()) * 0.5f, glm::vec3(0.02f));
+            }
+            half *= ecs_.tryGetComponent<core::Transform>(e)->scale;
+            s.shape = core::ColliderShape{core::ColliderShapeKind::Box, glm::abs(half), ""};
+        }
+        if (!s.material) s.material = core::PhysicsMaterial{};
+        s.body = core::RigidBody{core::RigidBody::kInvalidBodyId,
+                                 anchor ? core::RigidBodyMotionType::Static : core::RigidBodyMotionType::Dynamic};
+        after.push_back(s);
+    }
+    if (after.empty()) return;
+    write(after);
+    undoStack_.push({anchor ? "Anchor" : "Unanchor", [write, before] { write(before); }, [write, after] { write(after); }});
+}
+
+void StudioApp::insertPrimitive(panels::ViewportPanel::Primitive kind) {
+    if (editingLocked()) return;
+    core::EntityId entity = viewportPanel_.spawnPrimitive(ecs_, &meshLibrary_, explorerPanel_, kind);
+    if (auto* name = ecs_.tryGetComponent<core::Name>(entity)) {
+        int sameName = 0;
+        for (auto [other, otherName] : ecs_.raw().view<core::Name>().each()) sameName += otherName.value == name->value ? 1 : 0;
+        if (sameName > 1) name->value = nextUniqueName(ecs_, name->value);
+    }
+    pushCreationUndo("Insert", {entity});
+}
+
+void StudioApp::togglePlay() {
+    if (physicsPreviewPlugin_ == nullptr) return;
+    if (physicsPreviewPlugin_->isPlaying()) {
+        physicsPreviewPlugin_->stop(ecs_);
+    } else {
+        physicsPreviewPlugin_->play(ecs_);
+    }
 }
 
 } // namespace engine::studio

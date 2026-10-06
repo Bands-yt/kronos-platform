@@ -5,6 +5,7 @@
 #include <imgui.h>
 
 #include "studio/PluginChrome.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -58,6 +59,8 @@ void SafeContentPreviewPanel::drawSafeThumbnailPreviewSection() {
     ImGui::TextWrapped(
         "Runs an image through the same structural and filename checks as the live upload path, before you publish it.");
     ImGui::InputText("Image path", thumbnailPathBuffer_, sizeof(thumbnailPathBuffer_));
+    ImGui::SameLine();
+    browseButton("image", thumbnailPathBuffer_, sizeof(thumbnailPathBuffer_), {"Choose Image", {"*.png", "*.jpg", "*.jpeg"}, "Images"});
 
     if (ImGui::Button("Scan Thumbnail")) {
         std::string path(thumbnailPathBuffer_);
@@ -104,6 +107,8 @@ void SafeContentPreviewPanel::drawSafeScriptScanSection() {
     ImGui::TextWrapped(
         "Scans a script\'s source text for the same keyword markers used on chat and listings, catching harmful strings in UI or dialogue lines. It does not analyze what the code does.");
     ImGui::InputText("Script path", scriptPathBuffer_, sizeof(scriptPathBuffer_));
+    ImGui::SameLine();
+    browseButton("script", scriptPathBuffer_, sizeof(scriptPathBuffer_), {"Choose Script", {"*.luau", "*.lua"}, "Luau scripts"});
 
     if (ImGui::Button("Scan Script")) {
         std::string path(scriptPathBuffer_);

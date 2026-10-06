@@ -9,6 +9,7 @@
 #include "core/MeshUvPicking.hpp"
 #include "studio/MaterialPresets.hpp"
 #include "studio/PluginChrome.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -72,6 +73,8 @@ void MaterialPlugin::drawTextureSlot(Slot slot, const char* label, core::Rendera
 
     ImGui::SetNextItemWidth(200.0f);
     ImGui::InputText("##path", pathBuffer, 256);
+    ImGui::SameLine();
+    browseButton("texture", pathBuffer, 256, {"Load Texture", {"*.png", "*.jpg", "*.jpeg", "*.tga", "*.ktx2"}, "Images"});
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
         core::Texture texture = core::Texture::loadFromFile(pathBuffer, allocator_, device_, cmdPool_, queue_, srgb);

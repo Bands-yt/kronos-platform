@@ -82,6 +82,13 @@ public:
     void destroy(VmaAllocator allocator, VkDevice device);
 
     [[nodiscard]] bool isValid() const { return image_ != VK_NULL_HANDLE; }
+    // Set by the renderer when VK_EXT_host_image_copy can write RGBA8 images
+    // straight into SHADER_READ_ONLY_OPTIMAL: new textures are then copied
+    // from host memory with no staging buffer, command buffer or queue wait.
+    static void setHostImageCopy(bool enabled) { hostImageCopy_ = enabled; }
+    [[nodiscard]] static bool hostImageCopy() { return hostImageCopy_; }
+    [[nodiscard]] static uint64_t hostCopiedUploads() { return hostCopiedUploads_; }
+
     [[nodiscard]] VkImage image() const { return image_; }
     [[nodiscard]] VkImageView view() const { return view_; }
     [[nodiscard]] int width() const { return width_; }
@@ -91,6 +98,11 @@ private:
     [[nodiscard]] static Texture uploadPixels(const uint8_t* rgba, int width, int height, bool srgb,
                                                VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool,
                                                VkQueue queue);
+    [[nodiscard]] static Texture uploadPixelsFromHost(const uint8_t* rgba, int width, int height, bool srgb,
+                                                       VmaAllocator allocator, VkDevice device);
+
+    static inline bool hostImageCopy_ = false;
+    static inline uint64_t hostCopiedUploads_ = 0;
 
     VkImage image_ = VK_NULL_HANDLE;
     VmaAllocation allocation_ = nullptr;
@@ -115,6 +127,12 @@ public:
     // every frame needs a non-const pointer, not the const one every
     // read-only sampler (scene.frag's own material bindings) uses.
     [[nodiscard]] Texture* get(uint32_t handle);
+    // Swaps the image at `handle` for `texture`, destroying the old one.
+    // The GPU must not be using it (callers wait for the device first).
+    void replaceTexture(uint32_t handle, Texture texture, VmaAllocator allocator, VkDevice device);
+    // Destroys the image and leaves an invalid texture behind, so the
+    // handle stays reserved and samples the renderer's default.
+    void destroyTexture(uint32_t handle, VmaAllocator allocator, VkDevice device);
     void destroyAll(VmaAllocator allocator, VkDevice device);
 
 private:

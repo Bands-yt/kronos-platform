@@ -1,6 +1,8 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -35,6 +37,24 @@ public:
     [[nodiscard]] const char* backendName() const override { return "Kronos Script Editor (Luau)"; }
 
     void moveCaretToLine(int oneBasedLine) override;
+    void setHooks(ScriptEditorHooks hooks) override { hooks_ = std::move(hooks); }
+    void selectSourceRange(int line, int byteStart, int byteEnd) override;
+    [[nodiscard]] std::set<int> breakpoints() const override { return breakpoints_; }
+    void setBreakpoints(const std::set<int>& lines) override { breakpoints_ = lines; }
+    void setExecutionLine(int oneBasedLine) override { executionLine_ = oneBasedLine; }
+
+    // A caret plus the other end of its selection, as flat byte offsets.
+    struct Caret {
+        int anchor = 0;
+        int position = 0;
+    };
+    struct TextEdit {
+        int start = 0;
+        int end = 0;
+        std::string text;
+    };
+    // Applies edits (any order, overlaps dropped) and maps each caret through them.
+    [[nodiscard]] static std::string applyEdits(const std::string& text, std::vector<TextEdit> edits, std::vector<Caret>& carets);
 
     enum class CompletionKind { Keyword, Variable, Function, Method, Property, Table, Type, Module, Snippet };
 
@@ -125,6 +145,25 @@ private:
     void toggleCommentOnSelection();
     void duplicateLine();
     void selectRange(int line, int byteStart, int byteEnd);
+
+    [[nodiscard]] std::string flatText() const;
+    [[nodiscard]] int offsetOf(int line, int column) const;
+    [[nodiscard]] std::pair<int, int> positionOf(int offset) const; // (line, column)
+    [[nodiscard]] Caret primaryCaret() const;
+    [[nodiscard]] std::vector<Caret> allCarets() const;
+    void setCarets(const std::vector<Caret>& carets);
+    void commitEdits(std::vector<TextEdit> edits, std::vector<Caret> carets);
+    void editAtCarets(const std::function<TextEdit(const Caret&, const std::string&)>& makeEdit);
+    bool handleMultiCursorKeys();
+    void addNextOccurrence();
+    void addCaretVertically(int direction);
+    [[nodiscard]] std::pair<int, int> mouseTextPosition() const;
+    void goToDefinitionAt(int line, int byteColumn);
+    void beginRename();
+    void drawRenamePopup();
+    void applyRename();
+    void toggleBreakpoint(int oneBasedLine);
+    void setNotice(std::string text);
     [[nodiscard]] bool selectionLines(int& firstLine, int& lastLine) const;
     [[nodiscard]] std::string memberContainerBefore(int line, int anchorByte) const;
     [[nodiscard]] ImVec2 caretScreenPos() const;
@@ -167,6 +206,19 @@ private:
     std::vector<FindMatch> matches_;
     int currentMatch_ = -1;
 
+    ScriptEditorHooks hooks_;
+    std::set<int> breakpoints_;
+    int executionLine_ = 0;
+    std::vector<Caret> extraCarets_;
+    bool openRename_ = false;
+    std::string renameText_;
+    int renameLine_ = 0;
+    int renameByte_ = 0;
+    std::string notice_;
+    double noticeUntil_ = 0.0;
+
+    unsigned int editorWindowId_ = 0;
+    bool editorWasFocused_ = false;
     bool refocusEditor_ = false;
     bool openSymbolPicker_ = false;
     ImVec2 editorOrigin_{0.0f, 0.0f};

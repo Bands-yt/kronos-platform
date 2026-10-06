@@ -8,11 +8,14 @@
 
 #include <imgui.h>
 
+#include "core/Audio.hpp"
 #include "core/Navigation.hpp"
 #include "core/OreNode.hpp"
 #include "core/PhysicsMaterial.hpp"
+#include "core/ResourceManager.hpp"
 #include "core/SceneTypes.hpp"
 #include "core/UIWidgets.hpp"
+#include "studio/FileBrowse.hpp"
 #include "studio/StudioIcons.hpp"
 
 namespace engine::studio::panels {
@@ -384,6 +387,7 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
     drawNavMarkerSection(ecs, selected);
     drawOreNodeSection(ecs, selected);
     drawLightSection(ecs, selected);
+    drawSoundSection(ecs, selected, undoStack);
 
     ImGui::PopItemWidth();
     ImGui::End();
@@ -631,6 +635,178 @@ void InspectorPanel::drawLightSection(core::ECS& ecs, core::EntityId selected) {
     ImGui::TextDisabled(
         "Shaded through the clustered light list, so there is no per-scene light cap. Spots aim down the entity's "
         "-Z axis.");
+}
+
+namespace {
+
+void loadSoundFile(core::ECS& ecs, core::EntityId entity, core::ResourceManager* resources) {
+    auto* sound = ecs.tryGetComponent<core::AudioSource>(entity);
+    if (sound == nullptr) return;
+    auto* refs = ecs.tryGetComponent<core::ResourceRefs>(entity);
+    if (refs != nullptr) {
+        std::erase_if(refs->handles, [&](const core::ResourceHandle& handle) {
+            return handle.kind() == core::ResourceKind::Audio && handle.get() == sound->soundHandle;
+        });
+    }
+    sound->soundHandle = core::AudioSource::kInvalidHandle;
+    if (sound->path.empty() || resources == nullptr || !resources->hasLoader(core::ResourceKind::Audio)) return;
+    core::ResourceHandle handle = resources->acquire(core::ResourceKind::Audio, sound->path);
+    sound->soundHandle = handle.get();
+    ecs.raw().get_or_emplace<core::ResourceRefs>(entity).handles.push_back(std::move(handle));
+}
+
+const core::ResourceHandle* soundResource(core::ECS& ecs, core::EntityId entity, uint32_t soundHandle) {
+    auto* refs = ecs.tryGetComponent<core::ResourceRefs>(entity);
+    if (refs == nullptr) return nullptr;
+    for (const core::ResourceHandle& handle : refs->handles) {
+        if (handle.kind() == core::ResourceKind::Audio && handle.get() == soundHandle) return &handle;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+void InspectorPanel::drawSoundSection(core::ECS& ecs, core::EntityId selected, UndoStack& undoStack) {
+    auto* sound = ecs.tryGetComponent<core::AudioSource>(selected);
+    core::ResourceManager* resources = resources_;
+    auto setSound = [&ecs, selected, resources](const core::AudioSource& value) {
+        auto* target = ecs.tryGetComponent<core::AudioSource>(selected);
+        if (target == nullptr) return;
+        const bool reload = target->path != value.path;
+        const uint32_t handle = target->soundHandle;
+        *target = value;
+        target->soundHandle = handle;
+        target->playing = false;
+        if (reload) loadSoundFile(ecs, selected, resources);
+    };
+
+    if (sound == nullptr) {
+        ImGui::Spacing();
+        if (ImGui::Button("Add Sound")) {
+            ecs.addComponent<core::AudioSource>(selected);
+            undoStack.push({"Add Sound", [&ecs, selected]() { ecs.removeComponent<core::AudioSource>(selected); },
+                            [&ecs, selected]() { ecs.addComponent<core::AudioSource>(selected); }});
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lets this object play a sound file.");
+        return;
+    }
+    if (!ImGui::CollapsingHeader("Sound", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    auto track = [&](const char* label) {
+        if (ImGui::IsItemActivated()) soundBeforeEdit_ = *sound;
+        if (!ImGui::IsItemDeactivatedAfterEdit()) return;
+        const core::AudioSource before = soundBeforeEdit_;
+        const core::AudioSource after = *sound;
+        undoStack.push({label, [setSound, before]() { setSound(before); }, [setSound, after]() { setSound(after); }});
+    };
+    auto commit = [&](const char* label, const core::AudioSource& before) {
+        const core::AudioSource after = *sound;
+        undoStack.push({label, [setSound, before]() { setSound(before); }, [setSound, after]() { setSound(after); }});
+    };
+
+    if (soundPathEntity_ != selected || (!ImGui::IsAnyItemActive() && sound->path != soundPath_)) {
+        std::snprintf(soundPath_, sizeof(soundPath_), "%s", sound->path.c_str());
+        soundPathEntity_ = selected;
+    }
+    auto labelAbove = [](const char* text) {
+        ImGui::TextUnformatted(text);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+    };
+    ImGui::TextUnformatted("File");
+    ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("Browse...").x -
+                                                ImGui::GetStyle().FramePadding.x * 2.0f - ImGui::GetStyle().ItemSpacing.x));
+    ImGui::InputText("##soundfile", soundPath_, sizeof(soundPath_));
+    bool pathChanged = ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SameLine();
+    pathChanged |= browseButton("sound", soundPath_, sizeof(soundPath_),
+                                {"Choose a Sound", {"*.wav", "*.mp3", "*.ogg", "*.flac"}, "Sound files"});
+    if (pathChanged && sound->path != soundPath_) {
+        const core::AudioSource before = *sound;
+        sound->path = soundPath_;
+        loadSoundFile(ecs, selected, resources_);
+        sound = ecs.tryGetComponent<core::AudioSource>(selected);
+        commit("Change Sound File", before);
+    }
+    if (sound->path.empty()) {
+        ImGui::TextDisabled("Pick a .wav, .mp3, .ogg or .flac file.");
+    } else if (resources_ == nullptr || audio_ == nullptr || !audio_->isInitialized()) {
+        ImGui::TextDisabled("No audio device, so sounds can't be heard here.");
+    } else if (const core::ResourceHandle* handle = soundResource(ecs, selected, sound->soundHandle)) {
+        if (handle->state() == core::ResourceState::Failed) {
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "Couldn't load: %s", handle->error().c_str());
+        } else if (handle->state() == core::ResourceState::Loading) {
+            ImGui::TextDisabled("Loading...");
+        }
+    } else if (sound->soundHandle == core::AudioSource::kInvalidHandle) {
+        loadSoundFile(ecs, selected, resources_);
+        sound = ecs.tryGetComponent<core::AudioSource>(selected);
+    }
+
+    labelAbove("Volume");
+    ImGui::SliderFloat("##soundvolume", &sound->volume, 0.0f, 2.0f, "%.2f");
+    track("Edit Sound Volume");
+    labelAbove("Pitch");
+    ImGui::SliderFloat("##soundpitch", &sound->pitch, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    track("Edit Sound Pitch");
+    ImGui::Checkbox("Loop", &sound->looping);
+    track("Toggle Sound Loop");
+    ImGui::Checkbox("Play when the game starts", &sound->playOnStart);
+    track("Toggle Play On Start");
+    ImGui::Checkbox("3D (quieter further away)", &sound->spatial);
+    track("Toggle 3D Sound");
+    if (sound->spatial) {
+        labelAbove("Full volume within");
+        ImGui::DragFloat("##soundmin", &sound->minDistance, 0.1f, 0.1f, 500.0f, "%.1f m", ImGuiSliderFlags_AlwaysClamp);
+        track("Edit Sound Distance");
+        labelAbove("Fades out by");
+        ImGui::DragFloat("##soundmax", &sound->maxDistance, 0.5f, sound->minDistance, 5000.0f, "%.1f m",
+                         ImGuiSliderFlags_AlwaysClamp);
+        track("Edit Sound Distance");
+    }
+
+    std::vector<std::string> buses;
+    if (audio_ != nullptr) {
+        for (const core::MixerBus& bus : audio_->mixer().config().buses) buses.push_back(bus.name);
+    }
+    const std::string shown = !sound->bus.empty() ? sound->bus : sound->category == core::AudioCategory::Music ? "Music" : "SFX";
+    labelAbove("Mixer bus");
+    if (ImGui::BeginCombo("##soundbus", shown.c_str())) {
+        for (const std::string& name : buses) {
+            if (ImGui::Selectable(name.c_str(), name == shown) && name != shown) {
+                const core::AudioSource before = *sound;
+                sound->bus = name;
+                sound->category = name == "Music" ? core::AudioCategory::Music : core::AudioCategory::SFX;
+                commit("Change Sound Bus", before);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Which group of the mixer this sound goes through (Audio > Mixer).");
+
+    const bool canPreview = audio_ != nullptr && audio_->isInitialized() && sound->soundHandle != core::AudioSource::kInvalidHandle;
+    ImGui::BeginDisabled(!canPreview);
+    if (ImGui::Button("Preview")) {
+        audio_->setSoundSpatialized(sound->soundHandle, false);
+        audio_->setSoundVolume(sound->soundHandle, sound->volume);
+        audio_->setSoundPitch(sound->soundHandle, sound->pitch);
+        audio_->setSoundLooping(sound->soundHandle, false);
+        audio_->setSoundBus(sound->soundHandle, shown);
+        audio_->playFromOffset(sound->soundHandle, 0.0);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Stop")) audio_->stopSound(sound->soundHandle);
+    ImGui::EndDisabled();
+    if (ImGui::Button("Remove Sound")) {
+        const core::AudioSource before = *sound;
+        if (canPreview) audio_->stopSound(sound->soundHandle);
+        ecs.removeComponent<core::AudioSource>(selected);
+        undoStack.push({"Remove Sound",
+                        [&ecs, selected, before, resources]() {
+                            ecs.addComponent<core::AudioSource>(selected, before);
+                            loadSoundFile(ecs, selected, resources);
+                        },
+                        [&ecs, selected]() { ecs.removeComponent<core::AudioSource>(selected); }});
+    }
 }
 
 } // namespace engine::studio::panels

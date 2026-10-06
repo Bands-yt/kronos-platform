@@ -16,6 +16,7 @@
 
 #include "core/Components.hpp"
 #include "core/NativeFileDialog.hpp"
+#include "core/ScriptDebugger.hpp"
 #include "core/UITheme.hpp"
 #include "core/UIWidgets.hpp"
 #include "studio/StudioIcons.hpp"
@@ -294,6 +295,8 @@ int ScriptEditorPanel::openOrFocusTab(core::ECS& ecs, core::EntityId entity) {
     ScriptEditorTab tab;
     tab.entity = entity;
     tab.backend = createBackend();
+    tab.backend->setHooks(makeHooks(entity));
+    if (auto it = breakpointsByEntity_.find(entity); it != breakpointsByEntity_.end()) tab.backend->setBreakpoints(it->second);
     if (const core::Script* script = ecs.tryGetComponent<core::Script>(entity)) {
         tab.backend->setSource(script->source);
         tab.savedSource = script->source;
@@ -347,9 +350,14 @@ int ScriptEditorPanel::newScriptTab(core::ECS& ecs, const std::string& baseName,
     return index;
 }
 
-void ScriptEditorPanel::openScriptFromFile(core::ECS& ecs, NotificationCenter& notifications) {
-    std::optional<std::string> path = core::openFileDialog("Open Script", {"*.luau", "*.lua"});
-    if (!path) return; // real cancel, not an error
+void ScriptEditorPanel::openScriptFromFile(core::ECS& /*ecs*/, NotificationCenter& notifications) {
+    const bool started = core::openFileDialogAsync({"Open Script", {"*.luau", "*.lua"}, "Luau scripts"},
+                                                   [this](const std::string& path) { pendingScriptPath_ = path; });
+    if (!started) notifications.push("Could not open a file dialog: " + core::fileDialogError(), NotificationSeverity::Error);
+}
+
+void ScriptEditorPanel::importScriptFile(core::ECS& ecs, NotificationCenter& notifications, const std::string& pickedPath) {
+    const std::optional<std::string> path = pickedPath;
 
     std::ifstream file(*path, std::ios::binary);
     if (!file) {
@@ -398,6 +406,7 @@ void ScriptEditorPanel::drawTabBar(core::ECS& ecs, NotificationCenter& notificat
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("New script");
     if (addTabClicked) newScriptTab(ecs);
 
+    int forcedTab = forceFocusActiveTab_ ? activeTab_ : -1;
     for (int i = 0; i < static_cast<int>(tabs_.size());) {
         ScriptEditorTab& tab = tabs_[i];
         const core::Name* name = ecs.tryGetComponent<core::Name>(tab.entity);
@@ -411,15 +420,17 @@ void ScriptEditorPanel::drawTabBar(core::ECS& ecs, NotificationCenter& notificat
             title + (dirty ? " *" : "") + "###tab" + std::to_string(static_cast<uint32_t>(tab.entity));
 
         ImGuiTabItemFlags flags = ImGuiTabItemFlags_None;
-        if (i == activeTab_ && forceFocusActiveTab_) flags |= ImGuiTabItemFlags_SetSelected;
+        if (i == forcedTab) flags |= ImGuiTabItemFlags_SetSelected;
 
         bool open = true;
         if (ImGui::BeginTabItem(label.c_str(), &open, flags)) {
-            activeTab_ = i;
+            if (forcedTab < 0) activeTab_ = i;
             ImGui::EndTabItem();
         }
         if (!open) {
             closeTab(i);
+            if (forcedTab > i) --forcedTab;
+            else if (forcedTab == i) forcedTab = -1;
             continue; // next tab has shifted into slot i -- don't advance
         }
         ++i;
@@ -547,9 +558,32 @@ void ScriptEditorPanel::drawHeader(ScriptEditorTab& tab, core::ECS& ecs, Notific
     drawList->AddCircleFilled(ImVec2(chip.x + 8.0f, chip.y + stateSize.y * 0.5f), 3.0f, ImGui::GetColorU32(stateColor));
     drawList->AddText(ImVec2(chip.x + 15.0f, chip.y), ImGui::GetColorU32(stateColor), state);
 
+    if (debugger_ != nullptr && debugger_->paused() && debugger_->pauseState().chunk == title) {
+        ImGui::SameLine(0.0f, stateSize.x + 34.0f);
+        const ImVec2 pausedChip = ImGui::GetCursorScreenPos();
+        char pausedText[64];
+        std::snprintf(pausedText, sizeof(pausedText), "Paused at line %d", debugger_->pauseState().line);
+        const ImVec2 pausedSize = ImGui::CalcTextSize(pausedText);
+        const ImVec4 amber(1.0f, 0.8f, 0.0f, 1.0f);
+        drawList->AddRectFilled(ImVec2(pausedChip.x, pausedChip.y - 2.0f),
+                                ImVec2(pausedChip.x + pausedSize.x + 16.0f, pausedChip.y + pausedSize.y + 2.0f),
+                                ImGui::GetColorU32(ImVec4(amber.x, amber.y, amber.z, 0.16f)), 9.0f);
+        drawList->AddText(ImVec2(pausedChip.x + 8.0f, pausedChip.y), ImGui::GetColorU32(amber), pausedText);
+    }
+
     const float saveWidth = 74.0f;
     const float revertWidth = 74.0f;
+    const float debugWidth = 86.0f;
     const float buttonY = centerY - ImGui::GetFrameHeight() * 0.5f;
+    if (debugger_ != nullptr) {
+        ImGui::SetCursorScreenPos(ImVec2(max.x - saveWidth - revertWidth - debugWidth - 24.0f, buttonY));
+        if (ui::button(debuggerWindowOpen_ ? "Debugger*" : "Debugger", ui::ButtonKind::Ghost, ImVec2(debugWidth, 0.0f))) {
+            debuggerWindowOpen_ = !debuggerWindowOpen_;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Breakpoints, call stack and variables.\nF9 toggles a breakpoint; F5/F10/F11 continue and step while paused.");
+        }
+    }
     ImGui::SetCursorScreenPos(ImVec2(max.x - saveWidth - revertWidth - 18.0f, buttonY));
     ImGui::BeginDisabled(!dirty);
     if (ui::button("Revert", ui::ButtonKind::Ghost, ImVec2(revertWidth, 0.0f))) {
@@ -580,6 +614,13 @@ void ScriptEditorPanel::openAndJumpToLine(core::ECS& ecs, core::EntityId entity,
 }
 
 void ScriptEditorPanel::draw(core::ECS& ecs, core::EntityId selectedEntity, NotificationCenter& notifications) {
+    runPendingRequests(ecs, notifications);
+    syncDebugger(ecs);
+    if (!pendingScriptPath_.empty()) {
+        const std::string path = std::move(pendingScriptPath_);
+        pendingScriptPath_.clear();
+        importScriptFile(ecs, notifications, path);
+    }
     if (selectedEntity != lastOuterSelection_) {
         lastOuterSelection_ = selectedEntity;
         if (selectedEntity != core::kNullEntity) {
@@ -644,6 +685,347 @@ void ScriptEditorPanel::draw(core::ECS& ecs, core::EntityId selectedEntity, Noti
         return;
     }
 
+    ImGui::End();
+}
+
+ScriptEditorHooks ScriptEditorPanel::makeHooks(core::EntityId owner) {
+    ScriptEditorHooks hooks;
+    hooks.goToGlobalDefinition = [this](const luau_symbols::GlobalRef& ref) { pendingDefinition_ = ref; };
+    hooks.findInAllScripts = [this](const std::string& query) {
+        if (!query.empty()) globalQuery_ = query;
+        findInScriptsOpen_ = true;
+        focusFindInScripts_ = true;
+    };
+    hooks.renameGlobalElsewhere = [this, owner](const luau_symbols::GlobalRef& ref, const std::string& newName) {
+        pendingRename_ = PendingRename{ref, newName, owner};
+    };
+    return hooks;
+}
+
+std::string ScriptEditorPanel::liveSource(core::ECS& ecs, core::EntityId entity) const {
+    const int index = findTabIndex(entity);
+    if (index >= 0) return tabs_[static_cast<size_t>(index)].backend->source();
+    const core::Script* script = ecs.tryGetComponent<core::Script>(entity);
+    return script != nullptr ? script->source : std::string();
+}
+
+std::string ScriptEditorPanel::chunkNameOf(core::ECS& ecs, core::EntityId entity) {
+    const core::Name* name = ecs.tryGetComponent<core::Name>(entity);
+    return (name != nullptr && !name->value.empty()) ? name->value : "Script";
+}
+
+void ScriptEditorPanel::jumpTo(core::ECS& ecs, core::EntityId entity, int line, int byteStart, int byteEnd) {
+    if (ecs.tryGetComponent<core::Script>(entity) == nullptr) return;
+    const int index = openOrFocusTab(ecs, entity);
+    forceFocusActiveTab_ = true;
+    lastOuterSelection_ = entity;
+    tabs_[static_cast<size_t>(index)].backend->selectSourceRange(line, byteStart, byteEnd);
+    ImGui::SetWindowFocus("Script Editor");
+}
+
+void ScriptEditorPanel::runPendingRequests(core::ECS& ecs, NotificationCenter& notifications) {
+    if (pendingDefinition_) {
+        const luau_symbols::GlobalRef ref = *pendingDefinition_;
+        pendingDefinition_.reset();
+        const std::string label = ref.member.empty() ? ref.global : ref.global + "." + ref.member;
+        bool found = false;
+        for (auto entity : ecs.view<core::Script>()) {
+            const std::optional<luau_symbols::Range> definition = luau_symbols::definitionOf(liveSource(ecs, entity), ref);
+            if (!definition) continue;
+            jumpTo(ecs, entity, definition->line, definition->column, definition->endColumn);
+            found = true;
+            break;
+        }
+        if (!found) notifications.push("No script defines \"" + label + "\" (it may be built in)", NotificationSeverity::Info);
+    }
+    if (pendingRename_) {
+        const PendingRename rename = std::move(*pendingRename_);
+        pendingRename_.reset();
+        const int previousActive = activeTab_;
+        int changed = 0;
+        std::vector<core::EntityId> entities;
+        for (auto entity : ecs.view<core::Script>()) {
+            if (entity != rename.origin) entities.push_back(entity);
+        }
+        for (core::EntityId entity : entities) {
+            const std::string source = liveSource(ecs, entity);
+            std::vector<luau_symbols::Range> ranges = luau_symbols::occurrencesOf(source, rename.ref);
+            if (ranges.empty()) continue;
+            const std::string updated = luau_symbols::replaceRanges(source, std::move(ranges), rename.newName);
+            tabs_[static_cast<size_t>(openOrFocusTab(ecs, entity))].backend->setSource(updated);
+            ++changed;
+        }
+        activeTab_ = previousActive;
+        if (changed > 0) {
+            notifications.push("Also renamed in " + std::to_string(changed) + " other script" + (changed == 1 ? "" : "s") +
+                                   " (unsaved, review and save each)",
+                               NotificationSeverity::Info);
+        }
+    }
+}
+
+void ScriptEditorPanel::syncDebugger(core::ECS& ecs) {
+    if (debugger_ == nullptr) return;
+    for (ScriptEditorTab& tab : tabs_) breakpointsByEntity_[tab.entity] = tab.backend->breakpoints();
+
+    std::map<std::string, std::set<int>> wanted;
+    for (auto it = breakpointsByEntity_.begin(); it != breakpointsByEntity_.end();) {
+        if (!ecs.raw().valid(it->first) || ecs.tryGetComponent<core::Script>(it->first) == nullptr) {
+            it = breakpointsByEntity_.erase(it);
+            continue;
+        }
+        if (!it->second.empty()) wanted[chunkNameOf(ecs, it->first)].insert(it->second.begin(), it->second.end());
+        ++it;
+    }
+    if (wanted != debugger_->breakpoints()) {
+        debugger_->clearBreakpoints();
+        for (const auto& [chunk, lines] : wanted) debugger_->setBreakpoints(chunk, lines);
+    }
+
+    const bool paused = debugger_->paused();
+    const core::ScriptPauseState& state = debugger_->pauseState();
+    if (paused && debugger_->pauseSerial() != seenPauseSerial_) {
+        seenPauseSerial_ = debugger_->pauseSerial();
+        selectedFrame_ = 0;
+        debuggerWindowOpen_ = true;
+        focusDebuggerWindow_ = true;
+        for (auto entity : ecs.view<core::Script>()) {
+            if (chunkNameOf(ecs, entity) != state.chunk) continue;
+            const int index = openOrFocusTab(ecs, entity);
+            forceFocusActiveTab_ = true;
+            lastOuterSelection_ = entity;
+            tabs_[static_cast<size_t>(index)].backend->moveCaretToLine(state.line);
+            ImGui::SetWindowFocus("Script Editor");
+            break;
+        }
+    }
+
+    std::string chunk;
+    int line = 0;
+    if (paused) {
+        chunk = state.chunk;
+        line = state.line;
+        if (selectedFrame_ > 0 && selectedFrame_ < static_cast<int>(state.frames.size())) {
+            chunk = state.frames[static_cast<size_t>(selectedFrame_)].chunk;
+            line = state.frames[static_cast<size_t>(selectedFrame_)].line;
+        }
+    }
+    for (ScriptEditorTab& tab : tabs_) tab.backend->setExecutionLine(paused && chunkNameOf(ecs, tab.entity) == chunk ? line : 0);
+}
+
+void ScriptEditorPanel::handleDebuggerShortcuts() {
+    if (debugger_ == nullptr || !debugger_->paused()) return;
+    const bool shift = ImGui::GetIO().KeyShift;
+    if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) debugger_->resume(core::ScriptDebugger::Action::Continue);
+    else if (ImGui::IsKeyPressed(ImGuiKey_F10, false)) debugger_->resume(core::ScriptDebugger::Action::StepOver);
+    else if (ImGui::IsKeyPressed(ImGuiKey_F11, false)) {
+        debugger_->resume(shift ? core::ScriptDebugger::Action::StepOut : core::ScriptDebugger::Action::StepInto);
+    }
+}
+
+void ScriptEditorPanel::drawAuxiliaryWindows(core::ECS& ecs, bool playing) {
+    handleDebuggerShortcuts();
+    if (debugger_ != nullptr && debuggerWindowOpen_) drawDebuggerWindow(ecs, playing);
+    if (findInScriptsOpen_) drawFindInScripts(ecs);
+}
+
+void ScriptEditorPanel::drawDebuggerWindow(core::ECS& ecs, bool playing) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 700.0f, viewport->WorkPos.y + 300.0f),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 480.0f), ImGuiCond_FirstUseEver);
+    if (focusDebuggerWindow_) {
+        ImGui::SetNextWindowFocus();
+        focusDebuggerWindow_ = false;
+    }
+    if (!ImGui::Begin("Debugger", &debuggerWindowOpen_)) {
+        ImGui::End();
+        return;
+    }
+    using Action = core::ScriptDebugger::Action;
+    const bool paused = debugger_->paused();
+    const core::ScriptPauseState& state = debugger_->pauseState();
+
+    ImGui::BeginDisabled(!paused);
+    if (ui::button("Continue", paused ? ui::ButtonKind::Primary : ui::ButtonKind::Secondary)) debugger_->resume(Action::Continue);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Continue (F5)");
+    ImGui::SameLine();
+    if (ui::button("Over", ui::ButtonKind::Secondary)) debugger_->resume(Action::StepOver);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Step over (F10)");
+    ImGui::SameLine();
+    if (ui::button("Into", ui::ButtonKind::Secondary)) debugger_->resume(Action::StepInto);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Step into (F11)");
+    ImGui::SameLine();
+    if (ui::button("Out", ui::ButtonKind::Secondary)) debugger_->resume(Action::StepOut);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Step out (Shift+F11)");
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(paused || !playing || debugger_->pauseRequested());
+    if (ui::button("Pause", ui::ButtonKind::Ghost)) debugger_->requestPause();
+    ImGui::EndDisabled();
+
+    if (paused) {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "%s in %s, line %d", state.reason.c_str(), state.chunk.c_str(), state.line);
+    } else if (playing) {
+        ImGui::TextDisabled(debugger_->pauseRequested() ? "Pausing at the next script statement..." : "Running");
+    } else {
+        ImGui::TextDisabled("Press Play to run scripts under the debugger.");
+    }
+    if (!debugger_->lastNotice().empty()) ImGui::TextWrapped("%s", debugger_->lastNotice().c_str());
+
+    ImGui::SeparatorText("Call Stack");
+    if (!paused) {
+        ImGui::TextDisabled("Not paused.");
+    } else if (ImGui::BeginTable("##call_stack", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        for (int i = 0; i < static_cast<int>(state.frames.size()); ++i) {
+            const core::ScriptDebugFrame& frame = state.frames[static_cast<size_t>(i)];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::PushID(i);
+            const std::string label = frame.function.empty() ? std::string("(main chunk)") : frame.function;
+            if (ImGui::Selectable(label.c_str(), selectedFrame_ == i, ImGuiSelectableFlags_SpanAllColumns)) {
+                selectedFrame_ = i;
+                for (auto entity : ecs.view<core::Script>()) {
+                    if (chunkNameOf(ecs, entity) != frame.chunk) continue;
+                    const int index = openOrFocusTab(ecs, entity);
+                    forceFocusActiveTab_ = true;
+                    lastOuterSelection_ = entity;
+                    tabs_[static_cast<size_t>(index)].backend->moveCaretToLine(frame.line);
+                    break;
+                }
+            }
+            ImGui::PopID();
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s:%d", frame.chunk.c_str(), frame.line);
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::SeparatorText("Variables");
+    if (paused && selectedFrame_ < static_cast<int>(state.frames.size())) {
+        const core::ScriptDebugFrame& frame = state.frames[static_cast<size_t>(selectedFrame_)];
+        if (frame.variables.empty()) ImGui::TextDisabled("No locals in this frame.");
+        else if (ImGui::BeginTable("##variables", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+            ImGui::TableHeadersRow();
+            for (const core::ScriptDebugVariable& variable : frame.variables) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                if (variable.upvalue) ImGui::TextColored(ImVec4(0.6f, 0.75f, 1.0f, 1.0f), "%s", variable.name.c_str());
+                else ImGui::TextUnformatted(variable.name.c_str());
+                if (variable.upvalue && ImGui::IsItemHovered()) ImGui::SetTooltip("Upvalue (captured from an enclosing scope)");
+                ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", variable.value.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%s", variable.type.c_str());
+            }
+            ImGui::EndTable();
+        }
+    } else {
+        ImGui::TextDisabled("Not paused.");
+    }
+
+    ImGui::SeparatorText("Breakpoints");
+    bool any = false;
+    for (auto& [entity, lines] : breakpointsByEntity_) {
+        for (auto it = lines.begin(); it != lines.end();) {
+            any = true;
+            const int line = *it;
+            ImGui::PushID(static_cast<int>(static_cast<uint32_t>(entity)) * 100000 + line);
+            bool keep = true;
+            ImGui::Checkbox("##keep", &keep);
+            ImGui::SameLine();
+            const std::string label = chunkNameOf(ecs, entity) + ":" + std::to_string(line);
+            const bool clicked = ImGui::Selectable(label.c_str());
+            ImGui::PopID();
+            if (!keep) {
+                it = lines.erase(it);
+                const int index = findTabIndex(entity);
+                if (index >= 0) tabs_[static_cast<size_t>(index)].backend->setBreakpoints(lines);
+                continue;
+            }
+            if (clicked) openAndJumpToLine(ecs, entity, line);
+            ++it;
+        }
+    }
+    if (!any) ImGui::TextDisabled("Click the gutter or press F9 to add one.");
+    else if (ui::button("Remove all", ui::ButtonKind::Ghost)) {
+        breakpointsByEntity_.clear();
+        for (ScriptEditorTab& tab : tabs_) tab.backend->setBreakpoints({});
+    }
+    ImGui::End();
+}
+
+void ScriptEditorPanel::drawFindInScripts(core::ECS& ecs) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 760.0f, viewport->WorkPos.y + 280.0f),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(480.0f, 420.0f), ImGuiCond_FirstUseEver);
+    if (focusFindInScripts_) ImGui::SetNextWindowFocus();
+    if (!ImGui::Begin("Find in Scripts", &findInScriptsOpen_)) {
+        ImGui::End();
+        return;
+    }
+    if (focusFindInScripts_) {
+        ImGui::SetKeyboardFocusHere();
+        focusFindInScripts_ = false;
+    }
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::InputTextWithHint("##global_query", "Search every script (Ctrl+Shift+F)", &globalQuery_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Aa", &globalMatchCase_);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Match case");
+    ImGui::SameLine();
+    ImGui::Checkbox("W", &globalWholeWord_);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Whole word");
+
+    int total = 0;
+    int files = 0;
+    ImGui::BeginChild("##global_results", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing()));
+    if (!globalQuery_.empty()) {
+        for (auto entity : ecs.view<core::Script>()) {
+            const std::string source = liveSource(ecs, entity);
+            const std::vector<luau_symbols::TextHit> hits = luau_symbols::findText(source, globalQuery_, globalMatchCase_, globalWholeWord_);
+            if (hits.empty()) continue;
+            ++files;
+            total += static_cast<int>(hits.size());
+            std::vector<std::string> lines;
+            for (size_t start = 0;;) {
+                const size_t end = source.find('\n', start);
+                lines.push_back(source.substr(start, end == std::string::npos ? std::string::npos : end - start));
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+            const std::string name = chunkNameOf(ecs, entity);
+            ImGui::PushID(static_cast<int>(static_cast<uint32_t>(entity)));
+            ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+            if (ImGui::TreeNodeEx("##file", ImGuiTreeNodeFlags_SpanAvailWidth, "%s  (%d)", name.c_str(), static_cast<int>(hits.size()))) {
+                for (size_t i = 0; i < hits.size(); ++i) {
+                    const luau_symbols::TextHit& hit = hits[i];
+                    std::string text = hit.line < static_cast<int>(lines.size()) ? lines[static_cast<size_t>(hit.line)] : std::string();
+                    const size_t indent = text.find_first_not_of(" \t");
+                    text = indent == std::string::npos ? std::string() : text.substr(indent);
+                    if (text.size() > 120) text = text.substr(0, 117) + "...";
+                    ImGui::PushID(static_cast<int>(i));
+                    char label[32];
+                    std::snprintf(label, sizeof(label), "%4d", hit.line + 1);
+                    if (ImGui::Selectable(label, false, ImGuiSelectableFlags_AllowOverlap)) {
+                        jumpTo(ecs, entity, hit.line, hit.byteStart, hit.byteEnd);
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(text.c_str());
+                    ImGui::PopID();
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    if (globalQuery_.empty()) ImGui::TextDisabled("Type to search every script in the place.");
+    else ImGui::TextDisabled("%d result%s in %d script%s", total, total == 1 ? "" : "s", files, files == 1 ? "" : "s");
     ImGui::End();
 }
 

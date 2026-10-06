@@ -2,9 +2,11 @@
 
 #include <cstdio>
 #include <fstream>
+#include <vector>
 
 #include "core/Logger.hpp"
 #include "core/Renderer.hpp"
+#include "trailer/FrameEncoding.hpp"
 
 namespace engine::publishing {
 
@@ -94,7 +96,11 @@ bool captureThumbnailToFile(core::Renderer& renderer, VkImage colorImage, VkForm
     bool swapRedBlue = colorFormat == VK_FORMAT_B8G8R8A8_SRGB || colorFormat == VK_FORMAT_B8G8R8A8_UNORM;
 
     bool ok = true;
-    {
+    if (outputPath.size() >= 4 && outputPath.compare(outputPath.size() - 4, 4, ".png") == 0) {
+        std::vector<uint8_t> opaque(pixels, pixels + imageBytes);
+        for (size_t i = 3; i < opaque.size(); i += 4) opaque[i] = 255;
+        ok = trailer::writePngRgba8(opaque.data(), extent.width, extent.height, swapRedBlue, outputPath);
+    } else {
         std::ofstream file(outputPath, std::ios::binary | std::ios::trunc);
         if (!file.is_open()) {
             core::logError("ThumbnailCapture", "could not open \"%s\" for writing.", outputPath.c_str());

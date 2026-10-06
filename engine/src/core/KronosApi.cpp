@@ -18,6 +18,7 @@ namespace {
 // Versioned so a future format change can be introduced without silently
 // mis-reading an old value.
 constexpr const char* kRefreshTokenKey = "kronos_backend_refresh_token_v1";
+constexpr const char* kProductionApiUrl = "https://kronosplatform.com";
 
 size_t writeToString(char* data, size_t size, size_t nmemb, void* userdata) {
     auto* out = static_cast<std::string*>(userdata);
@@ -305,8 +306,21 @@ KronosAuthResult KronosApi::adoptSession(const HttpResponse& response) {
     return result;
 }
 
+// Each backend gets its own keychain entry, so pointing a build at staging or
+// a local server can never overwrite or (on a 401) delete the production login.
+// Production keeps the original unsuffixed key so existing sign-ins survive.
+std::string KronosApi::refreshTokenKey() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (baseUrl_ == kProductionApiUrl) return kRefreshTokenKey;
+    return std::string(kRefreshTokenKey) + "@" + baseUrl_;
+}
+
 void KronosApi::persistRefreshToken(const std::string& token) {
-    if (!storeCredential(kRefreshTokenKey, token)) {
+    if (!persistSession_) {
+        memoryRefreshToken_ = token;
+        return;
+    }
+    if (!storeCredential(refreshTokenKey(), token)) {
         std::fprintf(stderr,
                       "KronosApi: could not store the refresh token in the OS credential store -- you will need to "
                       "sign in again next launch.\n");
@@ -314,13 +328,18 @@ void KronosApi::persistRefreshToken(const std::string& token) {
 }
 
 std::string KronosApi::loadPersistedRefreshToken() const {
+    if (!persistSession_) return memoryRefreshToken_;
     std::string token;
-    if (!loadCredential(kRefreshTokenKey, token)) return {};
+    if (!loadCredential(refreshTokenKey(), token)) return {};
     return token;
 }
 
 void KronosApi::clearPersistedRefreshToken() {
-    if (!deleteCredential(kRefreshTokenKey)) {
+    if (!persistSession_) {
+        memoryRefreshToken_.clear();
+        return;
+    }
+    if (!deleteCredential(refreshTokenKey())) {
         std::fprintf(stderr, "KronosApi: could not clear the stored refresh token.\n");
     }
 }
@@ -1000,11 +1019,30 @@ PackageUploadResult KronosApi::uploadGamePackage(const std::string& slug, const 
         return result;
     }
 
+    HttpResponse put = putUpload(uploadUrl, bytes, "application/octet-stream");
+    if (!ok(put)) return fail(put);
+
+    HttpResponse confirm = requestWithRefresh("POST", base + "/confirm", nlohmann::json{{"sha256", sha256}}.dump());
+    if (!ok(confirm)) return fail(confirm);
+    nlohmann::json confirmed = nlohmann::json::parse(confirm.body, nullptr, false);
+    if (!confirmed.is_discarded()) {
+        auto version = confirmed.find("version");
+        if (version != confirmed.end() && version->is_object()) {
+            result.versionNumber = version->value("version_number", 0);
+            result.reviewStatus = jsonStringOr(*version, "review_status");
+        }
+    }
+    result.success = true;
+    return result;
+}
+
+KronosApi::HttpResponse KronosApi::putUpload(const std::string& uploadUrl, const std::string& bytes,
+                                             const char* contentType) {
     HttpResponse put;
     CURL* curl = curl_easy_init();
     if (curl == nullptr) {
-        result.error = "curl_easy_init() failed";
-        return result;
+        put.error = "curl_easy_init() failed";
+        return put;
     }
     std::string bearer;
     {
@@ -1012,7 +1050,8 @@ PackageUploadResult KronosApi::uploadGamePackage(const std::string& slug, const 
         // Presigned bucket URLs carry their own signature and reject a second auth header.
         if (uploadUrl.rfind(baseUrl_, 0) == 0 && !accessToken_.empty()) bearer = "Authorization: Bearer " + accessToken_;
     }
-    struct curl_slist* headers = curl_slist_append(nullptr, "Content-Type: application/octet-stream");
+    const std::string contentTypeHeader = std::string("Content-Type: ") + contentType;
+    struct curl_slist* headers = curl_slist_append(nullptr, contentTypeHeader.c_str());
     if (!bearer.empty()) headers = curl_slist_append(headers, bearer.c_str());
     curl_easy_setopt(curl, CURLOPT_URL, uploadUrl.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -1036,10 +1075,152 @@ PackageUploadResult KronosApi::uploadGamePackage(const std::string& slug, const 
     }
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    if (!ok(put)) return fail(put);
+    return put;
+}
 
-    HttpResponse confirm = requestWithRefresh("POST", base + "/confirm", nlohmann::json{{"sha256", sha256}}.dump());
-    if (!ok(confirm)) return fail(confirm);
+namespace {
+GameImage parseGameImage(const nlohmann::json& node) {
+    GameImage image;
+    image.id = jsonStringOr(node, "id");
+    image.kind = jsonStringOr(node, "kind");
+    image.url = jsonStringOr(node, "url");
+    image.width = node.value("width", 0);
+    image.height = node.value("height", 0);
+    image.reviewStatus = jsonStringOr(node, "review_status");
+    image.reviewNote = jsonStringOr(node, "review_note");
+    return image;
+}
+
+StorageUsage parseStorageUsage(const nlohmann::json& parent) {
+    StorageUsage usage;
+    auto node = parent.find("storage");
+    if (node == parent.end() || !node->is_object()) return usage;
+    usage.usedBytes = node->value("used_bytes", uint64_t{0});
+    usage.quotaBytes = node->value("quota_bytes", uint64_t{0});
+    return usage;
+}
+} // namespace
+
+bool KronosApi::responseFailed(const HttpResponse& response, std::string& error) {
+    if (!response.transportOk) {
+        error = response.error.empty() ? "Could not reach the Kronos service." : response.error;
+        return true;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        error = extractError(response.body, response.status);
+        return true;
+    }
+    return false;
+}
+
+PackageVersionList KronosApi::fetchPackageVersions(const std::string& slug) {
+    PackageVersionList result;
+    HttpResponse response = requestWithRefresh("GET", "/v1/catalog/games/" + slug + "/package/versions", {});
+    if (responseFailed(response, result.error)) return result;
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    if (parsed.is_discarded()) {
+        result.error = "The Kronos service returned a version list this build could not parse.";
+        return result;
+    }
+    auto versions = parsed.find("versions");
+    if (versions != parsed.end() && versions->is_array()) {
+        for (const auto& node : *versions) {
+            PackageVersion version;
+            version.id = jsonStringOr(node, "id");
+            version.versionNumber = node.value("version_number", 0);
+            version.sha256 = jsonStringOr(node, "sha256");
+            version.sizeBytes = node.value("size_bytes", uint64_t{0});
+            version.reviewStatus = jsonStringOr(node, "review_status");
+            version.reviewNote = jsonStringOr(node, "review_note");
+            version.createdAt = jsonStringOr(node, "created_at");
+            version.current = node.value("current", false);
+            result.versions.push_back(std::move(version));
+        }
+    }
+    result.gameReviewStatus = jsonStringOr(parsed, "game_review_status");
+    result.reviewRequired = parsed.value("review_required", false);
+    result.storage = parseStorageUsage(parsed);
+    result.success = true;
+    return result;
+}
+
+CatalogActionResult KronosApi::activatePackageVersion(const std::string& slug, int versionNumber) {
+    CatalogActionResult result;
+    HttpResponse response = requestWithRefresh(
+        "POST", "/v1/catalog/games/" + slug + "/package/versions/" + std::to_string(versionNumber) + "/activate", "{}");
+    if (responseFailed(response, result.error)) return result;
+    result.success = true;
+    return result;
+}
+
+CatalogActionResult KronosApi::deletePackageVersion(const std::string& slug, int versionNumber) {
+    CatalogActionResult result;
+    HttpResponse response = requestWithRefresh(
+        "DELETE", "/v1/catalog/games/" + slug + "/package/versions/" + std::to_string(versionNumber), {});
+    if (responseFailed(response, result.error)) return result;
+    result.success = true;
+    return result;
+}
+
+GameImageUploadResult KronosApi::uploadGameImage(const std::string& slug, const std::string& kind,
+                                                 const std::string& imagePath, const std::string& sha256) {
+    GameImageUploadResult result;
+    std::ifstream in(imagePath, std::ios::binary);
+    if (!in.is_open()) {
+        result.error = "Could not read the image file.";
+        return result;
+    }
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const char* contentType = nullptr;
+    if (bytes.size() >= 8 && bytes.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0) contentType = "image/png";
+    else if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xFF &&
+             static_cast<unsigned char>(bytes[1]) == 0xD8 && static_cast<unsigned char>(bytes[2]) == 0xFF)
+        contentType = "image/jpeg";
+    if (contentType == nullptr) {
+        result.error = "Only PNG and JPEG images can be uploaded.";
+        return result;
+    }
+
+    const std::string base = "/v1/catalog/games/" + slug + "/media";
+    nlohmann::json request{{"kind", kind}, {"sha256", sha256}, {"size_bytes", bytes.size()}, {"content_type", contentType}};
+    HttpResponse ticket = requestWithRefresh("POST", base + "/upload-url", request.dump());
+    if (responseFailed(ticket, result.error)) return result;
+    nlohmann::json parsed = nlohmann::json::parse(ticket.body, nullptr, false);
+    std::string uploadUrl = parsed.is_discarded() ? std::string() : jsonStringOr(parsed, "upload_url");
+    if (uploadUrl.empty()) {
+        result.error = "The Kronos service did not return an upload location.";
+        return result;
+    }
+    HttpResponse put = putUpload(uploadUrl, bytes, contentType);
+    if (responseFailed(put, result.error)) return result;
+
+    request.erase("size_bytes");
+    HttpResponse confirm = requestWithRefresh("POST", base + "/confirm", request.dump());
+    if (responseFailed(confirm, result.error)) return result;
+    nlohmann::json confirmed = nlohmann::json::parse(confirm.body, nullptr, false);
+    if (!confirmed.is_discarded() && confirmed.contains("media") && confirmed["media"].is_object()) {
+        result.image = parseGameImage(confirmed["media"]);
+    }
+    result.success = true;
+    return result;
+}
+
+GameImageList KronosApi::fetchGameImages(const std::string& slug) {
+    GameImageList result;
+    HttpResponse response = requestWithRefresh("GET", "/v1/catalog/games/" + slug + "/media", {});
+    if (responseFailed(response, result.error)) return result;
+    nlohmann::json parsed = nlohmann::json::parse(response.body, nullptr, false);
+    if (!parsed.is_discarded() && parsed.contains("media") && parsed["media"].is_array()) {
+        for (const auto& node : parsed["media"]) result.images.push_back(parseGameImage(node));
+    }
+    result.success = true;
+    return result;
+}
+
+CatalogActionResult KronosApi::deleteGameImage(const std::string& slug, const std::string& imageId) {
+    CatalogActionResult result;
+    HttpResponse response = requestWithRefresh("DELETE", "/v1/catalog/games/" + slug + "/media/" + imageId, {});
+    if (responseFailed(response, result.error)) return result;
     result.success = true;
     return result;
 }
@@ -1075,6 +1256,7 @@ PublishResult KronosApi::publishGame(const PublishRequest& request) {
     if (game != parsed.end() && game->is_object()) {
         result.gameId = jsonStringOr(*game, "id");
         result.slug = jsonStringOr(*game, "slug");
+        result.reviewStatus = jsonStringOr(*game, "review_status");
     }
     result.success = true;
     return result;

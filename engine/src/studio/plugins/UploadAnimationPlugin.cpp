@@ -8,6 +8,7 @@
 
 #include "core/Components.hpp"
 #include "core/Renderer.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -166,6 +167,8 @@ void UploadAnimationPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*selec
     ImGui::Combo("Category", &categoryIndex_, kCategoryNames, IM_ARRAYSIZE(kCategoryNames));
     ImGui::InputText("Tags (comma-separated)", tagsBuffer_, sizeof(tagsBuffer_));
     ImGui::InputText("Clip Path (.anim)", clipPathBuffer_, sizeof(clipPathBuffer_));
+    ImGui::SameLine();
+    browseButton("clip", clipPathBuffer_, sizeof(clipPathBuffer_), {"Choose Animation Clip", {"*.anim"}, "Animation clips"});
     ImGui::InputText("Creator Id", creatorIdBuffer_, sizeof(creatorIdBuffer_));
 
     if (hasClip_) {

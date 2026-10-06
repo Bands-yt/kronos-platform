@@ -33,3 +33,7 @@ export function minidumpObjectKey(sha256Hex) {
 export function installerObjectKey(app, platform, version) {
   return `installers/${app}/${platform}/${version}.bin`;
 }
+
+export function mediaObjectKey(sha256Hex, contentType) {
+  return `media/${sha256Hex}.${contentType === 'image/png' ? 'png' : 'jpg'}`;
+}

@@ -296,4 +296,44 @@ std::vector<std::string> ColorTextEditBackend::splitSignatureParameters(const st
     return parameters;
 }
 
+std::string ColorTextEditBackend::applyEdits(const std::string& text, std::vector<TextEdit> edits, std::vector<Caret>& carets) {
+    std::sort(edits.begin(), edits.end(), [](const TextEdit& a, const TextEdit& b) { return a.start < b.start; });
+    std::vector<TextEdit> kept;
+    for (TextEdit& edit : edits) {
+        edit.start = std::clamp(edit.start, 0, static_cast<int>(text.size()));
+        edit.end = std::clamp(edit.end, edit.start, static_cast<int>(text.size()));
+        if (!kept.empty() && edit.start < kept.back().end) continue;
+        if (!kept.empty() && edit.start == kept.back().start && edit.end == kept.back().end) continue;
+        kept.push_back(std::move(edit));
+    }
+
+    std::string out;
+    out.reserve(text.size());
+    std::vector<int> newStarts;
+    int cursor = 0;
+    for (const TextEdit& edit : kept) {
+        out.append(text, static_cast<size_t>(cursor), static_cast<size_t>(edit.start - cursor));
+        newStarts.push_back(static_cast<int>(out.size()));
+        out += edit.text;
+        cursor = edit.end;
+    }
+    out.append(text, static_cast<size_t>(cursor), std::string::npos);
+
+    auto map = [&](int offset) {
+        int delta = 0;
+        for (size_t i = 0; i < kept.size(); ++i) {
+            const TextEdit& edit = kept[i];
+            if (offset < edit.start) break;
+            if (offset <= edit.end) return newStarts[i] + static_cast<int>(edit.text.size());
+            delta += static_cast<int>(edit.text.size()) - (edit.end - edit.start);
+        }
+        return offset + delta;
+    };
+    for (Caret& caret : carets) {
+        caret.anchor = map(caret.anchor);
+        caret.position = map(caret.position);
+    }
+    return out;
+}
+
 } // namespace engine::studio::panels

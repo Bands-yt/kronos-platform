@@ -12,6 +12,7 @@ import { authRouter } from './auth/routes.js';
 import { avatarRouter } from './avatar/routes.js';
 import { catalogRouter } from './catalog/routes.js';
 import { assetsRouter } from './catalog/assets.js';
+import { catalogReviewRouter, releasesRouter } from './catalog/releases.js';
 import { downloadsRouter, desktopClientManifest } from './catalog/downloads.js';
 import { showcaseRouter } from './catalog/showcase.js';
 import { inventoryRouter } from './inventory/routes.js';
@@ -92,6 +93,8 @@ export function createApp() {
   app.use('/v1/avatar', avatarRouter);
   app.use('/v1/catalog', catalogRouter);
   app.use('/v1/catalog', assetsRouter);
+  app.use('/v1/catalog', releasesRouter);
+  app.use('/v1/moderation/catalog', catalogReviewRouter);
   app.use('/v1/downloads', downloadsRouter);
   app.use('/v1/showcase', showcaseRouter);
   app.use('/v1/inventory', inventoryRouter);

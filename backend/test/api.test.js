@@ -13,9 +13,9 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/server.js';
 import { config } from '../src/config.js';
 import { pool, query } from '../src/db.js';
-import { redis, keys } from '../src/redis.js';
+import { closeRedis, redis, keys } from '../src/redis.js';
 import { setEmailTransport } from '../src/email/mailer.js';
-import { issueJoinTicket, verifyJoinTicket } from '../src/auth/tokens.js';
+import { issueJoinTicket, purgeExpiredTokens, verifyJoinTicket } from '../src/auth/tokens.js';
 import { hashPassword, verifyPassword, validatePasswordStrength } from '../src/auth/passwords.js';
 import { verifyGoogleIdToken, GoogleTokenError } from '../src/auth/google.js';
 
@@ -35,7 +35,7 @@ before(async () => {
 after(async () => {
   server.close();
   await pool.end();
-  redis.disconnect();
+  closeRedis();
 });
 
 async function api(method, path, { body, token } = {}) {
@@ -545,6 +545,25 @@ test('the login rate limiter really blocks a sustained brute-force attempt', asy
   assert.equal(correct.status, 429);
 
   await clearRateLimits();
+});
+
+test('expired tokens are purged after a grace period; live ones stay', async () => {
+  const { rows: [user] } = await query(
+    `INSERT INTO users (email, email_lower, display_name) VALUES ($1, $1, 'purge') RETURNING id`,
+    [`purge_${crypto.randomBytes(6).toString('hex')}@example.com`],
+  );
+  const insert = (hash, expiresSql) => query(
+    `INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at) VALUES ($1, $2, gen_random_uuid(), ${expiresSql})`,
+    [user.id, hash],
+  );
+  const tag = crypto.randomBytes(6).toString('hex');
+  await insert(`old_${tag}`, `NOW() - INTERVAL '3 days'`);
+  await insert(`grace_${tag}`, `NOW() - INTERVAL '2 hours'`);
+  await insert(`live_${tag}`, `NOW() + INTERVAL '3 days'`);
+  const removed = await purgeExpiredTokens();
+  assert.ok(removed.refresh_tokens >= 1);
+  const { rows } = await query(`SELECT token_hash FROM refresh_tokens WHERE user_id = $1 ORDER BY token_hash`, [user.id]);
+  assert.deepEqual(rows.map((r) => r.token_hash), [`grace_${tag}`, `live_${tag}`]);
 });
 
 test('unknown endpoints 404 and malformed JSON 400s without leaking internals', async () => {

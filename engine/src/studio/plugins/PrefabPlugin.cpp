@@ -5,6 +5,7 @@
 #include <imgui.h>
 
 #include "core/Components.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -71,6 +72,8 @@ void PrefabPlugin::drawPanel(core::ECS& ecs, core::EntityId /*selected*/,
     ImGui::Begin("Prefabs");
 
     ImGui::InputText("File", pathBuffer_, sizeof(pathBuffer_));
+    ImGui::SameLine();
+    browseButton("prefab", pathBuffer_, sizeof(pathBuffer_), {"Load Prefab", {"*.prefab"}, "Prefabs"});
     ImGui::SameLine();
     if (ImGui::Button("New")) {
         library_.emplace_back();

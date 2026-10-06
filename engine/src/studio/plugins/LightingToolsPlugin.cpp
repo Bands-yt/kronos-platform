@@ -6,7 +6,9 @@
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
+#include "core/Texture.hpp"
 #include "studio/PluginChrome.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -177,7 +179,29 @@ void LightingToolsPlugin::drawRenderingModeSection() {
     }
     ImGui::SameLine();
     helpMarker(
-        "PCF instead of PCSS shadows, no bloom extract, capped particle draws, and ray-traced shadows off. Same as F7 in the client.");
+        "PCF instead of PCSS shadows, no bloom extract, capped particle draws, coarse shading where supported, and ray-traced shadows off. Same as F7 in the client.");
+
+    const core::GpuFeatureTier& gpu = renderer_->gpuFeatures();
+    ImGui::BeginDisabled(!gpu.fragmentShadingRate || perfEnabled);
+    bool coarse = renderer_->coarseShading() || (perfEnabled && gpu.fragmentShadingRate);
+    if (ImGui::Checkbox("Coarse Shading (VRS)", &coarse)) renderer_->setCoarseShading(coarse);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    helpMarker(gpu.fragmentShadingRate
+                   ? "Shades the scene once per 2x2 pixels with variable rate shading. Edges stay sharp; surface detail softens. Always on in Performance Mode."
+                   : "This GPU doesn't support variable rate shading (VK_KHR_fragment_shading_rate).");
+    ImGui::BeginDisabled(!gpu.shaderClock);
+    bool costView = renderer_->shaderCostView();
+    if (ImGui::Checkbox("Shader Cost View", &costView)) renderer_->setShaderCostView(costView);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    helpMarker(gpu.shaderClock
+                   ? "Colours every opaque pixel by the GPU cycles its shading took, from blue (cheap) through green and yellow to red (expensive). Use it to find costly lights, materials and ray-traced effects."
+                   : "This GPU doesn't support shader clocks (VK_KHR_shader_clock).");
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s | %llu textures uploaded by host copy", gpu.summary().c_str(),
+                        static_cast<unsigned long long>(core::Texture::hostCopiedUploads()));
+    ImGui::PopTextWrapPos();
 
     bool taaEnabled = renderer_->isTemporalAAEnabled();
     if (ImGui::Checkbox("Temporal Anti-Aliasing", &taaEnabled)) {
@@ -235,6 +259,8 @@ void LightingToolsPlugin::drawRenderingModeSection() {
                                                                       : core::Renderer::TonemapOperator::AcesFilm);
         }
         ImGui::InputText("LUT File Path", &lutPathBuffer_);
+        ImGui::SameLine();
+        browseButton("lut", lutPathBuffer_, {"Load Color LUT", {"*.cube"}, "Cube LUTs"});
         ImGui::SameLine();
         helpMarker("A standard Adobe .cube 3D LUT file (the format DaVinci Resolve/Premiere/Blender export).");
         if (ImGui::Button("Load LUT")) {

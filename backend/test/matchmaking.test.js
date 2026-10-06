@@ -10,7 +10,7 @@ import test, { after, before } from 'node:test';
 import { createApp } from '../src/server.js';
 import { config } from '../src/config.js';
 import { pool, query } from '../src/db.js';
-import { redis, keys } from '../src/redis.js';
+import { closeRedis, redis, keys } from '../src/redis.js';
 import { setEmailTransport } from '../src/email/mailer.js';
 
 let server;
@@ -18,6 +18,8 @@ let baseUrl;
 const originalGraceSeconds = config.matchmakingGraceSeconds;
 
 before(async () => {
+  // Written before catalog review existed; review has its own tests.
+  config.gameReviewRequired = false;
   setEmailTransport(async () => {});
   // Real players in this test never wait for a companion -- a 15s grace
   // period (the real default) would make this test slow for no reason.
@@ -31,7 +33,7 @@ after(async () => {
   config.matchmakingGraceSeconds = originalGraceSeconds;
   server.close();
   await pool.end();
-  redis.disconnect();
+  closeRedis();
 });
 
 async function api(method, path, { body, token } = {}) {

@@ -49,6 +49,8 @@ struct ScenePickResult {
 // for a downward raycast starting at the selected entity's own origin,
 // which would otherwise trivially self-hit its own AABB at distance ~0
 // instead of finding the real ground surface below it.
+// When the registry context holds a core::SceneSpatialIndex (the renderer
+// creates one), the ray walks its BVH instead of testing every entity.
 [[nodiscard]] ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin, glm::vec3 direction,
                                           float maxDistance, EntityId excludeEntity = kNullEntity);
 

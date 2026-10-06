@@ -12,6 +12,7 @@
 #include "studio/MaterialPresets.hpp"
 #include "studio/ParticlePresets.hpp"
 #include "studio/PluginChrome.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -210,8 +211,16 @@ void CreatorAssetBrowserPlugin::drawImportedAssetsSection() {
         "Creator-imported files (.obj/.gltf/.glb/.fbx/.png/.wav/...) -- distinct from the built-in presets above. "
         "Drag a file onto the Studio window to import it too.");
 
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 160.0f);
     ImGui::InputTextWithHint("##import_path", "path/to/asset.obj", importPathBuffer_, sizeof(importPathBuffer_));
+    ImGui::SameLine();
+    if (browseButton("asset", importPathBuffer_, sizeof(importPathBuffer_),
+                     {"Import Asset",
+                      {"*.obj", "*.gltf", "*.glb", "*.fbx", "*.png", "*.jpg", "*.jpeg", "*.wav", "*.flac", "*.mp3", "*.ogg"},
+                      "Models, images and audio"})) {
+        importQueue_.submit(importPathBuffer_);
+        importStatusMessage_ = std::string("Importing \"") + importPathBuffer_ + "\" in the background...";
+    }
     ImGui::SameLine();
     if (ImGui::Button("Import") && importPathBuffer_[0] != '\0') {
         importQueue_.submit(importPathBuffer_);

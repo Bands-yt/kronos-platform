@@ -8,6 +8,7 @@
 
 #include "core/ObjLoader.hpp"
 #include "core/Renderer.hpp"
+#include "studio/FileBrowse.hpp"
 
 namespace engine::studio::plugins {
 
@@ -245,7 +246,12 @@ void UploadAvatarItemPlugin::drawPanel(core::ECS& /*ecs*/, core::EntityId /*sele
     ImGui::Combo("Category", &categoryIndex_, kCategoryNames, IM_ARRAYSIZE(kCategoryNames));
     ImGui::InputText("Tags (comma-separated)", tagsBuffer_, sizeof(tagsBuffer_));
     ImGui::InputText("Mesh Path (.obj)", meshPathBuffer_, sizeof(meshPathBuffer_));
+    ImGui::SameLine();
+    browseButton("mesh", meshPathBuffer_, sizeof(meshPathBuffer_), {"Choose Mesh", {"*.obj"}, "OBJ meshes"});
     ImGui::InputText("Texture Path (optional)", texturePathBuffer_, sizeof(texturePathBuffer_));
+    ImGui::SameLine();
+    browseButton("texture", texturePathBuffer_, sizeof(texturePathBuffer_),
+                 {"Choose Texture", {"*.png", "*.jpg", "*.jpeg"}, "Images"});
     // Kronos ("Creator Identity + Marketplace Publishing Pipeline"): real,
     // read-only -- no longer a free-text field a creator could type
     // anything into (see core::LocalProfile::creatorId's own comment).

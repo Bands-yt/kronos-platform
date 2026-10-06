@@ -1,7 +1,11 @@
 #include "studio/plugins/PhysicsPreviewPlugin.hpp"
 
+#include <algorithm>
+#include <unordered_set>
+
 #include <imgui.h>
 
+#include "core/Audio.hpp"
 #include "core/Components.hpp"
 #include "core/Logger.hpp"
 #include "core/ScriptHotReload.hpp"
@@ -17,6 +21,7 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
         }
         physicsInitialized_ = true;
     }
+    captureScene(ecs);
 
     attachedEntities_.clear();
     int skippedMesh = 0;
@@ -64,8 +69,16 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
         // ScriptPhysicsPreviewApi.hpp's own header comment for why this,
         // not DebugConsolePanel's separate VM, is the one real place a
         // script can pause/resume/step this simulation.
+        scripting_.setDebugger(scriptDebugger_);
         scriptPhysicsPreviewApi_ = std::make_unique<ScriptPhysicsPreviewApi>(*this, ecs);
-        scripting_.setBindingsHook([this](lua_State* L) { scriptPhysicsPreviewApi_->registerInto(L); });
+        scriptWorldApi_ = std::make_unique<core::ScriptWorldApi>(ecs, physics_, animationPlayer_);
+        scriptWorldApi_->setSpawnBoxMeshHandle(spawnBoxMesh_);
+        if (audio_ != nullptr) scriptAudioApi_ = std::make_unique<core::ScriptAudioApi>(*audio_, ecs);
+        scripting_.setBindingsHook([this](lua_State* L) {
+            scriptPhysicsPreviewApi_->registerInto(L);
+            scriptWorldApi_->registerInto(L);
+            if (scriptAudioApi_) scriptAudioApi_->registerInto(L);
+        });
         // Kronos ("Script Editor QoL" -- Engine Console click-to-jump):
         // without this, loadAndRun()'s compile/runtime error messages
         // (which embed the entity's own Name as chunkName -- see
@@ -81,6 +94,11 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
                 core::logInfo("Script", "%s", line.c_str());
             }
         });
+    }
+
+    if (audio_ != nullptr) {
+        mixerBeforePlay_ = audio_->mixer().config();
+        for (auto [entity, sound] : ecs.raw().view<core::AudioSource>().each()) sound.playing = sound.playOnStart;
     }
 
     playing_ = true;
@@ -110,6 +128,16 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
         script.loadedSource.clear();
     }
     scripting_.shutdown();
+    scriptAudioApi_.reset();
+    if (audio_ != nullptr) {
+        for (auto [entity, sound] : ecs.raw().view<core::AudioSource>().each()) {
+            sound.playing = false;
+            audio_->stopSound(sound.soundHandle);
+        }
+        audio_->mixer().clearSnapshots();
+        (void)audio_->mixer().setConfig(mixerBeforePlay_);
+    }
+    restoreScene(ecs);
 
     playing_ = false;
     paused_ = false;
@@ -126,9 +154,16 @@ bool PhysicsPreviewPlugin::stepOnce(core::ECS& ecs, float dt) {
 void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*selected*/,
                                    const std::vector<core::EntityId>& /*selectedEntities*/) {
     if (!playing_) return;
+    if (scripting_.debugPaused()) {
+        scripting_.tick(0.0f);
+        return;
+    }
     if (!paused_) {
         physics_.step(dt, ecs);
         recentContacts_ = physics_.drainCollisionEvents();
+        for (const auto& contact : recentContacts_) {
+            scripting_.fireCollision(static_cast<uint32_t>(contact.first), static_cast<uint32_t>(contact.second));
+        }
     }
 
     // Real hot-reload: a script saved from the Script Editor while
@@ -137,6 +172,70 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
     // completely untouched by this.
     core::tickScriptHotReload(ecs, scripting_);
     scripting_.tick(dt);
+}
+
+namespace {
+
+void collectMembers(core::ECS& ecs, core::EntityId entity, std::vector<core::EntityId>& out) {
+    out.push_back(entity);
+    if (const auto* hierarchy = ecs.tryGetComponent<core::Hierarchy>(entity)) {
+        for (core::EntityId child : hierarchy->children) {
+            if (ecs.raw().valid(child)) collectMembers(ecs, child, out);
+        }
+    }
+}
+
+} // namespace
+
+void PhysicsPreviewPlugin::captureScene(core::ECS& ecs) {
+    playSnapshot_ = PlaySnapshot{};
+    for (auto [entity, transform] : ecs.raw().view<core::Transform>().each()) {
+        playSnapshot_.entities.push_back(entity);
+        playSnapshot_.transforms.emplace_back(entity, transform);
+        if (const auto* renderable = ecs.tryGetComponent<core::Renderable>(entity)) {
+            playSnapshot_.renderables.emplace_back(entity, *renderable);
+        }
+        if (const auto* light = ecs.tryGetComponent<core::Light>(entity)) playSnapshot_.lights.emplace_back(entity, *light);
+        const auto* hierarchy = ecs.tryGetComponent<core::Hierarchy>(entity);
+        if (hierarchy == nullptr || hierarchy->parent == core::kNullEntity || !ecs.raw().valid(hierarchy->parent)) {
+            PlaySnapshot::Root root;
+            collectMembers(ecs, entity, root.members);
+            root.snapshot = EntitySnapshot::capture(ecs, {entity});
+            playSnapshot_.roots.push_back(std::move(root));
+        }
+    }
+}
+
+void PhysicsPreviewPlugin::restoreScene(core::ECS& ecs) {
+    auto& registry = ecs.raw();
+    const std::unordered_set<core::EntityId> before(playSnapshot_.entities.begin(), playSnapshot_.entities.end());
+    std::vector<core::EntityId> spawned;
+    for (auto entity : registry.view<core::Transform>()) {
+        if (before.count(entity) == 0) spawned.push_back(entity);
+    }
+    for (core::EntityId entity : spawned) {
+        physics_.detachBody(entity, ecs);
+        ecs.destroyEntity(entity);
+    }
+
+    for (const PlaySnapshot::Root& root : playSnapshot_.roots) {
+        const bool intact = std::all_of(root.members.begin(), root.members.end(),
+                                        [&](core::EntityId member) { return registry.valid(member); });
+        if (intact) continue;
+        for (core::EntityId member : root.members) ecs.destroyEntity(member);
+        root.snapshot.restore(ecs);
+    }
+
+    for (const auto& [entity, transform] : playSnapshot_.transforms) {
+        if (auto* current = ecs.tryGetComponent<core::Transform>(entity)) *current = transform;
+    }
+    for (const auto& [entity, renderable] : playSnapshot_.renderables) {
+        if (auto* current = ecs.tryGetComponent<core::Renderable>(entity)) *current = renderable;
+    }
+    for (const auto& [entity, light] : playSnapshot_.lights) {
+        if (auto* current = ecs.tryGetComponent<core::Light>(entity)) *current = light;
+    }
+    playSnapshot_ = PlaySnapshot{};
 }
 
 void PhysicsPreviewPlugin::castTestRay(glm::vec3 origin, glm::vec3 direction, float maxDistance) {

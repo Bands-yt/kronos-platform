@@ -184,8 +184,47 @@ public:
     // OffscreenTarget to before the *next* frame's scene render.
     [[nodiscard]] VkExtent2D desiredExtent() const { return desiredExtent_; }
 
-    void setGizmoOperation(GizmoOperation op) { gizmoOperation_ = op; }
+    void setGizmoOperation(GizmoOperation op) {
+        gizmoOperation_ = op;
+        selectTool_ = false;
+    }
     [[nodiscard]] GizmoOperation gizmoOperation() const { return gizmoOperation_; }
+    // Select tool: click-to-pick with no manipulator drawn.
+    void setSelectTool(bool on) { selectTool_ = on; }
+    [[nodiscard]] bool selectTool() const { return selectTool_; }
+    void setGizmoSpace(GizmoSpace space) { gizmoSpace_ = space; }
+    [[nodiscard]] GizmoSpace gizmoSpace() const { return gizmoSpace_; }
+
+    bool& gridSnapEnabled() { return gridSnapEnabled_; }
+    bool& angleSnapEnabled() { return angleSnapEnabled_; }
+    bool& scaleSnapEnabled() { return scaleSnapEnabled_; }
+    float& translateSnap() { return translateSnap_; }
+    float& rotateSnapDegrees() { return rotateSnapDegrees_; }
+    float& scaleSnap() { return scaleSnap_; }
+    bool& showBoundingBoxes() { return showBoundingBoxes_; }
+    bool& showTerrainStreaming() { return showTerrainStreaming_; }
+    bool& showCascades() { return showCascades_; }
+    bool& showViewCube() { return showViewCube_; }
+
+    // The top ribbon owns the tools; the in-viewport floating toolbar hides.
+    void setRibbonMode(bool on) { ribbonMode_ = on; }
+
+    enum class Primitive { Block, Sphere, Cylinder, Plane, Torus };
+    // Spawns in front of the camera (or on the ground under its gaze) and
+    // selects the result.
+    // Where an object with the given local bounds should go: under the
+    // camera's gaze (grid-snapped), resting on top of whatever its footprint
+    // overlaps.
+    [[nodiscard]] glm::vec3 spawnPointInFront(core::ECS& ecs, core::MeshLibrary* meshLibrary, glm::vec3 boundsMin,
+                                              glm::vec3 boundsMax, core::EntityId exclude = core::kNullEntity) const;
+    core::EntityId spawnPrimitive(core::ECS& ecs, core::MeshLibrary* meshLibrary, ExplorerPanel& explorer,
+                                  Primitive kind);
+
+    // Frames the camera on the union of the entities' world bounds.
+    void focusOn(core::ECS& ecs, core::MeshLibrary& meshLibrary, const std::vector<core::EntityId>& entities);
+    void resetCamera();
+    // Rests the selection on whatever is below it (End key).
+    void dropSelectedToGround(core::ECS& ecs, core::MeshLibrary& meshLibrary, core::EntityId selected);
 
     // Kronos ("Studio Asset Drag-and-Drop"): real, deferred setter --
     // same "constructed before GPU is ready, real mesh handles arrive
@@ -247,19 +286,6 @@ private:
     void handleSelection(core::ECS& ecs, core::MeshLibrary& meshLibrary, ExplorerPanel& explorer, ImVec2 imageOrigin,
                           ImVec2 imageSize);
 
-    // Kronos ("Developer Velocity Sprint" -- "Drop-to-Ground Shortcut
-    // (End Key)"): a real, physics-independent downward raycast
-    // (core::pickEntity(), the same one click-to-select already uses --
-    // Studio runs no live core::Physics outside Play mode, see that
-    // function's own header comment) from `selected`'s current Transform
-    // position, excluding `selected` itself. On a real hit, repositions
-    // `selected` so its own mesh's local-space bottom (scaled by
-    // Transform::scale.y, ignoring rotation -- a real, stated scope
-    // simplification, see this method's own .cpp comment) rests exactly
-    // on the hit surface, not its raw origin (which would sink a
-    // center-origin mesh like a Box halfway into the ground). A real,
-    // honest no-op if there's nothing selected or nothing below it.
-    void dropSelectedToGround(core::ECS& ecs, core::MeshLibrary& meshLibrary, core::EntityId selected);
 
     // World -> screen projection shared by every debug-draw shape below --
     // same convention handleSelection()'s drag-select rectangle test
@@ -326,16 +352,6 @@ private:
     void drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& meshLibrary, const ViewportDebugContext& debugContext,
                                    ImVec2 imageOrigin, ImVec2 imageSize);
 
-    // Kronos ("Clean Viewport & Mesh Import Pipeline" -- "clean ground
-    // grid"): a real, always-on world-space grid of lines on the XZ plane
-    // at y=0, projected with the exact same worldToScreen() helper every
-    // other overlay above already uses -- not a texture/shader change,
-    // just screen-space lines drawn every frame the same way physics/
-    // terrain debug wireframes already are. Deliberately unconditional
-    // (no showX_ toggle): this is meant to always read as "an empty
-    // studio floor", the same permanent baseline a real 3D editor's
-    // viewport grid is, not an opt-in debug overlay.
-    void drawGroundGridOverlay(ImVec2 imageOrigin, ImVec2 imageSize);
 
     core::Camera camera_;
     // See snapshotRenderCamera()'s own comment. Default-constructed to
@@ -392,6 +408,19 @@ private:
     bool showBoundingBoxes_ = false;
     bool showTerrainStreaming_ = false;
     bool showCascades_ = false;
+
+    bool selectTool_ = false;
+    bool ribbonMode_ = false;
+    bool showViewCube_ = true;
+    void drawViewCube(ImVec2 imageOrigin, ImVec2 imageSize);
+    void drawStatusBar(ImDrawList* drawList, ImVec2 imageOrigin, ImVec2 imageSize, size_t selectionCount);
+    bool focusActive_ = false;
+    glm::vec3 focusTarget_{0.0f};
+    float focusDistance_ = 10.0f;
+    bool orbitActive_ = false;
+    float orbitYawGoal_ = 0.0f;
+    float orbitPitchGoal_ = 0.0f;
+    void updateFocus(float deltaTime);
 };
 
 } // namespace engine::studio::panels

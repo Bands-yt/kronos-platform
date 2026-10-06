@@ -23,6 +23,7 @@ a global table: `world.setPosition(id, x, y, z)`.
 | `world.spawnPlayer`, `avatar.*` | ✅ (`core::ScriptAvatarApi`) | ❌ | ❌ |
 | `network.*` | ✅ | ✅ | ❌ |
 | `ui.*` | ✅ | ❌ | ❌ |
+| `audio.*` | ✅ (also during Studio Play) | ❌ | ❌ |
 
 Studio's plugin/console `world` table (`studio::registerStudioEcsBindings`)
 is intentionally smaller than engine_runtime's (`core::ScriptWorldApi`) —
@@ -148,6 +149,8 @@ noted.
 - **`world.setPosition(id, x, y, z)`**
 - **`world.getRotation(id)`** → x, y, z (Euler degrees).
 - **`world.setRotation(id, x, y, z)`** (Euler degrees).
+- **`world.rotateBy(id, x, y, z)`**: turns by Euler degrees about the world axes. Repeated calls spin smoothly.
+- **`script.entity`**: the id of the object this script is attached to (set for scripts attached to objects).
 - **`world.setScale(id, x, y, z)`**
 - **`world.setColor(id, r, g, b, a?)`** — sets `Renderable::baseColor`;
   no-op if the entity has no `Renderable`.
@@ -251,6 +254,24 @@ mapping to number/string/boolean values.
   every connected client; real, honest no-op outside Server mode.
 - **`network.onClientEvent(name, fn)`** — `fn(payload)`, client-side
   handler registration.
+
+## `audio` — sounds and the mixer
+
+Gameplay scripts only (engine_runtime and Studio Play). Buses and snapshots
+are named in the project's `mixer.kmixer`; see [AUDIO_MIXER.md](AUDIO_MIXER.md).
+Entity functions need an entity with a sound (Inspector → Add Sound).
+
+- **`audio.snapshot(name, intensity?, fadeSeconds?)`** → `true`/`false` —
+  fades a snapshot to `intensity` (0–1, default 1). 0 turns it off.
+- **`audio.snapshotIntensity(name)`** → number (0–1).
+- **`audio.setBusVolume(bus, dB)`** → `true`/`false` — clamped to -80..24.
+- **`audio.busVolume(bus)`** → dB, after snapshots.
+- **`audio.setBusMuted(bus, muted)`** → `true`/`false`.
+- **`audio.busLevel(bus)`** → current loudness in dB (-80 is silent).
+- **`audio.play(entity)`** → `true`, or `nil` if the entity has no sound.
+- **`audio.stop(entity)`**, **`audio.isPlaying(entity)`** → boolean.
+- **`audio.setVolume(entity, volume)`** (0–4), **`audio.setPitch(entity, pitch)`**
+  (0.05–8), **`audio.setBus(entity, bus)`**.
 
 ## `ui` — screen-space HUD drawing and shell control
 

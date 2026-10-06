@@ -12,6 +12,7 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "recycle-usernames": "node scripts/recycle-usernames.js",
+    "purge-expired-tokens": "node scripts/purge-expired-tokens.js",
     "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {

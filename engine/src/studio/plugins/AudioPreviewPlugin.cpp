@@ -1,6 +1,7 @@
 #include "studio/plugins/AudioPreviewPlugin.hpp"
 
 #include "core/UIWidgets.hpp"
+#include "studio/FileBrowse.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -82,6 +83,10 @@ void AudioPreviewPlugin::drawAudioSourceWindow() {
     ImGui::TextDisabled("Load a WAV, FLAC or MP3 file to audition and process.");
     ImGui::SetNextItemWidth(320.0f);
     ImGui::InputText("Path", pathBuffer_, sizeof(pathBuffer_));
+    ImGui::SameLine();
+    if (browseButton("audio", pathBuffer_, sizeof(pathBuffer_), {"Load Audio", {"*.wav", "*.flac", "*.mp3", "*.ogg"}, "Audio files"})) {
+        pendingLoad_ = true;
+    }
     ImGui::SameLine();
     if (ImGui::Button("Load") || pendingLoad_) {
         pendingLoad_ = false;

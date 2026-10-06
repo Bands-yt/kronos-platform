@@ -35,6 +35,13 @@
 namespace engine::studio::panels {
 
 namespace {
+
+constexpr float kViewCubeSize = 96.0f;
+
+ImVec2 viewCubeOrigin(ImVec2 imageOrigin, ImVec2 imageSize) {
+    return ImVec2(imageOrigin.x + imageSize.x - kViewCubeSize - 8.0f, imageOrigin.y + 8.0f);
+}
+
 // The world matrix of `entity`'s *parent* (identity if it has none) --
 // every caller below needs this to convert an ImGuizmo-edited world
 // matrix back into the entity's own local Transform, since
@@ -726,37 +733,6 @@ void ViewportPanel::drawPhysicsDebugOverlay(core::ECS& ecs, plugins::PhysicsPrev
     }
 }
 
-void ViewportPanel::drawGroundGridOverlay(ImVec2 imageOrigin, ImVec2 imageSize) {
-    if (imageSize.x <= 0.0f || imageSize.y <= 0.0f) return;
-
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    float aspect = imageSize.x / imageSize.y;
-    glm::mat4 viewProj = renderCamera_.projectionMatrix(aspect) * renderCamera_.viewMatrix();
-
-    auto projectLine = [&](glm::vec3 a, glm::vec3 b, ImU32 color, float thickness) {
-        ImVec2 screenA, screenB;
-        if (!worldToScreen(viewProj, a, imageOrigin, imageSize, screenA)) return;
-        if (!worldToScreen(viewProj, b, imageOrigin, imageSize, screenB)) return;
-        drawList->AddLine(screenA, screenB, color, thickness);
-    };
-
-    // Matches buildBringUpScene()'s own 25x25 GroundPlane extent (halfWidth/
-    // halfDepth = 12.5) -- a grid line every 1m, so the two read as one
-    // consistent floor rather than the grid overshooting or undershooting
-    // the real ground mesh underneath it.
-    constexpr float kHalfExtent = 12.5f;
-    constexpr float kStep = 1.0f;
-    constexpr ImU32 kLineColor = IM_COL32(255, 255, 255, 35);
-    constexpr ImU32 kAxisColor = IM_COL32(255, 255, 255, 90);
-    int lineCount = static_cast<int>(kHalfExtent / kStep);
-    for (int i = -lineCount; i <= lineCount; ++i) {
-        float offset = static_cast<float>(i) * kStep;
-        ImU32 color = (i == 0) ? kAxisColor : kLineColor;
-        projectLine({-kHalfExtent, 0.0f, offset}, {kHalfExtent, 0.0f, offset}, color, (i == 0) ? 1.5f : 1.0f);
-        projectLine({offset, 0.0f, -kHalfExtent}, {offset, 0.0f, kHalfExtent}, color, (i == 0) ? 1.5f : 1.0f);
-    }
-}
-
 void ViewportPanel::drawSprint8DebugOverlays(core::ECS& ecs, core::MeshLibrary& meshLibrary,
                                               const ViewportDebugContext& debugContext, ImVec2 imageOrigin,
                                               ImVec2 imageSize) {
@@ -1115,6 +1091,7 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     ImGui::PopStyleVar();
 
     updateFreeFly(deltaTime);
+    updateFocus(deltaTime);
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
     desiredExtent_ = {static_cast<uint32_t>(std::max(1.0f, avail.x)), static_cast<uint32_t>(std::max(1.0f, avail.y))};
@@ -1131,8 +1108,6 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         ImGui::Dummy(avail);
     }
     ImVec2 imageSize = ImGui::GetItemRectSize();
-
-    drawGroundGridOverlay(imageOrigin, imageSize);
 
     // Kronos ("Studio Asset Drag-and-Drop"): real drop target -- the
     // viewport image/dummy just submitted above is "the last item," so
@@ -1190,7 +1165,7 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         auto* editable = ecs->tryGetComponent<core::EditableMeshComponent>(selected);
         if (modelingMode != nullptr && editable != nullptr) {
             drawSubObjectEditing(*modelingMode, *ecs, selected, imageOrigin, imageSize);
-        } else {
+        } else if (!selectTool_) {
             drawGizmo(*ecs, selected, explorer.selectedEntities(), imageOrigin, imageSize);
         }
     }
@@ -1201,7 +1176,14 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     // Click-to-select / drag-select-box -- only while free-flying isn't
     // consuming the mouse (right-drag), there's an ECS+MeshLibrary to pick
     // against, and Live Sculpt isn't claiming left-click instead.
-    if (ecs != nullptr && meshLibrary != nullptr && !dragging_ && !liveSculptActive) {
+    bool overViewCube = false;
+    if (ribbonMode_ && showViewCube_) {
+        const ImVec2 cube = viewCubeOrigin(imageOrigin, imageSize);
+        const ImVec2 mouse = ImGui::GetMousePos();
+        overViewCube = mouse.x >= cube.x && mouse.y >= cube.y && mouse.x <= cube.x + kViewCubeSize &&
+                       mouse.y <= cube.y + kViewCubeSize;
+    }
+    if (ecs != nullptr && meshLibrary != nullptr && !dragging_ && !liveSculptActive && !overViewCube) {
         handleSelection(*ecs, *meshLibrary, explorer, imageOrigin, imageSize);
     }
     if (ecs != nullptr && !dragging_ && liveSculptActive) {
@@ -1220,12 +1202,7 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
-    // Camera status -- bottom-left, out of the toolbar's way (top-left,
-    // see below).
-    char overlay[192];
-    std::snprintf(overlay, sizeof(overlay), "Camera pos (%.1f, %.1f, %.1f)  yaw %.0f  pitch %.0f  |  Right-drag + WASD/QE to fly",
-                  camera_.position.x, camera_.position.y, camera_.position.z, camera_.yawDegrees, camera_.pitchDegrees);
-    drawList->AddText(ImVec2(imageOrigin.x + 10, imageOrigin.y + imageSize.y - 22), IM_COL32(210, 212, 218, 220), overlay);
+    drawStatusBar(drawList, imageOrigin, imageSize, explorer.selectedEntities().size());
 
     if (movieMode != nullptr) {
         // Kronos (viewport error audit -- Movie Maker active camera
@@ -1259,9 +1236,19 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     // the viewport itself being hovered, not just "gizmo not in use".
     bool viewportHovered = ImGui::IsWindowHovered();
     if (!ImGuizmo::IsUsing() && !ImGui::GetIO().WantCaptureKeyboard && viewportHovered) {
-        if (ImGui::IsKeyPressed(ImGuiKey_W)) gizmoOperation_ = GizmoOperation::Translate;
-        if (ImGui::IsKeyPressed(ImGuiKey_E)) gizmoOperation_ = GizmoOperation::Rotate;
-        if (ImGui::IsKeyPressed(ImGuiKey_R)) gizmoOperation_ = GizmoOperation::Scale;
+        const bool ctrl = ImGui::GetIO().KeyCtrl;
+        if (!dragging_ && !ctrl) {
+            if (ImGui::IsKeyPressed(ImGuiKey_W)) setGizmoOperation(GizmoOperation::Translate);
+            if (ImGui::IsKeyPressed(ImGuiKey_E)) setGizmoOperation(GizmoOperation::Rotate);
+            if (ImGui::IsKeyPressed(ImGuiKey_R)) setGizmoOperation(GizmoOperation::Scale);
+        }
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_1, false)) setSelectTool(true);
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_2, false)) setGizmoOperation(GizmoOperation::Translate);
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_3, false)) setGizmoOperation(GizmoOperation::Scale);
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_4, false)) setGizmoOperation(GizmoOperation::Rotate);
+        if (!dragging_ && !ctrl && ImGui::IsKeyPressed(ImGuiKey_F, false) && ecs != nullptr && meshLibrary != nullptr) {
+            focusOn(*ecs, *meshLibrary, explorer.selectedEntities());
+        }
 
         // Kronos ("Developer Velocity Sprint" -- "Drop-to-Ground Shortcut
         // (End Key)"): same gating as W/E/R above (hovered, not fighting
@@ -1272,245 +1259,198 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         }
     }
 
-    constexpr float kIconButtonSize = 28.0f;
-    constexpr float kToolbarPadding = 5.0f;
-    const ImVec2 iconSize(kIconButtonSize, kIconButtonSize);
-    const float rounding = ImGui::GetStyle().FrameRounding + 3.0f;
+    if (ribbonMode_) {
+        drawViewCube(imageOrigin, imageSize);
+    } else {
+        constexpr float kIconButtonSize = 28.0f;
+        constexpr float kToolbarPadding = 5.0f;
+        const ImVec2 iconSize(kIconButtonSize, kIconButtonSize);
+        const float rounding = ImGui::GetStyle().FrameRounding + 3.0f;
 
-    auto glassPanel = [&](ImVec2 min, ImVec2 max) {
-        ui::softShadow(drawList, min, max, rounding, 10.0f, ImVec4(0.0f, 0.0f, 0.0f, 0.35f));
-        drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_WindowBg, 0.82f), rounding);
-        drawList->AddRectFilledMultiColor(ImVec2(min.x + 1.0f, min.y + 1.0f), ImVec2(max.x - 1.0f, min.y + (max.y - min.y) * 0.5f),
-                                          IM_COL32(255, 255, 255, 10), IM_COL32(255, 255, 255, 10),
-                                          IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
-        drawList->AddRect(min, max, IM_COL32(255, 255, 255, 22), rounding);
-    };
-    auto separator = [&] {
-        ImGui::SameLine(0.0f, 6.0f);
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        drawList->AddLine(ImVec2(p.x, p.y + 5.0f), ImVec2(p.x, p.y + kIconButtonSize - 5.0f),
-                          ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
-        ImGui::Dummy(ImVec2(1.0f, kIconButtonSize));
-        ImGui::SameLine(0.0f, 6.0f);
-    };
-    auto label = [&](const char* text) {
+        auto glassPanel = [&](ImVec2 min, ImVec2 max) {
+            ui::softShadow(drawList, min, max, rounding, 10.0f, ImVec4(0.0f, 0.0f, 0.0f, 0.35f));
+            drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_WindowBg, 0.82f), rounding);
+            drawList->AddRectFilledMultiColor(ImVec2(min.x + 1.0f, min.y + 1.0f), ImVec2(max.x - 1.0f, min.y + (max.y - min.y) * 0.5f),
+                                              IM_COL32(255, 255, 255, 10), IM_COL32(255, 255, 255, 10),
+                                              IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
+            drawList->AddRect(min, max, IM_COL32(255, 255, 255, 22), rounding);
+        };
+        auto separator = [&] {
+            ImGui::SameLine(0.0f, 6.0f);
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            drawList->AddLine(ImVec2(p.x, p.y + 5.0f), ImVec2(p.x, p.y + kIconButtonSize - 5.0f),
+                              ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
+            ImGui::Dummy(ImVec2(1.0f, kIconButtonSize));
+            ImGui::SameLine(0.0f, 6.0f);
+        };
+        auto label = [&](const char* text) {
+            if (!advancedMode_) {
+                ImGui::SameLine(0.0f, 4.0f);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("%s", text);
+            }
+            ImGui::SameLine(0.0f, 3.0f);
+        };
+        auto presetCombo = [&](const char* id, const char* preview, const char* tooltip, auto&& body) {
+            ImGui::SetNextItemWidth(advancedMode_ ? 62.0f : 72.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
+            if (ImGui::BeginCombo(id, preview)) {
+                body();
+                ImGui::EndCombo();
+            }
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip);
+        };
+
+        ImDrawListSplitter splitter;
+        splitter.Split(drawList, 2);
+        splitter.SetCurrentChannel(drawList, 1);
+
+        ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 10.0f + kToolbarPadding, imageOrigin.y + 10.0f + kToolbarPadding));
+        ImGui::BeginGroup();
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 3.0f));
+
+        if (iconButton("gizmo_translate", Icon::Translate, iconSize, gizmoOperation_ == GizmoOperation::Translate,
+                        "Move (W)")) {
+            gizmoOperation_ = GizmoOperation::Translate;
+        }
+        ImGui::SameLine();
+        if (iconButton("gizmo_rotate", Icon::Rotate, iconSize, gizmoOperation_ == GizmoOperation::Rotate, "Rotate (E)")) {
+            gizmoOperation_ = GizmoOperation::Rotate;
+        }
+        ImGui::SameLine();
+        if (iconButton("gizmo_scale", Icon::Scale, iconSize, gizmoOperation_ == GizmoOperation::Scale, "Scale (R)")) {
+            gizmoOperation_ = GizmoOperation::Scale;
+        }
+
+        separator();
+        const bool worldSpace = gizmoSpace_ == GizmoSpace::World;
+        if (iconButton("gizmo_space", worldSpace ? Icon::WorldSpace : Icon::LocalSpace, iconSize, false,
+                        worldSpace ? "World space (click for local)" : "Local space (click for world)")) {
+            gizmoSpace_ = worldSpace ? GizmoSpace::Local : GizmoSpace::World;
+        }
         if (!advancedMode_) {
             ImGui::SameLine(0.0f, 4.0f);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("%s", text);
+            ImGui::TextDisabled(worldSpace ? "World" : "Local");
         }
-        ImGui::SameLine(0.0f, 3.0f);
-    };
-    auto presetCombo = [&](const char* id, const char* preview, const char* tooltip, auto&& body) {
-        ImGui::SetNextItemWidth(advancedMode_ ? 62.0f : 72.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
-        if (ImGui::BeginCombo(id, preview)) {
-            body();
-            ImGui::EndCombo();
-        }
-        ImGui::PopStyleVar();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip);
-    };
 
-    ImDrawListSplitter splitter;
-    splitter.Split(drawList, 2);
-    splitter.SetCurrentChannel(drawList, 1);
-
-    ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 10.0f + kToolbarPadding, imageOrigin.y + 10.0f + kToolbarPadding));
-    ImGui::BeginGroup();
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 3.0f));
-
-    if (iconButton("gizmo_translate", Icon::Translate, iconSize, gizmoOperation_ == GizmoOperation::Translate,
-                    "Move (W)")) {
-        gizmoOperation_ = GizmoOperation::Translate;
-    }
-    ImGui::SameLine();
-    if (iconButton("gizmo_rotate", Icon::Rotate, iconSize, gizmoOperation_ == GizmoOperation::Rotate, "Rotate (E)")) {
-        gizmoOperation_ = GizmoOperation::Rotate;
-    }
-    ImGui::SameLine();
-    if (iconButton("gizmo_scale", Icon::Scale, iconSize, gizmoOperation_ == GizmoOperation::Scale, "Scale (R)")) {
-        gizmoOperation_ = GizmoOperation::Scale;
-    }
-
-    separator();
-    const bool worldSpace = gizmoSpace_ == GizmoSpace::World;
-    if (iconButton("gizmo_space", worldSpace ? Icon::WorldSpace : Icon::LocalSpace, iconSize, false,
-                    worldSpace ? "World space (click for local)" : "Local space (click for world)")) {
-        gizmoSpace_ = worldSpace ? GizmoSpace::Local : GizmoSpace::World;
-    }
-    if (!advancedMode_) {
-        ImGui::SameLine(0.0f, 4.0f);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled(worldSpace ? "World" : "Local");
-    }
-
-    separator();
-    if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_, "Grid snap for Move")) {
-        gridSnapEnabled_ = !gridSnapEnabled_;
-    }
-    label("Grid");
-    static constexpr float kGridSnapPresets[] = {0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 5.0f};
-    char gridPresetLabel[16];
-    std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%gm", translateSnap_);
-    presetCombo("##grid_snap_preset", gridPresetLabel, "Grid snap increment (meters)", [&] {
-        for (float preset : kGridSnapPresets) {
-            char text[16];
-            std::snprintf(text, sizeof(text), "%gm", preset);
-            const bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
-            if (ImGui::Selectable(text, selected)) translateSnap_ = preset;
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-    });
-
-    ImGui::SameLine(0.0f, 8.0f);
-    if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_, "Angle snap for Rotate")) {
-        angleSnapEnabled_ = !angleSnapEnabled_;
-    }
-    label("Angle");
-    static constexpr float kAngleSnapPresets[] = {5.0f, 15.0f, 30.0f, 45.0f, 90.0f};
-    char anglePresetLabel[16];
-    std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f\xc2\xb0", rotateSnapDegrees_);
-    presetCombo("##angle_snap_preset", anglePresetLabel, "Angle snap increment (degrees)", [&] {
-        for (float preset : kAngleSnapPresets) {
-            char text[16];
-            std::snprintf(text, sizeof(text), "%.0f\xc2\xb0", preset);
-            const bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
-            if (ImGui::Selectable(text, selected)) rotateSnapDegrees_ = preset;
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-    });
-
-    ImGui::SameLine(0.0f, 8.0f);
-    if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_, "Scale snap")) {
-        scaleSnapEnabled_ = !scaleSnapEnabled_;
-    }
-    label("Scale");
-    ImGui::SetNextItemWidth(advancedMode_ ? 52.0f : 60.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
-    ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
-    ImGui::PopStyleVar();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Scale snap increment (drag to adjust)");
-
-    if (showAssetTools_) {
         separator();
-        if (modelImporterPlugin_ != nullptr) {
-            if (iconButton("import_asset", Icon::Folder, iconSize, false, "Import 3D asset (glTF / OBJ / FBX)")) {
-                modelImporterPlugin_->setOpen(true);
-                modelImporterPlugin_->browseForFile();
+        if (iconButton("grid_snap", Icon::Snap, iconSize, gridSnapEnabled_, "Grid snap for Move")) {
+            gridSnapEnabled_ = !gridSnapEnabled_;
+        }
+        label("Grid");
+        static constexpr float kGridSnapPresets[] = {0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 5.0f};
+        char gridPresetLabel[16];
+        std::snprintf(gridPresetLabel, sizeof(gridPresetLabel), "%gm", translateSnap_);
+        presetCombo("##grid_snap_preset", gridPresetLabel, "Grid snap increment (meters)", [&] {
+            for (float preset : kGridSnapPresets) {
+                char text[16];
+                std::snprintf(text, sizeof(text), "%gm", preset);
+                const bool selected = std::fabs(translateSnap_ - preset) < 0.001f;
+                if (ImGui::Selectable(text, selected)) translateSnap_ = preset;
+                if (selected) ImGui::SetItemDefaultFocus();
             }
-            ImGui::SameLine();
+        });
+
+        ImGui::SameLine(0.0f, 8.0f);
+        if (iconButton("angle_snap", Icon::Snap, iconSize, angleSnapEnabled_, "Angle snap for Rotate")) {
+            angleSnapEnabled_ = !angleSnapEnabled_;
         }
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(9.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
-        if (ui::button(advancedMode_ ? "+##add_primitive" : "+  Add##add_primitive", ui::ButtonKind::Ghost)) {
-            ImGui::OpenPopup("##add_primitive_menu");
+        label("Angle");
+        static constexpr float kAngleSnapPresets[] = {5.0f, 15.0f, 30.0f, 45.0f, 90.0f};
+        char anglePresetLabel[16];
+        std::snprintf(anglePresetLabel, sizeof(anglePresetLabel), "%.0f\xc2\xb0", rotateSnapDegrees_);
+        presetCombo("##angle_snap_preset", anglePresetLabel, "Angle snap increment (degrees)", [&] {
+            for (float preset : kAngleSnapPresets) {
+                char text[16];
+                std::snprintf(text, sizeof(text), "%.0f\xc2\xb0", preset);
+                const bool selected = std::fabs(rotateSnapDegrees_ - preset) < 0.001f;
+                if (ImGui::Selectable(text, selected)) rotateSnapDegrees_ = preset;
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+        });
+
+        ImGui::SameLine(0.0f, 8.0f);
+        if (iconButton("scale_snap", Icon::Snap, iconSize, scaleSnapEnabled_, "Scale snap")) {
+            scaleSnapEnabled_ = !scaleSnapEnabled_;
         }
+        label("Scale");
+        ImGui::SetNextItemWidth(advancedMode_ ? 52.0f : 60.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
+        ImGui::DragFloat("##scale_snap_val", &scaleSnap_, 0.01f, 0.01f, 10.0f, "%.2f");
         ImGui::PopStyleVar();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Add primitive");
-        if (ImGui::BeginPopup("##add_primitive_menu")) {
-            // 4m in front of the camera, or onto the ground plane when the
-            // camera looks down at it from a sane distance.
-            glm::vec3 spawnPos = camera_.position + camera_.forward() * 4.0f;
-            spawnPos.y = std::max(spawnPos.y, 0.5f);
-            const glm::vec3 forward = camera_.forward();
-            constexpr float kMaxGroundSpawnDistance = 40.0f;
-            if (forward.y < -0.05f) {
-                const float t = -camera_.position.y / forward.y;
-                if (t > 0.0f && t <= kMaxGroundSpawnDistance) {
-                    spawnPos = camera_.position + forward * t;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Scale snap increment (drag to adjust)");
+
+        if (showAssetTools_) {
+            separator();
+            if (modelImporterPlugin_ != nullptr) {
+                if (iconButton("import_asset", Icon::Folder, iconSize, false, "Import 3D asset (glTF / OBJ / FBX)")) {
+                    modelImporterPlugin_->browseForFile();
                 }
+                ImGui::SameLine();
             }
-
-            // Render-only on spawn: sub-object editing is opted into via
-            // Modeling Mode's "Start Editing".
-            auto spawnPrimitive = [&](const char* entityName, uint32_t meshHandle, core::MeshSourceKind kind,
-                                        glm::vec3 params, bool hasMeshSource) {
-                if (ecs == nullptr) return;
-                core::EntityId entity = ecs->createEntity(entityName);
-                if (auto* transform = ecs->tryGetComponent<core::Transform>(entity)) {
-                    transform->position = spawnPos;
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(9.0f, (kIconButtonSize - ImGui::GetFontSize()) * 0.5f));
+            if (ui::button(advancedMode_ ? "+##add_primitive" : "+  Add##add_primitive", ui::ButtonKind::Ghost)) {
+                ImGui::OpenPopup("##add_primitive_menu");
+            }
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Add primitive");
+            if (ImGui::BeginPopup("##add_primitive_menu")) {
+                ui::sectionHeader("Add primitive");
+                if (ecs != nullptr) {
+                    if (ImGui::Selectable("Sphere")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Sphere);
+                    if (ImGui::Selectable("Cube")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Block);
+                    if (ImGui::Selectable("Cylinder")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Cylinder);
+                    if (ImGui::Selectable("Plane")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Plane);
+                    if (ImGui::Selectable("Torus")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Torus);
                 }
-                auto& renderable = ecs->addComponent<core::Renderable>(entity);
-                renderable.meshHandle = meshHandle;
-                renderable.baseColor = {0.82f, 0.82f, 0.85f, 1.0f};
-                renderable.metallic = 0.1f;
-                renderable.roughness = 0.6f;
-                if (hasMeshSource) {
-                    auto& meshSource = ecs->addComponent<core::MeshSource>(entity);
-                    meshSource.kind = kind;
-                    meshSource.params = params;
-                }
-                explorer.setSelected(entity);
-            };
-
-            ui::sectionHeader("Add primitive");
-            if (ImGui::Selectable("Sphere")) {
-                spawnPrimitive("Sphere", propSpawnMeshHandles_.sphereMesh, core::MeshSourceKind::Capsule,
-                                {0.5f, 0.0f, 0.0f}, true);
+                ImGui::EndPopup();
             }
-            if (ImGui::Selectable("Cube")) {
-                spawnPrimitive("Cube", propSpawnMeshHandles_.boxMesh, core::MeshSourceKind::Box,
-                                {0.5f, 0.5f, 0.5f}, true);
-            }
-            if (ImGui::Selectable("Cylinder")) {
-                // No MeshSourceKind::Cylinder; matches the GPU mesh built
-                // for propSpawnMeshHandles_.cylinderMesh.
-                spawnPrimitive("Cylinder", propSpawnMeshHandles_.cylinderMesh, core::MeshSourceKind::Box,
-                                {0.5f, 0.5f, 0.0f}, false);
-            }
-            if (ImGui::Selectable("Plane")) {
-                spawnPrimitive("Plane", propSpawnMeshHandles_.planeMesh, core::MeshSourceKind::Plane,
-                                {2.0f, 0.0f, 2.0f}, true);
-            }
-            if (ImGui::Selectable("Torus")) {
-                spawnPrimitive("Torus", propSpawnMeshHandles_.torusMesh, core::MeshSourceKind::Torus,
-                                {1.0f, 0.35f, 0.0f}, true);
-            }
-            ImGui::EndPopup();
         }
-    }
 
-    ImGui::PopStyleVar();
-    ImGui::EndGroup();
-
-    const ImVec2 groupMin = ImGui::GetItemRectMin();
-    const ImVec2 groupMax = ImGui::GetItemRectMax();
-    splitter.SetCurrentChannel(drawList, 0);
-    glassPanel(ImVec2(groupMin.x - kToolbarPadding, groupMin.y - kToolbarPadding),
-               ImVec2(groupMax.x + kToolbarPadding, groupMax.y + kToolbarPadding));
-    splitter.Merge(drawList);
-
-    // Top-right: view options popover and the beginner/pro density switch.
-    const bool hasOverlayOptions = physicsPreview != nullptr || showEngineDebugOverlays;
-    const char* modeLabel = advancedMode_ ? "Compact" : "Labels";
-    const ImVec2 modeSize(ImGui::CalcTextSize(modeLabel).x + 20.0f, kIconButtonSize);
-    const ImVec2 overlaysSize(ImGui::CalcTextSize("Overlays").x + 20.0f, kIconButtonSize);
-    float rightWidth = modeSize.x + (hasOverlayOptions ? overlaysSize.x + 3.0f : 0.0f);
-    ImVec2 rightMin(imageOrigin.x + imageSize.x - 10.0f - kToolbarPadding * 2.0f - rightWidth, imageOrigin.y + 10.0f);
-    if (rightMin.x > groupMax.x + kToolbarPadding + 8.0f) {
-        ImDrawListSplitter rightSplitter;
-        rightSplitter.Split(drawList, 2);
-        rightSplitter.SetCurrentChannel(drawList, 1);
-        ImGui::SetCursorScreenPos(ImVec2(rightMin.x + kToolbarPadding, rightMin.y + kToolbarPadding));
-        ImGui::BeginGroup();
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 3.0f));
-        if (hasOverlayOptions) {
-            if (ui::button("Overlays", ui::ButtonKind::Ghost, overlaysSize)) ImGui::OpenPopup("##viewport_overlays");
-            ImGui::SameLine();
-        }
-        if (ui::button(modeLabel, ui::ButtonKind::Ghost, modeSize)) advancedMode_ = !advancedMode_;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            ImGui::SetTooltip(advancedMode_ ? "Compact toolbar. Click to show text labels."
-                                            : "Labelled toolbar. Click for compact icons.");
-        }
         ImGui::PopStyleVar();
         ImGui::EndGroup();
-        const ImVec2 rMin = ImGui::GetItemRectMin();
-        const ImVec2 rMax = ImGui::GetItemRectMax();
-        rightSplitter.SetCurrentChannel(drawList, 0);
-        glassPanel(ImVec2(rMin.x - kToolbarPadding, rMin.y - kToolbarPadding),
-                   ImVec2(rMax.x + kToolbarPadding, rMax.y + kToolbarPadding));
-        rightSplitter.Merge(drawList);
+
+        const ImVec2 groupMin = ImGui::GetItemRectMin();
+        const ImVec2 groupMax = ImGui::GetItemRectMax();
+        splitter.SetCurrentChannel(drawList, 0);
+        glassPanel(ImVec2(groupMin.x - kToolbarPadding, groupMin.y - kToolbarPadding),
+                   ImVec2(groupMax.x + kToolbarPadding, groupMax.y + kToolbarPadding));
+        splitter.Merge(drawList);
+
+        // Top-right: view options popover and the beginner/pro density switch.
+        const bool hasOverlayOptions = physicsPreview != nullptr || showEngineDebugOverlays;
+        const char* modeLabel = advancedMode_ ? "Compact" : "Labels";
+        const ImVec2 modeSize(ImGui::CalcTextSize(modeLabel).x + 20.0f, kIconButtonSize);
+        const ImVec2 overlaysSize(ImGui::CalcTextSize("Overlays").x + 20.0f, kIconButtonSize);
+        float rightWidth = modeSize.x + (hasOverlayOptions ? overlaysSize.x + 3.0f : 0.0f);
+        ImVec2 rightMin(imageOrigin.x + imageSize.x - 10.0f - kToolbarPadding * 2.0f - rightWidth, imageOrigin.y + 10.0f);
+        if (rightMin.x > groupMax.x + kToolbarPadding + 8.0f) {
+            ImDrawListSplitter rightSplitter;
+            rightSplitter.Split(drawList, 2);
+            rightSplitter.SetCurrentChannel(drawList, 1);
+            ImGui::SetCursorScreenPos(ImVec2(rightMin.x + kToolbarPadding, rightMin.y + kToolbarPadding));
+            ImGui::BeginGroup();
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 3.0f));
+            if (hasOverlayOptions) {
+                if (ui::button("Overlays", ui::ButtonKind::Ghost, overlaysSize)) ImGui::OpenPopup("##viewport_overlays");
+                ImGui::SameLine();
+            }
+            if (ui::button(modeLabel, ui::ButtonKind::Ghost, modeSize)) advancedMode_ = !advancedMode_;
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+                ImGui::SetTooltip(advancedMode_ ? "Compact toolbar. Click to show text labels."
+                                                : "Labelled toolbar. Click for compact icons.");
+            }
+            ImGui::PopStyleVar();
+            ImGui::EndGroup();
+            const ImVec2 rMin = ImGui::GetItemRectMin();
+            const ImVec2 rMax = ImGui::GetItemRectMax();
+            rightSplitter.SetCurrentChannel(drawList, 0);
+            glassPanel(ImVec2(rMin.x - kToolbarPadding, rMin.y - kToolbarPadding),
+                       ImVec2(rMax.x + kToolbarPadding, rMax.y + kToolbarPadding));
+            rightSplitter.Merge(drawList);
+        }
     }
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(240.0f, 0.0f), ImVec2(360.0f, FLT_MAX));
@@ -1544,6 +1484,310 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     }
 
     ImGui::End();
+}
+
+glm::vec3 ViewportPanel::spawnPointInFront(core::ECS& ecs, core::MeshLibrary* meshLibrary, glm::vec3 boundsMin,
+                                           glm::vec3 boundsMax, core::EntityId exclude) const {
+    constexpr float kMaxSpawnDistance = 40.0f;
+    const glm::vec3 forward = camera_.forward();
+    glm::vec3 target = camera_.position + forward * 6.0f;
+    float targetDistance = kMaxSpawnDistance;
+    if (forward.y < -0.05f) {
+        const float t = -camera_.position.y / forward.y;
+        if (t > 0.0f && t <= kMaxSpawnDistance) {
+            target = camera_.position + forward * t;
+            targetDistance = t;
+        }
+    }
+    if (meshLibrary != nullptr) {
+        const core::ScenePickResult hit =
+            core::pickEntity(ecs, *meshLibrary, camera_.position, forward, targetDistance, exclude);
+        if (hit.hit) target = hit.point - forward * 0.01f;
+    }
+    if (gridSnapEnabled_ && translateSnap_ > 0.0f) {
+        target.x = std::round(target.x / translateSnap_) * translateSnap_;
+        target.z = std::round(target.z / translateSnap_) * translateSnap_;
+    }
+    if (meshLibrary == nullptr) return {target.x, -boundsMin.y, target.z};
+
+    constexpr float kTouchTolerance = 0.001f;
+    const glm::vec2 footMin = glm::vec2(target.x + boundsMin.x, target.z + boundsMin.z) + kTouchTolerance;
+    const glm::vec2 footMax = glm::vec2(target.x + boundsMax.x, target.z + boundsMax.z) - kTouchTolerance;
+    bool foundSurface = false;
+    float surfaceY = 0.0f;
+    auto view = ecs.view<core::Transform, core::Renderable>();
+    for (auto entity : view) {
+        if (entity == exclude) continue;
+        const auto& renderable = view.get<core::Renderable>(entity);
+        if (!renderable.visible) continue;
+        const core::Mesh* mesh = meshLibrary->get(renderable.meshHandle);
+        if (mesh == nullptr) continue;
+        const glm::mat4 world = core::hierarchy::computeWorldMatrix(ecs, entity);
+        glm::vec3 worldMin(FLT_MAX);
+        glm::vec3 worldMax(-FLT_MAX);
+        for (int corner = 0; corner < 8; ++corner) {
+            const glm::vec3 local((corner & 1) ? mesh->localBoundsMax().x : mesh->localBoundsMin().x,
+                                  (corner & 2) ? mesh->localBoundsMax().y : mesh->localBoundsMin().y,
+                                  (corner & 4) ? mesh->localBoundsMax().z : mesh->localBoundsMin().z);
+            const glm::vec3 p = glm::vec3(world * glm::vec4(local, 1.0f));
+            worldMin = glm::min(worldMin, p);
+            worldMax = glm::max(worldMax, p);
+        }
+        if (worldMin.y > camera_.position.y) continue;
+        if (worldMax.x < footMin.x || worldMin.x > footMax.x || worldMax.z < footMin.y || worldMin.z > footMax.y) continue;
+        surfaceY = foundSurface ? std::max(surfaceY, worldMax.y) : worldMax.y;
+        foundSurface = true;
+    }
+    return {target.x, surfaceY - boundsMin.y, target.z};
+}
+
+core::EntityId ViewportPanel::spawnPrimitive(core::ECS& ecs, core::MeshLibrary* meshLibrary, ExplorerPanel& explorer,
+                                             Primitive kind) {
+    struct Spec {
+        const char* name;
+        uint32_t mesh;
+        core::MeshSourceKind sourceKind;
+        glm::vec3 params;
+        bool hasMeshSource;
+        float lift;
+    };
+    // Cylinder has no MeshSourceKind of its own, so it isn't saved with a source.
+    Spec spec{};
+    switch (kind) {
+        case Primitive::Block:
+            spec = {"Part", propSpawnMeshHandles_.boxMesh, core::MeshSourceKind::Box, {0.5f, 0.5f, 0.5f}, true, 0.5f};
+            break;
+        case Primitive::Sphere:
+            spec = {"Sphere", propSpawnMeshHandles_.sphereMesh, core::MeshSourceKind::Capsule, {0.5f, 0.0f, 0.0f}, true, 0.5f};
+            break;
+        case Primitive::Cylinder:
+            spec = {"Cylinder", propSpawnMeshHandles_.cylinderMesh, core::MeshSourceKind::Box, {0.5f, 0.5f, 0.0f}, false, 0.5f};
+            break;
+        case Primitive::Plane:
+            spec = {"Plane", propSpawnMeshHandles_.planeMesh, core::MeshSourceKind::Plane, {2.0f, 0.0f, 2.0f}, true, 0.01f};
+            break;
+        case Primitive::Torus:
+            spec = {"Torus", propSpawnMeshHandles_.torusMesh, core::MeshSourceKind::Torus, {1.0f, 0.35f, 0.0f}, true, 0.35f};
+            break;
+    }
+
+    glm::vec3 boundsMin(-spec.lift);
+    glm::vec3 boundsMax(spec.lift);
+    if (const core::Mesh* mesh = meshLibrary != nullptr ? meshLibrary->get(spec.mesh) : nullptr) {
+        boundsMin = mesh->localBoundsMin();
+        boundsMax = mesh->localBoundsMax();
+    }
+    const glm::vec3 spawnPos = spawnPointInFront(ecs, meshLibrary, boundsMin, boundsMax);
+    core::EntityId entity = ecs.createEntity(spec.name);
+    if (auto* transform = ecs.tryGetComponent<core::Transform>(entity)) transform->position = spawnPos;
+    auto& renderable = ecs.addComponent<core::Renderable>(entity);
+    renderable.meshHandle = spec.mesh;
+    renderable.baseColor = {0.64f, 0.64f, 0.66f, 1.0f};
+    renderable.metallic = 0.0f;
+    renderable.roughness = 0.7f;
+    if (spec.hasMeshSource) {
+        auto& meshSource = ecs.addComponent<core::MeshSource>(entity);
+        meshSource.kind = spec.sourceKind;
+        meshSource.params = spec.params;
+    }
+    explorer.setSelected(entity);
+    return entity;
+}
+
+void ViewportPanel::focusOn(core::ECS& ecs, core::MeshLibrary& meshLibrary, const std::vector<core::EntityId>& entities) {
+    glm::vec3 boundsMin(FLT_MAX), boundsMax(-FLT_MAX);
+    bool any = false;
+    for (core::EntityId entity : entities) {
+        if (!ecs.raw().valid(entity) || ecs.tryGetComponent<core::Transform>(entity) == nullptr) continue;
+        const glm::mat4 world = core::hierarchy::computeWorldMatrix(ecs, entity);
+        glm::vec3 localMin(-0.5f), localMax(0.5f);
+        if (auto* renderable = ecs.tryGetComponent<core::Renderable>(entity)) {
+            if (const core::Mesh* mesh = meshLibrary.get(renderable->meshHandle)) {
+                localMin = mesh->localBoundsMin();
+                localMax = mesh->localBoundsMax();
+            }
+        }
+        for (int i = 0; i < 8; ++i) {
+            const glm::vec3 corner((i & 1) ? localMax.x : localMin.x, (i & 2) ? localMax.y : localMin.y,
+                                   (i & 4) ? localMax.z : localMin.z);
+            const glm::vec3 p = glm::vec3(world * glm::vec4(corner, 1.0f));
+            boundsMin = glm::min(boundsMin, p);
+            boundsMax = glm::max(boundsMax, p);
+        }
+        any = true;
+    }
+    if (!any) return;
+    const float radius = std::max(0.5f, glm::length(boundsMax - boundsMin) * 0.5f);
+    focusTarget_ = (boundsMin + boundsMax) * 0.5f;
+    focusDistance_ = std::clamp(radius / std::tan(glm::radians(camera_.verticalFovDegrees) * 0.5f) * 1.1f, 2.0f, 400.0f);
+    focusActive_ = true;
+    orbitActive_ = false;
+}
+
+void ViewportPanel::updateFocus(float deltaTime) {
+    if (!focusActive_ || dragging_) {
+        focusActive_ = false;
+        orbitActive_ = false;
+        return;
+    }
+    const float blend = 1.0f - std::exp(-deltaTime * 14.0f);
+    if (orbitActive_) {
+        const float yawDelta = std::remainder(orbitYawGoal_ - camera_.yawDegrees, 360.0f);
+        const float pitchDelta = orbitPitchGoal_ - camera_.pitchDegrees;
+        camera_.yawDegrees += yawDelta * blend;
+        camera_.pitchDegrees += pitchDelta * blend;
+        if (std::fabs(yawDelta) < 0.05f && std::fabs(pitchDelta) < 0.05f) {
+            camera_.yawDegrees = orbitYawGoal_;
+            camera_.pitchDegrees = orbitPitchGoal_;
+            orbitActive_ = false;
+        }
+        camera_.position = focusTarget_ - camera_.forward() * focusDistance_;
+        if (!orbitActive_) focusActive_ = false;
+        return;
+    }
+    const glm::vec3 goal = focusTarget_ - camera_.forward() * focusDistance_;
+    camera_.position += (goal - camera_.position) * blend;
+    if (glm::length(goal - camera_.position) < 0.01f) {
+        camera_.position = goal;
+        focusActive_ = false;
+    }
+}
+
+void ViewportPanel::resetCamera() {
+    focusActive_ = false;
+    camera_.position = {0.0f, 8.0f, -10.0f};
+    camera_.yawDegrees = 90.0f;
+    camera_.pitchDegrees = -22.0f;
+}
+
+void ViewportPanel::drawViewCube(ImVec2 imageOrigin, ImVec2 imageSize) {
+    if (!showViewCube_ || imageSize.x < kViewCubeSize * 2.5f || imageSize.y < kViewCubeSize * 2.0f) return;
+
+    struct Face {
+        glm::vec3 normal;
+        glm::vec3 u;
+        glm::vec3 v;
+        const char* label;
+    };
+    static const std::array<Face, 6> kFaces = {{
+        {{0, 1, 0}, {1, 0, 0}, {0, 0, 1}, "TOP"},
+        {{0, -1, 0}, {1, 0, 0}, {0, 0, 1}, "BOTTOM"},
+        {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}, "FRONT"},
+        {{0, 0, -1}, {1, 0, 0}, {0, 1, 0}, "BACK"},
+        {{1, 0, 0}, {0, 0, 1}, {0, 1, 0}, "RIGHT"},
+        {{-1, 0, 0}, {0, 0, 1}, {0, 1, 0}, "LEFT"},
+    }};
+
+    const ImVec2 origin = viewCubeOrigin(imageOrigin, imageSize);
+    const ImVec2 center(origin.x + kViewCubeSize * 0.5f, origin.y + kViewCubeSize * 0.5f);
+    const float half = kViewCubeSize * 0.24f;
+    const glm::mat3 rotation(camera_.viewMatrix());
+    auto project = [&](const glm::vec3& p) {
+        const glm::vec3 view = rotation * p;
+        return ImVec2(center.x + view.x * half, center.y - view.y * half);
+    };
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 mouse = ImGui::GetMousePos();
+    const bool mouseInside = ImGui::IsWindowHovered() && mouse.x >= origin.x && mouse.y >= origin.y &&
+                             mouse.x <= origin.x + kViewCubeSize && mouse.y <= origin.y + kViewCubeSize;
+    if (mouseInside) drawList->AddCircleFilled(center, kViewCubeSize * 0.5f, IM_COL32(16, 18, 24, 70), 48);
+
+    const std::array<std::pair<glm::vec3, ImU32>, 3> axes = {{
+        {{1, 0, 0}, IM_COL32(232, 72, 72, 255)},
+        {{0, 1, 0}, IM_COL32(88, 200, 96, 255)},
+        {{0, 0, 1}, IM_COL32(72, 140, 240, 255)},
+    }};
+    const char* axisNames[] = {"X", "Y", "Z"};
+    for (size_t i = 0; i < axes.size(); ++i) {
+        const ImVec2 tip = project(axes[i].first * 1.8f);
+        drawList->AddLine(center, tip, axes[i].second, 2.0f);
+        drawList->AddCircleFilled(tip, 6.5f, axes[i].second, 16);
+        const ImVec2 textSize = ImGui::GetFont()->CalcTextSizeA(10.0f, FLT_MAX, 0.0f, axisNames[i]);
+        drawList->AddText(ImGui::GetFont(), 10.0f, ImVec2(tip.x - textSize.x * 0.5f, tip.y - textSize.y * 0.5f),
+                          IM_COL32(255, 255, 255, 255), axisNames[i]);
+    }
+
+    int hovered = -1;
+    std::array<std::array<ImVec2, 4>, 6> quads{};
+    std::array<float, 6> facing{};
+    for (size_t i = 0; i < kFaces.size(); ++i) {
+        const Face& face = kFaces[i];
+        facing[i] = (rotation * face.normal).z;
+        quads[i] = {project(face.normal - face.u - face.v), project(face.normal + face.u - face.v),
+                    project(face.normal + face.u + face.v), project(face.normal - face.u + face.v)};
+        if (facing[i] <= 0.02f || !mouseInside) continue;
+        bool inside = true;
+        float sign = 0.0f;
+        for (int k = 0; k < 4 && inside; ++k) {
+            const ImVec2 a = quads[i][k];
+            const ImVec2 b = quads[i][(k + 1) % 4];
+            const float cross = (b.x - a.x) * (mouse.y - a.y) - (b.y - a.y) * (mouse.x - a.x);
+            if (sign == 0.0f) sign = cross;
+            else if (cross * sign < 0.0f) inside = false;
+        }
+        if (inside) hovered = static_cast<int>(i);
+    }
+
+    for (size_t i = 0; i < kFaces.size(); ++i) {
+        if (facing[i] <= 0.02f) continue;
+        const float shade = 0.68f + 0.32f * facing[i];
+        const ImU32 fill = static_cast<int>(i) == hovered
+                               ? IM_COL32(86, 170, 255, 255)
+                               : IM_COL32(static_cast<int>(212 * shade), static_cast<int>(219 * shade),
+                                          static_cast<int>(232 * shade), 255);
+        drawList->AddQuadFilled(quads[i][0], quads[i][1], quads[i][2], quads[i][3], fill);
+        drawList->AddQuad(quads[i][0], quads[i][1], quads[i][2], quads[i][3], IM_COL32(38, 42, 52, 255), 1.3f);
+        if (facing[i] > 0.3f) {
+            const ImVec2 mid = project(kFaces[i].normal);
+            const float fontSize = 10.0f;
+            const ImVec2 textSize = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, kFaces[i].label);
+            const int alpha = static_cast<int>(255.0f * std::clamp((facing[i] - 0.3f) / 0.2f, 0.0f, 1.0f));
+            const ImU32 text = static_cast<int>(i) == hovered ? IM_COL32(255, 255, 255, alpha) : IM_COL32(30, 34, 44, alpha);
+            drawList->AddText(ImGui::GetFont(), fontSize, ImVec2(mid.x - textSize.x * 0.5f, mid.y - textSize.y * 0.5f),
+                              text, kFaces[i].label);
+        }
+    }
+
+    if (hovered >= 0) {
+        ImGui::SetTooltip("View from %s", kFaces[static_cast<size_t>(hovered)].label);
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            const glm::vec3 forward = camera_.forward();
+            float distance = 12.0f;
+            if (forward.y < -0.05f) distance = std::clamp(-camera_.position.y / forward.y, 2.0f, 200.0f);
+            focusTarget_ = camera_.position + forward * distance;
+            focusDistance_ = distance;
+            const glm::vec3 goalForward = -kFaces[static_cast<size_t>(hovered)].normal;
+            if (std::fabs(goalForward.y) > 0.5f) {
+                orbitYawGoal_ = camera_.yawDegrees;
+                orbitPitchGoal_ = goalForward.y < 0.0f ? -89.0f : 89.0f;
+            } else {
+                orbitYawGoal_ = glm::degrees(std::atan2(goalForward.z, goalForward.x));
+                orbitPitchGoal_ = 0.0f;
+            }
+            focusActive_ = true;
+            orbitActive_ = true;
+        }
+    }
+}
+
+void ViewportPanel::drawStatusBar(ImDrawList* drawList, ImVec2 imageOrigin, ImVec2 imageSize, size_t selectionCount) {
+    const char* tool = selectTool_ ? "Select"
+                       : gizmoOperation_ == GizmoOperation::Translate ? "Move"
+                       : gizmoOperation_ == GizmoOperation::Rotate    ? "Rotate"
+                                                                      : "Scale";
+    char text[160];
+    if (selectionCount > 0) {
+        std::snprintf(text, sizeof(text), "%s  \xc2\xb7  %zu selected  \xc2\xb7  F to focus", tool, selectionCount);
+    } else {
+        std::snprintf(text, sizeof(text), "%s  \xc2\xb7  Hold right mouse + WASD to fly  \xc2\xb7  Scroll to zoom", tool);
+    }
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    const ImVec2 min(imageOrigin.x + 10.0f, imageOrigin.y + imageSize.y - size.y - 18.0f);
+    const ImVec2 max(min.x + size.x + 20.0f, min.y + size.y + 10.0f);
+    if (max.x > imageOrigin.x + imageSize.x - 10.0f) return;
+    drawList->AddRectFilled(min, max, IM_COL32(18, 18, 22, 170), (max.y - min.y) * 0.5f);
+    drawList->AddText(ImVec2(min.x + 10.0f, min.y + 5.0f), IM_COL32(236, 238, 242, 235), text);
 }
 
 } // namespace engine::studio::panels

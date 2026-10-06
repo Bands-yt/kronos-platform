@@ -1,4 +1,7 @@
 #version 460
+#ifdef KRONOS_SHADER_CLOCK
+#extension GL_ARB_shader_clock : require
+#endif
 #extension GL_EXT_ray_query : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference_uvec2 : require

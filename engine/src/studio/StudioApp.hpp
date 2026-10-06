@@ -10,12 +10,16 @@
 #include "core/LocalProfile.hpp"
 #include "core/Mesh.hpp"
 #include "core/NativePluginManager.hpp"
+#include "plugin/PluginHost.hpp"
 #include "core/ParticleSystem.hpp"
 #include "core/PerformanceDiagnostics.hpp"
 #include "core/ProcessStats.hpp"
 #include "core/Profiler.hpp"
 #include "core/ProjectFile.hpp"
 #include "core/Renderer.hpp"
+#include "core/Audio.hpp"
+#include "core/ResourceManager.hpp"
+#include "core/WorldStreaming.hpp"
 #include "core/RiggedMesh.hpp"
 #include "core/Texture.hpp"
 #include "core/Window.hpp"
@@ -26,8 +30,11 @@
 #include "studio/CommandPalette.hpp"
 #include "studio/KronosPluginHost.hpp"
 #include "studio/Notification.hpp"
+#include "studio/SurfaceGraphMaterials.hpp"
 #include "studio/OffscreenTarget.hpp"
 #include "studio/PluginManager.hpp"
+#include "studio/EntityOps.hpp"
+#include "studio/StudioRibbon.hpp"
 #include "studio/StudioStyle.hpp"
 #include "core/SceneManager.hpp"
 #include "migration/InstanceHydrator.hpp"
@@ -36,6 +43,7 @@
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
 #include "studio/panels/SceneSearchPanel.hpp"
+#include "core/ScriptDebugger.hpp"
 #include "studio/panels/ScriptEditorPanel.hpp"
 #include "studio/panels/PerformanceOverlayPanel.hpp"
 #include "studio/panels/StatsPanel.hpp"
@@ -71,6 +79,8 @@ class ModelImporterPlugin;
 }
 
 namespace engine::studio {
+
+class NativePluginAdapter;
 
 // The desktop Studio shell (docs/ARCHITECTURE.md §5/§9): Explorer,
 // Inspector, Viewport, Script Editor, docked via Dear ImGui. Owns its own
@@ -295,6 +305,7 @@ private:
     void handleFileDrop(const std::string& path);
 
     void buildBringUpScene();
+    std::unique_ptr<IStudioPlugin> makeAudioMixerPlugin();
     // Kronos ("Studio QoL Sprint" -- "VS Code-Style Command Palette"):
     // the real, concrete action list -- Spawn Baseplate, Toggle Physics
     // Debug, Clear Engine Log, etc. -- built fresh each time the palette
@@ -321,6 +332,27 @@ private:
     void drawAboutPanel();
     bool showAboutPanel_ = false;
     void drawSceneTabsBar();
+
+    // Roblox-style ribbon and the scene edits it drives (all undoable).
+    [[nodiscard]] bool showRibbon() const;
+    void drawRibbon();
+    void handleEditShortcuts();
+    void copySelection();
+    void pasteClipboard();
+    void duplicateSelection();
+    void deleteSelection();
+    void groupSelection();
+    void ungroupSelection();
+    void toggleAnchorSelection();
+    [[nodiscard]] bool selectionAnchored();
+    void insertPrimitive(panels::ViewportPanel::Primitive kind);
+    void togglePlay();
+    void pushCreationUndo(const char* label, std::vector<core::EntityId> created);
+    void giveClonesOwnMeshes(core::EntityId root);
+    [[nodiscard]] bool editingLocked() const;
+    StudioRibbon ribbon_;
+    EntitySnapshot clipboard_;
+    std::string lastFileDialogError_;
     void drawRecoveryBanner();
     // Kronos ("First-Launch Experience"): a real welcome panel, shown
     // only the one time drawDockspace()'s own DockBuilder detects a
@@ -341,6 +373,8 @@ private:
     // registration attempt for an already-known name is the only thing
     // this guards against).
     void registerNativePluginAdapterIfNeeded(const std::string& name);
+    void loadPluginApiPlugins();
+    void registerPluginApiPanels();
     // Saves whatever scene is currently open (if any path is set) before
     // loading `path` -- the "switch" half of scene tabs (see
     // SceneManager.hpp's class comment on what "tabs" means here) and
@@ -386,8 +420,11 @@ private:
     // separate window_/renderer_ pair, see this header's own class comment).
     bool windowShown_ = false;
     core::Renderer renderer_;
+    core::Audio audio_;
+    core::ResourceManager resources_{2};
     core::ECS ecs_;
     core::MeshLibrary meshLibrary_;
+    core::WorldStreamer worldStreamer_; // after ecs_/resources_/meshLibrary_: closes before they go
     core::TextureLibrary textureLibrary_;
     // Shared the same way meshLibrary_/textureLibrary_ are -- any plugin
     // with real skinned/rigged content (today: just AnimationPreviewerPlugin's
@@ -409,6 +446,8 @@ private:
     panels::ExplorerPanel explorerPanel_;
     panels::InspectorPanel inspectorPanel_;
     panels::ViewportPanel viewportPanel_;
+    core::ScriptDebugger scriptDebugger_;
+    SurfaceGraphMaterials surfaceGraphMaterials_;
     panels::ScriptEditorPanel scriptEditorPanel_;
     panels::StatsPanel statsPanel_;
     // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
@@ -442,6 +481,11 @@ private:
     // registers a second adapter into pluginManager_, which has no
     // removal path (see PluginManager.hpp's own comment).
     std::vector<std::string> nativePluginsWithAdapter_;
+    std::vector<NativePluginAdapter*> nativeAdapters_;
+    // Plugins built against plugin/kronos_plugin.h: trusted ones from
+    // native_plugins run in-process, third-party ones are sandboxed.
+    plugin::PluginHost pluginApi_;
+    std::vector<std::string> pluginApiPanels_;
 
     // Kronos ("3D Mesh & CSG Editor" -- Beta Roadmap Phase 2, "windowed
     // plugin module"): the IKronosPlugin sibling of pluginManager_ above

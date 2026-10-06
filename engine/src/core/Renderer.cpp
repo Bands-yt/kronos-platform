@@ -1,4 +1,7 @@
 #include "core/Renderer.hpp"
+#include "core/SceneSpatialIndex.hpp"
+#include "core/StaticBatching.hpp"
+#include "core/GpuFeatures.hpp"
 
 #include "core/CascadeSplitMath.hpp"
 #include "core/Hierarchy.hpp"
@@ -553,6 +556,11 @@ bool Renderer::createLogicalDevice() {
         deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     }
 
+    gpuFeatures_ = queryGpuFeatures(physicalDevice_);
+    GpuFeatureEnables optionalFeatures(gpuFeatures_);
+    optionalFeatures.apply(&features2, deviceExtensions);
+    std::fprintf(stdout, "Renderer: %s\n", gpuFeatures_.summary().c_str());
+
     VkDeviceCreateInfo createInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     createInfo.pNext = &features2;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueInfos.size());
@@ -565,6 +573,7 @@ bool Renderer::createLogicalDevice() {
         return false;
     }
 
+    Texture::setHostImageCopy(gpuFeatures_.hostCopyToShaderReadLayout);
     vkGetDeviceQueue(device_, *queueFamilies_.graphics, 0, &graphicsQueue_);
     vkGetDeviceQueue(device_, *queueFamilies_.present, 0, &presentQueue_);
     std::fprintf(stdout, "Renderer: ray-traced shadows %s (VK_KHR_ray_query%s)\n",
@@ -997,6 +1006,9 @@ bool Renderer::createShadowPipeline() {
     if (result == VK_SUCCESS && !createSkinnedShadowPipeline(pipelineInfo, shaderDir)) {
         std::fprintf(stderr, "Renderer: skinned shadow pipeline failed -- characters will not cast shadow-map shadows.\n");
     }
+    if (result == VK_SUCCESS && !createInstancedShadowPipeline(pipelineInfo, shaderDir)) {
+        std::fprintf(stderr, "Renderer: instanced shadow pipeline failed -- shadow casters draw one by one.\n");
+    }
 
     if (result != VK_SUCCESS) {
         std::fprintf(stderr, "Renderer: vkCreateGraphicsPipelines (shadow) failed.\n");
@@ -1045,7 +1057,42 @@ bool Renderer::createSkinnedShadowPipeline(VkGraphicsPipelineCreateInfo pipeline
     return result == VK_SUCCESS;
 }
 
+bool Renderer::createInstancedShadowPipeline(VkGraphicsPipelineCreateInfo pipelineInfo, const std::string& shaderDir) {
+    auto code = readBinaryFile(shaderDir + "/shadow_instanced.vert.spv");
+    VkShaderModule module = code.empty() ? VK_NULL_HANDLE : createShaderModule(device_, code);
+    if (module == VK_NULL_HANDLE) return false;
+    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stage.module = module;
+    stage.pName = "main";
+
+    std::array<VkVertexInputBindingDescription, 2> bindings{
+        Vertex::bindingDescription(), VkVertexInputBindingDescription{1, sizeof(glm::mat4), VK_VERTEX_INPUT_RATE_INSTANCE}};
+    std::vector<VkVertexInputAttributeDescription> attributes;
+    for (const auto& attribute : Vertex::attributeDescriptions()) {
+        if (attribute.location == 0) attributes.push_back(attribute);
+    }
+    for (uint32_t column = 0; column < 4; ++column) {
+        attributes.push_back({4 + column, 1, VK_FORMAT_R32G32B32A32_SFLOAT,
+                              static_cast<uint32_t>(sizeof(glm::vec4) * column)});
+    }
+    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInput.vertexBindingDescriptionCount = static_cast<uint32_t>(bindings.size());
+    vertexInput.pVertexBindingDescriptions = bindings.data();
+    vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size());
+    vertexInput.pVertexAttributeDescriptions = attributes.data();
+
+    pipelineInfo.pStages = &stage;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    VkResult result =
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &instancedShadowPipeline_);
+    vkDestroyShaderModule(device_, module, nullptr);
+    return result == VK_SUCCESS;
+}
+
 void Renderer::destroyShadowPipeline() {
+    if (instancedShadowPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, instancedShadowPipeline_, nullptr);
+    instancedShadowPipeline_ = VK_NULL_HANDLE;
     if (skinnedShadowPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, skinnedShadowPipeline_, nullptr);
     if (skinnedShadowPipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device_, skinnedShadowPipelineLayout_, nullptr);
@@ -1095,6 +1142,7 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
     for (auto entity : view) {
         const auto& renderable = view.get<Renderable>(entity);
         if (!renderable.visible || !renderable.castsShadow) continue;
+        if (activeBatching_ != nullptr && activeBatching_->isBatched(entity)) continue;
         const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
         if (!mesh) continue;
         glm::mat4 model = hierarchy::computeWorldMatrix(ecs, entity);
@@ -1104,6 +1152,30 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
                                    glm::length(glm::vec3(model[2]))});
         casters.push_back({model, glm::vec3(model * glm::vec4(localCenter, 1.0f)), localRadius * maxScale, mesh});
     }
+
+    if (activeBatching_ != nullptr) {
+        for (const StaticBatchSet::Batch& batch : activeBatching_->batches()) {
+            if (!batch.active || !batch.material.castsShadow) continue;
+            const Mesh* mesh = meshLibrary.get(batch.meshHandle);
+            if (!mesh) continue;
+            casters.push_back({glm::mat4(1.0f), batch.bounds.center(),
+                               0.5f * glm::length(batch.bounds.max - batch.bounds.min), mesh});
+        }
+    }
+
+    // Casters sharing a mesh with enough others are drawn instanced, per view.
+    std::unordered_map<const Mesh*, uint32_t> castersPerMesh;
+    for (const Caster& caster : casters) ++castersPerMesh[caster.mesh];
+    std::vector<bool> instancedCaster(casters.size(), false);
+    if (automaticInstancing_ && instancedShadowPipeline_ != VK_NULL_HANDLE) {
+        for (size_t i = 0; i < casters.size(); ++i) {
+            instancedCaster[i] = castersPerMesh[casters[i].mesh] >= kMinAutomaticInstances;
+        }
+    }
+    auto* shadowInstances = reinterpret_cast<glm::mat4*>(static_cast<char*>(frame.instanceMapped) +
+                                                         sizeof(InstanceData) * kMaxInstancesPerFrame);
+    uint32_t shadowInstanceCount = 0;
+    std::unordered_map<const Mesh*, std::vector<glm::mat4>> instancedThisView;
 
     auto drawCasters = [&](VkImageView target, uint32_t extent, int32_t viewIndex, auto&& visible) {
         VkRenderingAttachmentInfo depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1125,8 +1197,14 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
 
         vkCmdBeginRendering(cmd, &renderingInfo);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
-        for (const Caster& caster : casters) {
+        for (auto& [mesh, models] : instancedThisView) models.clear();
+        for (size_t i = 0; i < casters.size(); ++i) {
+            const Caster& caster = casters[i];
             if (!visible(caster)) continue;
+            if (instancedCaster[i]) {
+                instancedThisView[caster.mesh].push_back(caster.model);
+                continue;
+            }
             ShadowPushConstants push{};
             push.model = caster.model;
             push.viewIndex = viewIndex;
@@ -1138,6 +1216,42 @@ void Renderer::drawShadowPass(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, M
             vkCmdBindIndexBuffer(cmd, caster.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(cmd, caster.mesh->indexCount(), 1, 0, 0, 0);
             recordDraw(caster.mesh->indexCount(), 1);
+        }
+        bool instancedBound = false;
+        for (const auto& [mesh, models] : instancedThisView) {
+            if (models.empty()) continue;
+            const auto count = static_cast<uint32_t>(models.size());
+            ShadowPushConstants push{};
+            push.viewIndex = viewIndex;
+            if (shadowInstanceCount + count > kMaxShadowInstancesPerFrame) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
+                instancedBound = false;
+                VkDeviceSize offset = 0;
+                VkBuffer vb = mesh->vertexBuffer();
+                vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
+                vkCmdBindIndexBuffer(cmd, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                for (const glm::mat4& model : models) {
+                    push.model = model;
+                    vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+                    vkCmdDrawIndexed(cmd, mesh->indexCount(), 1, 0, 0, 0);
+                    recordDraw(mesh->indexCount(), 1);
+                }
+                continue;
+            }
+            if (!instancedBound) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, instancedShadowPipeline_);
+                instancedBound = true;
+            }
+            vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+            std::memcpy(shadowInstances + shadowInstanceCount, models.data(), count * sizeof(glm::mat4));
+            std::array<VkBuffer, 2> buffers{mesh->vertexBuffer(), frame.instanceBuffer};
+            std::array<VkDeviceSize, 2> offsets{
+                0, sizeof(InstanceData) * kMaxInstancesPerFrame + sizeof(glm::mat4) * shadowInstanceCount};
+            vkCmdBindVertexBuffers(cmd, 0, 2, buffers.data(), offsets.data());
+            vkCmdBindIndexBuffer(cmd, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, mesh->indexCount(), count, 0, 0, 0);
+            recordDraw(mesh->indexCount(), count);
+            shadowInstanceCount += count;
         }
         if (skinnedShadowPipeline_ != VK_NULL_HANDLE) {
             bool bound = false;
@@ -1729,6 +1843,47 @@ void Renderer::writeSceneModuleDescriptors(FrameSync& frame) {
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
+StaticBatchSet* Renderer::prepareStaticBatches(ECS& ecs, MeshLibrary& meshLibrary) {
+    auto& batching = ecs.raw().ctx().emplace<StaticBatchSet>();
+    if (batching.backend().owner != &meshLibrary) {
+        batching = StaticBatchSet{};
+        auto freeHandles = std::make_shared<std::vector<uint32_t>>();
+        StaticBatchBackend backend;
+        backend.owner = &meshLibrary;
+        backend.meshVersion = [&meshLibrary](uint32_t handle) -> uint64_t {
+            const Mesh* mesh = meshLibrary.get(handle);
+            return mesh != nullptr ? mesh->uid() : 0;
+        };
+        backend.fetch = [this, &meshLibrary](uint32_t handle) -> std::shared_ptr<const HostMesh> {
+            const Mesh* mesh = meshLibrary.get(handle);
+            auto host = std::make_shared<HostMesh>();
+            if (mesh == nullptr ||
+                !mesh->downloadToHost(allocator_, device_, commandPool_, graphicsQueue_, host->vertices, host->indices)) {
+                return nullptr;
+            }
+            return host;
+        };
+        backend.upload = [this, &meshLibrary, freeHandles](const HostMesh& merged) -> uint32_t {
+            Mesh mesh;
+            if (!mesh.uploadFromHost(allocator_, device_, commandPool_, graphicsQueue_, merged.vertices, merged.indices)) {
+                return Renderable::kInvalidHandle;
+            }
+            if (freeHandles->empty()) return meshLibrary.registerMesh(std::move(mesh));
+            const uint32_t handle = freeHandles->back();
+            freeHandles->pop_back();
+            meshLibrary.replaceMesh(handle, std::move(mesh), allocator_);
+            return handle;
+        };
+        backend.release = [this, &meshLibrary, freeHandles](uint32_t handle) {
+            meshLibrary.destroyMesh(handle, allocator_);
+            freeHandles->push_back(handle);
+        };
+        batching.setBackend(std::move(backend));
+    }
+    batching.update(ecs, frameSerial_);
+    return &batching;
+}
+
 uint32_t Renderer::pushObjectRecord(FrameSync& frame, EntityId entity, const MaterialLayers& layers,
                                     const glm::mat4& model) {
     const uint32_t key = static_cast<uint32_t>(entt::to_integral(entity));
@@ -1752,6 +1907,7 @@ uint32_t Renderer::pushObjectRecord(FrameSync& frame, EntityId entity, const Mat
     record.misc.x = l.specular;
     record.misc.z = l.waterWaves;
     record.misc.w = l.waterFoam;
+    record.pattern.x = l.gridSize;
 
     uint32_t index = frame.objectRecordCount++;
     static_cast<GpuObjectRecord*>(frame.objectRecords.mapped)[index] = record;
@@ -1893,7 +2049,7 @@ void Renderer::destroySceneDescriptorResources() {
 
 bool Renderer::initInstanceBufferFor(FrameSync& frame) {
     VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size = sizeof(InstanceData) * kMaxInstancesPerFrame;
+    bufferInfo.size = sizeof(InstanceData) * kMaxInstancesPerFrame + sizeof(glm::mat4) * kMaxShadowInstancesPerFrame;
     bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -2104,6 +2260,14 @@ void Renderer::setPerformanceMode(bool enabled) {
     }
 }
 
+void Renderer::applySceneShadingRate(VkCommandBuffer cmd) const {
+    if (!gpuFeatures_.fragmentShadingRate) return;
+    const VkExtent2D rate = coarseShadingActive() ? VkExtent2D{2, 2} : VkExtent2D{1, 1};
+    const VkFragmentShadingRateCombinerOpKHR combiners[2] = {VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+                                                             VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR};
+    vkCmdSetFragmentShadingRateKHR(cmd, &rate, combiners);
+}
+
 void Renderer::setVsyncEnabled(bool enabled) {
     if (vsyncEnabled_ == enabled) return; // real, honest no-op -- no swapchain rebuild for an unchanged value
     vsyncEnabled_ = enabled;
@@ -2157,6 +2321,58 @@ bool Renderer::createScenePipeline() {
         return false;
     }
 
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(ObjectPushConstants);
+
+    // Two sets: 0 = per-frame scene data (UBO + shadow sampler, unchanged),
+    // 1 = per-material textures (see createMaterialResources()) -- reused
+    // as-is by createInstancedScenePipeline()/createParticlePipeline(),
+    // whose shaders simply never declare a set=1 binding, so Vulkan never
+    // requires it to be bound for those draws (only createScenePipeline()'s
+    // individually-drawn entities bind set=1, see drawSceneInto()'s loop).
+    // Set 2 is the global bindless texture array, added only when the
+    // device supports it. Set 1 stays declared so the non-bindless path,
+    // and the other pipelines that share this layout, are unchanged.
+    std::vector<VkDescriptorSetLayout> setLayouts{sceneDescriptorSetLayout_, materialDescriptorSetLayout_};
+    if (bindlessInitialised_ && bindlessSetLayout_ != VK_NULL_HANDLE) setLayouts.push_back(bindlessSetLayout_);
+
+    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+    layoutInfo.pSetLayouts = setLayouts.data();
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &scenePipelineLayout_) != VK_SUCCESS) {
+        std::fprintf(stderr, "Renderer: vkCreatePipelineLayout failed.\n");
+        vkDestroyShaderModule(device_, vertModule, nullptr);
+        vkDestroyShaderModule(device_, fragModule, nullptr);
+        return false;
+    }
+
+    scenePipeline_ = buildScenePipeline(vertModule, fragModule);
+    if (gpuFeatures_.shaderClock) {
+        const std::string costName = fragShaderName.substr(0, fragShaderName.size() - std::string(".frag.spv").size()) +
+                                     "_cost.frag.spv";
+        auto costCode = readBinaryFile(shaderDir + "/" + costName);
+        VkShaderModule costModule = costCode.empty() ? VK_NULL_HANDLE : createShaderModule(device_, costCode);
+        if (costModule != VK_NULL_HANDLE) {
+            shaderCostPipeline_ = buildScenePipeline(vertModule, costModule);
+            vkDestroyShaderModule(device_, costModule, nullptr);
+        }
+    }
+
+    vkDestroyShaderModule(device_, vertModule, nullptr);
+    vkDestroyShaderModule(device_, fragModule, nullptr);
+
+    if (scenePipeline_ == VK_NULL_HANDLE) {
+        std::fprintf(stderr, "Renderer: vkCreateGraphicsPipelines failed.\n");
+        return false;
+    }
+    return true;
+}
+
+VkPipeline Renderer::buildScenePipeline(VkShaderModule vertModule, VkShaderModule fragModule) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0] = VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -2211,39 +2427,11 @@ bool Renderer::createScenePipeline() {
     colorBlending.attachmentCount = 2;
     colorBlending.pAttachments = blendAttachments.data();
 
-    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                      VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR};
     VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamicState.dynamicStateCount = 2;
+    dynamicState.dynamicStateCount = gpuFeatures_.fragmentShadingRate ? 3 : 2; // see applySceneShadingRate()
     dynamicState.pDynamicStates = dynamicStates;
-
-    VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushRange.offset = 0;
-    pushRange.size = sizeof(ObjectPushConstants);
-
-    // Two sets: 0 = per-frame scene data (UBO + shadow sampler, unchanged),
-    // 1 = per-material textures (see createMaterialResources()) -- reused
-    // as-is by createInstancedScenePipeline()/createParticlePipeline(),
-    // whose shaders simply never declare a set=1 binding, so Vulkan never
-    // requires it to be bound for those draws (only createScenePipeline()'s
-    // individually-drawn entities bind set=1, see drawSceneInto()'s loop).
-    // Set 2 is the global bindless texture array, added only when the
-    // device supports it. Set 1 stays declared so the non-bindless path,
-    // and the other pipelines that share this layout, are unchanged.
-    std::vector<VkDescriptorSetLayout> setLayouts{sceneDescriptorSetLayout_, materialDescriptorSetLayout_};
-    if (bindlessInitialised_ && bindlessSetLayout_ != VK_NULL_HANDLE) setLayouts.push_back(bindlessSetLayout_);
-
-    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
-    layoutInfo.pSetLayouts = setLayouts.data();
-    layoutInfo.pushConstantRangeCount = 1;
-    layoutInfo.pPushConstantRanges = &pushRange;
-    if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &scenePipelineLayout_) != VK_SUCCESS) {
-        std::fprintf(stderr, "Renderer: vkCreatePipelineLayout failed.\n");
-        vkDestroyShaderModule(device_, vertModule, nullptr);
-        vkDestroyShaderModule(device_, fragModule, nullptr);
-        return false;
-    }
 
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     renderingInfo.colorAttachmentCount = 2;
@@ -2266,19 +2454,55 @@ bool Renderer::createScenePipeline() {
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = scenePipelineLayout_;
 
-    VkResult result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &scenePipeline_);
-
-    vkDestroyShaderModule(device_, vertModule, nullptr);
-    vkDestroyShaderModule(device_, fragModule, nullptr);
-
-    if (result != VK_SUCCESS) {
-        std::fprintf(stderr, "Renderer: vkCreateGraphicsPipelines failed.\n");
-        return false;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
     }
-    return true;
+    return pipeline;
+}
+
+Renderer::SurfaceShaderTarget Renderer::surfaceShaderTarget() const {
+    return {rayTracingSupported_, bindlessInitialised_,
+            resolveResourceDir(executableDirectory(), "shaders", ENGINE_SHADER_DIR)};
+}
+
+uint32_t Renderer::createSurfacePipeline(const std::vector<uint32_t>& fragmentSpirv) {
+    if (device_ == VK_NULL_HANDLE || scenePipelineLayout_ == VK_NULL_HANDLE || fragmentSpirv.empty()) {
+        return kInvalidSurfacePipeline;
+    }
+    auto vertCode = readBinaryFile(surfaceShaderTarget().shaderDirectory + "/scene.vert.spv");
+    std::vector<char> fragCode(fragmentSpirv.size() * sizeof(uint32_t));
+    std::memcpy(fragCode.data(), fragmentSpirv.data(), fragCode.size());
+    VkShaderModule vertModule = vertCode.empty() ? VK_NULL_HANDLE : createShaderModule(device_, vertCode);
+    VkShaderModule fragModule = createShaderModule(device_, fragCode);
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vertModule != VK_NULL_HANDLE && fragModule != VK_NULL_HANDLE) pipeline = buildScenePipeline(vertModule, fragModule);
+    if (vertModule != VK_NULL_HANDLE) vkDestroyShaderModule(device_, vertModule, nullptr);
+    if (fragModule != VK_NULL_HANDLE) vkDestroyShaderModule(device_, fragModule, nullptr);
+    if (pipeline == VK_NULL_HANDLE) return kInvalidSurfacePipeline;
+    const uint32_t handle = nextSurfacePipeline_++;
+    surfacePipelines_[handle] = pipeline;
+    return handle;
+}
+
+void Renderer::destroySurfacePipeline(uint32_t handle) {
+    auto it = surfacePipelines_.find(handle);
+    if (it == surfacePipelines_.end()) return;
+    // Rare (a graph re-applied or dropped), so a full idle beats tracking
+    // which in-flight frame last used it.
+    vkDeviceWaitIdle(device_);
+    vkDestroyPipeline(device_, it->second, nullptr);
+    surfacePipelines_.erase(it);
+}
+
+void Renderer::destroySurfacePipelines() {
+    for (auto& [handle, pipeline] : surfacePipelines_) vkDestroyPipeline(device_, pipeline, nullptr);
+    surfacePipelines_.clear();
 }
 
 void Renderer::destroyScenePipeline() {
+    if (shaderCostPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, shaderCostPipeline_, nullptr);
+    shaderCostPipeline_ = VK_NULL_HANDLE;
     if (scenePipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(device_, scenePipeline_, nullptr);
         scenePipeline_ = VK_NULL_HANDLE;
@@ -2678,9 +2902,10 @@ bool Renderer::createInstancedScenePipeline() {
     colorBlending.attachmentCount = 2;
     colorBlending.pAttachments = blendAttachments.data();
 
-    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                      VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR};
     VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamicState.dynamicStateCount = 2;
+    dynamicState.dynamicStateCount = gpuFeatures_.fragmentShadingRate ? 3 : 2; // see applySceneShadingRate()
     dynamicState.pDynamicStates = dynamicStates;
 
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -2956,6 +3181,62 @@ void Renderer::destroyMaterialResources() {
         vkDestroySampler(device_, materialSampler_, nullptr);
         materialSampler_ = VK_NULL_HANDLE;
     }
+}
+
+void Renderer::deferDestroy(std::function<void()> destroy) {
+    deferredDestroys_.emplace_back(frameSerial_ + frames_.size() + 1, std::move(destroy));
+}
+
+void Renderer::waitIdle() const {
+    if (device_ != VK_NULL_HANDLE) vkDeviceWaitIdle(device_);
+}
+
+void Renderer::refreshTextureDescriptors(uint32_t handle, TextureLibrary& textureLibrary) {
+    const Texture* texture = textureLibrary.get(handle);
+    const bool usable = texture != nullptr && texture->isValid();
+
+    std::vector<VkDescriptorImageInfo> infos;
+    std::vector<VkWriteDescriptorSet> writes;
+    infos.reserve(materialDescriptorCache_.size() * 5 + 1);
+    const Texture* fallbacks[5] = {&defaultWhiteTexture_, &defaultFlatNormalTexture_, &defaultWhiteTexture_,
+                                   &defaultWhiteTexture_, &defaultWhiteTexture_};
+    for (const auto& [key, set] : materialDescriptorCache_) {
+        for (uint32_t binding = 0; binding < key.size(); ++binding) {
+            if (key[binding] != handle || set == VK_NULL_HANDLE) continue;
+            infos.push_back({materialSampler_, usable ? texture->view() : fallbacks[binding]->view(),
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = set;
+            write.dstBinding = binding;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &infos.back();
+            writes.push_back(write);
+        }
+    }
+
+    if (bindlessInitialised_) {
+        const uint64_t key = static_cast<uint64_t>(handle) + kBindlessReservedKeyCount;
+        const uint32_t slot = bindlessTable_.lookup(key);
+        if (slot != BindlessTextureTable::kInvalidSlot) {
+            if (usable) {
+                infos.push_back({bindlessSampler_, texture->view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+                VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                write.dstSet = bindlessSet_;
+                write.dstBinding = 0;
+                write.dstArrayElement = slot;
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo = &infos.back();
+                writes.push_back(write);
+            } else {
+                bindlessTable_.release(key);
+            }
+        }
+    }
+    if (writes.empty()) return;
+    vkDeviceWaitIdle(device_);
+    vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 VkDescriptorSet Renderer::getOrCreateMaterialDescriptorSet(const Renderable& renderable, TextureLibrary& textureLibrary) {
@@ -5232,6 +5513,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     std::memcpy(frame.sceneUboMapped, &ubo, sizeof(ubo)); // persistently mapped -- no map/unmap round trip
 
     prepareSkinnedDraws(frame, ecs, riggedMeshLibrary);
+    activeBatching_ = staticBatching_ ? prepareStaticBatches(ecs, meshLibrary) : nullptr;
     drawShadowPass(cmd, frame, ecs, meshLibrary, cascades, spotShadows);
     clusteredLighting_.record(cmd, frame.sceneDescriptorSet, frame.clusterResources, clusterGrid);
     frame.objectRecordCount = 1;
@@ -5320,6 +5602,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipeline_);
+    applySceneShadingRate(cmd);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 0, 1,
                              &frame.sceneDescriptorSet, 0, nullptr);
     // set=2 (the bindless texture array) -- bound ONCE per pass, not per
@@ -5333,9 +5616,32 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // TODO(frame graph, §4.1): everything below this line is the opaque
     // (Forward+) pass -- see this method's declaration in Renderer.hpp for
     // where shadows/RT/transparency/post attach around it.
+    VkPipeline boundScenePipeline = scenePipeline_;
     auto view = ecs.view<Transform, Renderable>();
-    for (auto entity : view) {
-        auto& renderable = view.get<Renderable>(entity);
+    SceneSpatialIndex* culling = nullptr;
+    if (frustumCulling_) {
+        culling = &ecs.raw().ctx().emplace<SceneSpatialIndex>();
+        culling->sync(ecs, meshLibrary);
+        visibleEntities_.clear();
+        culling->cull(ubo.viewProjNoJitter, visibleEntities_);
+        frameObjectsVisible_ += static_cast<uint32_t>(culling->stats().visible);
+        frameObjectsCulled_ += static_cast<uint32_t>(culling->stats().culled);
+    }
+    activeCulling_ = culling;
+    auto forEachDrawn = [&](auto&& draw) {
+        if (culling != nullptr) {
+            for (EntityId entity : visibleEntities_) draw(entity);
+        } else {
+            for (auto entity : view) draw(entity);
+        }
+    };
+    auto worldMatrixOf = [&](EntityId entity) {
+        if (culling != nullptr) {
+            if (const glm::mat4* world = culling->worldMatrix(entity)) return *world;
+        }
+        return hierarchy::computeWorldMatrix(ecs, entity);
+    };
+    auto drawOpaque = [&](const Renderable& renderable, EntityId recordKey, const glm::mat4& model) {
         // instanced entities are drawn by drawInstancedBatches() below,
         // via a batched vkCmdDrawIndexed(instanceCount=N) instead of one
         // individual draw + push-constant update each -- see
@@ -5343,13 +5649,22 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         // (transmission > 0) are drawn by the dedicated glass loop right
         // below instead of this opaque one -- see Renderable::transmission's
         // own comment and shaders/glass.frag's header comment.
-        if (!renderable.visible || renderable.instanced || renderable.transmission > 0.0f) continue;
-
         const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
-        if (!mesh) continue;
+        if (!mesh) return;
+
+        VkPipeline wantedPipeline = shaderCostViewActive() ? shaderCostPipeline_ : scenePipeline_;
+        if (renderable.surfacePipeline != Renderable::kInvalidHandle) {
+            auto surface = surfacePipelines_.find(renderable.surfacePipeline);
+            if (surface != surfacePipelines_.end()) wantedPipeline = surface->second;
+        }
+        if (wantedPipeline != boundScenePipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wantedPipeline);
+            applySceneShadingRate(cmd);
+            boundScenePipeline = wantedPipeline;
+        }
 
         ObjectPushConstants push{};
-        push.model = hierarchy::computeWorldMatrix(ecs, entity);
+        push.model = model;
         push.baseColor = renderable.baseColor;
         push.metallicRoughness = glm::vec4(renderable.metallic, renderable.roughness, renderable.normalIntensity,
                                             renderable.useTriplanarProjection ? 1.0f : 0.0f);
@@ -5359,7 +5674,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         // whenever bindless isn't initialised -- see SceneTypes.hpp's own
         // comment on why this flag can't ride inside that helper.
         push.textureIndices.w = renderable.unlitSilhouette ? 1u : 0u;
-        push.textureIndices.z |= pushObjectRecord(frame, entity, renderable.layers, push.model) << 16;
+        push.textureIndices.z |= pushObjectRecord(frame, recordKey, renderable.layers, push.model) << 16;
         vkCmdPushConstants(cmd, scenePipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                             0, sizeof(push), &push);
 
@@ -5387,6 +5702,55 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         vkCmdBindIndexBuffer(cmd, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, mesh->indexCount(), 1, 0, 0, 0);
         recordDraw(mesh->indexCount(), 1);
+    };
+    for (auto& [meshHandle, entities] : automaticInstances_) entities.clear();
+    auto instanceable = [&](const Renderable& renderable) {
+        if (!automaticInstancing_ || shaderCostViewActive() || renderable.surfacePipeline != Renderable::kInvalidHandle) {
+            return false;
+        }
+        // Without bindless, instances can't carry their own textures.
+        return bindlessInitialised_ ||
+               (renderable.albedoTexture == Renderable::kInvalidHandle &&
+                renderable.normalTexture == Renderable::kInvalidHandle &&
+                renderable.metallicTexture == Renderable::kInvalidHandle &&
+                renderable.roughnessTexture == Renderable::kInvalidHandle &&
+                renderable.aoTexture == Renderable::kInvalidHandle);
+    };
+    forEachDrawn([&](EntityId entity) {
+        const auto& renderable = view.get<Renderable>(entity);
+        if (!renderable.visible || renderable.instanced || renderable.transmission > 0.0f) return;
+        if (activeBatching_ != nullptr && activeBatching_->isBatched(entity)) return;
+        if (instanceable(renderable)) {
+            automaticInstances_[renderable.meshHandle].push_back(entity);
+            return;
+        }
+        drawOpaque(renderable, entity, worldMatrixOf(entity));
+    });
+    for (auto it = automaticInstances_.begin(); it != automaticInstances_.end();) {
+        auto& entities = it->second;
+        if (entities.empty()) {
+            it = automaticInstances_.erase(it);
+            continue;
+        }
+        if (entities.size() < kMinAutomaticInstances) {
+            for (EntityId entity : entities) drawOpaque(view.get<Renderable>(entity), entity, worldMatrixOf(entity));
+            entities.clear();
+        }
+        ++it;
+    }
+    if (activeBatching_ != nullptr) {
+        const Frustum frustum = Frustum::fromViewProjection(ubo.viewProjNoJitter);
+        const auto& batches = activeBatching_->batches();
+        for (size_t i = 0; i < batches.size(); ++i) {
+            const StaticBatchSet::Batch& batch = batches[i];
+            if (!batch.active) continue;
+            ++frameStaticBatches_;
+            frameStaticBatchedObjects_ += static_cast<uint32_t>(batch.members.size());
+            if (frustumCulling_ && !frustum.intersects(batch.bounds)) continue;
+            // Version 0xFFF never belongs to a live entity, so these keys can't collide with one.
+            const auto recordKey = static_cast<EntityId>(0xFFF00000u | static_cast<uint32_t>(i));
+            drawOpaque(batch.material, recordKey, glm::mat4(1.0f));
+        }
     }
 
     // Kronos ("Real-Time Rendering Evolved" trailer): real glass/water --
@@ -5399,11 +5763,11 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
     // technique differs, not its place in the depth-sorted world.
     if (glassPipeline_ != VK_NULL_HANDLE) {
         bool boundGlassPipeline = false;
-        for (auto entity : view) {
+        forEachDrawn([&](EntityId entity) {
             auto& renderable = view.get<Renderable>(entity);
-            if (!renderable.visible || renderable.transmission <= 0.0f) continue;
+            if (!renderable.visible || renderable.transmission <= 0.0f) return;
             const Mesh* mesh = meshLibrary.get(renderable.meshHandle);
-            if (!mesh) continue;
+            if (!mesh) return;
 
             if (!boundGlassPipeline) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glassPipeline_);
@@ -5413,7 +5777,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
             }
 
             GlassPushConstants push{};
-            push.model = hierarchy::computeWorldMatrix(ecs, entity);
+            push.model = worldMatrixOf(entity);
             push.tintColor = glm::vec4(glm::vec3(renderable.baseColor), renderable.transmission);
             push.params = glm::vec4(renderable.transmissionIor, renderable.roughness, 0.0f, 0.0f);
             vkCmdPushConstants(cmd, glassPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -5425,7 +5789,7 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
             vkCmdBindIndexBuffer(cmd, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(cmd, mesh->indexCount(), 1, 0, 0, 0);
             recordDraw(mesh->indexCount(), 1);
-        }
+        });
     }
 
     // Instanced draws don't get per-instance textures (see Components.hpp's
@@ -5442,7 +5806,11 @@ void Renderer::drawSceneIntoImpl(FrameSync& frame, VkCommandBuffer cmd, VkImage 
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 1, 1, &defaultMaterialSet,
                                  0, nullptr);
     }
-    drawInstancedBatches(cmd, frame, ecs, meshLibrary, textureLibrary);
+    drawInstancedBatches(cmd, frame, ecs, meshLibrary, textureLibrary, automaticInstances_, [&](EntityId entity) {
+        drawOpaque(view.get<Renderable>(entity), entity, worldMatrixOf(entity));
+    });
+    activeCulling_ = nullptr;
+    activeBatching_ = nullptr;
     // Its own pipeline (not scenePipelineLayout_-based), so it rebinds
     // pipeline/set=0 itself the first time it actually has something to
     // draw -- see its own doc comment. A no-op (no rebind at all) when
@@ -5670,33 +6038,51 @@ void Renderer::destroyAuxiliaryScene(AuxiliarySceneHandle handle) {
 }
 
 void Renderer::drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
-                                     TextureLibrary& textureLibrary) {
+                                     TextureLibrary& textureLibrary,
+                                     const std::unordered_map<uint32_t, std::vector<EntityId>>& automatic,
+                                     const std::function<void(EntityId)>& drawSingle) {
     // Bucket by meshHandle -- every entity sharing a mesh in one bucket
     // becomes one draw call, regardless of how many entities that is.
     std::unordered_map<uint32_t, std::vector<InstanceData>> buckets;
+    size_t total = 0;
 
-    for (auto entity : ecs.view<Transform, Renderable>()) {
-        auto* renderable = ecs.tryGetComponent<Renderable>(entity);
-        if (renderable == nullptr || !renderable->visible || !renderable->instanced) continue;
-
-        auto* transform = ecs.tryGetComponent<Transform>(entity);
-        if (transform == nullptr) continue;
-
+    auto addInstance = [&](EntityId entity, const Renderable& renderable) {
         InstanceData data{};
-        data.model = transform->matrix();
-        data.baseColor = renderable->baseColor;
-        data.metallicRoughness = glm::vec4(renderable->metallic, renderable->roughness, renderable->normalIntensity,
-                                            renderable->useTriplanarProjection ? 1.0f : 0.0f);
-        data.emissive = glm::vec4(renderable->emissiveColor, renderable->emissiveIntensity);
-        data.textureIndices = packTextureIndices(*renderable, textureLibrary);
-        data.textureIndices.w = renderable->unlitSilhouette ? 1u : 0u;
-        data.textureIndices.z |= pushObjectRecord(frame, entity, renderable->layers, data.model) << 16;
-        buckets[renderable->meshHandle].push_back(data);
+        const glm::mat4* world = activeCulling_ != nullptr ? activeCulling_->worldMatrix(entity) : nullptr;
+        data.model = world != nullptr ? *world : hierarchy::computeWorldMatrix(ecs, entity);
+        data.baseColor = renderable.baseColor;
+        data.metallicRoughness = glm::vec4(renderable.metallic, renderable.roughness, renderable.normalIntensity,
+                                            renderable.useTriplanarProjection ? 1.0f : 0.0f);
+        data.emissive = glm::vec4(renderable.emissiveColor, renderable.emissiveIntensity);
+        data.textureIndices = packTextureIndices(renderable, textureLibrary);
+        data.textureIndices.w = renderable.unlitSilhouette ? 1u : 0u;
+        data.textureIndices.z |= pushObjectRecord(frame, entity, renderable.layers, data.model) << 16;
+        buckets[renderable.meshHandle].push_back(data);
+        ++total;
+    };
+
+    auto view = ecs.view<Transform, Renderable>();
+    for (auto entity : view) {
+        const auto& renderable = view.get<Renderable>(entity);
+        if (!renderable.visible || !renderable.instanced) continue;
+        if (activeCulling_ != nullptr && !activeCulling_->wasVisible(entity)) continue;
+        addInstance(entity, renderable);
+    }
+    for (const auto& [meshHandle, entities] : automatic) {
+        if (entities.empty()) continue;
+        if (total + entities.size() > kMaxInstancesPerFrame || meshLibrary.get(meshHandle) == nullptr) {
+            for (EntityId entity : entities) drawSingle(entity);
+            continue;
+        }
+        for (EntityId entity : entities) addInstance(entity, view.get<Renderable>(entity));
+        ++frameInstancedDraws_;
+        frameInstancedObjects_ += static_cast<uint32_t>(entities.size());
     }
 
     if (buckets.empty()) return;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, instancedScenePipeline_);
+    applySceneShadingRate(cmd);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout_, 0, 1, &frame.sceneDescriptorSet,
                              0, nullptr);
     // Bound here too rather than relying on the opaque loop above: this
@@ -5912,10 +6298,25 @@ bool Renderer::renderFrame() {
     lastFrameTimestamp_ = now;
     frameDrawCalls_ = 0;
     frameTriangles_ = 0;
+    frameObjectsVisible_ = 0;
+    frameObjectsCulled_ = 0;
+    frameStaticBatches_ = 0;
+    frameStaticBatchedObjects_ = 0;
+    frameInstancedDraws_ = 0;
+    frameInstancedObjects_ = 0;
+    ++frameSerial_;
 
     FrameSync& frame = frames_[currentFrame_];
 
     vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
+    if (!deferredDestroys_.empty()) {
+        auto due = std::stable_partition(deferredDestroys_.begin(), deferredDestroys_.end(),
+                                         [this](const auto& entry) { return entry.first > frameSerial_; });
+        std::vector<std::function<void()>> run;
+        for (auto it = due; it != deferredDestroys_.end(); ++it) run.push_back(std::move(it->second));
+        deferredDestroys_.erase(due, deferredDestroys_.end());
+        for (auto& destroy : run) destroy();
+    }
 
     uint32_t imageIndex = 0;
     VkResult acquireResult = vkAcquireNextImageKHR(
@@ -6056,6 +6457,12 @@ bool Renderer::renderFrame() {
 
     lastMetrics_.drawCalls = frameDrawCalls_;
     lastMetrics_.triangleCount = frameTriangles_;
+    lastMetrics_.objectsVisible = frameObjectsVisible_;
+    lastMetrics_.staticBatches = frameStaticBatches_;
+    lastMetrics_.staticBatchedObjects = frameStaticBatchedObjects_;
+    lastMetrics_.instancedDraws = frameInstancedDraws_;
+    lastMetrics_.instancedObjects = frameInstancedObjects_;
+    lastMetrics_.objectsCulled = frameObjectsCulled_;
 
     // vmaGetHeapBudgets: VMA's own live tracking of what's actually
     // resident/available per memory heap -- real numbers from the driver,
@@ -6093,6 +6500,7 @@ void Renderer::shutdown() {
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
     }
+    deferredDestroys_.clear();
 
     destroyShadowPipeline();
     destroyInstancedScenePipeline();
@@ -6101,6 +6509,7 @@ void Renderer::shutdown() {
     destroySkyPipeline();
     destroySkinnedScenePipeline();
     destroyGlassPipeline();
+    destroySurfacePipelines();
     destroyScenePipeline();
 
     // Persist whatever every createXPipeline() call above just compiled

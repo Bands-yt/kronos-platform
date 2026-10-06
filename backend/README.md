@@ -50,7 +50,32 @@ GOOGLE_CLIENT_ID=test-client-id.apps.googleusercontent.com npm test
 |---|---|---|
 | GET | `/games` | Keyset-paginated grid (limit max 200): title, creator, thumbnail, live player count |
 | POST | `/games/publish` | One-click publish from Studio; owner-only re-publish |
-| GET | `/games/:slug` | One game |
+| GET | `/games/:slug` | One game, with approved screenshots |
+| POST | `/games/:slug/package/upload-url` | Upload ticket (presigned S3 PUT, or `local-upload` without a bucket); checks the storage quota |
+| POST | `/games/:slug/package/confirm` | Re-hashes and validates the archive (manifest, project, scenes, no unsafe paths), then records it as the next version |
+| GET | `/games/:slug/package` | Live approved version for players; `?version=N` lets the owner fetch any of theirs |
+| GET | `/games/:slug/package/versions` | Owner: every version with review status, plus storage used/quota |
+| POST | `/games/:slug/package/versions/:n/activate` | Owner: make an approved version live (instant rollback) |
+| DELETE | `/games/:slug/package/versions/:n` | Owner: delete a version that is not live; the object is removed once nothing references it |
+| POST | `/games/:slug/media/upload-url`, `/games/:slug/media/confirm` | Thumbnail or screenshot (PNG/JPEG, 16–4096 px, max 8 per game) |
+| GET | `/games/:slug/media` | Approved images; the owner also sees pending/rejected ones |
+| GET | `/media/:id` | Serves an image (redirect to S3, or streamed from local storage) |
+| DELETE | `/games/:slug/media/:id` | Owner: remove an image |
+| GET | `/storage` | Caller's storage used and quota |
+
+With `GAME_REVIEW_REQUIRED` (default on), a new game stays unlisted and
+unhostable until its first version is approved, and later versions only go
+live once approved — players keep the previous version meanwhile. Uploads
+count against a per-account quota (`PACKAGE_QUOTA_BYTES`, default 2 GiB,
+overridable per user via `users.storage_quota_bytes`); identical bytes are
+counted once.
+
+### Catalogue review (`/v1/moderation/catalog`, admin/moderator)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/pending` | Versions (with a download link) and images awaiting review |
+| POST | `/versions/:id/review` | `{approve, note}` — a note is required to reject; approving a newer version makes it live |
+| POST | `/media/:id/review` | `{approve, note}` — an approved thumbnail replaces the game's thumbnail |
 
 ### Sessions (`/v1/sessions`)
 | Method | Path | Notes |
@@ -110,8 +135,7 @@ ip:port and the server would have no way to know we sent them.
 - No HTTPS termination here; run it behind a TLS-terminating proxy.
 - No email provider wired in — `src/email/mailer.js` is the hook; the default
   transport logs instead of sending.
-- No admin/publishing endpoints yet: `games` and `game_servers` rows are
-  inserted directly for now.
+- `game_servers` rows are inserted directly for now.
 - Rate limiting is per-IP and fails open if Redis is down.
 
 ## Account lifecycle
@@ -134,6 +158,11 @@ the only thing standing between a banned user and a new account.
 
 **Usernames are locked for 30 days** after termination, then released to the
 public pool by `npm run recycle-usernames` (idempotent; run it hourly).
+
+**Expired tokens** (refresh, email verification, password reset, launcher
+hand-off) are deleted by `npm run purge-expired-tokens` (idempotent; run it
+daily). Every refresh writes a row, so without it `refresh_tokens` grows
+without bound.
 
 **Appeals:**
 - Granted *inside* 30 days → account restored, username retained.

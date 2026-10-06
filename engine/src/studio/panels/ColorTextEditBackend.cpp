@@ -118,6 +118,7 @@ TextEditor::LanguageDefinition luauLanguageDefinition() {
             {"ui", "ui -- immediate-mode on-screen drawing"},
             {"network", "network -- client/server remote events"},
             {"avatar", "avatar -- player avatar emotes"},
+            {"audio", "audio -- sounds, mixer buses and snapshots"},
             {"engine", "engine -- logging"},
             {"TextChatService", "TextChatService -- send and receive chat"},
             {"print", "print(...) -- writes to the Engine Console"},
@@ -424,9 +425,14 @@ void ColorTextEditBackend::draw() {
     editor_->SetShowWhitespaces(g_prefs.whitespace);
 
     const bool panelFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
-    ImGuiWindow* editorWindow = ImGui::FindWindowByID(ImGui::GetID("##luau_source"));
-    const bool editorFocused = panelFocused && editorWindow != nullptr && ImGui::GetCurrentContext()->NavWindow == editorWindow;
-    handleShortcuts(editorFocused || (panelFocused && findOpen_));
+    const ImGuiWindow* navWindow = ImGui::GetCurrentContext()->NavWindow;
+    const bool editorFocused = panelFocused && navWindow != nullptr && navWindow->ID == editorWindowId_;
+    // ImGui's nav moves focus from a child to its parent on Escape before we
+    // get here, so treat Escape as still belonging to the editor.
+    const bool escapeFromEditor = editorWasFocused_ && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    if (escapeFromEditor) refocusEditor_ = true;
+    editorWasFocused_ = editorFocused || escapeFromEditor;
+    handleShortcuts(editorFocused || escapeFromEditor || (panelFocused && findOpen_));
 
     drawToolbar();
     if (findOpen_) drawFindBar();
@@ -443,6 +449,7 @@ void ColorTextEditBackend::draw() {
 
     drawCompletionPopup();
     drawSignaturePopup();
+    drawRenamePopup();
 }
 
 void ColorTextEditBackend::handleShortcuts(bool focused) {
@@ -488,6 +495,44 @@ void ColorTextEditBackend::handleShortcuts(bool focused) {
     }
 
     if (focused && !consumed) {
+        const TextEditor::Coordinates caret = editor_->GetCursorPosition();
+        if (ctrl && io.KeyAlt && (pressed(ImGuiKey_UpArrow, true) || pressed(ImGuiKey_DownArrow, true))) {
+            addCaretVertically(ImGui::IsKeyPressed(ImGuiKey_UpArrow, true) ? -1 : 1);
+            consumed = true;
+        } else if (ctrl && io.KeyShift && pressed(ImGuiKey_D)) {
+            extraCarets_.clear();
+            duplicateLine();
+            consumed = true;
+        } else if (ctrl && pressed(ImGuiKey_D)) {
+            addNextOccurrence();
+            consumed = true;
+        } else if (ctrl && io.KeyShift && pressed(ImGuiKey_F)) {
+            std::string query = editor_->HasSelection() ? editor_->GetSelectedText() : std::string();
+            if (query.empty() || query.find('\n') != std::string::npos) {
+                const std::string& line = lines_.empty() ? std::string() : lines_[static_cast<size_t>(caret.mLine)];
+                const int byte = columnToByte(line, caret.mColumn, kTabSize);
+                const int start = identifierPrefixStart(line, byte);
+                int finish = byte;
+                while (finish < static_cast<int>(line.size()) && isIdentifierChar(line[static_cast<size_t>(finish)])) ++finish;
+                query = line.substr(static_cast<size_t>(start), static_cast<size_t>(finish - start));
+            }
+            if (hooks_.findInAllScripts) hooks_.findInAllScripts(query);
+            consumed = true;
+        } else if (pressed(ImGuiKey_F12) && !lines_.empty()) {
+            goToDefinitionAt(caret.mLine, columnToByte(lines_[static_cast<size_t>(caret.mLine)], caret.mColumn, kTabSize));
+            consumed = true;
+        } else if (pressed(ImGuiKey_F2)) {
+            beginRename();
+            consumed = true;
+        } else if (pressed(ImGuiKey_F9)) {
+            toggleBreakpoint(caret.mLine + 1);
+            consumed = true;
+        } else if (!extraCarets_.empty()) {
+            consumed = handleMultiCursorKeys();
+        }
+    }
+
+    if (focused && !consumed) {
         if (ctrl && pressed(ImGuiKey_Space)) {
             updateCompletions(true);
             consumed = true;
@@ -499,9 +544,6 @@ void ColorTextEditBackend::handleShortcuts(bool focused) {
             consumed = true;
         } else if (ctrl && pressed(ImGuiKey_Slash)) {
             toggleCommentOnSelection();
-            consumed = true;
-        } else if (ctrl && pressed(ImGuiKey_D)) {
-            duplicateLine();
             consumed = true;
         } else if (ctrl && io.KeyShift && pressed(ImGuiKey_O)) {
             openSymbolPicker_ = true;
@@ -874,6 +916,7 @@ void ColorTextEditBackend::drawEditor(ImVec2 size) {
                              ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav;
     if (io.KeyCtrl) flags |= ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::BeginChild("##luau_source", size, ImGuiChildFlags_None, flags);
+    editorWindowId_ = ImGui::GetCurrentWindow()->ID;
     ImGui::PushFont(core::kronosCodeFont(), ImGui::GetStyle().FontSizeBase * g_prefs.zoom);
 
     if (io.KeyCtrl && io.MouseWheel != 0.0f && ImGui::IsWindowHovered()) {
@@ -892,6 +935,27 @@ void ColorTextEditBackend::drawEditor(ImVec2 size) {
     editor_->SetHandleKeyboardInputs(true);
     editorClipMin_ = ImGui::GetWindowPos();
     editorClipMax_ = ImVec2(editorClipMin_.x + ImGui::GetWindowSize().x, editorClipMin_.y + ImGui::GetWindowSize().y);
+
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !lines_.empty()) {
+        const ImVec2 mouse = io.MousePos;
+        const auto [line, byte] = mouseTextPosition();
+        const bool belowText = mouse.y >= editorOrigin_.y + static_cast<float>(lines_.size()) * charAdvance_.y;
+        if (mouse.x < editorOrigin_.x + textStart_ - 4.0f) {
+            if (!belowText) toggleBreakpoint(line + 1);
+        } else if (io.KeyAlt && !io.KeyCtrl) {
+            const int offset = offsetOf(line, byteToColumn(lines_[static_cast<size_t>(line)], byte, kTabSize));
+            std::vector<Caret> carets = allCarets();
+            const auto existing = std::find_if(carets.begin() + 1, carets.end(), [&](const Caret& c) { return c.position == offset; });
+            if (existing != carets.end()) carets.erase(existing);
+            else carets.push_back({offset, offset});
+            setCarets(carets);
+        } else if (io.KeyCtrl && !io.KeyAlt && !belowText) {
+            extraCarets_.clear();
+            goToDefinitionAt(line, byte);
+        } else {
+            extraCarets_.clear();
+        }
+    }
     drawOverlays(ImGui::GetWindowDrawList(), editorOrigin_, charAdvance_, textStart_);
 
     if (editor_->IsTextChanged()) {
@@ -970,6 +1034,73 @@ void ColorTextEditBackend::drawOverlays(ImDrawList* drawList, ImVec2 origin, ImV
 
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool hovered = ImGui::IsWindowHovered();
+    const float rowRight = editorClipMax_.x;
+
+    if (executionLine_ > 0 && executionLine_ - 1 >= firstVisible && executionLine_ - 1 <= lastVisible) {
+        const float y = lineY(executionLine_ - 1);
+        drawList->AddRectFilled(ImVec2(origin.x + textStart - 2.0f, y), ImVec2(rowRight, y + advance.y), IM_COL32(255, 204, 0, 30));
+        drawList->AddRectFilled(ImVec2(origin.x + textStart - 2.0f, y), ImVec2(origin.x + textStart, y + advance.y),
+                                IM_COL32(255, 204, 0, 255));
+    }
+    const float dotRadius = std::max(3.0f, std::min(advance.y * 0.22f, advance.x * 0.45f));
+    const float dotX = origin.x + dotRadius + 1.0f;
+    for (int line : breakpoints_) {
+        if (line - 1 < firstVisible || line - 1 > lastVisible) continue;
+        drawList->AddCircleFilled(ImVec2(dotX, lineY(line - 1) + advance.y * 0.5f), dotRadius, IM_COL32(229, 57, 53, 255));
+    }
+    if (hovered && mouse.x < origin.x + textStart - 4.0f) {
+        const int line = static_cast<int>((mouse.y - origin.y) / advance.y);
+        if (line >= 0 && line < static_cast<int>(lines_.size()) && breakpoints_.count(line + 1) == 0) {
+            drawList->AddCircleFilled(ImVec2(dotX, lineY(line) + advance.y * 0.5f), dotRadius, IM_COL32(229, 57, 53, 90));
+        }
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+    if (executionLine_ > 0 && executionLine_ - 1 >= firstVisible && executionLine_ - 1 <= lastVisible) {
+        const float cy = lineY(executionLine_ - 1) + advance.y * 0.5f;
+        const float half = dotRadius;
+        drawList->AddTriangleFilled(ImVec2(dotX - half, cy - half), ImVec2(dotX - half, cy + half), ImVec2(dotX + half + 1.0f, cy),
+                                    IM_COL32(255, 204, 0, 255));
+    }
+
+    const ImU32 caretColor = editor_->GetPalette()[static_cast<int>(TextEditor::PaletteIndex::Cursor)];
+    const ImU32 selectionColor = editor_->GetPalette()[static_cast<int>(TextEditor::PaletteIndex::Selection)];
+    for (const Caret& caret : extraCarets_) {
+        const int from = std::min(caret.anchor, caret.position);
+        const int to = std::max(caret.anchor, caret.position);
+        if (from != to) {
+            const auto [startLine, startColumn] = positionOf(from);
+            const auto [endLine, endColumn] = positionOf(to);
+            for (int line = startLine; line <= endLine; ++line) {
+                if (line < firstVisible || line > lastVisible) continue;
+                const int c0 = line == startLine ? startColumn : 0;
+                const int c1 = line == endLine ? endColumn
+                                               : byteToColumn(lines_[static_cast<size_t>(line)],
+                                                              static_cast<int>(lines_[static_cast<size_t>(line)].size()), kTabSize) + 1;
+                drawList->AddRectFilled(ImVec2(colX(c0), lineY(line)), ImVec2(colX(c1), lineY(line) + advance.y), selectionColor);
+            }
+        }
+        const auto [line, column] = positionOf(caret.position);
+        if (line < firstVisible || line > lastVisible) continue;
+        drawList->AddRectFilled(ImVec2(colX(column), lineY(line)), ImVec2(colX(column) + 2.0f, lineY(line) + advance.y), caretColor);
+    }
+
+    if (hovered && ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt && mouse.x >= origin.x + textStart) {
+        const auto [line, byte] = mouseTextPosition();
+        if (line >= firstVisible && line <= lastVisible && mouse.y < lineY(static_cast<int>(lines_.size()))) {
+            const std::string& text = lines_[static_cast<size_t>(line)];
+            int start = std::min(byte, static_cast<int>(text.size()));
+            int finish = start;
+            while (start > 0 && isIdentifierChar(text[static_cast<size_t>(start - 1)])) --start;
+            while (finish < static_cast<int>(text.size()) && isIdentifierChar(text[static_cast<size_t>(finish)])) ++finish;
+            if (finish > start && !std::isdigit(static_cast<unsigned char>(text[static_cast<size_t>(start)]))) {
+                const float y = lineY(line) + advance.y - 1.0f;
+                drawList->AddLine(ImVec2(colX(byteToColumn(text, start, kTabSize)), y),
+                                  ImVec2(colX(byteToColumn(text, finish, kTabSize)), y), ImGui::GetColorU32(accent), 1.0f);
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+        }
+    }
+
     const ImU32 errorColor = IM_COL32(229, 83, 75, 255);
     const ImU32 warningColor = IM_COL32(232, 169, 59, 255);
     int lastAnnotatedLine = -1;
@@ -1493,6 +1624,14 @@ void ColorTextEditBackend::drawStatusBar() {
     ImGui::Text("Ln %d, Col %d", cursor.mLine + 1, cursor.mColumn + 1);
     ImGui::SameLine(0.0f, 18.0f);
     ImGui::TextDisabled("%d lines", editor_->GetTotalLines());
+    if (!extraCarets_.empty()) {
+        ImGui::SameLine(0.0f, 18.0f);
+        ImGui::TextColored(accent, "%d cursors", static_cast<int>(extraCarets_.size()) + 1);
+    }
+    if (!notice_.empty() && ImGui::GetTime() < noticeUntil_) {
+        ImGui::SameLine(0.0f, 18.0f);
+        ImGui::TextUnformatted(notice_.c_str());
+    }
 
     char right[96];
     std::snprintf(right, sizeof(right), "Luau   UTF-8   Tab %d   %s", kTabSize, editor_->IsOverwrite() ? "OVR" : "INS");

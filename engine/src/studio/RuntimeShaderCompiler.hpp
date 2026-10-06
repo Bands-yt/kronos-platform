@@ -60,6 +60,14 @@ public:
     // debounce, not something this class hides.
     [[nodiscard]] Result compile(const std::string& glslSource, ShaderStage stage, const std::string& debugName) const;
 
+    // #include "x" resolves next to the including file first, then in
+    // each include directory in order.
+    struct Options {
+        std::vector<std::string> includeDirectories;
+    };
+    [[nodiscard]] Result compile(const std::string& glslSource, ShaderStage stage, const std::string& debugName,
+                                 const Options& options) const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

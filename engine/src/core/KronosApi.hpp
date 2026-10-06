@@ -183,6 +183,61 @@ struct PackageInfo {
 
 struct PackageUploadResult {
     bool success = false;
+    int versionNumber = 0;
+    // "pending" while a moderator reviews it; players keep the previous version until then.
+    std::string reviewStatus;
+    std::string error;
+};
+
+struct PackageVersion {
+    std::string id;
+    int versionNumber = 0;
+    std::string sha256;
+    uint64_t sizeBytes = 0;
+    std::string reviewStatus;
+    std::string reviewNote;
+    std::string createdAt;
+    bool current = false;
+};
+
+struct StorageUsage {
+    uint64_t usedBytes = 0;
+    uint64_t quotaBytes = 0;
+};
+
+struct PackageVersionList {
+    bool success = false;
+    std::vector<PackageVersion> versions;
+    std::string gameReviewStatus;
+    bool reviewRequired = false;
+    StorageUsage storage;
+    std::string error;
+};
+
+struct GameImage {
+    std::string id;
+    std::string kind; // "thumbnail" or "screenshot"
+    std::string url;
+    int width = 0;
+    int height = 0;
+    std::string reviewStatus;
+    std::string reviewNote;
+};
+
+struct GameImageList {
+    bool success = false;
+    std::vector<GameImage> images;
+    std::string error;
+};
+
+struct GameImageUploadResult {
+    bool success = false;
+    GameImage image;
+    std::string error;
+};
+
+struct CatalogActionResult {
+    bool success = false;
     std::string error;
 };
 
@@ -200,6 +255,7 @@ struct PublishResult {
     std::string status;
     std::string gameId;
     std::string slug;
+    std::string reviewStatus;
     std::string error;
 };
 
@@ -272,6 +328,9 @@ public:
 
     void setBaseUrl(std::string baseUrl);
     [[nodiscard]] const std::string& baseUrl() const { return baseUrl_; }
+    // Off keeps the refresh token in memory only (tests, CLI tools) so the
+    // user's real keychain session is never read or overwritten.
+    void setPersistSession(bool persist) { persistSession_ = persist; }
 
     // --- authentication ---------------------------------------------------
     [[nodiscard]] KronosAuthResult signUp(const std::string& email, const std::string& password,
@@ -379,6 +438,15 @@ public:
     // received before the package becomes downloadable.
     [[nodiscard]] PackageUploadResult uploadGamePackage(const std::string& slug, const std::string& archivePath,
                                                         const std::string& sha256);
+    // Every confirmed upload is a numbered version; any approved one can be made live again.
+    [[nodiscard]] PackageVersionList fetchPackageVersions(const std::string& slug);
+    [[nodiscard]] CatalogActionResult activatePackageVersion(const std::string& slug, int versionNumber);
+    [[nodiscard]] CatalogActionResult deletePackageVersion(const std::string& slug, int versionNumber);
+    // `kind` is "thumbnail" or "screenshot"; the file must be a PNG or JPEG.
+    [[nodiscard]] GameImageUploadResult uploadGameImage(const std::string& slug, const std::string& kind,
+                                                        const std::string& imagePath, const std::string& sha256);
+    [[nodiscard]] GameImageList fetchGameImages(const std::string& slug);
+    [[nodiscard]] CatalogActionResult deleteGameImage(const std::string& slug, const std::string& imageId);
 
 private:
     struct HttpResponse {
@@ -390,6 +458,11 @@ private:
 
     [[nodiscard]] HttpResponse request(const char* method, const std::string& path, const std::string& jsonBody,
                                         bool withAuth);
+    [[nodiscard]] std::string refreshTokenKey() const;
+    [[nodiscard]] static bool responseFailed(const HttpResponse& response, std::string& error);
+    // PUT to an upload-url ticket: a presigned bucket URL, or this service's own local-storage route.
+    [[nodiscard]] HttpResponse putUpload(const std::string& uploadUrl, const std::string& bytes,
+                                          const char* contentType);
     // Performs `fn`, and if it comes back 401, refreshes the session once
     // and retries. One retry only: a refresh that does not fix a 401
     // means the session is genuinely gone, and retrying further would
@@ -406,6 +479,8 @@ private:
     void clearPersistedRefreshToken();
 
     std::string baseUrl_;
+    bool persistSession_ = true;
+    std::string memoryRefreshToken_;
 
     // Guards everything below -- a background worker thread mutates these
     // while the UI thread reads isSignedIn()/currentUser() each frame.

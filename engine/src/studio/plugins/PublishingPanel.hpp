@@ -76,6 +76,18 @@ private:
     // metadata to the real backend.
     void drawCloudPublishSection(core::ECS& ecs);
     void startCloudPublish(core::ECS& ecs);
+    void drawReleasesSection();
+    void drawStorePageSection();
+    struct CatalogSnapshot {
+        bool current = false; // false until the lists have been loaded for the World Id being edited
+        core::PackageVersionList versions;
+        core::GameImageList images;
+        std::string status;
+        bool statusIsError = false;
+    };
+    [[nodiscard]] CatalogSnapshot catalogSnapshot();
+    // Runs `task` on the catalogue worker, then refreshes the version and image lists.
+    void runCatalogTask(std::string startedMessage, std::function<std::string()> task);
 
     [[nodiscard]] publishing::WorldPackage buildPackage(core::ECS& ecs) const;
     void logMessage(const std::string& message);
@@ -127,10 +139,23 @@ private:
     std::thread cloudPublishThread_;
     std::atomic<bool> cloudPublishInProgress_{false};
     std::mutex cloudPublishMutex_;
-    std::optional<core::PublishResult> cloudPublishPendingResult_;
+    struct CloudPublishOutcome {
+        core::PublishResult publish;
+        core::PackageUploadResult upload;
+    };
+    std::optional<CloudPublishOutcome> cloudPublishPendingResult_;
     std::string cloudPublishStatus_;
     bool cloudPublishSucceeded_ = false;
     std::string pendingThumbnailPath_;
+
+    std::thread catalogThread_;
+    std::atomic<bool> catalogBusy_{false};
+    std::mutex catalogMutex_;
+    std::string catalogSlug_; // the World Id the lists below belong to
+    core::PackageVersionList versions_;
+    core::GameImageList images_;
+    std::string catalogStatus_;
+    bool catalogStatusIsError_ = false;
     // Task 3's "Add auto-capture + manual capture modes": Manual (the
     // default) requires the explicit "Capture Thumbnail" button; Auto
     // real-triggers a capture automatically the first time the thumbnail

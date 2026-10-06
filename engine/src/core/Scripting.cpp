@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
+#include <string>
 
 #include <lua.h>
 #include <lualib.h>
@@ -75,6 +77,61 @@ struct AllocatorState {
     size_t used = 0;
     size_t budget = 0;
 };
+
+std::string chunkFromSource(const char* source) {
+    if (source == nullptr) return {};
+    if (*source == '=' || *source == '@') ++source;
+    return source;
+}
+
+std::string describeValue(lua_State* L, int index, int depth) {
+    index = lua_absindex(L, index);
+    char buffer[96];
+    switch (lua_type(L, index)) {
+        case LUA_TNIL: return "nil";
+        case LUA_TBOOLEAN: return lua_toboolean(L, index) ? "true" : "false";
+        case LUA_TNUMBER:
+            std::snprintf(buffer, sizeof(buffer), "%.14g", lua_tonumber(L, index));
+            return buffer;
+        case LUA_TVECTOR: {
+            const float* v = lua_tovector(L, index);
+            std::snprintf(buffer, sizeof(buffer), "(%g, %g, %g)", v[0], v[1], v[2]);
+            return buffer;
+        }
+        case LUA_TSTRING: {
+            size_t length = 0;
+            const char* text = lua_tolstring(L, index, &length);
+            constexpr size_t kMaxShown = 80;
+            std::string out = "\"" + std::string(text, std::min(length, kMaxShown));
+            if (length > kMaxShown) out += "...";
+            return out + "\"";
+        }
+        case LUA_TTABLE: {
+            if (depth > 0) return "{...}";
+            if (!lua_checkstack(L, 4)) return "{...}";
+            std::string out = "{";
+            int shown = 0;
+            lua_pushnil(L);
+            while (lua_next(L, index) != 0) {
+                if (shown == 6) {
+                    out += ", ...";
+                    lua_pop(L, 2);
+                    break;
+                }
+                if (shown > 0) out += ", ";
+                if (lua_type(L, -2) == LUA_TSTRING) out += lua_tostring(L, -2);
+                else out += "[" + describeValue(L, -2, depth + 1) + "]";
+                out += " = " + describeValue(L, -1, depth + 1);
+                ++shown;
+                lua_pop(L, 1);
+            }
+            return out + "}";
+        }
+        default:
+            std::snprintf(buffer, sizeof(buffer), "%s: %p", luaL_typename(L, index), lua_topointer(L, index));
+            return buffer;
+    }
+}
 
 } // namespace
 
@@ -186,6 +243,17 @@ void* Scripting::budgetAllocator(void* ud, void* ptr, size_t oldSize, size_t new
 void Scripting::scriptInterrupt(lua_State* L, int gc) {
     if (gc >= 0) return; // only care about safepoints, not GC-phase callbacks
 
+    auto* self = static_cast<Scripting*>(lua_callbacks(L)->userdata);
+    if (self != nullptr && self->debugger_ != nullptr && self->debugger_->pauseRequested_ && self->broken_.thread == nullptr &&
+        lua_isyieldable(L)) {
+        self->debugger_->pauseRequested_ = false;
+        lua_Debug ar;
+        if (lua_getinfo(L, 0, "l", &ar)) {
+            self->pauseAt(L, ar.currentline, "Paused");
+            return;
+        }
+    }
+
     auto* budget = static_cast<ScriptBudget*>(lua_getthreaddata(L));
     if (!budget) return;
 
@@ -243,6 +311,33 @@ void Scripting::registerEventCallback(std::vector<EventCallback>& list, lua_Stat
 
 void Scripting::invokeCallback(const EventCallback& callback, int argCount, const char* eventName) {
     lua_State* L = callback.owner;
+    if (debugger_ != nullptr) {
+        if (debugPaused()) {
+            lua_pop(L, argCount);
+            return;
+        }
+        // Run on a coroutine so a breakpoint inside the handler can pause it.
+        int ref = 0;
+        lua_State* thread = spawnThread(L, ref);
+        lua_getref(L, callback.ref);
+        if (argCount > 0) lua_insert(L, -(argCount + 1));
+        lua_xmove(L, thread, argCount + 1);
+        refreshDeadline(L);
+        const int status = lua_resume(thread, nullptr, argCount);
+        if (status == LUA_BREAK) {
+            holdBrokenThread(thread, ref);
+            return;
+        }
+        if (status == LUA_YIELD) {
+            double wakeTime = clock_, startTime = clock_;
+            consumeWait(thread, wakeTime, startTime);
+            parked_.push_back(ParkedThread{thread, ref, wakeTime, startTime});
+            return;
+        }
+        if (status != LUA_OK) std::fprintf(stderr, "[luau] %s callback error: %s\n", eventName, lua_tostring(thread, -1));
+        lua_unref(L, ref);
+        return;
+    }
     refreshDeadline(L);
     lua_getref(L, callback.ref);           // push the callback function
     // With argCount == 0 (events.onUnload, a new Phase 5 addition -- every
@@ -409,6 +504,10 @@ int Scripting::luaTaskSpawn(lua_State* L) {
     int nargs = lua_gettop(thread) - 1;
     self->refreshDeadline(owner);
     int status = lua_resume(thread, L, nargs);
+    if (status == LUA_BREAK) {
+        self->holdBrokenThread(thread, ref);
+        return 0;
+    }
     if (status != LUA_OK && status != LUA_YIELD) {
         std::fprintf(stderr, "[luau] task.spawn error: %s\n", lua_tostring(thread, -1));
     }
@@ -737,6 +836,11 @@ SecurityIdentity Scripting::identityOf(ScriptId id) const {
 }
 
 ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity) {
+    return loadAndRun(chunkName, source, identity, kNoScriptEntity);
+}
+
+ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity,
+                               uint32_t entity) {
     if (!initialized_) return kInvalidScript;
 
     auto* allocState = new AllocatorState{0, maxMemoryBytesPerScript_};
@@ -750,6 +854,13 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     luaL_openlibs(owner);
     registerBindings(owner);
     registerModuleLoader(owner);
+    if (entity != kNoScriptEntity) {
+        lua_newtable(owner);
+        lua_pushnumber(owner, static_cast<double>(entity));
+        lua_setfield(owner, -2, "entity");
+        lua_setreadonly(owner, -1, true);
+        lua_setglobal(owner, "script");
+    }
     // Must run last: it freezes the global table, so every global this
     // VM will ever have has to be installed before this point.
     applySandbox(owner);
@@ -761,10 +872,16 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     budget->identity = identity;
     lua_setthreaddata(owner, budget);
     lua_callbacks(owner)->interrupt = &Scripting::scriptInterrupt;
+    lua_callbacks(owner)->userdata = this;
+    if (debugger_ != nullptr) {
+        lua_callbacks(owner)->debugbreak = &Scripting::debugBreakHook;
+        lua_callbacks(owner)->debugstep = &Scripting::debugStepHook;
+        lua_callbacks(owner)->debuginterrupt = &Scripting::debugInterruptHook;
+    }
 
     Luau::CompileOptions compileOptions;
-    compileOptions.optimizationLevel = 1;
-    compileOptions.debugLevel = 1;
+    compileOptions.optimizationLevel = debugger_ != nullptr ? 0 : 1;
+    compileOptions.debugLevel = debugger_ != nullptr ? 2 : 1;
     std::string bytecode = Luau::compile(source, compileOptions);
 
     lua_State* thread = lua_newthread(owner);
@@ -783,18 +900,43 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
         return kInvalidScript;
     }
 
+    int mainFunctionRef = -1;
+    std::set<int> appliedBreakpoints;
+    if (debugger_ != nullptr) {
+        lua_pushvalue(thread, -1);
+        mainFunctionRef = lua_ref(thread, -1);
+        lua_pop(thread, 1);
+        auto wanted = debugger_->breakpoints().find(chunkName);
+        if (wanted != debugger_->breakpoints().end()) {
+            for (int line : wanted->second) lua_breakpoint(thread, -1, line, 1);
+            appliedBreakpoints = wanted->second;
+        }
+    }
+
+    if (debugPaused()) {
+        // Another script is stopped in the debugger: run this one's body once it continues.
+        ScriptId id = static_cast<ScriptId>(scripts_.size());
+        scripts_.push_back(LoadedScript{chunkName, owner, allocState, budget, identity, /*alive=*/true, mainFunctionRef,
+                                        std::move(appliedBreakpoints)});
+        deferredQueue_.push_back(ParkedThread{thread, threadRef, 0.0, clock_});
+        return id;
+    }
+
     refreshDeadline(owner);
     int status = lua_resume(thread, nullptr, 0);
-    if (status != LUA_OK && status != LUA_YIELD) {
+    if (status != LUA_OK && status != LUA_YIELD && status != LUA_BREAK) {
         std::string message = std::string("runtime error in \"") + chunkName + "\": " + lua_tostring(thread, -1);
         std::fprintf(stderr, "Scripting: %s\n", message.c_str());
         if (outputCallback_) outputCallback_(message);
     }
 
     ScriptId id = static_cast<ScriptId>(scripts_.size());
-    scripts_.push_back(LoadedScript{chunkName, owner, allocState, budget, identity, /*alive=*/true});
+    scripts_.push_back(LoadedScript{chunkName, owner, allocState, budget, identity, /*alive=*/true, mainFunctionRef,
+                                    std::move(appliedBreakpoints)});
 
-    if (status == LUA_YIELD) {
+    if (status == LUA_BREAK) {
+        holdBrokenThread(thread, threadRef);
+    } else if (status == LUA_YIELD) {
         double wakeTime = clock_, startTime = clock_;
         consumeWait(thread, wakeTime, startTime);
         parked_.push_back(ParkedThread{thread, threadRef, wakeTime, startTime});
@@ -866,6 +1008,16 @@ void Scripting::unload(ScriptId id) {
         std::remove_if(onPlayerLeaveCallbacks_.begin(), onPlayerLeaveCallbacks_.end(), belongsToThisScriptCallback),
         onPlayerLeaveCallbacks_.end());
 
+    if (broken_.thread != nullptr && lua_mainthread(broken_.thread) == script.owner) {
+        broken_ = {};
+        pausedThread_ = nullptr;
+        interruptedThread_ = nullptr;
+        if (debugger_ != nullptr) {
+            debugger_->paused_ = false;
+            debugger_->resumeRequested_ = false;
+            debugger_->stepAction_ = ScriptDebugger::Action::Continue;
+        }
+    }
     lua_close(script.owner);
     delete static_cast<AllocatorState*>(script.allocatorState);
     delete static_cast<ScriptBudget*>(script.budgetState);
@@ -875,6 +1027,11 @@ void Scripting::unload(ScriptId id) {
 
 void Scripting::tick(float dt) {
     if (!initialized_) return;
+    if (debugger_ != nullptr) {
+        syncBreakpoints();
+        if (debugger_->resumeRequested_) resumeBrokenThread();
+        if (debugPaused()) return;
+    }
     clock_ += dt;
 
     // 1. Run anything task.defer()'d during the previous tick, per
@@ -882,10 +1039,18 @@ void Scripting::tick(float dt) {
     std::vector<ParkedThread> deferredNow;
     deferredNow.swap(deferredQueue_);
     for (auto& entry : deferredNow) {
+        if (debugPaused()) {
+            deferredQueue_.push_back(entry);
+            continue;
+        }
         lua_State* owner = lua_mainthread(entry.thread);
         int nargs = lua_gettop(entry.thread) - 1; // stack is still exactly [fn, args...] from task.defer()
         refreshDeadline(owner);
         int status = lua_resume(entry.thread, nullptr, nargs);
+        if (status == LUA_BREAK) {
+            holdBrokenThread(entry.thread, entry.ref);
+            continue;
+        }
         if (status != LUA_OK && status != LUA_YIELD) {
             std::fprintf(stderr, "[luau] task.defer error: %s\n", lua_tostring(entry.thread, -1));
         }
@@ -902,7 +1067,7 @@ void Scripting::tick(float dt) {
     //    yet due stay parked for a later tick.
     std::vector<ParkedThread> stillParked;
     for (auto& entry : parked_) {
-        if (entry.wakeTime > clock_) {
+        if (entry.wakeTime > clock_ || debugPaused()) {
             stillParked.push_back(entry);
             continue;
         }
@@ -910,6 +1075,10 @@ void Scripting::tick(float dt) {
         lua_pushnumber(entry.thread, clock_ - entry.startTime); // task.wait() returns elapsed time
         refreshDeadline(owner);
         int status = lua_resume(entry.thread, nullptr, 1);
+        if (status == LUA_BREAK) {
+            holdBrokenThread(entry.thread, entry.ref);
+            continue;
+        }
         if (status != LUA_OK && status != LUA_YIELD) {
             std::fprintf(stderr, "[luau] task.wait resume error: %s\n", lua_tostring(entry.thread, -1));
         }
@@ -939,9 +1108,183 @@ void Scripting::tick(float dt) {
     //    layer; this is the one, simple "runs every tick" signal that
     //    layer doesn't gate.
     for (auto& callback : onUpdateCallbacks_) {
+        if (debugPaused()) break;
         lua_pushnumber(callback.owner, static_cast<double>(dt));
         invokeCallback(callback, 1, "events.onUpdate");
     }
+}
+
+bool Scripting::debugPaused() const { return debugger_ != nullptr && broken_.thread != nullptr; }
+
+void Scripting::holdBrokenThread(lua_State* thread, int ref) {
+    if (broken_.thread != nullptr) {
+        // Only one stop at a time; a second thread that broke while nested stays held until the first resumes.
+        std::fprintf(stderr, "[luau] debugger: a second thread stopped while already paused; it resumes with the first\n");
+    }
+    broken_ = BrokenThread{thread, ref};
+}
+
+void Scripting::pauseAt(lua_State* L, int line, const char* reason) {
+    ScriptDebugger& debugger = *debugger_;
+    if (L == skipBreakThread_ && line == skipBreakLine_) {
+        skipBreakThread_ = nullptr;
+        return;
+    }
+    if (broken_.thread != nullptr || pausedThread_ != nullptr) return;
+    if (!lua_isyieldable(L)) {
+        debugger.lastNotice_ = "Could not stop at line " + std::to_string(line) +
+                               ": the code was running inside a C call (a metamethod, sort comparator or pcall'd module body).";
+        return;
+    }
+    lua_checkstack(L, 8);
+
+    ScriptPauseState state;
+    state.line = line;
+    state.reason = reason;
+    constexpr int kMaxFrames = 32;
+    for (int level = 0; level < kMaxFrames; ++level) {
+        lua_Debug ar;
+        if (!lua_getinfo(L, level, "sln", &ar)) break;
+        ScriptDebugFrame frame;
+        frame.chunk = chunkFromSource(ar.source);
+        frame.line = ar.currentline;
+        const bool isC = ar.what != nullptr && std::strcmp(ar.what, "C") == 0;
+        if (ar.name != nullptr && *ar.name != '\0') frame.function = ar.name;
+        else if (ar.what != nullptr && std::strcmp(ar.what, "main") == 0) frame.function = "main chunk";
+        else frame.function = isC ? "C function" : "anonymous function";
+        if (isC) frame.function = "[C] " + frame.function;
+        for (int n = 1;; ++n) {
+            const char* name = lua_getlocal(L, level, n);
+            if (name == nullptr) break;
+            if (*name != '(') frame.variables.push_back({name, luaL_typename(L, -1), describeValue(L, -1, 0), false});
+            lua_pop(L, 1);
+        }
+        if (!isC && lua_getinfo(L, level, "f", &ar)) {
+            for (int n = 1;; ++n) {
+                const char* name = lua_getupvalue(L, -1, n);
+                if (name == nullptr) break;
+                if (*name != '\0') frame.variables.push_back({name, luaL_typename(L, -1), describeValue(L, -1, 0), true});
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+        }
+        state.frames.push_back(std::move(frame));
+    }
+    state.chunk = state.frames.empty() ? std::string() : state.frames.front().chunk;
+
+    debugger.pauseState_ = std::move(state);
+    debugger.paused_ = true;
+    debugger.resumeRequested_ = false;
+    debugger.pausedDepth_ = lua_stackdepth(L);
+    debugger.stepAction_ = ScriptDebugger::Action::Continue;
+    ++debugger.pauseSerial_;
+    pausedThread_ = L;
+    lua_singlestep(L, 0);
+    lua_break(L);
+}
+
+void Scripting::resumeBrokenThread() {
+    ScriptDebugger& debugger = *debugger_;
+    debugger.resumeRequested_ = false;
+    if (broken_.thread == nullptr) return;
+
+    lua_State* stoppedThread = pausedThread_ != nullptr ? pausedThread_ : broken_.thread;
+    pausedThread_ = nullptr;
+    debugger.stepAction_ = debugger.pendingAction_;
+    debugger.stepDepth_ = debugger.pausedDepth_;
+    debugger.stepLine_ = debugger.pauseState_.line;
+    lua_singlestep(stoppedThread, debugger.stepAction_ != ScriptDebugger::Action::Continue ? 1 : 0);
+    // Resuming re-executes the BREAK instruction; don't stop on it again.
+    const auto chunkBreakpoints = debugger.breakpoints().find(debugger.pauseState_.chunk);
+    const bool onBreakpointLine = debugger.pauseState_.reason == "Breakpoint" ||
+                                  (chunkBreakpoints != debugger.breakpoints().end() &&
+                                   chunkBreakpoints->second.count(debugger.pauseState_.line) != 0);
+    skipBreakThread_ = onBreakpointLine ? stoppedThread : nullptr;
+    skipBreakLine_ = debugger.pauseState_.line;
+
+    if (lua_State* inner = interruptedThread_) {
+        interruptedThread_ = nullptr;
+        refreshDeadline(lua_mainthread(inner));
+        const int innerStatus = lua_resume(inner, nullptr, 0);
+        if (innerStatus == LUA_BREAK) return;
+    }
+
+    const BrokenThread broken = broken_;
+    broken_ = {};
+    lua_State* owner = lua_mainthread(broken.thread);
+    refreshDeadline(owner);
+    const int status = lua_resume(broken.thread, nullptr, 0);
+    skipBreakThread_ = nullptr;
+    if (status == LUA_BREAK) {
+        holdBrokenThread(broken.thread, broken.ref);
+        return;
+    }
+    if (status == LUA_YIELD) {
+        double wakeTime = clock_, startTime = clock_;
+        consumeWait(broken.thread, wakeTime, startTime);
+        parked_.push_back(ParkedThread{broken.thread, broken.ref, wakeTime, startTime});
+        return;
+    }
+    if (status != LUA_OK) {
+        const std::string message = std::string("runtime error: ") + lua_tostring(broken.thread, -1);
+        std::fprintf(stderr, "Scripting: %s\n", message.c_str());
+        if (outputCallback_) outputCallback_(message);
+    }
+    lua_singlestep(stoppedThread, 0);
+    debugger.stepAction_ = ScriptDebugger::Action::Continue;
+    if (broken.ref >= 0) lua_unref(owner, broken.ref);
+}
+
+void Scripting::syncBreakpoints() {
+    if (appliedBreakpointRevision_ == debugger_->breakpointRevision()) return;
+    appliedBreakpointRevision_ = debugger_->breakpointRevision();
+    static const std::set<int> kNone;
+    for (LoadedScript& script : scripts_) {
+        if (!script.alive || script.mainFunctionRef < 0) continue;
+        auto it = debugger_->breakpoints().find(script.name);
+        const std::set<int>& wanted = it != debugger_->breakpoints().end() ? it->second : kNone;
+        if (wanted == script.appliedBreakpoints) continue;
+        lua_getref(script.owner, script.mainFunctionRef);
+        for (int line : script.appliedBreakpoints) {
+            if (wanted.count(line) == 0) lua_breakpoint(script.owner, -1, line, 0);
+        }
+        for (int line : wanted) {
+            if (script.appliedBreakpoints.count(line) == 0) lua_breakpoint(script.owner, -1, line, 1);
+        }
+        lua_pop(script.owner, 1);
+        script.appliedBreakpoints = wanted;
+    }
+}
+
+void Scripting::debugBreakHook(lua_State* L, lua_Debug* ar) {
+    auto* self = static_cast<Scripting*>(lua_callbacks(L)->userdata);
+    if (self == nullptr || self->debugger_ == nullptr) return;
+    self->pauseAt(L, ar->currentline, "Breakpoint");
+}
+
+void Scripting::debugStepHook(lua_State* L, lua_Debug* ar) {
+    auto* self = static_cast<Scripting*>(lua_callbacks(L)->userdata);
+    if (self == nullptr || self->debugger_ == nullptr) return;
+    ScriptDebugger& debugger = *self->debugger_;
+    if (debugger.stepAction_ == ScriptDebugger::Action::Continue || ar->currentline <= 0) return;
+    const int depth = lua_stackdepth(L);
+    const int line = ar->currentline;
+    bool stop = false;
+    switch (debugger.stepAction_) {
+        case ScriptDebugger::Action::StepInto: stop = depth != debugger.stepDepth_ || line != debugger.stepLine_; break;
+        case ScriptDebugger::Action::StepOver:
+            stop = depth < debugger.stepDepth_ || (depth == debugger.stepDepth_ && line != debugger.stepLine_);
+            break;
+        case ScriptDebugger::Action::StepOut: stop = depth < debugger.stepDepth_; break;
+        case ScriptDebugger::Action::Continue: break;
+    }
+    if (stop) self->pauseAt(L, line, "Step");
+}
+
+void Scripting::debugInterruptHook(lua_State* L, lua_Debug* ar) {
+    auto* self = static_cast<Scripting*>(lua_callbacks(L)->userdata);
+    if (self == nullptr) return;
+    self->interruptedThread_ = static_cast<lua_State*>(ar->userdata);
 }
 
 } // namespace engine::core

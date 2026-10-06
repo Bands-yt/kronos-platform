@@ -23,6 +23,11 @@ import {
 
 export const authRouter = express.Router();
 
+// A terminated account cannot start or resume a session, however it signs in.
+function isLockedOut(user) {
+  return Boolean(user.disabled_at) || user.account_state === 'terminated';
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function normalizeEmail(value) {
@@ -178,7 +183,7 @@ authRouter.post(
     if (ban) throw unauthorized('Incorrect email or password.');
 
     const { rows } = await query(
-      `SELECT id, email, display_name, email_verified, password_hash, disabled_at
+      `SELECT id, email, display_name, email_verified, password_hash, disabled_at, account_state
          FROM users WHERE email_lower = $1`,
       [email],
     );
@@ -192,7 +197,7 @@ authRouter.post(
     }
     const user = rows[0];
     const ok = await verifyPassword(password, user.password_hash);
-    if (!ok || user.disabled_at) throw unauthorized('Incorrect email or password.');
+    if (!ok || isLockedOut(user)) throw unauthorized('Incorrect email or password.');
 
     await issueSession(res, user, req);
   }),
@@ -241,10 +246,10 @@ authRouter.post(
     if (!userId) throw unauthorized('Invalid or expired handoff code.');
 
     const { rows } = await query(
-      `SELECT id, email, display_name, email_verified, disabled_at FROM users WHERE id = $1`,
+      `SELECT id, email, display_name, email_verified, disabled_at, account_state FROM users WHERE id = $1`,
       [userId],
     );
-    if (rows.length === 0 || rows[0].disabled_at) throw unauthorized('Invalid or expired handoff code.');
+    if (rows.length === 0 || isLockedOut(rows[0])) throw unauthorized('Invalid or expired handoff code.');
 
     await issueSession(res, rows[0], req);
   }),
@@ -274,7 +279,7 @@ authRouter.post(
     // safe only because verifyGoogleIdToken already required
     // email_verified.
     const existing = await query(
-      `SELECT id, email, display_name, email_verified, google_sub, disabled_at
+      `SELECT id, email, display_name, email_verified, google_sub, disabled_at, account_state
          FROM users WHERE google_sub = $1 OR email_lower = $2`,
       [identity.sub, identity.email.toLowerCase()],
     );
@@ -290,7 +295,7 @@ authRouter.post(
       user = inserted.rows[0];
     } else {
       user = existing.rows[0];
-      if (user.disabled_at) throw unauthorized('This account has been disabled.');
+      if (isLockedOut(user)) throw unauthorized('This account has been disabled.');
       if (!user.google_sub) {
         const updated = await query(
           `UPDATE users SET google_sub = $1, email_verified = TRUE, updated_at = NOW()
@@ -335,10 +340,15 @@ authRouter.post(
     }
 
     const { rows } = await query(
-      `SELECT id, email, display_name, email_verified FROM users WHERE id = $1`,
+      `SELECT id, email, display_name, email_verified, disabled_at, account_state FROM users WHERE id = $1`,
       [rotated.userId],
     );
     if (rows.length === 0) throw unauthorized('Account no longer exists.');
+    if (isLockedOut(rows[0])) {
+      await revokeAllForUser(rows[0].id);
+      clearRefreshCookie(res);
+      throw unauthorized('This account has been disabled.');
+    }
 
     setRefreshCookie(res, rotated);
     res.json({

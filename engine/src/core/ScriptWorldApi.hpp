@@ -73,6 +73,9 @@ private:
     static int luaSetEmissive(lua_State* L);
     static int luaApplyImpulse(lua_State* L);
     static int luaSetVelocity(lua_State* L);
+    // world.rotateBy(id, dx, dy, dz): turns by Euler degrees about the
+    // world axes, composing quaternions so repeated calls never flip.
+    static int luaRotateBy(lua_State* L);
     static int luaPlayAnimation(lua_State* L);
     static int luaStopAnimation(lua_State* L);
     // Kronos ("Kronos Scripting Environment" -- "Immediate Gaps for

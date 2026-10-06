@@ -9,8 +9,8 @@
 //   - a custom docked ImGui panel + a "Plugins" menu entry
 //     (IStudioNativePluginExtension), bridged into Studio's existing
 //     PluginManager UI by studio::NativePluginAdapter;
-//   - a real Renderer overlay hook (registerRendererCallbacks()),
-//     drawing directly into the swapchain's overlay pass.
+//   - a Renderer overlay hook (registerRendererCallbacks()) that counts
+//     the frames it runs in; the panel shows the count.
 //
 // Rebuilding this file and re-launching Studio (or, for a live edit
 // loop, re-running NativePluginManager::loadPlugin() with the same name
@@ -69,7 +69,7 @@ public:
 
     void registerRendererCallbacks(engine::core::Renderer& renderer) override {
         renderer.addPluginOverlayCallback(
-            panelName(), [this](VkCommandBuffer, VkImageView, VkExtent2D) { drawOverlayMarker(); });
+            panelName(), [this](VkCommandBuffer, VkImageView, VkExtent2D) { ++overlayFrames_; });
     }
 
     void drawPanel(engine::core::ECS& /*ecs*/, engine::core::EntityId /*selected*/,
@@ -81,6 +81,7 @@ public:
         ImGui::Text("Loaded from a real, separately compiled .so.");
         ImGui::Text("Gameplay ticks so far: %d", tickCount_);
         ImGui::Text("Elapsed: %.2fs", static_cast<double>(elapsedSeconds_));
+        ImGui::Text("Renderer overlay frames: %d", overlayFrames_);
         ImGui::Separator();
         ImGui::Text("Rebuild this file and reload the plugin to see this");
         ImGui::Text("panel's own code change live -- that's the hot-reload proof.");
@@ -95,26 +96,9 @@ public:
     }
 
 private:
-    // Real, minimal overlay draw -- this only records ImGui draw calls
-    // (via the SAME adopted context every other ImGui:: call in this
-    // plugin uses), it does not touch `cmd`/the swapchain image directly;
-    // the actual command-buffer recording for ImGui's draw data happens
-    // in Studio's own ImGui backend pass, same as every other ImGui
-    // window. Proves the Renderer overlay-hook seam reaches a real
-    // plugin without this plugin needing any Vulkan code of its own.
-    void drawOverlayMarker() {
-        ImGui::SetNextWindowBgAlpha(0.35f);
-        if (ImGui::Begin("##SampleStudioToolPluginOverlay", nullptr,
-                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove |
-                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                              ImGuiWindowFlags_NoNav)) {
-            ImGui::Text("SampleStudioToolPlugin overlay -- ticks: %d", tickCount_);
-        }
-        ImGui::End();
-    }
-
     int tickCount_ = 0;
     float elapsedSeconds_ = 0.0f;
+    int overlayFrames_ = 0;
 };
 
 } // namespace

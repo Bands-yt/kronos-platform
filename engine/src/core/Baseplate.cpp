@@ -7,52 +7,16 @@
 #include "core/Mesh.hpp"
 #include "core/Physics.hpp"
 #include "core/PhysicsMaterial.hpp"
-#include "core/Texture.hpp"
 
 namespace engine::core {
 namespace {
 
 constexpr float kHalfWidth = 250.0f;    // 500 units, X/Z
 constexpr float kHalfHeight = 0.5f;     // 1 unit, Y
-constexpr float kTileWorldSize = 10.0f; // major line spacing
-constexpr int kTilePixels = 250;
-constexpr int kMinorSpacingPx = kTilePixels / 10; // 1-unit minor lines
-
-uint32_t createGridTexture(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
-                            TextureLibrary& textureLibrary) {
-    std::vector<uint8_t> pixels(static_cast<size_t>(kTilePixels) * kTilePixels * 4);
-    for (int y = 0; y < kTilePixels; ++y) {
-        for (int x = 0; x < kTilePixels; ++x) {
-            bool majorEdge = x < 2 || y < 2 || x >= kTilePixels - 2 || y >= kTilePixels - 2;
-            bool minorLine = (x % kMinorSpacingPx) == 0 || (y % kMinorSpacingPx) == 0;
-            uint8_t r, g, b;
-            if (majorEdge) {
-                r = g = 150;
-                b = 158;
-            } else if (minorLine) {
-                r = g = 90;
-                b = 95;
-            } else {
-                r = g = 46;
-                b = 50;
-            }
-
-            size_t i = (static_cast<size_t>(y) * kTilePixels + x) * 4;
-            pixels[i + 0] = r;
-            pixels[i + 1] = g;
-            pixels[i + 2] = b;
-            pixels[i + 3] = 255;
-        }
-    }
-    Texture tex = Texture::createFromPixels(pixels.data(), kTilePixels, kTilePixels, /*srgb=*/true, allocator,
-                                             device, cmdPool, queue);
-    return textureLibrary.registerTexture(std::move(tex));
-}
+constexpr float kTileWorldSize = 10.0f;
 
 // Same 24-vertex flat-shaded box layout as Mesh::createBox(), except top/
-// bottom UVs are scaled to `t` instead of [0,1] so the grid texture above
-// repeats via the material sampler's REPEAT address mode
-// (Renderer::createMaterialResources()) instead of stretching.
+// bottom UVs are scaled to `t` instead of [0,1] so a tiled texture repeats.
 Mesh createBaseplateMesh(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue) {
     const glm::vec3 h{kHalfWidth, kHalfHeight, kHalfWidth};
     const float t = (kHalfWidth * 2.0f) / kTileWorldSize; // 50
@@ -85,11 +49,9 @@ Mesh createBaseplateMesh(VmaAllocator allocator, VkDevice device, VkCommandPool 
 
 } // namespace
 
-EntityId spawnDefaultBaseplate(ECS& ecs, MeshLibrary& meshLibrary, TextureLibrary& textureLibrary,
-                                VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
-                                Physics* physics) {
+EntityId spawnDefaultBaseplate(ECS& ecs, MeshLibrary& meshLibrary, VmaAllocator allocator, VkDevice device,
+                                VkCommandPool cmdPool, VkQueue queue, Physics* physics) {
     uint32_t meshHandle = meshLibrary.registerMesh(createBaseplateMesh(allocator, device, cmdPool, queue));
-    uint32_t gridTexture = createGridTexture(allocator, device, cmdPool, queue, textureLibrary);
 
     EntityId entity = ecs.createEntity("Baseplate"); // also adds Transform{} + Name{"Baseplate"}
     ecs.tryGetComponent<Transform>(entity)->position = {0.0f, -kHalfHeight, 0.0f};
@@ -98,8 +60,8 @@ EntityId spawnDefaultBaseplate(ECS& ecs, MeshLibrary& meshLibrary, TextureLibrar
 
     Renderable renderable;
     renderable.meshHandle = meshHandle;
-    renderable.albedoTexture = gridTexture;
-    renderable.baseColor = {1.0f, 1.0f, 1.0f, 1.0f}; // texture carries the actual grey/grid look
+    renderable.baseColor = {0.2f, 0.205f, 0.215f, 1.0f};
+    renderable.layers.gridSize = 1.0f;
     renderable.metallic = 0.0f;
     renderable.roughness = 0.85f;
     ecs.addComponent<Renderable>(entity, renderable);

@@ -2,17 +2,21 @@
 
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "core/ScriptDebugger.hpp"
 #include "core/ScriptSecurity.hpp"
 
 struct lua_State;
+struct lua_Debug;
 
 namespace engine::core {
 
 using ScriptId = uint32_t;
 inline constexpr ScriptId kInvalidScript = ~0u;
+inline constexpr uint32_t kNoScriptEntity = ~0u;
 
 // Embeds the real Luau VM -- per docs/ARCHITECTURE.md Principle 1, this is
 // deliberately *not* a "Lua 5.1-compatible" reimplementation. Every script
@@ -52,6 +56,10 @@ public:
     // an under-privileged script, never an over-privileged one.
     ScriptId loadAndRun(const std::string& chunkName, const std::string& source);
     ScriptId loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity);
+    // Same, with a read-only `script.entity` global naming the entity the
+    // script is attached to.
+    ScriptId loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity,
+                        uint32_t entity);
     void unload(ScriptId id);
 
     // The real privilege level a loaded script is running at, for
@@ -178,6 +186,12 @@ public:
     // net:: type appears in this class's own interface).
     void refreshWatchdogDeadline(lua_State* owner) { refreshDeadline(owner); }
 
+    // Scripts loaded after this compile with full debug info and honour the
+    // debugger's breakpoints. While it is paused, tick() and fire*() run no
+    // script code.
+    void setDebugger(ScriptDebugger* debugger) { debugger_ = debugger; }
+    [[nodiscard]] bool debugPaused() const;
+
 private:
     struct ParkedThread {
         lua_State* thread = nullptr;
@@ -204,7 +218,28 @@ private:
         void* budgetState = nullptr;    // ScriptThreadContext*, see Scripting.cpp
         SecurityIdentity identity = SecurityIdentity::UserScript;
         bool alive = false;
+        int mainFunctionRef = -1;
+        std::set<int> appliedBreakpoints;
     };
+
+    struct BrokenThread {
+        lua_State* thread = nullptr;
+        int ref = -1;
+    };
+    void holdBrokenThread(lua_State* thread, int ref);
+    void resumeBrokenThread();
+    void syncBreakpoints();
+    void pauseAt(lua_State* L, int line, const char* reason);
+    static void debugBreakHook(lua_State* L, lua_Debug* ar);
+    static void debugStepHook(lua_State* L, lua_Debug* ar);
+    static void debugInterruptHook(lua_State* L, lua_Debug* ar);
+    lua_State* pausedThread_ = nullptr;
+    lua_State* interruptedThread_ = nullptr;
+    lua_State* skipBreakThread_ = nullptr;
+    int skipBreakLine_ = 0;
+    ScriptDebugger* debugger_ = nullptr;
+    BrokenThread broken_;
+    uint64_t appliedBreakpointRevision_ = ~0ull;
 
     void registerBindings(lua_State* L);
     void applySandbox(lua_State* L);

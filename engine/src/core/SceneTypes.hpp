@@ -312,6 +312,7 @@ struct GpuObjectRecord {
     glm::vec4 clearcoat{0.0f, 0.1f, 0.0f, 0.0f}; // x strength, y perceptual roughness, z anisotropy, w anisotropy rotation
     glm::vec4 sheen{0.0f, 0.0f, 0.0f, 0.5f};     // rgb color, a perceptual roughness
     glm::vec4 misc{0.5f, 0.0f, 0.0f, 0.0f};      // x specular reflectance, y prevModel valid, z water waves, w water foam
+    glm::vec4 pattern{0.0f};                     // x grid cell size (0 = no grid)
 };
 
 // Plain data a caller of Renderer::setLighting() fills in -- kept

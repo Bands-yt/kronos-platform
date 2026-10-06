@@ -6,14 +6,7 @@ import { asyncRoute, badRequest, conflict, forbidden, notFound } from '../errors
 import { redis, keys } from '../redis.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
-import {
-  s3Configured, packageObjectKey, createPresignedUploadUrl, createPresignedDownloadUrl, headObject, verifyObjectHash,
-} from '../storage/s3.js';
-import {
-  headObject as headLocalObject, verifyObjectHash as verifyLocalObjectHash,
-  writeObjectFromStream as writeLocalObjectFromStream, readObjectStream as readLocalObjectStream,
-} from '../storage/local.js';
-import { requireOwnedGame } from './ownership.js';
+import { mediaUrl } from './releases.js';
 
 export const catalogRouter = express.Router();
 
@@ -67,7 +60,7 @@ catalogRouter.get(
     // Keyset pagination on id, not OFFSET: stable under concurrent
     // publishes and does not degrade on deep pages.
     const params = [limit + 1];
-    let where = 'g.published = TRUE';
+    let where = "g.published = TRUE AND g.review_status = 'approved'";
     if (!isAdultVerified) where += ' AND g.mature = FALSE';
     if (cursor > 0) {
       params.push(cursor);
@@ -119,7 +112,7 @@ catalogRouter.get(
       `SELECT g.id, g.slug, g.title, g.description, g.thumbnail_url, g.created_at, g.mature,
               u.display_name AS creator_name, u.id AS creator_id
          FROM games g JOIN users u ON u.id = g.creator_id
-        WHERE g.slug = $1 AND g.published = TRUE`,
+        WHERE g.slug = $1 AND g.published = TRUE AND g.review_status = 'approved'`,
       [req.params.slug],
     );
     if (rows.length === 0) throw notFound('No such published game.');
@@ -138,7 +131,14 @@ catalogRouter.get(
       if (!isAdultVerified) throw notFound('No such published game.');
     }
 
-    const counts = await livePlayerCounts([g.id]);
+    const [counts, { rows: screenshots }] = await Promise.all([
+      livePlayerCounts([g.id]),
+      query(
+        `SELECT id, width, height FROM game_media
+          WHERE game_id = $1 AND kind = 'screenshot' AND review_status = 'approved' ORDER BY position, id`,
+        [g.id],
+      ),
+    ]);
     res.json({
       game: {
         id: String(g.id),
@@ -149,6 +149,7 @@ catalogRouter.get(
         mature: g.mature,
         creator: { id: String(g.creator_id), display_name: g.creator_name },
         active_players: counts ? counts.get(String(g.id)) : null,
+        screenshots: screenshots.map((m) => ({ id: String(m.id), url: mediaUrl(m.id), width: m.width, height: m.height })),
       },
       player_counts_available: counts !== null,
     });
@@ -196,24 +197,6 @@ catalogRouter.post(
     if (thumbnailUrl && !/^https?:\/\//i.test(thumbnailUrl)) {
       throw badRequest('thumbnail_url must be an http(s) URL.');
     }
-    // A real, honest object existence check against whichever backend is
-    // actually active (S3, or the local disk fallback -- see
-    // storage/local.js -- when no bucket is configured). This route
-    // deliberately does NOT do the full re-hash verifyObjectHash() does --
-    // that real, stronger verification already ran once at
-    // package/confirm time (see that route below); a hash reaching this
-    // route has either already been through that, or points at nothing,
-    // which this HEAD check alone is enough to catch.
-    let packageObjectKeyForSlug = null;
-    let packageSizeBytes = null;
-    if (sceneHash) {
-      const key = packageObjectKey(sceneHash);
-      const head = s3Configured() ? await headObject(key) : await headLocalObject(key);
-      if (!head.exists) throw badRequest('scene_sha256 does not match any uploaded package -- upload it first.');
-      packageObjectKeyForSlug = key;
-      packageSizeBytes = head.sizeBytes;
-    }
-
     // Guests cannot publish -- enforced server-side, like every other
     // guest restriction.
     const { rows: authors } = await query(
@@ -230,202 +213,52 @@ catalogRouter.post(
       if (String(existing.rows[0].creator_id) !== String(req.user.id)) {
         throw conflict('That slug is already taken.');
       }
+      // scene_sha256 names an already-confirmed, approved version to make live;
+      // packages themselves only arrive through package/confirm.
+      if (sceneHash) {
+        const { rows: versions } = await query(
+          `SELECT id, review_status FROM game_package_versions WHERE game_id = $1 AND sha256 = $2`,
+          [existing.rows[0].id, sceneHash],
+        );
+        if (versions.length === 0) throw badRequest('scene_sha256 does not match any uploaded package -- upload it first.');
+        if (versions[0].review_status !== 'approved') throw badRequest('That package version has not been approved yet.');
+        await query(
+          `UPDATE games g SET current_package_version_id = v.id, scene_sha256 = v.sha256, package_object_key = v.object_key,
+                  package_size_bytes = v.size_bytes, package_uploaded_at = v.created_at
+             FROM game_package_versions v WHERE v.id = $2 AND g.id = $1`,
+          [existing.rows[0].id, versions[0].id],
+        );
+      }
+      // Catalog thumbnails are uploaded images now; a URL is only kept when the
+      // game has none, for older clients.
       const updated = await query(
         `UPDATE games
-            SET title = $2, description = $3, thumbnail_url = $4, published = TRUE, updated_at = NOW(),
-                scene_sha256 = COALESCE($6, scene_sha256),
-                package_object_key = COALESCE($7, package_object_key),
-                package_size_bytes = COALESCE($8, package_size_bytes),
-                package_uploaded_at = CASE WHEN $6::text IS NOT NULL THEN NOW() ELSE package_uploaded_at END,
-                mature = $9
+            SET title = $2, description = $3,
+                thumbnail_url = CASE WHEN thumbnail_url LIKE $6 THEN thumbnail_url ELSE $4 END,
+                published = TRUE, updated_at = NOW(), mature = $7
           WHERE id = $1 AND creator_id = $5
-          RETURNING id, slug`,
-        [existing.rows[0].id, title, description, thumbnailUrl, req.user.id,
-         sceneHash || null, packageObjectKeyForSlug, packageSizeBytes, mature],
+          RETURNING id, slug, review_status`,
+        [existing.rows[0].id, title, description, thumbnailUrl, req.user.id, `${mediaUrl('')}%`, mature],
       );
-      return res.json({ status: 'updated', game: { id: String(updated.rows[0].id), slug: updated.rows[0].slug } });
-    }
-
-    const inserted = await query(
-      `INSERT INTO games (slug, title, description, creator_id, thumbnail_url, published,
-                           scene_sha256, package_object_key, package_size_bytes, package_uploaded_at, mature)
-       VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, $8, CASE WHEN $6::text IS NOT NULL THEN NOW() ELSE NULL END, $9)
-       RETURNING id, slug`,
-      [slug, title, description, req.user.id, thumbnailUrl, sceneHash || null, packageObjectKeyForSlug, packageSizeBytes, mature],
-    );
-    res.status(201).json({ status: 'published', game: { id: String(inserted.rows[0].id), slug: inserted.rows[0].slug } });
-  }),
-);
-
-// --- Dynamic Asset Streaming: package upload/download -----------------------
-//
-// A game's real .kronos archive lives content-addressed in S3
-// (packages/<sha256>.kronos, see storage/s3.js's own comment), never in
-// Postgres. Ownership is checked against the SAME games row /publish
-// already protects (requireOwnedGame, see ./ownership.js) -- a slug must
-// exist and be owned by the caller before its package can be uploaded
-// to, matching the real, intended order: publish metadata first
-// (creating the row), then upload/confirm the package against that same
-// slug.
-
-catalogRouter.post(
-  '/games/:slug/package/upload-url',
-  requireAuth,
-  rateLimit({ bucket: 'packageupload', limit: 30, windowSeconds: 3600 }),
-  asyncRoute(async (req, res) => {
-    await requireOwnedGame(req.params.slug, req.user.id);
-
-    const sha256 = String(req.body?.sha256 || '').trim().toLowerCase();
-    if (!/^[a-f0-9]{64}$/.test(sha256)) throw badRequest('sha256 must be a hex SHA-256 digest.');
-    const sizeBytes = Number(req.body?.size_bytes);
-    if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) throw badRequest('size_bytes must be a positive number.');
-    if (sizeBytes > config.packageMaxSizeBytes) {
-      throw badRequest(`Package exceeds the ${config.packageMaxSizeBytes}-byte size limit.`);
-    }
-
-    const key = packageObjectKey(sha256);
-    if (s3Configured()) {
-      const uploadUrl = await createPresignedUploadUrl(key);
-      return res.json({ upload_url: uploadUrl, object_key: key, expires_in: config.packageUploadTtlSeconds, storage: 's3' });
-    }
-    // Local disk fallback: no bucket to presign a URL against, so the
-    // client PUTs its raw package bytes straight to this same backend
-    // instead of to a third-party bucket -- same "PUT bytes to
-    // upload_url" client contract either way, just a same-origin route
-    // (protected by the SAME auth + ownership check above, see the
-    // local-upload route right below) instead of an AWS-signed one.
-    res.json({
-      upload_url: `${config.publicBaseUrl}/v1/catalog/games/${req.params.slug}/package/local-upload/${sha256}`,
-      object_key: key,
-      expires_in: null,
-      storage: 'local',
-    });
-  }),
-);
-
-catalogRouter.put(
-  '/games/:slug/package/local-upload/:sha256',
-  requireAuth,
-  rateLimit({ bucket: 'packageupload', limit: 30, windowSeconds: 3600 }),
-  asyncRoute(async (req, res) => {
-    // This route only exists as the local-disk counterpart to a presigned
-    // S3 PUT -- once a bucket is configured, uploads go straight there
-    // instead, and this path is never handed out (see upload-url above).
-    if (s3Configured()) throw notFound('No such endpoint.');
-    await requireOwnedGame(req.params.slug, req.user.id);
-
-    const sha256 = String(req.params.sha256 || '').trim().toLowerCase();
-    if (!/^[a-f0-9]{64}$/.test(sha256)) throw badRequest('sha256 must be a hex SHA-256 digest.');
-
-    const key = packageObjectKey(sha256);
-    let sizeBytes;
-    try {
-      ({ sizeBytes } = await writeLocalObjectFromStream(key, req, config.packageMaxSizeBytes));
-    } catch (err) {
-      if (err.code === 'PACKAGE_TOO_LARGE') throw badRequest(err.message);
-      throw err;
-    }
-    res.json({ status: 'stored', object_key: key, size_bytes: sizeBytes });
-  }),
-);
-
-catalogRouter.post(
-  '/games/:slug/package/confirm',
-  requireAuth,
-  asyncRoute(async (req, res) => {
-    const game = await requireOwnedGame(req.params.slug, req.user.id);
-
-    const sha256 = String(req.body?.sha256 || '').trim().toLowerCase();
-    if (!/^[a-f0-9]{64}$/.test(sha256)) throw badRequest('sha256 must be a hex SHA-256 digest.');
-    const key = packageObjectKey(sha256);
-    const useS3 = s3Configured();
-
-    // Real, streamed, server-side re-hash of the actual uploaded bytes
-    // -- never trusts the client's own claim, and never trusts the
-    // content-addressed key alone (a key names what SHOULD be there,
-    // not what really is). See storage/s3.js's own header comment on
-    // why this is a full re-read rather than relying on a presigned-
-    // checksum feature. Same real check either way, just against
-    // whichever backend actually received the upload.
-    const head = useS3 ? await headObject(key) : await headLocalObject(key);
-    if (!head.exists) throw notFound('No package was uploaded for that hash.');
-    if (head.sizeBytes > config.packageMaxSizeBytes) {
-      throw badRequest(`Uploaded package exceeds the ${config.packageMaxSizeBytes}-byte size limit.`);
-    }
-    const verified = useS3 ? await verifyObjectHash(key, sha256) : await verifyLocalObjectHash(key, sha256);
-    if (!verified.matches) {
-      throw badRequest('The uploaded package\'s real content does not match the declared sha256.');
-    }
-
-    await query(
-      `UPDATE games
-          SET scene_sha256 = $2, package_object_key = $3, package_size_bytes = $4, package_uploaded_at = NOW(),
-              updated_at = NOW()
-        WHERE id = $1`,
-      [game.id, sha256, key, verified.sizeBytes],
-    );
-    res.json({ status: 'confirmed', sha256, size_bytes: verified.sizeBytes });
-  }),
-);
-
-catalogRouter.get(
-  '/games/:slug/package',
-  optionalAuth,
-  asyncRoute(async (req, res) => {
-    const { rows } = await query(
-      `SELECT scene_sha256, package_object_key, package_size_bytes, package_uploaded_at
-         FROM games WHERE slug = $1 AND published = TRUE`,
-      [req.params.slug],
-    );
-    if (rows.length === 0) throw notFound('No such published game.');
-    const g = rows[0];
-    if (!g.package_object_key) throw notFound('This game has no uploaded package yet.');
-
-    if (s3Configured()) {
-      const downloadUrl = await createPresignedDownloadUrl(g.package_object_key);
       return res.json({
-        sha256: g.scene_sha256,
-        size_bytes: g.package_size_bytes,
-        uploaded_at: g.package_uploaded_at,
-        download_url: downloadUrl,
-        expires_in: config.s3PublicBaseUrl ? null : config.packageDownloadTtlSeconds,
+        status: 'updated',
+        game: { id: String(updated.rows[0].id), slug: updated.rows[0].slug, review_status: updated.rows[0].review_status },
       });
     }
-    // Local disk fallback: a real, direct, unsigned URL back to this same
-    // backend -- same "a public CDN needs no per-request signature"
-    // reasoning s3PublicBaseUrl already uses above, just served from
-    // local disk instead of a CDN.
-    res.json({
-      sha256: g.scene_sha256,
-      size_bytes: g.package_size_bytes,
-      uploaded_at: g.package_uploaded_at,
-      download_url: `${config.publicBaseUrl}/v1/catalog/games/${req.params.slug}/package/download`,
-      expires_in: null,
+    if (sceneHash) throw badRequest('scene_sha256 does not match any uploaded package -- upload it first.');
+
+    const reviewStatus = config.gameReviewRequired ? 'pending' : 'approved';
+    const inserted = await query(
+      `INSERT INTO games (slug, title, description, creator_id, thumbnail_url, published, mature, review_status)
+       VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7)
+       RETURNING id, slug, review_status`,
+      [slug, title, description, req.user.id, thumbnailUrl, mature, reviewStatus],
+    );
+    res.status(201).json({
+      status: 'published',
+      game: { id: String(inserted.rows[0].id), slug: inserted.rows[0].slug, review_status: inserted.rows[0].review_status },
     });
   }),
 );
 
-catalogRouter.get(
-  '/games/:slug/package/download',
-  optionalAuth,
-  asyncRoute(async (req, res) => {
-    // Local-disk counterpart to the presigned S3 GET above -- once a
-    // bucket is configured, download_url points straight at it instead
-    // and this path is never handed out.
-    if (s3Configured()) throw notFound('No such endpoint.');
-
-    const { rows } = await query(
-      `SELECT package_object_key FROM games WHERE slug = $1 AND published = TRUE`,
-      [req.params.slug],
-    );
-    if (rows.length === 0 || !rows[0].package_object_key) throw notFound('This game has no uploaded package yet.');
-
-    const key = rows[0].package_object_key;
-    const head = await headLocalObject(key);
-    if (!head.exists) throw notFound('This game has no uploaded package yet.');
-
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', String(head.sizeBytes));
-    readLocalObjectStream(key).pipe(res);
-  }),
-);
+// Package upload, versions, review and catalog images live in ./releases.js.

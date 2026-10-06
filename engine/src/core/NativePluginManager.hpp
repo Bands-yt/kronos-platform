@@ -1,5 +1,8 @@
 #pragma once
 
+#include <chrono>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -48,6 +51,9 @@ public:
     struct LoadedPluginInfo {
         std::string name;
         std::string libraryPath;
+        int64_t fileStamp = 0;
+        int64_t pendingStamp = 0;
+        std::string lastError; // latest failed reload; the previous build keeps running
     };
 
     // The real, platform-native shared library extension a discoverable
@@ -81,9 +87,29 @@ public:
     // currently loaded.
     void unloadPlugin(const std::string& name);
 
+    // See CppHotReloadHost::setBeforeUnload.
+    void setBeforeUnload(std::function<void(const std::string& name)> callback) { host_.setBeforeUnload(std::move(callback)); }
+
     // Real per-tick forward to every currently loaded plugin, in the order
     // each was first loaded -- see CppHotReloadHost::tick()'s own comment.
     void tick(float dt, ECS& ecs);
+
+    // Reloads every plugin whose library file changed on disk, right now.
+    // Returns how many reloaded. A failed reload leaves the old build
+    // running and is not retried until the file changes again.
+    size_t checkForChanges(ECS& ecs);
+    bool reloadPlugin(const std::string& name, ECS& ecs, std::string& outError);
+
+    // With auto reload on, update() polls library files and reloads a
+    // plugin once its file has stopped changing for one poll interval, so
+    // a half-written build is never loaded.
+    void setAutoReload(bool enabled, double pollSeconds = 0.5);
+    [[nodiscard]] bool autoReloadEnabled() const { return autoReload_; }
+    size_t update(ECS& ecs);
+
+    [[nodiscard]] std::optional<CppHotReloadHost::SlotStatus> status(const std::string& name) const {
+        return host_.status(name);
+    }
 
     [[nodiscard]] bool isPluginLoaded(const std::string& name) const;
     [[nodiscard]] const std::vector<LoadedPluginInfo>& listLoadedPlugins() const { return loaded_; }
@@ -109,6 +135,9 @@ private:
     // listLoadedPlugins() report each plugin's own source path without
     // CppHotReloadHost needing to expose that itself.
     std::vector<LoadedPluginInfo> loaded_;
+    bool autoReload_ = false;
+    double pollSeconds_ = 0.5;
+    std::chrono::steady_clock::time_point lastPoll_{};
 };
 
 } // namespace engine::core

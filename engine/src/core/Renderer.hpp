@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <unordered_map>
 #include <map>
 #include <memory>
 #include <optional>
@@ -20,6 +21,7 @@
 #include "core/Camera.hpp"
 #include "core/CubeLut.hpp"
 #include "core/ECS.hpp"
+#include "core/GpuFeatures.hpp"
 #include "core/Mesh.hpp"
 #include "core/ParticleSystem.hpp"
 #include "core/PerformanceMetrics.hpp"
@@ -64,6 +66,9 @@ namespace engine::core {
 //     VkRenderPass/VkFramebuffer -- this is *not* a simplification, it's
 //     the direction the real frame graph wants (passes declare
 //     attachments per-draw), kept from the first pass.
+class SceneSpatialIndex;
+class StaticBatchSet;
+
 class Renderer {
 public:
     struct CreateInfo {
@@ -291,6 +296,29 @@ public:
     // texture array needs. False means the existing per-draw descriptor
     // path is in use -- a graceful fallback, not an error.
     [[nodiscard]] bool isBindlessSupported() const { return bindlessSupported_; }
+    // Re-points every cached material descriptor and the bindless slot for
+    // `handle` at whatever TextureLibrary now holds there (the default
+    // texture once it is destroyed). Call with the device idle, after a
+    // texture is replaced or destroyed in place.
+    void refreshTextureDescriptors(uint32_t handle, TextureLibrary& textureLibrary);
+    void waitIdle() const;
+    // Runs `destroy` once no frame in flight can still be using what it frees.
+    // Dropped at shutdown: the libraries free everything themselves then.
+    void deferDestroy(std::function<void()> destroy);
+
+    // Shader-graph materials: a forward-lit fragment shader compiled for
+    // surfaceShaderTarget() becomes a pipeline that shares the scene
+    // layout. Assign the handle to Renderable::surfacePipeline.
+    struct SurfaceShaderTarget {
+        bool rayTracing = false;
+        bool bindless = false;
+        std::string shaderDirectory; // holds kronos/*.glsl for #include
+    };
+    [[nodiscard]] SurfaceShaderTarget surfaceShaderTarget() const;
+    static constexpr uint32_t kInvalidSurfacePipeline = ~0u;
+    [[nodiscard]] uint32_t createSurfacePipeline(const std::vector<uint32_t>& fragmentSpirv);
+    void destroySurfacePipeline(uint32_t handle);
+    [[nodiscard]] size_t surfacePipelineCount() const { return surfacePipelines_.size(); }
     void setRayTracedShadowsEnabled(bool enabled) { rayTracedShadowsEnabled_ = enabled && rayTracingSupported_; }
     [[nodiscard]] bool isRayTracedShadowsEnabled() const { return rayTracedShadowsEnabled_; }
 
@@ -467,6 +495,30 @@ public:
     void setRTAmbientOcclusionRadius(float radius) { rtAORadius_ = std::max(radius, 0.0f); }
     // Instances in the most recent ray-tracing build (0 while ray tracing is idle).
     [[nodiscard]] uint32_t rayTracingInstanceCount() const { return lastRtInstanceCount_; }
+    // BVH frustum culling for the main scene pass (on by default).
+    void setFrustumCulling(bool enabled) { frustumCulling_ = enabled; }
+    [[nodiscard]] bool frustumCulling() const { return frustumCulling_; }
+    // Merges objects that stay still and share a material into one draw (on by default).
+    void setStaticBatching(bool enabled) { staticBatching_ = enabled; }
+    [[nodiscard]] bool staticBatching() const { return staticBatching_; }
+    [[nodiscard]] const GpuFeatureTier& gpuFeatures() const { return gpuFeatures_; }
+    // Shades the opaque scene once per 2x2 pixels (variable rate shading).
+    // Off by default; Performance Mode turns it on. No effect without
+    // VK_KHR_fragment_shading_rate.
+    void setCoarseShading(bool enabled) { coarseShading_ = enabled; }
+    [[nodiscard]] bool coarseShading() const { return coarseShading_; }
+    // Colours each opaque pixel by the GPU cycles its shading took (needs
+    // VK_KHR_shader_clock). Shader-graph and explicitly instanced objects keep
+    // their normal look.
+    void setShaderCostView(bool enabled) { shaderCostView_ = enabled; }
+    [[nodiscard]] bool shaderCostView() const { return shaderCostView_; }
+    [[nodiscard]] bool shaderCostViewActive() const { return shaderCostView_ && shaderCostPipeline_ != VK_NULL_HANDLE; }
+    [[nodiscard]] bool coarseShadingActive() const {
+        return gpuFeatures_.fragmentShadingRate && (coarseShading_ || performanceModeEnabled_);
+    }
+    // Draws moving objects that share a mesh with one instanced call (on by default).
+    void setAutomaticInstancing(bool enabled) { automaticInstancing_ = enabled; }
+    [[nodiscard]] bool automaticInstancing() const { return automaticInstancing_; }
 
     // Sprint 14 ("Performance Mode"): one real toggle bundling several
     // concrete rendering-cost reductions -- see the .cpp implementation
@@ -879,6 +931,12 @@ public:
         pluginOverlayCallbacks_.emplace_back(std::move(name), std::move(callback));
     }
 
+    [[nodiscard]] std::vector<std::string> pluginOverlayNames() const {
+        std::vector<std::string> names;
+        for (const auto& entry : pluginOverlayCallbacks_) names.push_back(entry.first);
+        return names;
+    }
+
     void removePluginOverlayCallback(const std::string& name) {
         pluginOverlayCallbacks_.erase(
             std::remove_if(pluginOverlayCallbacks_.begin(), pluginOverlayCallbacks_.end(),
@@ -1211,6 +1269,8 @@ private:
     void destroySceneDescriptorResources();
     bool createScenePipeline();
     void destroyScenePipeline();
+    VkPipeline buildScenePipeline(VkShaderModule vertModule, VkShaderModule fragModule);
+    void destroySurfacePipelines();
     // Kronos ("Real-Time Rendering Evolved" trailer): real glass/water
     // transmission pipeline -- see shaders/glass.frag's own header
     // comment. Own pipeline layout (set=0 scene UBO only, a small
@@ -1425,8 +1485,12 @@ private:
     // same vkCmdBeginRendering block (pipelines can be switched mid-pass
     // freely). Does NOT affect drawShadowPass(), which still draws every
     // caster individually regardless of this flag -- see its comment.
+    // `automatic` holds same-mesh groups the opaque loop chose to instance;
+    // whatever doesn't fit the instance buffer goes to `drawSingle` instead.
     void drawInstancedBatches(VkCommandBuffer cmd, FrameSync& frame, ECS& ecs, MeshLibrary& meshLibrary,
-                               TextureLibrary& textureLibrary);
+                               TextureLibrary& textureLibrary,
+                               const std::unordered_map<uint32_t, std::vector<EntityId>>& automatic,
+                               const std::function<void(EntityId)>& drawSingle);
 
     // Uploads one ParticleInstanceData per live particle and draws them
     // all in one instanced call against the shared unit quad
@@ -1464,6 +1528,7 @@ private:
     void destroyParticleInstanceBufferFor(FrameSync& frame);
     bool createShadowPipeline();   // owns shadowPipelineLayout_ -- see its .cpp comment for why not scenePipelineLayout_
     bool createSkinnedShadowPipeline(VkGraphicsPipelineCreateInfo pipelineInfo, const std::string& shaderDir);
+    bool createInstancedShadowPipeline(VkGraphicsPipelineCreateInfo pipelineInfo, const std::string& shaderDir);
     // Assigns skinning palette slots and uploads palettes once per view, so
     // the shadow pass and the main pass draw the same skinned set.
     void prepareSkinnedDraws(FrameSync& frame, ECS& ecs, RiggedMeshLibrary* riggedMeshLibrary);
@@ -1762,6 +1827,8 @@ private:
     VkDescriptorPool sceneDescriptorPool_ = VK_NULL_HANDLE;
     VkPipelineLayout scenePipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline scenePipeline_ = VK_NULL_HANDLE;
+    std::map<uint32_t, VkPipeline> surfacePipelines_;
+    uint32_t nextSurfacePipeline_ = 1;
     // Kronos ("Real-Time Rendering Evolved" trailer) -- see
     // createGlassPipeline()'s own comment.
     VkPipelineLayout glassPipelineLayout_ = VK_NULL_HANDLE;
@@ -1774,6 +1841,8 @@ private:
     // this clamps and logs rather than overflowing frame.instanceBuffer;
     // see drawInstancedBatches()'s comment.
     static constexpr uint32_t kMaxInstancesPerFrame = 4096;
+    // Shadow caster model matrices, stored after the InstanceData region of frame.instanceBuffer.
+    static constexpr uint32_t kMaxShadowInstancesPerFrame = 16384;
 
     Mesh particleQuadMesh_;             // shared unit quad every particle billboard instances (see Mesh::createQuad)
     VkPipeline particlePipeline_ = VK_NULL_HANDLE; // additive-blended, no depth write
@@ -2007,6 +2076,7 @@ private:
     float iblReflectionNormalization_ = 1.0f;
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
     VkPipeline skinnedShadowPipeline_ = VK_NULL_HANDLE;
+    VkPipeline instancedShadowPipeline_ = VK_NULL_HANDLE; // shares shadowPipelineLayout_
     VkPipelineLayout skinnedShadowPipelineLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout_ = VK_NULL_HANDLE; // ShadowPushConstants -- see SceneTypes.hpp, not scenePipelineLayout_
 
@@ -2032,6 +2102,28 @@ private:
     // see PerformanceMetrics.hpp and metrics()'s doc comment.
     uint32_t frameDrawCalls_ = 0;
     uint64_t frameTriangles_ = 0;
+    uint32_t frameObjectsVisible_ = 0;
+    uint32_t frameObjectsCulled_ = 0;
+    bool frustumCulling_ = true;
+    bool staticBatching_ = true;
+    GpuFeatureTier gpuFeatures_;
+    bool coarseShading_ = false;
+    bool shaderCostView_ = false;
+    VkPipeline shaderCostPipeline_ = VK_NULL_HANDLE;
+    void applySceneShadingRate(VkCommandBuffer cmd) const;
+    bool automaticInstancing_ = true;
+    static constexpr size_t kMinAutomaticInstances = 4;
+    std::unordered_map<uint32_t, std::vector<EntityId>> automaticInstances_;
+    uint32_t frameInstancedDraws_ = 0;
+    uint32_t frameInstancedObjects_ = 0;
+    uint64_t frameSerial_ = 0;
+    std::vector<std::pair<uint64_t, std::function<void()>>> deferredDestroys_;
+    uint32_t frameStaticBatches_ = 0;
+    uint32_t frameStaticBatchedObjects_ = 0;
+    const StaticBatchSet* activeBatching_ = nullptr; // set while a scene pass records
+    StaticBatchSet* prepareStaticBatches(ECS& ecs, MeshLibrary& meshLibrary);
+    std::vector<EntityId> visibleEntities_;
+    const SceneSpatialIndex* activeCulling_ = nullptr; // set while a culled scene pass records
     std::chrono::steady_clock::time_point lastFrameTimestamp_{};
     PerformanceMetrics lastMetrics_;
     bool logMetricsToStdout_ = false;

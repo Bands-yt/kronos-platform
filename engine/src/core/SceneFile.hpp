@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,10 @@ struct SceneEntityRecord {
     bool hasLight = false;
     Light light;
 
+    // soundHandle and playing aren't saved; playOnStart starts it in a game.
+    bool hasSound = false;
+    AudioSource sound;
+
     // Kronos ("Game Catalogue Overhaul", Phase 1): real physics
     // round-trip -- see this file's own class comment, which used to list
     // RigidBody as a stated, deliberate gap ("Studio creates no entities
@@ -95,9 +100,15 @@ struct SceneEntityRecord {
     // deliberately NOT persisted -- they're live-VM bookkeeping (see
     // Components.hpp's own Script comment), meaningless before a fresh
     // load re-runs the script from scratch.
+    // core::SurfaceGraphMaterial::graph; empty means the standard material.
+    // Only meaningful with hasRenderable.
+    std::string surfaceGraph;
+
     bool hasScript = false;
     std::string scriptSource;
     bool scriptAutoRun = true;
+    // core::VisualScript::graph; empty when the entity has none.
+    std::string visualScript;
 };
 
 // A full scene -- every SceneEntityRecord worth persisting, plus the
@@ -115,8 +126,6 @@ struct SceneEntityRecord {
 // the source file path a texture was loaded from, so there is nothing
 // to serialize from yet; building that provenance tracking is the
 // texture-pipeline equivalent of MeshSource and deserves its own pass).
-// core::AudioSource isn't included either: no audio-source authoring UI
-// exists anywhere yet, so there is nothing yet to round-trip.
 //
 // cinematic::CameraRail and cinematic::Sequence (the authored rail path
 // and keyframe timeline behind studio::plugins::MovieModePlugin) ARE now
@@ -203,6 +212,8 @@ struct SceneFile {
     // implementation between the two). Callable directly if a caller
     // wants to force one format regardless of `path`'s extension.
     [[nodiscard]] bool saveToBinaryFile(const std::string& path) const;
+    // The text format, to any stream.
+    bool writeText(std::ostream& out) const;
     [[nodiscard]] bool loadFromBinaryFile(const std::string& path);
 };
 

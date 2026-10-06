@@ -1,7 +1,9 @@
 #include "studio/plugins/PublishingPanel.hpp"
 
+#include "core/NativeFileDialog.hpp"
 #include "core/ResourcePaths.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <sstream>
@@ -59,7 +61,7 @@ publishing::WorldPackage PublishingPanel::buildPackage(core::ECS& ecs) const {
     package.metadata.recommendedPlayerCount = recommendedPlayerCount_;
     package.metadata.category = static_cast<publishing::WorldCategory>(categoryIndex_);
     package.metadata.thumbnailPath = lastThumbnailPath_;
-    package.scene = sceneManager_->captureScene(ecs, *viewportCamera_);
+    package.scene = sceneManager_->captureWholeWorld(ecs, *viewportCamera_);
     return package;
 }
 
@@ -115,7 +117,7 @@ void PublishingPanel::drawThumbnailSection() {
         // create_directories() call for the same real requirement.
         std::error_code ec;
         std::filesystem::create_directories(publishDirectoryBuffer_, ec);
-        std::string path = std::string(publishDirectoryBuffer_) + "/" + std::string(worldIdBuffer_) + "_thumbnail.ppm";
+        std::string path = std::string(publishDirectoryBuffer_) + "/" + std::string(worldIdBuffer_) + "_thumbnail.png";
         // captureToFile() itself needs a live core::Renderer&, only
         // available from renderPreview()'s per-frame hook -- the button
         // just marks intent; the actual real capture happens the next
@@ -210,7 +212,9 @@ void PublishingPanel::startCloudPublish(core::ECS& ecs) {
         // Restore the launcher's saved session if this Studio process
         // does not already have one -- signing in once covers both.
         if (!kronosApi_.isSignedIn()) (void)kronosApi_.restoreSession();
-        core::PublishResult result = kronosApi_.publishGame(request);
+        CloudPublishOutcome outcome;
+        core::PublishResult& result = outcome.publish;
+        result = kronosApi_.publishGame(request);
         if (result.success) {
             std::error_code ec;
             std::string archivePath =
@@ -220,8 +224,8 @@ void PublishingPanel::startCloudPublish(core::ECS& ecs) {
                 result.success = false;
                 result.error = "Listed, but not playable yet: " + error;
             } else {
-                core::PackageUploadResult upload =
-                    kronosApi_.uploadGamePackage(request.slug, archivePath, publishing::archiveSha256Hex(archivePath));
+                core::PackageUploadResult& upload = outcome.upload;
+                upload = kronosApi_.uploadGamePackage(request.slug, archivePath, publishing::archiveSha256Hex(archivePath));
                 if (!upload.success) {
                     result.success = false;
                     result.error = "Listed, but the game upload failed: " + upload.error;
@@ -230,7 +234,7 @@ void PublishingPanel::startCloudPublish(core::ECS& ecs) {
             std::filesystem::remove(archivePath, ec);
         }
         std::lock_guard<std::mutex> lock(cloudPublishMutex_);
-        cloudPublishPendingResult_ = std::move(result);
+        cloudPublishPendingResult_ = std::move(outcome);
         cloudPublishInProgress_.store(false);
     });
 }
@@ -238,21 +242,28 @@ void PublishingPanel::startCloudPublish(core::ECS& ecs) {
 void PublishingPanel::drawCloudPublishSection(core::ECS& ecs) {
     // Drain the worker's result on the UI thread.
     {
-        std::optional<core::PublishResult> result;
+        std::optional<CloudPublishOutcome> outcome;
         {
             std::lock_guard<std::mutex> lock(cloudPublishMutex_);
             if (cloudPublishPendingResult_.has_value()) {
-                result = std::move(cloudPublishPendingResult_);
+                outcome = std::move(cloudPublishPendingResult_);
                 cloudPublishPendingResult_.reset();
             }
         }
-        if (result.has_value()) {
+        if (outcome.has_value()) {
+            const core::PublishResult* result = &outcome->publish;
             cloudPublishSucceeded_ = result->success;
             if (result->success) {
-                cloudPublishStatus_ = result->status == "updated"
-                                           ? "Updated \"" + result->slug + "\" in the Kronos catalogue."
-                                           : "Published \"" + result->slug + "\" to the Kronos catalogue.";
+                const std::string version = "version " + std::to_string(outcome->upload.versionNumber);
+                if (outcome->upload.reviewStatus == "pending") {
+                    cloudPublishStatus_ = "Uploaded \"" + result->slug + "\" " + version +
+                                          ". It goes live once a moderator approves it.";
+                } else {
+                    cloudPublishStatus_ = (result->status == "updated" ? "Updated \"" : "Published \"") + result->slug +
+                                          "\" -- " + version + " is live.";
+                }
                 logMessage(cloudPublishStatus_);
+                runCatalogTask("Refreshing releases...", [] { return std::string(); });
             } else {
                 // The backend's messages are written for a human, so they
                 // are shown verbatim rather than replaced with "failed".
@@ -292,6 +303,210 @@ void PublishingPanel::drawCloudPublishSection(core::ECS& ecs) {
         const ImVec4 color = cloudPublishSucceeded_ ? ImVec4(0.0f, 0.698f, 0.349f, 1.0f)
                                                      : ImVec4(0.85f, 0.35f, 0.30f, 1.0f);
         ImGui::TextColored(color, "%s", cloudPublishStatus_.c_str());
+    }
+}
+
+void PublishingPanel::runCatalogTask(std::string startedMessage, std::function<std::string()> task) {
+    if (catalogBusy_.load() || worldIdBuffer_[0] == '\0') return;
+    if (catalogThread_.joinable()) catalogThread_.join();
+    catalogBusy_.store(true);
+    const std::string slug = worldIdBuffer_;
+    {
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        catalogStatus_ = std::move(startedMessage);
+        catalogStatusIsError_ = false;
+    }
+    catalogThread_ = std::thread([this, slug, task = std::move(task)]() {
+        if (!kronosApi_.isSignedIn()) (void)kronosApi_.restoreSession();
+        std::string error = task();
+        core::PackageVersionList versions = kronosApi_.fetchPackageVersions(slug);
+        core::GameImageList images = kronosApi_.fetchGameImages(slug);
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        catalogSlug_ = slug;
+        if (!error.empty()) {
+            catalogStatus_ = error;
+            catalogStatusIsError_ = true;
+        } else if (!versions.success) {
+            catalogStatus_ = versions.error;
+            catalogStatusIsError_ = true;
+        } else {
+            catalogStatus_.clear();
+            catalogStatusIsError_ = false;
+        }
+        versions_ = std::move(versions);
+        images_ = std::move(images);
+        catalogBusy_.store(false);
+    });
+}
+
+namespace {
+std::string formatBytes(uint64_t bytes) {
+    char text[32];
+    if (bytes >= (1ull << 30)) std::snprintf(text, sizeof(text), "%.2f GB", static_cast<double>(bytes) / (1ull << 30));
+    else if (bytes >= (1ull << 20)) std::snprintf(text, sizeof(text), "%.1f MB", static_cast<double>(bytes) / (1ull << 20));
+    else std::snprintf(text, sizeof(text), "%.0f KB", static_cast<double>(bytes) / 1024.0);
+    return text;
+}
+
+ImVec4 reviewColor(const std::string& status) {
+    if (status == "approved") return ImVec4(0.35f, 0.80f, 0.40f, 1.0f);
+    if (status == "rejected") return ImVec4(0.90f, 0.30f, 0.30f, 1.0f);
+    return ImVec4(0.90f, 0.70f, 0.20f, 1.0f);
+}
+
+const char* reviewLabel(const std::string& status) {
+    if (status == "approved") return "Approved";
+    if (status == "rejected") return "Rejected";
+    return "In review";
+}
+} // namespace
+
+PublishingPanel::CatalogSnapshot PublishingPanel::catalogSnapshot() {
+    std::lock_guard<std::mutex> lock(catalogMutex_);
+    return {catalogSlug_ == worldIdBuffer_, versions_, images_, catalogStatus_, catalogStatusIsError_};
+}
+
+void PublishingPanel::drawReleasesSection() {
+    if (!ImGui::CollapsingHeader("Releases")) return;
+    const bool busy = catalogBusy_.load();
+    const CatalogSnapshot snapshot = catalogSnapshot();
+    const std::string slug = worldIdBuffer_;
+    auto versionAction = [this, slug](std::string message, int number, bool activate) {
+        runCatalogTask(std::move(message), [this, slug, number, activate] {
+            core::CatalogActionResult r = activate ? kronosApi_.activatePackageVersion(slug, number)
+                                                   : kronosApi_.deletePackageVersion(slug, number);
+            return r.success ? std::string() : r.error;
+        });
+    };
+
+    ImGui::BeginDisabled(busy || slug.empty());
+    if (ImGui::Button(busy ? "Loading..." : "Refresh")) runCatalogTask("Loading releases...", [] { return std::string(); });
+    ImGui::EndDisabled();
+    if (!snapshot.status.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(snapshot.statusIsError ? ImVec4(0.90f, 0.30f, 0.30f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s",
+                           snapshot.status.c_str());
+    }
+    const core::PackageVersionList& list = snapshot.versions;
+    if (!snapshot.current || !list.success) {
+        ImGui::TextDisabled("Refresh to see the versions uploaded for \"%s\".", slug.c_str());
+        return;
+    }
+
+    if (list.storage.quotaBytes > 0) {
+        const double fraction = static_cast<double>(list.storage.usedBytes) / static_cast<double>(list.storage.quotaBytes);
+        const std::string label =
+            formatBytes(list.storage.usedBytes) + " of " + formatBytes(list.storage.quotaBytes) + " used";
+        ImGui::ProgressBar(static_cast<float>(fraction), ImVec2(-1.0f, 0.0f), label.c_str());
+    }
+    if (list.gameReviewStatus != "approved") {
+        ImGui::TextColored(reviewColor(list.gameReviewStatus), "Not listed yet: %s",
+                           list.gameReviewStatus == "rejected" ? "the last submission was rejected."
+                                                               : "waiting for the first approval.");
+    }
+    if (list.versions.empty()) {
+        ImGui::TextDisabled("Nothing uploaded yet. Publish to Kronos to create version 1.");
+        return;
+    }
+    if (!ImGui::BeginTable("##versions", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) return;
+    ImGui::TableSetupColumn("Version", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Uploaded", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Review", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableHeadersRow();
+    for (const core::PackageVersion& version : list.versions) {
+        const std::string label = "v" + std::to_string(version.versionNumber);
+        std::string uploaded = version.createdAt.substr(0, 16);
+        std::replace(uploaded.begin(), uploaded.end(), 'T', ' ');
+        ImGui::PushID(version.versionNumber);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        if (version.current) ImGui::TextColored(ImVec4(0.0f, 0.698f, 0.349f, 1.0f), "%s live", label.c_str());
+        else ImGui::TextUnformatted(label.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(uploaded.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(formatBytes(version.sizeBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(reviewColor(version.reviewStatus), "%s%s", reviewLabel(version.reviewStatus),
+                           version.reviewNote.empty() ? "" : " (?)");
+        if (!version.reviewNote.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", version.reviewNote.c_str());
+        ImGui::TableNextColumn();
+        if (!version.current) {
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("...")) ImGui::OpenPopup("actions");
+            ImGui::EndDisabled();
+            if (ImGui::BeginPopup("actions")) {
+                const bool canGoLive = version.reviewStatus == "approved";
+                if (ImGui::MenuItem("Make live", nullptr, false, canGoLive)) {
+                    versionAction("Making " + label + " live...", version.versionNumber, true);
+                }
+                if (!canGoLive && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    ImGui::SetTooltip("Only approved versions can go live.");
+                }
+                if (ImGui::MenuItem("Delete version")) {
+                    versionAction("Deleting " + label + "...", version.versionNumber, false);
+                }
+                ImGui::EndPopup();
+            }
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+}
+
+void PublishingPanel::drawStorePageSection() {
+    if (!ImGui::CollapsingHeader("Store Page Images")) return;
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("PNG or JPEG, up to 4096 px. Images are reviewed before players see them.");
+    ImGui::PopStyleColor();
+    const bool busy = catalogBusy_.load();
+    const std::string slug = worldIdBuffer_;
+    auto upload = [this, slug](const std::string& kind, const std::string& path) {
+        runCatalogTask("Uploading " + kind + "...", [this, slug, kind, path] {
+            core::GameImageUploadResult r = kronosApi_.uploadGameImage(slug, kind, path, publishing::archiveSha256Hex(path));
+            return r.success ? std::string() : r.error;
+        });
+    };
+
+    ImGui::BeginDisabled(busy || slug.empty() || !hasCapturedThumbnail_);
+    if (ImGui::Button("Upload Thumbnail")) upload("thumbnail", lastThumbnailPath_);
+    ImGui::EndDisabled();
+    if (!hasCapturedThumbnail_ && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Capture one in Thumbnail Camera first.");
+    }
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy || slug.empty());
+    if (ImGui::Button("Add Screenshot...")) {
+        core::openFileDialogAsync({"Add Screenshot", {"*.png", "*.jpg", "*.jpeg"}, "Images"},
+                                  [this, upload](const std::string& path) { upload("screenshot", path); });
+    }
+    ImGui::EndDisabled();
+
+    const CatalogSnapshot snapshot = catalogSnapshot();
+    if (!snapshot.current || !snapshot.images.success) {
+        ImGui::TextDisabled("Refresh Releases to see this game's images.");
+        return;
+    }
+    for (const core::GameImage& image : snapshot.images.images) {
+        ImGui::PushID(image.id.c_str());
+        ImGui::BulletText("%s %dx%d", image.kind == "thumbnail" ? "Thumbnail" : "Screenshot", image.width, image.height);
+        ImGui::SameLine();
+        ImGui::TextColored(reviewColor(image.reviewStatus), "%s", reviewLabel(image.reviewStatus));
+        if (!image.reviewNote.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", image.reviewNote.c_str());
+        ImGui::SameLine();
+        ImGui::BeginDisabled(busy);
+        if (ImGui::SmallButton("Remove")) {
+            const std::string id = image.id;
+            runCatalogTask("Removing image...", [this, slug, id] {
+                core::CatalogActionResult r = kronosApi_.deleteGameImage(slug, id);
+                return r.success ? std::string() : r.error;
+            });
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
     }
 }
 
@@ -358,6 +573,8 @@ void PublishingPanel::drawPanel(core::ECS& ecs, core::EntityId, const std::vecto
     drawValidationSection(ecs);
     drawTestPublishSection(ecs);
     drawCloudPublishSection(ecs);
+    drawReleasesSection();
+    drawStorePageSection();
     drawServerRegistrySection(ecs);
     drawPublishLogSection();
 
@@ -378,7 +595,7 @@ void PublishingPanel::renderPreview(VkCommandBuffer cmd, core::Renderer& rendere
         std::error_code ec;
         std::filesystem::create_directories(publishDirectoryBuffer_, ec); // see the manual button's own comment on why this is real-required
         captureRequested_ = true;
-        pendingThumbnailPath_ = std::string(publishDirectoryBuffer_) + "/" + std::string(worldIdBuffer_) + "_thumbnail.ppm";
+        pendingThumbnailPath_ = std::string(publishDirectoryBuffer_) + "/" + std::string(worldIdBuffer_) + "_thumbnail.png";
     }
 
     if (captureRequested_ && thumbnailRig_.hasRenderedFrame()) {
@@ -397,6 +614,7 @@ void PublishingPanel::renderPreview(VkCommandBuffer cmd, core::Renderer& rendere
 void PublishingPanel::shutdown(core::Renderer& renderer) {
     // The worker captures `this`; it must not outlive the panel.
     if (cloudPublishThread_.joinable()) cloudPublishThread_.join();
+    if (catalogThread_.joinable()) catalogThread_.join();
 
     thumbnailRig_.destroy(renderer, renderer.allocator(), renderer.device());
 }

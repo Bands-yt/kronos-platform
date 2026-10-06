@@ -16,6 +16,7 @@ set(ENGINE_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow_instanced.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/fullscreen.vert
@@ -98,6 +99,44 @@ add_custom_command(
 )
 list(APPEND ENGINE_COMPILED_SHADERS ${ENGINE_BINDLESS_RT_FRAG})
 
+# Shader cost view variants (KRONOS_SHADER_CLOCK), one per scene.frag variant above.
+foreach(cost_variant "scene;" "scene;-DKRONOS_BINDLESS" "scene_rt;" "scene_rt;-DKRONOS_BINDLESS")
+    list(GET cost_variant 0 cost_source)
+    list(LENGTH cost_variant cost_args)
+    set(cost_define "")
+    set(cost_suffix "")
+    if(cost_args GREATER 1)
+        list(GET cost_variant 1 cost_define)
+    endif()
+    if(cost_define)
+        set(cost_suffix "_bindless")
+    endif()
+    set(cost_output ${ENGINE_SHADER_OUTPUT_DIR}/${cost_source}${cost_suffix}_cost.frag.spv)
+    add_custom_command(
+        OUTPUT ${cost_output}
+        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DKRONOS_SHADER_CLOCK ${cost_define}
+                ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${cost_source}.frag -o ${cost_output}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${cost_source}.frag ${ENGINE_SHADER_LIBRARY}
+        COMMENT "Compiling shader ${cost_source}.frag [KRONOS_SHADER_CLOCK${cost_define}] -> SPIR-V"
+        VERBATIM
+    )
+    list(APPEND ENGINE_COMPILED_SHADERS ${cost_output})
+endforeach()
+
+# The shader library also ships as source next to the .spv files: Studio
+# compiles shader-graph materials against it at runtime.
+foreach(library_source ${ENGINE_SHADER_LIBRARY})
+    get_filename_component(library_name ${library_source} NAME)
+    set(library_output ${ENGINE_SHADER_OUTPUT_DIR}/kronos/${library_name})
+    add_custom_command(
+        OUTPUT ${library_output}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${library_source} ${library_output}
+        DEPENDS ${library_source}
+        VERBATIM
+    )
+    list(APPEND ENGINE_COMPILED_SHADERS ${library_output})
+endforeach()
+
 add_custom_target(engine_shaders DEPENDS ${ENGINE_COMPILED_SHADERS})
 
 # ---------------------------------------------------------------------------
@@ -133,6 +172,8 @@ add_library(engine_core STATIC
     core/ComputePbrPainter.cpp
     core/CppHotReloadHost.cpp
     core/NativePluginManager.cpp
+    plugin/PluginHost.cpp
+    plugin/PluginSandbox.cpp
     core/MeshUvPicking.cpp
     core/RayTracingScene.cpp
     core/VmaImpl.cpp
@@ -162,6 +203,14 @@ add_library(engine_core STATIC
     core/FbxLoader.cpp
     core/AssetMetadata.cpp
     core/AssetCache.cpp
+    core/ResourceManager.cpp
+    core/Bvh.cpp
+    core/SceneSpatialIndex.cpp
+    core/StaticBatching.cpp
+    core/WorldStreaming.cpp
+    core/PhysicsRollback.cpp
+    core/GpuFeatures.cpp
+    core/RenderResourceLoaders.cpp
     core/AssetRegistry.cpp
     core/AssetImportQueue.cpp
     core/TextureBaker.cpp
@@ -254,7 +303,10 @@ add_library(engine_core STATIC
     core/ConsoleQuickEdit.cpp
     core/ResourcePaths.cpp
     core/Audio.cpp
+    core/AudioMixer.cpp
+    core/ScriptAudioApi.cpp
     core/Scripting.cpp
+    core/ScriptDebugger.cpp
     core/ScriptHotReload.cpp
     core/ScriptSecurity.cpp
     core/MathExpression.cpp
@@ -294,6 +346,8 @@ add_library(engine_core STATIC
     net/InteractionValidation.cpp
     net/NetworkedMovement.cpp
     net/NetworkSession.cpp
+    net/RollbackProtocol.cpp
+    net/RollbackNetSession.cpp
     net/SessionHistory.cpp
     net/GamePlayLog.cpp
     net/LanDiscoveryProtocol.cpp
@@ -569,6 +623,12 @@ target_link_libraries(engine_core PUBLIC
     CURL::libcurl
 )
 
+# Gameplay math feeding deterministic physics must not fuse multiply-adds
+# differently per compiler or CPU.
+if(NOT MSVC)
+    target_compile_options(engine_core PUBLIC -ffp-contract=off)
+endif()
+
 # Kronos (Beta Roadmap "Package Registry Integration" / "VFS Mounting"):
 # real PackageRegistry/VirtualFileSystem, now used by core::PackageManager
 # (PackageManager.hpp/.cpp) and core::SceneFile respectively -- see
@@ -618,6 +678,14 @@ endif()
 # docking dockspace); this is a real, separate, much smaller ImGui use
 # than Studio's own dockable panel host, not a shared surface with it.
 # ---------------------------------------------------------------------------
+# Runs one third-party plugin in a locked-down process (plugin/SandboxMain.cpp).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(kronos_plugin_sandbox plugin/SandboxMain.cpp)
+    target_include_directories(kronos_plugin_sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(kronos_plugin_sandbox PRIVATE dl)
+    target_compile_features(kronos_plugin_sandbox PRIVATE cxx_std_20)
+endif()
+
 if(ENGINE_BUILD_RUNTIME)
     add_executable(engine_runtime
         main.cpp
@@ -690,12 +758,16 @@ if(ENGINE_BUILD_STUDIO)
         studio/OffscreenTarget.cpp
         studio/PluginManager.cpp
         studio/NativePluginAdapter.cpp
+        studio/PluginApiPanel.cpp
         studio/StudioEcsScriptApi.cpp
         studio/ScriptCinematicApi.cpp
         studio/ScriptRenderApi.cpp
         studio/ScriptPhysicsPreviewApi.cpp
         studio/StudioStyle.cpp
         studio/StudioIcons.cpp
+        studio/EntityOps.cpp
+        studio/StudioRibbon.cpp
+        studio/FileBrowse.cpp
         studio/PluginChrome.cpp
         studio/CommandPalette.cpp
         studio/MathExpressionPopup.cpp
@@ -717,9 +789,14 @@ if(ENGINE_BUILD_STUDIO)
         studio/panels/ScriptEditorPanel.cpp
         studio/panels/ColorTextEditBackend.cpp
         studio/panels/ColorTextEditBackendText.cpp
+        studio/panels/ColorTextEditBackendNav.cpp
+        studio/panels/LuauSymbolIndex.cpp
         studio/RuntimeShaderCompiler.cpp
         studio/ShaderGraph.cpp
         studio/ShaderGraphCodegen.cpp
+        studio/SurfaceGraphMaterials.cpp
+        studio/VisualScript.cpp
+        studio/VisualScriptCompiler.cpp
         studio/ParticleComputeGraph.cpp
         studio/ParticleComputeCodegen.cpp
         studio/panels/StatsPanel.cpp
@@ -738,6 +815,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/PrefabPlugin.cpp
         studio/plugins/ModelImporterPlugin.cpp
         studio/plugins/TexturePreviewPlugin.cpp
+        studio/plugins/AudioMixerPlugin.cpp
         studio/plugins/AudioPreviewPlugin.cpp
         studio/PluginManifest.cpp
         studio/LocalPluginDirectory.cpp
@@ -760,6 +838,9 @@ if(ENGINE_BUILD_STUDIO)
         studio/plugins/PublishingPanel.cpp
         studio/plugins/LightingToolsPlugin.cpp
         studio/plugins/ShaderGraphPlugin.cpp
+        studio/plugins/VisualScriptPlugin.cpp
+        studio/plugins/ResourcesPlugin.cpp
+        studio/plugins/WorldStreamingPlugin.cpp
         studio/plugins/CreatorConsolePlugin.cpp
         studio/plugins/TimelineEditorPlugin.cpp
         studio/plugins/MovieModePlugin.cpp
@@ -876,6 +957,23 @@ if(ENGINE_BUILD_STUDIO)
     # Studio dlopen()s this at startup; keep it in lockstep with the headers.
     add_dependencies(studio sample_studio_tool_plugin)
     add_dependencies(kronos_studio sample_studio_tool_plugin)
+    # native_plugins/SampleCPlugin.c: the example for the C plugin API.
+    add_library(sample_c_plugin SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../../native_plugins/SampleCPlugin.c)
+    target_include_directories(sample_c_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(sample_c_plugin PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "SampleCPlugin"
+        C_STANDARD 99
+        C_VISIBILITY_PRESET hidden
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../native_plugins"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../native_plugins"
+    )
+    foreach(_app studio kronos_studio kronos_3d_maker kronos_movie_maker kronos_audio)
+        add_dependencies(${_app} sample_c_plugin)
+        if(TARGET kronos_plugin_sandbox)
+            add_dependencies(${_app} kronos_plugin_sandbox)
+        endif()
+    endforeach()
     add_dependencies(kronos_3d_maker sample_studio_tool_plugin)
     add_dependencies(kronos_movie_maker sample_studio_tool_plugin)
     add_dependencies(kronos_audio sample_studio_tool_plugin)
@@ -910,6 +1008,9 @@ if(ENGINE_BUILD_RUNTIME OR ENGINE_BUILD_STUDIO)
     endif()
     if(ENGINE_BUILD_STUDIO)
         list(APPEND _kronos_install_targets ${KRONOS_STUDIO_TARGETS})
+        if(TARGET kronos_plugin_sandbox)
+            list(APPEND _kronos_install_targets kronos_plugin_sandbox)
+        endif()
     endif()
 
     if(WIN32)

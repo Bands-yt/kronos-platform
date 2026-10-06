@@ -46,6 +46,8 @@ cp "${BUILD_DIR}/src/studio" "${OUT_DIR}/"
 for bin in kronos_studio kronos_3d_maker kronos_movie_maker kronos_audio; do
     cp "${BUILD_DIR}/src/${bin}" "${OUT_DIR}/"
 done
+# Runs third-party plugins in their own locked-down process.
+[ -x "${BUILD_DIR}/src/kronos_plugin_sandbox" ] && cp "${BUILD_DIR}/src/kronos_plugin_sandbox" "${OUT_DIR}/"
 
 # The real test binary -- a tester can run it locally (no GPU/window
 # needed, see docs/QUICKSTART.md's own "Test" section) as independent

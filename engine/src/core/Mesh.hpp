@@ -99,6 +99,10 @@ public:
     [[nodiscard]] bool uploadFromHost(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
                                        const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
     void destroy(VmaAllocator allocator);
+    // Copies the GPU buffers back (one blocking transfer). Used to build
+    // static batches from meshes that only live on the GPU.
+    [[nodiscard]] bool downloadToHost(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                                      std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) const;
 
     [[nodiscard]] VkBuffer vertexBuffer() const { return vertexBuffer_; }
     [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_; }
@@ -209,6 +213,8 @@ private:
 class MeshLibrary {
 public:
     uint32_t registerMesh(Mesh mesh);
+    // nullptr for unknown handles and for slots with no GPU buffers yet
+    // (reserved by the resource layer, or a failed import).
     [[nodiscard]] const Mesh* get(uint32_t handle) const;
 
     // Destroys the GPU buffers currently at `handle` and replaces them
@@ -220,6 +226,9 @@ public:
     // needs "replace the mesh at a stable handle" today, but the
     // operation is generic, not terrain-specific.
     void replaceMesh(uint32_t handle, Mesh newMesh, VmaAllocator allocator);
+    // Frees the buffers but keeps the handle reserved; get() then returns
+    // nullptr, which every draw path already skips.
+    void destroyMesh(uint32_t handle, VmaAllocator allocator);
 
     void destroyAll(VmaAllocator allocator);
 

@@ -294,6 +294,143 @@ void drawIcon(ImDrawList* drawList, Icon icon, ImVec2 center, float size, ImU32 
             drawArrowHead(drawList, ImVec2(center.x + r * 0.9f, center.y + r * 0.1f), ImVec2(1.0f, 0.0f), r * 0.3f, r * 0.22f, color);
             break;
         }
+        case Icon::Select: {
+            const ImVec2 pts[7] = {{center.x - r * 0.55f, center.y - r * 0.85f}, {center.x + r * 0.55f, center.y + r * 0.15f},
+                                   {center.x + r * 0.02f, center.y + r * 0.2f},  {center.x + r * 0.32f, center.y + r * 0.82f},
+                                   {center.x + r * 0.08f, center.y + r * 0.92f}, {center.x - r * 0.2f, center.y + r * 0.32f},
+                                   {center.x - r * 0.55f, center.y + r * 0.62f}};
+            drawList->AddConcavePolyFilled(pts, 7, color);
+            break;
+        }
+        case Icon::Part:
+        case Icon::Anchor: {
+            const float s = r * 0.62f;
+            const ImVec2 top(center.x, center.y - s), right(center.x + s * 0.95f, center.y - s * 0.45f),
+                left(center.x - s * 0.95f, center.y - s * 0.45f), mid(center.x, center.y + s * 0.1f),
+                rightB(center.x + s * 0.95f, center.y + s * 0.55f), leftB(center.x - s * 0.95f, center.y + s * 0.55f),
+                bottom(center.x, center.y + s * 1.1f);
+            const ImU32 faded = (color & ~IM_COL32_A_MASK) | (((color >> IM_COL32_A_SHIFT) & 0xFF) * 3 / 5) << IM_COL32_A_SHIFT;
+            const ImU32 dim = (color & ~IM_COL32_A_MASK) | (((color >> IM_COL32_A_SHIFT) & 0xFF) * 2 / 5) << IM_COL32_A_SHIFT;
+            drawList->AddQuadFilled(top, right, mid, left, color);
+            drawList->AddQuadFilled(left, mid, bottom, leftB, faded);
+            drawList->AddQuadFilled(mid, right, rightB, bottom, dim);
+            if (icon == Icon::Anchor) {
+                const ImVec2 pinTop(center.x + r * 0.55f, center.y - r * 0.95f);
+                drawList->AddLine(pinTop, ImVec2(pinTop.x, pinTop.y + r * 0.7f), color, thickness);
+                drawList->AddCircleFilled(pinTop, thickness * 1.6f, color);
+            }
+            break;
+        }
+        case Icon::Copy:
+        case Icon::Duplicate: {
+            const float w = r * 0.55f, h = r * 0.7f;
+            const ImVec2 back(center.x - r * 0.2f, center.y - r * 0.2f), front(center.x + r * 0.2f, center.y + r * 0.2f);
+            drawList->AddRect(ImVec2(back.x - w, back.y - h), ImVec2(back.x + w, back.y + h), color, 2.0f, 0, thickness * 0.8f);
+            drawList->AddRectFilled(ImVec2(front.x - w, front.y - h), ImVec2(front.x + w, front.y + h), color, 2.0f);
+            if (icon == Icon::Duplicate) {
+                const ImU32 bg = IM_COL32(30, 30, 34, 255);
+                drawList->AddLine(ImVec2(front.x - w * 0.5f, front.y), ImVec2(front.x + w * 0.5f, front.y), bg, thickness);
+                drawList->AddLine(ImVec2(front.x, front.y - w * 0.5f), ImVec2(front.x, front.y + w * 0.5f), bg, thickness);
+            }
+            break;
+        }
+        case Icon::Paste: {
+            drawList->AddRect(ImVec2(center.x - r * 0.6f, center.y - r * 0.7f), ImVec2(center.x + r * 0.6f, center.y + r * 0.9f),
+                              color, 2.0f, 0, thickness);
+            drawList->AddRectFilled(ImVec2(center.x - r * 0.3f, center.y - r * 0.9f), ImVec2(center.x + r * 0.3f, center.y - r * 0.55f),
+                                    color, 1.5f);
+            drawList->AddLine(ImVec2(center.x - r * 0.3f, center.y), ImVec2(center.x + r * 0.3f, center.y), color, thickness * 0.8f);
+            drawList->AddLine(ImVec2(center.x - r * 0.3f, center.y + r * 0.4f), ImVec2(center.x + r * 0.2f, center.y + r * 0.4f), color,
+                              thickness * 0.8f);
+            break;
+        }
+        case Icon::Delete: {
+            drawList->AddLine(ImVec2(center.x - r * 0.75f, center.y - r * 0.55f), ImVec2(center.x + r * 0.75f, center.y - r * 0.55f), color,
+                              thickness);
+            drawList->AddRect(ImVec2(center.x - r * 0.25f, center.y - r * 0.85f), ImVec2(center.x + r * 0.25f, center.y - r * 0.55f), color,
+                              1.0f, 0, thickness * 0.8f);
+            const ImVec2 pts[4] = {{center.x - r * 0.55f, center.y - r * 0.4f}, {center.x + r * 0.55f, center.y - r * 0.4f},
+                                   {center.x + r * 0.42f, center.y + r * 0.9f}, {center.x - r * 0.42f, center.y + r * 0.9f}};
+            drawList->AddPolyline(pts, 4, color, ImDrawFlags_Closed, thickness);
+            drawList->AddLine(ImVec2(center.x, center.y - r * 0.2f), ImVec2(center.x, center.y + r * 0.7f), color, thickness * 0.7f);
+            break;
+        }
+        case Icon::Group: {
+            drawList->AddRect(ImVec2(center.x - r * 0.85f, center.y - r * 0.75f), ImVec2(center.x + r * 0.85f, center.y + r * 0.75f), color,
+                              3.0f, 0, thickness * 0.7f);
+            drawList->AddRectFilled(ImVec2(center.x - r * 0.55f, center.y - r * 0.45f), ImVec2(center.x - r * 0.05f, center.y + r * 0.05f),
+                                    color, 1.5f);
+            drawList->AddRectFilled(ImVec2(center.x + r * 0.05f, center.y - r * 0.05f), ImVec2(center.x + r * 0.55f, center.y + r * 0.45f),
+                                    color, 1.5f);
+            break;
+        }
+        case Icon::Color: {
+            const ImU32 swatches[4] = {IM_COL32(235, 87, 87, 255), IM_COL32(242, 201, 76, 255), IM_COL32(39, 174, 96, 255),
+                                       IM_COL32(47, 128, 237, 255)};
+            for (int i = 0; i < 4; ++i) {
+                const float a = kPi * 0.25f + static_cast<float>(i) * kPi * 0.5f;
+                drawList->AddCircleFilled(ImVec2(center.x + std::cos(a) * r * 0.42f, center.y + std::sin(a) * r * 0.42f), r * 0.36f,
+                                          swatches[i]);
+            }
+            break;
+        }
+        case Icon::Stop: {
+            drawList->AddRectFilled(ImVec2(center.x - r * 0.58f, center.y - r * 0.58f), ImVec2(center.x + r * 0.58f, center.y + r * 0.58f),
+                                    color, 2.0f);
+            break;
+        }
+        case Icon::Focus: {
+            const float a = r * 0.8f, l = r * 0.35f;
+            const ImVec2 corners[4] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+            for (const ImVec2& c : corners) {
+                const ImVec2 p(center.x + c.x * a, center.y + c.y * a);
+                drawList->AddLine(p, ImVec2(p.x - c.x * l, p.y), color, thickness);
+                drawList->AddLine(p, ImVec2(p.x, p.y - c.y * l), color, thickness);
+            }
+            drawList->AddCircleFilled(center, r * 0.22f, color);
+            break;
+        }
+        case Icon::Grid: {
+            for (int i = 0; i < 4; ++i) {
+                const float t = -r * 0.75f + static_cast<float>(i) * r * 0.5f;
+                drawList->AddLine(ImVec2(center.x + t, center.y - r * 0.75f), ImVec2(center.x + t, center.y + r * 0.75f), color,
+                                  thickness * 0.7f);
+                drawList->AddLine(ImVec2(center.x - r * 0.75f, center.y + t), ImVec2(center.x + r * 0.75f, center.y + t), color,
+                                  thickness * 0.7f);
+            }
+            break;
+        }
+        case Icon::Import: {
+            drawList->AddLine(ImVec2(center.x, center.y - r * 0.85f), ImVec2(center.x, center.y + r * 0.15f), color, thickness);
+            drawArrowHead(drawList, ImVec2(center.x, center.y + r * 0.35f), ImVec2(0.0f, 1.0f), r * 0.4f, r * 0.32f, color);
+            const ImVec2 tray[4] = {{center.x - r * 0.8f, center.y + r * 0.2f}, {center.x - r * 0.8f, center.y + r * 0.8f},
+                                    {center.x + r * 0.8f, center.y + r * 0.8f}, {center.x + r * 0.8f, center.y + r * 0.2f}};
+            drawList->AddPolyline(tray, 4, color, ImDrawFlags_None, thickness);
+            break;
+        }
+        case Icon::Layout: {
+            const ImVec2 mn(center.x - r * 0.85f, center.y - r * 0.7f), mx(center.x + r * 0.85f, center.y + r * 0.7f);
+            drawList->AddRect(mn, mx, color, 2.0f, 0, thickness * 0.8f);
+            drawList->AddLine(ImVec2(mn.x + r * 0.55f, mn.y), ImVec2(mn.x + r * 0.55f, mx.y), color, thickness * 0.8f);
+            drawList->AddLine(ImVec2(mn.x + r * 0.55f, center.y + r * 0.2f), ImVec2(mx.x, center.y + r * 0.2f), color, thickness * 0.8f);
+            break;
+        }
+        case Icon::Gauge: {
+            drawList->PathArcTo(ImVec2(center.x, center.y + r * 0.3f), r * 0.8f, kPi, kPi * 2.0f, 16);
+            drawList->PathStroke(color, ImDrawFlags_None, thickness);
+            drawList->AddLine(ImVec2(center.x, center.y + r * 0.3f), ImVec2(center.x + r * 0.45f, center.y - r * 0.25f), color, thickness);
+            drawList->AddCircleFilled(ImVec2(center.x, center.y + r * 0.3f), thickness * 1.3f, color);
+            break;
+        }
+        case Icon::Eye: {
+            for (int side = -1; side <= 1; side += 2) {
+                drawList->PathArcTo(ImVec2(center.x, center.y - side * r * 0.55f), r * 1.0f, side > 0 ? kPi * 0.22f : kPi * 1.22f,
+                                    side > 0 ? kPi * 0.78f : kPi * 1.78f, 12);
+                drawList->PathStroke(color, ImDrawFlags_None, thickness);
+            }
+            drawList->AddCircleFilled(center, r * 0.28f, color);
+            break;
+        }
     }
 }
 

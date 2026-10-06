@@ -71,6 +71,8 @@ jobs:
             exit 1
           }
           Copy-Item "$vcpkgBin\*.dll" "installer\dist\" -Force
+          & "$env:GITHUB_WORKSPACE\scripts\windows\copy-msvc-runtime.ps1" -Destination "installer\dist"
+          if ($LASTEXITCODE) { exit 1 }
 
       # installer/ is its own, separate CMake project (KronosBootstrapper.exe
       # -- the real kronos:// URI handler build_installer.iss registers --

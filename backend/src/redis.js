@@ -17,10 +17,15 @@ redis.on('error', (err) => {
 // of its own rather than sharing `redis` above, which every request-path
 // route (heartbeats, rate limits, player counts) still needs to keep
 // using normally.
-export const redisSubscriber = new Redis(config.redisUrl, { maxRetriesPerRequest: 2, lazyConnect: false });
+export const redisSubscriber = new Redis(config.redisUrl, { maxRetriesPerRequest: 2, lazyConnect: true });
 redisSubscriber.on('error', (err) => {
   console.error('[redis:sub] %s', err.message);
 });
+
+export function closeRedis() {
+  redis.disconnect();
+  redisSubscriber.disconnect();
+}
 
 export const keys = {
   serverHeartbeat: (serverKey) => `srv:hb:${serverKey}`,

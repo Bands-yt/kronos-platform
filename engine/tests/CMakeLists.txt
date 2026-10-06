@@ -43,14 +43,17 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ScriptPhysicsPreviewApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/ScriptedPlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/PhysicsPreviewPlugin.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/AudioMixerPlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/MovieModePlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/ModelingModePlugin.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/FileBrowse.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/PluginChrome.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UITheme.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UIWidgets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/Notification.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/EntityClassification.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/StudioIcons.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/EntityOps.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/ExplorerPanel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/InspectorPanel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/MathExpressionPopup.cpp
@@ -61,9 +64,13 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/RuntimeShaderCompiler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ShaderGraph.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ShaderGraphCodegen.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/SurfaceGraphMaterials.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/VisualScript.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/VisualScriptCompiler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticleComputeGraph.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/ParticleComputeCodegen.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/ColorTextEditBackendText.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/LuauSymbolIndex.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine_core imgui::imgui)
 if(TARGET kronos::shaderc)
@@ -133,11 +140,55 @@ target_compile_features(hotreload_counter_module_v2 PRIVATE cxx_std_20)
 # already establish for "a test needs to find a real build output/asset
 # by absolute path, not a guess at the working directory it happens to
 # be run from."
+foreach(stateful_module A B C)
+    add_library(hotreload_stateful_${stateful_module} SHARED hotreload_fixtures/StatefulModule${stateful_module}.cpp)
+    target_include_directories(hotreload_stateful_${stateful_module} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(hotreload_stateful_${stateful_module} PRIVATE EnTT::EnTT glm::glm)
+    target_compile_features(hotreload_stateful_${stateful_module} PRIVATE cxx_std_20)
+    add_dependencies(engine_tests hotreload_stateful_${stateful_module})
+endforeach()
+
 add_dependencies(engine_tests hotreload_counter_module_v1 hotreload_counter_module_v2)
+
+# C plugins for the stable plugin API (plugin/kronos_plugin.h), built as C.
+set(_kronos_test_plugins
+    "test_plugin|"
+    "test_plugin_v2|PLUGIN_ID=\"test.plugin.v2\",IMPORTER_VERSION=2,OUTPUT_PREFIX=\"V2:\""
+    "test_plugin_dup|PLUGIN_ID=\"test.plugin.dup\""
+    "test_plugin_limited|PLUGIN_ID=\"test.plugin.limited\",PLUGIN_CAPS=KRONOS_CAP_EDITOR_PANELS|KRONOS_CAP_SCENE_READ"
+    "test_plugin_future|PLUGIN_ID=\"test.plugin.future\",PLUGIN_API_MAJOR=2"
+)
+foreach(_entry IN LISTS _kronos_test_plugins)
+    string(FIND "${_entry}" "|" _bar)
+    string(SUBSTRING "${_entry}" 0 ${_bar} _name)
+    math(EXPR _rest "${_bar} + 1")
+    string(SUBSTRING "${_entry}" ${_rest} -1 _defs)
+    string(REPLACE "," ";" _defs "${_defs}")
+    add_library(${_name} SHARED plugin_fixtures/TestPlugin.c)
+    target_include_directories(${_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    set_target_properties(${_name} PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
+    if(_defs)
+        target_compile_definitions(${_name} PRIVATE ${_defs})
+    endif()
+    add_dependencies(engine_tests ${_name})
+    string(TOUPPER "${_name}" _upper)
+    target_compile_definitions(engine_tests PRIVATE ${_upper}_PATH="$<TARGET_FILE:${_name}>")
+endforeach()
+if(TARGET sample_c_plugin)
+    add_dependencies(engine_tests sample_c_plugin)
+    target_compile_definitions(engine_tests PRIVATE SAMPLE_C_PLUGIN_PATH="$<TARGET_FILE:sample_c_plugin>")
+endif()
+if(TARGET kronos_plugin_sandbox)
+    add_dependencies(engine_tests kronos_plugin_sandbox)
+    target_compile_definitions(engine_tests PRIVATE KRONOS_PLUGIN_SANDBOX_PATH="$<TARGET_FILE:kronos_plugin_sandbox>")
+endif()
 
 target_compile_definitions(engine_tests PRIVATE
     HOTRELOAD_MODULE_V1_PATH="$<TARGET_FILE:hotreload_counter_module_v1>"
     HOTRELOAD_MODULE_V2_PATH="$<TARGET_FILE:hotreload_counter_module_v2>"
+    HOTRELOAD_STATEFUL_A_PATH="$<TARGET_FILE:hotreload_stateful_A>"
+    HOTRELOAD_STATEFUL_B_PATH="$<TARGET_FILE:hotreload_stateful_B>"
+    HOTRELOAD_STATEFUL_C_PATH="$<TARGET_FILE:hotreload_stateful_C>"
 )
 # 2-frame lossless fixture (red @ 0s, blue @ 1s, 64x64); only meaningful
 # when the decoder is built with FFmpeg.

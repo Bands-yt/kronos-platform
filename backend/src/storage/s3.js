@@ -40,11 +40,13 @@ export async function createPresignedUploadUrl(key) {
   return getSignedUrl(s3Client(), command, { expiresIn: config.packageUploadTtlSeconds });
 }
 
-export async function createPresignedDownloadUrl(key) {
+export async function createPresignedDownloadUrl(key, { contentType } = {}) {
   // A public CDN needs no signature at all -- a presigned URL in front
   // of one would just be a link nobody ever needed to expire.
   if (config.s3PublicBaseUrl) return `${config.s3PublicBaseUrl}/${key}`;
-  const command = new GetObjectCommand({ Bucket: config.s3Bucket, Key: key });
+  const command = new GetObjectCommand({
+    Bucket: config.s3Bucket, Key: key, ...(contentType ? { ResponseContentType: contentType } : {}),
+  });
   return getSignedUrl(s3Client(), command, { expiresIn: config.packageDownloadTtlSeconds });
 }
 

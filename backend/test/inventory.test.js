@@ -6,14 +6,17 @@ import crypto from 'node:crypto';
 import test, { after, before } from 'node:test';
 
 import { createApp } from '../src/server.js';
+import { config } from '../src/config.js';
 import { pool, query } from '../src/db.js';
-import { redis } from '../src/redis.js';
+import { closeRedis, redis } from '../src/redis.js';
 import { setEmailTransport } from '../src/email/mailer.js';
 
 let server;
 let baseUrl;
 
 before(async () => {
+  // Written before catalog review existed; review has its own tests.
+  config.gameReviewRequired = false;
   setEmailTransport(async () => {});
   server = createApp().listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -23,7 +26,7 @@ before(async () => {
 after(async () => {
   server.close();
   await pool.end();
-  redis.disconnect();
+  closeRedis();
 });
 
 async function api(method, path, { body, token } = {}) {

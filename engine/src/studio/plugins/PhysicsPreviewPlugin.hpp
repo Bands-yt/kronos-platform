@@ -6,8 +6,14 @@
 
 #include <glm/glm.hpp>
 
+#include "core/AudioMixer.hpp"
+#include "core/Components.hpp"
 #include "core/Physics.hpp"
+#include "core/RuntimeAnimationPlayer.hpp"
+#include "core/ScriptAudioApi.hpp"
+#include "core/ScriptWorldApi.hpp"
 #include "core/Scripting.hpp"
+#include "studio/EntityOps.hpp"
 #include "studio/IStudioPlugin.hpp"
 #include "studio/ScriptPhysicsPreviewApi.hpp"
 
@@ -68,6 +74,15 @@ public:
     void play(core::ECS& ecs);
     void stop(core::ECS& ecs);
 
+    // Attached to every Play session's VM; while it holds a script at a
+    // breakpoint the whole simulation is frozen.
+    void setScriptDebugger(core::ScriptDebugger* debugger) { scriptDebugger_ = debugger; }
+    // Unit cube used by world.spawnDynamicBox().
+    void setSpawnBoxMesh(uint32_t meshHandle) { spawnBoxMesh_ = meshHandle; }
+    // Sounds play during Play, and scripts get the `audio` table.
+    void setAudio(core::Audio* audio) { audio_ = audio; }
+    [[nodiscard]] bool scriptDebugPaused() const { return playing_ && scripting_.debugPaused(); }
+
     // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
     // Luau Studio API Bindings, "deterministic physics step triggers"):
     // real, explicit pause -- update()'s own per-frame auto-step (see its
@@ -123,6 +138,30 @@ private:
     // play() call, matching scripting_'s own "fresh VM every Play" real
     // reset -- see ScriptPhysicsPreviewApi.hpp's own header comment.
     std::unique_ptr<ScriptPhysicsPreviewApi> scriptPhysicsPreviewApi_;
+    core::RuntimeAnimationPlayer animationPlayer_;
+    std::unique_ptr<core::ScriptWorldApi> scriptWorldApi_;
+    core::Audio* audio_ = nullptr;
+    std::unique_ptr<core::ScriptAudioApi> scriptAudioApi_;
+    core::MixerConfig mixerBeforePlay_;
+    uint32_t spawnBoxMesh_ = 0xFFFFFFFFu;
+
+    // Scene state from the moment Play started; Stop puts it back so
+    // scripts and physics never leave lasting edits.
+    struct PlaySnapshot {
+        struct Root {
+            std::vector<core::EntityId> members;
+            EntitySnapshot snapshot;
+        };
+        std::vector<core::EntityId> entities;
+        std::vector<std::pair<core::EntityId, core::Transform>> transforms;
+        std::vector<std::pair<core::EntityId, core::Renderable>> renderables;
+        std::vector<std::pair<core::EntityId, core::Light>> lights;
+        std::vector<Root> roots;
+    };
+    PlaySnapshot playSnapshot_;
+    void captureScene(core::ECS& ecs);
+    void restoreScene(core::ECS& ecs);
+    core::ScriptDebugger* scriptDebugger_ = nullptr;
     bool physicsInitialized_ = false;
     bool playing_ = false;
     bool paused_ = false;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "core/NativePluginManager.hpp"
 #include "studio/IStudioPlugin.hpp"
@@ -43,7 +44,14 @@ public:
                    const std::vector<core::EntityId>& selectedEntities) override;
     void drawExtraMenuItems() override;
 
+    // Drops the renderer callbacks this plugin registered; call while its
+    // library is still loaded (destroying them runs the plugin's code).
+    void onPluginUnloading();
+    [[nodiscard]] const std::string& pluginName() const { return pluginName_; }
+
 private:
+    void releaseRendererCallbacks();
+
     // Real re-resolve of this plugin's current IStudioNativePluginExtension
     // (nullptr if unloaded). Whenever the resolved pointer differs from
     // the last one seen (first attach, or a fresh instance after a
@@ -57,6 +65,7 @@ private:
     core::NativePluginManager& manager_;
     core::Renderer& renderer_;
     IStudioNativePluginExtension* lastSeen_ = nullptr;
+    std::vector<std::string> ownedOverlays_;
     // Own copies (not the extension's raw const char*) so name()/category()
     // stay valid -- and keep showing this plugin's real menu entry -- even
     // while the underlying plugin is momentarily unloaded.
