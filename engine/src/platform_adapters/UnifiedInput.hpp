@@ -79,6 +79,9 @@ public:
     // Shift lock: the cursor is captured and the character faces where
     // the camera looks. Set by whoever owns the toggle (the Player shell).
     void setShiftLock(bool enabled) { shiftLock_ = enabled; }
+    // While blocked (e.g. the user is typing in a text box) every action
+    // reads as released and the mouse doesn't move the camera.
+    void setBlocked(bool blocked) { blocked_ = blocked; }
     [[nodiscard]] bool isShiftLocked() const { return shiftLock_; }
     void addMouseWheel(float wheel) { pendingWheel_ += wheel; }
     // Wheel movement since the last update(); 0 while over a menu.
@@ -122,6 +125,7 @@ private:
     bool orbitButtonWasDown_ = false;
     glm::ivec2 orbitStartCursor_{0};
     bool shiftLock_ = false;
+    bool blocked_ = false;
     float pendingWheel_ = 0.0f;
     float mouseWheel_ = 0.0f;
 

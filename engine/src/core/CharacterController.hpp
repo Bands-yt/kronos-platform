@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include <vector>
 
 #include "core/AvatarController.hpp"
@@ -153,6 +155,9 @@ public:
     void setInitialCameraAngles(float yawDegrees, float pitchDegrees) {
         cameraYawDegrees_ = yawDegrees;
         cameraPitchDegrees_ = pitchDegrees;
+        // Start with the character's back to the camera, like Roblox.
+        const float yawRadians = glm::radians(yawDegrees);
+        facingYawRadians_ = std::atan2(std::cos(yawRadians), std::sin(yawRadians));
     }
 
     // Reads input, moves the character (relative to camera yaw), sets

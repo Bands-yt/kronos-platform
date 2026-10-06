@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -81,6 +82,12 @@ public:
     void setSpawnBoxMesh(uint32_t meshHandle) { spawnBoxMesh_ = meshHandle; }
     // Sounds play during Play, and scripts get the `audio` table.
     void setAudio(core::Audio* audio) { audio_ = audio; }
+    // Called once Play has set the scene up, and as Stop begins (before
+    // the scene is restored). Studio spawns and removes the player here.
+    void setPlayHooks(std::function<void(core::ECS&, core::Physics&)> onPlay, std::function<void(core::ECS&)> onStop) {
+        onPlay_ = std::move(onPlay);
+        onStop_ = std::move(onStop);
+    }
     [[nodiscard]] bool scriptDebugPaused() const { return playing_ && scripting_.debugPaused(); }
 
     // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
@@ -162,6 +169,8 @@ private:
     void captureScene(core::ECS& ecs);
     void restoreScene(core::ECS& ecs);
     core::ScriptDebugger* scriptDebugger_ = nullptr;
+    std::function<void(core::ECS&, core::Physics&)> onPlay_;
+    std::function<void(core::ECS&)> onStop_;
     bool physicsInitialized_ = false;
     bool playing_ = false;
     bool paused_ = false;

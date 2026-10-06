@@ -1,0 +1,28 @@
+name: Idea or request
+description: Something you'd like Kronos to have or do better.
+title: "[Idea] "
+labels: ["idea"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What's your idea?
+      placeholder: "Let me pick the colour of each part from a palette, like in Roblox Studio."
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would it help?
+      description: What were you trying to make or do when you wanted this?
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which part of Kronos?
+      options:
+        - Kronos Player
+        - Kronos Studio
+        - Scripting (Luau)
+        - Avatar
+        - Website or downloads
+        - Something else

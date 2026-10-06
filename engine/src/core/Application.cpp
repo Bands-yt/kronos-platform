@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 
+#include "core/PlayerAvatar.hpp"
 #include "core/RenderResourceLoaders.hpp"
 
 #include "core/ScriptChatApi.hpp"
@@ -2957,130 +2958,18 @@ bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skin
         return false;
     }
 
-    Skeleton skeleton = applyBodyProportionsToSkeleton(buildHumanoidSkeleton(), bodyProportions);
-    std::string spawnError;
-    if (!spawnRiggedAvatar(ecs_, skeleton, loadout, catalogueIndex, riggedMeshLibrary_, renderer_.allocator(),
-                            renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), skinnedAvatarEntities_,
-                            spawnError, skinTone, headShape, bodyProportions)) {
-        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnRiggedAvatar() failed: %s\n",
-                     spawnError.c_str());
+    PlayerAvatarLook look;
+    look.skinTone = skinTone;
+    look.headShape = headShape;
+    look.bodyProportions = bodyProportions;
+    look.loadout = loadout;
+    look.animationOverrides = animationOverrides;
+    look.clothingFit = clothingFit;
+    avatarController_ = spawnPlayerAvatarRig(ecs_, renderer_, riggedMeshLibrary_, look, catalogueIndex, skinnedAvatarEntities_);
+    if (!avatarController_) {
         skinnedAvatarEntities_.clear();
         return false;
     }
-
-    // Kronos ("Avatar 2.0" -- "Facial System" -- "Ensure in-game avatars
-    // update instantly when equipping new items"... and, more directly,
-    // "the actual playable avatar has a real face"): spawns the five
-    // real facial feature entities and folds them into the exact same
-    // skinnedAvatarEntities_ list AvatarController::tick() already
-    // drives every frame -- one real update loop, not a second one. A
-    // real, honest, logged-but-non-fatal degrade if this fails (same
-    // "the avatar itself is still real and already spawned" precedent
-    // the animation-clip loading loop just below already establishes) --
-    // a faceless-but-otherwise-correct avatar is still real and playable.
-    std::vector<EntityId> faceEntities;
-    std::string faceError;
-    if (spawnAvatarFace(ecs_, skeleton, skinTone, riggedMeshLibrary_, renderer_.allocator(), renderer_.device(),
-                         renderer_.commandPool(), renderer_.graphicsQueue(), faceEntities, faceError)) {
-        skinnedAvatarEntities_.insert(skinnedAvatarEntities_.end(), faceEntities.begin(), faceEntities.end());
-    } else {
-        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarFace() failed: %s\n",
-                     faceError.c_str());
-    }
-
-    // Kronos ("Avatar 2.0" -- "Clothing Meshes" -- "Runtime Integration"):
-    // real, same "fold into the one real skinnedAvatarEntities_ list"
-    // pattern spawnAvatarFace() just established above. `localProfile_`
-    // isn't reachable from here (Application has no real identity
-    // concept of its own, by design -- see core::LocalProfile's own
-    // "engine_runtime/Studio each own their own real profile" scope), so
-    // the real fit choice is threaded in as a parameter instead, same
-    // "caller resolves from its own real, persisted state" precedent
-    // skinTone/headShape/bodyProportions/loadout already establish for
-    // this exact function.
-    std::vector<EntityId> clothingEntities;
-    std::string clothingError;
-    if (spawnAvatarClothing(ecs_, skeleton, loadout, catalogueIndex, bodyProportions, clothingFit, riggedMeshLibrary_,
-                             renderer_.allocator(), renderer_.device(), renderer_.commandPool(),
-                             renderer_.graphicsQueue(), clothingEntities, clothingError)) {
-        skinnedAvatarEntities_.insert(skinnedAvatarEntities_.end(), clothingEntities.begin(), clothingEntities.end());
-    } else {
-        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarClothing() failed: %s\n",
-                     clothingError.c_str());
-    }
-
-    // Kronos ("Avatar 2.0" -- "Accessory Rigging"): real, same
-    // fold-into-skinnedAvatarEntities_ pattern as face/clothing above.
-    std::vector<EntityId> accessoryEntities;
-    std::string accessoryError;
-    if (spawnAvatarAccessories(ecs_, skeleton, loadout, catalogueIndex, riggedMeshLibrary_, renderer_.allocator(),
-                                renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
-                                accessoryEntities, accessoryError)) {
-        skinnedAvatarEntities_.insert(skinnedAvatarEntities_.end(), accessoryEntities.begin(), accessoryEntities.end());
-    } else {
-        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarAccessories() failed: %s\n",
-                     accessoryError.c_str());
-    }
-
-    // Kronos ("Avatar Visual Silhouette Pass" -- "Head and Hair"): real,
-    // same fold-into-skinnedAvatarEntities_ pattern as face/clothing/
-    // accessories above -- real, honest no-op (empty outHairEntities,
-    // still returns true) if a Hair accessory item is already equipped,
-    // see spawnAvatarDefaultHair()'s own comment.
-    std::vector<EntityId> hairEntities;
-    std::string hairError;
-    if (spawnAvatarDefaultHair(ecs_, skeleton, loadout, kDefaultHairColor, riggedMeshLibrary_, renderer_.allocator(),
-                                renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), hairEntities,
-                                hairError)) {
-        skinnedAvatarEntities_.insert(skinnedAvatarEntities_.end(), hairEntities.begin(), hairEntities.end());
-    } else {
-        std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- spawnAvatarDefaultHair() failed: %s\n",
-                     hairError.c_str());
-    }
-
-    avatarController_ = std::make_unique<AvatarController>(skeleton);
-
-    // Real, shipped clips (engine/assets/animations/*.anim) -- same
-    // packaged-vs-dev-build resolution every other real asset path in
-    // this codebase uses. A missing clip is a real, honest partial
-    // degrade (that locomotion state just holds whatever pose the last
-    // successfully-loaded clip left, per AnimationPlayer's own "finished/
-    // never-started clip holds its pose" behavior) logged to stderr, not
-    // a fatal error -- the avatar itself is still real and already
-    // spawned above.
-    std::string animDir = resolveResourceDir(executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/animations";
-    // Kronos ("Avatar Phase" -- "AvatarEditor: Animation Overrides"):
-    // `overridePath` (non-empty) is tried first; a broken override
-    // real-falls back to the shipped default clip (rather than leaving
-    // this locomotion state with no clip at all), same real, honest
-    // fail-soft discipline the shipped-clip-only path already had.
-    auto loadClip = [&](const char* fileBaseName, void (AvatarController::*setter)(AnimationClip),
-                         const std::string& overridePath) {
-        std::string shippedPath = animDir + "/" + fileBaseName + ".anim";
-        AnimationClip clip;
-        if (!overridePath.empty()) {
-            if (clip.loadFromFile(overridePath)) {
-                (avatarController_.get()->*setter)(std::move(clip));
-                return;
-            }
-            std::fprintf(stderr,
-                         "Application: spawnLocalPlayerAvatar() -- override clip \"%s\" failed to load, falling "
-                         "back to the shipped default.\n",
-                         overridePath.c_str());
-        }
-        if (clip.loadFromFile(shippedPath)) {
-            (avatarController_.get()->*setter)(std::move(clip));
-        } else {
-            std::fprintf(stderr, "Application: spawnLocalPlayerAvatar() -- could not load \"%s\".\n", shippedPath.c_str());
-        }
-    };
-    loadClip("idle", &AvatarController::setIdleClip, animationOverrides.idleClipPath);
-    loadClip("walk", &AvatarController::setWalkClip, animationOverrides.walkClipPath);
-    loadClip("run", &AvatarController::setRunClip, animationOverrides.runClipPath);
-    loadClip("jump_start", &AvatarController::setJumpClip, animationOverrides.jumpStartClipPath);
-    loadClip("jump_air", &AvatarController::setJumpAirClip, animationOverrides.jumpAirClipPath);
-    loadClip("jump_land", &AvatarController::setJumpLandClip, animationOverrides.jumpLandClipPath);
-
     return true;
 }
 

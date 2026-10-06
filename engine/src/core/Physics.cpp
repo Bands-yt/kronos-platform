@@ -427,6 +427,10 @@ void Physics::step(float dt, ECS& ecs) {
     // tuning belongs to the Adaptive Performance Controller (§4.1), not
     // hardcoded here -- this is the bring-up default.
     constexpr float kFixedSubStep = 1.0f / 60.0f;
+    // A long hitch (loading, a debugger pause) slows the world down instead
+    // of asking Jolt for dozens of sub-steps, which can stall its job pool.
+    constexpr float kMaxStep = 6.0f * kFixedSubStep;
+    dt = std::min(dt, kMaxStep);
     int collisionSteps = std::max(1, static_cast<int>(dt / kFixedSubStep + 0.5f));
 
     physicsSystem_->Update(dt, collisionSteps, tempAllocator_.get(), jobSystem_.get());

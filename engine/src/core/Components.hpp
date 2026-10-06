@@ -366,6 +366,12 @@ struct MeshSource {
     std::string path;
 };
 
+// Tags the pieces of a player's avatar spawned for Play in Studio, so the
+// Explorer lists the character once instead of every body part.
+struct PlayerAvatarPart {
+    entt::entity character = entt::null;
+};
+
 // Marks an entity as GPU-skinned -- rendered through
 // core::Renderer::drawSkinnedEntities() (a real, separate draw path from
 // Renderable's, see Renderer.hpp's AuxiliarySceneHandle/skinning

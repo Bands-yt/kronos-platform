@@ -17,6 +17,7 @@
 #include <SDL2/SDL.h>
 
 #include "core/Application.hpp"
+#include "core/PlayerAvatar.hpp"
 #include "core/ConsoleQuickEdit.hpp"
 #include "core/CrashReporter.hpp"
 #include "core/Biome.hpp"
@@ -2600,7 +2601,7 @@ int main(int argc, char** argv) {
             // loadout/animation database -- this lambda has no profile/
             // catalogue access of its own, it just forwards what it's
             // given.
-            glm::vec3 spawnPosition{0.0f, 3.0f, -6.0f};
+            glm::vec3 spawnPosition = engine::core::findPlayerSpawnPosition(app.ecs(), {0.0f, 3.0f, -6.0f});
             if (!app.spawnLocalPlayerAvatar(spawnPosition, skinTone, headShape, bodyProportions, loadout, catalogueIndex,
                                              animationOverrides, clothingFit)) {
                 std::fprintf(stderr, "engine_runtime: spawnLocalPlayerAvatar() failed for a Catalogue game.\n");

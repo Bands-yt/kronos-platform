@@ -72,6 +72,20 @@ hosting). Once in a game the controls work like Roblox:
 
 The camera stops in front of walls and floors instead of going through them.
 
+### Play in Studio
+
+**Play** (Home tab) drops your avatar into the scene, like Roblox's Play
+button: same body as on the Avatar page, same controls as the table
+above, with physics, scripts and sound running. While playing, the
+Explorer lists your character under your display name, and Ctrl is Run
+(so editor shortcuts like Ctrl+S and Ctrl+Z wait until you stop).
+**Stop** removes the avatar, puts every part back where it was and
+returns the editor camera.
+
+**Spawn point:** name a part `SpawnLocation` (or `SpawnPoint`) and players
+appear just above it, in Studio and in the Player. Without one they appear
+at (0, 3, -6).
+
 ### Game Catalogue and the `games/` folder
 
 The Game Catalogue browses real local games under `games/` (a sibling

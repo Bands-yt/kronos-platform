@@ -103,6 +103,7 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
 
     playing_ = true;
     paused_ = false;
+    if (onPlay_) onPlay_(ecs, physics_);
     statusMessage_ = "Playing -- " + std::to_string(attachedEntities_.size()) + " bodies simulating";
     if (skippedMesh > 0) {
         statusMessage_ += " (" + std::to_string(skippedMesh) + " Mesh collider(s) skipped, see README Known Issues)";
@@ -111,6 +112,7 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
 
 void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
     if (!playing_) return;
+    if (onStop_) onStop_(ecs);
     for (core::EntityId entity : attachedEntities_) physics_.detachBody(entity, ecs);
     attachedEntities_.clear();
     recentContacts_.clear();

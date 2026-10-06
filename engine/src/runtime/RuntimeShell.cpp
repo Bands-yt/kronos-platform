@@ -2511,7 +2511,7 @@ void RuntimeShell::drawGameCataloguePanel() {
 }
 
 namespace {
-constexpr const char* kAvatarShopCategoryFilterNames[] = {"Any",   "Head", "Hair",      "Face",           "Torso",
+constexpr const char* kAvatarShopCategoryFilterNames[] = {"All items",   "Head", "Hair",      "Face",           "Torso",
                                                             "Legs",  "Accessory", "LayeredClothing", "Emote",
                                                             "Shoes", "Back", "Bundle"};
 constexpr core::AvatarItemCategory kAvatarShopCategoryFilterValues[] = {
@@ -2602,6 +2602,23 @@ void RuntimeShell::drawAvatarShopPanel() {
 
         ImGui::SameLine();
         ImGui::BeginChild("##avatar_items_card", ImVec2(0.0f, columnHeight), true);
+
+        bool customizeTab = false;
+        if (ImGui::BeginTabBar("##avatar_tabs")) {
+            if (ImGui::BeginTabItem("Customize")) {
+                customizeTab = true;
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Shop")) ImGui::EndTabItem();
+            ImGui::EndTabBar();
+        }
+        if (customizeTab) {
+            drawAvatarCustomizeTab();
+            ImGui::EndChild();
+            ImGui::End();
+            drawAvatarShopDetailPopup();
+            return;
+        }
     }
 
     // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
@@ -2667,16 +2684,19 @@ void RuntimeShell::drawAvatarShopPanel() {
         }
     }
 
-    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::InputTextWithHint("##avatar_shop_search", "Search by name, tag, or creator...", avatarShopSearchText_,
                               sizeof(avatarShopSearchText_));
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::Combo("Category", &avatarShopCategoryFilterIndex_, kAvatarShopCategoryFilterNames,
+    const float halfWidth = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    ImGui::SetNextItemWidth(halfWidth);
+    ImGui::Combo("##avatar_shop_category", &avatarShopCategoryFilterIndex_, kAvatarShopCategoryFilterNames,
                  IM_ARRAYSIZE(kAvatarShopCategoryFilterNames));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Category");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(180.0f);
-    ImGui::Combo("Sort", &avatarShopSortOrderIndex_, kAvatarShopSortNames, IM_ARRAYSIZE(kAvatarShopSortNames));
+    ImGui::SetNextItemWidth(halfWidth);
+    ImGui::Combo("##avatar_shop_sort", &avatarShopSortOrderIndex_, kAvatarShopSortNames,
+                 IM_ARRAYSIZE(kAvatarShopSortNames));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sort by");
 
     core::CatalogueSearchFilter filter;
     if (avatarShopCategoryFilterIndex_ > 0) filter.category = kAvatarShopCategoryFilterValues[avatarShopCategoryFilterIndex_ - 1];
@@ -2746,6 +2766,84 @@ void RuntimeShell::drawAvatarShopPanel() {
     ImGui::End();
 
     drawAvatarShopDetailPopup();
+}
+
+void RuntimeShell::saveAvatarAppearanceChange() {
+    (void)localProfile_.saveToFile(kLocalProfilePath);
+    pushAvatarConfigToBackend();
+    if (homeAvatarPreview_) homeAvatarPreview_->refresh();
+}
+
+void RuntimeShell::drawAvatarCustomizeTab() {
+    ui::sectionHeader("Skin tone");
+    const auto& palette = core::skinTonePalette();
+    for (size_t i = 0; i < palette.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const glm::vec4& c = palette[i].color;
+        const bool selected = localProfile_.skinToneIndex == static_cast<int>(i);
+        if (selected) {
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+        }
+        if (ImGui::ColorButton(palette[i].name, ImVec4(c.x, c.y, c.z, 1.0f),
+                               ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(34.0f, 34.0f))) {
+            localProfile_.skinToneIndex = static_cast<int>(i);
+            saveAvatarAppearanceChange();
+        }
+        if (selected) {
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", palette[i].name);
+        ImGui::PopID();
+        if ((i + 1) % 5 != 0 && i + 1 < palette.size()) ImGui::SameLine();
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ui::sectionHeader("Head");
+    for (core::HeadShape shape : {core::HeadShape::Oval, core::HeadShape::Sphere}) {
+        const int index = static_cast<int>(shape);
+        if (index > 0) ImGui::SameLine();
+        if (ImGui::RadioButton(core::headShapeName(shape), localProfile_.headShapeIndex == index)) {
+            localProfile_.headShapeIndex = index;
+            saveAvatarAppearanceChange();
+        }
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ui::sectionHeader("Body");
+    struct BodySlider {
+        const char* label;
+        float core::LocalProfile::*value;
+    };
+    static constexpr BodySlider kBodySliders[] = {
+        {"Height", &core::LocalProfile::bodyHeight},
+        {"Width", &core::LocalProfile::bodyWidth},
+        {"Arms & legs", &core::LocalProfile::bodyLimbScale},
+        {"Torso", &core::LocalProfile::bodyTorsoLength},
+        {"Shoulders", &core::LocalProfile::bodyShoulderWidth},
+    };
+    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.62f);
+    for (const BodySlider& slider : kBodySliders) {
+        float percent = localProfile_.*slider.value * 100.0f;
+        if (ImGui::SliderFloat(slider.label, &percent, core::kBodyProportionMin * 100.0f,
+                               core::kBodyProportionMax * 100.0f, "%.0f%%")) {
+            localProfile_.*slider.value = core::clampBodyProportionValue(percent / 100.0f);
+        }
+        // Rebuilding the body re-uploads meshes, so wait until the drag ends.
+        if (ImGui::IsItemDeactivatedAfterEdit()) saveAvatarAppearanceChange();
+    }
+    ImGui::PopItemWidth();
+    if (ImGui::Button("Reset body")) {
+        for (const BodySlider& slider : kBodySliders) localProfile_.*slider.value = 1.0f;
+        saveAvatarAppearanceChange();
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(paletteColor(core::kronos_palette::kTextMuted),
+                       "Changes save straight away and show up in every game you play.");
+    ImGui::PopTextWrapPos();
 }
 
 void RuntimeShell::drawAvatarShopDetailPopup() {

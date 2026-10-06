@@ -145,6 +145,7 @@
 #include "core/GameManifest.hpp"
 #include "core/LocalGameDirectory.hpp"
 #include "core/MyGames.hpp"
+#include "core/PlayerAvatar.hpp"
 #include "core/PartCollider.hpp"
 #include "core/MathExpression.hpp"
 #include "core/ProcessLaunch.hpp"
@@ -9969,6 +9970,26 @@ void setTestEnv(const char* name, const std::string& value) {
     if (value.empty()) unsetenv(name);
     else setenv(name, value.c_str(), 1);
 #endif
+}
+
+void testFindPlayerSpawnPosition() {
+    using namespace engine::core;
+    ECS ecs;
+    (void)ecs.createEntity("Ground");
+    const glm::vec3 fallback(0.0f, 3.0f, -6.0f);
+    check(findPlayerSpawnPosition(ecs, fallback) == fallback, "no SpawnLocation -> the default spawn");
+
+    EntityId spawn = ecs.createEntity("SpawnLocation");
+    auto& transform = *ecs.tryGetComponent<Transform>(spawn);
+    transform.position = {4.0f, 2.0f, -3.0f};
+    transform.scale = {6.0f, 0.5f, 6.0f};
+    auto& source = ecs.addComponent<MeshSource>(spawn);
+    source.kind = MeshSourceKind::Box;
+    source.params = {0.5f, 0.5f, 0.5f};
+    const glm::vec3 position = findPlayerSpawnPosition(ecs, fallback);
+    check(std::abs(position.x - 4.0f) < 1e-4f && std::abs(position.z + 3.0f) < 1e-4f,
+          "the player spawns over the SpawnLocation");
+    check(position.y > 2.25f && position.y < 5.0f, "the player spawns just above the SpawnLocation's top");
 }
 
 void testMyGamesSaveAndScan() {
@@ -44931,6 +44952,7 @@ int main() {
     testAnimationPlayerPlaybackRate();
     testAnimationPlayerReversed();
     testMyGamesSaveAndScan();
+    testFindPlayerSpawnPosition();
     testPartColliderFitsAndFollowsScale();
     testAvatarControllerWalkRunHysteresis();
     testAvatarControllerBlendTreeTransitions();

@@ -1,0 +1,64 @@
+name: Bug report
+description: Something crashed, broke or looks wrong.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Kronos! A few details help a lot. Screenshots or a short video are great: drag them into any box below.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, in a sentence or two.
+      placeholder: "When I pressed Play in Studio, the window froze."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we make it happen again?
+      description: The steps you took, if you remember them.
+      placeholder: |
+        1. Open Kronos Studio
+        2. Insert a Part
+        3. Press Play
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which part of Kronos?
+      options:
+        - Kronos Player (playing games, Avatar, Create page)
+        - Kronos Studio (making games)
+        - Download or installer
+        - Website
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Computer
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kronos version
+      description: Shown at the bottom left of the Player (for example v4.1.0-beta).
+  - type: input
+    id: gpu
+    attributes:
+      label: Graphics card (if you know it)
+      placeholder: "NVIDIA RTX 3060, AMD RX 6600, Intel UHD..."
+  - type: textarea
+    id: crash-report
+    attributes:
+      label: Crash report
+      description: If Kronos crashed, it saves a file called `crash_report_<date>.txt` in the folder it was started from. Drag the file here or paste what's in it.

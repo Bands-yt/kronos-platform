@@ -177,6 +177,11 @@ void PreviewScene::reset() {
     orbitDistance_ = 3.0f;
 }
 
+void PreviewScene::frameSubject(glm::vec3 focus, float distance) {
+    focusPoint_ = focus;
+    orbitDistance_ = std::clamp(distance, kMinOrbitDistance, kMaxOrbitDistance);
+}
+
 void PreviewScene::destroy(core::Renderer& renderer, VmaAllocator allocator, VkDevice device) {
     target_.destroy(allocator, device);
     // Unlike StudioApp's own viewportTarget_, a PreviewScene is never

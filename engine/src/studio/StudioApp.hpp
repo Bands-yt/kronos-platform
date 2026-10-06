@@ -31,6 +31,7 @@
 #include "studio/CommandPalette.hpp"
 #include "studio/KronosPluginHost.hpp"
 #include "studio/Notification.hpp"
+#include "studio/PlaySoloPlayer.hpp"
 #include "studio/SurfaceGraphMaterials.hpp"
 #include "studio/OffscreenTarget.hpp"
 #include "studio/PluginManager.hpp"
@@ -557,6 +558,8 @@ private:
     // header comment); this is the real, persisted loadout for the new
     // rigged/skinned Avatar Phase system.
     core::AvatarLoadout localAvatarLoadout_;
+    PlaySoloPlayer playSoloPlayer_;
+    [[nodiscard]] core::PlayerAvatarLook localPlayerLook() const;
     // Kronos ("Moderation Architecture v1", Phase 1): Studio's own real
     // TrustSafetyService instance, distinct from any net::NetworkSession's
     // (Studio isn't necessarily connected to a live session at all when a

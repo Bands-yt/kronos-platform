@@ -281,6 +281,9 @@ private:
     void openAvatarShop();
     void drawAvatarShopPanel();
     void drawAvatarShopDetailPopup();
+    // Skin tone, head shape and body sliders on the Avatar page.
+    void drawAvatarCustomizeTab();
+    void saveAvatarAppearanceChange();
     // Kronos ("Player & Chat System" -- chat panel): tickChatActivation()
     // checks the real "/" key press (only while chat isn't already open,
     // and only while no other real ImGui text field already wants

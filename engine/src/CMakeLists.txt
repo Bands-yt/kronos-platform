@@ -224,6 +224,7 @@ add_library(engine_core STATIC
     core/LocalGameDirectory.cpp
     core/MyGames.cpp
     core/PartCollider.cpp
+    core/PlayerAvatar.cpp
     core/SceneManager.cpp
     core/SceneHistory.cpp
     core/ProcessLaunch.cpp
@@ -757,6 +758,7 @@ if(ENGINE_BUILD_STUDIO)
     # party plugins' object code either way), but in what each one boots.
     set(KRONOS_STUDIO_SHARED_SOURCES
         studio/StudioApp.cpp
+        studio/PlaySoloPlayer.cpp
         studio/OffscreenTarget.cpp
         studio/PluginManager.cpp
         studio/NativePluginAdapter.cpp

@@ -146,6 +146,8 @@ public:
     // Clears every entity currently in this scene's ECS and resets the
     // orbit camera to its default framing -- "Reset Preview".
     void reset();
+    // Aims the orbit camera at `focus` from `distance` away, keeping its angle.
+    void frameSubject(glm::vec3 focus, float distance);
 
     // Releases both the OffscreenTarget and (if acquired) the
     // AuxiliarySceneHandle -- needs `renderer` for the latter, unlike the

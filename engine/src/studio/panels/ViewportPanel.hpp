@@ -102,6 +102,11 @@ struct WorldPropSpawnMeshHandles {
 // class for.
 class ViewportPanel {
 public:
+    // During Play the player character owns the camera: no fly camera,
+    // gizmos, click-to-select or tool shortcuts.
+    void setPlayerCameraActive(bool active) { playerCameraActive_ = active; }
+    // The mouse is over the scene image this frame.
+    [[nodiscard]] bool isHovered() const { return hovered_; }
     enum class GizmoOperation { Translate, Rotate, Scale };
     enum class GizmoSpace { Local, World };
 
@@ -354,6 +359,8 @@ private:
 
 
     core::Camera camera_;
+    bool playerCameraActive_ = false;
+    bool hovered_ = false;
     // See snapshotRenderCamera()'s own comment. Default-constructed to
     // the same values as camera_ so the very first frame (before any
     // snapshot is taken) still matches.

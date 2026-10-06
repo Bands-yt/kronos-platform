@@ -1,5 +1,6 @@
 #include "runtime/HomeAvatarPreview.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -108,6 +109,17 @@ void HomeAvatarPreview::spawnPreviewBody() {
     // transforms"): real, computed once here (not every real update()
     // tick) -- see cachedBindPose_'s own header comment.
     cachedBindPose_ = scaledSkeleton.bindPoseMatrices();
+
+    // Frame the whole body, so taller avatars keep their heads in view.
+    float bottom = 0.0f;
+    float top = 0.0f;
+    for (const glm::mat4& joint : cachedBindPose_) {
+        bottom = std::min(bottom, joint[3].y);
+        top = std::max(top, joint[3].y);
+    }
+    top += 0.4f; // head and hair above the head joint
+    const float halfHeight = (top - bottom) * 0.5f * 1.15f;
+    scene_.frameSubject(glm::vec3(0.0f, bottom + (top - bottom) * 0.42f, 0.0f), halfHeight / std::tan(glm::radians(30.0f)));
 
     // Kronos ("Home Screen Avatar Preview" -- "idle animation"): real,
     // automatic -- unlike AvatarEditor's own demo body (which starts

@@ -36,12 +36,12 @@ stranger.
 |---|---|---|
 | Windows build passes CI with the MSVC runtime fix | `build.yml` is green on `4.1-creators` and the zip contains `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` | Claude |
 | Fresh-PC test | The Windows zip and installer start on a PC that never had Kronos or the VC++ redistributable, and the Linux download runs | Owner (Claude walks through it) |
-| First-run check | A new project opens from the template, Play works, closing Studio leaves no crash report, Broken Bones starts | Claude |
+| First-run check | A new project opens from the template, Play works, closing Studio leaves no crash report, Broken Bones starts | Claude — Play and clean exit verified; new-project-from-template and Broken Bones start still to check |
 | Version bump and release `4.1.0-beta` | The three version numbers match, the tag is pushed, and the GitHub Release has every download | Claude, only after the owner says OK |
 | Licence decision | `LICENSE` and the website say the same thing (today `LICENSE` says "All Rights Reserved"; don't call Kronos "open source" unless that changes) | Owner decides |
 | Online or offline | Decide whether the post includes publishing and playing online. If yes: staging deploy with migration 011, publish → package → play verified, then production | Owner decides; deploys only with OK |
-| Launch kit | A 30–60 s video (`marketing/pipeline`), 3–4 screenshots, `marketing/site` download links pointing at the release, a short README "what is this / how to start" | Claude makes, owner approves |
-| Feedback channel | GitHub issue templates for bugs and ideas, linked from the post and the site | Claude |
+| Launch kit | A 30–60 s video (`marketing/pipeline`), 3–4 screenshots, `marketing/site` download links pointing at the release, a short README "what is this / how to start" | Claude makes, owner approves — README and 1 screenshot done; video, more screenshots and site links left |
+| Feedback channel | GitHub issue templates for bugs and ideas, linked from the post and the site | Claude — forms done; link them from the post and site |
 | Pick where to post | Each subreddit's rules read first (r/gaming is for players and strict about self-promotion; r/IndieDev, r/indiegames, r/playmygame and r/gamedev's showcase threads fit better) | Owner |
 
 ### Done locally (2026-10-06), waiting for release
@@ -49,6 +49,12 @@ stranger.
 - **Roblox controls**: hold right mouse to look, Shift for shift lock, wheel zoom, Ctrl to run, a camera that stays out of walls, smooth turning, and legs that turn toward strafes and walk backwards (fixes the moonwalk). Online play uses the same facing logic on the client.
 - **Solid parts**: inserted parts get a matching anchored collider that follows resizing.
 - **Blocky avatar**: a Roblox-style body: big rounded head with a smile, box torso, chunky arms and legs, T-shirt with short sleeves, hair cap. Shorter arms and neck (the shipped `.anim` files were converted to match). Works in the Avatar page, games, Studio and the Broken Bones ragdoll.
+
+- **Play as your avatar in Studio**: Play spawns your avatar with the Player's controls and camera; Stop puts the scene and editor camera back. A part named `SpawnLocation` sets where players appear (Studio and Player). A long frame no longer stalls physics (Jolt is asked for at most 6 sub-steps).
+
+- **Avatar page Customize tab** (Player): skin tone, Classic/Round head and five body sliders, saved to the profile and shown in every game; the preview frames the whole body; the Shop filters fit the card.
+- **Feedback channel**: GitHub issue forms for bugs (`bug_report.yml`) and ideas (`idea.yml`).
+- **README for newcomers**: what Kronos is, downloads, first game in five minutes, controls, where to report bugs, with `docs/images/studio-play.png`.
 
 After the post: collect what people actually hit (crashes, confusing UI,
 missing features) into the 4.4 list below before starting anything new.

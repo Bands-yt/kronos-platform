@@ -57,6 +57,7 @@ core::EntityId SceneSearchPanel::draw(core::ECS& ecs, core::EntityId currentSele
     std::vector<Match> matches;
 
     for (auto entity : ecs.view<core::Transform>()) {
+        if (ecs.hasComponent<core::PlayerAvatarPart>(entity)) continue;
         ++totalCount;
         bool hasRenderable = ecs.hasComponent<core::Renderable>(entity);
         bool hasRigidBody = ecs.hasComponent<core::RigidBody>(entity);

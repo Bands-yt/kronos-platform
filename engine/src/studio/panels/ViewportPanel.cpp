@@ -1092,8 +1092,13 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     ImGui::Begin("Viewport");
     ImGui::PopStyleVar();
 
-    updateFreeFly(deltaTime);
-    updateFocus(deltaTime);
+    hovered_ = ImGui::IsWindowHovered();
+    if (playerCameraActive_) {
+        dragging_ = false;
+    } else {
+        updateFreeFly(deltaTime);
+        updateFocus(deltaTime);
+    }
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
     desiredExtent_ = {static_cast<uint32_t>(std::max(1.0f, avail.x)), static_cast<uint32_t>(std::max(1.0f, avail.y))};
@@ -1158,7 +1163,7 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     bool liveSculptActive = terrainEditor != nullptr && terrainEditor->liveSculptEnabled();
 
     core::EntityId selected = explorer.selectedEntity();
-    if (ecs != nullptr && selected != core::kNullEntity && !liveSculptActive) {
+    if (ecs != nullptr && selected != core::kNullEntity && !liveSculptActive && !playerCameraActive_) {
         // Kronos ("3D DCC Modeling Suite" -- real sub-object raycast
         // picking): a real core::EditableMeshComponent on the selection
         // switches to Modeling Mode's own vertex/edge/face gizmo instead
@@ -1185,7 +1190,8 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         overViewCube = mouse.x >= cube.x && mouse.y >= cube.y && mouse.x <= cube.x + kViewCubeSize &&
                        mouse.y <= cube.y + kViewCubeSize;
     }
-    if (ecs != nullptr && meshLibrary != nullptr && !dragging_ && !liveSculptActive && !overViewCube) {
+    if (ecs != nullptr && meshLibrary != nullptr && !dragging_ && !liveSculptActive && !overViewCube &&
+        !playerCameraActive_) {
         handleSelection(*ecs, *meshLibrary, explorer, imageOrigin, imageSize);
     }
     if (ecs != nullptr && !dragging_ && liveSculptActive) {
@@ -1218,7 +1224,9 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         // scene -- independent of whether the rail's own gizmo/lines are
         // currently toggled visible.
         const char* activeCameraLabel =
-            movieMode->previewThroughRailCamera() ? "Active Camera: Rail" : "Active Camera: Free-fly";
+            movieMode->previewThroughRailCamera() ? "Active Camera: Rail"
+            : playerCameraActive_                 ? "Active Camera: Player"
+                                                  : "Active Camera: Free-fly";
         ImVec2 textSize = ImGui::CalcTextSize(activeCameraLabel);
         ImVec2 badgeOrigin(imageOrigin.x + imageSize.x - textSize.x - 22.0f, imageOrigin.y + imageSize.y - 26.0f);
         drawList->AddRectFilled(ImVec2(badgeOrigin.x - 6.0f, badgeOrigin.y - 4.0f),
@@ -1237,7 +1245,7 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     // the gizmo mode underneath whatever panel actually had focus) and on
     // the viewport itself being hovered, not just "gizmo not in use".
     bool viewportHovered = ImGui::IsWindowHovered();
-    if (!ImGuizmo::IsUsing() && !ImGui::GetIO().WantCaptureKeyboard && viewportHovered) {
+    if (!ImGuizmo::IsUsing() && !ImGui::GetIO().WantCaptureKeyboard && viewportHovered && !playerCameraActive_) {
         const bool ctrl = ImGui::GetIO().KeyCtrl;
         if (!dragging_ && !ctrl) {
             if (ImGui::IsKeyPressed(ImGuiKey_W)) setGizmoOperation(GizmoOperation::Translate);
@@ -1789,7 +1797,11 @@ void ViewportPanel::drawStatusBar(ImDrawList* drawList, ImVec2 imageOrigin, ImVe
                        : gizmoOperation_ == GizmoOperation::Rotate    ? "Rotate"
                                                                       : "Scale";
     char text[160];
-    if (selectionCount > 0) {
+    if (playerCameraActive_) {
+        std::snprintf(text, sizeof(text),
+                      "WASD to move  \xc2\xb7  Space to jump  \xc2\xb7  Ctrl to run  \xc2\xb7  Hold right mouse to look  "
+                      "\xc2\xb7  Shift for shift lock");
+    } else if (selectionCount > 0) {
         std::snprintf(text, sizeof(text), "%s  \xc2\xb7  %zu selected  \xc2\xb7  F to focus", tool, selectionCount);
     } else {
         std::snprintf(text, sizeof(text), "%s  \xc2\xb7  Hold right mouse + WASD to fly  \xc2\xb7  Scroll to zoom", tool);

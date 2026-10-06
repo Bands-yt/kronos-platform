@@ -291,7 +291,7 @@ void StudioRibbon::drawPlayGroup(const RibbonContext& context) {
     const bool playing = context.physics->isPlaying();
     beginGroup();
     if (bigButton("play", playing ? Icon::Stop : Icon::Play, playing ? "Stop" : "Play", playing, true,
-                  playing ? "Stop the simulation and restore the scene" : "Simulate physics and run scripts",
+                  playing ? "Stop the simulation and restore the scene" : "Play the game as your avatar",
                   playing ? kRed : kGreen)) {
         context.actions.togglePlay();
     }

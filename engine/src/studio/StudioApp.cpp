@@ -1,5 +1,7 @@
 #include "studio/StudioApp.hpp"
 
+#include "core/AvatarSkinTone.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -340,7 +342,7 @@ bool StudioApp::initialize(StudioMode mode) {
 
         renderer_.drawSceneInto(cmd, viewportTarget_.colorImage(), viewportTarget_.colorView(),
                                  viewportTarget_.depthImage(), viewportTarget_.depthView(), viewportTarget_.extent(),
-                                 *sceneCamera, ecs_, meshLibrary_, particleSystem_, textureLibrary_);
+                                 *sceneCamera, ecs_, meshLibrary_, particleSystem_, textureLibrary_, &riggedMeshLibrary_);
         // The texture this just rendered into is what viewportPanel_.draw()
         // displays starting *next* frame (OffscreenTarget.hpp's own
         // one-frame latency) -- snapshot the camera pose used for it now,
@@ -606,6 +608,22 @@ bool StudioApp::initialize(StudioMode mode) {
     physicsPreviewPlugin_ = physicsPreview.get();
     physicsPreviewPlugin_->setScriptDebugger(&scriptDebugger_);
     physicsPreviewPlugin_->setAudio(&audio_);
+    if (show3DViewport()) {
+        physicsPreviewPlugin_->setPlayHooks(
+            [this](core::ECS& ecs, core::Physics& physics) {
+                if (!playSoloPlayer_.begin(ecs, physics, renderer_, riggedMeshLibrary_, localPlayerLook(), catalogueIndex_,
+                                           localProfile_.displayName, viewportPanel_.camera())) {
+                    notifications_.push("Couldn't spawn your avatar", NotificationSeverity::Warning);
+                    return;
+                }
+                viewportPanel_.setPlayerCameraActive(true);
+                ImGui::SetWindowFocus("Viewport");
+            },
+            [this](core::ECS& ecs) {
+                playSoloPlayer_.end(ecs, viewportPanel_.camera());
+                viewportPanel_.setPlayerCameraActive(false);
+            });
+    }
     scriptEditorPanel_.setDebugger(&scriptDebugger_);
     pluginManager_.registerPlugin(std::move(physicsPreview));
 
@@ -1522,6 +1540,29 @@ void StudioApp::drawAboutPanel() {
         if (ImGui::Button("Close")) showAboutPanel_ = false;
     }
     ImGui::End();
+}
+
+core::PlayerAvatarLook StudioApp::localPlayerLook() const {
+    core::PlayerAvatarLook look;
+    look.skinTone = core::resolveSkinToneColor(localProfile_.skinToneIndex);
+    look.headShape = core::headShapeFromIndex(localProfile_.headShapeIndex);
+    look.bodyProportions = core::BodyProportions{localProfile_.bodyHeight, localProfile_.bodyWidth,
+                                                 localProfile_.bodyLimbScale, localProfile_.bodyTorsoLength,
+                                                 localProfile_.bodyShoulderWidth};
+    look.loadout = localAvatarLoadout_;
+    look.clothingFit = core::clothingFitFromIndex(localProfile_.clothingFitIndex);
+    auto clipPath = [&](const std::string& itemId) -> std::string {
+        if (itemId.empty()) return {};
+        const core::AnimationManifest* manifest = animationDatabase_.findById(itemId);
+        return manifest != nullptr ? manifest->item.clipPath : std::string();
+    };
+    look.animationOverrides.idleClipPath = clipPath(localProfile_.animOverrideIdleId);
+    look.animationOverrides.walkClipPath = clipPath(localProfile_.animOverrideWalkId);
+    look.animationOverrides.runClipPath = clipPath(localProfile_.animOverrideRunId);
+    look.animationOverrides.jumpStartClipPath = clipPath(localProfile_.animOverrideJumpStartId);
+    look.animationOverrides.jumpAirClipPath = clipPath(localProfile_.animOverrideJumpAirId);
+    look.animationOverrides.jumpLandClipPath = clipPath(localProfile_.animOverrideJumpLandId);
+    return look;
 }
 
 std::vector<PaletteCommand> StudioApp::buildCommandPaletteCommands() {
@@ -2581,17 +2622,19 @@ void StudioApp::run() {
         // where Ctrl+Z overwhelmingly means "undo my last scene edit".
         {
             ImGuiIO& io = ImGui::GetIO();
-            if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+            // Ctrl is Run while playing as the avatar.
+            const bool ctrlShortcuts = io.KeyCtrl && !playSoloPlayer_.active();
+            if (ctrlShortcuts && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
                 if (io.KeyShift) {
                     undoStack_.redo();
                 } else {
                     undoStack_.undo();
                 }
-            } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+            } else if (ctrlShortcuts && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
                 undoStack_.redo();
-            } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+            } else if (ctrlShortcuts && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
                 saveGame();
-            } else if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_K, false) || ImGui::IsKeyPressed(ImGuiKey_P, false))) {
+            } else if (ctrlShortcuts && (ImGui::IsKeyPressed(ImGuiKey_K, false) || ImGui::IsKeyPressed(ImGuiKey_P, false))) {
                 // Kronos ("Studio QoL Sprint" -- "VS Code-Style Command
                 // Palette"): real, either shortcut opens the same real
                 // palette -- VS Code itself uses Ctrl+P for "go to
@@ -2733,6 +2776,12 @@ void StudioApp::run() {
             worldStreamer_.update({viewportPanel_.camera().position});
         }
         resources_.update();
+        if (playSoloPlayer_.active() && !physicsPreviewPlugin_->isPaused() && !physicsPreviewPlugin_->scriptDebugPaused()) {
+            const ImGuiIO& io = ImGui::GetIO();
+            const bool overGame = viewportPanel_.isHovered();
+            playSoloPlayer_.tick(deltaTime, ecs_, physicsPreviewPlugin_->physics(), viewportPanel_.camera(), overGame,
+                                 io.WantTextInput, overGame ? io.MouseWheel : 0.0f);
+        }
         pluginManager_.update(deltaTime, ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
         if (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying()) {
             const core::Camera& camera = viewportPanel_.camera();
@@ -3068,7 +3117,7 @@ void StudioApp::drawRibbon() {
 }
 
 void StudioApp::handleEditShortcuts() {
-    if (!showRibbon()) return;
+    if (!showRibbon() || playSoloPlayer_.active()) return;
     const ImGuiIO& io = ImGui::GetIO();
     if (io.WantTextInput) return;
     ImGuiWindow* focused = ImGui::GetCurrentContext()->NavWindow;

@@ -153,7 +153,11 @@ void UnifiedInput::update() {
                 combined.axisValue = axisValue;
             }
         }
-        state_[actionName] = combined;
+        state_[actionName] = blocked_ ? ActionState{} : combined;
+    }
+    if (blocked_) {
+        mouseDelta_ = glm::vec2(0.0f);
+        mouseWheel_ = 0.0f;
     }
 
     bool orbitButtonDown = isActionDown("CameraOrbit");
