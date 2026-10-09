@@ -19,6 +19,17 @@ using ScriptId = uint32_t;
 inline constexpr ScriptId kInvalidScript = ~0u;
 inline constexpr uint32_t kNoScriptEntity = ~0u;
 
+// Where a script runs. Own: its own VM (Kronos scripts, plugins). Server and
+// Client: one shared VM per side, each script a sandboxed thread in it, like
+// Roblox (so ModuleScripts, _G and shared are shared between scripts).
+enum class RunContext : uint8_t { Own, Server, Client };
+
+// The context of the VM `L` belongs to.
+[[nodiscard]] RunContext runContextOf(lua_State* L);
+
+// Luau bytecode for `source`, compiled with the options every script uses.
+[[nodiscard]] std::string compileScriptSource(const std::string& source);
+
 // Embeds the real Luau VM -- per docs/ARCHITECTURE.md Principle 1, this is
 // deliberately *not* a "Lua 5.1-compatible" reimplementation. Every script
 // gets its own lua_State (its own global table, its own custom allocator
@@ -40,6 +51,9 @@ class DeferredWork {
 public:
     virtual ~DeferredWork() = default;
     virtual void flush() = 0;
+    // A script in a shared VM stopped; drop what it owns (`owner` is its
+    // thread data, see lua_getthreaddata).
+    virtual void forgetOwner(const void* owner) { (void)owner; }
 };
 
 class Scripting {
@@ -69,7 +83,14 @@ public:
     // script is attached to.
     ScriptId loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity,
                         uint32_t entity);
+    ScriptId loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity,
+                        uint32_t entity, RunContext context);
     void unload(ScriptId id);
+    [[nodiscard]] bool isAlive(ScriptId id) const { return id < scripts_.size() && scripts_[id].alive; }
+    // Goes up whenever every script is closed, so old ScriptIds can be told apart.
+    [[nodiscard]] uint64_t generation() const { return generation_; }
+    // The shared VM of a context, or null before its first script.
+    [[nodiscard]] lua_State* contextVm(RunContext context) const;
 
     // The real privilege level a loaded script is running at, for
     // diagnostics and tests. Returns UserScript for an unknown id --
@@ -205,7 +226,8 @@ public:
     // handler's arguments onto the given thread and returns how many.
     using PushArgs = std::function<int(lua_State*)>;
     // Runs fnRef (a ref in vm's registry) on a new thread. False while the debugger is paused.
-    bool runHandler(lua_State* vm, int fnRef, const PushArgs& pushArgs, const std::string& label);
+    bool runHandler(lua_State* vm, int fnRef, const PushArgs& pushArgs, const std::string& label,
+                    void* owner = nullptr);
     // Parks the calling thread until resumeWaiting(); the caller then returns lua_yield(L, 0).
     void suspendCurrent(lua_State* L);
     // Resumes a thread parked by suspendCurrent(). False if it isn't waiting
@@ -249,7 +271,20 @@ private:
         bool alive = false;
         int mainFunctionRef = -1;
         std::set<int> appliedBreakpoints;
+        bool shared = false; // a thread in a context VM, not its own VM
     };
+
+    // The shared VM of a Server or Client context. Script budgets stay
+    // allocated until the VM closes: coroutines may still point at them.
+    struct ContextVm {
+        lua_State* vm = nullptr;
+        void* allocatorState = nullptr;
+        std::vector<void*> budgets;
+    };
+    ContextVm contextVms_[2];
+    lua_State* ensureContextVm(RunContext context);
+    void closeContextVms();
+    [[nodiscard]] bool ownsThread(const LoadedScript& script, lua_State* thread) const;
 
     struct BrokenThread {
         lua_State* thread = nullptr;
@@ -278,7 +313,7 @@ private:
     // shutdown()'s own doc comment for why those two are not the same
     // call.
     void closeAllScripts();
-    lua_State* spawnThread(lua_State* owner, int& outRef);
+    lua_State* spawnThread(lua_State* owner, int& outRef, void* threadData = nullptr);
 
     // If `thread` just yielded via task.wait(), returns true and fills in
     // the wake/start time it recorded (removing the bookkeeping entry).
@@ -332,6 +367,7 @@ private:
     struct EventCallback {
         lua_State* owner = nullptr;
         int ref = -1;
+        void* budget = nullptr; // thread data of the registering thread
     };
 
     // Shared by fireCollision()/fireInteract()/fireUpdate(): looks up
@@ -372,6 +408,7 @@ private:
     double maxExecutionMillisPerTick_ = 8.0;   // ScriptContext.MaxExecutionTimePerFrame default, §6
     size_t maxMemoryBytesPerScript_ = 256u * 1024u * 1024u; // ScriptContext.MaxMemory default, §6
     bool initialized_ = false;
+    uint64_t generation_ = 1;
 };
 
 } // namespace engine::core

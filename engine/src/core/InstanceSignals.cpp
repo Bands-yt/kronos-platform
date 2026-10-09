@@ -40,9 +40,11 @@ uint64_t SignalHub::add(std::shared_ptr<Connection> connection, InstanceRef ref,
     return connection->id;
 }
 
-uint64_t SignalHub::connect(lua_State* vm, InstanceRef ref, const std::string& event, int fnRef, bool once) {
+uint64_t SignalHub::connect(lua_State* vm, InstanceRef ref, const std::string& event, int fnRef, bool once,
+                            void* owner) {
     auto connection = std::make_shared<Connection>();
     connection->vm = vm;
+    connection->owner = owner;
     connection->fnRef = fnRef;
     connection->once = once;
     return add(std::move(connection), ref, event);
@@ -52,6 +54,7 @@ uint64_t SignalHub::connectWait(lua_State* thread, InstanceRef ref, const std::s
     auto connection = std::make_shared<Connection>();
     connection->vm = lua_mainthread(thread);
     connection->thread = thread;
+    connection->owner = lua_getthreaddata(thread);
     connection->once = true;
     return add(std::move(connection), ref, event);
 }
@@ -143,9 +146,11 @@ void SignalHub::flush() {
         Call call = std::move(queue_.front());
         queue_.pop_front();
         Connection& connection = *call.connection;
-        if ((!connection.connected && !call.force) || connection.vm == nullptr) continue;
-        auto* scripting = static_cast<Scripting*>(lua_callbacks(connection.vm)->userdata);
-        if (scripting == nullptr) continue;
+        auto* scripting = connection.vm != nullptr ? static_cast<Scripting*>(lua_callbacks(connection.vm)->userdata) : nullptr;
+        if ((!connection.connected && !call.force) || scripting == nullptr) {
+            if (call.invokeId != 0) finishInvoke(call.invokeId, false, {}, "The callback was removed before it could run");
+            continue;
+        }
         if (scripting->debugPaused()) {
             held.push_back(std::move(call));
             continue;
@@ -156,10 +161,26 @@ void SignalHub::flush() {
             for (const SignalArg& arg : call.args) pushSignalArg(L, arg);
             return static_cast<int>(call.args.size());
         };
-        if (connection.thread != nullptr) {
+        if (call.invokeId != 0) {
+            lua_getfield(connection.vm, LUA_REGISTRYINDEX, kInvokeTrampolineKey);
+            const int trampoline = lua_isnumber(connection.vm, -1) ? static_cast<int>(lua_tointeger(connection.vm, -1)) : -1;
+            lua_pop(connection.vm, 1);
+            if (trampoline < 0) {
+                finishInvoke(call.invokeId, false, {}, "Callbacks are not available in this script");
+                continue;
+            }
+            const auto pushInvokeArgs = [&call, &connection](lua_State* L) {
+                lua_checkstack(L, static_cast<int>(call.args.size()) + 8);
+                lua_getref(L, connection.fnRef);
+                lua_pushnumber(L, static_cast<double>(call.invokeId));
+                for (const SignalArg& arg : call.args) pushSignalArg(L, arg);
+                return static_cast<int>(call.args.size()) + 2;
+            };
+            scripting->runHandler(connection.vm, trampoline, pushInvokeArgs, call.label, connection.owner);
+        } else if (connection.thread != nullptr) {
             scripting->resumeWaiting(connection.thread, pushArgs);
         } else {
-            scripting->runHandler(connection.vm, connection.fnRef, pushArgs, call.label);
+            scripting->runHandler(connection.vm, connection.fnRef, pushArgs, call.label, connection.owner);
         }
     }
     depth_ = 0;
@@ -180,12 +201,93 @@ void SignalHub::forgetVm(lua_State* vm) {
     }
     for (Call& call : queue_) {
         if (call.connection->vm == vm) call.connection->vm = nullptr;
+        if (call.connection->vm == nullptr && call.invokeId != 0) {
+            finishInvoke(call.invokeId, false, {}, "The callback's script stopped");
+        }
     }
     queue_.erase(std::remove_if(queue_.begin(), queue_.end(), [](const Call& c) { return c.connection->vm == nullptr; }),
                  queue_.end());
     retired_.erase(std::remove_if(retired_.begin(), retired_.end(),
                                   [vm](const std::shared_ptr<Connection>& c) { return c->vm == vm || c->vm == nullptr; }),
                    retired_.end());
+}
+
+void SignalHub::forgetOwner(const void* owner) {
+    if (owner == nullptr) return;
+    std::vector<uint64_t> ids;
+    for (const auto& [id, connection] : byId_) {
+        if (connection->owner == owner) ids.push_back(id);
+    }
+    for (uint64_t id : ids) disconnect(id);
+    for (const Call& call : queue_) {
+        if (call.connection->owner == owner && call.invokeId != 0) {
+            finishInvoke(call.invokeId, false, {}, "The callback's script stopped");
+        }
+    }
+    queue_.erase(std::remove_if(queue_.begin(), queue_.end(),
+                                [owner](const Call& c) { return c.connection->owner == owner; }),
+                 queue_.end());
+    releaseRetired();
+}
+
+void SignalHub::setCallback(lua_State* vm, InstanceRef ref, const std::string& name, int fnRef, void* owner) {
+    const std::string event = "Callback:" + name;
+    const uint64_t slot = slotOf(ref, event);
+    if (const auto old = callbackIds_.find(slot); old != callbackIds_.end()) {
+        disconnect(old->second);
+        callbackIds_.erase(old);
+    }
+    if (fnRef < 0) return;
+    auto connection = std::make_shared<Connection>();
+    connection->vm = vm;
+    connection->owner = owner;
+    connection->fnRef = fnRef;
+    callbackIds_[slot] = add(connection, ref, event);
+    if (auto waiting = waitingInvokes_.find(slot); waiting != waitingInvokes_.end()) {
+        for (auto& [id, args] : waiting->second) {
+            queue_.push_back(Call{connection, std::move(args), name + " callback", depth_ + 1, false, id});
+        }
+        waitingInvokes_.erase(waiting);
+    }
+}
+
+uint64_t SignalHub::invoke(InstanceRef ref, const std::string& name, std::vector<SignalArg> args) {
+    const uint64_t id = nextInvokeId_++;
+    invokes_[id];
+    const uint64_t slot = slotOf(ref, "Callback:" + name);
+    std::shared_ptr<Connection> callback;
+    if (const auto found = callbackIds_.find(slot); found != callbackIds_.end()) {
+        if (const auto connection = byId_.find(found->second); connection != byId_.end()) {
+            callback = connection->second;
+        } else {
+            callbackIds_.erase(found);
+        }
+    }
+    if (callback) {
+        queue_.push_back(Call{callback, std::move(args), name + " callback", depth_ + 1, false, id});
+    } else {
+        waitingInvokes_[slot].emplace_back(id, std::move(args));
+    }
+    return id;
+}
+
+void SignalHub::finishInvoke(uint64_t id, bool ok, std::vector<SignalArg> values, std::string error) {
+    const auto found = invokes_.find(id);
+    if (found == invokes_.end() || found->second.done) return;
+    found->second = InvokeResult{true, ok, std::move(values), std::move(error)};
+}
+
+bool SignalHub::invokeDone(uint64_t id) const {
+    const auto found = invokes_.find(id);
+    return found == invokes_.end() || found->second.done;
+}
+
+SignalHub::InvokeResult SignalHub::takeInvoke(uint64_t id) {
+    const auto found = invokes_.find(id);
+    if (found == invokes_.end()) return InvokeResult{true, false, {}, "Unknown invocation"};
+    InvokeResult result = std::move(found->second);
+    invokes_.erase(found);
+    return result;
 }
 
 void SignalHub::forgetInstances(const std::vector<InstanceRef>& refs) {

@@ -140,7 +140,7 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"RunService", false, ApiMappingStatus::Mapped,
                           "Heartbeat, Stepped and RenderStepped work as in Roblox (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"ReplicatedStorage", false, ApiMappingStatus::Mapped,
-                          "Works as a container. RemoteEvents inside it arrive in a later 4.3 step."});
+                          "Works as in Roblox; RemoteEvents and RemoteFunctions inside it work (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"Players", false, ApiMappingStatus::Mapped,
                           "Players, LocalPlayer, PlayerAdded/Removing and characters work (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"Humanoid", false, ApiMappingStatus::Mapped,
@@ -170,8 +170,11 @@ LuauApiCompatibility::LuauApiCompatibility() {
     }
     registry_.push_back({"MoveTo", true, ApiMappingStatus::Mapped,
                           "Humanoid:MoveTo works; Model:MoveTo is planned for a later 4.3 step."});
-    for (const char* method : {"FireServer",
-                               "FireClient", "FireAllClients", "InvokeServer", "InvokeClient", "Create", "Play",
+    for (const char* method : {"FireServer", "FireClient", "FireAllClients", "InvokeServer", "InvokeClient", "Invoke"}) {
+        registry_.push_back({method, true, ApiMappingStatus::Mapped,
+                              "Works as in Roblox within one game session (docs/ROBLOX_BRIDGE.md)."});
+    }
+    for (const char* method : {"Create", "Play",
                                "GetDataStore", "GetAsync", "SetAsync", "UpdateAsync", "IncrementAsync",
                                "RemoveAsync", "AddItem", "AddTag", "GetTagged", "HasTag", "Raycast"}) {
         registry_.push_back({method, true, ApiMappingStatus::Unmapped, kBridgeGuidance});

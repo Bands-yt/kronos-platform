@@ -87,6 +87,7 @@ int main(int argc, char** argv) {
         runImportedScripts(report, score);
         std::printf("%s: %s\n", place.filename().string().c_str(), score.summary().c_str());
         for (const CompatScriptRun& run : score.scripts) {
+            if (!run.started) std::printf("    not started   %s (Roblox wouldn't run it here)\n", run.path.c_str());
             if (!run.ok) std::printf("    script error  %s\n", run.error.c_str());
         }
 

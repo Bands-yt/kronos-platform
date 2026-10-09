@@ -554,6 +554,16 @@ InstanceValue getLightEnabled(ECS& ecs, EntityId e) {
 void setLightEnabled(ECS& ecs, EntityId e, const InstanceValue& v) {
     if (auto* l = light(ecs, e)) l->enabled = v.boolean;
 }
+// Script.Enabled is the newer name for `not Disabled`.
+InstanceValue getScriptEnabled(ECS& ecs, EntityId e) {
+    const auto* info = ecs.tryGetComponent<InstanceInfo>(e);
+    if (info == nullptr) return InstanceValue::ofBool(true);
+    const auto it = info->properties.find("Disabled");
+    return InstanceValue::ofBool(it == info->properties.end() || !it->second.boolean);
+}
+void setScriptEnabled(ECS& ecs, EntityId e, const InstanceValue& v) {
+    ecs.raw().get_or_emplace<InstanceInfo>(e).properties["Disabled"] = InstanceValue::ofBool(!v.boolean);
+}
 InstanceValue getShadows(ECS& ecs, EntityId e) {
     const auto* l = light(ecs, e);
     return InstanceValue::ofBool(l != nullptr && l->castsShadow);
@@ -700,6 +710,7 @@ std::vector<ClassDef> buildClasses() {
     add("LuaSourceContainer", "Instance", false);
     add("BaseScript", "LuaSourceContainer", false).properties = {
         stored("Disabled", PropertyType::Bool, InstanceValue::ofBool(false)),
+        prop("Enabled", PropertyType::Bool, &getScriptEnabled, &setScriptEnabled),
     };
     add("Script", "BaseScript", true);
     add("LocalScript", "Script", true);
@@ -741,18 +752,29 @@ std::vector<ClassDef> buildClasses() {
     add("BrickColorValue", "ValueBase", true).properties = {
         stored("Value", PropertyType::BrickColor, InstanceValue::ofBrickColor(kDefaultPartColor))};
 
-    // Present as objects; what they do arrives in later bridge steps.
-    add("RemoteEvent", "Instance", true);
-    add("RemoteFunction", "Instance", true);
+    auto& baseRemoteEvent = add("BaseRemoteEvent", "Instance", false);
+    baseRemoteEvent.methods = {"FireServer", "FireClient", "FireAllClients"};
+    baseRemoteEvent.events = {"OnServerEvent", "OnClientEvent"};
+    add("RemoteEvent", "BaseRemoteEvent", true);
+    add("UnreliableRemoteEvent", "BaseRemoteEvent", true);
+    add("RemoteFunction", "Instance", true).methods = {"InvokeServer", "InvokeClient"};
     auto& bindableEvent = add("BindableEvent", "Instance", true);
     bindableEvent.methods = {"Fire"};
     bindableEvent.events = {"Event"};
-    add("BindableFunction", "Instance", true);
+    add("BindableFunction", "Instance", true).methods = {"Invoke"};
+    // Present as objects; what they do arrives in later bridge steps.
     add("Sound", "Instance", true);
     add("Tool", "Instance", true);
     add("Accessory", "Instance", true);
     add("StarterPlayerScripts", "Instance", false);
     add("StarterCharacterScripts", "Instance", false);
+    add("PlayerScripts", "Instance", false);
+    add("GuiBase2d", "Instance", false);
+    add("LayerCollector", "GuiBase2d", false).properties = {
+        stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("ResetOnSpawn", PropertyType::Bool, InstanceValue::ofBool(true)),
+    };
+    add("ScreenGui", "LayerCollector", true);
 
     add("DataModel", "Instance", false).methods = {"GetService", "FindService"};
     // Has no entity: game:GetService("RunService") is always the same object.
@@ -1097,6 +1119,8 @@ InstanceRef createUnchecked(ECS& ecs, const std::string& cls) {
     } else if (classIsA(cls, "LuaSourceContainer")) {
         auto& script = ecs.addComponent<Script>(e);
         script.autoRun = false;
+        // Marks a Roblox script (core/RobloxScripts.hpp).
+        if (classIsA(cls, "BaseScript")) info.properties["Disabled"] = InstanceValue::ofBool(false);
     }
     if (ecs.tryGetComponent<InstanceInfo>(e) == nullptr) ecs.addComponent<InstanceInfo>(e, std::move(info));
     updateWorldPresence(ecs, e);

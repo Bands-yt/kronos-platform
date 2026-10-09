@@ -13,6 +13,7 @@ struct CompatScriptRun {
     std::string path;
     std::string className;
     bool ok = false;
+    bool started = true; // false: Roblox's run rules never start it in a test session
     std::string error;
 };
 
@@ -38,8 +39,10 @@ struct CompatibilityScore {
 // Counts mapped instances and supported API uses in an import report.
 [[nodiscard]] CompatibilityScore scoreImport(const ImportReport& report);
 
-// Runs every Script and LocalScript's top level in a fresh Luau VM and records
-// which ones finish without an error. ModuleScripts are only compiled.
+// Plays the place headlessly with Roblox's run rules (server and client
+// contexts, a test player joining, Starter copies) and records which Scripts
+// and LocalScripts run without an error. ModuleScripts are compiled here and
+// run when something requires them.
 void runImportedScripts(const ImportReport& report, CompatibilityScore& score);
 
 } // namespace engine::migration

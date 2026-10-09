@@ -1,5 +1,6 @@
 #include "core/ScriptInstanceApi.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -8,6 +9,7 @@
 #include <lua.h>
 #include <lualib.h>
 
+#include "core/Components.hpp"
 #include "core/ECS.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/InstanceTree.hpp"
@@ -28,6 +30,7 @@ constexpr const char* kSignalMetaKey = "kronos.Signal.mt";
 constexpr const char* kConnectionMetaKey = "kronos.Connection.mt";
 constexpr const char* kHubKey = "kronos.Signal.hub";
 constexpr const char* kGuardKey = "kronos.Signal.guard";
+constexpr const char* kStringRequireKey = "kronos.require.string";
 
 struct Proxy {
     InstanceRef ref;
@@ -293,9 +296,7 @@ const char* propertyTypeName(const PropertyDef& property) {
 bool isPlannedMember(const char* key) {
     static const char* const kPlanned[] = {
         "Kick", "GetMouse", "Team", "TeamColor", "LoadAnimation", "EquipTool", "UnequipTools", "Animator",
-        "Invoke", "OnInvoke",
-        "OnServerEvent", "OnClientEvent", "OnServerInvoke", "OnClientInvoke", "FireServer", "FireClient",
-        "FireAllClients", "InvokeServer", "InvokeClient", "Play", "Stop", "Pause", "Resume", "GetPivot",
+        "Play", "Stop", "Pause", "Resume", "GetPivot",
         "PivotTo", "MoveTo", "SetPrimaryPartCFrame", "GetPrimaryPartCFrame", "GetMass", "ApplyImpulse",
         "AssemblyLinearVelocity", "Velocity", "SoundId", "Volume", "Looped", "Playing", "MouseButton1Click",
         "MouseButton1Down", "MouseButton1Up", "Activated", "MouseEnter", "MouseLeave", "Text", "Visible",
@@ -338,14 +339,26 @@ void pushConnection(lua_State* L, uint64_t id) {
     lua_setmetatable(L, -2);
 }
 
+// OnServerEvent is the server's to listen to, OnClientEvent the client's.
+void checkEventSide(lua_State* L, const char* event) {
+    const RunContext context = runContextOf(L);
+    if (context == RunContext::Client && std::strcmp(event, "OnServerEvent") == 0) {
+        luaL_error(L, "OnServerEvent can only be used on the server");
+    }
+    if (context == RunContext::Server && std::strcmp(event, "OnClientEvent") == 0) {
+        luaL_error(L, "OnClientEvent can only be used on the client");
+    }
+}
+
 int connectSignal(lua_State* L, const char* method, bool once) {
     SignalProxy* signal = checkSignal(L, method);
+    checkEventSide(L, signal->event);
     luaL_checktype(L, 2, LUA_TFUNCTION);
     SignalHub& hub = hubOf(L);
     lua_pushvalue(L, 2);
     const int fnRef = lua_ref(L, -1);
     lua_pop(L, 1);
-    pushConnection(L, hub.connect(lua_mainthread(L), signal->ref, signal->event, fnRef, once));
+    pushConnection(L, hub.connect(lua_mainthread(L), signal->ref, signal->event, fnRef, once, lua_getthreaddata(L)));
     return 1;
 }
 
@@ -354,6 +367,7 @@ int sOnce(lua_State* L) { return connectSignal(L, "Once", true); }
 
 int sWait(lua_State* L) {
     SignalProxy* signal = checkSignal(L, "Wait");
+    checkEventSide(L, signal->event);
     auto* scripting = static_cast<Scripting*>(lua_callbacks(L)->userdata);
     if (scripting == nullptr || !lua_isyieldable(L)) luaL_error(L, "Wait can't be used here; it must run in a script thread");
     hubOf(L).connectWait(L, signal->ref, signal->event);
@@ -391,6 +405,56 @@ int cDisconnect(lua_State* L) {
     return 0;
 }
 
+// Set-only function members, kept by the SignalHub.
+bool isCallback(const std::string& cls, const char* key) {
+    if (instances::classIsA(cls, "RemoteFunction")) {
+        return std::strcmp(key, "OnServerInvoke") == 0 || std::strcmp(key, "OnClientInvoke") == 0;
+    }
+    return instances::classIsA(cls, "BindableFunction") && std::strcmp(key, "OnInvoke") == 0;
+}
+
+void setCallback(lua_State* L, InstanceRef ref, const char* key) {
+    const RunContext context = runContextOf(L);
+    if ((context == RunContext::Client && std::strcmp(key, "OnServerInvoke") == 0) ||
+        (context == RunContext::Server && std::strcmp(key, "OnClientInvoke") == 0)) {
+        luaL_error(L, "%s can only be set on the %s", key, context == RunContext::Client ? "server" : "client");
+    }
+    SignalHub& hub = hubOf(L);
+    if (lua_isnil(L, 3)) {
+        hub.setCallback(lua_mainthread(L), ref, key, -1, nullptr);
+        return;
+    }
+    if (!lua_isfunction(L, 3)) luaL_error(L, "%s must be set to a function, got %s", key, luaL_typename(L, 3));
+    lua_pushvalue(L, 3);
+    const int fnRef = lua_ref(L, -1);
+    lua_pop(L, 1);
+    hub.setCallback(lua_mainthread(L), ref, key, fnRef, lua_getthreaddata(L));
+}
+
+// A client sees ServerStorage and ServerScriptService empty, as in Roblox.
+bool hiddenFromClient(lua_State* L, ECS& ecs, InstanceRef ref) {
+    if (runContextOf(L) != RunContext::Client) return false;
+    for (const char* name : {"ServerStorage", "ServerScriptService"}) {
+        const InstanceRef service = instances::findService(ecs, name);
+        if (service != kNoInstance && (ref == service || instances::isDescendantOf(ecs, ref, service))) return true;
+    }
+    return false;
+}
+
+std::vector<InstanceRef> visibleChildren(lua_State* L, ECS& ecs, InstanceRef ref) {
+    if (hiddenFromClient(L, ecs, ref)) return {};
+    return instances::children(ecs, ref);
+}
+
+std::vector<InstanceRef> visibleDescendants(lua_State* L, ECS& ecs, InstanceRef ref) {
+    std::vector<InstanceRef> list = instances::descendants(ecs, ref);
+    if (runContextOf(L) != RunContext::Client) return list;
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&](InstanceRef d) { return hiddenFromClient(L, ecs, instances::parent(ecs, d)); }),
+               list.end());
+    return list;
+}
+
 // --- metamethods -------------------------------------------------------------
 
 int instanceIndex(lua_State* L) {
@@ -404,7 +468,16 @@ int instanceIndex(lua_State* L) {
     const bool alive = instances::isAlive(ecs, ref);
     const std::string cls = alive ? instances::className(ecs, ref) : std::string("Instance");
 
+    if (isCallback(cls, key)) {
+        luaL_error(L, "%s is a callback member of %s; you can only set the callback value, get is not available", key,
+                   cls.c_str());
+    }
     if (const PropertyDef* property = instances::findProperty(cls, key)) {
+        // As in Roblox, the server has no local player.
+        if (property->name == "LocalPlayer" && runContextOf(L) == RunContext::Server) {
+            lua_pushnil(L);
+            return 1;
+        }
         InstanceValue value;
         if (alive && instances::getProperty(ecs, ref, *property, value)) {
             pushValue(L, value);
@@ -437,7 +510,7 @@ int instanceIndex(lua_State* L) {
         return 1;
     }
 
-    for (InstanceRef child : instances::children(ecs, ref)) {
+    for (InstanceRef child : visibleChildren(L, ecs, ref)) {
         if (instances::name(ecs, child) == key) {
             pushInstance(L, child);
             return 1;
@@ -468,6 +541,10 @@ int instanceNewIndex(lua_State* L) {
         luaL_error(L, "Unable to assign property %s of a destroyed Instance", key);
     }
     const std::string cls = instances::className(ecs, ref);
+    if (isCallback(cls, key)) {
+        setCallback(L, ref, key);
+        return 0;
+    }
     const PropertyDef* property = instances::findProperty(cls, key);
     if (property == nullptr) {
         if (isPlannedMember(key)) {
@@ -515,18 +592,18 @@ void pushList(lua_State* L, const std::vector<InstanceRef>& refs) {
 }
 
 int mGetChildren(lua_State* L) {
-    pushList(L, instances::children(ecsOf(L), checkSelf(L, "GetChildren")));
+    pushList(L, visibleChildren(L, ecsOf(L), checkSelf(L, "GetChildren")));
     return 1;
 }
 
 int mGetDescendants(lua_State* L) {
-    pushList(L, instances::descendants(ecsOf(L), checkSelf(L, "GetDescendants")));
+    pushList(L, visibleDescendants(L, ecsOf(L), checkSelf(L, "GetDescendants")));
     return 1;
 }
 
 template <typename Match>
-InstanceRef findChild(ECS& ecs, InstanceRef ref, bool recursive, const Match& match) {
-    const std::vector<InstanceRef> list = recursive ? instances::descendants(ecs, ref) : instances::children(ecs, ref);
+InstanceRef findChild(lua_State* L, ECS& ecs, InstanceRef ref, bool recursive, const Match& match) {
+    const std::vector<InstanceRef> list = recursive ? visibleDescendants(L, ecs, ref) : visibleChildren(L, ecs, ref);
     for (InstanceRef child : list) {
         if (match(child)) return child;
     }
@@ -538,7 +615,7 @@ int mFindFirstChild(lua_State* L) {
     const InstanceRef self = checkSelf(L, "FindFirstChild");
     const std::string wanted = luaL_checkstring(L, 2);
     const bool recursive = lua_toboolean(L, 3) != 0;
-    pushInstance(L, findChild(ecs, self, recursive, [&](InstanceRef c) { return instances::name(ecs, c) == wanted; }));
+    pushInstance(L, findChild(L, ecs, self, recursive, [&](InstanceRef c) { return instances::name(ecs, c) == wanted; }));
     return 1;
 }
 
@@ -546,7 +623,7 @@ int mFindFirstChildOfClass(lua_State* L) {
     ECS& ecs = ecsOf(L);
     const InstanceRef self = checkSelf(L, "FindFirstChildOfClass");
     const std::string wanted = luaL_checkstring(L, 2);
-    pushInstance(L, findChild(ecs, self, false, [&](InstanceRef c) { return instances::className(ecs, c) == wanted; }));
+    pushInstance(L, findChild(L, ecs, self, false, [&](InstanceRef c) { return instances::className(ecs, c) == wanted; }));
     return 1;
 }
 
@@ -555,7 +632,7 @@ int mFindFirstChildWhichIsA(lua_State* L) {
     const InstanceRef self = checkSelf(L, "FindFirstChildWhichIsA");
     const std::string wanted = luaL_checkstring(L, 2);
     const bool recursive = lua_toboolean(L, 3) != 0;
-    pushInstance(L, findChild(ecs, self, recursive,
+    pushInstance(L, findChild(L, ecs, self, recursive,
                               [&](InstanceRef c) { return instances::classIsA(instances::className(ecs, c), wanted); }));
     return 1;
 }
@@ -724,10 +801,154 @@ int mFire(lua_State* L) {
     return 0;
 }
 
+// --- remotes -----------------------------------------------------------------
+
+void checkClass(lua_State* L, ECS& ecs, InstanceRef self, const char* base, const char* method) {
+    const std::string cls = instances::className(ecs, self);
+    if (!instances::classIsA(cls, base)) luaL_error(L, "%s is not a valid member of %s", method, cls.c_str());
+}
+
+InstanceRef playerArg(lua_State* L, ECS& ecs, int index, const char* method) {
+    Proxy* proxy = toProxy(L, index);
+    if (proxy == nullptr || instances::className(ecs, proxy->ref) != "Player") {
+        luaL_error(L, "%s: player argument must be a Player object", method);
+    }
+    return proxy->ref;
+}
+
+std::vector<SignalArg> argsFrom(lua_State* L, int first, std::vector<SignalArg> args = {}) {
+    for (int i = first; i <= lua_gettop(L); ++i) args.push_back(toSignalArg(L, i));
+    return args;
+}
+
+SignalArg localPlayerArg(ECS& ecs) { return SignalArg::of(InstanceValue::ofInstance(players::localPlayer(ecs))); }
+
+// This process has a client only for its local player; other players' clients
+// are on other computers.
+bool hasLocalClient(ECS& ecs, InstanceRef player) {
+    return signals::runService(ecs).client && player == players::localPlayer(ecs);
+}
+
+int mFireServer(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "FireServer");
+    checkClass(L, ecs, self, "BaseRemoteEvent", "FireServer");
+    if (runContextOf(L) == RunContext::Server) luaL_error(L, "FireServer can only be called from the client");
+    if (signals::runService(ecs).server) hubOf(L).fire(self, "OnServerEvent", argsFrom(L, 2, {localPlayerArg(ecs)}));
+    return 0;
+}
+
+int mFireClient(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "FireClient");
+    checkClass(L, ecs, self, "BaseRemoteEvent", "FireClient");
+    if (runContextOf(L) == RunContext::Client) luaL_error(L, "FireClient can only be called from the server");
+    const InstanceRef player = playerArg(L, ecs, 2, "FireClient");
+    if (hasLocalClient(ecs, player)) hubOf(L).fire(self, "OnClientEvent", argsFrom(L, 3));
+    return 0;
+}
+
+int mFireAllClients(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "FireAllClients");
+    checkClass(L, ecs, self, "BaseRemoteEvent", "FireAllClients");
+    if (runContextOf(L) == RunContext::Client) luaL_error(L, "FireAllClients can only be called from the server");
+    if (signals::runService(ecs).client) hubOf(L).fire(self, "OnClientEvent", argsFrom(L, 2));
+    return 0;
+}
+
+// invokeStart(self, method, ...) -> id; the Luau wrappers below wait for it.
+int invokeStart(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const std::string method = luaL_checkstring(L, 2);
+    const InstanceRef self = checkSelf(L, method.c_str());
+    const RunContext context = runContextOf(L);
+    std::vector<SignalArg> args;
+    std::string callback;
+    if (method == "Invoke") {
+        checkClass(L, ecs, self, "BindableFunction", "Invoke");
+        args = argsFrom(L, 3);
+        callback = "OnInvoke";
+    } else if (method == "InvokeServer") {
+        checkClass(L, ecs, self, "RemoteFunction", "InvokeServer");
+        if (context == RunContext::Server) luaL_error(L, "InvokeServer can only be called from the client");
+        args = argsFrom(L, 3, {localPlayerArg(ecs)});
+        callback = "OnServerInvoke";
+    } else {
+        checkClass(L, ecs, self, "RemoteFunction", "InvokeClient");
+        if (context == RunContext::Client) luaL_error(L, "InvokeClient can only be called from the server");
+        const InstanceRef player = playerArg(L, ecs, 3, "InvokeClient");
+        if (!hasLocalClient(ecs, player)) {
+            luaL_error(L, "InvokeClient: %s's client isn't running in this process", instances::name(ecs, player).c_str());
+        }
+        args = argsFrom(L, 4);
+        callback = "OnClientInvoke";
+    }
+    lua_pushnumber(L, static_cast<double>(hubOf(L).invoke(self, callback, std::move(args))));
+    return 1;
+}
+
+uint64_t invokeId(lua_State* L) { return static_cast<uint64_t>(luaL_checknumber(L, 1)); }
+
+int invokeIsDone(lua_State* L) {
+    lua_pushboolean(L, hubOf(L).invokeDone(invokeId(L)) ? 1 : 0);
+    return 1;
+}
+
+int invokeTake(lua_State* L) {
+    SignalHub::InvokeResult result = hubOf(L).takeInvoke(invokeId(L));
+    if (!result.ok) {
+        lua_pushlstring(L, result.error.data(), result.error.size());
+        lua_error(L);
+    }
+    lua_checkstack(L, static_cast<int>(result.values.size()) + 4);
+    for (const SignalArg& value : result.values) pushSignalArg(L, value);
+    return static_cast<int>(result.values.size());
+}
+
+// Called by the trampoline in the callback's VM with (id, pcall results...).
+int invokeFinish(lua_State* L) {
+    const uint64_t id = invokeId(L);
+    const bool ok = lua_toboolean(L, 2) != 0;
+    std::vector<SignalArg> values;
+    std::string error;
+    if (ok) {
+        values = argsFrom(L, 3);
+    } else {
+        error = luaL_tolstring(L, 3, nullptr);
+    }
+    hubOf(L).finishInvoke(id, ok, std::move(values), std::move(error));
+    return 0;
+}
+
+const char* const kInvokeSource = R"LUAU(
+local start, isDone, take, wait = ...
+local function result(id)
+	while not isDone(id) do wait() end
+	return take(id)
+end
+return function(self, ...) return result(start(self, "InvokeServer", ...)) end,
+	function(self, ...) return result(start(self, "InvokeClient", ...)) end,
+	function(self, ...) return result(start(self, "Invoke", ...)) end
+)LUAU";
+
+const char* const kTrampolineSource = R"LUAU(
+local finish = ...
+return function(callback, id, ...)
+	finish(id, pcall(callback, ...))
+end
+)LUAU";
+
 template <bool (*Read)(const RunServiceState&)>
 int runServiceQuery(lua_State* L) {
     checkSelf(L, "RunService method");
-    lua_pushboolean(L, Read(signals::runService(ecsOf(L))) ? 1 : 0);
+    RunServiceState state = signals::runService(ecsOf(L));
+    // Scripts in a Server or Client VM see only their own side.
+    if (const RunContext context = runContextOf(L); context != RunContext::Own) {
+        state.server = context == RunContext::Server;
+        state.client = context == RunContext::Client;
+    }
+    lua_pushboolean(L, Read(state) ? 1 : 0);
     return 1;
 }
 bool readServer(const RunServiceState& s) { return s.server; }
@@ -853,6 +1074,114 @@ end
 const std::string& waitForChildBytecode() {
     static const std::string compiled = Luau::compile(kWaitForChildSource);
     return compiled;
+}
+
+// require(ModuleScript), Roblox's way: one result per module per VM, shared by
+// every script in that VM; a module that yields makes other requirers wait.
+const char* const kRequireSource = R"LUAU(
+local stringRequire, loadModule, isInstance, wait = ...
+local cache = {}
+return function(target)
+	if not isInstance(target) then
+		if stringRequire == nil then error("Attempted to call require with invalid argument(s).", 2) end
+		return stringRequire(target)
+	end
+	local entry = cache[target]
+	if entry == nil then
+		local body, compileError = loadModule(target)
+		entry = {loading = true, thread = coroutine.running()}
+		cache[target] = entry
+		if body == nil then
+			entry.loading, entry.failed = false, true
+			error(compileError .. "\nRequested module experienced an error while loading", 2)
+		end
+		local results = table.pack(pcall(body))
+		entry.loading = false
+		if not results[1] then
+			entry.failed = true
+			error(tostring(results[2]) .. "\nRequested module experienced an error while loading", 2)
+		end
+		if results.n ~= 2 then
+			entry.failed = true
+			error("Module code did not return exactly one value", 2)
+		end
+		entry.value = results[2]
+		return entry.value
+	end
+	if entry.loading then
+		if entry.thread == coroutine.running() then error("Requested module was required recursively", 2) end
+		while entry.loading do wait() end
+	end
+	if entry.failed then error("Requested module experienced an error while loading", 2) end
+	return entry.value
+end
+)LUAU";
+
+const std::string& invokeBytecode() {
+    static const std::string compiled = Luau::compile(kInvokeSource);
+    return compiled;
+}
+
+const std::string& trampolineBytecode() {
+    static const std::string compiled = Luau::compile(kTrampolineSource);
+    return compiled;
+}
+
+// Pushes the compiled helper chunk's function, or reports why it failed.
+bool loadHelper(lua_State* L, const char* name, const std::string& bytecode) {
+    if (luau_load(L, name, bytecode.data(), bytecode.size(), 0) == 0) return true;
+    std::fprintf(stderr, "ScriptInstanceApi: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return false;
+}
+
+const std::string& requireBytecode() {
+    static const std::string compiled = Luau::compile(kRequireSource);
+    return compiled;
+}
+
+int isInstanceValue(lua_State* L) {
+    lua_pushboolean(L, toProxy(L, 1) != nullptr);
+    return 1;
+}
+
+// The module's body as a function with its own environment (`script` is the
+// module), or nil plus the compile error.
+int loadModule(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    Proxy* proxy = toProxy(L, 1);
+    const EntityId e = proxy != nullptr ? instances::entityOf(ecs, proxy->ref) : kNullEntity;
+    const auto* module = e != kNullEntity && instances::className(ecs, proxy->ref) == "ModuleScript"
+                             ? ecs.tryGetComponent<Script>(e)
+                             : nullptr;
+    if (module == nullptr) luaL_error(L, "Attempted to call require with invalid argument(s).");
+    const std::string chunkName = "=" + instances::fullName(ecs, proxy->ref);
+    const std::string bytecode = compileScriptSource(module->source);
+
+    lua_newtable(L);
+    lua_newtable(L);
+    lua_pushvalue(L, lua_upvalueindex(2));
+    lua_setfield(L, -2, "__index");
+    lua_setreadonly(L, -1, true);
+    lua_setmetatable(L, -2);
+    lua_pushvalue(L, 1);
+    lua_setfield(L, -2, "script");
+    lua_setsafeenv(L, -1, true);
+    // Loaded on a thread whose globals are the module's: Luau resolves some
+    // globals at load time through the loading thread, which would otherwise
+    // be the requiring script's.
+    lua_State* loader = lua_newthread(L);
+    lua_pushvalue(L, -2);
+    lua_xmove(L, loader, 1);
+    lua_replace(loader, LUA_GLOBALSINDEX);
+    const int status = luau_load(loader, chunkName.c_str(), bytecode.data(), bytecode.size(), 0);
+    lua_xmove(loader, L, 1);
+    if (status != 0) {
+        lua_pushnil(L);
+        lua_insert(L, -2);
+        return 2;
+    }
+    return 1;
 }
 
 } // namespace
@@ -981,6 +1310,9 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"Move", &mMove},
         {"GetState", &mGetState},
         {"ChangeState", &mChangeState},
+        {"FireServer", &mFireServer},
+        {"FireClient", &mFireClient},
+        {"FireAllClients", &mFireAllClients},
     };
     lua_newtable(L);
     for (const Method& method : kMethods) {
@@ -1004,8 +1336,36 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         std::fprintf(stderr, "ScriptInstanceApi: %s\n", lua_tostring(L, -1));
         lua_pop(L, 1);
     }
+    if (loadHelper(L, "=Invoke", invokeBytecode())) {
+        pushClosure(&invokeStart, "invokeStart");
+        lua_pushcfunction(L, &invokeIsDone, "invokeIsDone");
+        lua_pushcfunction(L, &invokeTake, "invokeTake");
+        lua_getglobal(L, "task");
+        lua_getfield(L, -1, "wait");
+        lua_remove(L, -2);
+        if (lua_pcall(L, 4, 3, 0) == 0) {
+            lua_setfield(L, -4, "Invoke");
+            lua_setfield(L, -3, "InvokeClient");
+            lua_setfield(L, -2, "InvokeServer");
+        } else {
+            std::fprintf(stderr, "ScriptInstanceApi: %s\n", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
     lua_setreadonly(L, -1, true);
     lua_setfield(L, LUA_REGISTRYINDEX, kMethodsKey);
+
+    if (loadHelper(L, "=InvokeCallback", trampolineBytecode())) {
+        lua_pushcfunction(L, &invokeFinish, "invokeFinish");
+        if (lua_pcall(L, 1, 1, 0) == 0) {
+            lua_pushinteger(L, lua_ref(L, -1));
+            lua_setfield(L, LUA_REGISTRYINDEX, kInvokeTrampolineKey);
+            lua_pop(L, 1);
+        } else {
+            std::fprintf(stderr, "ScriptInstanceApi: %s\n", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
 
     pushInstance(L, kGameInstance);
     lua_pushvalue(L, -1);
@@ -1015,6 +1375,37 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
     lua_pushvalue(L, -1);
     lua_setglobal(L, "workspace");
     lua_setglobal(L, "Workspace");
+
+    lua_getfield(L, LUA_REGISTRYINDEX, kStringRequireKey);
+    const bool wrapped = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+    if (!wrapped) {
+        lua_getglobal(L, "require");
+        lua_pushvalue(L, -1);
+        lua_setfield(L, LUA_REGISTRYINDEX, kStringRequireKey);
+    } else {
+        lua_getfield(L, LUA_REGISTRYINDEX, kStringRequireKey);
+    }
+    const std::string& requireCode = requireBytecode();
+    if (luau_load(L, "=require", requireCode.data(), requireCode.size(), 0) == 0) {
+        lua_insert(L, -2);
+        lua_pushlightuserdata(L, &ecs);
+        lua_pushvalue(L, LUA_GLOBALSINDEX);
+        lua_pushcclosure(L, &loadModule, "loadModule", 2);
+        lua_pushcfunction(L, &isInstanceValue, "isInstance");
+        lua_getglobal(L, "task");
+        lua_getfield(L, -1, "wait");
+        lua_remove(L, -2);
+        if (lua_pcall(L, 4, 1, 0) == 0) {
+            lua_setglobal(L, "require");
+        } else {
+            std::fprintf(stderr, "ScriptInstanceApi: %s\n", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        std::fprintf(stderr, "ScriptInstanceApi: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 2);
+    }
 
     lua_newtable(L);
     pushClosure(&instanceNew, "Instance.new");

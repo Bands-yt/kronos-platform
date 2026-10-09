@@ -196,6 +196,7 @@
 #include "core/InstanceSignals.hpp"
 #include "core/ScriptInstanceApi.hpp"
 #include "core/RobloxPlayers.hpp"
+#include "core/RobloxScripts.hpp"
 #include "core/InstanceTree.hpp"
 #include "studio/panels/LuauSymbolIndex.hpp"
 #include "core/ScriptUiApi.hpp"
@@ -12613,10 +12614,16 @@ void testPhysicsPreviewPluginPlayAttachesAndStopDetaches() {
     float fallenY = ecs.tryGetComponent<engine::core::Transform>(box)->position.y;
     check(fallenY < 9.9f, "update() really steps live physics while playing -- the attached box really falls under gravity");
 
+    engine::core::EntityId madeInPlay = ecs.createEntity("MadeInPlay");
+    engine::core::hierarchy::setParent(ecs, madeInPlay, plainProp);
+
     plugin.stop(ecs);
     check(!plugin.isPlaying(), "stop() leaves the plugin stopped");
     check(ecs.tryGetComponent<engine::core::RigidBody>(box)->joltBodyId == engine::core::RigidBody::kInvalidBodyId,
           "stop() really detaches -- joltBodyId reverts to invalid, matching detachBody()'s own contract");
+    const auto* keptParent = ecs.tryGetComponent<engine::core::Hierarchy>(plainProp);
+    check(!ecs.raw().valid(madeInPlay) && (keptParent == nullptr || keptParent->children.empty()),
+          "stop() removes an entity made during Play from its kept parent's children");
 }
 
 void testPhysicsPreviewPluginSkipsMeshColliders() {
@@ -43207,6 +43214,476 @@ workspace.QuietPad.Touched:Connect(function() print("QUIET TOUCHED") end)
     scripting.unload(mainId);
 }
 
+void testRobloxScriptContexts() {
+    using namespace engine::core;
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "script contexts: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto count = [&](const char* text) {
+        int n = 0;
+        for (const std::string& line : output) n += line.find(text) != std::string::npos ? 1 : 0;
+        return n;
+    };
+    std::string error;
+    auto scriptEntity = [&](const char* className, const char* name) {
+        const InstanceRef ref = instances::create(ecs, className, error);
+        instances::setName(ecs, ref, name);
+        (void)instances::setParent(ecs, ref, kWorkspaceInstance, error);
+        return static_cast<uint32_t>(instances::entityOf(ecs, ref));
+    };
+    const InstanceRef event = instances::create(ecs, "BindableEvent", error);
+    instances::setName(ecs, event, "Ping");
+    (void)instances::setParent(ecs, event, kWorkspaceInstance, error);
+
+    const ScriptId a = scripting.loadAndRun("A", R"LUAU(
+_G.counter = 1
+shared.word = "hi"
+myGlobal = 5
+print("A script name " .. script.Name)
+workspace.Ping.Event:Connect(function() print("A heard ping") end)
+task.spawn(function() while true do task.wait(0.1) print("A tick") end end)
+)LUAU", SecurityIdentity::UserScript, scriptEntity("Script", "A"), RunContext::Server);
+    const ScriptId b = scripting.loadAndRun("B", R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+expect("_G is shared between server scripts", _G.counter == 1)
+expect("shared is shared between server scripts", shared.word == "hi")
+expect("plain globals stay in their own script", myGlobal == nil)
+expect("script is this script's own Instance", script.Name == "B")
+_G.counter += 1
+workspace.Ping.Event:Connect(function() print("B heard ping") end)
+print("DONE")
+)LUAU", SecurityIdentity::UserScript, scriptEntity("Script", "B"), RunContext::Server);
+    const ScriptId c = scripting.loadAndRun("C", R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+expect("the client context has its own _G", _G.counter == nil)
+error("C breaks on purpose")
+)LUAU", SecurityIdentity::UserScript, scriptEntity("LocalScript", "C"), RunContext::Client);
+    checkLuauExpectations("script contexts", output);
+    check(a != kInvalidScript && b != kInvalidScript && c != kInvalidScript, "script contexts: all three scripts load");
+    check(scripting.contextVm(RunContext::Server) != nullptr && scripting.contextVm(RunContext::Client) != nullptr &&
+              scripting.contextVm(RunContext::Server) != scripting.contextVm(RunContext::Client),
+          "script contexts: server and client each get one shared VM");
+    check(runContextOf(scripting.contextVm(RunContext::Client)) == RunContext::Client,
+          "script contexts: a VM knows its context");
+    check(count("A script name A") == 1, "script contexts: the first script sees its own script");
+    check(count("C breaks on purpose") == 1, "script contexts: an error in one script is reported");
+
+    for (int i = 0; i < 4; ++i) scripting.tick(0.1f);
+    check(count("A tick") >= 3, "script contexts: a task loop runs in the shared VM");
+    signals::hubFor(ecs)->fire(event, "Event");
+    signals::flush(ecs);
+    check(count("A heard ping") == 1 && count("B heard ping") == 1, "script contexts: both scripts' handlers run");
+
+    scripting.unload(a);
+    check(!scripting.isAlive(a) && scripting.isAlive(b), "script contexts: unloading one script leaves the other");
+    const int ticksBefore = count("A tick");
+    for (int i = 0; i < 4; ++i) scripting.tick(0.1f);
+    check(count("A tick") == ticksBefore, "script contexts: an unloaded script's task loop stops");
+    signals::hubFor(ecs)->fire(event, "Event");
+    signals::flush(ecs);
+    check(count("A heard ping") == 1 && count("B heard ping") == 2,
+          "script contexts: an unloaded script's connections are gone, the other's stay");
+
+    const ScriptId d = scripting.loadAndRun("D", R"LUAU(
+print("D sees counter " .. tostring(_G.counter))
+)LUAU", SecurityIdentity::UserScript, scriptEntity("Script", "D"), RunContext::Server);
+    check(d != kInvalidScript && count("D sees counter 2") == 1,
+          "script contexts: a script loaded later joins the same VM and state");
+    check(scripting.totalUsedMemoryBytes() > 0, "script contexts: shared VM memory is counted");
+    scripting.shutdown();
+}
+
+void testRobloxScriptRunRules() {
+    using namespace engine::core;
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "run rules: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto count = [&](const std::string& text) {
+        int n = 0;
+        for (const std::string& line : output) n += line.find(text) != std::string::npos ? 1 : 0;
+        return n;
+    };
+    std::string error;
+    auto service = [&](const char* name) { return instances::getService(ecs, name, error); };
+    auto make = [&](const char* className, const char* name, InstanceRef parent) {
+        const InstanceRef ref = instances::create(ecs, className, error);
+        instances::setName(ecs, ref, name);
+        if (parent != kNoInstance) (void)instances::setParent(ecs, ref, parent, error);
+        return ref;
+    };
+    auto scriptIn = [&](const char* className, const char* name, InstanceRef parent, const std::string& source) {
+        const InstanceRef ref = instances::create(ecs, className, error);
+        instances::setName(ecs, ref, name);
+        ecs.tryGetComponent<Script>(instances::entityOf(ecs, ref))->source = source;
+        if (parent != kNoInstance) (void)instances::setParent(ecs, ref, parent, error);
+        return ref;
+    };
+    auto childNamed = [&](InstanceRef parent, const char* name) {
+        for (InstanceRef child : instances::children(ecs, parent)) {
+            if (instances::name(ecs, child) == name) return child;
+        }
+        return kNoInstance;
+    };
+    auto setBool = [&](InstanceRef ref, const char* property, bool value) {
+        instances::setProperty(ecs, ref, *instances::findProperty(instances::className(ecs, ref), property),
+                               InstanceValue::ofBool(value));
+    };
+    auto frame = [&]() {
+        robloxScripts::tick(ecs, scripting);
+        scripting.tick(0.1f);
+        players::tick(ecs, 0.1f);
+        signals::flush(ecs);
+    };
+    const char* sides = R"LUAU(
+local rs = game:GetService("RunService")
+print(script.Name .. " started server=" .. tostring(rs:IsServer()) .. " client=" .. tostring(rs:IsClient())
+	.. " local=" .. tostring(game:GetService("Players").LocalPlayer ~= nil))
+)LUAU";
+
+    const InstanceRef sss = service("ServerScriptService");
+    const InstanceRef storage = service("ServerStorage");
+    const InstanceRef first = service("ReplicatedFirst");
+    const InstanceRef starterPlayer = service("StarterPlayer");
+    // Roblox makes these two itself; scripts can't.
+    auto starterFolder = [&](const char* className) {
+        const InstanceRef ref = instances::createUnchecked(ecs, className);
+        (void)instances::setParent(ecs, ref, starterPlayer, error);
+        return ref;
+    };
+    const InstanceRef playerScripts = starterFolder("StarterPlayerScripts");
+    const InstanceRef characterScripts = starterFolder("StarterCharacterScripts");
+
+    scriptIn("Script", "Main", sss, sides);
+    scriptIn("Script", "Stored", storage, sides);
+    scriptIn("LocalScript", "LooseLocal", kWorkspaceInstance, sides);
+    scriptIn("LocalScript", "Intro", first, sides);
+    const InstanceRef looper = scriptIn("Script", "Looper", kWorkspaceInstance,
+                                        "print('Looper started') while true do task.wait(0.1) print('Looper tick') end");
+    const InstanceRef mover = scriptIn("Script", "Mover", kWorkspaceInstance,
+                                       "print('Mover started') while true do task.wait(0.1) print('Mover tick') end");
+    const InstanceRef late = scriptIn("Script", "Late", storage, "print('Late started')");
+    const EntityId native = ecs.createEntity();
+    ecs.addComponent<Script>(native, Script{"print('native ran')", false});
+    scriptIn("LocalScript", "PlayerScript", playerScripts, sides);
+    scriptIn("Script", "CharacterScript", characterScripts, "print('CharacterScript in ' .. script.Parent.Name)");
+    const InstanceRef tool = make("Tool", "Sword", service("StarterPack"));
+    scriptIn("Script", "SwordScript", tool, "print('SwordScript in ' .. script.Parent.Parent.ClassName)");
+    make("ScreenGui", "Hud", service("StarterGui"));
+    const InstanceRef keep = make("ScreenGui", "Keep", service("StarterGui"));
+    setBool(keep, "ResetOnSpawn", false);
+
+    frame();
+    check(count("Main started server=true client=false local=false") == 1,
+          "run rules: a Script in ServerScriptService runs as the server and sees no LocalPlayer");
+    check(count("Intro started server=false client=true local=false") == 1,
+          "run rules: a LocalScript in ReplicatedFirst runs as the client before anyone joins");
+    check(count("Stored started") == 0, "run rules: a Script in ServerStorage doesn't run");
+    check(count("LooseLocal started") == 0, "run rules: a LocalScript in the workspace doesn't run");
+    check(count("Looper started") == 1 && count("Mover started") == 1, "run rules: Scripts in the workspace run");
+    check(count("native ran") == 0, "run rules: Kronos's own scripts are left to the Kronos loop");
+    check(count("PlayerScript started") == 0 && count("CharacterScript") == 0 && count("SwordScript") == 0,
+          "run rules: Starter scripts don't run in their Starter folders");
+
+    setBool(looper, "Disabled", true);
+    frame();
+    const int looperTicks = count("Looper tick");
+    frame();
+    frame();
+    check(count("Looper tick") == looperTicks, "run rules: Disabled = true stops a running script");
+    setBool(looper, "Enabled", true);
+    frame();
+    check(count("Looper started") == 2, "run rules: Enabled = true starts it again from the top");
+
+    ecs.tryGetComponent<Script>(instances::entityOf(ecs, looper))->source = "print('Looper edited')";
+    frame();
+    const int editedTicks = count("Looper tick");
+    frame();
+    check(count("Looper edited") == 1 && count("Looper tick") == editedTicks, "run rules: an edited script restarts with its new source");
+
+    (void)instances::setParent(ecs, mover, storage, error);
+    const int moverTicks = count("Mover tick");
+    frame();
+    frame();
+    check(count("Mover tick") > moverTicks && count("Mover started") == 1,
+          "run rules: a running script keeps running after it is moved somewhere it wouldn't start");
+    instances::destroy(ecs, mover);
+    frame();
+    const int destroyedTicks = count("Mover tick");
+    frame();
+    frame();
+    check(count("Mover tick") == destroyedTicks, "run rules: Destroy stops a script");
+
+    (void)instances::setParent(ecs, late, sss, error);
+    frame();
+    check(count("Late started") == 1, "run rules: a script starts once it is moved where scripts run");
+
+    const InstanceRef rootPart = instances::create(ecs, "Part", error);
+    const InstanceRef ana = players::join(ecs, "Ana", 42, instances::entityOf(ecs, rootPart), true);
+    frame();
+    check(count("PlayerScript started server=false client=true local=true") == 1,
+          "run rules: StarterPlayerScripts are copied to PlayerScripts on join and run as the client");
+    check(count("CharacterScript in Ana") == 1, "run rules: StarterCharacterScripts are copied into the character");
+    check(count("SwordScript in Backpack") == 1, "run rules: StarterPack tools are copied to the Backpack and their Scripts run");
+    const InstanceRef backpack = childNamed(ana, "Backpack");
+    const InstanceRef gui = childNamed(ana, "PlayerGui");
+    const InstanceRef firstHud = childNamed(gui, "Hud");
+    const InstanceRef firstKeep = childNamed(gui, "Keep");
+    check(firstHud != kNoInstance && firstKeep != kNoInstance, "run rules: StarterGui is copied to PlayerGui");
+    check(instances::children(ecs, starterPlayer).size() == 2 && childNamed(playerScripts, "PlayerScript") != kNoInstance,
+          "run rules: the Starter originals stay where they are");
+
+    players::loadCharacter(ecs, ana);
+    frame();
+    check(count("CharacterScript in Ana") == 2, "run rules: each new character gets a fresh StarterCharacterScripts copy");
+    check(count("SwordScript in Backpack") == 2 && instances::children(ecs, backpack).size() == 1,
+          "run rules: the Backpack is emptied and refilled from StarterPack on respawn");
+    check(count("PlayerScript started") == 1, "run rules: PlayerScripts aren't copied again on respawn");
+    check(!instances::isAlive(ecs, firstHud) && childNamed(gui, "Hud") != kNoInstance,
+          "run rules: a ResetOnSpawn ScreenGui is replaced on respawn");
+    check(childNamed(gui, "Keep") == firstKeep && instances::children(ecs, gui).size() == 2,
+          "run rules: a ScreenGui with ResetOnSpawn = false is kept");
+
+    scripting.shutdown();
+    check(scripting.initialize(), "run rules: Scripting starts again");
+    frame();
+    check(count("Main started") == 2, "run rules: scripts start again after the Scripting VMs are reset");
+    scripting.shutdown();
+
+    ECS serverOnly;
+    Scripting serverScripting;
+    serverScripting.setBindingsHook([&serverOnly](lua_State* L) { registerInstanceApi(L, serverOnly); });
+    check(serverScripting.initialize(), "run rules: a server-only Scripting initializes");
+    std::vector<std::string> serverOutput;
+    serverScripting.setOutputCallback([&](const std::string& line) { serverOutput.push_back(line); });
+    signals::runService(serverOnly).client = false;
+    for (const char* className : {"Script", "LocalScript"}) {
+        const InstanceRef ref = instances::create(serverOnly, className, error);
+        instances::setName(serverOnly, ref, className);
+        serverOnly.tryGetComponent<Script>(instances::entityOf(serverOnly, ref))->source = "print(script.Name .. ' ran')";
+        (void)instances::setParent(serverOnly, ref, instances::getService(serverOnly, "ReplicatedFirst", error), error);
+    }
+    const InstanceRef serverScript = instances::create(serverOnly, "Script", error);
+    serverOnly.tryGetComponent<Script>(instances::entityOf(serverOnly, serverScript))->source = "print('server script ran')";
+    (void)instances::setParent(serverOnly, serverScript, kWorkspaceInstance, error);
+    robloxScripts::tick(serverOnly, serverScripting);
+    signals::flush(serverOnly);
+    const auto has = [&](const char* text) {
+        return std::any_of(serverOutput.begin(), serverOutput.end(),
+                           [&](const std::string& line) { return line.find(text) != std::string::npos; });
+    };
+    check(has("server script ran") && !has("LocalScript ran"), "run rules: a server-only process never starts LocalScripts");
+    serverScripting.shutdown();
+}
+
+void testRobloxModuleScripts() {
+    using namespace engine::core;
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "modules: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto count = [&](const char* text) {
+        int n = 0;
+        for (const std::string& line : output) n += line.find(text) != std::string::npos ? 1 : 0;
+        return n;
+    };
+    std::string error;
+    const InstanceRef storage = instances::getService(ecs, "ReplicatedStorage", error);
+    auto module = [&](const char* name, const std::string& source) {
+        const InstanceRef ref = instances::create(ecs, "ModuleScript", error);
+        instances::setName(ecs, ref, name);
+        ecs.tryGetComponent<Script>(instances::entityOf(ecs, ref))->source = source;
+        (void)instances::setParent(ecs, ref, storage, error);
+    };
+    auto scriptEntity = [&](const char* className, const char* name) {
+        const InstanceRef ref = instances::create(ecs, className, error);
+        instances::setName(ecs, ref, name);
+        (void)instances::setParent(ecs, ref, kWorkspaceInstance, error);
+        return static_cast<uint32_t>(instances::entityOf(ecs, ref));
+    };
+    module("Counter", R"LUAU(
+print("Counter body ran as " .. script.Name)
+moduleGlobal = true
+assert(requirerGlobal == nil, "a module can't see the requiring script's globals")
+local Counter = {value = 0}
+function Counter.add() Counter.value += 1 return Counter.value end
+return Counter
+)LUAU");
+    module("Slow", "task.wait(0.2) print('Slow body ran') return 5");
+    module("Broken", "print('Broken body ran') error('broken on purpose')");
+    module("Nothing", "local x = 1");
+    module("Two", "return 1, 2");
+    module("BadSyntax", "return function(");
+    module("LoopA", "return require(script.Parent.LoopB)");
+    module("LoopB", "return require(script.Parent.LoopA)");
+
+    const char* expectations = R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	if ok or string.find(tostring(err), text, 1, true) == nil then print("unexpected: " .. tostring(err)) end
+	return not ok and string.find(tostring(err), text, 1, true) ~= nil
+end
+local rs = game:GetService("ReplicatedStorage")
+requirerGlobal = true
+local counter = require(rs.Counter)
+expect("require returns the module's value", type(counter) == "table" and counter.add() >= 1)
+expect("a module's globals stay in the module", moduleGlobal == nil)
+expect("a second require gives the same value", require(rs.Counter) == counter)
+expect("an error in a module is reported to the requirer", fails(function() require(rs.Broken) end, "Requested module experienced an error while loading"))
+expect("a failed module fails again without re-running", fails(function() require(rs.Broken) end, "Requested module experienced an error while loading"))
+expect("a module must return one value", fails(function() require(rs.Nothing) end, "Module code did not return exactly one value"))
+expect("a module can't return two values", fails(function() require(rs.Two) end, "Module code did not return exactly one value"))
+expect("a syntax error names the module", fails(function() require(rs.BadSyntax) end, "ReplicatedStorage.BadSyntax"))
+expect("modules that require each other fail", fails(function() require(rs.LoopA) end, "Requested module was required recursively"))
+expect("only ModuleScripts can be required", fails(function() require(workspace) end, "Attempted to call require with invalid argument(s)."))
+expect("a string path still uses the Kronos module loader", fails(function() require("lib/thing") end, "require(\"lib/thing\")"))
+print("DONE")
+)LUAU";
+    scripting.loadAndRun("First", expectations, SecurityIdentity::UserScript, scriptEntity("Script", "First"), RunContext::Server);
+    scripting.loadAndRun("Second", R"LUAU(
+local counter = require(game:GetService("ReplicatedStorage").Counter)
+print("Second sees value " .. counter.add())
+)LUAU", SecurityIdentity::UserScript, scriptEntity("Script", "Second"), RunContext::Server);
+    scripting.loadAndRun("Client", R"LUAU(
+local counter = require(game:GetService("ReplicatedStorage").Counter)
+print("Client sees value " .. counter.add())
+)LUAU", SecurityIdentity::UserScript, scriptEntity("LocalScript", "Client"), RunContext::Client);
+    scripting.loadAndRun("Own", R"LUAU(
+print("Own sees value " .. require(game:GetService("ReplicatedStorage").Counter).add())
+)LUAU", SecurityIdentity::UserScript, scriptEntity("Script", "Own"), RunContext::Own);
+    checkLuauExpectations("modules", output);
+    check(count("Counter body ran as Counter") == 3, "modules: a module runs once per VM (server, client, a Kronos script)");
+    check(count("Second sees value 2") == 1, "modules: server scripts share one module table");
+    check(count("Client sees value 1") == 1 && count("Own sees value 1") == 1,
+          "modules: the client and a script with its own VM get their own copy");
+    check(count("Broken body ran") == 1, "modules: a module that failed isn't run again");
+
+    for (const char* name : {"WaiterA", "WaiterB"}) {
+        scripting.loadAndRun(name, std::string("print('") + name + " got ' .. require(game:GetService('ReplicatedStorage').Slow))",
+                             SecurityIdentity::UserScript, scriptEntity("Script", name), RunContext::Server);
+    }
+    for (int i = 0; i < 5; ++i) scripting.tick(0.1f);
+    check(count("Slow body ran") == 1 && count("WaiterA got 5") == 1 && count("WaiterB got 5") == 1,
+          "modules: a module that yields runs once and every waiting script gets its value");
+    scripting.shutdown();
+}
+
+void testRobloxRemotes() {
+    using namespace engine::core;
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "remotes: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto count = [&](const char* text) {
+        int n = 0;
+        for (const std::string& line : output) n += line.find(text) != std::string::npos ? 1 : 0;
+        return n;
+    };
+    std::string error;
+    const InstanceRef storage = instances::getService(ecs, "ReplicatedStorage", error);
+    auto make = [&](const char* className, const char* name, InstanceRef parent) {
+        const InstanceRef ref = instances::create(ecs, className, error);
+        instances::setName(ecs, ref, name);
+        (void)instances::setParent(ecs, ref, parent, error);
+        return ref;
+    };
+    make("RemoteEvent", "Ping", storage);
+    make("UnreliableRemoteEvent", "Fast", storage);
+    make("RemoteFunction", "Ask", storage);
+    make("BindableFunction", "Calc", storage);
+    make("BindableFunction", "Late", storage);
+    make("Folder", "Secret", instances::getService(ecs, "ServerStorage", error));
+    make("Script", "Hidden", instances::getService(ecs, "ServerScriptService", error));
+    (void)players::join(ecs, "Ana", 42, kNullEntity, true);
+    (void)players::join(ecs, "Bo", 7, kNullEntity, false);
+    auto scriptEntity = [&](const char* className, const char* name) {
+        return static_cast<uint32_t>(instances::entityOf(ecs, make(className, name, kWorkspaceInstance)));
+    };
+    const char* helpers = R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	if ok or string.find(tostring(err), text, 1, true) == nil then print("unexpected: " .. tostring(err)) end
+	return not ok and string.find(tostring(err), text, 1, true) ~= nil
+end
+local rs = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+)LUAU";
+
+    scripting.loadAndRun("Server", std::string(helpers) + R"LUAU(
+rs.Ping.OnServerEvent:Connect(function(player, a, t)
+	print("server got " .. player.Name .. " " .. a .. " " .. t.x .. " " .. tostring(t.f))
+	t.x = 99
+	rs.Ping:FireClient(player, "pong", a)
+end)
+rs.Fast.OnServerEvent:Connect(function(player, n) print("fast " .. n) end)
+rs.Ask.OnServerInvoke = function(player, a, b)
+	if a == "fail" then error("server says no") end
+	task.wait(0.1)
+	return a + b, player.Name
+end
+rs.Calc.OnInvoke = function(x) return x * 2 end
+task.delay(0.3, function() rs.Late.OnInvoke = function() return "ok" end end)
+expect("the server can't call FireServer", fails(function() rs.Ping:FireServer() end, "FireServer can only be called from the client"))
+expect("the server can't listen to OnClientEvent", fails(function() rs.Ping.OnClientEvent:Connect(print) end, "OnClientEvent can only be used on the client"))
+expect("a callback can't be read", fails(function() return rs.Ask.OnServerInvoke end, "callback member of RemoteFunction"))
+expect("FireClient needs a Player", fails(function() rs.Ping:FireClient(workspace) end, "player argument must be a Player object"))
+expect("the server sees ServerStorage", game:GetService("ServerStorage"):FindFirstChild("Secret") ~= nil)
+expect("a BindableFunction returns its callback's value", rs.Calc:Invoke(21) == 42)
+task.wait(0.5)
+expect("InvokeClient returns the client's value", rs.Ask:InvokeClient(Players.Ana, "hi") == "hi!")
+expect("InvokeClient needs that player's client here", fails(function() rs.Ask:InvokeClient(Players.Bo, 1) end, "isn't running in this process"))
+rs.Ping:FireAllClients("all", 1)
+rs.Ping:FireClient(Players.Bo, "nobody", 1)
+print("SERVER DONE")
+)LUAU", SecurityIdentity::UserScript, scriptEntity("Script", "Server"), RunContext::Server);
+
+    scripting.loadAndRun("Client", std::string(helpers) + R"LUAU(
+local sent = {x = 3, f = function() end}
+rs.Ping.OnClientEvent:Connect(function(word, a) print("client got " .. word .. " " .. a) end)
+rs.Ping:FireServer(7, sent)
+rs.Fast:FireServer(1)
+rs.Ask.OnClientInvoke = function(q) return q .. "!" end
+task.spawn(function() print("late " .. rs.Late:Invoke()) end)
+expect("the client can't call FireAllClients", fails(function() rs.Ping:FireAllClients() end, "FireAllClients can only be called from the server"))
+expect("the client can't listen to OnServerEvent", fails(function() rs.Ping.OnServerEvent:Connect(print) end, "OnServerEvent can only be used on the server"))
+expect("the client can't set OnServerInvoke", fails(function() rs.Ask.OnServerInvoke = print end, "OnServerInvoke can only be set on the server"))
+local serverStorage = game:GetService("ServerStorage")
+expect("ServerStorage looks empty to the client", #serverStorage:GetChildren() == 0 and serverStorage:FindFirstChild("Secret") == nil)
+expect("ServerScriptService looks empty to the client", #game:GetService("ServerScriptService"):GetDescendants() == 0)
+expect("indexing a hidden child fails on the client", fails(function() return serverStorage.Secret end, "is not a valid member"))
+local sum, name = rs.Ask:InvokeServer(2, 3)
+expect("InvokeServer returns the server's values", sum == 5 and name == "Ana")
+expect("a server error reaches the client", fails(function() rs.Ask:InvokeServer("fail") end, "server says no"))
+expect("tables are copied, not shared", sent.x == 3)
+print("CLIENT DONE")
+)LUAU", SecurityIdentity::UserScript, scriptEntity("LocalScript", "Client"), RunContext::Client);
+
+    for (int i = 0; i < 20; ++i) {
+        scripting.tick(0.1f);
+        signals::flush(ecs);
+    }
+    checkLuauExpectations("remotes", output);
+    check(count("SERVER DONE") == 1 && count("CLIENT DONE") == 1, "remotes: both scripts finish");
+    check(count("server got Ana 7 3 nil") == 1, "remotes: FireServer passes the player first, copies tables and drops functions");
+    check(count("client got pong 7") == 1, "remotes: FireClient reaches the local player's client");
+    check(count("client got all 1") == 1, "remotes: FireAllClients reaches the client");
+    check(count("client got nobody") == 0, "remotes: FireClient to a player without a client here goes nowhere");
+    check(count("fast 1") == 1, "remotes: UnreliableRemoteEvent works like a RemoteEvent");
+    check(count("late ok") == 1, "remotes: Invoke waits until a callback is set");
+    scripting.shutdown();
+}
+
 void testRobloxPlayers() {
     using namespace engine::core;
     ECS ecs;
@@ -43510,8 +43987,10 @@ lamp.Glow.Brightness = 3</string></Properties></Item>
 
     CompatibilityScore score = scoreImport(report);
     runImportedScripts(report, score);
-    check(score.scriptsRun == 4 && score.scriptsOk == 4,
+    check(score.scriptsRun == 1 && score.scriptsOk == 1,
           "an imported script finds its parts through workspace, script.Parent and WaitForChild");
+    check(std::count_if(score.scripts.begin(), score.scripts.end(), [](const CompatScriptRun& r) { return !r.started; }) == 3,
+          "the score runner follows Roblox's run rules (Off, Client and Stored never start)");
     for (const CompatScriptRun& run : score.scripts) {
         if (!run.ok) std::fprintf(stderr, "  %s: %s\n", run.path.c_str(), run.error.c_str());
     }
@@ -43561,7 +44040,7 @@ debris:AddItem(workspace, 1)</string></Properties></Item>
       <string name="Source">return function(</string></Properties></Item>
   </Item>
   <Item class="StarterGui" referent="G"><Properties><string name="Name">StarterGui</string></Properties>
-    <Item class="ScreenGui" referent="SG"><Properties><string name="Name">Hud</string></Properties></Item>
+    <Item class="Frame" referent="SG"><Properties><string name="Name">Hud</string></Properties></Item>
   </Item>
 </roblox>)XML";
     const ImportReport report = importer.importDocument(place, scanner);
@@ -43569,8 +44048,8 @@ debris:AddItem(workspace, 1)</string></Properties></Item>
 
     CompatibilityScore score = scoreImport(report);
     check(score.instances == 7, "the score counts every instance");
-    check(score.instancesMapped == 6 && score.unmappedClasses.count("ScreenGui") == 1,
-          "classes Kronos can't build yet (ScreenGui) count as unmapped");
+    check(score.instancesMapped == 6 && score.unmappedClasses.count("Frame") == 1,
+          "classes Kronos can't build yet (Frame) count as unmapped");
     check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
           "print, game and :GetService are supported; :AddItem is not yet");
     check(score.missingApis.count(":AddItem") == 1, "the score lists the missing Roblox APIs by name");
@@ -45898,6 +46377,10 @@ int main() {
     testRobloxEvents();
     testRobloxPartPhysics();
     testRobloxPlayers();
+    testRobloxScriptContexts();
+    testRobloxScriptRunRules();
+    testRobloxModuleScripts();
+    testRobloxRemotes();
     testEntitlementManager();
     testMovieModeScrubbingAndKeyDrag();
     testMovieModePlugin();

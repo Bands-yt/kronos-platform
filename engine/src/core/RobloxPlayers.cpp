@@ -112,6 +112,50 @@ std::string formatValue(const InstanceValue& v) {
     }
 }
 
+InstanceRef starterPlayerFolder(ECS& ecs, const char* className) {
+    return childOfClass(ecs, instances::findService(ecs, "StarterPlayer"), className);
+}
+
+void copyChildren(ECS& ecs, InstanceRef from, InstanceRef to, const std::vector<std::string>& skipNames = {}) {
+    if (from == kNoInstance || to == kNoInstance) return;
+    std::string error;
+    for (InstanceRef child : instances::children(ecs, from)) {
+        if (std::find(skipNames.begin(), skipNames.end(), instances::name(ecs, child)) != skipNames.end()) continue;
+        const InstanceRef copy = instances::clone(ecs, child);
+        if (copy != kNoInstance) (void)instances::setParent(ecs, copy, to, error);
+    }
+}
+
+bool resetsOnSpawn(ECS& ecs, InstanceRef gui) {
+    const auto* info = ecs.tryGetComponent<InstanceInfo>(instances::entityOf(ecs, gui));
+    if (info == nullptr) return true;
+    const auto it = info->properties.find("ResetOnSpawn");
+    return it == info->properties.end() || it->second.boolean;
+}
+
+// Roblox's spawn copies: StarterCharacterScripts into the character, a
+// fresh StarterPack into the Backpack, and StarterGui into PlayerGui (items
+// with ResetOnSpawn = false are kept from the last life).
+void copyStarterItems(ECS& ecs, InstanceRef player, InstanceRef character) {
+    copyChildren(ecs, starterPlayerFolder(ecs, "StarterCharacterScripts"), character);
+
+    const InstanceRef backpack = childOfClass(ecs, player, "Backpack");
+    for (InstanceRef item : instances::children(ecs, backpack)) instances::destroy(ecs, item);
+    copyChildren(ecs, instances::findService(ecs, "StarterPack"), backpack);
+
+    const InstanceRef playerGui = childOfClass(ecs, player, "PlayerGui");
+    const InstanceRef starterGui = instances::findService(ecs, "StarterGui");
+    std::vector<std::string> kept;
+    for (InstanceRef gui : instances::children(ecs, playerGui)) {
+        if (resetsOnSpawn(ecs, gui)) {
+            instances::destroy(ecs, gui);
+        } else {
+            kept.push_back(instances::name(ecs, gui));
+        }
+    }
+    copyChildren(ecs, starterGui, playerGui, kept);
+}
+
 // Places a fresh character Model around `rootPart` and tells scripts.
 void buildCharacter(ECS& ecs, InstanceRef player, EntityId rootPart) {
     const InstanceRef root = instances::refOf(ecs, rootPart);
@@ -137,6 +181,7 @@ void buildCharacter(ECS& ecs, InstanceRef player, EntityId rootPart) {
     set(ecs, humanoid, "DisplayName", get(ecs, player, "DisplayName"));
     humanoidState(ecs, instances::entityOf(ecs, humanoid));
     set(ecs, model, "PrimaryPart", InstanceValue::ofInstance(root));
+    copyStarterItems(ecs, player, model);
 
     set(ecs, player, "Character", InstanceValue::ofInstance(model));
     fire(ecs, player, "CharacterAdded", {instanceArg(model)});
@@ -165,10 +210,11 @@ InstanceRef join(ECS& ecs, const std::string& name, int64_t userId, EntityId roo
     state.local = local;
 
     std::string error;
-    for (const char* folder : {"Backpack", "PlayerGui"}) {
+    for (const char* folder : {"Backpack", "PlayerGui", "PlayerScripts"}) {
         const InstanceRef child = instances::createUnchecked(ecs, folder);
         (void)instances::setParent(ecs, child, player, error);
     }
+    copyChildren(ecs, starterPlayerFolder(ecs, "StarterPlayerScripts"), childOfClass(ecs, player, "PlayerScripts"));
     (void)instances::setParent(ecs, player, service, error);
     if (local) set(ecs, service, "LocalPlayer", InstanceValue::ofInstance(player));
 

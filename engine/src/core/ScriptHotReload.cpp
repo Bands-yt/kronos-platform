@@ -2,6 +2,7 @@
 
 #include "core/Components.hpp"
 #include "core/ECS.hpp"
+#include "core/RobloxScripts.hpp"
 #include "core/Scripting.hpp"
 
 namespace engine::core {
@@ -10,6 +11,7 @@ void tickScriptHotReload(ECS& ecs, Scripting& scripting) {
     auto scriptView = ecs.view<Script>();
     for (auto entity : scriptView) {
         Script& script = scriptView.get<Script>(entity);
+        if (robloxScripts::isRobloxScript(ecs, entity)) continue;
         if (script.autoRun && !script.source.empty() && script.source != script.loadedSource) {
             if (script.scriptId != kInvalidScript) scripting.unload(script.scriptId);
             const Name* name = ecs.tryGetComponent<Name>(entity);
@@ -19,6 +21,7 @@ void tickScriptHotReload(ECS& ecs, Scripting& scripting) {
             script.loadedSource = script.source;
         }
     }
+    robloxScripts::tick(ecs, scripting);
 }
 
 } // namespace engine::core

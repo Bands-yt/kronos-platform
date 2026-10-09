@@ -372,6 +372,7 @@ add_library(engine_core STATIC
     core/InstanceTree.cpp
     core/InstanceSignals.cpp
     core/RobloxPlayers.cpp
+    core/RobloxScripts.cpp
     core/ScriptInstanceApi.cpp
     migration/AssetModeration.cpp
 

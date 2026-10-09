@@ -7,9 +7,11 @@
 
 #include "core/Audio.hpp"
 #include "core/Components.hpp"
+#include "core/Hierarchy.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/Logger.hpp"
 #include "core/RobloxPlayers.hpp"
+#include "core/RobloxScripts.hpp"
 #include "core/ScriptHotReload.hpp"
 
 namespace engine::studio::plugins {
@@ -141,6 +143,7 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
         script.loadedSource.clear();
     }
     scripting_.shutdown();
+    core::robloxScripts::reset(ecs);
     scriptAudioApi_.reset();
     physics_.setTouchRecording(false);
     core::signals::runService(ecs).running = false;
@@ -240,6 +243,8 @@ void PhysicsPreviewPlugin::restoreScene(core::ECS& ecs) {
     for (auto entity : registry.view<core::Transform>()) {
         if (before.count(entity) == 0) spawned.push_back(entity);
     }
+    // Unparent first so a kept parent (an imported Workspace) doesn't keep stale child ids.
+    for (core::EntityId entity : spawned) core::hierarchy::unparent(ecs, entity);
     for (core::EntityId entity : spawned) {
         physics_.detachBody(entity, ecs);
         ecs.destroyEntity(entity);

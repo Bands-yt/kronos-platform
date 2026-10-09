@@ -38,6 +38,12 @@ using Clock = std::chrono::steady_clock;
 // reachable from Lua at all, so a script cannot inspect, poison, or
 // clear another module's cached value.
 constexpr const char* kModuleCacheRegistryKey = "kronos.modulecache";
+constexpr const char* kRunContextKey = "kronos.runcontext";
+
+// New threads (coroutine.create, wrap) run under their creator's budget.
+void inheritThreadData(lua_State* parent, lua_State* child) {
+    if (parent != nullptr) lua_setthreaddata(child, lua_getthreaddata(parent));
+}
 // Modules whose top-level chunk is currently running, in require() order.
 // Kept in the registry rather than a C++ member so it is per-VM (and so a
 // coroutine yielding mid-require cannot corrupt another VM's view of it),
@@ -156,6 +162,22 @@ std::string describeValue(lua_State* L, int index, int depth) {
 // privilege level than the script that created it.
 using ScriptBudget = ScriptThreadContext;
 
+RunContext runContextOf(lua_State* L) {
+    lua_getfield(L, LUA_REGISTRYINDEX, kRunContextKey);
+    const int value = lua_isnumber(L, -1) ? static_cast<int>(lua_tointeger(L, -1)) : 0;
+    lua_pop(L, 1);
+    return value == 1 ? RunContext::Server : value == 2 ? RunContext::Client : RunContext::Own;
+}
+
+std::string compileScriptSource(const std::string& source) {
+    Luau::CompileOptions options;
+    options.disabledBuiltins = kDisabledBuiltins;
+    options.mutableGlobals = kMutableGlobals;
+    options.optimizationLevel = 1;
+    options.debugLevel = 1;
+    return Luau::compile(source, options);
+}
+
 Scripting::Scripting() = default;
 // Real, deliberate asymmetry from shutdown() -- see that method's own
 // doc comment for why the destructor must NOT go through it: this
@@ -174,6 +196,9 @@ size_t Scripting::totalUsedMemoryBytes() const {
     for (const auto& script : scripts_) {
         if (!script.alive || script.allocatorState == nullptr) continue;
         total += static_cast<const AllocatorState*>(script.allocatorState)->used;
+    }
+    for (const ContextVm& context : contextVms_) {
+        if (context.allocatorState != nullptr) total += static_cast<const AllocatorState*>(context.allocatorState)->used;
     }
     return total;
 }
@@ -198,6 +223,9 @@ void Scripting::closeAllScripts() {
     onSessionLeaveCallbacks_.clear();
     onPlayerJoinCallbacks_.clear();
     onPlayerLeaveCallbacks_.clear();
+    pendingWaits_.clear();
+    closeContextVms();
+    ++generation_;
 }
 
 void Scripting::shutdown() {
@@ -277,11 +305,11 @@ void Scripting::scriptInterrupt(lua_State* L, int gc) {
     }
 }
 
-lua_State* Scripting::spawnThread(lua_State* owner, int& outRef) {
+lua_State* Scripting::spawnThread(lua_State* owner, int& outRef, void* threadData) {
     lua_State* thread = lua_newthread(owner); // pushed onto owner's stack
     outRef = lua_ref(owner, -1);
     lua_pop(owner, 1);
-    lua_setthreaddata(thread, lua_getthreaddata(owner));
+    lua_setthreaddata(thread, threadData != nullptr ? threadData : lua_getthreaddata(owner));
     return thread;
 }
 
@@ -318,7 +346,7 @@ void Scripting::registerEventCallback(std::vector<EventCallback>& list, lua_Stat
     lua_pushvalue(L, stackIndex);
     int ref = lua_ref(L, -1);
     lua_pop(L, 1);
-    list.push_back(EventCallback{owner, ref});
+    list.push_back(EventCallback{owner, ref, lua_getthreaddata(L)});
 }
 
 void Scripting::invokeCallback(const EventCallback& callback, int argCount, const char* eventName) {
@@ -330,7 +358,7 @@ void Scripting::invokeCallback(const EventCallback& callback, int argCount, cons
         }
         // Run on a coroutine so a breakpoint inside the handler can pause it.
         int ref = 0;
-        lua_State* thread = spawnThread(L, ref);
+        lua_State* thread = spawnThread(L, ref, callback.budget);
         lua_getref(L, callback.ref);
         if (argCount > 0) lua_insert(L, -(argCount + 1));
         lua_xmove(L, thread, argCount + 1);
@@ -553,7 +581,7 @@ lua_State* Scripting::prepareTask(lua_State* L, const char* name, int& ref, int&
         return thread;
     }
     if (!lua_isfunction(L, 1)) luaL_error(L, "%s expects a function or a thread", name);
-    lua_State* thread = spawnThread(owner, ref);
+    lua_State* thread = spawnThread(owner, ref, lua_getthreaddata(L));
     lua_xmove(L, thread, nargs + 1);
     lua_pushthread(thread);
     lua_xmove(thread, L, 1);
@@ -564,7 +592,7 @@ int Scripting::luaTaskSpawn(lua_State* L) {
     auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
     int ref = -1, nargs = 0;
     lua_State* thread = self->prepareTask(L, "task.spawn", ref, nargs);
-    self->refreshDeadline(lua_mainthread(L));
+    self->refreshDeadline(thread);
     self->settleThread(thread, ref, lua_resume(thread, L, nargs), "task.spawn");
     return 1;
 }
@@ -979,41 +1007,126 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
 
 ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity,
                                uint32_t entity) {
-    if (!initialized_) return kInvalidScript;
+    return loadAndRun(chunkName, source, identity, entity, RunContext::Own);
+}
 
+namespace {
+
+void setScriptGlobal(lua_State* L, uint32_t entity) {
+    if (entity == kNoScriptEntity) return;
+    // An Instance when the VM has the Instance API; `script.entity` works either way.
+    if (!pushScriptInstance(L, entity)) {
+        lua_newtable(L);
+        lua_pushnumber(L, static_cast<double>(entity));
+        lua_setfield(L, -2, "entity");
+        lua_setreadonly(L, -1, true);
+    }
+    lua_setglobal(L, "script");
+}
+
+} // namespace
+
+lua_State* Scripting::contextVm(RunContext context) const {
+    if (context == RunContext::Own) return nullptr;
+    return contextVms_[context == RunContext::Server ? 0 : 1].vm;
+}
+
+lua_State* Scripting::ensureContextVm(RunContext context) {
+    ContextVm& slot = contextVms_[context == RunContext::Server ? 0 : 1];
+    if (slot.vm != nullptr) return slot.vm;
     auto* allocState = new AllocatorState{0, maxMemoryBytesPerScript_};
-    lua_State* owner = lua_newstate(&Scripting::budgetAllocator, allocState);
-    if (!owner) {
-        std::fprintf(stderr, "Scripting: lua_newstate failed for \"%s\" (allocator budget too small?)\n", chunkName.c_str());
+    lua_State* vm = lua_newstate(&Scripting::budgetAllocator, allocState);
+    if (vm == nullptr) {
         delete allocState;
-        return kInvalidScript;
+        return nullptr;
     }
+    luaL_openlibs(vm);
+    lua_callbacks(vm)->userdata = this;
+    lua_callbacks(vm)->userthread = &inheritThreadData;
+    lua_pushinteger(vm, context == RunContext::Server ? 1 : 2);
+    lua_setfield(vm, LUA_REGISTRYINDEX, kRunContextKey);
+    registerModuleLoader(vm);
+    registerBindings(vm);
+    // Roblox's _G and shared: one writable table per context.
+    lua_newtable(vm);
+    lua_setglobal(vm, "_G");
+    lua_newtable(vm);
+    lua_setglobal(vm, "shared");
+    applySandbox(vm);
+    for (const char* name : {"_G", "shared"}) {
+        lua_getglobal(vm, name);
+        lua_setreadonly(vm, -1, false);
+        lua_pop(vm, 1);
+    }
+    auto* budget = new ScriptBudget{};
+    budget->deadline = Clock::now();
+    lua_setthreaddata(vm, budget);
+    lua_callbacks(vm)->interrupt = &Scripting::scriptInterrupt;
+    slot.vm = vm;
+    slot.allocatorState = allocState;
+    slot.budgets.push_back(budget);
+    return vm;
+}
 
-    luaL_openlibs(owner);
-    // Bindings (the Instance API) look Scripting up through this.
-    lua_callbacks(owner)->userdata = this;
-    registerBindings(owner);
-    registerModuleLoader(owner);
-    if (entity != kNoScriptEntity) {
-        // An Instance when the VM has the Instance API; `script.entity` works either way.
-        if (!pushScriptInstance(owner, entity)) {
-            lua_newtable(owner);
-            lua_pushnumber(owner, static_cast<double>(entity));
-            lua_setfield(owner, -2, "entity");
-            lua_setreadonly(owner, -1, true);
-        }
-        lua_setglobal(owner, "script");
+void Scripting::closeContextVms() {
+    for (ContextVm& slot : contextVms_) {
+        if (slot.vm != nullptr) lua_close(slot.vm);
+        delete static_cast<AllocatorState*>(slot.allocatorState);
+        for (void* budget : slot.budgets) delete static_cast<ScriptBudget*>(budget);
+        slot = ContextVm{};
     }
-    // Must run last: it freezes the global table, so every global this
-    // VM will ever have has to be installed before this point.
-    applySandbox(owner);
+}
+
+bool Scripting::ownsThread(const LoadedScript& script, lua_State* thread) const {
+    if (thread == nullptr) return false;
+    if (script.shared) return lua_getthreaddata(thread) == script.budgetState;
+    return lua_mainthread(thread) == script.owner;
+}
+
+ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& source, SecurityIdentity identity,
+                               uint32_t entity, RunContext context) {
+    if (!initialized_) return kInvalidScript;
+    const bool shared = context != RunContext::Own;
+
+    AllocatorState* allocState = nullptr;
+    lua_State* owner = nullptr;
+    if (shared) {
+        owner = ensureContextVm(context);
+        if (owner == nullptr) {
+            std::fprintf(stderr, "Scripting: could not create the script VM for \"%s\"\n", chunkName.c_str());
+            return kInvalidScript;
+        }
+    } else {
+        allocState = new AllocatorState{0, maxMemoryBytesPerScript_};
+        owner = lua_newstate(&Scripting::budgetAllocator, allocState);
+        if (!owner) {
+            std::fprintf(stderr, "Scripting: lua_newstate failed for \"%s\" (allocator budget too small?)\n", chunkName.c_str());
+            delete allocState;
+            return kInvalidScript;
+        }
+
+        luaL_openlibs(owner);
+        // Bindings (the Instance API) look Scripting up through this.
+        lua_callbacks(owner)->userdata = this;
+        lua_callbacks(owner)->userthread = &inheritThreadData;
+        registerModuleLoader(owner);
+        registerBindings(owner);
+        setScriptGlobal(owner, entity);
+        // Must run last: it freezes the global table, so every global this
+        // VM will ever have has to be installed before this point.
+        applySandbox(owner);
+    }
 
     auto* budget = new ScriptBudget{};
     budget->deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
                                            std::chrono::duration<double, std::milli>(maxExecutionMillisPerTick_));
-    // The VM's privilege level, fixed here and never mutated again.
+    // The script's privilege level, fixed here and never mutated again.
     budget->identity = identity;
-    lua_setthreaddata(owner, budget);
+    if (shared) {
+        contextVms_[context == RunContext::Server ? 0 : 1].budgets.push_back(budget);
+    } else {
+        lua_setthreaddata(owner, budget);
+    }
     lua_callbacks(owner)->interrupt = &Scripting::scriptInterrupt;
     if (debugger_ != nullptr) {
         lua_callbacks(owner)->debugbreak = &Scripting::debugBreakHook;
@@ -1032,15 +1145,22 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     int threadRef = lua_ref(owner, -1);
     lua_pop(owner, 1);
     lua_setthreaddata(thread, budget);
+    if (shared) {
+        // The script's own globals, reading through to the shared ones.
+        luaL_sandboxthread(thread);
+        setScriptGlobal(thread, entity);
+    }
 
     if (luau_load(thread, chunkName.c_str(), bytecode.data(), bytecode.size(), 0) != 0) {
         std::string message = std::string("compile error in \"") + chunkName + "\": " + lua_tostring(thread, -1);
         std::fprintf(stderr, "Scripting: %s\n", message.c_str());
         if (outputCallback_) outputCallback_(message);
         lua_unref(owner, threadRef);
-        lua_close(owner);
-        delete allocState;
-        delete budget;
+        if (!shared) {
+            lua_close(owner);
+            delete allocState;
+            delete budget;
+        }
         return kInvalidScript;
     }
 
@@ -1061,12 +1181,12 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
         // Another script is stopped in the debugger: run this one's body once it continues.
         ScriptId id = static_cast<ScriptId>(scripts_.size());
         scripts_.push_back(LoadedScript{chunkName, owner, allocState, budget, identity, /*alive=*/true, mainFunctionRef,
-                                        std::move(appliedBreakpoints)});
+                                        std::move(appliedBreakpoints), shared});
         deferredQueue_.push_back(ParkedThread{thread, threadRef, 0.0, clock_});
         return id;
     }
 
-    refreshDeadline(owner);
+    refreshDeadline(thread);
     int status = lua_resume(thread, nullptr, 0);
     if (status != LUA_OK && status != LUA_YIELD && status != LUA_BREAK) {
         std::string message = std::string("runtime error in \"") + chunkName + "\": " + lua_tostring(thread, -1);
@@ -1076,7 +1196,7 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
 
     ScriptId id = static_cast<ScriptId>(scripts_.size());
     scripts_.push_back(LoadedScript{chunkName, owner, allocState, budget, identity, /*alive=*/true, mainFunctionRef,
-                                    std::move(appliedBreakpoints)});
+                                    std::move(appliedBreakpoints), shared});
 
     if (status == LUA_BREAK) {
         holdBrokenThread(thread, threadRef);
@@ -1095,65 +1215,54 @@ void Scripting::unload(ScriptId id) {
     if (id >= scripts_.size() || !scripts_[id].alive) return;
     auto& script = scripts_[id];
 
-    // Real bug found while auditing hot-reload stability (Alpha Completion
-    // Checklist, "Lua Creator Experience"): core::Application's own
-    // hot-reload path (see Application.cpp's "Real hot-reload path")
-    // calls this on a live, shared Scripting instance's single script,
-    // NOT during a full shutdown() -- so the previous "not built out
-    // since nothing yet calls unload() outside of shutdown" reasoning was
-    // already stale. Any parked task.wait()/task.defer() coroutine, or
-    // any events.onUpdate/onCollision/onInteract/onUnload handler,
-    // registered by THIS script and still live in one of the five lists
-    // below would otherwise dangle the moment lua_close() below frees the
-    // VM they belong to -- and the very next tick()/fire*() call
-    // (Application.cpp runs scripting_.tick() right after this same hot-
-    // reload scan, same frame) would resume/invoke a freed lua_State.
-    // Every real gameplay-script example that uses events.onUpdate (e.g.
-    // examples/lua/moving_platform.lua) hits this path on every reload.
-    // Purging by owner here -- not unref'ing, since the whole VM these
-    // refs live in is about to be destroyed anyway -- closes the gap.
-    // Deliberately does NOT fire this script's own onUnload handler (see
-    // docs/LUA_API.md's own onUnload entry: that hook is scoped to a real
-    // Scripting::shutdown() call, not a single script's unload()).
-    auto belongsToThisScript = [owner = script.owner](const ParkedThread& entry) {
-        return lua_mainthread(entry.thread) == owner;
+    // Drop everything this script owns before its VM (or, in a shared VM,
+    // its threads) goes away; tick()/fire*() would otherwise resume freed
+    // state. A shared VM stays open, so its refs are released here.
+    auto release = [&](int ref) {
+        if (script.shared && ref >= 0) lua_unref(script.owner, ref);
     };
-    parked_.erase(std::remove_if(parked_.begin(), parked_.end(), belongsToThisScript), parked_.end());
-    deferredQueue_.erase(std::remove_if(deferredQueue_.begin(), deferredQueue_.end(), belongsToThisScript),
-                          deferredQueue_.end());
-    auto belongsToThisScriptCallback = [owner = script.owner](const EventCallback& callback) {
-        return callback.owner == owner;
+    auto purgeThreads = [&](std::vector<ParkedThread>& list) {
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [&](const ParkedThread& entry) {
+                                      if (!ownsThread(script, entry.thread)) return false;
+                                      release(entry.ref);
+                                      return true;
+                                  }),
+                   list.end());
     };
-    onUpdateCallbacks_.erase(std::remove_if(onUpdateCallbacks_.begin(), onUpdateCallbacks_.end(), belongsToThisScriptCallback),
-                             onUpdateCallbacks_.end());
-    onCollisionCallbacks_.erase(
-        std::remove_if(onCollisionCallbacks_.begin(), onCollisionCallbacks_.end(), belongsToThisScriptCallback),
-        onCollisionCallbacks_.end());
-    onInteractCallbacks_.erase(
-        std::remove_if(onInteractCallbacks_.begin(), onInteractCallbacks_.end(), belongsToThisScriptCallback),
-        onInteractCallbacks_.end());
-    onUnloadCallbacks_.erase(
-        std::remove_if(onUnloadCallbacks_.begin(), onUnloadCallbacks_.end(), belongsToThisScriptCallback),
-        onUnloadCallbacks_.end());
-    // Kronos ("Active Joining UI" -- Scripting event hooks): the four new
-    // vectors go through the exact same real purge filter as the
-    // pre-existing four above -- skipping this is the single easiest way
-    // to regress the real use-after-free bug this filter exists to fix
-    // (see this function's own comment above).
-    onSessionJoinCallbacks_.erase(
-        std::remove_if(onSessionJoinCallbacks_.begin(), onSessionJoinCallbacks_.end(), belongsToThisScriptCallback),
-        onSessionJoinCallbacks_.end());
-    onSessionLeaveCallbacks_.erase(
-        std::remove_if(onSessionLeaveCallbacks_.begin(), onSessionLeaveCallbacks_.end(), belongsToThisScriptCallback),
-        onSessionLeaveCallbacks_.end());
-    onPlayerJoinCallbacks_.erase(
-        std::remove_if(onPlayerJoinCallbacks_.begin(), onPlayerJoinCallbacks_.end(), belongsToThisScriptCallback),
-        onPlayerJoinCallbacks_.end());
-    onPlayerLeaveCallbacks_.erase(
-        std::remove_if(onPlayerLeaveCallbacks_.begin(), onPlayerLeaveCallbacks_.end(), belongsToThisScriptCallback),
-        onPlayerLeaveCallbacks_.end());
+    purgeThreads(parked_);
+    purgeThreads(deferredQueue_);
+    if (resumingBatch_ != nullptr) {
+        for (ParkedThread& entry : *resumingBatch_) {
+            if (!ownsThread(script, entry.thread)) continue;
+            release(entry.ref);
+            entry.thread = nullptr;
+        }
+    }
+    pendingWaits_.erase(std::remove_if(pendingWaits_.begin(), pendingWaits_.end(),
+                                       [&](const PendingWait& wait) { return ownsThread(script, wait.thread); }),
+                        pendingWaits_.end());
 
-    if (broken_.thread != nullptr && lua_mainthread(broken_.thread) == script.owner) {
+    // Deliberately does NOT fire this script's own onUnload handler: that
+    // hook is scoped to a real Scripting::shutdown() call.
+    auto purgeCallbacks = [&](std::vector<EventCallback>& list) {
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [&](const EventCallback& callback) {
+                                      const bool owned = script.shared ? callback.budget == script.budgetState
+                                                                       : callback.owner == script.owner;
+                                      if (owned) release(callback.ref);
+                                      return owned;
+                                  }),
+                   list.end());
+    };
+    for (auto* list : {&onUpdateCallbacks_, &onCollisionCallbacks_, &onInteractCallbacks_, &onUnloadCallbacks_,
+                       &onSessionJoinCallbacks_, &onSessionLeaveCallbacks_, &onPlayerJoinCallbacks_,
+                       &onPlayerLeaveCallbacks_}) {
+        purgeCallbacks(*list);
+    }
+
+    if (ownsThread(script, broken_.thread)) {
+        release(broken_.ref);
         broken_ = {};
         pausedThread_ = nullptr;
         interruptedThread_ = nullptr;
@@ -1163,9 +1272,16 @@ void Scripting::unload(ScriptId id) {
             debugger_->stepAction_ = ScriptDebugger::Action::Continue;
         }
     }
-    lua_close(script.owner);
-    delete static_cast<AllocatorState*>(script.allocatorState);
-    delete static_cast<ScriptBudget*>(script.budgetState);
+    if (script.shared) {
+        for (const auto& weak : deferredWork_) {
+            if (auto work = weak.lock()) work->forgetOwner(script.budgetState);
+        }
+        release(script.mainFunctionRef);
+    } else {
+        lua_close(script.owner);
+        delete static_cast<AllocatorState*>(script.allocatorState);
+        delete static_cast<ScriptBudget*>(script.budgetState);
+    }
     script.owner = nullptr;
     script.alive = false;
 }
@@ -1191,7 +1307,7 @@ void Scripting::tick(float dt) {
             continue;
         }
         const int nargs = entry.resumeArgs >= 0 ? entry.resumeArgs : lua_gettop(entry.thread) - 1;
-        refreshDeadline(lua_mainthread(entry.thread));
+        refreshDeadline(entry.thread);
         settleThread(entry.thread, entry.ref, lua_resume(entry.thread, nullptr, nargs), "task.defer");
     }
 
@@ -1210,7 +1326,7 @@ void Scripting::tick(float dt) {
             lua_pushnumber(entry.thread, clock_ - entry.startTime); // task.wait() returns elapsed time
             nargs = 1;
         }
-        refreshDeadline(lua_mainthread(entry.thread));
+        refreshDeadline(entry.thread);
         settleThread(entry.thread, entry.ref, lua_resume(entry.thread, nullptr, nargs),
                      entry.resumeArgs >= 0 ? "task.delay" : "task.wait");
     }
@@ -1224,12 +1340,13 @@ void Scripting::tick(float dt) {
     flushDeferredWork();
 }
 
-bool Scripting::runHandler(lua_State* vm, int fnRef, const PushArgs& pushArgs, const std::string& label) {
+bool Scripting::runHandler(lua_State* vm, int fnRef, const PushArgs& pushArgs, const std::string& label,
+                           void* owner) {
     int ref = 0;
-    lua_State* thread = spawnThread(vm, ref);
+    lua_State* thread = spawnThread(vm, ref, owner);
     lua_getref(thread, fnRef);
     const int nargs = pushArgs ? pushArgs(thread) : 0;
-    refreshDeadline(vm);
+    refreshDeadline(thread);
     settleThread(thread, ref, lua_resume(thread, nullptr, nargs), label.c_str());
     return true;
 }
@@ -1244,7 +1361,7 @@ bool Scripting::resumeWaiting(lua_State* thread, const PushArgs& pushArgs) {
         const int ref = parked_[i].ref;
         parked_.erase(parked_.begin() + static_cast<long>(i));
         const int nargs = pushArgs ? pushArgs(thread) : 0;
-        refreshDeadline(lua_mainthread(thread));
+        refreshDeadline(thread);
         settleThread(thread, ref, lua_resume(thread, nullptr, nargs), "a signal Wait");
         return true;
     }
@@ -1361,7 +1478,7 @@ void Scripting::resumeBrokenThread() {
 
     if (lua_State* inner = interruptedThread_) {
         interruptedThread_ = nullptr;
-        refreshDeadline(lua_mainthread(inner));
+        refreshDeadline(inner);
         const int innerStatus = lua_resume(inner, nullptr, 0);
         if (innerStatus == LUA_BREAK) return;
     }
@@ -1369,7 +1486,7 @@ void Scripting::resumeBrokenThread() {
     const BrokenThread broken = broken_;
     broken_ = {};
     lua_State* owner = lua_mainthread(broken.thread);
-    refreshDeadline(owner);
+    refreshDeadline(broken.thread);
     const int status = lua_resume(broken.thread, nullptr, 0);
     skipBreakThread_ = nullptr;
     if (status == LUA_BREAK) {

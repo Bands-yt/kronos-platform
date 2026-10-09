@@ -51,6 +51,7 @@ Only test with places you made or that are clearly licensed for it.
 | 2026-10-09 | 57% | 52/56 (93%) | 66/94 (70%) | 1/13 (8%) | Step 3, Instance tree. Scripts now get past `game`/`workspace` and stop at events (`Touched`, `PlayerAdded`, `:Connect`, step 4) or services (TweenService, DataStoreService) |
 | 2026-10-09 | 75% | 52/56 (93%) | 83/95 (87%) | 6/13 (46%) | Step 4, events. All four obby scripts run. The rest stop at `PlayerAdded` (step 5), `OnServerEvent` (step 6), `DataStoreService` (step 7), `TweenService`/`Debris` (step 8) or `MouseButton1Click` (step 9) |
 | 2026-10-09 | 82% | 52/56 (93%) | 86/95 (91%) | 8/13 (62%) | Step 5, players and characters. The obby scores 100% and is playable in Studio; the tycoon's leaderstats and buy button work. The rest stop at `DataStoreService` (step 7), `Debris`/`TweenService` (step 8), `OnServerEvent` (step 6) or `MouseButton1Click` (step 9) |
+| 2026-10-09 | 85% | 53/56 (95%) | 87/95 (92%) | 9/13 (69%) | Step 6, client and server. The GUI shop's server script (`OnServerEvent`) runs, and its LocalScript starts on the client. The rest stop at `DataStoreService` (step 7), `Debris`/`TweenService` (step 8) or `MouseButton1Click` (step 9) |
 
 Most-used missing APIs at the baseline: `:Connect`, `:GetService`, `game`,
 `script`, `Instance`, `:WaitForChild`, `workspace`. Unbuilt classes: the GUI
@@ -308,7 +309,7 @@ end)
 | Respawning | When `Health` reaches 0 the character dies (`Died` fires once, input stops). After `Players.RespawnTime` a new character appears at the player's `RespawnLocation`, else at a part named `SpawnLocation`. Falling below `workspace.FallenPartsDestroyHeight` (-500) kills |
 | Leaderboard | A player with a `leaderstats` folder shows in the top-right list, one column per value in the order they were added, sorted by the first column. Your own row is blue. In the Player and in Studio Play |
 | Moving parts | Setting `CFrame`/`Position` on a part that is simulating now moves its physics body (teleporting a character works) |
-| Imported places | Imported `Script`s start when the game runs (Play), like in Roblox: ones in the workspace or `ServerScriptService` that aren't `Disabled`. Scripts in `ReplicatedStorage`/`ServerStorage`, `LocalScript`s and `ModuleScript`s don't start on their own |
+| Imported places | Imported scripts start when the game runs (Play), following Roblox's rules; see "Client and server (step 6)" |
 
 Roblox's scale is kept: `WalkSpeed` 16 and `JumpPower` 50 (or `JumpHeight`
 7.2) are the normal Kronos walk and jump, and other values scale them
@@ -323,7 +324,7 @@ made inside `PlayerAdded` catches the first character.
 ### Differences from Roblox (known limits)
 
 - Only the local player for now. Other players in a network game don't get
-  `Player` objects until step 6 (client/server).
+  `Player` objects yet (they arrive with remotes over the network, see step 6).
 - The character has no `Head`, `Torso` or limb parts, only
   `HumanoidRootPart`; the avatar mesh is drawn on top of it. Scripts that
   look for `character.Head` don't work yet.
@@ -333,6 +334,136 @@ made inside `PlayerAdded` catches the first character.
   and tools (`EquipTool`) are planned; using them gives a "planned" error.
 - Broken Bones and the bring-up world don't create players (they have their
   own game code).
+
+## Client and server (step 6)
+
+A Roblox game has two sides: the **server** (one per game, runs `Script`s)
+and a **client** for each player (runs `LocalScript`s). They talk through
+`RemoteEvent`s and `RemoteFunction`s. Kronos now has the same split. The code
+is in `engine/src/core/RobloxScripts.cpp` (which scripts run where),
+`core/Scripting.cpp` (one Luau VM per side) and `core/ScriptInstanceApi.cpp`
+(`require` and the remotes).
+
+```lua
+-- ReplicatedStorage has a RemoteEvent "Buy" and a RemoteFunction "GetPrice".
+
+-- Script in ServerScriptService
+local RS = game:GetService("ReplicatedStorage")
+RS.GetPrice.OnServerInvoke = function(player, item)
+    return 25
+end
+RS.Buy.OnServerEvent:Connect(function(player, item)
+    print(player.Name .. " bought " .. item)
+    RS.Buy:FireClient(player, "thanks")
+end)
+
+-- LocalScript in StarterPlayer.StarterPlayerScripts
+local RS = game:GetService("ReplicatedStorage")
+RS.Buy.OnClientEvent:Connect(print)
+print("price", RS.GetPrice:InvokeServer("Sword"))
+RS.Buy:FireServer("Sword")
+```
+
+### Which scripts run, and where
+
+| Script | Runs when it is under | Side |
+|---|---|---|
+| `Script` | `Workspace` (also inside models), `ServerScriptService`, or a player's `Backpack` | server |
+| `LocalScript` | the local player's `PlayerScripts`, `PlayerGui`, `Backpack` or character, or `ReplicatedFirst` | client |
+| `ModuleScript` | never on its own; it runs the first time a script `require`s it | the requiring side |
+
+The same rules apply to scripts made or moved while the game runs:
+
+- A script starts as soon as it is in one of those places and not `Disabled`.
+- It stops when it is destroyed or disabled, and starts again from the top
+  when it is enabled again or its source is edited.
+- Moving a running script somewhere else doesn't stop it (as in Roblox).
+- Scripts in `ReplicatedStorage`, `ServerStorage`, `StarterPlayer`,
+  `StarterGui` and `StarterPack` don't run there. They are templates.
+
+The Kronos `--` style scripts (the `world` table, `onUpdate`) still run as
+before, each in its own VM.
+
+### Starter folders
+
+| Folder | Copied to | When |
+|---|---|---|
+| `StarterPlayer.StarterPlayerScripts` | the player's `PlayerScripts` | once, when the player joins |
+| `StarterPlayer.StarterCharacterScripts` | the character `Model` | every spawn |
+| `StarterPack` | the player's `Backpack` (emptied first) | every spawn |
+| `StarterGui` | the player's `PlayerGui` | every spawn; a `ScreenGui` with `ResetOnSpawn = false` is kept instead of copied again |
+
+### One VM per side
+
+All server scripts share one Luau VM, and all client scripts share another,
+so `_G`, `shared` and `require` work across scripts like in Roblox. Each
+script still has its own `script` and its own top-level variables, and one
+script's error doesn't stop the others. `RunService:IsServer()` and
+`IsClient()` answer for the side the script runs on, and
+`Players.LocalPlayer` is `nil` on the server.
+
+### require
+
+`require(module)` runs a `ModuleScript` once per side and returns the same
+value to every later caller. Inside the module, `script` is the module.
+A module may wait (`task.wait`); other scripts that require it meanwhile wait
+for it to finish. Errors match Roblox:
+
+- "Requested module was required recursively" (A requires B requires A)
+- "Module code did not return exactly one value"
+- "Requested module experienced an error while loading"
+- "Attempted to call require with invalid argument(s)." (not a ModuleScript)
+
+`require("path/to/file.lua")` with a string still loads a Kronos Luau file.
+
+### Remotes
+
+| Object | Supported |
+|---|---|
+| `RemoteEvent`, `UnreliableRemoteEvent` | `FireServer`, `FireClient`, `FireAllClients`, `OnServerEvent` (gets the sending player first), `OnClientEvent` |
+| `RemoteFunction` | `InvokeServer`, `InvokeClient`, `OnServerInvoke`, `OnClientInvoke`. The caller waits for the answer; an error in the callback is raised in the caller |
+| `BindableFunction` | `Invoke`, `OnInvoke` (same side) |
+
+Like Roblox:
+
+- Calling from the wrong side errors, e.g. "FireServer can only be called
+  from the client", "OnServerEvent can only be used on the server".
+- Messages are delivered at the next resume point (deferred), not inside the
+  `Fire` call.
+- Tables are copied: the receiver gets its own copy.
+- A callback can only be set, not read. An invoke waits until a callback
+  is set.
+
+### What the client can see
+
+On the client, `ServerStorage` and `ServerScriptService` look empty
+(`GetChildren`, `FindFirstChild`, `WaitForChild`, `.Name` lookups). The
+server sees everything.
+
+### Where each side runs
+
+| Where | Server side | Client side |
+|---|---|---|
+| Studio Play | yes | yes, for your player |
+| Player, single player or hosting | yes | yes, for your player |
+| Player, joined someone else's game | no | yes |
+| Dedicated server (`--server`) | yes | no |
+
+### Differences from Roblox (known limits)
+
+- **Remotes stay inside one program for now.** `FireServer` from a client
+  that joined someone else's game goes nowhere, and `FireClient` only
+  reaches the local player. Sending remotes and the player list over the
+  network is the next part of this step.
+- No size or rate limits on remote messages yet (Roblox drops very large
+  ones). They come with the network part.
+- If a script is stopped while its `OnServerInvoke` is waiting, the caller
+  gets an error ("The callback's script stopped"). If the callback's thread is
+  killed mid-wait in another way, the caller may wait forever.
+- Error messages from a wrong-side invoke include the position inside
+  Kronos's own `Invoke` wrapper (`Invoke:N:`).
+- The importer's `autoRunImportedScripts` option no longer does anything;
+  the rules above decide which scripts run.
 
 ## From entity ids to Instances
 
