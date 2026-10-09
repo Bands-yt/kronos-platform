@@ -9,7 +9,9 @@
 #include <lualib.h>
 
 #include "core/ECS.hpp"
+#include "core/InstanceSignals.hpp"
 #include "core/InstanceTree.hpp"
+#include "core/Scripting.hpp"
 
 namespace engine::core {
 namespace {
@@ -19,9 +21,30 @@ constexpr const char* kMetaKey = "kronos.Instance.mt";
 constexpr const char* kCacheKey = "kronos.Instance.cache";
 constexpr const char* kMethodsKey = "kronos.Instance.methods";
 constexpr const char* kEcsKey = "kronos.Instance.ecs";
+constexpr int kSignalTag = 61;
+constexpr int kConnectionTag = 62;
+constexpr const char* kSignalMetaKey = "kronos.Signal.mt";
+constexpr const char* kConnectionMetaKey = "kronos.Connection.mt";
+constexpr const char* kHubKey = "kronos.Signal.hub";
+constexpr const char* kGuardKey = "kronos.Signal.guard";
 
 struct Proxy {
     InstanceRef ref;
+};
+
+struct SignalProxy {
+    InstanceRef ref;
+    char event[128];
+};
+
+struct ConnectionProxy {
+    uint64_t id;
+};
+
+// Lives in each VM's registry; tells the hub when the VM closes.
+struct VmGuard {
+    std::shared_ptr<SignalHub> hub;
+    lua_State* vm;
 };
 
 ECS& ecsOf(lua_State* L) { return *static_cast<ECS*>(lua_tolightuserdata(L, lua_upvalueindex(1))); }
@@ -268,20 +291,103 @@ const char* propertyTypeName(const PropertyDef& property) {
 // Members that exist in Roblox and arrive in a later bridge step.
 bool isPlannedMember(const char* key) {
     static const char* const kPlanned[] = {
-        "Touched", "TouchEnded", "Changed", "ChildAdded", "ChildRemoved", "DescendantAdded", "DescendantRemoving",
-        "AncestryChanged", "AttributeChanged", "Destroying", "GetPropertyChangedSignal",
-        "GetAttributeChangedSignal", "PlayerAdded", "PlayerRemoving", "CharacterAdded", "CharacterRemoving",
-        "LocalPlayer", "GetPlayers", "GetPlayerFromCharacter", "Event", "Fire", "Invoke", "OnInvoke",
+        "PlayerAdded", "PlayerRemoving", "CharacterAdded", "CharacterRemoving",
+        "LocalPlayer", "GetPlayers", "GetPlayerFromCharacter", "Invoke", "OnInvoke",
         "OnServerEvent", "OnClientEvent", "OnServerInvoke", "OnClientInvoke", "FireServer", "FireClient",
         "FireAllClients", "InvokeServer", "InvokeClient", "Play", "Stop", "Pause", "Resume", "GetPivot",
         "PivotTo", "MoveTo", "SetPrimaryPartCFrame", "GetPrimaryPartCFrame", "GetMass", "ApplyImpulse",
         "AssemblyLinearVelocity", "Velocity", "SoundId", "Volume", "Looped", "Playing", "MouseButton1Click",
-        "MouseButton1Down", "MouseButton1Up", "Activated", "MouseEnter", "MouseLeave", "Heartbeat", "Stepped",
-        "RenderStepped", "Text", "Visible"};
+        "MouseButton1Down", "MouseButton1Up", "Activated", "MouseEnter", "MouseLeave", "Text", "Visible",
+        "BindToRenderStep", "UnbindFromRenderStep"};
     for (const char* planned : kPlanned) {
         if (std::strcmp(key, planned) == 0) return true;
     }
     return false;
+}
+
+// --- signals -----------------------------------------------------------------
+
+SignalHub& hubOf(lua_State* L) {
+    lua_getfield(L, LUA_REGISTRYINDEX, kHubKey);
+    auto* hub = static_cast<SignalHub*>(lua_tolightuserdata(L, -1));
+    lua_pop(L, 1);
+    if (hub == nullptr) luaL_error(L, "signals are not available in this script");
+    return *hub;
+}
+
+void pushSignal(lua_State* L, InstanceRef ref, const std::string& event) {
+    if (event.size() >= sizeof(SignalProxy::event)) luaL_error(L, "the name \"%s\" is too long", event.c_str());
+    auto* signal = static_cast<SignalProxy*>(lua_newuserdatatagged(L, sizeof(SignalProxy), kSignalTag));
+    signal->ref = ref;
+    std::memcpy(signal->event, event.c_str(), event.size() + 1);
+    lua_getfield(L, LUA_REGISTRYINDEX, kSignalMetaKey);
+    lua_setmetatable(L, -2);
+}
+
+SignalProxy* checkSignal(lua_State* L, const char* method) {
+    auto* signal = static_cast<SignalProxy*>(lua_touserdatatagged(L, 1, kSignalTag));
+    if (signal == nullptr) luaL_error(L, "Expected ':' not '.' calling member function %s", method);
+    return signal;
+}
+
+void pushConnection(lua_State* L, uint64_t id) {
+    auto* connection = static_cast<ConnectionProxy*>(lua_newuserdatatagged(L, sizeof(ConnectionProxy), kConnectionTag));
+    connection->id = id;
+    lua_getfield(L, LUA_REGISTRYINDEX, kConnectionMetaKey);
+    lua_setmetatable(L, -2);
+}
+
+int connectSignal(lua_State* L, const char* method, bool once) {
+    SignalProxy* signal = checkSignal(L, method);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    SignalHub& hub = hubOf(L);
+    lua_pushvalue(L, 2);
+    const int fnRef = lua_ref(L, -1);
+    lua_pop(L, 1);
+    pushConnection(L, hub.connect(lua_mainthread(L), signal->ref, signal->event, fnRef, once));
+    return 1;
+}
+
+int sConnect(lua_State* L) { return connectSignal(L, "Connect", false); }
+int sOnce(lua_State* L) { return connectSignal(L, "Once", true); }
+
+int sWait(lua_State* L) {
+    SignalProxy* signal = checkSignal(L, "Wait");
+    auto* scripting = static_cast<Scripting*>(lua_callbacks(L)->userdata);
+    if (scripting == nullptr || !lua_isyieldable(L)) luaL_error(L, "Wait can't be used here; it must run in a script thread");
+    hubOf(L).connectWait(L, signal->ref, signal->event);
+    scripting->suspendCurrent(L);
+    return lua_yield(L, 0);
+}
+
+int signalToString(lua_State* L) {
+    const auto* signal = static_cast<SignalProxy*>(lua_touserdatatagged(L, 1, kSignalTag));
+    std::string name = signal != nullptr ? signal->event : "";
+    if (const size_t colon = name.find(':'); colon != std::string::npos) name = name.substr(0, colon);
+    lua_pushstring(L, ("Signal " + name).c_str());
+    return 1;
+}
+
+int connectionIndex(lua_State* L) {
+    const auto* connection = static_cast<ConnectionProxy*>(lua_touserdatatagged(L, 1, kConnectionTag));
+    const char* key = luaL_checkstring(L, 2);
+    if (std::strcmp(key, "Connected") == 0) {
+        lua_pushboolean(L, hubOf(L).isConnected(connection->id) ? 1 : 0);
+        return 1;
+    }
+    if (std::strcmp(key, "Disconnect") == 0 || std::strcmp(key, "disconnect") == 0) {
+        lua_pushvalue(L, lua_upvalueindex(1));
+        return 1;
+    }
+    luaL_error(L, "%s is not a valid member of RBXScriptConnection", key);
+    return 0;
+}
+
+int cDisconnect(lua_State* L) {
+    const auto* connection = static_cast<ConnectionProxy*>(lua_touserdatatagged(L, 1, kConnectionTag));
+    if (connection == nullptr) luaL_error(L, "Expected ':' not '.' calling member function Disconnect");
+    hubOf(L).disconnect(connection->id);
+    return 0;
 }
 
 // --- metamethods -------------------------------------------------------------
@@ -307,13 +413,16 @@ int instanceIndex(lua_State* L) {
         return 1;
     }
 
-    lua_getfield(L, LUA_REGISTRYINDEX, kMethodsKey);
-    lua_rawgetfield(L, -1, key);
-    if (!lua_isnil(L, -1)) {
-        const bool dataModelOnly = std::strcmp(key, "GetService") == 0 || std::strcmp(key, "FindService") == 0;
-        if (!dataModelOnly || ref == kGameInstance) return 1;
+    if (instances::classHasMethod(cls, key)) {
+        lua_getfield(L, LUA_REGISTRYINDEX, kMethodsKey);
+        lua_rawgetfield(L, -1, key);
+        if (!lua_isnil(L, -1)) return 1;
+        lua_pop(L, 2);
     }
-    lua_pop(L, 2);
+    if (instances::classHasEvent(cls, key)) {
+        pushSignal(L, ref, key);
+        return 1;
+    }
 
     if (!alive) luaL_error(L, "%s is not a valid member of a destroyed Instance", key);
 
@@ -378,7 +487,7 @@ int instanceNewIndex(lua_State* L) {
         if (!instances::setParent(ecs, ref, value.ref, error)) luaL_error(L, "%s", error.c_str());
         return 0;
     }
-    if ((ref == kGameInstance || ref == kWorkspaceInstance) && property->name == "Name") {
+    if ((ref == kGameInstance || ref == kWorkspaceInstance || ref == kRunServiceInstance) && property->name == "Name") {
         luaL_error(L, "Unable to rename %s", instances::name(ecs, ref).c_str());
     }
     instances::setProperty(ecs, ref, *property, value);
@@ -515,7 +624,7 @@ int mClone(lua_State* L) {
 int mDestroy(lua_State* L) {
     ECS& ecs = ecsOf(L);
     const InstanceRef self = checkSelf(L, "Destroy");
-    if (self == kGameInstance || self == kWorkspaceInstance) {
+    if (self == kGameInstance || self == kWorkspaceInstance || self == kRunServiceInstance) {
         luaL_error(L, "%s cannot be destroyed", instances::name(ecs, self).c_str());
     }
     instances::destroy(ecs, self);
@@ -590,6 +699,43 @@ int mFindService(lua_State* L) {
     return 1;
 }
 
+int mGetPropertyChangedSignal(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "GetPropertyChangedSignal");
+    const std::string property = luaL_checkstring(L, 2);
+    const std::string cls = instances::isAlive(ecs, self) ? instances::className(ecs, self) : std::string("Instance");
+    if (instances::findProperty(cls, property) == nullptr) luaL_error(L, "%s is not a valid property name.", property.c_str());
+    pushSignal(L, self, "Changed:" + property);
+    return 1;
+}
+
+int mGetAttributeChangedSignal(lua_State* L) {
+    const InstanceRef self = checkSelf(L, "GetAttributeChangedSignal");
+    pushSignal(L, self, std::string("AttributeChanged:") + luaL_checkstring(L, 2));
+    return 1;
+}
+
+int mFire(lua_State* L) {
+    const InstanceRef self = checkSelf(L, "Fire");
+    std::vector<SignalArg> args;
+    for (int i = 2; i <= lua_gettop(L); ++i) args.push_back(toSignalArg(L, i));
+    hubOf(L).fire(self, "Event", std::move(args));
+    return 0;
+}
+
+template <bool (*Read)(const RunServiceState&)>
+int runServiceQuery(lua_State* L) {
+    checkSelf(L, "RunService method");
+    lua_pushboolean(L, Read(signals::runService(ecsOf(L))) ? 1 : 0);
+    return 1;
+}
+bool readServer(const RunServiceState& s) { return s.server; }
+bool readClient(const RunServiceState& s) { return s.client; }
+bool readStudio(const RunServiceState& s) { return s.studio; }
+bool readRunning(const RunServiceState& s) { return s.running; }
+bool readRunMode(const RunServiceState& s) { return s.studio && s.running; }
+bool readEdit(const RunServiceState& s) { return s.studio && !s.running; }
+
 int instanceNew(lua_State* L) {
     ECS& ecs = ecsOf(L);
     const std::string cls = luaL_checkstring(L, 1);
@@ -633,6 +779,57 @@ const std::string& waitForChildBytecode() {
 void registerInstanceApi(lua_State* L, ECS& ecs) {
     lua_pushlightuserdata(L, &ecs);
     lua_setfield(L, LUA_REGISTRYINDEX, kEcsKey);
+
+    lua_getfield(L, LUA_REGISTRYINDEX, kGuardKey);
+    const bool hasGuard = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+    if (!hasGuard) {
+        std::shared_ptr<SignalHub> hub = signals::hubFor(ecs);
+        lua_pushlightuserdata(L, hub.get());
+        lua_setfield(L, LUA_REGISTRYINDEX, kHubKey);
+        if (auto* scripting = static_cast<Scripting*>(lua_callbacks(L)->userdata)) scripting->addDeferredWork(hub);
+        auto** guard = static_cast<VmGuard**>(lua_newuserdatadtor(L, sizeof(VmGuard*), [](void* data) {
+            VmGuard* g = *static_cast<VmGuard**>(data);
+            g->hub->forgetVm(g->vm);
+            delete g;
+        }));
+        *guard = new VmGuard{std::move(hub), lua_mainthread(L)};
+        lua_setfield(L, LUA_REGISTRYINDEX, kGuardKey);
+    }
+
+    lua_newtable(L);
+    lua_pushstring(L, "RBXScriptSignal");
+    lua_setfield(L, -2, "__type");
+    lua_newtable(L);
+    lua_pushcfunction(L, &sConnect, "Connect");
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -3, "Connect");
+    lua_setfield(L, -2, "ConnectParallel");
+    lua_pushcfunction(L, &sOnce, "Once");
+    lua_setfield(L, -2, "Once");
+    lua_pushcfunction(L, &sWait, "Wait");
+    lua_setfield(L, -2, "Wait");
+    lua_setreadonly(L, -1, true);
+    lua_setfield(L, -2, "__index");
+    lua_pushcfunction(L, &signalToString, "Signal.__tostring");
+    lua_setfield(L, -2, "__tostring");
+    lua_pushstring(L, "The metatable is locked");
+    lua_setfield(L, -2, "__metatable");
+    lua_setreadonly(L, -1, true);
+    lua_setfield(L, LUA_REGISTRYINDEX, kSignalMetaKey);
+
+    lua_newtable(L);
+    lua_pushstring(L, "RBXScriptConnection");
+    lua_setfield(L, -2, "__type");
+    lua_pushcfunction(L, &cDisconnect, "Disconnect");
+    lua_pushcclosure(L, &connectionIndex, "Connection.__index", 1);
+    lua_setfield(L, -2, "__index");
+    lua_pushstring(L, "Connection");
+    lua_setfield(L, -2, "__name");
+    lua_pushstring(L, "The metatable is locked");
+    lua_setfield(L, -2, "__metatable");
+    lua_setreadonly(L, -1, true);
+    lua_setfield(L, LUA_REGISTRYINDEX, kConnectionMetaKey);
 
     auto pushClosure = [&](lua_CFunction fn, const char* debugName) {
         lua_pushlightuserdata(L, &ecs);
@@ -685,6 +882,15 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"GetAttributes", &mGetAttributes},
         {"GetService", &mGetService},
         {"FindService", &mFindService},
+        {"GetPropertyChangedSignal", &mGetPropertyChangedSignal},
+        {"GetAttributeChangedSignal", &mGetAttributeChangedSignal},
+        {"Fire", &mFire},
+        {"IsServer", &runServiceQuery<&readServer>},
+        {"IsClient", &runServiceQuery<&readClient>},
+        {"IsStudio", &runServiceQuery<&readStudio>},
+        {"IsRunning", &runServiceQuery<&readRunning>},
+        {"IsRunMode", &runServiceQuery<&readRunMode>},
+        {"IsEdit", &runServiceQuery<&readEdit>},
     };
     lua_newtable(L);
     for (const Method& method : kMethods) {
@@ -725,6 +931,46 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
     lua_setfield(L, -2, "new");
     lua_setreadonly(L, -1, true);
     lua_setglobal(L, "Instance");
+}
+
+namespace {
+
+SignalArg toSignalArgAt(lua_State* L, int index, int depth) {
+    index = lua_absindex(L, index);
+    SignalArg arg;
+    if (toAnyValue(L, index, arg.value)) return arg;
+    arg.value = InstanceValue{};
+    if (lua_type(L, index) != LUA_TTABLE || depth >= 32) return arg; // functions and the like arrive as nil
+    arg.isTable = true;
+    lua_checkstack(L, 4);
+    lua_pushnil(L);
+    while (lua_next(L, index) != 0) {
+        SignalArg key = toSignalArgAt(L, -2, depth + 1);
+        SignalArg value = toSignalArgAt(L, -1, depth + 1);
+        lua_pop(L, 1);
+        if (key.isTable || key.value.type == InstanceValue::Type::Nil) continue;
+        arg.keys.push_back(std::move(key));
+        arg.values.push_back(std::move(value));
+    }
+    return arg;
+}
+
+} // namespace
+
+SignalArg toSignalArg(lua_State* L, int index) { return toSignalArgAt(L, index, 0); }
+
+void pushSignalArg(lua_State* L, const SignalArg& arg) {
+    if (!arg.isTable) {
+        pushValue(L, arg.value);
+        return;
+    }
+    lua_checkstack(L, 4);
+    lua_createtable(L, 0, static_cast<int>(arg.keys.size()));
+    for (size_t i = 0; i < arg.keys.size(); ++i) {
+        pushSignalArg(L, arg.keys[i]);
+        pushSignalArg(L, arg.values[i]);
+        lua_rawset(L, -3);
+    }
 }
 
 bool pushScriptInstance(lua_State* L, uint32_t entity) {

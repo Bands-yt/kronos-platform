@@ -193,6 +193,7 @@
 #include "core/TerrainLod.hpp"
 #include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
+#include "core/InstanceSignals.hpp"
 #include "core/ScriptInstanceApi.hpp"
 #include "core/InstanceTree.hpp"
 #include "studio/panels/LuauSymbolIndex.hpp"
@@ -42386,7 +42387,7 @@ void testLuauApiCompatibilityScan() {
     check(compat.registrySize() > 0, "LuauApiCompatibility really registers APIs");
 
     const std::string script = R"LUA(
-wait(1)
+local mouse = UserInputService.MouseEnabled
 local Players = game:GetService("Players")
 local part = Instance.new("Part")
 part.Parent = workspace
@@ -42400,13 +42401,13 @@ world.setPosition(part, 1, 2, 3)
         }
         return false;
     };
-    check(found("wait"), "the API scan finds an unmapped `wait` reference");
+    check(found("UserInputService"), "the API scan finds an unmapped `UserInputService` reference");
     check(found("game") && found("Instance") && found("workspace"), "the API scan finds `game`, `Instance` and `workspace`");
     check(found("world"), "the API scan also records the mapped Kronos APIs a script already uses");
 
     for (const auto& f : findings) {
-        if (f.identifier == "wait") {
-            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`wait` is classified as unmapped");
+        if (f.identifier == "UserInputService") {
+            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`UserInputService` is classified as unmapped");
             check(f.line == 2, "the API scan reports the real 1-based line of a finding");
             check(!f.guidance.empty(), "an unmapped API finding carries real migration guidance");
         }
@@ -42882,6 +42883,329 @@ print("DONE")
           "once parented to the workspace it is saved");
 }
 
+void testRobloxPartPhysics() {
+    using namespace engine::core;
+    ECS ecs;
+    std::string error;
+    auto prop = [](const char* name) { return instances::findProperty("Part", name); };
+    auto near3 = [](glm::vec3 a, glm::vec3 b) { return glm::all(glm::lessThan(glm::abs(a - b), glm::vec3(1e-3f))); };
+
+    const InstanceRef part = instances::create(ecs, "Part", error);
+    const EntityId pe = instances::entityOf(ecs, part);
+    const auto* shape = ecs.tryGetComponent<ColliderShape>(pe);
+    check(shape != nullptr && shape->kind == ColliderShapeKind::Box && near3(shape->params, {2.0f, 0.5f, 1.0f}) &&
+              ecs.tryGetComponent<PhysicsMaterial>(pe) != nullptr,
+          "Instance.new(\"Part\") is solid, with a collider matching its 4x1x2 Size");
+    const auto* body = ecs.tryGetComponent<RigidBody>(pe);
+    check(body != nullptr && body->motionType == RigidBodyMotionType::Dynamic, "a new Part is unanchored, like in Roblox");
+    instances::setProperty(ecs, part, *prop("Anchored"), InstanceValue::ofBool(true));
+    check(ecs.tryGetComponent<RigidBody>(pe)->motionType == RigidBodyMotionType::Static, "Anchored = true makes the body static");
+    instances::setProperty(ecs, part, *prop("Size"), InstanceValue::ofVector3({6.0f, 2.0f, 8.0f}));
+    check(near3(ecs.tryGetComponent<ColliderShape>(pe)->params, {3.0f, 1.0f, 4.0f}), "changing Size refits the collider");
+    instances::setProperty(ecs, part, *prop("Shape"), InstanceValue::ofEnum("PartType", "Ball", 0));
+    shape = ecs.tryGetComponent<ColliderShape>(pe);
+    check(shape->kind == ColliderShapeKind::Sphere && std::fabs(shape->params.x - 1.0f) < 1e-3f,
+          "Shape = Ball gives a sphere collider sized by the smallest side");
+    const InstanceRef folder = instances::create(ecs, "Folder", error);
+    check(ecs.tryGetComponent<ColliderShape>(instances::entityOf(ecs, folder)) == nullptr, "non-parts get no collider");
+
+    // Parts in a moved Model, a CanCollide = false floor, and a part kept in
+    // ReplicatedStorage, given bodies the way Play does.
+    ECS world;
+    Physics physics;
+    check(physics.initialize(), "part physics test: physics initializes");
+    physics.setTouchRecording(true);
+    auto make = [&](const char* cls, const char* name) {
+        const InstanceRef ref = instances::create(world, cls, error);
+        instances::setName(world, ref, name);
+        return ref;
+    };
+    auto set = [&](InstanceRef ref, const char* name, InstanceValue value) {
+        instances::setProperty(world, ref, *instances::findProperty(instances::className(world, ref), name), value);
+    };
+    const InstanceRef model = make("Model", "Tower");
+    check(instances::setParent(world, model, kWorkspaceInstance, error), "the Model goes in the workspace");
+    world.tryGetComponent<Transform>(instances::entityOf(world, model))->position = {10.0f, 0.0f, 0.0f};
+    const InstanceRef block = make("Part", "Block");
+    check(instances::setParent(world, block, model, error), "the block goes in the Model");
+    set(block, "Position", InstanceValue::ofVector3({10.0f, 20.0f, 0.0f}));
+    const InstanceRef floor = make("Part", "Floor");
+    set(floor, "Size", InstanceValue::ofVector3({20.0f, 1.0f, 20.0f}));
+    set(floor, "Anchored", InstanceValue::ofBool(true));
+    set(floor, "CanCollide", InstanceValue::ofBool(false));
+    check(instances::setParent(world, floor, kWorkspaceInstance, error), "the floor goes in the workspace");
+    const InstanceRef stored = make("Part", "Template");
+    std::string serviceError;
+    const InstanceRef replicated = instances::getService(world, "ReplicatedStorage", serviceError);
+    check(instances::setParent(world, stored, replicated, error), "the template goes in ReplicatedStorage");
+    check(!instances::isInWorld(world, instances::entityOf(world, stored)) &&
+              instances::isInWorld(world, instances::entityOf(world, block)),
+          "only parts under the workspace count as in the world");
+
+    int attached = 0;
+    auto view = world.view<ColliderShape, PhysicsMaterial>();
+    for (auto entity : view) {
+        if (!instances::isInWorld(world, entity)) continue;
+        const RigidBodyMotionType motion = world.tryGetComponent<RigidBody>(entity)->motionType;
+        if (physics.attachBodyToEntity(entity, world, view.get<ColliderShape>(entity), view.get<PhysicsMaterial>(entity),
+                                       motion, 0.0f, CollisionLayer::Default, !instances::canCollide(world, entity))) {
+            ++attached;
+        }
+    }
+    check(attached == 2, "the template in ReplicatedStorage gets no physics body");
+    const EntityId blockEntity = instances::entityOf(world, block);
+    bool touchedFloor = false;
+    for (int i = 0; i < 180; ++i) {
+        physics.step(1.0f / 60.0f, world);
+        for (const auto& touch : physics.drainTouchEvents()) {
+            const EntityId fe = instances::entityOf(world, floor);
+            if (touch.began && (touch.a == fe || touch.b == fe)) touchedFloor = true;
+        }
+    }
+    const glm::vec3 blockWorld = instances::worldPose(world, blockEntity).position;
+    check(std::fabs(blockWorld.x - 10.0f) < 0.05f && std::fabs(world.tryGetComponent<Transform>(blockEntity)->position.x) < 0.05f,
+          "a part inside a moved Model falls from its world position and keeps its place in the Model");
+    check(blockWorld.y < -5.0f, "a CanCollide = false floor lets the part fall through");
+    check(touchedFloor, "the part still touches the CanCollide = false floor (Touched would fire)");
+}
+
+void testRobloxEvents() {
+    using namespace engine::core;
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "events test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    constexpr float dt = 1.0f / 60.0f;
+    auto frame = [&]() {
+        signals::renderStepped(ecs, dt);
+        signals::flush(ecs);
+        signals::stepped(ecs, dt);
+        scripting.tick(dt);
+        signals::heartbeat(ecs, dt);
+        signals::flush(ecs);
+    };
+    auto printed = [&](const char* text) {
+        for (const std::string& line : output) {
+            if (line.find(text) != std::string::npos) return true;
+        }
+        return false;
+    };
+
+    const char* source = R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	return not ok and (text == nil or string.find(tostring(err), text, 1, true) ~= nil)
+end
+
+-- Changed and GetPropertyChangedSignal
+local p = Instance.new("Part")
+p.Parent = workspace
+local changed = {}
+local conn = p.Changed:Connect(function(prop) table.insert(changed, prop) end)
+expect("signals and connections have Roblox types", typeof(p.Changed) == "RBXScriptSignal" and typeof(conn) == "RBXScriptConnection" and conn.Connected)
+local positions = 0
+p:GetPropertyChangedSignal("Position"):Connect(function() positions += 1 end)
+p.Name = "Mover"
+p.CFrame = CFrame.new(0, 10, 0)
+p.Transparency = p.Transparency
+expect("handlers wait until the script yields (deferred)", #changed == 0)
+task.wait()
+expect("Changed passes the property name", table.find(changed, "Name") ~= nil and table.find(changed, "CFrame") ~= nil)
+expect("setting CFrame also changes Position", table.find(changed, "Position") ~= nil and positions == 1)
+expect("no Changed when the value stays the same", table.find(changed, "Transparency") == nil)
+expect("a bad property name is refused", fails(function() p:GetPropertyChangedSignal("Nope") end, "not a valid property name"))
+conn:Disconnect()
+expect("Disconnect clears Connected", not conn.Connected)
+table.clear(changed)
+p.Name = "Again"
+task.wait()
+expect("a disconnected handler stays quiet", #changed == 0)
+
+-- Once
+local onceCount = 0
+p:GetPropertyChangedSignal("Name"):Once(function() onceCount += 1 end)
+p.Name = "A"
+p.Name = "B"
+task.wait()
+expect("Once runs one time", onceCount == 1)
+
+-- ValueBase
+local v = Instance.new("IntValue")
+local got, calls = nil, 0
+v.Changed:Connect(function(value) got = value calls += 1 end)
+v.Value = 7
+v.Name = "Renamed"
+task.wait()
+expect("IntValue.Changed passes the new value and ignores Name", got == 7 and calls == 1)
+
+-- BindableEvent and Wait
+local b = Instance.new("BindableEvent")
+task.delay(0.05, function() b:Fire("hi", {score = 5, list = {1, 2}}, p) end)
+local word, data, part = b.Event:Wait()
+expect("Event:Wait returns what Fire sent (tables copied, Instances kept)", word == "hi" and data.score == 5 and data.list[2] == 2 and part == p)
+
+-- tree events
+local folder = Instance.new("Folder")
+folder.Parent = workspace
+local added, removed, descendants, ancestry = {}, {}, {}, 0
+folder.ChildAdded:Connect(function(c) table.insert(added, c) end)
+folder.ChildRemoved:Connect(function(c) table.insert(removed, c) end)
+workspace.DescendantAdded:Connect(function(d) table.insert(descendants, d) end)
+local kid = Instance.new("Part")
+local grandkid = Instance.new("Part", kid)
+kid.AncestryChanged:Connect(function() ancestry += 1 end)
+kid.Parent = folder
+task.wait()
+expect("ChildAdded", added[1] == kid)
+expect("DescendantAdded covers the whole moved branch", table.find(descendants, kid) ~= nil and table.find(descendants, grandkid) ~= nil)
+expect("AncestryChanged", ancestry == 1)
+kid.Parent = nil
+task.wait()
+expect("ChildRemoved", removed[1] == kid)
+
+-- Destroying
+local destroyed = 0
+local doomed = Instance.new("Part", workspace)
+local doomedConn = doomed.Destroying:Connect(function() destroyed += 1 end)
+doomed:Destroy()
+task.wait()
+expect("Destroying runs, then the connection is gone", destroyed == 1 and not doomedConn.Connected)
+
+-- attributes
+local attrs, health = {}, nil
+p.AttributeChanged:Connect(function(name) table.insert(attrs, name) end)
+p:GetAttributeChangedSignal("Health"):Connect(function() health = p:GetAttribute("Health") end)
+p:SetAttribute("Health", 50)
+p:SetAttribute("Health", 50)
+task.wait()
+expect("AttributeChanged once per real change", #attrs == 1 and attrs[1] == "Health" and health == 50)
+
+-- a handler that keeps re-firing itself
+local loops = 0
+local counter = Instance.new("IntValue")
+counter.Changed:Connect(function() loops += 1 counter.Value += 1 end)
+counter.Value = 1
+task.wait()
+expect("re-firing stops at Roblox's depth of 10", loops == 10)
+
+-- handler errors reach the output
+p:GetPropertyChangedSignal("Name"):Connect(function() error("handler boom") end)
+p.Name = "Err"
+task.wait()
+
+-- task library
+local order = {}
+local th = task.spawn(function() table.insert(order, "spawn") task.wait() table.insert(order, "spawn2") end)
+expect("task.spawn runs at once and returns the thread", order[1] == "spawn" and type(th) == "thread")
+local delayed = task.delay(10, function() table.insert(order, "never") end)
+task.cancel(delayed)
+local sum
+task.delay(0, function(a, c) sum = a + c end, 2, 3)
+local deferredRan = false
+task.defer(function() deferredRan = true end)
+local resumed
+task.spawn(coroutine.create(function(x) resumed = x end), 42)
+expect("task.spawn resumes a thread with arguments", resumed == 42)
+task.wait(0.1)
+expect("task.delay passes its arguments", sum == 5)
+expect("task.defer runs", deferredRan)
+expect("task.cancel stops a delayed call", table.find(order, "never") == nil and table.find(order, "spawn2") ~= nil)
+
+-- older globals
+local e, t = wait(0.05)
+expect("wait returns elapsed and time", e >= 0.049 and type(t) == "number")
+local spawned, delayedLegacy = false, false
+spawn(function() spawned = true end)
+delay(0, function() delayedLegacy = true end)
+expect("tick and time", tick() > 1e9 and time() > 0 and elapsedTime() == time())
+wait()
+expect("spawn and delay", spawned and delayedLegacy)
+
+-- RunService
+local rs = game:GetService("RunService")
+expect("RunService is a service", rs.ClassName == "RunService" and rs.Name == "Run Service" and rs.Parent == game and game.RunService == rs and table.find(game:GetChildren(), rs) ~= nil)
+expect("RunService queries", rs:IsServer() and rs:IsClient() and not rs:IsStudio() and rs:IsRunning())
+expect("RunService can't be destroyed or used as a parent", fails(function() rs:Destroy() end) and fails(function() Instance.new("Folder").Parent = rs end))
+expect("RunService methods only on RunService", fails(function() return workspace:IsServer() end))
+local beats, total, steppedTime = 0, 0, nil
+local hb = rs.Heartbeat:Connect(function(dt) beats += 1 total += dt end)
+rs.Stepped:Connect(function(runTime) steppedTime = runTime end)
+task.wait(0.2)
+hb:Disconnect()
+expect("Heartbeat runs every step with dt", beats >= 10 and total > 0.15)
+expect("Stepped passes the running time", steppedTime ~= nil and steppedTime > 0)
+print("DONE")
+)LUAU";
+    const ScriptId mainId = scripting.loadAndRun("Events", source);
+    check(mainId != kInvalidScript, "events test: the script loads");
+    for (int i = 0; i < 120; ++i) frame();
+    checkLuauExpectations("Roblox events", output);
+    check(printed("Maximum event re-entrancy depth exceeded for Changed"), "a runaway Changed chain is reported");
+    check(printed("runtime error in GetPropertyChangedSignal(\"Name\") handler") && printed("handler boom"),
+          "an error inside a handler reaches the script output with the handler's name");
+
+    // Frame order: RenderStepped, then Stepped (before physics), then Heartbeat.
+    output.clear();
+    scripting.loadAndRun("Order", R"LUAU(
+local rs = game:GetService("RunService")
+for _, name in {"Heartbeat", "PostSimulation", "Stepped", "PreSimulation", "RenderStepped", "PreRender"} do
+	rs[name]:Once(function() print("EVENT " .. name) end)
+end
+)LUAU");
+    frame();
+    std::string order;
+    for (const std::string& line : output) {
+        if (line.rfind("EVENT ", 0) == 0) order += line.substr(6) + ",";
+    }
+    check(order == "PreRender,RenderStepped,Stepped,PreSimulation,PostSimulation,Heartbeat,",
+          ("RunService events run in the documented frame order (got " + order + ")").c_str());
+
+    // A BindableEvent connects scripts in different VMs.
+    output.clear();
+    scripting.loadAndRun("Listener", "local b = Instance.new('BindableEvent') b.Name = 'Bus' b.Parent = workspace "
+                                     "b.Event:Connect(function(n, t) print('HEARD ' .. n .. ' ' .. t.k) end)");
+    scripting.loadAndRun("Sender", "workspace.Bus:Fire(3, {k = 'v'})");
+    check(printed("HEARD 3 v"), "BindableEvent:Fire reaches a handler in another script");
+
+    // Touched and TouchEnded from real physics contacts.
+    Physics physics;
+    check(physics.initialize(), "events test: physics initializes");
+    physics.setTouchRecording(true);
+    const PhysicsMaterial material{};
+    const glm::quat noRotation(1.0f, 0.0f, 0.0f, 0.0f);
+    auto makePart = [&](EntityId e, const char* name) {
+        ecs.raw().get_or_emplace<Name>(e).value = name;
+        ecs.raw().emplace_or_replace<InstanceInfo>(e, InstanceInfo{"Part"});
+    };
+    makePart(physics.createStaticBox(ecs, {0, 3, 0}, {2.0f, 0.2f, 2.0f}, noRotation, material, CollisionLayer::Trigger, true), "Pad");
+    makePart(physics.createStaticBox(ecs, {0, 1, 0}, {2.0f, 0.2f, 2.0f}, noRotation, material, CollisionLayer::Trigger, true), "QuietPad");
+    makePart(physics.createSphereBody(ecs, {0, 6, 0}, 0.4f, 1.0f, material), "Ball");
+    output.clear();
+    const ScriptId touchId = scripting.loadAndRun("Touch", R"LUAU(
+workspace.Pad.Touched:Connect(function(hit) print("TOUCHED " .. hit.Name) end)
+workspace.Pad.TouchEnded:Connect(function(hit) print("ENDED " .. hit.Name) end)
+workspace.QuietPad.CanTouch = false
+workspace.QuietPad.Touched:Connect(function() print("QUIET TOUCHED") end)
+)LUAU");
+    for (int i = 0; i < 120; ++i) {
+        physics.step(dt, ecs);
+        for (const auto& touch : physics.drainTouchEvents()) signals::touch(ecs, touch.a, touch.b, touch.began);
+        signals::flush(ecs);
+    }
+    check(printed("TOUCHED Ball"), "Touched fires when the ball reaches the pad, with the ball as the argument");
+    check(printed("ENDED Ball"), "TouchEnded fires when the ball has passed through");
+    check(!printed("QUIET TOUCHED"), "a part with CanTouch = false fires no Touched");
+
+    SignalHub* hub = signals::findHub(ecs);
+    check(hub != nullptr && hub->anyConnections("Touched"), "the Touched connections are live");
+    scripting.unload(touchId);
+    check(hub != nullptr && !hub->anyConnections("Touched"), "closing a script drops its connections");
+    scripting.unload(mainId);
+}
+
 void testRobloxImportedInstances() {
     using namespace engine::migration;
     using namespace engine::core;
@@ -42995,7 +43319,7 @@ void testRobloxCompatibilityScore() {
       <string name="Source">print("hi")</string></Properties></Item>
     <Item class="Script" referent="S2"><Properties><string name="Name">Roblox</string>
       <string name="Source">local players = game:GetService("Players")
-players.PlayerAdded:Connect(print)</string></Properties></Item>
+print(#players:GetPlayers())</string></Properties></Item>
     <Item class="ModuleScript" referent="M"><Properties><string name="Name">Broken</string>
       <string name="Source">return function(</string></Properties></Item>
   </Item>
@@ -43011,8 +43335,8 @@ players.PlayerAdded:Connect(print)</string></Properties></Item>
     check(score.instancesMapped == 6 && score.unmappedClasses.count("ScreenGui") == 1,
           "classes Kronos can't build yet (ScreenGui) count as unmapped");
     check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
-          "print, game and :GetService are supported; :Connect is not yet");
-    check(score.missingApis.count(":Connect") == 1, "the score lists the missing Roblox APIs by name");
+          "print, game and :GetService are supported; :GetPlayers is not yet");
+    check(score.missingApis.count(":GetPlayers") == 1, "the score lists the missing Roblox APIs by name");
 
     runImportedScripts(report, score);
     check(score.scriptsRun == 3 && score.scriptsOk == 1, "one of three scripts runs cleanly today");
@@ -43058,7 +43382,7 @@ void testProjectImportPipeline() {
       <Item class="Script" referent="RBX3">
         <Properties>
           <string name="Name">Main</string>
-          <string name="Source">wait(1)
+          <string name="Source">local mouse = UserInputService.MouseEnabled
 local part = Instance.new("Part")</string>
         </Properties>
       </Item>
@@ -43094,7 +43418,7 @@ local part = Instance.new("Part")</string>
     bool warnedAboutEmptySource = false;
     for (const auto& diagnostic : report.diagnostics) {
         if (diagnostic.subject.rfind("Workspace.Lobby.Main:", 0) == 0 &&
-            diagnostic.message.find("wait") != std::string::npos) {
+            diagnostic.message.find("UserInputService") != std::string::npos) {
             warnedAboutWait = true;
             check(diagnostic.severity == engine::migration::ImportSeverity::Warning,
                   "an unmapped API is reported at Warning severity");
@@ -43134,7 +43458,7 @@ local part = Instance.new("Part")</string>
         big += "<Properties><string name=\"Name\">Part" + std::to_string(i) + "</string></Properties></Item>";
         big += "<Item class=\"Script\" referent=\"S" + std::to_string(i) + "\">";
         big += "<Properties><string name=\"Name\">S" + std::to_string(i) + "</string>";
-        big += "<string name=\"Source\">wait(1)\nlocal x = game.Workspace\nworld.createEntity()\n</string>";
+        big += "<string name=\"Source\">local m = UserInputService.MouseEnabled\nlocal x = game.Workspace\nworld.createEntity()\n</string>";
         big += "</Properties></Item></Item>";
     }
     big += "</roblox>";
@@ -45334,6 +45658,8 @@ int main() {
     testRobloxDatatypes();
     testRobloxInstanceTree();
     testRobloxImportedInstances();
+    testRobloxEvents();
+    testRobloxPartPhysics();
     testEntitlementManager();
     testMovieModeScrubbingAndKeyDrag();
     testMovieModePlugin();

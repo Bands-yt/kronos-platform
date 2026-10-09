@@ -10,6 +10,7 @@
 
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
+#include "core/InstanceSignals.hpp"
 #include "core/PhysicsMaterial.hpp"
 
 namespace engine::core {
@@ -223,11 +224,26 @@ namespace {
 struct VirtualInstances {
     InstanceInfo game{"DataModel"};
     InstanceInfo workspace{"Workspace"};
+    InstanceInfo runService{"RunService"};
 };
 
 constexpr glm::vec3 kDefaultPartColor{163.0f / 255.0f, 162.0f / 255.0f, 165.0f / 255.0f};
 
 bool valid(ECS& ecs, EntityId e) { return e != kNullEntity && ecs.raw().valid(e); }
+
+bool sameValue(const InstanceValue& a, const InstanceValue& b) {
+    if (a.type != b.type) return false;
+    switch (a.type) {
+        case InstanceValue::Type::Nil: return true;
+        case InstanceValue::Type::Bool: return a.boolean == b.boolean;
+        case InstanceValue::Type::Number: return a.number == b.number;
+        case InstanceValue::Type::String: return a.text == b.text;
+        case InstanceValue::Type::Enum: return a.enumType == b.enumType && a.text == b.text;
+        case InstanceValue::Type::Instance: return a.ref == b.ref;
+        case InstanceValue::Type::CFrame: return a.vec == b.vec && a.rot == b.rot;
+        default: return a.vec == b.vec;
+    }
+}
 
 EntityId parentEntity(ECS& ecs, EntityId e) {
     const auto* h = ecs.tryGetComponent<Hierarchy>(e);
@@ -300,15 +316,18 @@ EntityId workspaceEntity(ECS& ecs) {
 
 InstanceInfo& infoFor(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance) return ecs.raw().ctx().emplace<VirtualInstances>().game;
+    if (ref == kRunServiceInstance) return ecs.raw().ctx().emplace<VirtualInstances>().runService;
     const EntityId e = entityOf(ecs, ref);
     if (valid(ecs, e)) return ensureInfo(ecs, e);
     return ecs.raw().ctx().emplace<VirtualInstances>().workspace;
 }
 
 const InstanceInfo* findInfo(ECS& ecs, InstanceRef ref) {
-    if (ref == kGameInstance || (ref == kWorkspaceInstance && !valid(ecs, workspaceEntity(ecs)))) {
+    if (ref == kGameInstance || ref == kRunServiceInstance ||
+        (ref == kWorkspaceInstance && !valid(ecs, workspaceEntity(ecs)))) {
         auto* virtuals = ecs.raw().ctx().find<VirtualInstances>();
         if (virtuals == nullptr) return nullptr;
+        if (ref == kRunServiceInstance) return &virtuals->runService;
         return ref == kGameInstance ? &virtuals->game : &virtuals->workspace;
     }
     return ecs.tryGetComponent<InstanceInfo>(entityOf(ecs, ref));
@@ -413,6 +432,7 @@ void setSize(ECS& ecs, EntityId e, const InstanceValue& v) {
         if (auto* t = ecs.tryGetComponent<Transform>(child)) t->scale = pose.scale / newScale;
         setWorldPose(ecs, child, pose.position, pose.rotation);
     }
+    if (ecs.tryGetComponent<ColliderShape>(e) != nullptr) fitPartCollider(ecs, e);
 }
 InstanceValue getColor(ECS& ecs, EntityId e) {
     const auto* r = renderable(ecs, e);
@@ -485,6 +505,10 @@ void setMaterial(ECS& ecs, EntityId e, const InstanceValue& v) {
     }
 }
 void setShape(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (ecs.tryGetComponent<ColliderShape>(e) != nullptr) {
+        ensureInfo(ecs, e).properties["Shape"] = v;
+        fitPartCollider(ecs, e);
+    }
     const auto* meshes = ecs.raw().ctx().find<InstanceMeshes>();
     auto* r = renderable(ecs, e);
     if (meshes == nullptr || r == nullptr) return;
@@ -605,6 +629,13 @@ std::vector<ClassDef> buildClasses() {
         stored("Archivable", PropertyType::Bool, InstanceValue::ofBool(true)),
     };
     instance.properties.back().replicated = false;
+    instance.methods = {"GetChildren", "GetDescendants", "FindFirstChild", "FindFirstChildOfClass",
+                        "FindFirstChildWhichIsA", "FindFirstAncestor", "FindFirstAncestorOfClass",
+                        "FindFirstAncestorWhichIsA", "WaitForChild", "IsA", "IsDescendantOf", "IsAncestorOf",
+                        "Clone", "Destroy", "ClearAllChildren", "GetFullName", "GetAttribute", "SetAttribute",
+                        "GetAttributes", "GetPropertyChangedSignal", "GetAttributeChangedSignal"};
+    instance.events = {"Changed", "ChildAdded", "ChildRemoved", "DescendantAdded", "DescendantRemoving",
+                       "AncestryChanged", "AttributeChanged", "Destroying"};
 
     add("PVInstance", "Instance", false);
     auto& basePart = add("BasePart", "PVInstance", false);
@@ -626,6 +657,7 @@ std::vector<ClassDef> buildClasses() {
         stored("Locked", PropertyType::Bool, InstanceValue::ofBool(false)),
         storedEnum("Material", "Material", "Plastic", 256, &setMaterial),
     };
+    basePart.events = {"Touched", "TouchEnded"};
     add("Part", "BasePart", true).properties = {storedEnum("Shape", "PartType", "Block", 1, &setShape)};
     add("WedgePart", "BasePart", true);
     add("MeshPart", "BasePart", true);
@@ -696,7 +728,9 @@ std::vector<ClassDef> buildClasses() {
     // Present as objects; what they do arrives in later bridge steps.
     add("RemoteEvent", "Instance", true);
     add("RemoteFunction", "Instance", true);
-    add("BindableEvent", "Instance", true);
+    auto& bindableEvent = add("BindableEvent", "Instance", true);
+    bindableEvent.methods = {"Fire"};
+    bindableEvent.events = {"Event"};
     add("BindableFunction", "Instance", true);
     add("Sound", "Instance", true);
     add("Tool", "Instance", true);
@@ -704,7 +738,11 @@ std::vector<ClassDef> buildClasses() {
     add("StarterPlayerScripts", "Instance", false);
     add("StarterCharacterScripts", "Instance", false);
 
-    add("DataModel", "Instance", false);
+    add("DataModel", "Instance", false).methods = {"GetService", "FindService"};
+    // Has no entity: game:GetService("RunService") is always the same object.
+    auto& runService = add("RunService", "Instance", false, true);
+    runService.methods = {"IsServer", "IsClient", "IsStudio", "IsRunning", "IsRunMode", "IsEdit"};
+    runService.events = {"Stepped", "PreSimulation", "PostSimulation", "Heartbeat", "RenderStepped", "PreRender"};
     for (const char* service : {"Players", "Lighting", "ReplicatedStorage", "ReplicatedFirst", "ServerScriptService",
                                 "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer", "SoundService", "Teams",
                                 "Chat"}) {
@@ -751,9 +789,23 @@ const PropertyDef* findProperty(const std::string& className, const std::string&
     return nullptr;
 }
 
+bool classHasMethod(const std::string& className, const std::string& method) {
+    for (const ClassDef* def = findClass(className); def != nullptr; def = findClass(def->superclass)) {
+        if (std::find(def->methods.begin(), def->methods.end(), method) != def->methods.end()) return true;
+    }
+    return false;
+}
+
+bool classHasEvent(const std::string& className, const std::string& event) {
+    for (const ClassDef* def = findClass(className); def != nullptr; def = findClass(def->superclass)) {
+        if (std::find(def->events.begin(), def->events.end(), event) != def->events.end()) return true;
+    }
+    return false;
+}
+
 bool isPlannedService(const std::string& name) {
     static const char* const kPlanned[] = {
-        "RunService", "TweenService", "UserInputService", "ContextActionService", "HttpService", "Debris",
+        "TweenService", "UserInputService", "ContextActionService", "HttpService", "Debris",
         "CollectionService", "DataStoreService", "MarketplaceService", "PhysicsService", "TextService",
         "GuiService", "PathfindingService", "BadgeService", "MessagingService", "TeleportService",
         "ProximityPromptService", "TextChatService", "LocalizationService", "GroupService", "SocialService",
@@ -772,14 +824,14 @@ InstanceRef refOf(ECS& ecs, EntityId entity) {
 }
 
 EntityId entityOf(ECS& ecs, InstanceRef ref) {
-    if (ref == kGameInstance || ref == kNoInstance) return kNullEntity;
+    if (ref == kGameInstance || ref == kRunServiceInstance || ref == kNoInstance) return kNullEntity;
     if (ref == kWorkspaceInstance) return workspaceEntity(ecs);
     const auto entity = static_cast<EntityId>(ref);
     return valid(ecs, entity) ? entity : kNullEntity;
 }
 
 bool isAlive(ECS& ecs, InstanceRef ref) {
-    if (ref == kGameInstance || ref == kWorkspaceInstance) return true;
+    if (ref == kGameInstance || ref == kWorkspaceInstance || ref == kRunServiceInstance) return true;
     if (ref == kNoInstance) return false;
     return valid(ecs, static_cast<EntityId>(ref));
 }
@@ -787,12 +839,14 @@ bool isAlive(ECS& ecs, InstanceRef ref) {
 std::string className(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance) return "DataModel";
     if (ref == kWorkspaceInstance) return "Workspace";
+    if (ref == kRunServiceInstance) return "RunService";
     const EntityId e = entityOf(ecs, ref);
     return valid(ecs, e) ? entityClass(ecs, e) : std::string();
 }
 
 std::string name(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance) return "Game";
+    if (ref == kRunServiceInstance) return "Run Service";
     const EntityId e = entityOf(ecs, ref);
     if (!valid(ecs, e)) return ref == kWorkspaceInstance ? "Workspace" : std::string();
     if (const auto* n = ecs.tryGetComponent<Name>(e)) return n->value;
@@ -802,7 +856,10 @@ std::string name(ECS& ecs, InstanceRef ref) {
 void setName(ECS& ecs, InstanceRef ref, const std::string& value) {
     const EntityId e = entityOf(ecs, ref);
     if (!valid(ecs, e)) return;
-    ecs.raw().get_or_emplace<Name>(e).value = value;
+    std::string& stored = ecs.raw().get_or_emplace<Name>(e).value;
+    if (stored == value) return;
+    stored = value;
+    signals::propertyChanged(ecs, ref, "Name", InstanceValue::ofString(value));
 }
 
 std::string fullName(ECS& ecs, InstanceRef ref) {
@@ -820,7 +877,7 @@ std::string fullName(ECS& ecs, InstanceRef ref) {
 
 InstanceRef parent(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance || ref == kNoInstance) return kNoInstance;
-    if (ref == kWorkspaceInstance) return kGameInstance;
+    if (ref == kWorkspaceInstance || ref == kRunServiceInstance) return kGameInstance;
     const EntityId e = entityOf(ecs, ref);
     if (!valid(ecs, e)) return kNoInstance;
     const EntityId p = parentEntity(ecs, e);
@@ -844,6 +901,7 @@ std::vector<InstanceRef> children(ECS& ecs, InstanceRef ref) {
             const std::string cls = entityClass(ecs, e);
             if (cls != "Workspace" && isServiceClass(cls)) out.push_back(refOf(ecs, e));
         }
+        out.push_back(kRunServiceInstance);
         return out;
     }
     if (ref == kWorkspaceInstance) {
@@ -883,7 +941,7 @@ bool isDescendantOf(ECS& ecs, InstanceRef ref, InstanceRef ancestor) {
 }
 
 bool setParent(ECS& ecs, InstanceRef child, InstanceRef newParent, std::string& error) {
-    if (child == kGameInstance || child == kWorkspaceInstance) {
+    if (child == kGameInstance || child == kWorkspaceInstance || child == kRunServiceInstance) {
         error = "The Parent property of " + name(ecs, child) + " is locked";
         return false;
     }
@@ -904,6 +962,11 @@ bool setParent(ECS& ecs, InstanceRef child, InstanceRef newParent, std::string& 
         error = "Kronos only keeps services directly under game";
         return false;
     }
+    if (newParent == kRunServiceInstance) {
+        error = "Kronos can't keep objects inside Run Service";
+        return false;
+    }
+    const InstanceRef oldParent = parent(ecs, child);
 
     const Pose pose = worldPose(ecs, e);
     ensureInfo(ecs, e);
@@ -924,6 +987,7 @@ bool setParent(ECS& ecs, InstanceRef child, InstanceRef newParent, std::string& 
         setWorldPose(ecs, e, pose.position, pose.rotation);
     }
     updateWorldPresence(ecs, e);
+    if (oldParent != newParent) signals::parentChanged(ecs, child, oldParent);
     return true;
 }
 
@@ -951,6 +1015,8 @@ InstanceRef create(ECS& ecs, const std::string& cls, std::string& error) {
         ecs.tryGetComponent<Transform>(e)->scale = cls == "SpawnLocation" ? glm::vec3(12.0f, 1.0f, 12.0f)
                                                                           : glm::vec3(4.0f, 1.0f, 2.0f);
         info.properties["Anchored"] = InstanceValue::ofBool(false);
+        ecs.addComponent<InstanceInfo>(e, std::move(info));
+        fitPartCollider(ecs, e);
     } else if (classIsA(cls, "Light")) {
         auto& l = ecs.addComponent<Light>(e);
         l.radius = 8.0f;
@@ -963,7 +1029,7 @@ InstanceRef create(ECS& ecs, const std::string& cls, std::string& error) {
         auto& script = ecs.addComponent<Script>(e);
         script.autoRun = false;
     }
-    ecs.addComponent<InstanceInfo>(e, std::move(info));
+    if (ecs.tryGetComponent<InstanceInfo>(e) == nullptr) ecs.addComponent<InstanceInfo>(e, std::move(info));
     updateWorldPresence(ecs, e);
     return refOf(ecs, e);
 }
@@ -1032,7 +1098,9 @@ InstanceRef clone(ECS& ecs, InstanceRef ref) {
 void destroy(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance || ref == kWorkspaceInstance) return;
     const EntityId e = entityOf(ecs, ref);
-    if (valid(ecs, e)) hierarchy::destroyEntityRecursive(ecs, e);
+    if (!valid(ecs, e)) return;
+    signals::destroying(ecs, ref);
+    hierarchy::destroyEntityRecursive(ecs, e);
 }
 
 bool isDetached(ECS& ecs, EntityId entity) {
@@ -1044,6 +1112,7 @@ bool isDetached(ECS& ecs, EntityId entity) {
 
 InstanceRef findService(ECS& ecs, const std::string& serviceName) {
     if (serviceName == "Workspace") return kWorkspaceInstance;
+    if (serviceName == "RunService") return kRunServiceInstance;
     if (!isServiceClass(serviceName)) return kNoInstance;
     for (EntityId e : rootEntities(ecs)) {
         if (entityClass(ecs, e) == serviceName) return refOf(ecs, e);
@@ -1106,9 +1175,31 @@ void setProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, const I
         setName(ecs, ref, value.text);
         return;
     }
+    // Changed fires for every property whose value really moved, including
+    // the ones derived from this one (Position also moves CFrame).
+    std::vector<std::pair<const PropertyDef*, InstanceValue>> watched;
+    if (SignalHub* hub = signals::findHub(ecs); hub != nullptr && hub->watchesChanges(ref)) {
+        const std::string cls = className(ecs, ref);
+        std::vector<std::string> names{property.name};
+        for (const auto& group : {std::vector<std::string>{"Position", "CFrame", "Orientation", "Rotation"},
+                                  std::vector<std::string>{"Color", "BrickColor"}}) {
+            if (std::find(group.begin(), group.end(), property.name) != group.end()) names = group;
+        }
+        for (const std::string& name : names) {
+            const PropertyDef* def = findProperty(cls, name);
+            InstanceValue before;
+            if (def != nullptr && getProperty(ecs, ref, *def, before)) watched.emplace_back(def, before);
+        }
+    }
     const EntityId e = entityOf(ecs, ref);
     if (property.get == nullptr) infoFor(ecs, ref).properties[property.name] = value;
     if (property.set != nullptr && valid(ecs, e)) property.set(ecs, e, value);
+    for (const auto& [def, before] : watched) {
+        InstanceValue after;
+        if (getProperty(ecs, ref, *def, after) && !sameValue(before, after)) {
+            signals::propertyChanged(ecs, ref, def->name, after);
+        }
+    }
 }
 
 const InstanceValue* attribute(ECS& ecs, InstanceRef ref, const std::string& attributeName) {
@@ -1120,11 +1211,14 @@ const InstanceValue* attribute(ECS& ecs, InstanceRef ref, const std::string& att
 
 void setAttribute(ECS& ecs, InstanceRef ref, const std::string& attributeName, const InstanceValue& value) {
     InstanceInfo& info = infoFor(ecs, ref);
+    const auto it = info.attributes.find(attributeName);
+    const InstanceValue before = it != info.attributes.end() ? it->second : InstanceValue{};
     if (value.type == InstanceValue::Type::Nil) {
         info.attributes.erase(attributeName);
     } else {
         info.attributes[attributeName] = value;
     }
+    if (!sameValue(before, value)) signals::attributeChanged(ecs, ref, attributeName);
 }
 
 std::map<std::string, InstanceValue> attributes(ECS& ecs, InstanceRef ref) {
@@ -1132,20 +1226,57 @@ std::map<std::string, InstanceValue> attributes(ECS& ecs, InstanceRef ref) {
     return info != nullptr ? info->attributes : std::map<std::string, InstanceValue>{};
 }
 
-void updateWorldPresence(ECS& ecs, EntityId entity) {
-    if (!valid(ecs, entity)) return;
-    bool inWorld = true;
+bool isInWorld(ECS& ecs, EntityId entity) {
+    if (!valid(ecs, entity)) return false;
     EntityId at = entity;
     for (int guard = 0; guard < 1024; ++guard) {
-        if (entityClass(ecs, at) == "Workspace") break;
+        if (entityClass(ecs, at) == "Workspace") return true;
         const EntityId p = parentEntity(ecs, at);
         if (p == kNullEntity) {
             const auto* info = ecs.tryGetComponent<InstanceInfo>(at);
-            inWorld = !(info != nullptr && info->detached) && !isServiceClass(entityClass(ecs, at));
-            break;
+            return !(info != nullptr && info->detached) && !isServiceClass(entityClass(ecs, at));
         }
         at = p;
     }
+    return true;
+}
+
+void fitPartCollider(ECS& ecs, EntityId entity) {
+    if (!valid(ecs, entity) || ecs.tryGetComponent<MeshSource>(entity) == nullptr) return;
+    const glm::vec3 size = glm::abs(worldPose(ecs, entity).scale * sizeFactor(ecs, entity));
+    const auto* info = ecs.tryGetComponent<InstanceInfo>(entity);
+    std::string shapeName = "Block";
+    if (info != nullptr) {
+        const auto it = info->properties.find("Shape");
+        if (it != info->properties.end()) shapeName = it->second.text;
+    }
+    ColliderShape shape;
+    if (shapeName == "Ball") {
+        shape.kind = ColliderShapeKind::Sphere;
+        shape.params = {std::max(std::min({size.x, size.y, size.z}) * 0.5f, 0.01f), 0.0f, 0.0f};
+    } else {
+        shape.kind = ColliderShapeKind::Box;
+        shape.params = glm::max(size * 0.5f, glm::vec3(0.01f));
+    }
+    ecs.raw().emplace_or_replace<ColliderShape>(entity, shape);
+    if (ecs.tryGetComponent<PhysicsMaterial>(entity) == nullptr) ecs.addComponent<PhysicsMaterial>(entity, PhysicsMaterial{});
+    const bool anchored = getAnchored(ecs, entity).boolean;
+    auto& body = ecs.raw().get_or_emplace<RigidBody>(entity);
+    if (body.joltBodyId == RigidBody::kInvalidBodyId) {
+        body.motionType = anchored ? RigidBodyMotionType::Static : RigidBodyMotionType::Dynamic;
+    }
+}
+
+bool canCollide(ECS& ecs, EntityId entity) {
+    const auto* info = ecs.tryGetComponent<InstanceInfo>(entity);
+    if (info == nullptr) return true;
+    const auto it = info->properties.find("CanCollide");
+    return it == info->properties.end() || it->second.boolean;
+}
+
+void updateWorldPresence(ECS& ecs, EntityId entity) {
+    if (!valid(ecs, entity)) return;
+    const bool inWorld = isInWorld(ecs, entity);
     std::function<void(EntityId, int)> apply = [&](EntityId e, int depth) {
         if (depth > 512 || hidden(ecs, e)) return;
         if (auto* r = ecs.tryGetComponent<Renderable>(e)) {

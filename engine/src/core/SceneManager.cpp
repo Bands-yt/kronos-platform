@@ -177,38 +177,7 @@ void instantiateSceneEntities(const std::vector<SceneEntityRecord>& records, ECS
             light = record.light;
         }
 
-        // Kronos ("Game Catalogue Overhaul", Phase 2): only attaches a
-        // real, live Jolt body when a real Physics world was passed in --
-        // every existing Studio call site (physics == nullptr) is
-        // unaffected, matching this function's own header comment.
-        if (record.hasRigidBody && record.hasColliderShape && physics != nullptr) {
-            std::vector<glm::vec3> meshPositions;
-            std::vector<uint32_t> meshIndices;
-            const std::vector<glm::vec3>* meshPositionsPtr = nullptr;
-            const std::vector<uint32_t>* meshIndicesPtr = nullptr;
-            if (record.colliderShape.kind == ColliderShapeKind::Mesh) {
-                ObjLoadResult obj = loadObj(record.colliderShape.path);
-                if (obj.succeeded) {
-                    meshPositions.reserve(obj.vertices.size());
-                    for (const auto& v : obj.vertices) meshPositions.push_back(v.position);
-                    meshIndices = obj.indices;
-                    meshPositionsPtr = &meshPositions;
-                    meshIndicesPtr = &meshIndices;
-                } else {
-                    std::fprintf(stderr, "SceneManager: \"%s\"'s real mesh collider \"%s\" failed to load: %s\n",
-                                 record.name.c_str(), record.colliderShape.path.c_str(), obj.error.c_str());
-                }
-            }
-            bool attached = physics->attachBodyToEntity(entity, ecs, record.colliderShape, PhysicsMaterial{},
-                                                          record.motionType, 0.0f, CollisionLayer::Default, false,
-                                                          meshPositionsPtr, meshIndicesPtr);
-            if (!attached) {
-                std::fprintf(stderr, "SceneManager: \"%s\" kept its saved physics data but real body attachment failed\n",
-                             record.name.c_str());
-            }
-        } else if (record.hasRigidBody) {
-            // No live world (Studio edit mode): keep the authored data so a
-            // later Play session or Save still sees it.
+        if (record.hasRigidBody) {
             if (record.hasColliderShape) {
                 ecs.addComponent<ColliderShape>(entity, record.colliderShape);
                 ecs.addComponent<PhysicsMaterial>(entity, PhysicsMaterial{});
@@ -269,6 +238,41 @@ void instantiateSceneEntities(const std::vector<SceneEntityRecord>& records, ECS
     for (const auto& [name, entity] : entityByName) {
         const auto* h = ecs.tryGetComponent<Hierarchy>(entity);
         if (h == nullptr || h->parent == kNullEntity) instances::updateWorldPresence(ecs, entity);
+    }
+
+    // Bodies go in after parenting so parts inside Models sit at their world
+    // pose. Parts outside the workspace get none; CanCollide = false parts
+    // become sensors.
+    if (physics == nullptr) return;
+    for (const auto& record : records) {
+        if (!record.hasRigidBody || !record.hasColliderShape) continue;
+        auto it = entityByName.find(record.name);
+        if (it == entityByName.end()) continue;
+        const EntityId entity = it->second;
+        if (!instances::isInWorld(ecs, entity)) continue;
+        std::vector<glm::vec3> meshPositions;
+        std::vector<uint32_t> meshIndices;
+        const std::vector<glm::vec3>* meshPositionsPtr = nullptr;
+        const std::vector<uint32_t>* meshIndicesPtr = nullptr;
+        if (record.colliderShape.kind == ColliderShapeKind::Mesh) {
+            ObjLoadResult obj = loadObj(record.colliderShape.path);
+            if (obj.succeeded) {
+                meshPositions.reserve(obj.vertices.size());
+                for (const auto& v : obj.vertices) meshPositions.push_back(v.position);
+                meshIndices = obj.indices;
+                meshPositionsPtr = &meshPositions;
+                meshIndicesPtr = &meshIndices;
+            } else {
+                std::fprintf(stderr, "SceneManager: \"%s\"'s real mesh collider \"%s\" failed to load: %s\n",
+                             record.name.c_str(), record.colliderShape.path.c_str(), obj.error.c_str());
+            }
+        }
+        if (!physics->attachBodyToEntity(entity, ecs, record.colliderShape, PhysicsMaterial{}, record.motionType, 0.0f,
+                                         CollisionLayer::Default, !instances::canCollide(ecs, entity), meshPositionsPtr,
+                                         meshIndicesPtr)) {
+            std::fprintf(stderr, "SceneManager: \"%s\" kept its saved physics data but real body attachment failed\n",
+                         record.name.c_str());
+        }
     }
 }
 

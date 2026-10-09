@@ -277,6 +277,7 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
     if (parent != core::kNullEntity) {
         core::hierarchy::setParent(ecs, entity, parent);
     }
+    if (part) core::instances::fitPartCollider(ecs, entity);
 
     for (const ImportedInstance& child : node.children) {
         hydrateNode(child, ecs, entity, world, meshes, options, result);

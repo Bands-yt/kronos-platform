@@ -370,6 +370,7 @@ add_library(engine_core STATIC
     migration/CompatibilityScore.cpp
     core/RobloxDatatypes.cpp
     core/InstanceTree.cpp
+    core/InstanceSignals.cpp
     core/ScriptInstanceApi.cpp
     migration/AssetModeration.cpp
 

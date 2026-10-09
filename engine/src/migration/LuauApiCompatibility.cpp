@@ -137,8 +137,8 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"TweenService", false, ApiMappingStatus::Unmapped,
                           "No TweenService. Animate from `events.onUpdate`, or author a curve in Studio's Movie "
                           "Mode timeline."});
-    registry_.push_back({"RunService", false, ApiMappingStatus::Unmapped,
-                          "No RunService. Per-frame work belongs in `events.onUpdate`."});
+    registry_.push_back({"RunService", false, ApiMappingStatus::Mapped,
+                          "Heartbeat, Stepped and RenderStepped work as in Roblox (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"ReplicatedStorage", false, ApiMappingStatus::Mapped,
                           "Works as a container. RemoteEvents inside it arrive in a later 4.3 step."});
     registry_.push_back({"Players", false, ApiMappingStatus::Unmapped,
@@ -150,8 +150,8 @@ LuauApiCompatibility::LuauApiCompatibility() {
     // Common Roblox APIs the 4.3 bridge will add (docs/ROADMAP.md). Listed so
     // the compatibility score counts them; flip to Mapped as each lands.
     const char* kBridgeGuidance = "Not in Kronos yet; planned for the 4.3 Roblox bridge (docs/ROADMAP.md).";
-    for (const char* global : {"wait", "spawn", "delay", "tick"}) {
-        registry_.push_back({global, false, ApiMappingStatus::Unmapped, kBridgeGuidance});
+    for (const char* global : {"wait", "spawn", "delay", "tick", "time", "elapsedTime"}) {
+        registry_.push_back({global, false, ApiMappingStatus::Mapped, "Works as in Roblox; `task` is preferred."});
     }
     // Roblox datatypes (core/RobloxDatatypes.cpp).
     for (const char* global : {"Vector3", "Vector2", "CFrame", "Color3", "BrickColor", "UDim", "UDim2", "Enum",
@@ -163,10 +163,11 @@ LuauApiCompatibility::LuauApiCompatibility() {
                                "FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA",
                                "WaitForChild", "GetChildren", "GetDescendants", "Clone", "Destroy",
                                "ClearAllChildren", "IsA", "IsDescendantOf", "IsAncestorOf", "GetFullName",
-                               "GetAttribute", "SetAttribute", "GetAttributes"}) {
+                               "GetAttribute", "SetAttribute", "GetAttributes", "Connect", "Once", "Disconnect",
+                               "GetPropertyChangedSignal", "GetAttributeChangedSignal"}) {
         registry_.push_back({method, true, ApiMappingStatus::Mapped, "Works as in Roblox."});
     }
-    for (const char* method : {"Connect", "Once", "Disconnect", "GetPropertyChangedSignal", "FireServer",
+    for (const char* method : {"FireServer",
                                "FireClient", "FireAllClients", "InvokeServer", "InvokeClient",
                                "GetPlayerFromCharacter", "GetPlayers", "TakeDamage", "MoveTo", "Create", "Play",
                                "GetDataStore", "GetAsync", "SetAsync", "UpdateAsync", "IncrementAsync",
@@ -188,7 +189,7 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"events", false, ApiMappingStatus::Mapped, "Kronos `events` API."});
     registry_.push_back({"ui", false, ApiMappingStatus::Mapped, "Kronos `ui` API."});
     registry_.push_back({"print", false, ApiMappingStatus::Mapped, "Same as Roblox."});
-    registry_.push_back({"task", false, ApiMappingStatus::Mapped, "`task.wait`/`spawn`/`defer` work as in Roblox."});
+    registry_.push_back({"task", false, ApiMappingStatus::Mapped, "`task.wait`/`spawn`/`defer`/`delay`/`cancel` work as in Roblox."});
 }
 
 std::vector<ApiCompatibilityFinding> LuauApiCompatibility::scan(const std::string& luauSource) const {

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "core/CollisionLayers.hpp"
@@ -364,6 +365,28 @@ public:
         float impactSpeed = 0.0f;
     };
     void setImpactRecording(bool enabled, float minImpactSpeed = 1.0f);
+
+    // Two bodies started (began) or stopped touching: Roblox's
+    // BasePart.Touched / TouchEnded. Off until a host turns it on, so
+    // nothing piles up where no one drains it.
+    struct TouchEvent {
+        EntityId a = kNullEntity;
+        EntityId b = kNullEntity;
+        bool began = true;
+    };
+    void setTouchRecording(bool enabled);
+    [[nodiscard]] std::vector<TouchEvent> drainTouchEvents();
+    struct TouchTracker {
+        struct Pair {
+            EntityId a = kNullEntity;
+            EntityId b = kNullEntity;
+            int contacts = 0;
+        };
+        std::mutex mutex;
+        std::atomic<bool> enabled{false};
+        std::vector<TouchEvent> pending;
+        std::unordered_map<uint64_t, Pair> active; // by body-pair key
+    };
     [[nodiscard]] std::vector<ImpactEvent> drainImpactEvents();
 
     // Ragdolls built on Jolt's RagdollSettings. Handles are never reused.
@@ -422,6 +445,8 @@ private:
     std::unique_ptr<JPH::ContactListener> contactListener_;
     std::mutex collisionEventsMutex_;
     std::vector<CollisionEvent> pendingCollisionEvents_;
+
+    TouchTracker touches_;
 
     std::mutex impactEventsMutex_;
     std::vector<ImpactEvent> pendingImpactEvents_;

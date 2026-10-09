@@ -9,7 +9,7 @@ feeling. Estimates are rough, and the big ones are weeks, not hours.
 | 4.1 | Creators: publishing, scripting, held-back fixes | Done locally, ships in the public beta |
 | 4.2 | Scale: culling, batching, streaming, determinism, audio mixer | Done locally, ships in the public beta |
 | Launch | Public beta (4.1 and 4.2 together), first Reddit post | Date to be decided by the owner |
-| 4.3 | Roblox bridge: import a Roblox place and play it in Kronos | In progress: steps 1–3 done (score 57%) |
+| 4.3 | Roblox bridge: import a Roblox place and play it in Kronos | In progress: steps 1–4 done (score 75%) |
 | 4.4 | Polish from launch feedback, plus the small 4.2 leftovers | Alongside 4.3 |
 | 4.5 | Foundations: Rust plugins, Python scripts, permanent object IDs, engine clean-up | After 4.3 and 4.4 |
 | 5.0 | Next-gen: graphics, web player, collaboration, media tools, 3D Model Maker | Parked until the bridge works |
@@ -107,6 +107,7 @@ start to finish without hand edits.
 - **Step 1, compatibility score** (2026-10-07): `migration/CompatibilityScore`, the `kronos_compat` tool, five test places in `engine/tests/compat_corpus/`, and the score in Studio's Import window. Baseline: **34%** (instances 91%, API uses 3%, scripts 8%). The importer now reads Roblox Studio's CDATA script sources. Behaviour checks wait for scripts that run (steps 3–4). See `ROBLOX_BRIDGE.md`.
 - **Step 2, datatypes** (2026-10-07): `Vector3`, `Vector2`, `CFrame`, `Color3`, `BrickColor`, `UDim`/`UDim2`, 27 `Enum`s, `TweenInfo`, `NumberRange`, `NumberSequence`, `ColorSequence`, `Ray`, `RaycastParams`, `Random` and a `typeof` that names them, in every script (`core/RobloxDatatypes.cpp`), checked by 58 tests against Roblox's results. Score 34% → 36%. See `ROBLOX_BRIDGE.md`.
 - **Step 3, Instance tree** (2026-10-09): `game`, `workspace`, `script`, `Instance.new` and the common Instance methods (`FindFirstChild`, `WaitForChild`, `GetChildren`, `GetDescendants`, `Clone`, `Destroy`, `IsA`, attributes, ...) over the real ECS, built on a class table with about 60 classes whose properties carry saved/replicated/Studio flags (`core/InstanceTree.cpp`, `core/ScriptInstanceApi.cpp`). Part properties read and write the real entity. The importer keeps every known class and its stored properties, scenes save the Roblox data, and imported parts are now full size. Score 36% → 57%; scripts now stop at events (step 4). Checked in Studio's Debug Console and with an imported test place. See `ROBLOX_BRIDGE.md`.
+- **Step 4, Events** (2026-10-09): Roblox signals with deferred handlers (`:Connect`, `:Once`, `:Wait`, `:Disconnect`), `Changed`/`GetPropertyChangedSignal`, attribute and tree events, `Destroying`, `Touched`/`TouchEnded` from real Jolt contacts, `BindableEvent`, and `RunService` (`Stepped`, `Heartbeat`, `RenderStepped`, `Pre`/`PostSimulation`, `PreRender`) in one documented frame order in both the Player and Studio Play. `task.delay`/`task.cancel` and the old `wait`/`spawn`/`delay`/`tick`/`time` globals. Parts made by scripts or imported are now solid (Anchored, CanCollide = false as a sensor, no body outside the workspace, parts inside Models in the right place). Score 57% → 75%; all four obby scripts run. Checked in Studio Play: the avatar stops at a script-made wall and `Touched` fires, walks through it with `CanCollide = false`. See `ROBLOX_BRIDGE.md`.
 
 ---
 

@@ -7,6 +7,7 @@
 
 #include "core/Audio.hpp"
 #include "core/Components.hpp"
+#include "core/InstanceSignals.hpp"
 #include "core/Logger.hpp"
 #include "core/ScriptHotReload.hpp"
 
@@ -48,7 +49,10 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
             continue;
         }
 
-        if (physics_.attachBodyToEntity(entity, ecs, shape, material, motionType)) {
+        if (!core::instances::isInWorld(ecs, entity)) continue;
+        const bool sensor = !core::instances::canCollide(ecs, entity);
+        if (physics_.attachBodyToEntity(entity, ecs, shape, material, motionType, 0.0f, core::CollisionLayer::Default,
+                                        sensor)) {
             attachedEntities_.push_back(entity);
         }
     }
@@ -101,6 +105,11 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
         for (auto [entity, sound] : ecs.raw().view<core::AudioSource>().each()) sound.playing = sound.playOnStart;
     }
 
+    core::RunServiceState& runService = core::signals::runService(ecs);
+    runService = core::RunServiceState{};
+    runService.studio = true;
+    physics_.setTouchRecording(true);
+
     playing_ = true;
     paused_ = false;
     if (onPlay_) onPlay_(ecs, physics_);
@@ -131,6 +140,8 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
     }
     scripting_.shutdown();
     scriptAudioApi_.reset();
+    physics_.setTouchRecording(false);
+    core::signals::runService(ecs).running = false;
     if (audio_ != nullptr) {
         for (auto [entity, sound] : ecs.raw().view<core::AudioSource>().each()) {
             sound.playing = false;
@@ -150,6 +161,8 @@ bool PhysicsPreviewPlugin::stepOnce(core::ECS& ecs, float dt) {
     if (!playing_ || !paused_) return false; // see this method's own .hpp comment
     physics_.step(dt, ecs);
     recentContacts_ = physics_.drainCollisionEvents();
+    for (const auto& touch : physics_.drainTouchEvents()) core::signals::touch(ecs, touch.a, touch.b, touch.began);
+    core::signals::flush(ecs);
     return true;
 }
 
@@ -160,13 +173,10 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
         scripting_.tick(0.0f);
         return;
     }
-    if (!paused_) {
-        physics_.step(dt, ecs);
-        recentContacts_ = physics_.drainCollisionEvents();
-        for (const auto& contact : recentContacts_) {
-            scripting_.fireCollision(static_cast<uint32_t>(contact.first), static_cast<uint32_t>(contact.second));
-        }
-    }
+    // Same order as the Player's GameLoop (docs/ROBLOX_BRIDGE.md, "Frame order").
+    core::signals::renderStepped(ecs, dt);
+    core::signals::flush(ecs);
+    if (!paused_) core::signals::stepped(ecs, dt);
 
     // Real hot-reload: a script saved from the Script Editor while
     // Playing gets diffed and (re)loaded here, then ticked -- see
@@ -174,6 +184,17 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
     // completely untouched by this.
     core::tickScriptHotReload(ecs, scripting_);
     scripting_.tick(dt);
+
+    if (!paused_) {
+        physics_.step(dt, ecs);
+        recentContacts_ = physics_.drainCollisionEvents();
+        for (const auto& contact : recentContacts_) {
+            scripting_.fireCollision(static_cast<uint32_t>(contact.first), static_cast<uint32_t>(contact.second));
+        }
+        for (const auto& touch : physics_.drainTouchEvents()) core::signals::touch(ecs, touch.a, touch.b, touch.began);
+        core::signals::heartbeat(ecs, dt);
+        core::signals::flush(ecs);
+    }
 }
 
 namespace {

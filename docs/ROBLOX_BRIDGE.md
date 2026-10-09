@@ -49,6 +49,7 @@ Only test with places you made or that are clearly licensed for it.
 | 2026-10-07 | 34% | 51/56 (91%) | 3/94 (3%) | 1/13 (8%) | Baseline before the bridge. Every Roblox script stops at `game`, `workspace` or `script` on its first line |
 | 2026-10-07 | 36% | 51/56 (91%) | 9/94 (10%) | 1/13 (8%) | Step 2, datatypes. Scripts still stop at `game` (step 3) |
 | 2026-10-09 | 57% | 52/56 (93%) | 66/94 (70%) | 1/13 (8%) | Step 3, Instance tree. Scripts now get past `game`/`workspace` and stop at events (`Touched`, `PlayerAdded`, `:Connect`, step 4) or services (TweenService, DataStoreService) |
+| 2026-10-09 | 75% | 52/56 (93%) | 83/95 (87%) | 6/13 (46%) | Step 4, events. All four obby scripts run. The rest stop at `PlayerAdded` (step 5), `OnServerEvent` (step 6), `DataStoreService` (step 7), `TweenService`/`Debris` (step 8) or `MouseButton1Click` (step 9) |
 
 Most-used missing APIs at the baseline: `:Connect`, `:GetService`, `game`,
 `script`, `Instance`, `:WaitForChild`, `workspace`. Unbuilt classes: the GUI
@@ -116,7 +117,7 @@ part:Destroy()
 | Values | `IntValue`, `NumberValue`, `StringValue`, `BoolValue`, `ObjectValue`, `Vector3Value`, `Color3Value`, `CFrameValue`, `BrickColorValue` |
 | Scripts | `Script`, `LocalScript`, `ModuleScript` (`Disabled`) |
 | Services | `Players`, `Lighting`, `ReplicatedStorage`, `ReplicatedFirst`, `ServerScriptService`, `ServerStorage`, `StarterGui`, `StarterPack`, `StarterPlayer`, `SoundService`, `Teams`, `Chat` exist as containers. What they *do* comes in later steps |
-| Placeholders | `RemoteEvent`, `RemoteFunction`, `BindableEvent`, `BindableFunction`, `Sound`, `Tool`, `Accessory` exist so places import, but have no behaviour yet |
+| Placeholders | `RemoteEvent`, `RemoteFunction`, `BindableFunction`, `Sound`, `Tool`, `Accessory` exist so places import, but have no behaviour yet (`BindableEvent` works, see Events) |
 
 Roblox's rules are kept:
 - `Instance.new` makes an object with `Parent = nil`. It isn't drawn, saved
@@ -149,7 +150,8 @@ Scenes now save each object's Roblox class, stored properties and attributes
   together when they are welded.
 - Setting `Position`/`CFrame` on a part that is already simulating doesn't
   move its physics body yet; `Destroy` doesn't free the physics body yet
-  (the same as `world.destroy`). This comes with the physics work in 4.4.
+  (the same as `world.destroy`). Parts made while the game is running get no
+  physics body until the next Play. This comes with the physics work in 4.4.
 - `Material` is stored and saved, but only `Neon` changes how a part looks
   (it glows).
 - Properties that point at another object (`PrimaryPart`, `ObjectValue.Value`)
@@ -161,9 +163,108 @@ Scenes now save each object's Roblox class, stored properties and attributes
   memory until the scene is reloaded (Roblox frees them when no script holds
   them). They are not drawn, listed or saved.
 - 1 Kronos unit = 1 stud. The import window has a stud scale option.
-- No events yet (`Touched`, `Changed`, `:Connect`): that is step 4.
 - GUI classes (`ScreenGui`, `Frame`, `TextButton`, ...) aren't in the class
   table yet: step 9.
+
+### Parts are solid
+
+Like in Roblox, every part has a physics body that matches what you see:
+- `Instance.new("Part")` and imported parts collide. Parts start unanchored
+  (they fall when the game runs); `Anchored = true` keeps them still.
+- Changing `Size` or `Shape` changes the collider too (`Ball` is a sphere).
+- `CanCollide = false`: players and parts pass through, but `Touched` still
+  fires.
+- Parts kept in `ReplicatedStorage` or `ServerStorage`, or with
+  `Parent = nil`, have no body.
+- Parts inside a `Model` or `Folder` collide where they are drawn.
+
+## Events (step 4)
+
+Scripts can now react to things happening, with Roblox's `RBXScriptSignal`
+objects. The code is in `engine/src/core/InstanceSignals.cpp` (the queue and
+the connections) and `engine/src/core/ScriptInstanceApi.cpp` (what Luau
+sees).
+
+```lua
+local pad = workspace.Pad
+pad.Touched:Connect(function(hit)
+    print(hit.Name .. " stepped on the pad")
+end)
+
+local coins = Instance.new("IntValue")
+coins.Changed:Connect(function(value) print("coins:", value) end)
+coins.Value = 10
+
+game:GetService("RunService").Heartbeat:Connect(function(dt)
+    pad.Transparency = (math.sin(time() * 3) + 1) / 2
+end)
+```
+
+### What works
+
+| Area | Supported |
+|---|---|
+| Signals | `:Connect(fn)`, `:Once(fn)`, `:Wait()`, `:ConnectParallel(fn)` (runs like `Connect`, there are no Actors yet); `typeof` gives `RBXScriptSignal` |
+| Connections | `connection.Connected`, `connection:Disconnect()`; `typeof` gives `RBXScriptConnection` |
+| Every Instance | `Changed` (the property name), `GetPropertyChangedSignal(name)`, `AttributeChanged`, `GetAttributeChangedSignal(name)`, `ChildAdded`, `ChildRemoved`, `DescendantAdded`, `DescendantRemoving`, `AncestryChanged`, `Destroying` |
+| Value objects (`IntValue`, ...) | `Changed` passes the new value, and fires only for `Value` |
+| Parts | `Touched(otherPart)`, `TouchEnded(otherPart)`, from real physics contacts. Both parts need `CanTouch = true` |
+| `BindableEvent` | `:Fire(...)` and `.Event`. Works between scripts. Tables are copied |
+| `RunService` | `Stepped(time, dt)`, `PreSimulation(dt)`, `PostSimulation(dt)`, `Heartbeat(dt)`, `RenderStepped(dt)`, `PreRender(dt)`; `IsServer`, `IsClient`, `IsStudio`, `IsRunning`, `IsRunMode`, `IsEdit` |
+| `task` | `task.spawn`, `task.defer`, `task.delay`, `task.wait`, `task.cancel` |
+| Older globals | `wait`, `spawn`, `delay`, `tick`, `time`, `elapsedTime` |
+
+Roblox's rules are kept:
+- **Handlers run deferred**, like Roblox's default `SignalBehavior.Deferred`.
+  Firing an event only queues the handlers; they run when the current script
+  stops or yields. So `part.Name = "A"` followed by `print("after")` prints
+  `after` first.
+- `Changed` fires only when the value really changes. Setting `CFrame` also
+  fires `Position` (and the other way round), and `Color` and `BrickColor` go
+  together.
+- A handler that keeps firing its own event stops after 10 levels, with
+  Roblox's error `Maximum event re-entrancy depth exceeded`.
+- An error in one handler is printed (`runtime error in Touched handler:
+  ...`) and doesn't stop the other handlers or the script.
+- `Destroying` runs before the object goes away, then all its connections are
+  disconnected.
+- When a script stops (Stop in Studio, a script reloaded), its connections go
+  with it.
+
+### Frame order
+
+Every frame runs in this order, in the Player and in Studio's Play mode:
+
+1. `PreRender`, then `RenderStepped` (before the frame is drawn).
+2. `Stepped`, then `PreSimulation`.
+3. Scripts: waiting threads (`task.wait`, `wait`) resume, then the queued
+   handlers run.
+4. Physics steps.
+5. `Touched`/`TouchEnded` from that step, then `PostSimulation`, then
+   `Heartbeat`.
+
+In the Player, physics runs at a fixed 120 steps a second, so `Stepped` and
+`Heartbeat` can run more than once per drawn frame (or not at all when the
+frame is very short). `RenderStepped` runs once per drawn frame. On a
+server there's no drawing, so no `RenderStepped`.
+
+### Differences from Roblox (known limits)
+
+- The player's avatar touches things with one body part, named `Player`.
+  `hit.Parent:FindFirstChild("Humanoid")` doesn't find anything yet; that
+  comes with characters in step 5.
+- The avatar's body floats a little above the floor (like Roblox's
+  `HumanoidRootPart`), so the floor rarely gets `Touched`. Walls, pads you
+  walk into and parts that fall on you work.
+- `BindableEvent` passes numbers, strings, booleans, Instances, `Vector3`,
+  `CFrame`, `Color3`, `BrickColor`, Enum items and tables of these. Other
+  datatypes (`UDim2`, `TweenInfo`, ...) arrive as plain tables, and functions
+  as `nil`.
+- `DescendantRemoving` handlers run after the object has been removed
+  (deferred), so `Parent` is already the new parent.
+- `:Wait()` on an object that gets destroyed never resumes.
+- Connections made from Studio's Debug Console stay until Studio closes.
+- `BindToRenderStep` isn't there yet.
 
 ## From entity ids to Instances
 
@@ -186,6 +287,7 @@ To use an id with the old API from an Instance, read `instance.entity`.
 - Lights, Folders and other objects without a position now sit at their
   parent instead of the world origin.
 - `Ball` parts are round (they used to be long pills).
+- Imported parts are solid (see "Parts are solid").
 - Every Roblox class in the class table imports. Classes without a shape
   (`Folder`, `IntValue`, `RemoteEvent`, ...) become groups that keep their
   class, and `Anchored`, `CanCollide`, `Material`, `Shape` and `Value` are kept.

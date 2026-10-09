@@ -24,6 +24,7 @@
 
 #include "core/Economy.hpp"
 #include "core/EmoteSystem.hpp"
+#include "core/InstanceSignals.hpp"
 #include "core/Inventory.hpp"
 #include "core/Logger.hpp"
 #include "core/OreNode.hpp"
@@ -154,6 +155,7 @@ bool Application::initialize(const CreateInfo& info) {
         std::fprintf(stderr, "Application: Physics::initialize failed.\n");
         return false;
     }
+    physics_.setTouchRecording(true);
 
     if (!audio_.initialize()) {
         // Audio device init can legitimately fail in headless/CI
@@ -442,6 +444,10 @@ bool Application::initialize(const CreateInfo& info) {
                                              info.headless ? nullptr : &renderer_,
                                              &ecs_, &physics_, &audio_, &scripting_, &camera_};
     gameLoop_ = std::make_unique<runtime::GameLoop>(subsystems);
+    gameLoop_->setFrameStartHook([this](float dt) {
+        signals::renderStepped(ecs_, dt);
+        signals::flush(ecs_);
+    });
 
     // The pre-tick hook (see GameLoop.hpp's doc comment): sample input,
     // move the character, advance particle simulation, before
@@ -467,6 +473,7 @@ bool Application::initialize(const CreateInfo& info) {
         else renderer_.deferDestroy(std::move(destroy));
     };
     gameLoop_->setPreTickHook([this](float dt) {
+        signals::stepped(ecs_, dt);
         updateWorldStreaming();
         if (headless_) return;
         input_.addMouseWheel(window_.takeMouseWheel());
@@ -2532,6 +2539,9 @@ bool Application::initialize(const CreateInfo& info) {
         for (const auto& event : physics_.drainCollisionEvents()) {
             scripting_.fireCollision(static_cast<uint32_t>(event.first), static_cast<uint32_t>(event.second));
         }
+        for (const auto& touch : physics_.drainTouchEvents()) signals::touch(ecs_, touch.a, touch.b, touch.began);
+        signals::heartbeat(ecs_, dt);
+        signals::flush(ecs_);
         // PROJECT: DESPAIR -- first-person look-rotation + noise-level
         // write. Must run here, after Physics::step()'s syncTransforms()
         // reset this tick's Transform::rotation to yaw-only, and before
@@ -3147,6 +3157,8 @@ bool Application::startNetworking(const net::NetworkSession::Config& config) {
     // driving characterController_'s physics-backed entity with it would
     // fight physics.step() every tick over who owns that entity's
     // Transform.
+    signals::runService(ecs_).server = config.mode != net::NetworkMode::Client;
+    signals::runService(ecs_).client = config.mode != net::NetworkMode::Server;
     if (config.mode == net::NetworkMode::Server) {
         networkSession_.setOnPlayerJoin([this](ECS& ecs, net::PlayerId player) -> EntityId {
             std::string entityName = "Player" + std::to_string(player);

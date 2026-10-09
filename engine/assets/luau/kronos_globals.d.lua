@@ -14,13 +14,9 @@
 --   core/ScriptNetworkApi.cpp -- network
 --   core/ScriptUiApi.cpp      -- ui
 --   core/ScriptChatApi.cpp    -- TextChatService
--- Not Roblox's `game`/`workspace`/`script` -- those don't exist in this
--- engine yet (see Scripting.cpp's own registerBindings() TODO on the
--- Instance/DataModel translation layer this would need). Declaring them
--- here anyway would make the type checker silently accept scripts that
--- crash at runtime with "attempt to index nil" -- worse than the honest
--- "unknown global" a real nonstrict-mode script currently gets away
--- with. Update this file in the same commit that adds or changes a
+--   core/ScriptInstanceApi.cpp -- game, workspace, script, Instance (Roblox bridge)
+-- The Roblox Instance tree is declared loosely (`any`) for now; full types
+-- will be generated from the class table (core/InstanceTree.cpp). Update this file in the same commit that adds or changes a
 -- real global -- it drifts out of sync exactly like kKronosVersion does
 -- if that rule isn't followed (see core/KronosVersion.hpp's own comment).
 
@@ -35,12 +31,33 @@ declare engine: {
 }
 
 declare task: {
-    --- Pauses this coroutine for the given seconds (one frame if omitted).
-    wait: (seconds: number?) -> (),
-    --- Runs a function immediately in a new coroutine.
-    spawn: (fn: (...any) -> (...any), ...any) -> (),
+    --- Pauses this coroutine for the given seconds (one frame if omitted). Returns the time waited.
+    wait: (seconds: number?) -> number,
+    --- Runs a function (or resumes a thread) immediately in a new coroutine.
+    spawn: (fn: ((...any) -> (...any)) | thread, ...any) -> thread,
     --- Runs a function in a new coroutine at the end of this frame.
-    defer: (fn: (...any) -> (...any), ...any) -> (),
+    defer: (fn: ((...any) -> (...any)) | thread, ...any) -> thread,
+    --- Runs a function after the given seconds.
+    delay: (seconds: number, fn: ((...any) -> (...any)) | thread, ...any) -> thread,
+    --- Stops a thread from spawn, defer or delay.
+    cancel: (thread: thread) -> (),
+}
+
+--- Older Roblox scheduling globals.
+declare function wait(seconds: number?): (number, number)
+declare function spawn(fn: (...any) -> (...any)): ()
+declare function delay(seconds: number, fn: (...any) -> (...any)): ()
+--- Seconds since 1970.
+declare function tick(): number
+--- Seconds since the game started.
+declare function time(): number
+declare function elapsedTime(): number
+
+--- The Roblox object tree (see docs/ROBLOX_BRIDGE.md).
+declare game: any
+declare workspace: any
+declare Instance: {
+    new: (className: string, parent: any?) -> any,
 }
 
 declare events: {
@@ -74,14 +91,9 @@ type RaycastResult = {
     distance: number,
 }
 
--- Kronos entity ids are plain numbers (a Luau double, matching every
--- numeric id this engine's whole Lua surface hands scripts -- see
--- ScriptUiApi.cpp's own luaJoinSession() comment on this same
--- convention), not a dedicated userdata/class type -- there is no
--- Instance hierarchy yet for one to belong to.
-declare script: {
-    entity: number,
-}
+-- Kronos entity ids are plain numbers. `script` is the script's Instance;
+-- `script.entity` gives its entity id for the `world` API.
+declare script: any
 
 declare world: {
     --- Creates an empty entity and returns its id.

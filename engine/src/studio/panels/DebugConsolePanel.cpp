@@ -9,6 +9,7 @@
 #include <imgui_stdlib.h>
 
 #include "core/Components.hpp"
+#include "core/InstanceSignals.hpp"
 #include "core/Logger.hpp"
 #include "studio/StudioEcsScriptApi.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
@@ -83,6 +84,9 @@ std::optional<ScriptErrorRef> parseScriptErrorRef(const std::string& message) {
 bool DebugConsolePanel::initialize(core::ECS& ecs, plugins::MovieModePlugin& movieMode, core::Renderer& renderer) {
     ecs_ = &ecs;
     if (!scripting_.initialize()) return false;
+    core::RunServiceState& runService = core::signals::runService(ecs);
+    runService.studio = true;
+    runService.running = false;
 
     scriptMeshApi_ = std::make_unique<core::ScriptMeshApi>(*ecs_);
     scriptCinematicApi_ =

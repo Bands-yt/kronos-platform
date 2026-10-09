@@ -44,6 +44,7 @@ using InstanceRef = uint32_t;
 inline constexpr InstanceRef kNoInstance = ~0u;
 inline constexpr InstanceRef kGameInstance = ~0u - 1;
 inline constexpr InstanceRef kWorkspaceInstance = ~0u - 2;
+inline constexpr InstanceRef kRunServiceInstance = ~0u - 3;
 
 // Roblox-side data for an entity. Entities without it get a class from their
 // components (see className()).
@@ -91,6 +92,8 @@ struct ClassDef {
     bool creatable = false; // Instance.new may make it
     bool service = false;   // lives directly under game
     std::vector<PropertyDef> properties;
+    std::vector<std::string> methods;
+    std::vector<std::string> events;
 };
 
 namespace instances {
@@ -100,6 +103,8 @@ namespace instances {
 [[nodiscard]] bool classIsA(const std::string& className, const std::string& base);
 // Searches the class and its superclasses.
 [[nodiscard]] const PropertyDef* findProperty(const std::string& className, const std::string& property);
+[[nodiscard]] bool classHasMethod(const std::string& className, const std::string& method);
+[[nodiscard]] bool classHasEvent(const std::string& className, const std::string& event);
 // Behaviour-only services (RunService, TweenService, ...) the bridge adds later.
 [[nodiscard]] bool isPlannedService(const std::string& name);
 
@@ -140,6 +145,15 @@ void updateWorldPresence(ECS& ecs, EntityId entity);
 // True when the entity or an ancestor has Parent = nil. Such instances are
 // left out of Studio's lists and scene files, like in Roblox.
 [[nodiscard]] bool isDetached(ECS& ecs, EntityId entity);
+// False for parts kept outside the workspace; those have no physics body.
+[[nodiscard]] bool isInWorld(ECS& ecs, EntityId entity);
+
+// Roblox parts are solid: a collider matching Size and Shape, Static when
+// Anchored, else Dynamic. Play and scene loading build the body from it.
+void fitPartCollider(ECS& ecs, EntityId entity);
+// CanCollide = false parts become sensors: nothing bumps into them, but
+// Touched still fires.
+[[nodiscard]] bool canCollide(ECS& ecs, EntityId entity);
 
 // World-space pose of an entity, composed along its parents.
 struct Pose {

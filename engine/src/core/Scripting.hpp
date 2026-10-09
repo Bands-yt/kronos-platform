@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -33,6 +34,14 @@ inline constexpr uint32_t kNoScriptEntity = ~0u;
 // a partial version of it would be more misleading than leaving the seam
 // visible. registerBindings() is exactly that seam: it's where `game`,
 // `workspace`, and friends attach once that layer exists.
+// Work that runs once a script resume finishes (Roblox's deferred signals,
+// core/InstanceSignals.hpp). Scripting flushes it after loadAndRun and tick.
+class DeferredWork {
+public:
+    virtual ~DeferredWork() = default;
+    virtual void flush() = 0;
+};
+
 class Scripting {
 public:
     Scripting();
@@ -192,12 +201,32 @@ public:
     void setDebugger(ScriptDebugger* debugger) { debugger_ = debugger; }
     [[nodiscard]] bool debugPaused() const;
 
+    // Signal plumbing (core/InstanceSignals.hpp). pushArgs pushes the
+    // handler's arguments onto the given thread and returns how many.
+    using PushArgs = std::function<int(lua_State*)>;
+    // Runs fnRef (a ref in vm's registry) on a new thread. False while the debugger is paused.
+    bool runHandler(lua_State* vm, int fnRef, const PushArgs& pushArgs, const std::string& label);
+    // Parks the calling thread until resumeWaiting(); the caller then returns lua_yield(L, 0).
+    void suspendCurrent(lua_State* L);
+    // Resumes a thread parked by suspendCurrent(). False if it isn't waiting
+    // (cancelled, or the debugger is paused).
+    bool resumeWaiting(lua_State* thread, const PushArgs& pushArgs);
+    // Prints to stderr and the output callback.
+    void reportError(const std::string& message);
+    void addDeferredWork(std::weak_ptr<DeferredWork> work);
+    void flushDeferredWork();
+    [[nodiscard]] double clock() const { return clock_; }
+
 private:
     struct ParkedThread {
         lua_State* thread = nullptr;
         int ref = -1;         // lua_ref() id keeping the thread alive while parked
         double wakeTime = 0.0;
         double startTime = 0.0;
+        // >= 0: resume with this many values already on the thread's stack
+        // (a function not started yet, or task.delay args) instead of the
+        // elapsed time task.wait returns.
+        int resumeArgs = -1;
     };
 
     // Bookkeeping written by luaTaskWait (which only ever sees the raw
@@ -257,6 +286,13 @@ private:
     // tick" default -- the correct behavior for a yield we don't have a
     // wake condition for yet (see the note in luaTaskSpawn).
     bool consumeWait(lua_State* thread, double& outWakeTime, double& outStartTime);
+    // Common handling after lua_resume: park, hold for the debugger, report or release.
+    void settleThread(lua_State* thread, int ref, int status, const char* what);
+    // Removes a scheduled thread; returns its ref, or -1 if it wasn't scheduled.
+    int unscheduleThread(lua_State* thread);
+    // Shared by task.spawn/defer/delay: turns the function-or-thread at index 1
+    // and its args into a thread ready to resume, leaving only it on L's stack.
+    lua_State* prepareTask(lua_State* L, const char* name, int& ref, int& nargs);
 
     // Resets the watchdog deadline on `owner`'s shared ScriptBudget to
     // "now + maxExecutionMillisPerTick_". Must be called immediately
@@ -273,6 +309,11 @@ private:
     static int luaTaskWait(lua_State* L);
     static int luaTaskSpawn(lua_State* L);
     static int luaTaskDefer(lua_State* L);
+    static int luaTaskDelay(lua_State* L);
+    static int luaTaskCancel(lua_State* L);
+    static int luaTick(lua_State* L);
+    static int luaTime(lua_State* L);
+    void registerLegacyGlobals(lua_State* L);
     static int luaEngineLog(lua_State* L);
     static int luaEventsOnUpdate(lua_State* L);
     static int luaEventsOnCollision(lua_State* L);
@@ -306,6 +347,9 @@ private:
     std::vector<ParkedThread> parked_;
     std::vector<ParkedThread> deferredQueue_;
     std::vector<PendingWait> pendingWaits_;
+    // The parked threads tick() is resuming right now (moved out of parked_).
+    std::vector<ParkedThread>* resumingBatch_ = nullptr;
+    std::vector<std::weak_ptr<DeferredWork>> deferredWork_;
     std::vector<EventCallback> onUpdateCallbacks_;
     std::vector<EventCallback> onCollisionCallbacks_;
     std::vector<EventCallback> onInteractCallbacks_;

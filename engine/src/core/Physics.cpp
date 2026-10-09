@@ -1,5 +1,7 @@
 #include "core/Physics.hpp"
 #include "core/DeterministicMath.hpp"
+#include "core/Hierarchy.hpp"
+#include "core/InstanceTree.hpp"
 
 #include <cstdarg>
 #include <cstdio>
@@ -158,13 +160,31 @@ class ContactListenerImpl final : public JPH::ContactListener {
 public:
     ContactListenerImpl(std::mutex& mutex, std::vector<engine::core::Physics::CollisionEvent>& events,
                         std::mutex& impactMutex, std::vector<engine::core::Physics::ImpactEvent>& impactEvents,
-                        const std::atomic<bool>& impactEnabled, const std::atomic<float>& minImpactSpeed)
+                        const std::atomic<bool>& impactEnabled, const std::atomic<float>& minImpactSpeed,
+                        engine::core::Physics::TouchTracker& touches)
         : mutex_(mutex),
           events_(events),
           impactMutex_(impactMutex),
           impactEvents_(impactEvents),
           impactEnabled_(impactEnabled),
-          minImpactSpeed_(minImpactSpeed) {}
+          minImpactSpeed_(minImpactSpeed),
+          touches_(touches) {}
+
+    static uint64_t pairKey(JPH::BodyID a, JPH::BodyID b) {
+        uint64_t x = a.GetIndexAndSequenceNumber(), y = b.GetIndexAndSequenceNumber();
+        if (x > y) std::swap(x, y);
+        return (x << 32) | y;
+    }
+
+    // Jolt reports each sub-shape pair, so a body pair is touching while its count is above zero.
+    void OnContactRemoved(const JPH::SubShapeIDPair& pair) override {
+        if (!touches_.enabled.load(std::memory_order_relaxed)) return;
+        std::lock_guard<std::mutex> lock(touches_.mutex);
+        const auto it = touches_.active.find(pairKey(pair.GetBody1ID(), pair.GetBody2ID()));
+        if (it == touches_.active.end() || --it->second.contacts > 0) return;
+        touches_.pending.push_back({it->second.a, it->second.b, false});
+        touches_.active.erase(it);
+    }
 
     void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold,
                          JPH::ContactSettings&) override {
@@ -188,6 +208,15 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             events_.push_back(event);
+        }
+        if (touches_.enabled.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> lock(touches_.mutex);
+            auto& touch = touches_.active[pairKey(body1.GetID(), body2.GetID())];
+            if (touch.contacts++ == 0) {
+                touch.a = entity1;
+                touch.b = entity2;
+                touches_.pending.push_back({entity1, entity2, true});
+            }
         }
 
         if (!impactEnabled_.load(std::memory_order_relaxed) || body1.IsSensor() || body2.IsSensor()) return;
@@ -216,6 +245,7 @@ private:
     std::vector<engine::core::Physics::ImpactEvent>& impactEvents_;
     const std::atomic<bool>& impactEnabled_;
     const std::atomic<float>& minImpactSpeed_;
+    engine::core::Physics::TouchTracker& touches_;
 };
 
 constexpr JPH::uint kMaxBodies = 65536;
@@ -294,7 +324,7 @@ bool Physics::initialize(int workerThreadCount) {
 
     contactListener_ = std::make_unique<ContactListenerImpl>(collisionEventsMutex_, pendingCollisionEvents_,
                                                              impactEventsMutex_, pendingImpactEvents_,
-                                                             impactRecordingEnabled_, minImpactSpeed_);
+                                                             impactRecordingEnabled_, minImpactSpeed_, touches_);
     physicsSystem_->SetContactListener(contactListener_.get());
 
     ragdolls_ = std::make_unique<RagdollStore>();
@@ -317,6 +347,27 @@ std::vector<Physics::CollisionEvent> Physics::drainCollisionEvents() {
     };
     std::sort(drained.begin(), drained.end(),
               [&](const CollisionEvent& a, const CollisionEvent& b) { return key(a) < key(b); });
+    return drained;
+}
+
+void Physics::setTouchRecording(bool enabled) {
+    touches_.enabled.store(enabled, std::memory_order_relaxed);
+    if (enabled) return;
+    std::lock_guard<std::mutex> lock(touches_.mutex);
+    touches_.pending.clear();
+    touches_.active.clear();
+}
+
+std::vector<Physics::TouchEvent> Physics::drainTouchEvents() {
+    std::vector<TouchEvent> drained;
+    {
+        std::lock_guard<std::mutex> lock(touches_.mutex);
+        drained.swap(touches_.pending);
+    }
+    std::sort(drained.begin(), drained.end(), [](const TouchEvent& x, const TouchEvent& y) {
+        return std::make_tuple(!x.began, static_cast<uint32_t>(x.a), static_cast<uint32_t>(x.b)) <
+               std::make_tuple(!y.began, static_cast<uint32_t>(y.a), static_cast<uint32_t>(y.b));
+    });
     return drained;
 }
 
@@ -462,6 +513,13 @@ void Physics::syncTransforms(ECS& ecs) {
         JPH::BodyID id(rb.joltBodyId);
         if (!bodyInterface.IsAdded(id)) continue;
 
+        const auto* hierarchy = ecs.tryGetComponent<Hierarchy>(entity);
+        if (hierarchy != nullptr && hierarchy->parent != kNullEntity) {
+            if (rb.motionType != RigidBodyMotionType::Static) {
+                instances::setWorldPose(ecs, entity, toGlm(bodyInterface.GetPosition(id)), toGlm(bodyInterface.GetRotation(id)));
+            }
+            continue;
+        }
         auto& transform = view.get<Transform>(entity);
         transform.position = toGlm(bodyInterface.GetPosition(id));
         transform.rotation = toGlm(bodyInterface.GetRotation(id));
@@ -694,9 +752,11 @@ bool Physics::attachBodyToEntity(EntityId entity, ECS& ecs, const ColliderShape&
                                        : motionType == RigidBodyMotionType::Kinematic ? JPH::EMotionType::Kinematic
                                                                                        : JPH::EMotionType::Dynamic;
 
+    // Parts inside a Model or Folder sit at their world pose.
+    const instances::Pose pose = instances::worldPose(ecs, entity);
     JPH::BodyCreationSettings creationSettings(
-        shapeResult.Get(), JPH::RVec3(transform->position.x, transform->position.y, transform->position.z),
-        toJolt(transform->rotation), joltMotionType, toObjectLayer(layer));
+        shapeResult.Get(), JPH::RVec3(pose.position.x, pose.position.y, pose.position.z),
+        toJolt(pose.rotation), joltMotionType, toObjectLayer(layer));
     creationSettings.mFriction = material.friction;
     creationSettings.mRestitution = material.restitution;
     creationSettings.mIsSensor = isSensor;

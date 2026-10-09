@@ -54,6 +54,7 @@ void GameLoop::networkTick(float dt) {
 }
 
 void GameLoop::renderTick(float dt) {
+    if (frameStartHook_) frameStartHook_(dt);
     if (preRenderHook_) {
         preRenderHook_(dt);
     }

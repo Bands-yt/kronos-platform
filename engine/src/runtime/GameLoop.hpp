@@ -98,6 +98,9 @@ public:
     using PreRenderHook = std::function<void(float dt)>;
     void setPreRenderHook(PreRenderHook hook) { preRenderHook_ = std::move(hook); }
 
+    // Runs first in each rendered frame, before PreRenderHook (RunService.RenderStepped).
+    void setFrameStartHook(PreRenderHook hook) { frameStartHook_ = std::move(hook); }
+
     // Scales the dt physics is stepped with (0 pauses the simulation, <1 is slow motion); hooks still get real dt.
     void setTimeScale(float scale) { timeScale_ = std::max(scale, 0.0f); }
     [[nodiscard]] float timeScale() const { return timeScale_; }
@@ -168,6 +171,7 @@ private:
     NetworkTickHook networkTickHook_;
     PostRenderHook postRenderHook_;
     PreRenderHook preRenderHook_;
+    PreRenderHook frameStartHook_;
     float targetRenderDt_ = 1.0f / 180.0f;
     float timeScale_ = 1.0f;
 };

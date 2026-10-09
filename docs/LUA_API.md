@@ -101,6 +101,22 @@ Roblox-style task scheduling, backed by real Luau coroutines.
 - **`task.spawn(fn, ...)`** — runs `fn` on a new coroutine immediately.
 - **`task.defer(fn, ...)`** — runs `fn` on a new coroutine at the start of
   the *next* scheduler tick.
+- **`task.delay(seconds, fn, ...)`** — runs `fn` with the extra arguments
+  after `seconds`.
+- **`task.cancel(thread)`** — stops a thread from `task.spawn`, `task.defer`
+  or `task.delay` before it runs (or while it waits).
+
+`task.spawn`, `task.defer` and `task.delay` return the thread, and accept a
+coroutine instead of a function. Errors inside a task are printed as
+`runtime error in ...` and stop only that task.
+
+Older Roblox globals work too: `wait(seconds)` (at least 0.03 s; returns the
+time waited and `time()`), `spawn(fn)` (same as `task.defer`), `delay(seconds,
+fn)` (same as `task.delay`), `tick()` (seconds since 1970), and
+`time()`/`elapsedTime()` (seconds since the game started).
+
+Roblox events (`part.Touched:Connect(...)`, `RunService.Heartbeat`, ...) are
+described in [ROBLOX_BRIDGE.md](ROBLOX_BRIDGE.md#events-step-4).
 
 ## `events` — lifecycle and world callbacks
 

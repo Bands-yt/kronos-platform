@@ -7,7 +7,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <string>
 
@@ -333,19 +335,7 @@ void Scripting::invokeCallback(const EventCallback& callback, int argCount, cons
         if (argCount > 0) lua_insert(L, -(argCount + 1));
         lua_xmove(L, thread, argCount + 1);
         refreshDeadline(L);
-        const int status = lua_resume(thread, nullptr, argCount);
-        if (status == LUA_BREAK) {
-            holdBrokenThread(thread, ref);
-            return;
-        }
-        if (status == LUA_YIELD) {
-            double wakeTime = clock_, startTime = clock_;
-            consumeWait(thread, wakeTime, startTime);
-            parked_.push_back(ParkedThread{thread, ref, wakeTime, startTime});
-            return;
-        }
-        if (status != LUA_OK) std::fprintf(stderr, "[luau] %s callback error: %s\n", eventName, lua_tostring(thread, -1));
-        lua_unref(L, ref);
+        settleThread(thread, ref, lua_resume(thread, nullptr, argCount), eventName);
         return;
     }
     refreshDeadline(L);
@@ -358,7 +348,8 @@ void Scripting::invokeCallback(const EventCallback& callback, int argCount, cons
     if (argCount > 0) lua_insert(L, -(argCount + 1)); // move it below the already-pushed args, for lua_pcall's [fn, args...] order
     int status = lua_pcall(L, argCount, 0, 0);
     if (status != LUA_OK) {
-        std::fprintf(stderr, "[luau] %s callback error: %s\n", eventName, lua_tostring(L, -1));
+        const char* message = lua_tostring(L, -1);
+        reportError(std::string("runtime error in ") + eventName + ": " + (message ? message : "(non-string error)"));
         lua_pop(L, 1);
     }
 }
@@ -503,48 +494,177 @@ bool Scripting::consumeWait(lua_State* thread, double& outWakeTime, double& outS
     return false;
 }
 
-int Scripting::luaTaskSpawn(lua_State* L) {
-    auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
-    lua_State* owner = lua_mainthread(L);
-
-    int ref = 0;
-    lua_State* thread = self->spawnThread(owner, ref);
-    lua_xmove(L, thread, lua_gettop(L)); // move fn + args from the calling stack onto the new thread
-
-    int nargs = lua_gettop(thread) - 1;
-    self->refreshDeadline(owner);
-    int status = lua_resume(thread, L, nargs);
+void Scripting::settleThread(lua_State* thread, int ref, int status, const char* what) {
     if (status == LUA_BREAK) {
-        self->holdBrokenThread(thread, ref);
-        return 0;
-    }
-    if (status != LUA_OK && status != LUA_YIELD) {
-        std::fprintf(stderr, "[luau] task.spawn error: %s\n", lua_tostring(thread, -1));
+        holdBrokenThread(thread, ref);
+        return;
     }
     if (status == LUA_YIELD) {
-        double wakeTime = self->clock_, startTime = self->clock_;
-        // If it yielded via task.wait(), consumeWait() gives us the real
-        // requested wake time; otherwise (a yield we don't have a wake
-        // condition for yet -- e.g. a future task.wait(event)) it defaults
-        // to "resume next tick", which is the only sane fallback here.
-        self->consumeWait(thread, wakeTime, startTime);
-        self->parked_.push_back(Scripting::ParkedThread{thread, ref, wakeTime, startTime});
-    } else {
-        lua_unref(owner, ref);
+        double wakeTime = clock_, startTime = clock_;
+        // Without a task.wait (a bare coroutine.yield) it resumes next tick.
+        consumeWait(thread, wakeTime, startTime);
+        parked_.push_back(ParkedThread{thread, ref, wakeTime, startTime});
+        return;
     }
-    return 0;
+    if (status != LUA_OK) {
+        const char* message = lua_tostring(thread, -1);
+        reportError(std::string("runtime error in ") + what + ": " + (message ? message : "(non-string error)"));
+    }
+    lua_unref(lua_mainthread(thread), ref);
+}
+
+void Scripting::reportError(const std::string& message) {
+    std::fprintf(stderr, "Scripting: %s\n", message.c_str());
+    if (outputCallback_) outputCallback_(message);
+}
+
+int Scripting::unscheduleThread(lua_State* thread) {
+    for (std::vector<ParkedThread>* list : {&parked_, &deferredQueue_}) {
+        for (size_t i = 0; i < list->size(); ++i) {
+            if ((*list)[i].thread != thread) continue;
+            const int ref = (*list)[i].ref;
+            list->erase(list->begin() + static_cast<long>(i));
+            return ref;
+        }
+    }
+    if (resumingBatch_ != nullptr) {
+        for (ParkedThread& entry : *resumingBatch_) {
+            if (entry.thread != thread) continue;
+            entry.thread = nullptr;
+            return entry.ref;
+        }
+    }
+    return -1;
+}
+
+lua_State* Scripting::prepareTask(lua_State* L, const char* name, int& ref, int& nargs) {
+    lua_State* owner = lua_mainthread(L);
+    nargs = lua_gettop(L) - 1;
+    if (lua_isthread(L, 1)) {
+        lua_State* thread = lua_tothread(L, 1);
+        if (lua_mainthread(thread) != owner) luaL_error(L, "%s: that thread belongs to another script", name);
+        ref = unscheduleThread(thread);
+        if (ref < 0) {
+            lua_pushvalue(L, 1);
+            ref = lua_ref(L, -1);
+            lua_pop(L, 1);
+        }
+        lua_xmove(L, thread, nargs);
+        return thread;
+    }
+    if (!lua_isfunction(L, 1)) luaL_error(L, "%s expects a function or a thread", name);
+    lua_State* thread = spawnThread(owner, ref);
+    lua_xmove(L, thread, nargs + 1);
+    lua_pushthread(thread);
+    lua_xmove(thread, L, 1);
+    return thread;
+}
+
+int Scripting::luaTaskSpawn(lua_State* L) {
+    auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
+    int ref = -1, nargs = 0;
+    lua_State* thread = self->prepareTask(L, "task.spawn", ref, nargs);
+    self->refreshDeadline(lua_mainthread(L));
+    self->settleThread(thread, ref, lua_resume(thread, L, nargs), "task.spawn");
+    return 1;
 }
 
 int Scripting::luaTaskDefer(lua_State* L) {
     auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
-    lua_State* owner = lua_mainthread(L);
+    int ref = -1, nargs = 0;
+    lua_State* thread = self->prepareTask(L, "task.defer", ref, nargs);
+    self->deferredQueue_.push_back(ParkedThread{thread, ref, 0.0, self->clock_, nargs});
+    return 1;
+}
 
-    int ref = 0;
-    lua_State* thread = self->spawnThread(owner, ref);
-    lua_xmove(L, thread, lua_gettop(L));
+int Scripting::luaTaskDelay(lua_State* L) {
+    auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
+    const double seconds = std::max(0.0, luaL_optnumber(L, 1, 0.0));
+    lua_remove(L, 1);
+    int ref = -1, nargs = 0;
+    lua_State* thread = self->prepareTask(L, "task.delay", ref, nargs);
+    self->parked_.push_back(ParkedThread{thread, ref, self->clock_ + seconds, self->clock_, nargs});
+    return 1;
+}
 
-    self->deferredQueue_.push_back(Scripting::ParkedThread{thread, ref, 0.0, self->clock_});
+int Scripting::luaTaskCancel(lua_State* L) {
+    auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
+    luaL_checktype(L, 1, LUA_TTHREAD);
+    lua_State* thread = lua_tothread(L, 1);
+    if (thread == L) luaL_error(L, "task.cancel cannot cancel the running thread");
+    const int ref = self->unscheduleThread(thread);
+    if (ref >= 0) lua_unref(L, ref);
+    if (lua_costatus(L, thread) == LUA_COSUS) lua_resetthread(thread);
     return 0;
+}
+
+int Scripting::luaTick(lua_State* L) {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    lua_pushnumber(L, std::chrono::duration<double>(now).count());
+    return 1;
+}
+
+int Scripting::luaTime(lua_State* L) {
+    auto* self = static_cast<Scripting*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
+    lua_pushnumber(L, self->clock_);
+    return 1;
+}
+
+namespace {
+
+// Roblox's older globals, as thin wrappers over task.
+const char* const kLegacyGlobalsSource = R"LUAU(
+local taskWait, taskDefer, taskDelay, now = ...
+local function wait(seconds)
+	seconds = tonumber(seconds) or 0
+	local elapsed = taskWait(if seconds < 0.03 then 0.03 else seconds)
+	return elapsed, now()
+end
+local function spawn(callback)
+	taskDefer(callback)
+end
+local function delay(seconds, callback)
+	taskDelay(tonumber(seconds) or 0, callback)
+end
+return wait, spawn, delay
+)LUAU";
+
+} // namespace
+
+void Scripting::registerLegacyGlobals(lua_State* L) {
+    lua_pushlightuserdata(L, this);
+    lua_pushcclosure(L, &Scripting::luaTime, "time", 1);
+    lua_pushvalue(L, -1);
+    lua_setglobal(L, "time");
+    lua_pushvalue(L, -1);
+    lua_setglobal(L, "elapsedTime");
+    lua_setglobal(L, "ElapsedTime");
+    lua_pushcfunction(L, &Scripting::luaTick, "tick");
+    lua_setglobal(L, "tick");
+
+    static const std::string bytecode = Luau::compile(kLegacyGlobalsSource);
+    if (luau_load(L, "=legacy", bytecode.data(), bytecode.size(), 0) != 0) {
+        std::fprintf(stderr, "Scripting: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return;
+    }
+    lua_getglobal(L, "task");
+    lua_getfield(L, -1, "wait");
+    lua_getfield(L, -2, "defer");
+    lua_getfield(L, -3, "delay");
+    lua_remove(L, -4);
+    lua_getglobal(L, "time");
+    if (lua_pcall(L, 4, 3, 0) != 0) {
+        std::fprintf(stderr, "Scripting: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return;
+    }
+    const char* const names[3][2] = {{"wait", "Wait"}, {"spawn", "Spawn"}, {"delay", "Delay"}};
+    for (int i = 2; i >= 0; --i) {
+        lua_pushvalue(L, -1);
+        lua_setglobal(L, names[i][0]);
+        lua_setglobal(L, names[i][1]);
+    }
 }
 
 void Scripting::registerBindings(lua_State* L) {
@@ -570,7 +690,17 @@ void Scripting::registerBindings(lua_State* L) {
     lua_pushlightuserdata(L, this);
     lua_pushcclosure(L, &Scripting::luaTaskDefer, "task.defer", 1);
     lua_setfield(L, -2, "defer");
+
+    lua_pushlightuserdata(L, this);
+    lua_pushcclosure(L, &Scripting::luaTaskDelay, "task.delay", 1);
+    lua_setfield(L, -2, "delay");
+
+    lua_pushlightuserdata(L, this);
+    lua_pushcclosure(L, &Scripting::luaTaskCancel, "task.cancel", 1);
+    lua_setfield(L, -2, "cancel");
+    lua_setreadonly(L, -1, true);
     lua_setglobal(L, "task");
+    registerLegacyGlobals(L);
 
     lua_newtable(L); // events table
     lua_pushlightuserdata(L, this);
@@ -860,6 +990,8 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     }
 
     luaL_openlibs(owner);
+    // Bindings (the Instance API) look Scripting up through this.
+    lua_callbacks(owner)->userdata = this;
     registerBindings(owner);
     registerModuleLoader(owner);
     if (entity != kNoScriptEntity) {
@@ -883,7 +1015,6 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     budget->identity = identity;
     lua_setthreaddata(owner, budget);
     lua_callbacks(owner)->interrupt = &Scripting::scriptInterrupt;
-    lua_callbacks(owner)->userdata = this;
     if (debugger_ != nullptr) {
         lua_callbacks(owner)->debugbreak = &Scripting::debugBreakHook;
         lua_callbacks(owner)->debugstep = &Scripting::debugStepHook;
@@ -956,6 +1087,7 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     } else {
         lua_unref(owner, threadRef);
     }
+    flushDeferredWork();
     return id;
 }
 
@@ -1051,79 +1183,91 @@ void Scripting::tick(float dt) {
     //    Roblox's "runs after this resumption cycle" ordering.
     std::vector<ParkedThread> deferredNow;
     deferredNow.swap(deferredQueue_);
+    resumingBatch_ = &deferredNow;
     for (auto& entry : deferredNow) {
+        if (entry.thread == nullptr) continue; // cancelled meanwhile
         if (debugPaused()) {
             deferredQueue_.push_back(entry);
             continue;
         }
-        lua_State* owner = lua_mainthread(entry.thread);
-        int nargs = lua_gettop(entry.thread) - 1; // stack is still exactly [fn, args...] from task.defer()
-        refreshDeadline(owner);
-        int status = lua_resume(entry.thread, nullptr, nargs);
-        if (status == LUA_BREAK) {
-            holdBrokenThread(entry.thread, entry.ref);
-            continue;
-        }
-        if (status != LUA_OK && status != LUA_YIELD) {
-            std::fprintf(stderr, "[luau] task.defer error: %s\n", lua_tostring(entry.thread, -1));
-        }
-        if (status == LUA_YIELD) {
-            double wakeTime = clock_, startTime = clock_;
-            consumeWait(entry.thread, wakeTime, startTime);
-            parked_.push_back(ParkedThread{entry.thread, entry.ref, wakeTime, startTime});
-        } else {
-            lua_unref(owner, entry.ref);
-        }
+        const int nargs = entry.resumeArgs >= 0 ? entry.resumeArgs : lua_gettop(entry.thread) - 1;
+        refreshDeadline(lua_mainthread(entry.thread));
+        settleThread(entry.thread, entry.ref, lua_resume(entry.thread, nullptr, nargs), "task.defer");
     }
 
-    // 2. Resume every task.wait() whose deadline has elapsed. Threads not
-    //    yet due stay parked for a later tick.
-    std::vector<ParkedThread> stillParked;
-    for (auto& entry : parked_) {
+    // Resumed threads may park, spawn or cancel others, so work from a copy.
+    std::vector<ParkedThread> parkedNow;
+    parkedNow.swap(parked_);
+    resumingBatch_ = &parkedNow;
+    for (auto& entry : parkedNow) {
+        if (entry.thread == nullptr) continue;
         if (entry.wakeTime > clock_ || debugPaused()) {
-            stillParked.push_back(entry);
+            parked_.push_back(entry);
             continue;
         }
-        lua_State* owner = lua_mainthread(entry.thread);
-        lua_pushnumber(entry.thread, clock_ - entry.startTime); // task.wait() returns elapsed time
-        refreshDeadline(owner);
-        int status = lua_resume(entry.thread, nullptr, 1);
-        if (status == LUA_BREAK) {
-            holdBrokenThread(entry.thread, entry.ref);
-            continue;
+        int nargs = entry.resumeArgs;
+        if (nargs < 0) {
+            lua_pushnumber(entry.thread, clock_ - entry.startTime); // task.wait() returns elapsed time
+            nargs = 1;
         }
-        if (status != LUA_OK && status != LUA_YIELD) {
-            std::fprintf(stderr, "[luau] task.wait resume error: %s\n", lua_tostring(entry.thread, -1));
-        }
-        if (status == LUA_YIELD) {
-            // Yielded again (e.g. the script called task.wait() a second
-            // time) -- fetch the *new* wake time rather than reusing the
-            // one that just elapsed.
-            double wakeTime = clock_, startTime = clock_;
-            consumeWait(entry.thread, wakeTime, startTime);
-            stillParked.push_back(ParkedThread{entry.thread, entry.ref, wakeTime, startTime});
-        } else {
-            lua_unref(owner, entry.ref);
-        }
+        refreshDeadline(lua_mainthread(entry.thread));
+        settleThread(entry.thread, entry.ref, lua_resume(entry.thread, nullptr, nargs),
+                     entry.resumeArgs >= 0 ? "task.delay" : "task.wait");
     }
-    parked_.swap(stillParked);
+    resumingBatch_ = nullptr;
 
-    // Note: deadlines are refreshed immediately before each lua_resume()
-    // above via refreshDeadline(), not in bulk here -- see that function's
-    // doc comment for why "once per GameLoop tick" measures the wrong
-    // thing (wall-clock time including physics/render/vsync, not the
-    // script's own execution time).
-
-    // 3. events.onUpdate(dt) -- the real RunService.Heartbeat-equivalent
-    //    this codebase has today. Full parity (Stepped/Heartbeat/
-    //    RenderStepped as three distinct signals with different ordering
-    //    guarantees, §6's table) still needs the Instance/DataModel event
-    //    layer; this is the one, simple "runs every tick" signal that
-    //    layer doesn't gate.
     for (auto& callback : onUpdateCallbacks_) {
         if (debugPaused()) break;
         lua_pushnumber(callback.owner, static_cast<double>(dt));
         invokeCallback(callback, 1, "events.onUpdate");
+    }
+    flushDeferredWork();
+}
+
+bool Scripting::runHandler(lua_State* vm, int fnRef, const PushArgs& pushArgs, const std::string& label) {
+    int ref = 0;
+    lua_State* thread = spawnThread(vm, ref);
+    lua_getref(thread, fnRef);
+    const int nargs = pushArgs ? pushArgs(thread) : 0;
+    refreshDeadline(vm);
+    settleThread(thread, ref, lua_resume(thread, nullptr, nargs), label.c_str());
+    return true;
+}
+
+void Scripting::suspendCurrent(lua_State* L) {
+    pendingWaits_.push_back(PendingWait{L, std::numeric_limits<double>::infinity(), clock_});
+}
+
+bool Scripting::resumeWaiting(lua_State* thread, const PushArgs& pushArgs) {
+    for (size_t i = 0; i < parked_.size(); ++i) {
+        if (parked_[i].thread != thread || !std::isinf(parked_[i].wakeTime)) continue;
+        const int ref = parked_[i].ref;
+        parked_.erase(parked_.begin() + static_cast<long>(i));
+        const int nargs = pushArgs ? pushArgs(thread) : 0;
+        refreshDeadline(lua_mainthread(thread));
+        settleThread(thread, ref, lua_resume(thread, nullptr, nargs), "a signal Wait");
+        return true;
+    }
+    return false;
+}
+
+void Scripting::addDeferredWork(std::weak_ptr<DeferredWork> work) {
+    const auto wanted = work.lock();
+    if (!wanted) return;
+    for (const auto& existing : deferredWork_) {
+        if (existing.lock() == wanted) return;
+    }
+    deferredWork_.push_back(std::move(work));
+}
+
+void Scripting::flushDeferredWork() {
+    for (size_t i = 0; i < deferredWork_.size();) {
+        if (auto work = deferredWork_[i].lock()) {
+            work->flush();
+            ++i;
+        } else {
+            deferredWork_.erase(deferredWork_.begin() + static_cast<long>(i));
+        }
     }
 }
 
