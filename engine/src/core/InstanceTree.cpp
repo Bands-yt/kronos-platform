@@ -12,6 +12,7 @@
 #include "core/Hierarchy.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/PhysicsMaterial.hpp"
+#include "core/RobloxPlayers.hpp"
 
 namespace engine::core {
 
@@ -392,23 +393,31 @@ glm::quat fromRotationXYZ(glm::vec3 degrees) {
 Renderable* renderable(ECS& ecs, EntityId e) { return ecs.tryGetComponent<Renderable>(e); }
 
 InstanceValue getPosition(ECS& ecs, EntityId e) { return InstanceValue::ofVector3(worldPose(ecs, e).position); }
-void setPosition(ECS& ecs, EntityId e, const InstanceValue& v) { setWorldPose(ecs, e, v.vec, worldPose(ecs, e).rotation); }
+void setPosition(ECS& ecs, EntityId e, const InstanceValue& v) {
+    setWorldPose(ecs, e, v.vec, worldPose(ecs, e).rotation);
+    markBodyMoved(ecs, e);
+}
 InstanceValue getCFrame(ECS& ecs, EntityId e) {
     const Pose pose = worldPose(ecs, e);
     return InstanceValue::ofCFrame(pose.position, pose.rotation);
 }
-void setCFrame(ECS& ecs, EntityId e, const InstanceValue& v) { setWorldPose(ecs, e, v.vec, glm::normalize(v.rot)); }
+void setCFrame(ECS& ecs, EntityId e, const InstanceValue& v) {
+    setWorldPose(ecs, e, v.vec, glm::normalize(v.rot));
+    markBodyMoved(ecs, e);
+}
 InstanceValue getOrientation(ECS& ecs, EntityId e) {
     return InstanceValue::ofVector3(orientationOf(worldPose(ecs, e).rotation));
 }
 void setOrientation(ECS& ecs, EntityId e, const InstanceValue& v) {
     setWorldPose(ecs, e, worldPose(ecs, e).position, fromOrientation(v.vec));
+    markBodyMoved(ecs, e);
 }
 InstanceValue getRotation(ECS& ecs, EntityId e) {
     return InstanceValue::ofVector3(rotationXYZOf(worldPose(ecs, e).rotation));
 }
 void setRotation(ECS& ecs, EntityId e, const InstanceValue& v) {
     setWorldPose(ecs, e, worldPose(ecs, e).position, fromRotationXYZ(v.vec));
+    markBodyMoved(ecs, e);
 }
 InstanceValue getSize(ECS& ecs, EntityId e) {
     return InstanceValue::ofVector3(glm::abs(worldPose(ecs, e).scale * sizeFactor(ecs, e)));
@@ -599,6 +608,12 @@ PropertyDef derived(PropertyDef def) {
     return def;
 }
 
+PropertyDef readOnlyStored(std::string name, PropertyType type, InstanceValue defaultValue) {
+    PropertyDef def = stored(std::move(name), type, std::move(defaultValue));
+    def.readOnly = true;
+    return def;
+}
+
 PropertyDef readOnly(std::string name, PropertyType type) {
     PropertyDef def;
     def.name = std::move(name);
@@ -676,6 +691,7 @@ std::vector<ClassDef> buildClasses() {
     add("WorldRoot", "Model", false);
     add("Workspace", "WorldRoot", false, true).properties = {
         stored("Gravity", PropertyType::Number, InstanceValue::ofNumber(196.2)),
+        stored("FallenPartsDestroyHeight", PropertyType::Number, InstanceValue::ofNumber(-500.0)),
     };
 
     add("Folder", "Instance", true);
@@ -743,7 +759,55 @@ std::vector<ClassDef> buildClasses() {
     auto& runService = add("RunService", "Instance", false, true);
     runService.methods = {"IsServer", "IsClient", "IsStudio", "IsRunning", "IsRunMode", "IsEdit"};
     runService.events = {"Stepped", "PreSimulation", "PostSimulation", "Heartbeat", "RenderStepped", "PreRender"};
-    for (const char* service : {"Players", "Lighting", "ReplicatedStorage", "ReplicatedFirst", "ServerScriptService",
+    auto& playersService = add("Players", "Instance", false, true);
+    playersService.properties = {
+        readOnlyStored("LocalPlayer", PropertyType::Instance, InstanceValue{}),
+        stored("RespawnTime", PropertyType::Number, InstanceValue::ofNumber(5.0)),
+        stored("CharacterAutoLoads", PropertyType::Bool, InstanceValue::ofBool(true)),
+        readOnlyStored("MaxPlayers", PropertyType::Number, InstanceValue::ofNumber(1.0)),
+    };
+    playersService.methods = {"GetPlayers", "GetPlayerFromCharacter", "GetPlayerByUserId"};
+    playersService.events = {"PlayerAdded", "PlayerRemoving"};
+
+    auto& player = add("Player", "Instance", false);
+    player.properties = {
+        readOnlyStored("UserId", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("DisplayName", PropertyType::String, InstanceValue::ofString("")),
+        stored("Character", PropertyType::Instance, InstanceValue{}),
+        stored("RespawnLocation", PropertyType::Instance, InstanceValue{}),
+        readOnlyStored("AccountAge", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("CanLoadCharacterAppearance", PropertyType::Bool, InstanceValue::ofBool(true)),
+    };
+    player.methods = {"LoadCharacter"};
+    player.events = {"CharacterAdded", "CharacterRemoving"};
+    add("Backpack", "Instance", false);
+    add("PlayerGui", "Instance", false);
+
+    auto& humanoid = add("Humanoid", "Instance", true);
+    humanoid.properties = {
+        stored("Health", PropertyType::Number, InstanceValue::ofNumber(100.0), &players::onHealthSet),
+        stored("MaxHealth", PropertyType::Number, InstanceValue::ofNumber(100.0), &players::onMaxHealthSet),
+        stored("WalkSpeed", PropertyType::Number, InstanceValue::ofNumber(players::kDefaultWalkSpeed)),
+        stored("JumpPower", PropertyType::Number, InstanceValue::ofNumber(players::kDefaultJumpPower)),
+        stored("JumpHeight", PropertyType::Number, InstanceValue::ofNumber(players::kDefaultJumpHeight)),
+        stored("UseJumpPower", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("AutoRotate", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("HipHeight", PropertyType::Number, InstanceValue::ofNumber(2.0)),
+        stored("Jump", PropertyType::Bool, InstanceValue::ofBool(false)),
+        stored("Sit", PropertyType::Bool, InstanceValue::ofBool(false)),
+        stored("PlatformStand", PropertyType::Bool, InstanceValue::ofBool(false)),
+        readOnlyStored("MoveDirection", PropertyType::Vector3, InstanceValue::ofVector3(glm::vec3(0.0f))),
+        stored("WalkToPoint", PropertyType::Vector3, InstanceValue::ofVector3(glm::vec3(0.0f))),
+        readOnlyStored("RootPart", PropertyType::Instance, InstanceValue{}),
+        stored("DisplayName", PropertyType::String, InstanceValue::ofString("")),
+        storedEnum("RigType", "HumanoidRigType", "R15", 1),
+        stored("BreakJointsOnDeath", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("RequiresNeck", PropertyType::Bool, InstanceValue::ofBool(true)),
+    };
+    humanoid.methods = {"TakeDamage", "MoveTo", "Move", "GetState", "ChangeState"};
+    humanoid.events = {"Died", "HealthChanged", "MoveToFinished", "Running", "Jumping", "FreeFalling", "StateChanged"};
+
+    for (const char* service : {"Lighting", "ReplicatedStorage", "ReplicatedFirst", "ServerScriptService",
                                 "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer", "SoundService", "Teams",
                                 "Chat"}) {
         add(service, "Instance", false, true);
@@ -997,6 +1061,11 @@ InstanceRef create(ECS& ecs, const std::string& cls, std::string& error) {
         error = "Unable to create an Instance of type \"" + cls + "\"";
         return kNoInstance;
     }
+    return createUnchecked(ecs, cls);
+}
+
+InstanceRef createUnchecked(ECS& ecs, const std::string& cls) {
+    if (findClass(cls) == nullptr) return kNoInstance;
     const EntityId e = ecs.createEntity(cls);
     InstanceInfo info;
     info.className = cls;
@@ -1309,6 +1378,27 @@ Pose worldPose(ECS& ecs, EntityId entity) {
         pose.scale = pose.scale * t->scale;
     }
     return pose;
+}
+
+void markBodyMoved(ECS& ecs, EntityId entity, bool resetVelocity) {
+    std::function<void(EntityId, int)> mark = [&](EntityId e, int depth) {
+        if (depth > 512) return;
+        if (const auto* body = ecs.tryGetComponent<RigidBody>(e); body != nullptr && body->joltBodyId != RigidBody::kInvalidBodyId) {
+            auto& write = ecs.raw().get_or_emplace<PhysicsPoseWrite>(e);
+            write.resetVelocity = write.resetVelocity || resetVelocity;
+        }
+        if (const auto* h = ecs.tryGetComponent<Hierarchy>(e)) {
+            for (EntityId child : h->children) {
+                if (valid(ecs, child)) mark(child, depth + 1);
+            }
+        }
+    };
+    if (valid(ecs, entity)) mark(entity, 0);
+}
+
+void teleport(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation, bool resetVelocity) {
+    setWorldPose(ecs, entity, position, rotation);
+    markBodyMoved(ecs, entity, resetVelocity);
 }
 
 void setWorldPose(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation) {

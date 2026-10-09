@@ -11,6 +11,7 @@
 #include "core/ECS.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/InstanceTree.hpp"
+#include "core/RobloxPlayers.hpp"
 #include "core/Scripting.hpp"
 
 namespace engine::core {
@@ -291,8 +292,8 @@ const char* propertyTypeName(const PropertyDef& property) {
 // Members that exist in Roblox and arrive in a later bridge step.
 bool isPlannedMember(const char* key) {
     static const char* const kPlanned[] = {
-        "PlayerAdded", "PlayerRemoving", "CharacterAdded", "CharacterRemoving",
-        "LocalPlayer", "GetPlayers", "GetPlayerFromCharacter", "Invoke", "OnInvoke",
+        "Kick", "GetMouse", "Team", "TeamColor", "LoadAnimation", "EquipTool", "UnequipTools", "Animator",
+        "Invoke", "OnInvoke",
         "OnServerEvent", "OnClientEvent", "OnServerInvoke", "OnClientInvoke", "FireServer", "FireClient",
         "FireAllClients", "InvokeServer", "InvokeClient", "Play", "Stop", "Pause", "Resume", "GetPivot",
         "PivotTo", "MoveTo", "SetPrimaryPartCFrame", "GetPrimaryPartCFrame", "GetMass", "ApplyImpulse",
@@ -736,6 +737,86 @@ bool readRunning(const RunServiceState& s) { return s.running; }
 bool readRunMode(const RunServiceState& s) { return s.studio && s.running; }
 bool readEdit(const RunServiceState& s) { return s.studio && !s.running; }
 
+// --- Players and Humanoid ----------------------------------------------------
+
+int mGetPlayers(lua_State* L) {
+    checkSelf(L, "GetPlayers");
+    pushList(L, players::list(ecsOf(L)));
+    return 1;
+}
+
+int mGetPlayerFromCharacter(lua_State* L) {
+    checkSelf(L, "GetPlayerFromCharacter");
+    Proxy* character = toProxy(L, 2);
+    pushInstance(L, character != nullptr ? players::playerFromCharacter(ecsOf(L), character->ref) : kNoInstance);
+    return 1;
+}
+
+int mGetPlayerByUserId(lua_State* L) {
+    checkSelf(L, "GetPlayerByUserId");
+    pushInstance(L, players::playerByUserId(ecsOf(L), static_cast<int64_t>(luaL_checknumber(L, 2))));
+    return 1;
+}
+
+int mLoadCharacter(lua_State* L) {
+    players::requestLoadCharacter(ecsOf(L), checkSelf(L, "LoadCharacter"));
+    return 0;
+}
+
+EntityId checkHumanoid(lua_State* L, const char* method) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, method);
+    const EntityId e = instances::entityOf(ecs, self);
+    if (e == kNullEntity) luaL_error(L, "%s can't be called on a destroyed Humanoid", method);
+    return e;
+}
+
+glm::vec3 checkVector3(lua_State* L, int index, const char* method) {
+    InstanceValue value;
+    if (!toAnyValue(L, index, value) || value.type != InstanceValue::Type::Vector3) {
+        luaL_error(L, "%s expects a Vector3 as argument %d", method, index - 1);
+    }
+    return value.vec;
+}
+
+int mTakeDamage(lua_State* L) {
+    const EntityId humanoid = checkHumanoid(L, "TakeDamage");
+    players::takeDamage(ecsOf(L), humanoid, luaL_checknumber(L, 2));
+    return 0;
+}
+
+int mMoveTo(lua_State* L) {
+    const EntityId humanoid = checkHumanoid(L, "MoveTo");
+    const glm::vec3 target = checkVector3(L, 2, "MoveTo");
+    Proxy* part = toProxy(L, 3);
+    players::moveTo(ecsOf(L), humanoid, target, part != nullptr ? part->ref : kNoInstance);
+    return 0;
+}
+
+int mMove(lua_State* L) {
+    const EntityId humanoid = checkHumanoid(L, "Move");
+    players::move(ecsOf(L), humanoid, checkVector3(L, 2, "Move"), lua_toboolean(L, 3) != 0);
+    return 0;
+}
+
+int mGetState(lua_State* L) {
+    const EntityId humanoid = checkHumanoid(L, "GetState");
+    lua_getglobal(L, "Enum");
+    lua_rawgetfield(L, -1, "HumanoidStateType");
+    lua_rawgetfield(L, -1, players::state(ecsOf(L), humanoid).c_str());
+    return 1;
+}
+
+int mChangeState(lua_State* L) {
+    const EntityId humanoid = checkHumanoid(L, "ChangeState");
+    InstanceValue value;
+    if (!toAnyValue(L, 2, value) || value.type != InstanceValue::Type::Enum || value.enumType != "HumanoidStateType") {
+        luaL_error(L, "ChangeState expects an Enum.HumanoidStateType item");
+    }
+    players::changeState(ecsOf(L), humanoid, value.text);
+    return 0;
+}
+
 int instanceNew(lua_State* L) {
     ECS& ecs = ecsOf(L);
     const std::string cls = luaL_checkstring(L, 1);
@@ -891,6 +972,15 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"IsRunning", &runServiceQuery<&readRunning>},
         {"IsRunMode", &runServiceQuery<&readRunMode>},
         {"IsEdit", &runServiceQuery<&readEdit>},
+        {"GetPlayers", &mGetPlayers},
+        {"GetPlayerFromCharacter", &mGetPlayerFromCharacter},
+        {"GetPlayerByUserId", &mGetPlayerByUserId},
+        {"LoadCharacter", &mLoadCharacter},
+        {"TakeDamage", &mTakeDamage},
+        {"MoveTo", &mMoveTo},
+        {"Move", &mMove},
+        {"GetState", &mGetState},
+        {"ChangeState", &mChangeState},
     };
     lua_newtable(L);
     for (const Method& method : kMethods) {

@@ -10,6 +10,7 @@
 #include "core/AvatarSkinTone.hpp"
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/LocalProfile.hpp"
 #include "core/Renderer.hpp"
 #include "core/ResourcePaths.hpp"
@@ -115,7 +116,8 @@ namespace {
 EntityId findSpawnLocation(ECS& ecs) {
     for (auto [entity, name] : ecs.raw().view<Name>().each()) {
         if (name.value != "SpawnLocation" && name.value != "SpawnPoint") continue;
-        if (ecs.tryGetComponent<Transform>(entity) != nullptr) return entity;
+        if (ecs.tryGetComponent<Transform>(entity) == nullptr || !instances::isInWorld(ecs, entity)) continue;
+        return entity;
     }
     return kNullEntity;
 }
@@ -124,6 +126,10 @@ EntityId findSpawnLocation(ECS& ecs) {
 glm::vec3 findPlayerSpawnPosition(ECS& ecs, glm::vec3 fallback) {
     const EntityId spawn = findSpawnLocation(ecs);
     if (spawn == kNullEntity) return fallback;
+    return spawnPositionOn(ecs, spawn);
+}
+
+glm::vec3 spawnPositionOn(ECS& ecs, EntityId spawn) {
     const glm::mat4 world = hierarchy::computeWorldMatrix(ecs, spawn);
     float halfHeight = 0.5f;
     if (const auto* source = ecs.tryGetComponent<MeshSource>(spawn); source && source->kind == MeshSourceKind::Box) {

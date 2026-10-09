@@ -32,12 +32,9 @@ struct HydrationOptions {
     // entities, so the hierarchy an author built is preserved and a Model
     // can be moved as a unit.
     bool createGroupEntities = true;
-    // Scripts arrive as a core::Script component with autoRun off. An
-    // imported script is untrusted and almost always references Roblox
-    // APIs Kronos does not have (see LuauApiCompatibility), so running it
-    // on import would spray errors into the log at exactly the moment the
-    // author is trying to read the import report.
-    bool autoRunImportedScripts = false;
+    // Scripts Roblox would start on Play (see robloxStartsScript) get
+    // autoRun, so they run when the game runs; never at import time.
+    bool autoRunImportedScripts = true;
 };
 
 struct HydrationResult {

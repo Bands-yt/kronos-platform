@@ -31,6 +31,7 @@
 #include "core/LoopbackHttpServer.hpp"
 #include "core/OAuthPkce.hpp"
 #include "core/OpenUrl.hpp"
+#include "core/RobloxLeaderboard.hpp"
 #include "core/SwapchainSelection.hpp"
 #include "core/UITheme.hpp"
 #include "core/UIWidgets.hpp"
@@ -1094,6 +1095,8 @@ void RuntimeShell::tick(float dt) {
                         fg->AddLine(ImVec2(center.x - 6.0f, center.y), ImVec2(center.x + 6.0f, center.y), crosshairColor, 1.5f);
                         fg->AddLine(ImVec2(center.x, center.y - 6.0f), ImVec2(center.x, center.y + 6.0f), crosshairColor, 1.5f);
                     }
+                    core::drawLeaderboard(app_.ecs(), ImGui::GetForegroundDrawList(),
+                                          ImGui::GetIO().DisplaySize.x - 12.0f, 12.0f);
                     drawPlayerListOverlay();
                     tickChatActivation();
                     drawChatPanel();

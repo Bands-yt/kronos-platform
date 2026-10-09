@@ -7,6 +7,8 @@
 
 #include "core/AvatarLOD.hpp"
 #include "core/DeterministicMath.hpp"
+#include "core/InstanceTree.hpp"
+#include "core/RobloxPlayers.hpp"
 
 namespace engine::core {
 
@@ -196,14 +198,36 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
         // root-motion system.
         bool emoteSuppressesMovement = avatarController != nullptr && avatarController->isEmotePlaying();
 
+        // A Humanoid (Roblox bridge) sets speed and jump, and can walk the
+        // character itself (MoveTo, Move) or stop it (death).
+        const players::HumanoidControl humanoid = players::control(ecs, entity_);
+        const bool dead = humanoid.found && humanoid.dead;
+
         glm::vec3 moveDir(0.0f);
-        if (!emoteSuppressesMovement) {
+        if (!emoteSuppressesMovement && !dead) {
             if (input.isActionDown("MoveForward")) moveDir += camForward;
             if (input.isActionDown("MoveBackward")) moveDir -= camForward;
             if (input.isActionDown("MoveRight")) moveDir += camRight;
             if (input.isActionDown("MoveLeft")) moveDir -= camRight;
         }
         bool hasInput = glm::length(moveDir) > 0.0001f;
+        bool reachedMoveTo = false;
+        if (!hasInput && humanoid.found && !dead) {
+            glm::vec3 scripted = humanoid.scriptedMove;
+            if (humanoid.scriptedMoveRelativeToCamera) scripted = camRight * scripted.x - camForward * scripted.z;
+            if (glm::length(scripted) > 0.0001f) {
+                moveDir = scripted;
+            } else if (humanoid.hasMoveTo) {
+                glm::vec3 toTarget = humanoid.moveToTarget - instances::worldPose(ecs, entity_).position;
+                toTarget.y = 0.0f;
+                if (glm::length(toTarget) < 1.0f) {
+                    reachedMoveTo = true;
+                } else {
+                    moveDir = toTarget;
+                }
+            }
+            hasInput = glm::length(moveDir) > 0.0001f;
+        }
         if (hasInput) moveDir = glm::normalize(moveDir);
 
         // Real slope limit: isGrounded()'s raw raycast-hit-something bool
@@ -216,7 +240,7 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
         bool standableGround = ground.grounded && slopeDegrees <= settings_.maxSlopeDegrees;
 
         bool running = input.isActionDown("Run");
-        float targetSpeed = running ? settings_.runSpeed : settings_.walkSpeed;
+        float targetSpeed = (running ? settings_.runSpeed : settings_.walkSpeed) * humanoid.walkScale;
         glm::vec2 targetVelocity = hasInput ? glm::vec2(moveDir.x, moveDir.z) * targetSpeed : glm::vec2(0.0f);
 
         // Real acceleration model (see Settings::groundAcceleration's
@@ -237,7 +261,7 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
         // Face where you're going, or where the camera looks in shift lock.
         // Turning is smoothed so a sudden change of direction doesn't snap
         // the body around (the legs lead the turn, see AvatarController).
-        if (shiftLocked || hasInput) {
+        if (shiftLocked || (hasInput && humanoid.autoRotate)) {
             float target = shiftLocked ? std::atan2(camForward.x, camForward.z) : std::atan2(moveDir.x, moveDir.z);
             float delta = std::remainder(target - facingYawRadians_, 6.28318530718f);
             float t = shiftLocked ? 1.0f : 1.0f - std::exp(-settings_.turnSmoothing * dt);
@@ -252,15 +276,26 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
             tryStepUp(ecs, physics, moveDir);
         }
 
-        if (input.isActionDown("Jump") && standableGround) {
-            physics.setVerticalVelocity(entity_, ecs, settings_.jumpSpeed);
+        bool jumped = false;
+        if (((input.isActionDown("Jump") && !dead && !emoteSuppressesMovement) || humanoid.jump) && standableGround) {
+            jumped = currentVelocity3.y < 1.0f;
+            physics.setVerticalVelocity(entity_, ecs, settings_.jumpSpeed * humanoid.jumpScale);
+        }
+
+        if (humanoid.found) {
+            players::HumanoidMotion motion;
+            motion.moveDirection = hasInput ? moveDir : glm::vec3(0.0f);
+            motion.speed = glm::length(newVelocity) * static_cast<float>(players::kDefaultWalkSpeed) /
+                           std::max(settings_.walkSpeed, 0.01f);
+            motion.grounded = standableGround;
+            motion.jumped = jumped;
+            motion.reachedMoveTo = reachedMoveTo;
+            players::reportMotion(ecs, entity_, motion);
         }
     }
 
-    glm::vec3 characterPos(0.0f);
-    if (auto* transform = ecs.tryGetComponent<Transform>(entity_)) {
-        characterPos = transform->position;
-    }
+    // The capsule may sit inside a character Model (Roblox bridge).
+    glm::vec3 characterPos = instances::worldPose(ecs, entity_).position;
 
     // Facing marker -- see spawn()'s doc comment on why a symmetric
     // capsule needs one at all. Not physics-driven (no RigidBody), just a
@@ -313,7 +348,8 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
     camera.pitchDegrees = cameraPitchDegrees_;
 
     glm::vec3 targetFocus = characterPos + glm::vec3(0.0f, settings_.cameraHeight, 0.0f);
-    if (!cameraFocusInitialized_) {
+    // A respawn or teleport cuts straight to the new place.
+    if (!cameraFocusInitialized_ || glm::length(targetFocus - smoothedCameraFocus_) > 25.0f) {
         smoothedCameraFocus_ = targetFocus;
         cameraFocusInitialized_ = true;
     } else if (settings_.cameraPositionSmoothing <= 0.0f) {

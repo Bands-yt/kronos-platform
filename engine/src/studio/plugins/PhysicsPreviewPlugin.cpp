@@ -9,6 +9,7 @@
 #include "core/Components.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/Logger.hpp"
+#include "core/RobloxPlayers.hpp"
 #include "core/ScriptHotReload.hpp"
 
 namespace engine::studio::plugins {
@@ -110,6 +111,7 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
     runService.studio = true;
     physics_.setTouchRecording(true);
 
+    core::players::reset(ecs);
     playing_ = true;
     paused_ = false;
     if (onPlay_) onPlay_(ecs, physics_);
@@ -184,6 +186,8 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
     // completely untouched by this.
     core::tickScriptHotReload(ecs, scripting_);
     scripting_.tick(dt);
+    core::players::tick(ecs, dt);
+    core::signals::flush(ecs);
 
     if (!paused_) {
         physics_.step(dt, ecs);

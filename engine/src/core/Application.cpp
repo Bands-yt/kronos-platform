@@ -29,6 +29,7 @@
 #include "core/Logger.hpp"
 #include "core/OreNode.hpp"
 #include "core/PropAnimation.hpp"
+#include "core/RobloxPlayers.hpp"
 #include "core/ScriptHotReload.hpp"
 #include "core/Shop.hpp"
 #include "core/DeterministicMath.hpp"
@@ -761,6 +762,7 @@ bool Application::initialize(const CreateInfo& info) {
         // (PhysicsPreviewPlugin) can run the identical logic rather than a
         // hand-copied second version.
         core::tickScriptHotReload(ecs_, scripting_);
+        players::tick(ecs_, dt);
 
         // Kronos ("Native Plugin Architecture"): real per-tick forward to
         // every currently loaded native plugin -- see

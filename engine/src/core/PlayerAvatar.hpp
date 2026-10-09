@@ -46,6 +46,8 @@ struct PlayerAvatarLook {
 // Where a player should appear: above a part named "SpawnLocation" (or
 // "SpawnPoint") if the scene has one, like Roblox, otherwise `fallback`.
 [[nodiscard]] glm::vec3 findPlayerSpawnPosition(ECS& ecs, glm::vec3 fallback);
+// Just above the top of `spawn`.
+[[nodiscard]] glm::vec3 spawnPositionOn(ECS& ecs, EntityId spawn);
 
 // Camera yaw a player should start with: the SpawnLocation's front (-Z),
 // or with none, looking toward the middle of the world.

@@ -484,6 +484,27 @@ void Physics::step(float dt, ECS& ecs) {
     dt = std::min(dt, kMaxStep);
     int collisionSteps = std::max(1, static_cast<int>(dt / kFixedSubStep + 0.5f));
 
+    // Parts that scripts moved (CFrame, Position, a respawn) since the last step.
+    if (auto writes = ecs.raw().view<instances::PhysicsPoseWrite>(); !writes.empty()) {
+        JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
+        for (EntityId entity : writes) {
+            const auto* rb = ecs.tryGetComponent<RigidBody>(entity);
+            if (rb == nullptr || rb->joltBodyId == RigidBody::kInvalidBodyId) continue;
+            const JPH::BodyID id(rb->joltBodyId);
+            if (!bodyInterface.IsAdded(id)) continue;
+            const instances::Pose pose = instances::worldPose(ecs, entity);
+            const bool isStatic = rb->motionType == RigidBodyMotionType::Static;
+            bodyInterface.SetPositionAndRotation(id, JPH::RVec3(pose.position.x, pose.position.y, pose.position.z),
+                                                 JPH::Quat(pose.rotation.x, pose.rotation.y, pose.rotation.z,
+                                                           pose.rotation.w).Normalized(),
+                                                 isStatic ? JPH::EActivation::DontActivate : JPH::EActivation::Activate);
+            if (!isStatic && writes.get<instances::PhysicsPoseWrite>(entity).resetVelocity) {
+                bodyInterface.SetLinearAndAngularVelocity(id, JPH::Vec3::sZero(), JPH::Vec3::sZero());
+            }
+        }
+        ecs.raw().clear<instances::PhysicsPoseWrite>();
+    }
+
     physicsSystem_->Update(dt, collisionSteps, tempAllocator_.get(), jobSystem_.get());
     syncTransforms(ecs);
 }

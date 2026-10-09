@@ -7,7 +7,9 @@
 #include <Luau/Compiler.h>
 
 #include "core/Components.hpp"
+#include "core/InstanceSignals.hpp"
 #include "core/InstanceTree.hpp"
+#include "core/RobloxPlayers.hpp"
 #include "core/ScriptInstanceApi.hpp"
 #include "core/Scripting.hpp"
 #include "migration/InstanceHydrator.hpp"
@@ -89,8 +91,15 @@ void runImportedScripts(const ImportReport& report, CompatibilityScore& score) {
     if (!scripting.initialize()) return;
 
     std::string lastError;
+    std::vector<std::string> laterErrors; // from handlers and tasks, after every script has loaded
+    bool loading = true;
     scripting.setOutputCallback([&](const std::string& line) {
-        if (line.rfind("runtime error", 0) == 0 || line.rfind("compile error", 0) == 0) lastError = line;
+        if (line.rfind("runtime error", 0) != 0 && line.rfind("compile error", 0) != 0) return;
+        if (loading) {
+            lastError = line;
+        } else {
+            laterErrors.push_back(line);
+        }
     });
 
     std::vector<core::EntityId> scriptEntities;
@@ -122,9 +131,39 @@ void runImportedScripts(const ImportReport& report, CompatibilityScore& score) {
                 run.error = lastError.empty() ? "failed to load" : lastError;
             }
         }
+        score.scripts.push_back(std::move(run));
+    }
+
+    // A test player joins (with a character), plays for a moment and
+    // leaves, so PlayerAdded/CharacterAdded/PlayerRemoving handlers and
+    // loops run too. Their errors count against the script they came from.
+    loading = false;
+    std::string error;
+    const core::InstanceRef root = core::instances::create(ecs, "Part", error);
+    (void)core::instances::setParent(ecs, root, core::kWorkspaceInstance, error);
+    const core::InstanceRef player =
+        core::players::join(ecs, "Player1", 1, core::instances::entityOf(ecs, root), true);
+    for (int frame = 0; frame < 30; ++frame) {
+        scripting.tick(0.1f);
+        core::players::tick(ecs, 0.1f);
+        core::signals::flush(ecs);
+    }
+    core::players::leave(ecs, player);
+    for (const std::string& line : laterErrors) {
+        const size_t open = line.find('"');
+        const size_t close = open == std::string::npos ? open : line.find('"', open + 1);
+        if (close == std::string::npos) continue;
+        const std::string path = line.substr(open + 1, close - open - 1);
+        for (CompatScriptRun& run : score.scripts) {
+            if (run.path == path && run.ok) {
+                run.ok = false;
+                run.error = line;
+            }
+        }
+    }
+    for (const CompatScriptRun& run : score.scripts) {
         ++score.scriptsRun;
         if (run.ok) ++score.scriptsOk;
-        score.scripts.push_back(std::move(run));
     }
 }
 

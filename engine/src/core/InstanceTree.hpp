@@ -124,6 +124,8 @@ bool setParent(ECS& ecs, InstanceRef child, InstanceRef parent, std::string& err
 
 // Creates a detached instance (Parent nil). kNoInstance if not creatable.
 InstanceRef create(ECS& ecs, const std::string& className, std::string& error);
+// The same for engine code, including classes scripts can't make (Player).
+InstanceRef createUnchecked(ECS& ecs, const std::string& className);
 // Copies the instance and its descendants; the copy is detached.
 InstanceRef clone(ECS& ecs, InstanceRef ref);
 void destroy(ECS& ecs, InstanceRef ref);
@@ -163,6 +165,15 @@ struct Pose {
 };
 [[nodiscard]] Pose worldPose(ECS& ecs, EntityId entity);
 void setWorldPose(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation);
+
+// Asks Physics::step to move the live body (and those of its descendants)
+// to where the Transform now says, like setting CFrame in Roblox.
+struct PhysicsPoseWrite {
+    bool resetVelocity = false;
+};
+void markBodyMoved(ECS& ecs, EntityId entity, bool resetVelocity = false);
+// Moves a part and its body, e.g. a respawning character.
+void teleport(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation, bool resetVelocity);
 
 } // namespace instances
 } // namespace engine::core

@@ -5,6 +5,7 @@
 #include "core/Components.hpp"
 #include "core/Physics.hpp"
 #include "core/Renderer.hpp"
+#include "core/RobloxPlayers.hpp"
 
 namespace engine::studio {
 
@@ -16,7 +17,7 @@ constexpr glm::vec3 kDefaultSpawn{0.0f, 3.0f, -6.0f};
 bool PlaySoloPlayer::begin(core::ECS& ecs, core::Physics& physics, core::Renderer& renderer,
                            core::RiggedMeshLibrary& riggedMeshLibrary, const core::PlayerAvatarLook& look,
                            const core::CatalogueIndex& catalogueIndex, const std::string& playerName,
-                           core::Camera& camera) {
+                           int64_t userId, core::Camera& camera) {
     if (active_) return true;
     if (!inputReady_) {
         if (!input_.initialize()) return false;
@@ -38,6 +39,10 @@ bool PlaySoloPlayer::begin(core::ECS& ecs, core::Physics& physics, core::Rendere
     avatarEntities_.clear();
     avatar_ = core::spawnPlayerAvatarRig(ecs, renderer, riggedMeshLibrary, look, catalogueIndex, avatarEntities_);
     for (core::EntityId entity : avatarEntities_) ecs.addComponent<core::PlayerAvatarPart>(entity, controller_.entity());
+
+    // Becomes a Roblox Player with a character once the place's scripts have loaded.
+    core::players::setFallbackSpawn(ecs, kDefaultSpawn);
+    core::players::requestJoin(ecs, playerName.empty() ? "Player1" : playerName, userId, controller_.entity(), true);
 
     editorCamera_ = camera;
     shiftLocked_ = false;
@@ -69,6 +74,10 @@ void PlaySoloPlayer::tick(float dt, core::ECS& ecs, core::Physics& physics, core
 
 void PlaySoloPlayer::end(core::ECS& ecs, core::Camera& camera) {
     if (!active_) return;
+    if (const core::InstanceRef player = core::players::localPlayer(ecs); player != core::kNoInstance) {
+        core::players::leave(ecs, player);
+    }
+    core::players::reset(ecs);
     for (core::EntityId entity : avatarEntities_) {
         if (ecs.raw().valid(entity)) ecs.destroyEntity(entity);
     }

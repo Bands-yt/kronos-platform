@@ -141,11 +141,10 @@ LuauApiCompatibility::LuauApiCompatibility() {
                           "Heartbeat, Stepped and RenderStepped work as in Roblox (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"ReplicatedStorage", false, ApiMappingStatus::Mapped,
                           "Works as a container. RemoteEvents inside it arrive in a later 4.3 step."});
-    registry_.push_back({"Players", false, ApiMappingStatus::Unmapped,
-                          "No Players service. Use `events.onPlayerJoin` / `events.onPlayerLeave`."});
-    registry_.push_back({"Humanoid", false, ApiMappingStatus::Unmapped,
-                          "No Humanoid type. Character state is driven through `world.playAnimation()` and the "
-                          "avatar APIs."});
+    registry_.push_back({"Players", false, ApiMappingStatus::Mapped,
+                          "Players, LocalPlayer, PlayerAdded/Removing and characters work (docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"Humanoid", false, ApiMappingStatus::Mapped,
+                          "Health, WalkSpeed, JumpPower, Died, MoveTo and friends work (docs/ROBLOX_BRIDGE.md)."});
 
     // Common Roblox APIs the 4.3 bridge will add (docs/ROADMAP.md). Listed so
     // the compatibility score counts them; flip to Mapped as each lands.
@@ -164,12 +163,15 @@ LuauApiCompatibility::LuauApiCompatibility() {
                                "WaitForChild", "GetChildren", "GetDescendants", "Clone", "Destroy",
                                "ClearAllChildren", "IsA", "IsDescendantOf", "IsAncestorOf", "GetFullName",
                                "GetAttribute", "SetAttribute", "GetAttributes", "Connect", "Once", "Disconnect",
-                               "GetPropertyChangedSignal", "GetAttributeChangedSignal"}) {
+                               "GetPropertyChangedSignal", "GetAttributeChangedSignal", "GetPlayerFromCharacter",
+                               "GetPlayers", "GetPlayerByUserId", "LoadCharacter", "TakeDamage", "GetState",
+                               "ChangeState"}) {
         registry_.push_back({method, true, ApiMappingStatus::Mapped, "Works as in Roblox."});
     }
+    registry_.push_back({"MoveTo", true, ApiMappingStatus::Mapped,
+                          "Humanoid:MoveTo works; Model:MoveTo is planned for a later 4.3 step."});
     for (const char* method : {"FireServer",
-                               "FireClient", "FireAllClients", "InvokeServer", "InvokeClient",
-                               "GetPlayerFromCharacter", "GetPlayers", "TakeDamage", "MoveTo", "Create", "Play",
+                               "FireClient", "FireAllClients", "InvokeServer", "InvokeClient", "Create", "Play",
                                "GetDataStore", "GetAsync", "SetAsync", "UpdateAsync", "IncrementAsync",
                                "RemoveAsync", "AddItem", "AddTag", "GetTagged", "HasTag", "Raycast"}) {
         registry_.push_back({method, true, ApiMappingStatus::Unmapped, kBridgeGuidance});

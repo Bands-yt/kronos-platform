@@ -13,8 +13,11 @@ underlying `core::EntityId`, opaque to script).
 Roblox's API is being added alongside it (the 4.3 Roblox bridge, see
 [ROBLOX_BRIDGE.md](ROBLOX_BRIDGE.md)). Today every script also has Roblox's
 value types (`Vector3`, `CFrame`, `Color3`, `BrickColor`, `UDim2`, `Enum`,
-`TweenInfo`, ...) and Roblox's Instance tree (`game`, `workspace`, `script`,
-`Instance.new`, `FindFirstChild`, `Destroy`, ...). Events (`:Connect`) are next.
+`TweenInfo`, ...), Roblox's Instance tree (`game`, `workspace`, `script`,
+`Instance.new`, `FindFirstChild`, `Destroy`, ...), events (`:Connect`,
+`Touched`, `RunService.Heartbeat`, ...) and players and characters
+(`game.Players`, `PlayerAdded`, `Humanoid`, `leaderstats`). Client/server
+(`RemoteEvent`) is next.
 
 ## Availability by context
 
@@ -23,6 +26,7 @@ value types (`Vector3`, `CFrame`, `Color3`, `BrickColor`, `UDim2`, `Enum`,
 | `print`, `engine.log`, `task.*`, `events.*` | ✅ | ✅ | ✅ |
 | Roblox datatypes (`Vector3`, `CFrame`, `Color3`, `Enum`, ...), `typeof` | ✅ | ✅ | ✅ |
 | Roblox Instance tree (`game`, `workspace`, `Instance.new`) | ✅ (also during Studio Play) | ✅ | ✅ |
+| Roblox players (`Players.LocalPlayer`, `Character`, `Humanoid`) | ✅ (also during Studio Play) | Only during Play | Only during Play |
 | `world.*` (full) | ✅ (`core::ScriptWorldApi`) | ✅ (smaller — no Physics/Animation, see below) | ✅ (same as plugins) |
 | `world.spawnPlayer`, `avatar.*` | ✅ (`core::ScriptAvatarApi`) | ❌ | ❌ |
 | `network.*` | ✅ | ✅ | ❌ |

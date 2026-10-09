@@ -371,6 +371,7 @@ add_library(engine_core STATIC
     core/RobloxDatatypes.cpp
     core/InstanceTree.cpp
     core/InstanceSignals.cpp
+    core/RobloxPlayers.cpp
     core/ScriptInstanceApi.cpp
     migration/AssetModeration.cpp
 
@@ -710,6 +711,7 @@ if(ENGINE_BUILD_RUNTIME)
         # supports natively -- not a duplicated copy to keep in sync.
         core/UITheme.cpp
         core/UIWidgets.cpp
+        core/RobloxLeaderboard.cpp
         # Kronos ("Home Screen Avatar Preview"): same real "one source
         # file, two targets" precedent as core/UITheme.cpp just above --
         # studio::PreviewScene/OffscreenTarget have zero real Studio-only
@@ -789,6 +791,7 @@ if(ENGINE_BUILD_STUDIO)
         # engine_core.
         core/UITheme.cpp
         core/UIWidgets.cpp
+        core/RobloxLeaderboard.cpp
         studio/Notification.cpp
         studio/EntityClassification.cpp
         studio/CreatorToolsSpawning.cpp

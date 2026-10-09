@@ -50,6 +50,7 @@ Only test with places you made or that are clearly licensed for it.
 | 2026-10-07 | 36% | 51/56 (91%) | 9/94 (10%) | 1/13 (8%) | Step 2, datatypes. Scripts still stop at `game` (step 3) |
 | 2026-10-09 | 57% | 52/56 (93%) | 66/94 (70%) | 1/13 (8%) | Step 3, Instance tree. Scripts now get past `game`/`workspace` and stop at events (`Touched`, `PlayerAdded`, `:Connect`, step 4) or services (TweenService, DataStoreService) |
 | 2026-10-09 | 75% | 52/56 (93%) | 83/95 (87%) | 6/13 (46%) | Step 4, events. All four obby scripts run. The rest stop at `PlayerAdded` (step 5), `OnServerEvent` (step 6), `DataStoreService` (step 7), `TweenService`/`Debris` (step 8) or `MouseButton1Click` (step 9) |
+| 2026-10-09 | 82% | 52/56 (93%) | 86/95 (91%) | 8/13 (62%) | Step 5, players and characters. The obby scores 100% and is playable in Studio; the tycoon's leaderstats and buy button work. The rest stop at `DataStoreService` (step 7), `Debris`/`TweenService` (step 8), `OnServerEvent` (step 6) or `MouseButton1Click` (step 9) |
 
 Most-used missing APIs at the baseline: `:Connect`, `:GetService`, `game`,
 `script`, `Instance`, `:WaitForChild`, `workspace`. Unbuilt classes: the GUI
@@ -57,9 +58,11 @@ classes and `RemoteEvent`.
 
 ### Not measured yet
 
-- Behaviour checks (the door opens, a coin is counted). Scripts now get past
-  `game` and `workspace`, but every test place waits on events (step 4).
-- Errors after the first frame. Scripts run their top level only.
+- Behaviour checks (the door opens, a coin is counted) inside the score. The
+  tests check these by hand for now (`testRobloxPlayers`).
+
+The score runs each place for 3 seconds with one player joined, so errors in
+`PlayerAdded` handlers and in later frames count too.
 
 ## Datatypes (step 2)
 
@@ -148,10 +151,10 @@ Scenes now save each object's Roblox class, stored properties and attributes
 - **Children follow their parent.** In Kronos, moving a Model or Part moves
   everything under it (Kronos keeps a scene graph). In Roblox, parts only move
   together when they are welded.
-- Setting `Position`/`CFrame` on a part that is already simulating doesn't
-  move its physics body yet; `Destroy` doesn't free the physics body yet
-  (the same as `world.destroy`). Parts made while the game is running get no
-  physics body until the next Play. This comes with the physics work in 4.4.
+- `Destroy` doesn't free the physics body yet (the same as `world.destroy`).
+  Parts made while the game is running get no physics body until the next
+  Play. This comes with the physics work in 4.4. (Setting `Position` or
+  `CFrame` on a simulating part does move its body, since step 5.)
 - `Material` is stored and saved, but only `Neon` changes how a part looks
   (it glows).
 - Properties that point at another object (`PrimaryPart`, `ObjectValue.Value`)
@@ -250,12 +253,9 @@ server there's no drawing, so no `RenderStepped`.
 
 ### Differences from Roblox (known limits)
 
-- The player's avatar touches things with one body part, named `Player`.
-  `hit.Parent:FindFirstChild("Humanoid")` doesn't find anything yet; that
-  comes with characters in step 5.
-- The avatar's body floats a little above the floor (like Roblox's
-  `HumanoidRootPart`), so the floor rarely gets `Touched`. Walls, pads you
-  walk into and parts that fall on you work.
+- The player's avatar touches things with one part, its `HumanoidRootPart`
+  (Roblox would report a leg or the torso). `hit.Parent` is the character,
+  so `hit.Parent:FindFirstChild("Humanoid")` works (step 5).
 - `BindableEvent` passes numbers, strings, booleans, Instances, `Vector3`,
   `CFrame`, `Color3`, `BrickColor`, Enum items and tables of these. Other
   datatypes (`UDim2`, `TweenInfo`, ...) arrive as plain tables, and functions
@@ -265,6 +265,74 @@ server there's no drawing, so no `RenderStepped`.
 - `:Wait()` on an object that gets destroyed never resumes.
 - Connections made from Studio's Debug Console stay until Studio closes.
 - `BindToRenderStep` isn't there yet.
+
+## Players and characters (step 5)
+
+Games now know who is playing. When you press Play (Studio) or join a game
+(Player), you become a `Player` under `game.Players`, and your avatar becomes
+a character: a `Model` in the workspace named after you, holding a
+`HumanoidRootPart` and a `Humanoid`. The code is in
+`engine/src/core/RobloxPlayers.cpp`; the classes are in the class table
+(`core/InstanceTree.cpp`).
+
+```lua
+local Players = game:GetService("Players")
+
+Players.PlayerAdded:Connect(function(player)
+    local leaderstats = Instance.new("Folder")
+    leaderstats.Name = "leaderstats"
+    leaderstats.Parent = player
+    local coins = Instance.new("IntValue")
+    coins.Name = "Coins"
+    coins.Parent = leaderstats
+
+    player.CharacterAdded:Connect(function(character)
+        character.Humanoid.WalkSpeed = 24
+    end)
+end)
+
+workspace.Lava.Touched:Connect(function(hit)
+    local humanoid = hit.Parent:FindFirstChild("Humanoid")
+    if humanoid then humanoid.Health = 0 end
+end)
+```
+
+### What works
+
+| Area | Supported |
+|---|---|
+| `Players` | `LocalPlayer`, `GetPlayers`, `GetPlayerFromCharacter`, `GetPlayerByUserId`, `PlayerAdded`, `PlayerRemoving`, `RespawnTime` (5 s), `CharacterAutoLoads`, `MaxPlayers` |
+| `Player` | `Name`, `DisplayName`, `UserId` (your Kronos profile id), `Character`, `RespawnLocation`, `LoadCharacter`, `CharacterAdded`, `CharacterRemoving`; a `Backpack` and a `PlayerGui` inside |
+| Character | A `Model` named after the player with `PrimaryPart` = `HumanoidRootPart` (your avatar's capsule) and a `Humanoid` |
+| `Humanoid` | `Health`, `MaxHealth`, `WalkSpeed`, `JumpPower`, `JumpHeight`, `UseJumpPower`, `AutoRotate`, `Jump`, `MoveDirection`, `RootPart`, `DisplayName`, `HipHeight`, `Sit`, `PlatformStand`, `WalkToPoint`, `RigType`; `TakeDamage`, `MoveTo` (a point, or a point and a part to follow), `Move`, `GetState`, `ChangeState`; `Died`, `HealthChanged`, `MoveToFinished`, `Running`, `Jumping`, `FreeFalling`, `StateChanged` |
+| Respawning | When `Health` reaches 0 the character dies (`Died` fires once, input stops). After `Players.RespawnTime` a new character appears at the player's `RespawnLocation`, else at a part named `SpawnLocation`. Falling below `workspace.FallenPartsDestroyHeight` (-500) kills |
+| Leaderboard | A player with a `leaderstats` folder shows in the top-right list, one column per value in the order they were added, sorted by the first column. Your own row is blue. In the Player and in Studio Play |
+| Moving parts | Setting `CFrame`/`Position` on a part that is simulating now moves its physics body (teleporting a character works) |
+| Imported places | Imported `Script`s start when the game runs (Play), like in Roblox: ones in the workspace or `ServerScriptService` that aren't `Disabled`. Scripts in `ReplicatedStorage`/`ServerStorage`, `LocalScript`s and `ModuleScript`s don't start on their own |
+
+Roblox's scale is kept: `WalkSpeed` 16 and `JumpPower` 50 (or `JumpHeight`
+7.2) are the normal Kronos walk and jump, and other values scale them
+(`WalkSpeed = 32` walks twice as fast). `Running` reports speed in the same
+units.
+
+Join order, as in Roblox: scripts load first, then the player joins, so a
+script's `PlayerAdded` handler always sees the local player. `PlayerAdded`
+handlers run before the character is made, so a `CharacterAdded` connection
+made inside `PlayerAdded` catches the first character.
+
+### Differences from Roblox (known limits)
+
+- Only the local player for now. Other players in a network game don't get
+  `Player` objects until step 6 (client/server).
+- The character has no `Head`, `Torso` or limb parts, only
+  `HumanoidRootPart`; the avatar mesh is drawn on top of it. Scripts that
+  look for `character.Head` don't work yet.
+- On death the avatar just stands still: no falling apart, no death sound,
+  no health regeneration script.
+- `Player:Kick`, `GetMouse`, `Teams`/`TeamColor`, `Humanoid:LoadAnimation`
+  and tools (`EquipTool`) are planned; using them gives a "planned" error.
+- Broken Bones and the bring-up world don't create players (they have their
+  own game code).
 
 ## From entity ids to Instances
 
@@ -294,6 +362,8 @@ To use an id with the old API from an Instance, read `instance.entity`.
 - Importing a second place adds to the existing `Workspace` and services
   instead of making second copies.
 - Undoing an import removes everything it added, including children.
+- Imported `Script`s start when you press Play (they used to stay switched
+  off); see "Players and characters".
 
 - Roblox Studio saves script sources inside `<![CDATA[ ... ]]>`. The importer
   used to stop at the first one and drop the rest of the place; it now reads

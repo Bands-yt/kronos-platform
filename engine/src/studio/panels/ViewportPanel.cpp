@@ -26,6 +26,7 @@
 #include "core/PhysicsMaterial.hpp"
 #include "core/Renderer.hpp"
 #include "core/ScenePicking.hpp"
+#include "core/RobloxLeaderboard.hpp"
 #include "core/Terrain.hpp"
 #include "core/UIWidgets.hpp"
 #include "core/WorldProp.hpp"
@@ -1236,6 +1237,10 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                            movieMode->previewThroughRailCamera() ? IM_COL32(120, 220, 255, 255)
                                                                   : IM_COL32(210, 212, 218, 255),
                            activeCameraLabel);
+    }
+
+    if (playerCameraActive_ && ecs != nullptr) {
+        core::drawLeaderboard(*ecs, drawList, viewCubeOrigin(imageOrigin, imageSize).x - 10.0f, imageOrigin.y + 10.0f);
     }
 
     // Gizmo mode toolbar -- W/E/R matches the near-universal DCC/game-editor

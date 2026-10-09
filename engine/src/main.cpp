@@ -24,6 +24,7 @@
 #include "core/InstanceTree.hpp"
 #include "core/LocalProfile.hpp"
 #include "core/PlayerAvatar.hpp"
+#include "core/RobloxPlayers.hpp"
 #include "core/ConsoleQuickEdit.hpp"
 #include "core/CrashReporter.hpp"
 #include "core/Biome.hpp"
@@ -2635,6 +2636,14 @@ int main(int argc, char** argv) {
             }
             app.characterController().setInitialCameraAngles(
                 engine::core::findPlayerSpawnYawDegrees(app.ecs(), spawnPosition), -15.0f);
+            // The game's scripts see you as a Roblox Player with a character.
+            engine::core::LocalProfile profile;
+            (void)profile.loadFromFile("local_profile.profile");
+            engine::core::players::reset(app.ecs());
+            engine::core::players::setFallbackSpawn(app.ecs(), {0.0f, 3.0f, -6.0f});
+            engine::core::players::requestJoin(app.ecs(), profile.displayName.empty() ? "Player1" : profile.displayName,
+                                               static_cast<int64_t>(profile.profileId),
+                                               app.characterController().entity(), true);
             return app.characterController().entity();
         });
         shell->setTesterSafetyMode(testerSafetyMode);

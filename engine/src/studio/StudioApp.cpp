@@ -614,7 +614,8 @@ bool StudioApp::initialize(StudioMode mode) {
         physicsPreviewPlugin_->setPlayHooks(
             [this](core::ECS& ecs, core::Physics& physics) {
                 if (!playSoloPlayer_.begin(ecs, physics, renderer_, riggedMeshLibrary_, localPlayerLook(), catalogueIndex_,
-                                           localProfile_.displayName, viewportPanel_.camera())) {
+                                           localProfile_.displayName, static_cast<int64_t>(localProfile_.profileId),
+                                           viewportPanel_.camera())) {
                     notifications_.push("Couldn't spawn your avatar", NotificationSeverity::Warning);
                     return;
                 }

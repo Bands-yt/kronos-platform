@@ -26,13 +26,15 @@ public:
     // Spawns at the scene's SpawnLocation, or where the Player would.
     bool begin(core::ECS& ecs, core::Physics& physics, core::Renderer& renderer,
                core::RiggedMeshLibrary& riggedMeshLibrary, const core::PlayerAvatarLook& look,
-               const core::CatalogueIndex& catalogueIndex, const std::string& playerName, core::Camera& camera);
+               const core::CatalogueIndex& catalogueIndex, const std::string& playerName, int64_t userId,
+               core::Camera& camera);
     // `pointerInViewport`: the mouse is over the game view, not a panel.
     // `typing`: a text box has keyboard focus, so keys don't move the player.
     void tick(float dt, core::ECS& ecs, core::Physics& physics, core::Camera& camera, bool pointerInViewport,
               bool typing, float mouseWheel);
-    // Removes the avatar and restores the editor camera. Call before the
-    // scene is restored; the capsule itself goes with the scene restore.
+    // Fires PlayerRemoving, removes the avatar and restores the editor
+    // camera. Call before the scene is restored; the capsule and the
+    // character Model go with the scene restore.
     void end(core::ECS& ecs, core::Camera& camera);
 
     [[nodiscard]] bool active() const { return active_; }

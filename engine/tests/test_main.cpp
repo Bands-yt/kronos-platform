@@ -195,6 +195,7 @@
 #include "core/Scripting.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/ScriptInstanceApi.hpp"
+#include "core/RobloxPlayers.hpp"
 #include "core/InstanceTree.hpp"
 #include "studio/panels/LuauSymbolIndex.hpp"
 #include "core/ScriptUiApi.hpp"
@@ -42175,14 +42176,14 @@ void testInstanceHydration() {
     check(light != nullptr && nearlyEqual(light->radius, 12.0f), "a PointLight's Range becomes Light radius");
     check(light != nullptr && nearlyEqual(light->color.g, 0.5f, 1e-3f), "a PointLight's Color decodes");
 
-    // Imported scripts must not auto-run: they almost always reference
-    // Roblox APIs Kronos does not have, and running them on import sprays
-    // errors over the report the author is trying to read.
+    // A Script in the workspace starts when the game runs (Play), like in
+    // Roblox; nothing runs at import time.
     bool sawScript = false;
     for (auto entity : result.createdEntities) {
         if (const auto* script = ecs.tryGetComponent<engine::core::Script>(entity)) {
             sawScript = true;
-            check(!script->autoRun, "an imported script does not auto-run by default");
+            check(script->autoRun && script->scriptId == engine::core::kInvalidScript,
+                  "an imported Script is set to start on Play and hasn't run at import");
             check(script->source == "print(\"hello\")", "an imported script really carries its source");
         }
     }
@@ -43206,6 +43207,227 @@ workspace.QuietPad.Touched:Connect(function() print("QUIET TOUCHED") end)
     scripting.unload(mainId);
 }
 
+void testRobloxPlayers() {
+    using namespace engine::core;
+    ECS ecs;
+    Physics physics;
+    check(physics.initialize(), "players test: physics initializes");
+    physics.setTouchRecording(true);
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "players test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto printed = [&](const char* text) {
+        for (const std::string& line : output) {
+            if (line.find(text) != std::string::npos) return true;
+        }
+        return false;
+    };
+
+    // A floor, a kill brick, a SpawnLocation (no body) and a ball standing in for the avatar capsule.
+    const PhysicsMaterial material{};
+    const glm::quat noRotation(1.0f, 0.0f, 0.0f, 0.0f);
+    auto makePart = [&](EntityId e, const char* name) {
+        ecs.raw().get_or_emplace<Name>(e).value = name;
+        ecs.raw().emplace_or_replace<InstanceInfo>(e, InstanceInfo{"Part"});
+        return e;
+    };
+    makePart(physics.createStaticBox(ecs, {0, 0, 0}, {60.0f, 0.5f, 60.0f}, noRotation, material), "Floor");
+    makePart(physics.createStaticBox(ecs, {50, 1, 0}, {2.0f, 0.5f, 2.0f}, noRotation, material), "KillBrick");
+    std::string error;
+    const InstanceRef spawn = instances::create(ecs, "SpawnLocation", error);
+    instances::setProperty(ecs, spawn, *instances::findProperty("SpawnLocation", "Anchored"), InstanceValue::ofBool(true));
+    instances::setProperty(ecs, spawn, *instances::findProperty("SpawnLocation", "Position"),
+                           InstanceValue::ofVector3({20.0f, 1.0f, 0.0f}));
+    check(instances::setParent(ecs, spawn, kWorkspaceInstance, error), "the SpawnLocation goes in the workspace");
+    const EntityId root = physics.createSphereBody(ecs, {0, 3, 0}, 0.5f, 1.0f, material);
+
+    constexpr float dt = 1.0f / 30.0f;
+    auto frame = [&]() {
+        scripting.tick(dt);
+        players::tick(ecs, dt);
+        signals::flush(ecs);
+        physics.step(dt, ecs);
+        for (const auto& touch : physics.drainTouchEvents()) signals::touch(ecs, touch.a, touch.b, touch.began);
+        signals::flush(ecs);
+    };
+
+    const char* source = R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	return not ok and (text == nil or string.find(tostring(err), text, 1, true) ~= nil)
+end
+local Players = game:GetService("Players")
+local order = {}
+Players.PlayerAdded:Connect(function(p)
+	table.insert(order, "PlayerAdded " .. p.Name)
+	p.CharacterAdded:Connect(function(c) table.insert(order, "CharacterAdded " .. c.Name) end)
+	local stats = Instance.new("Folder")
+	stats.Name = "leaderstats"
+	local coins = Instance.new("IntValue")
+	coins.Name = "Coins"
+	coins.Value = p.UserId == 42 and 7 or 20
+	coins.Parent = stats
+	local stage = Instance.new("StringValue")
+	stage.Name = "Stage"
+	stage.Value = "Start"
+	stage.Parent = stats
+	stats.Parent = p
+end)
+Players.PlayerRemoving:Connect(function(p) print("REMOVING " .. p.Name) end)
+expect("nobody is playing before the join", #Players:GetPlayers() == 0 and Players.LocalPlayer == nil)
+expect("Players is a service", Players.ClassName == "Players" and Players.Parent == game and game.Players == Players)
+expect("scripts can't make a Player", fails(function() Instance.new("Player") end))
+expect("LocalPlayer is read-only", fails(function() Players.LocalPlayer = nil end))
+
+repeat task.wait() until Players.LocalPlayer and Players.LocalPlayer.Character
+local me = Players.LocalPlayer
+local char = me.Character
+expect("PlayerAdded runs before CharacterAdded", order[1] == "PlayerAdded Ana" and order[2] == "CharacterAdded Ana")
+expect("LocalPlayer is the joined player", me.Name == "Ana" and me.UserId == 42 and me.DisplayName == "Ana" and me:IsA("Player") and me.Parent == Players)
+expect("GetPlayers", #Players:GetPlayers() == 1 and Players:GetPlayers()[1] == me)
+expect("GetPlayerFromCharacter", Players:GetPlayerFromCharacter(char) == me and Players:GetPlayerFromCharacter(workspace) == nil and Players:GetPlayerFromCharacter(nil) == nil)
+expect("GetPlayerByUserId", Players:GetPlayerByUserId(42) == me and Players:GetPlayerByUserId(7) == nil)
+expect("a Player holds a Backpack and a PlayerGui", me.Backpack.ClassName == "Backpack" and me.PlayerGui.ClassName == "PlayerGui")
+
+local hum = char:FindFirstChildOfClass("Humanoid")
+local root = char:FindFirstChild("HumanoidRootPart")
+expect("the character is a Model in the workspace named after the player", char.ClassName == "Model" and char.Parent == workspace and char.Name == "Ana")
+expect("the character holds HumanoidRootPart and a Humanoid", root ~= nil and root:IsA("BasePart") and hum ~= nil and hum.RootPart == root and char.PrimaryPart == root and char.Humanoid == hum)
+expect("Humanoid defaults match Roblox", hum.Health == 100 and hum.MaxHealth == 100 and hum.WalkSpeed == 16 and hum.JumpPower == 50 and hum.AutoRotate)
+expect("Humanoid read-only properties", fails(function() hum.RootPart = nil end) and fails(function() hum.MoveDirection = Vector3.zero end))
+expect("Humanoid methods only on Humanoids", fails(function() workspace:TakeDamage(1) end))
+
+local healths = {}
+hum.HealthChanged:Connect(function(h) table.insert(healths, h) end)
+hum.Health = 150
+expect("Health is capped at MaxHealth", hum.Health == 100)
+hum:TakeDamage(30)
+expect("TakeDamage", hum.Health == 70)
+hum.MaxHealth = 50
+expect("lowering MaxHealth lowers Health", hum.Health == 50)
+hum.MaxHealth = 100
+hum.Health = 100
+task.wait()
+expect("HealthChanged fires with the new health", table.find(healths, 70) ~= nil and healths[#healths] == 100)
+expect("a living Humanoid is Running", hum:GetState() == Enum.HumanoidStateType.Running)
+
+local changed
+hum.StateChanged:Connect(function(old, new) changed = {old, new} end)
+hum:ChangeState(Enum.HumanoidStateType.Freefall)
+task.wait()
+expect("ChangeState and StateChanged", hum:GetState() == Enum.HumanoidStateType.Freefall and changed ~= nil and changed[1] == Enum.HumanoidStateType.Running and changed[2] == Enum.HumanoidStateType.Freefall)
+expect("ChangeState wants a HumanoidStateType", fails(function() hum:ChangeState("Dead") end))
+hum:ChangeState(Enum.HumanoidStateType.Running)
+
+local finished
+hum.MoveToFinished:Connect(function(reached) finished = reached end)
+hum:MoveTo(Vector3.new(500, 0, 0))
+task.wait(8.5)
+expect("MoveTo gives up after 8 seconds with reached = false", finished == false)
+
+local npc = Instance.new("Model")
+local npcHumanoid = Instance.new("Humanoid")
+npcHumanoid.Parent = npc
+local npcDied = false
+npcHumanoid.Died:Connect(function() npcDied = true end)
+npcHumanoid:TakeDamage(500)
+task.wait()
+expect("a script-made Humanoid dies too", npcDied and npcHumanoid.Health == 0)
+
+-- A kill brick, the classic obby script.
+workspace.KillBrick.Touched:Connect(function(hit)
+	local h = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
+	if h and Players:GetPlayerFromCharacter(hit.Parent) then h.Health = 0 end
+end)
+local deaths = 0
+hum.Died:Connect(function() deaths += 1 end)
+root.CFrame = CFrame.new(50, 4, 0)
+hum.Died:Wait()
+local diedAt = time()
+task.wait()
+expect("touching the kill brick kills", hum.Health == 0 and deaths == 1 and hum:GetState() == Enum.HumanoidStateType.Dead)
+hum.Health = 0
+task.wait()
+expect("Died fires only once", deaths == 1)
+
+local newChar = me.CharacterAdded:Wait()
+expect("the player respawns after Players.RespawnTime", time() - diedAt >= Players.RespawnTime - 0.1 and time() - diedAt < Players.RespawnTime + 1)
+expect("the new character replaces the old one", newChar ~= char and me.Character == newChar and char.Parent == nil and newChar.Parent == workspace)
+expect("the new character has a fresh Humanoid", newChar.Humanoid ~= hum and newChar.Humanoid.Health == 100 and newChar.Humanoid:GetState() ~= Enum.HumanoidStateType.Dead)
+expect("the character appears on the SpawnLocation", (newChar.HumanoidRootPart.Position - Vector3.new(20, 3, 0)).Magnitude < 0.1)
+print("DONE")
+)LUAU";
+    const ScriptId id = scripting.loadAndRun("Players", source);
+    check(id != kInvalidScript, "players test: the script loads");
+    players::setFallbackSpawn(ecs, {0.0f, 3.0f, 0.0f});
+    players::requestJoin(ecs, "Ana", 42, root, true);
+    check(players::list(ecs).empty(), "requestJoin waits for the next players tick");
+    for (int i = 0; i < 600 && !printed("DONE"); ++i) frame();
+    checkLuauExpectations("Roblox players", output);
+    for (int i = 0; i < 30; ++i) frame();
+    const glm::vec3 rootPos = instances::worldPose(ecs, root).position;
+    check(std::fabs(rootPos.x - 20.0f) < 0.1f && rootPos.y < 1.5f,
+          "the respawn moved the real physics body to the spawn, where it lands on the floor");
+
+    // A second (remote) player for the leaderboard; it has no character.
+    const InstanceRef bo = players::join(ecs, "Bo", 9, kNullEntity, false);
+    signals::flush(ecs);
+    const players::Leaderboard board = players::leaderboard(ecs);
+    check(board.columns == std::vector<std::string>{"Coins", "Stage"}, "leaderboard columns come from leaderstats, in order");
+    check(board.rows.size() == 2 && board.rows[0].name == "Bo" && board.rows[1].name == "Ana" && board.rows[1].local &&
+              !board.rows[0].local && board.rows[0].values == std::vector<std::string>{"20", "Start"},
+          "leaderboard rows are sorted by the first stat, highest first");
+    check(players::localPlayer(ecs) != bo && players::playerByUserId(ecs, 9) == bo, "a remote player isn't the LocalPlayer");
+
+    // Humanoid settings reach the character controller.
+    const EntityId humanoid = players::humanoidFor(ecs, root);
+    check(humanoid != kNullEntity, "the root part's Humanoid is found");
+    const InstanceRef hRef = instances::refOf(ecs, humanoid);
+    auto setH = [&](const char* name, InstanceValue value) {
+        instances::setProperty(ecs, hRef, *instances::findProperty("Humanoid", name), value);
+    };
+    setH("WalkSpeed", InstanceValue::ofNumber(32.0));
+    setH("JumpPower", InstanceValue::ofNumber(100.0));
+    setH("Jump", InstanceValue::ofBool(true));
+    players::HumanoidControl c = players::control(ecs, root);
+    check(c.found && std::fabs(c.walkScale - 2.0f) < 1e-4f && std::fabs(c.jumpScale - 2.0f) < 1e-4f,
+          "WalkSpeed 32 and JumpPower 100 double the walk and jump");
+    check(c.jump && !players::control(ecs, root).jump, "Humanoid.Jump = true jumps once");
+    setH("UseJumpPower", InstanceValue::ofBool(false));
+    setH("JumpHeight", InstanceValue::ofNumber(28.8));
+    check(std::fabs(players::control(ecs, root).jumpScale - 2.0f) < 1e-4f, "JumpHeight 4x jumps twice as fast (2x speed)");
+    setH("WalkSpeed", InstanceValue::ofNumber(0.0));
+    check(players::control(ecs, root).walkScale == 0.0f, "WalkSpeed 0 stops the character");
+
+    players::reportMotion(ecs, root, {glm::vec3(0.0f), 0.0f, false, true, false});
+    check(players::state(ecs, humanoid) == "Jumping", "a jump sets the Jumping state");
+    players::reportMotion(ecs, root, {glm::vec3(0.0f), 0.0f, false, false, false});
+    check(players::state(ecs, humanoid) == "Freefall", "in the air after a jump is Freefall");
+    players::reportMotion(ecs, root, {glm::vec3(3.0f, 0.0f, 4.0f), 16.0f, true, false, false});
+    InstanceValue moveDirection;
+    instances::getProperty(ecs, hRef, *instances::findProperty("Humanoid", "MoveDirection"), moveDirection);
+    check(players::state(ecs, humanoid) == "Running" && glm::length(moveDirection.vec - glm::vec3(0.6f, 0.0f, 0.8f)) < 1e-4f,
+          "landing goes back to Running, and MoveDirection is the unit walking direction");
+
+    // Falling out of the world kills.
+    instances::teleport(ecs, root, {0.0f, -600.0f, 0.0f}, noRotation, true);
+    players::tick(ecs, dt);
+    check(players::control(ecs, root).dead, "falling below workspace.FallenPartsDestroyHeight kills the character");
+
+    output.clear();
+    const InstanceRef ana = players::localPlayer(ecs);
+    players::leave(ecs, ana);
+    check(printed("REMOVING Ana"), "leaving fires PlayerRemoving");
+    check(players::list(ecs).size() == 1 && players::localPlayer(ecs) == kNoInstance && !instances::isAlive(ecs, ana),
+          "a player who leaves is gone, and LocalPlayer is nil");
+    check(ecs.raw().valid(root) && instances::parent(ecs, instances::refOf(ecs, root)) == kWorkspaceInstance,
+          "the host's capsule outlives its character Model");
+    scripting.unload(id);
+}
+
 void testRobloxImportedInstances() {
     using namespace engine::migration;
     using namespace engine::core;
@@ -43228,9 +43450,15 @@ assert(lamp.Anchored and lamp.Material == Enum.Material.Neon and lamp.Shape == E
 assert(workspace.Stats.Coins.Value == 25 and script.Parent == workspace)
 assert(lamp.Glow:IsA("Light") and lamp.Position == Vector3.new(10, 2, 0))
 lamp.Glow.Brightness = 3</string></Properties></Item>
+    <Item class="Script" referent="S3"><Properties><string name="Name">Off</string><bool name="Disabled">true</bool>
+      <string name="Source">print("off")</string></Properties></Item>
+    <Item class="LocalScript" referent="S4"><Properties><string name="Name">Client</string>
+      <string name="Source">print("client")</string></Properties></Item>
   </Item>
   <Item class="ReplicatedStorage" referent="R"><Properties><string name="Name">ReplicatedStorage</string></Properties>
     <Item class="Part" referent="P2"><Properties><string name="Name">Template</string></Properties></Item>
+    <Item class="Script" referent="S5"><Properties><string name="Name">Stored</string>
+      <string name="Source">print("stored")</string></Properties></Item>
   </Item>
 </roblox>)XML";
     const ImportReport report = importer.importDocument(place, scanner);
@@ -43260,6 +43488,15 @@ lamp.Glow.Brightness = 3</string></Properties></Item>
     check(templ != kNullEntity && !ecs.tryGetComponent<Renderable>(templ)->visible,
           "an imported part in ReplicatedStorage is hidden");
     check(result.skippedCount == 0, "Folder and IntValue are no longer skipped");
+    auto autoRuns = [&](const char* name) {
+        for (EntityId e : ecs.view<Name>()) {
+            if (ecs.tryGetComponent<Name>(e)->value == name) return ecs.tryGetComponent<Script>(e)->autoRun;
+        }
+        return false;
+    };
+    check(autoRuns("Main"), "an imported Script in the workspace starts when the game runs, like in Roblox");
+    check(!autoRuns("Off") && !autoRuns("Client") && !autoRuns("Stored"),
+          "Disabled Scripts, LocalScripts and Scripts in ReplicatedStorage don't start on their own");
 
     // A second import of the same place merges into the existing services.
     const HydrationResult again = InstanceHydrator{}.hydrate(report.tree, ecs, HydrationMeshes{});
@@ -43273,7 +43510,7 @@ lamp.Glow.Brightness = 3</string></Properties></Item>
 
     CompatibilityScore score = scoreImport(report);
     runImportedScripts(report, score);
-    check(score.scriptsRun == 1 && score.scriptsOk == 1,
+    check(score.scriptsRun == 4 && score.scriptsOk == 4,
           "an imported script finds its parts through workspace, script.Parent and WaitForChild");
     for (const CompatScriptRun& run : score.scripts) {
         if (!run.ok) std::fprintf(stderr, "  %s: %s\n", run.path.c_str(), run.error.c_str());
@@ -43318,8 +43555,8 @@ void testRobloxCompatibilityScore() {
     <Item class="Script" referent="S1"><Properties><string name="Name">Hello</string>
       <string name="Source">print("hi")</string></Properties></Item>
     <Item class="Script" referent="S2"><Properties><string name="Name">Roblox</string>
-      <string name="Source">local players = game:GetService("Players")
-print(#players:GetPlayers())</string></Properties></Item>
+      <string name="Source">local debris = game:GetService("Debris")
+debris:AddItem(workspace, 1)</string></Properties></Item>
     <Item class="ModuleScript" referent="M"><Properties><string name="Name">Broken</string>
       <string name="Source">return function(</string></Properties></Item>
   </Item>
@@ -43335,8 +43572,8 @@ print(#players:GetPlayers())</string></Properties></Item>
     check(score.instancesMapped == 6 && score.unmappedClasses.count("ScreenGui") == 1,
           "classes Kronos can't build yet (ScreenGui) count as unmapped");
     check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
-          "print, game and :GetService are supported; :GetPlayers is not yet");
-    check(score.missingApis.count(":GetPlayers") == 1, "the score lists the missing Roblox APIs by name");
+          "print, game and :GetService are supported; :AddItem is not yet");
+    check(score.missingApis.count(":AddItem") == 1, "the score lists the missing Roblox APIs by name");
 
     runImportedScripts(report, score);
     check(score.scriptsRun == 3 && score.scriptsOk == 1, "one of three scripts runs cleanly today");
@@ -43345,7 +43582,7 @@ print(#players:GetPlayers())</string></Properties></Item>
         if (run.path == "Workspace.Roblox") sawRuntime = !run.ok && run.error.find("runtime error") != std::string::npos;
         if (run.path == "Workspace.Broken") sawCompile = !run.ok && run.error.find("compile error") != std::string::npos;
     }
-    check(sawRuntime, "a script that uses a missing API (PlayerAdded) fails with its runtime error recorded");
+    check(sawRuntime, "a script that uses a missing API (Debris) fails with its runtime error recorded");
     check(sawCompile, "a ModuleScript with a syntax error is reported as a compile error");
     check(score.overallPercent() > 0.0 && score.overallPercent() < 100.0, "the overall score is a real percentage");
     check(score.summary().find("overall") != std::string::npos, "the score has a one-line summary");
@@ -45660,6 +45897,7 @@ int main() {
     testRobloxImportedInstances();
     testRobloxEvents();
     testRobloxPartPhysics();
+    testRobloxPlayers();
     testEntitlementManager();
     testMovieModeScrubbingAndKeyDrag();
     testMovieModePlugin();

@@ -88,6 +88,11 @@ void storeProperties(const ImportedInstance& node, core::ECS& ecs, core::EntityI
             }
         }
     }
+    if (isScriptClass(node.className) && node.className != "ModuleScript") {
+        const bool disabled = decodeBool(node.properties, "Disabled", false) ||
+                              (hasProperty(node.properties, "Enabled") && !decodeBool(node.properties, "Enabled", true));
+        set("Disabled", InstanceValue::ofBool(disabled));
+    }
     if (!hasProperty(node.properties, "Value")) return;
     const core::PropertyDef* value = core::instances::findProperty(node.className, "Value");
     if (value == nullptr) return;
@@ -117,6 +122,23 @@ uint32_t meshForPart(const ImportedInstance& node, const HydrationMeshes& meshes
         if (shape == 2 && meshes.cylinder != core::Renderable::kInvalidHandle) return meshes.cylinder;
     }
     return meshes.box;
+}
+
+// Roblox starts a Script on Play when it isn't Disabled and sits in the
+// Workspace or ServerScriptService (or in a loose model). LocalScripts and
+// ModuleScripts don't start on their own.
+bool robloxStartsScript(core::ECS& ecs, core::EntityId entity) {
+    const auto* info = ecs.tryGetComponent<core::InstanceInfo>(entity);
+    if (info == nullptr || info->className != "Script") return false;
+    if (auto it = info->properties.find("Disabled"); it != info->properties.end() && it->second.boolean) return false;
+    for (core::InstanceRef up = core::instances::parent(ecs, core::instances::refOf(ecs, entity));
+         up != core::kNoInstance && up != core::kGameInstance; up = core::instances::parent(ecs, up)) {
+        const std::string cls = core::instances::className(ecs, up);
+        if (cls == "Workspace" || cls == "ServerScriptService") return true;
+        const core::ClassDef* def = core::instances::findClass(cls);
+        if (def != nullptr && def->service) return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -263,7 +285,6 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
         ++result.scriptCount;
         auto& scriptComponent = ecs.addComponent<core::Script>(entity);
         scriptComponent.source = decodeString(node.properties, "Source");
-        scriptComponent.autoRun = options.autoRunImportedScripts;
     }
 
     if (group) ++result.groupCount;
@@ -278,6 +299,10 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
         core::hierarchy::setParent(ecs, entity, parent);
     }
     if (part) core::instances::fitPartCollider(ecs, entity);
+    if (script) {
+        ecs.tryGetComponent<core::Script>(entity)->autoRun =
+            options.autoRunImportedScripts && robloxStartsScript(ecs, entity);
+    }
 
     for (const ImportedInstance& child : node.children) {
         hydrateNode(child, ecs, entity, world, meshes, options, result);
