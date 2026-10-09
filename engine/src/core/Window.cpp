@@ -227,6 +227,11 @@ bool Window::pumpEvents() {
                     resized_ = true;
                 }
                 break;
+            case SDL_KEYDOWN:
+                if (event.key.repeat == 0 && event.key.windowID == SDL_GetWindowID(window_) && keyPresses_.size() < 64) {
+                    keyPresses_.push_back(static_cast<int>(event.key.keysym.scancode));
+                }
+                break;
             case SDL_MOUSEWHEEL:
                 if (event.wheel.windowID == SDL_GetWindowID(window_)) {
                     float y = event.wheel.preciseY;
@@ -237,10 +242,6 @@ bool Window::pumpEvents() {
             default:
                 break;
         }
-        // TODO(net/input): forward raw SDL input events into
-        // platform_adapters::UnifiedInput so InputAction bindings
-        // (docs/ARCHITECTURE.md §8.2) see them, instead of handling
-        // window-management events only, as done here.
     }
     return true;
 }

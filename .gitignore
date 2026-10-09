@@ -43,6 +43,7 @@ test_world_registry*.json
 test_world_metadata.json
 test_logger_file_sink.log
 test_instance_scene.*
+test_chat_review*.jsonl
 
 # Local game saves and Python caches
 brokenbones_save.json

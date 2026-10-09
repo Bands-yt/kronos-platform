@@ -55,6 +55,7 @@ stranger.
 
 - **Avatar page Customize tab** (Player): skin tone, Classic/Round head and five body sliders, saved to the profile and shown in every game (including Broken Bones, which runs as its own process and now reads the profile too); the preview frames the whole body; the Shop filters fit the card.
 - **Games open in daylight, facing the build**: a game made in Studio starts at 2 pm with the day/night clock stopped, like Studio and Roblox (before, the Player's clock ran on its menus, so a game opened a few minutes after launch started at night, almost black). The player starts facing a `SpawnLocation`'s front, or the middle of the world when there is none (before, you started with your build behind you).
+- **In-game chat works** (2026-10-09): `/` or the new chat button (top-left) opens it. A quick tap of a key is no longer missed (the Player used to miss taps shorter than a game tick). Playing alone now runs messages through the same moderation as a server (rate limit, profanity filter, local classifier, Gemini when `GEMINI_API_KEY` is set) and shows refusals in the chat box. `KRONOS_CHAT_REVIEW_LOG` saves every message with its local and Gemini verdicts as JSON lines, for training a moderation model. See `CHAT_MODERATION.md`.
 - **Feedback channel**: GitHub issue forms for bugs (`bug_report.yml`) and ideas (`idea.yml`).
 - **README for newcomers**: what Kronos is, downloads, first game in five minutes, controls, where to report bugs, with `docs/images/studio-play.png`.
 

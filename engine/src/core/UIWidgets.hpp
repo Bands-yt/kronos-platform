@@ -9,7 +9,7 @@ namespace engine::ui {
 
 enum class ButtonKind { Primary, Secondary, Ghost, Danger, Success };
 
-enum class Icon { None, Home, Discover, Avatar, People, Create, Settings, Bell, Search, Play, Download, Check };
+enum class Icon { None, Home, Discover, Avatar, People, Create, Settings, Bell, Search, Play, Download, Check, Chat };
 
 // Stroke-drawn vector icon centred in a `size` x `size` box.
 void drawIcon(ImDrawList* drawList, Icon icon, ImVec2 center, float size, ImU32 color);

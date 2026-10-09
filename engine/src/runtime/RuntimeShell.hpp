@@ -302,6 +302,9 @@ private:
     // visual pose change on this player's own avatar).
     void tickEmoteActivation();
     void drawChatPanel();
+    // Top-left chat icon (Roblox-style); toggles the chat panel.
+    void drawChatButton();
+    void setChatOpen(bool open);
 
     // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
     // Layer"): real -- same dual "Home state + in-game overlay" shape
@@ -958,15 +961,8 @@ private:
     // shortcut existed, and the always-visible HUD's own buttons were
     // themselves unreachable by a hidden, captured cursor.
     bool escapeKeyWasDown_ = false;
-    // Kronos ("Input Remapping System"): real edge-detect state for the
-    // real "OpenChat" bound action, same shape as escapeKeyWasDown_ just
-    // above -- platform_adapters::UnifiedInput::isActionDown() reports
-    // per-frame held state, not a "just pressed" edge, so tickChatActivation()
-    // tracks the previous frame's value itself.
-    bool openChatKeyWasDown_ = false;
     // Kronos ("Avatar 2.0" -- "Animation Polish"): real edge-detect state
-    // for the real "PlayEmote" bound action, same shape as
-    // openChatKeyWasDown_ just above.
+    // for the real "PlayEmote" bound action.
     bool playEmoteKeyWasDown_ = false;
 
     VkDescriptorPool imguiDescriptorPool_ = nullptr;

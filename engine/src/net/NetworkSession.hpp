@@ -440,6 +440,14 @@ public:
     void sendChatMessage(const std::string& text);
     // Same path, on an explicit channel. sendChatMessage() is General.
     void sendChatMessageOn(ChatChannel channel, const std::string& text);
+    // Offline (playing alone) a sent message goes through the same checks
+    // the server runs, then comes back through the receive callbacks with
+    // this sender id.
+    static constexpr PlayerId kOfflineLocalPlayer = 1;
+    // Offline only: why the local player's message wasn't shown.
+    void setOnLocalChatBlocked(std::function<void(const std::string& reason)> callback) {
+        onLocalChatBlocked_ = std::move(callback);
+    }
 
     // --- remote chat moderation --------------------------------------------
     // Attaches a remote classifier consulted BEFORE a message is
@@ -447,6 +455,9 @@ public:
     // pumpChatModeration(). Passing nullptr restores local-filters-only.
     void setChatModerationClient(safety::GeminiModerationClient* client) { chatModerationClient_ = client; }
     void setChatModerationReplacesBody(bool replace) { chatModerationReplacesBody_ = replace; }
+    // Opt-in: every chat message with its local and Gemini verdicts, one
+    // JSON line each (see moderation::ChatReviewSample). Empty turns it off.
+    void setChatReviewLogPath(std::string path) { chatReviewLogPath_ = std::move(path); }
     [[nodiscard]] uint64_t chatModerationBlockedCount() const { return chatModerationBlocked_; }
     [[nodiscard]] uint64_t chatModerationAllowedCount() const { return chatModerationAllowed_; }
     [[nodiscard]] uint64_t chatModerationTimeoutCount() const { return chatModerationTimeouts_; }
@@ -671,6 +682,9 @@ private:
     void tickStressTest(float dt);
     void handleTeleportRequestServer(PlayerId player, ByteReader& reader);
     void handleChatMessageServer(PlayerId player, ByteReader& reader);
+    // The server's chat checks, shared by remote messages and offline play.
+    void acceptChatMessage(PlayerId player, uint32_t channelId, const std::string& text);
+    void rejectChat(const std::string& reason);
     // Serialises and fans out one already-approved packet. Shared by the
     // immediate path and the deferred moderation path so the two cannot
     // drift apart.
@@ -682,6 +696,9 @@ private:
         ChatMessagePacket packet;
         std::future<safety::ModerationVerdict> verdict;
         uint64_t submittedAtMillis = 0;
+        std::string originalText;
+        bool profanity = false;
+        safety::TextClassification local;
     };
     std::vector<PendingChatModeration> pendingChatModeration_;
     void handleReportPlayerServer(PlayerId player, ByteReader& reader);
@@ -746,6 +763,7 @@ private:
     std::unordered_set<PlayerId> serverMutedPlayers_;
     std::function<void(PlayerId, const std::string&)> onChatMessageReceived_;
     std::function<void(const ChatMessagePacket&)> onChatPacketReceived_;
+    std::function<void(const std::string&)> onLocalChatBlocked_;
     ChatMessagePacket lastReceivedChatPacket_;
     // Server-side channel membership, player -> subscribed channel ids.
     std::unordered_map<PlayerId, std::unordered_set<uint32_t>> channelSubscriptions_;
@@ -757,6 +775,10 @@ private:
     // because a message that simply vanishes reads to the sender as a
     // network fault, and they retype it.
     bool chatModerationReplacesBody_ = true;
+    std::string chatReviewLogPath_;
+    void writeChatReview(const std::string& text, bool profanity, const safety::TextClassification& local,
+                         const std::string& shown, const std::string& outcome,
+                         const safety::ModerationVerdict* gemini);
     uint64_t chatModerationBlocked_ = 0;
     uint64_t chatModerationAllowed_ = 0;
     uint64_t chatModerationTimeouts_ = 0;

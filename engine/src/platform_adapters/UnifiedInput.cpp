@@ -143,8 +143,10 @@ void UnifiedInput::update() {
     SDL_GetMouseState(&x, &y);
     mousePosition_ = {static_cast<float>(x), static_cast<float>(y)};
 
+    const uint64_t nowMs = SDL_GetTicks64();
     for (auto& [actionName, actionBindings] : bindings_) {
         ActionState combined;
+        bool tapped = false;
         for (const auto& binding : actionBindings) {
             float axisValue = 0.0f;
             bool down = sampleBinding(binding, axisValue);
@@ -152,9 +154,25 @@ void UnifiedInput::update() {
             if (std::fabs(axisValue) > std::fabs(combined.axisValue)) {
                 combined.axisValue = axisValue;
             }
+            if (binding.kind == PhysicalInputKind::KeyboardKey &&
+                std::find(pendingKeyPresses_.begin(), pendingKeyPresses_.end(), binding.code) != pendingKeyPresses_.end()) {
+                tapped = true;
+            }
+        }
+        if (tapped && !combined.down) {
+            combined.down = true;
+            if (combined.axisValue == 0.0f) combined.axisValue = 1.0f;
+        }
+        const auto previous = state_.find(actionName);
+        const bool wasDown = previous != state_.end() && previous->second.down;
+        if (blocked_) {
+            pressedAtMs_.erase(actionName);
+        } else if (tapped || (combined.down && !wasDown)) {
+            pressedAtMs_[actionName] = nowMs;
         }
         state_[actionName] = blocked_ ? ActionState{} : combined;
     }
+    pendingKeyPresses_.clear();
     if (blocked_) {
         mouseDelta_ = glm::vec2(0.0f);
         mouseWheel_ = 0.0f;
@@ -183,6 +201,14 @@ bool UnifiedInput::isActionDown(const std::string& actionName) const {
     if (!held.empty() && held.find("," + actionName + ",") != std::string::npos) return true;
     auto it = state_.find(actionName);
     return it != state_.end() && it->second.down;
+}
+
+bool UnifiedInput::consumeActionPress(const std::string& actionName, uint64_t maxAgeMs) {
+    auto it = pressedAtMs_.find(actionName);
+    if (it == pressedAtMs_.end()) return false;
+    const bool fresh = SDL_GetTicks64() - it->second <= maxAgeMs;
+    pressedAtMs_.erase(it);
+    return fresh;
 }
 
 float UnifiedInput::actionAxisValue(const std::string& actionName) const {

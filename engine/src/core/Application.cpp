@@ -221,6 +221,10 @@ bool Application::initialize(const CreateInfo& info) {
     } else {
         logInfo("Moderation", "GEMINI_API_KEY unset -- chat moderation runs on local filters only");
     }
+    if (const char* reviewLog = std::getenv("KRONOS_CHAT_REVIEW_LOG"); reviewLog != nullptr && *reviewLog != '\0') {
+        networkSession_.setChatReviewLogPath(reviewLog);
+        logInfo("Moderation", "writing every chat message and verdict to %s", reviewLog);
+    }
     // Kronos ("Kronos Scripting Environment"): the real `world.spawnPlayer`
     // + `avatar` table -- see ScriptAvatarApi.hpp's own header comment.
     // Holds `*this` (always valid), so no ordering constraint the way
@@ -478,6 +482,7 @@ bool Application::initialize(const CreateInfo& info) {
         updateWorldStreaming();
         if (headless_) return;
         input_.addMouseWheel(window_.takeMouseWheel());
+        input_.addKeyPresses(window_.takeKeyPresses());
         input_.update();
         tickRollbackMatch(dt);
         // Sprint 14: accumulate this sim tick's real mouse delta for the

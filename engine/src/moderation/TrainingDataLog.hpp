@@ -2,6 +2,9 @@
 
 #include <string>
 
+#include <cstdint>
+
+#include "safety/GeminiModerationClient.hpp"
 #include "safety/TextClassifierStub.hpp"
 
 namespace engine::moderation {
@@ -32,5 +35,22 @@ namespace engine::moderation {
 // real reason to log an unflagged sample still can.
 bool appendTrainingDataSample(const std::string& path, const std::string& text,
                                const safety::TextClassification& classification);
+
+// One chat message and every verdict on it, for reviewing or training a
+// moderation model. Written as one JSON object per line.
+struct ChatReviewSample {
+    uint64_t timeMillis = 0;
+    std::string text;
+    std::string shown;
+    bool profanity = false;
+    safety::TextClassification local;
+    bool geminiAsked = false;
+    safety::ModerationVerdict gemini;
+    // delivered, censored, blocked_local, blocked_gemini, gemini_timeout
+    std::string outcome;
+};
+
+[[nodiscard]] std::string formatChatReviewLine(const ChatReviewSample& sample);
+bool appendChatReviewSample(const std::string& path, const ChatReviewSample& sample);
 
 } // namespace engine::moderation

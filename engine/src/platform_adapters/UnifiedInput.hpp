@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -84,6 +85,15 @@ public:
     void setBlocked(bool blocked) { blocked_ = blocked; }
     [[nodiscard]] bool isShiftLocked() const { return shiftLock_; }
     void addMouseWheel(float wheel) { pendingWheel_ += wheel; }
+    // Key presses from the window's events, so a tap shorter than a frame
+    // still counts as down for one update().
+    void addKeyPresses(const std::vector<int>& scancodes) {
+        pendingKeyPresses_.insert(pendingKeyPresses_.end(), scancodes.begin(), scancodes.end());
+    }
+    // True once per press of the action, if the press happened within the
+    // last `maxAgeMs` (so a press made while nothing was listening doesn't
+    // fire later).
+    [[nodiscard]] bool consumeActionPress(const std::string& actionName, uint64_t maxAgeMs = 300);
     // Wheel movement since the last update(); 0 while over a menu.
     [[nodiscard]] float mouseWheel() const { return mouseWheel_; }
 
@@ -128,6 +138,8 @@ private:
     bool blocked_ = false;
     float pendingWheel_ = 0.0f;
     float mouseWheel_ = 0.0f;
+    std::vector<int> pendingKeyPresses_;
+    std::unordered_map<std::string, uint64_t> pressedAtMs_;
 
     void endOrbitDrag();
 };

@@ -41109,6 +41109,126 @@ void testChatModerationInterceptor() {
 }
 #endif // !defined(_WIN32)
 
+// Playing alone: chat runs the server's checks in this program.
+void testOfflineChatModeration() {
+    engine::core::ECS ecs;
+    engine::net::NetworkSession session;
+    std::vector<std::pair<engine::net::PlayerId, std::string>> received;
+    std::vector<std::string> blocked;
+    session.setOnChatMessageReceived(
+        [&](engine::net::PlayerId sender, const std::string& text) { received.emplace_back(sender, text); });
+    session.setOnLocalChatBlocked([&](const std::string& reason) { blocked.push_back(reason); });
+    const std::string reviewPath = "test_chat_review.jsonl";
+    std::filesystem::remove(reviewPath);
+    session.setChatReviewLogPath(reviewPath);
+
+    session.sendChatMessage("hello everyone");
+    check(received.size() == 1 && received[0].first == engine::net::NetworkSession::kOfflineLocalPlayer &&
+              received[0].second == "hello everyone",
+          "offline chat: a clean message comes straight back from the local player");
+    session.sendChatMessage("this is shit");
+    check(received.size() == 2 && received[1].second == "this is ****",
+          "offline chat: the profanity filter censors the message");
+    check(session.chatLog().entries().size() == 2, "offline chat: both messages are in the chat log");
+    {
+        std::ifstream review(reviewPath);
+        std::vector<nlohmann::json> lines;
+        for (std::string line; std::getline(review, line);) lines.push_back(nlohmann::json::parse(line));
+        check(lines.size() == 2 && lines[0]["outcome"] == "delivered" && lines[0]["gemini"].is_null(),
+              "chat review log: a clean message is written as delivered");
+        check(lines.size() == 2 && lines[1]["text"] == "this is shit" && lines[1]["shown"] == "this is ****" &&
+                  lines[1]["outcome"] == "censored" && lines[1]["profanity"] == true,
+              "chat review log: keeps the real text next to what others saw");
+    }
+
+    for (int i = 0; i < 10; ++i) session.sendChatMessage("spam");
+    check(!blocked.empty() && blocked.front().find("too fast") != std::string::npos,
+          "offline chat: sending too fast is refused with a reason");
+
+    session.tick(5.0f, ecs, engine::core::kNullEntity);
+    received.clear();
+    session.sendChatMessage("back again");
+    check(received.size() == 1, "offline chat: after a pause messages go through again");
+}
+
+#if !defined(_WIN32)
+void testOfflineChatGeminiModeration() {
+    MockHttpServer flagging(geminiEnvelope(false, "HARASSMENT"));
+    check(flagging.start(), "offline Gemini chat: the mock server starts");
+    engine::net::HttpWorkerPool pool(2);
+    engine::safety::GeminiConfig config;
+    config.apiKey = "test-key";
+    config.endpoint = flagging.baseUrl();
+    config.timeoutMillis = 3000;
+    engine::safety::GeminiModerationClient client(
+        pool, config, [](const std::string&) { return engine::safety::ModerationVerdict{}; });
+
+    engine::core::ECS ecs;
+    engine::net::NetworkSession session;
+    session.setChatModerationClient(&client);
+    const std::string reviewPath = "test_chat_review_gemini.jsonl";
+    std::filesystem::remove(reviewPath);
+    session.setChatReviewLogPath(reviewPath);
+    std::vector<std::string> received;
+    std::vector<std::string> blocked;
+    session.setOnChatMessageReceived([&](engine::net::PlayerId, const std::string& text) { received.push_back(text); });
+    session.setOnLocalChatBlocked([&](const std::string& reason) { blocked.push_back(reason); });
+
+    session.sendChatMessage("you are terrible at this game");
+    check(received.empty(), "offline Gemini chat: the message waits for the verdict");
+    for (int i = 0; i < 300 && received.empty(); ++i) {
+        session.tick(0.01f, ecs, engine::core::kNullEntity);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(received.size() == 1 && received[0] == engine::net::NetworkSession::kModerationRemovedBody,
+          "offline Gemini chat: a flagged message shows as removed");
+    check(flagging.requestCount() >= 1 && session.chatModerationBlockedCount() == 1,
+          "offline Gemini chat: the message really went to the moderation endpoint");
+    {
+        std::ifstream review(reviewPath);
+        std::string line;
+        std::getline(review, line);
+        nlohmann::json sample = line.empty() ? nlohmann::json() : nlohmann::json::parse(line);
+        check(!sample.is_null() && sample["text"] == "you are terrible at this game" &&
+                  sample["outcome"] == "blocked_gemini" && sample["gemini"]["reason"] == "HARASSMENT" &&
+                  sample["gemini"]["fallback"] == false,
+              "chat review log: records Gemini's verdict for the message");
+    }
+
+    session.setChatModerationReplacesBody(false);
+    session.tick(2.0f, ecs, engine::core::kNullEntity);
+    session.sendChatMessage("another bad one");
+    for (int i = 0; i < 300 && blocked.empty(); ++i) {
+        session.tick(0.01f, ecs, engine::core::kNullEntity);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(blocked.size() == 1 && blocked[0].find("HARASSMENT") != std::string::npos,
+          "offline Gemini chat: a dropped message tells the sender why");
+    pool.shutdown();
+    flagging.stop();
+}
+#endif
+
+void testUnifiedInputCatchesQuickTaps() {
+    engine::platform_adapters::UnifiedInput input;
+    input.bindAction("OpenChat", engine::platform_adapters::InputBinding{
+                                     engine::platform_adapters::PhysicalInputKind::KeyboardKey, SDL_SCANCODE_SLASH});
+    input.update();
+    check(!input.isActionDown("OpenChat") && !input.consumeActionPress("OpenChat"), "input: nothing pressed yet");
+    input.addKeyPresses({SDL_SCANCODE_SLASH});
+    input.update();
+    check(input.isActionDown("OpenChat"), "input: a tap shorter than a frame still reads as down for one update");
+    input.update();
+    check(!input.isActionDown("OpenChat"), "input: the tap is released on the next update");
+    check(input.consumeActionPress("OpenChat"), "input: the tap is remembered until it is read");
+    check(!input.consumeActionPress("OpenChat"), "input: a press is read only once");
+    input.setBlocked(true);
+    input.addKeyPresses({SDL_SCANCODE_SLASH});
+    input.update();
+    check(!input.isActionDown("OpenChat") && !input.consumeActionPress("OpenChat"),
+          "input: taps are ignored while typing");
+}
+
 // A safe verdict must pass through unchanged, and a dead endpoint must
 // not wedge chat.
 #if !defined(_WIN32)
@@ -46345,6 +46465,9 @@ int main() {
 #if !defined(_WIN32)
     testChatModerationInterceptor();
     testChatModerationPassAndTimeout();
+    testOfflineChatGeminiModeration();
+    testOfflineChatModeration();
+    testUnifiedInputCatchesQuickTaps();
 #endif
     testLuauTextChatService();
     testChatMessagePacketSerialization();

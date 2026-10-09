@@ -309,10 +309,17 @@ bool RuntimeShell::initialize() {
     app_.networkSession().setOnChatMessageReceived([this](net::PlayerId sender, const std::string& text) {
         auto it = app_.networkSession().clientKnownPlayers().find(sender);
         std::string senderName = it != app_.networkSession().clientKnownPlayers().end() ? it->second : "Unknown";
+        if (!app_.networkSession().isActive() && sender == net::NetworkSession::kOfflineLocalPlayer) {
+            senderName = localProfile_.displayName.empty() ? std::string("You") : localProfile_.displayName;
+        }
         chatHistoryLines_.push_back(senderName + ": " + text);
         if (chatHistoryLines_.size() > kMaxChatHistoryLines) {
             chatHistoryLines_.erase(chatHistoryLines_.begin());
         }
+    });
+    app_.networkSession().setOnLocalChatBlocked([this](const std::string& reason) {
+        chatHistoryLines_.push_back("[System] " + reason);
+        if (chatHistoryLines_.size() > kMaxChatHistoryLines) chatHistoryLines_.erase(chatHistoryLines_.begin());
     });
 
     // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
@@ -1099,6 +1106,7 @@ void RuntimeShell::tick(float dt) {
                                           ImGui::GetIO().DisplaySize.x - 12.0f, 12.0f);
                     drawPlayerListOverlay();
                     tickChatActivation();
+                    drawChatButton();
                     drawChatPanel();
                     if (showAvatarShopOverlay_) drawAvatarShopPanel();
                     if (showSettingsOverlay_) drawSettingsPanel();
@@ -4929,11 +4937,7 @@ void RuntimeShell::drawPlayerListOverlay() {
         // too now -- see tickChatActivation()'s own comment for why the
         // "/" keybind and this button used to be online-only, and
         // drawChatPanel()'s own comment for how offline "send" behaves.
-        if (ImGui::Button("Chat (/)")) {
-            showChatPanel_ = true;
-            chatPanelJustOpened_ = true;
-            app_.setMovementInputSuspended(true);
-        }
+        if (ImGui::Button("Chat (/)")) setChatOpen(true);
         ImGui::SameLine();
         // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI" --
         // live re-equip while InGame): real -- the same Avatar Shop
@@ -5103,34 +5107,33 @@ void RuntimeShell::drawPlayerListOverlay() {
 }
 
 void RuntimeShell::tickChatActivation() {
-    // Kronos ("Player & Chat System" -- "Bind the '/' key to open the
-    // chat panel"): real, works offline too now (Kronos "Critical Fix --
-    // Chat Activation": previously gated to online-only, which made the
-    // "/" key and the HUD's own "Chat (/)" button silently do nothing
-    // during offline Catalogue play -- a real, confusing dead keybind
-    // rather than an honest no-op; see drawChatPanel()'s own comment for
-    // how an offline "send" is now a real local echo instead of a
-    // network call that would have gone nowhere). Only while no other
-    // real ImGui text field already wants keyboard text (WantTextInput)
-    // -- without that guard, typing "/" into some *other* hypothetical
-    // text field would also real-open chat underneath it, a real,
-    // confusing double input this guard prevents.
-    if (showChatPanel_) return;
-    ImGuiIO& io = ImGui::GetIO();
-    if (io.WantTextInput) return;
-    // Kronos ("Input Remapping System"): real -- routed through the real,
-    // bindable "OpenChat" action (see Application::initialize()'s own
-    // bindAction() call and RuntimeShell::applyInputBindingOverrides())
-    // instead of a hardcoded ImGuiKey_Slash check, so a player who
-    // rebinds Chat in Settings genuinely opens it with their own chosen
-    // key, not always "/".
-    bool openChatDown = app_.input().isActionDown("OpenChat");
-    if (openChatDown && !openChatKeyWasDown_) {
-        showChatPanel_ = true;
-        chatPanelJustOpened_ = true;
-        app_.setMovementInputSuspended(true);
+    // Read every frame so a press made while chat can't open doesn't fire later.
+    const bool pressed = app_.input().consumeActionPress("OpenChat");
+    if (showChatPanel_ || ImGui::GetIO().WantTextInput) return;
+    if (pressed) setChatOpen(true);
+}
+
+void RuntimeShell::setChatOpen(bool open) {
+    showChatPanel_ = open;
+    chatPanelJustOpened_ = open;
+    app_.setMovementInputSuspended(open);
+}
+
+void RuntimeShell::drawChatButton() {
+    const float size = 40.0f;
+    ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f));
+    ImGui::SetNextWindowBgAlpha(0.55f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
+                                   ImGuiWindowFlags_NoFocusOnAppearing;
+    if (ImGui::Begin("##chat_button", nullptr, flags)) {
+        if (ui::iconButton("##chat_icon", ui::Icon::Chat, size)) setChatOpen(!showChatPanel_);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chat (/)");
     }
-    openChatKeyWasDown_ = openChatDown;
+    ImGui::End();
+    ImGui::PopStyleVar(2);
 }
 
 void RuntimeShell::tickEmoteActivation() {
@@ -5158,7 +5161,7 @@ void RuntimeShell::tickEmoteActivation() {
 void RuntimeShell::drawChatPanel() {
     if (!showChatPanel_) return;
 
-    ImGui::SetNextWindowPos(ImVec2(16.0f, 90.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(12.0f, 60.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(420.0f, 260.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.85f);
     bool stillOpen = true;
@@ -5181,31 +5184,9 @@ void RuntimeShell::drawChatPanel() {
         bool sent = ImGui::InputText("##chat_input", chatInputBuffer_, sizeof(chatInputBuffer_),
                                       ImGuiInputTextFlags_EnterReturnsTrue);
         if (sent && chatInputBuffer_[0] != '\0') {
-            if (app_.networkSession().isActive()) {
-                // Kronos ("Player & Chat System" -- "Integrate moderation
-                // filters"): real, already-real -- sendChatMessage() routes
-                // through the exact same server-side safety::TrustSafetyService/
-                // safety::PolicyEngine/moderation::ChatLog pipeline every
-                // other chat message (native or scripted) already does; this
-                // panel is a real new front door onto real, pre-existing
-                // moderation, not a second, parallel path.
-                app_.networkSession().sendChatMessage(chatInputBuffer_);
-            } else {
-                // Kronos ("Critical Fix -- Chat Activation"): real, offline
-                // local echo -- NetworkSession::sendChatMessage() itself is
-                // already a safe, honest no-op offline (config_.mode !=
-                // Client), so routing an offline message through it would
-                // just make it silently vanish with no local trace at all,
-                // a worse, more confusing UX than not having chat offline
-                // in the first place. There's no server to relay it back to
-                // this same client (setOnChatMessageReceived() never fires
-                // offline either), so this appends directly, matching that
-                // callback's own "sender: text" formatting.
-                chatHistoryLines_.push_back(
-                    (localProfile_.displayName.empty() ? std::string("You") : localProfile_.displayName) + ": " +
-                    chatInputBuffer_);
-                if (chatHistoryLines_.size() > kMaxChatHistoryLines) chatHistoryLines_.erase(chatHistoryLines_.begin());
-            }
+            // Online this goes to the server; offline the session runs the
+            // same moderation checks here and echoes it back.
+            app_.networkSession().sendChatMessage(chatInputBuffer_);
             chatInputBuffer_[0] = '\0';
             chatPanelJustOpened_ = true; // real, keeps keyboard focus in the input box for the next message
         }
@@ -5219,10 +5200,7 @@ void RuntimeShell::drawChatPanel() {
     // deliberate Escape press, same "Escape backs out one real layer"
     // convention tick()'s own comment on this feature already states.
     bool escapeClosesChatDown = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
-    if (!stillOpen || escapeClosesChatDown) {
-        showChatPanel_ = false;
-        app_.setMovementInputSuspended(false);
-    }
+    if (!stillOpen || escapeClosesChatDown) setChatOpen(false);
 }
 
 void RuntimeShell::tickTrailerCaptureMode(float dt) {

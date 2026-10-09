@@ -475,7 +475,12 @@ void NetworkSession::sampleLocalInput(core::ECS& ecs, core::EntityId localPlayer
 }
 
 void NetworkSession::tick(float dt, core::ECS& ecs, core::EntityId localPlayerEntity, core::Physics* physics) {
-    if (config_.mode == NetworkMode::Offline) return;
+    if (config_.mode == NetworkMode::Offline) {
+        // Playing alone still runs chat through moderation.
+        clockSeconds_ += dt;
+        pumpChatModeration();
+        return;
+    }
     currentEcs_ = &ecs;
     currentPhysics_ = physics ? physics : &fallbackPhysics_;
     clockSeconds_ += dt;
@@ -732,7 +737,6 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
         networkStats_.recordPacketDropped();
         return;
     }
-    std::string text = incoming.body;
 
     // Server authority over the channel: a client may not originate on
     // System, and the sender id and timestamp it sent are both discarded
@@ -742,11 +746,20 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
         networkStats_.recordPacketDropped();
         return;
     }
-    const uint32_t incomingChannel = incoming.channelId;
-    if (text.empty()) {
+    if (incoming.body.empty()) {
         networkStats_.recordPacketDropped();
         return;
     }
+    acceptChatMessage(player, incoming.channelId, incoming.body);
+}
+
+void NetworkSession::rejectChat(const std::string& reason) {
+    networkStats_.recordPacketDropped();
+    if (config_.mode == NetworkMode::Offline && onLocalChatBlocked_) onLocalChatBlocked_(reason);
+}
+
+void NetworkSession::acceptChatMessage(PlayerId player, uint32_t incomingChannel, const std::string& text) {
+    const bool offline = config_.mode == NetworkMode::Offline;
 
     // Sprint 12 task 4's real world-safety enforcement + task 1's real
     // rate limiting -- both checked before the message is even looked
@@ -754,7 +767,7 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
     // server-authority convention (net::ServerReconciliation::validate()
     // established it first; this is the same pattern applied to chat).
     if (!worldSafetySettings_.chatEnabled || isServerMuted(player)) {
-        networkStats_.recordPacketDropped();
+        rejectChat("Chat is turned off or you are muted.");
         return;
     }
     // Kronos ("Moderation Architecture v2", "Account System v1"): real,
@@ -770,7 +783,7 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
     }
     chatRateLimiter_.setMaxPerSecond(worldSafetySettings_.maxChatMessagesPerSecond);
     if (!chatRateLimiter_.tryConsume(player, clockSeconds_)) {
-        networkStats_.recordPacketDropped();
+        rejectChat("You're sending messages too fast.");
         return;
     }
 
@@ -797,7 +810,8 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
     // the real JoinRequest identity signal) -- closes the real gap
     // Phase 1's own onChatMessage() comment stated ("no per-connected-
     // remote-player age signal exists in the network protocol yet").
-    safety::TextClassification classification = trustSafetyService_.onChatMessage(player, text, playerAgeGroup(player));
+    safety::TextClassification classification = trustSafetyService_.onChatMessage(
+        player, text, offline ? localAgeGroup_ : playerAgeGroup(player));
 
     chatLog_.record(moderation::ChatLogEntry{player, text, profanityResult.containsProfanity, classification.flagged,
                                               static_cast<double>(clockSeconds_)});
@@ -815,7 +829,12 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
     }
 
     if (classification.blocked) {
-        networkStats_.recordPacketDropped();
+        writeChatReview(text, profanityResult.containsProfanity, classification, "", "blocked_local", nullptr);
+        std::string reason = "Your message was blocked by moderation";
+        if (!classification.categories.empty()) {
+            reason += std::string(" (") + safety::textRiskCategoryName(classification.categories.front()) + ")";
+        }
+        rejectChat(reason + ".");
         return;
     }
 
@@ -838,12 +857,37 @@ void NetworkSession::handleChatMessageServer(PlayerId player, ByteReader& reader
         PendingChatModeration pending;
         pending.packet = outgoing;
         pending.submittedAtMillis = currentUnixMillis();
-        pending.verdict = chatModerationClient_->classifyText(outgoing.body);
+        pending.verdict = chatModerationClient_->classifyText(text);
+        pending.originalText = text;
+        pending.profanity = profanityResult.containsProfanity;
+        pending.local = classification;
         pendingChatModeration_.push_back(std::move(pending));
         return;
     }
 
+    writeChatReview(text, profanityResult.containsProfanity, classification, outgoing.body,
+                    profanityResult.containsProfanity ? "censored" : "delivered", nullptr);
     broadcastChatPacket(outgoing);
+}
+
+void NetworkSession::writeChatReview(const std::string& text, bool profanity, const safety::TextClassification& local,
+                                     const std::string& shown, const std::string& outcome,
+                                     const safety::ModerationVerdict* gemini) {
+    if (chatReviewLogPath_.empty()) return;
+    moderation::ChatReviewSample sample;
+    sample.timeMillis = currentUnixMillis();
+    sample.text = text;
+    sample.profanity = profanity;
+    sample.local = local;
+    sample.shown = shown;
+    if (gemini != nullptr) {
+        sample.geminiAsked = true;
+        sample.gemini = *gemini;
+    }
+    sample.outcome = outcome;
+    if (!moderation::appendChatReviewSample(chatReviewLogPath_, sample)) {
+        core::logWarn("Moderation", "could not write the chat review log %s", chatReviewLogPath_.c_str());
+    }
 }
 
 void NetworkSession::broadcastChatPacket(const ChatMessagePacket& outgoing) {
@@ -852,6 +896,12 @@ void NetworkSession::broadcastChatPacket(const ChatMessagePacket& outgoing) {
     outgoing.write(writer);
     networkStats_.recordPacketSent(writer.size());
 
+    if (config_.mode == NetworkMode::Offline) {
+        lastReceivedChatPacket_ = outgoing;
+        if (onChatMessageReceived_) onChatMessageReceived_(outgoing.senderId, outgoing.body);
+        if (onChatPacketReceived_) onChatPacketReceived_(outgoing);
+        return;
+    }
     const PlayerId player = outgoing.senderId;
     for (auto& [peer, recipient] : serverPeerToPlayer_) {
         // Real, per-recipient mute/block filtering (task 1) -- everyone
@@ -891,6 +941,7 @@ void NetworkSession::pumpChatModeration() {
             // The future is abandoned deliberately -- it owns its own
             // state and completing later harms nothing.
             ChatMessagePacket released = it->packet;
+            writeChatReview(it->originalText, it->profanity, it->local, released.body, "gemini_timeout", nullptr);
             it = pendingChatModeration_.erase(it);
             ++chatModerationTimeouts_;
             broadcastChatPacket(released);
@@ -899,10 +950,15 @@ void NetworkSession::pumpChatModeration() {
 
         safety::ModerationVerdict verdict = it->verdict.get();
         ChatMessagePacket packet = it->packet;
+        const std::string originalText = it->originalText;
+        const bool profanity = it->profanity;
+        const safety::TextClassification local = it->local;
         it = pendingChatModeration_.erase(it);
 
         if (verdict.isSafe) {
             if (!verdict.usedFallback) ++chatModerationAllowed_;
+            writeChatReview(originalText, profanity, local, packet.body, profanity ? "censored" : "delivered",
+                            &verdict);
             broadcastChatPacket(packet);
             continue;
         }
@@ -917,11 +973,13 @@ void NetworkSession::pumpChatModeration() {
                        verdict.reasonCode.c_str(), verdict.usedFallback ? ", local fallback" : "",
                        packet.body.c_str());
 
+        writeChatReview(originalText, profanity, local, chatModerationReplacesBody_ ? kModerationRemovedBody : "",
+                        "blocked_gemini", &verdict);
         if (chatModerationReplacesBody_) {
             packet.body = kModerationRemovedBody;
             broadcastChatPacket(packet);
         } else {
-            networkStats_.recordPacketDropped();
+            rejectChat("Your message was blocked by moderation (" + verdict.reasonCode + ").");
         }
     }
 }
@@ -1702,6 +1760,12 @@ void NetworkSession::sendChatMessage(const std::string& text) {
 }
 
 void NetworkSession::sendChatMessageOn(ChatChannel channel, const std::string& text) {
+    if (config_.mode == NetworkMode::Offline) {
+        if (clientMaySendOn(channel) && !text.empty() && text.size() <= ChatMessagePacket::kMaxBodyBytes) {
+            acceptChatMessage(kOfflineLocalPlayer, static_cast<uint32_t>(channel), text);
+        }
+        return;
+    }
     if (config_.mode != NetworkMode::Client) return;
     // Refused locally as well as server-side. The server is still the
     // authority (see handleChatMessageServer), but sending a packet that

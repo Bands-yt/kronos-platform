@@ -54,6 +54,7 @@ some Luau. The [Lua API](docs/LUA_API.md) lists everything scripts can do.
 | Right mouse (hold) and drag | Look around |
 | Mouse wheel | Zoom |
 | Shift | Shift lock: the character faces where you look |
+| `/` or the chat button | Open chat (Player) |
 | Escape | Pause menu (Player) |
 
 In Studio, hold the right mouse button and use WASD to fly the editor
@@ -92,6 +93,7 @@ are the biggest), so it takes a few minutes.
 | Fix a problem starting Kronos | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Script my game | [docs/LUA_CREATOR_EXPERIENCE.md](docs/LUA_CREATOR_EXPERIENCE.md), [docs/LUA_API.md](docs/LUA_API.md) |
 | Add music and sound | [docs/AUDIO_MIXER.md](docs/AUDIO_MIXER.md) |
+| Set up chat moderation (Gemini) | [docs/CHAT_MODERATION.md](docs/CHAT_MODERATION.md) |
 | Write a Studio plugin | [docs/PLUGIN_API.md](docs/PLUGIN_API.md) |
 | See what's coming next | [docs/ROADMAP.md](docs/ROADMAP.md) |
 | Understand how the engine fits together | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |

@@ -318,6 +318,13 @@ void drawIcon(ImDrawList* dl, Icon icon, ImVec2 c, float s, ImU32 color) {
         dl->PathStroke(color, ImDrawFlags_None, t);
         dl->AddLine(P(0.0f, -0.92f), P(0.0f, -0.8f), color, t);
         break;
+    case Icon::Chat: {
+        dl->AddRect(P(-0.85f, -0.7f), P(0.85f, 0.45f), color, h * 0.3f, 0, t);
+        const ImVec2 tail[] = {P(-0.45f, 0.45f), P(-0.55f, 0.88f), P(-0.05f, 0.45f)};
+        dl->AddPolyline(tail, 3, color, ImDrawFlags_None, t);
+        for (float x : {-0.4f, 0.0f, 0.4f}) dl->AddCircleFilled(P(x, -0.12f), t * 0.75f, color);
+        break;
+    }
     case Icon::Search:
         dl->AddCircle(P(-0.15f, -0.15f), h * 0.6f, color, 0, t);
         dl->AddLine(P(0.3f, 0.3f), P(0.85f, 0.85f), color, t * 1.15f);

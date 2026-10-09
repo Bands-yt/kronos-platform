@@ -101,6 +101,12 @@ public:
         mouseWheel_ = 0.0f;
         return wheel;
     }
+    // Keys pressed (SDL scancodes, no auto-repeat) since the last call.
+    [[nodiscard]] std::vector<int> takeKeyPresses() {
+        std::vector<int> presses;
+        presses.swap(keyPresses_);
+        return presses;
+    }
 
     // Kronos ("Settings Panel v2" -- "Window/Fullscreen scaling"): real
     // runtime mode switch, closing the gap RuntimeShell::drawSettingsPanel()'s
@@ -128,6 +134,7 @@ private:
     uint32_t height_ = 0;
     bool resized_ = false;
     float mouseWheel_ = 0.0f;
+    std::vector<int> keyPresses_;
     RawEventCallback rawEventCallback_;
     std::string lastError_;
 };
