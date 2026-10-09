@@ -6,19 +6,23 @@ or a Studio scripted plugin (see [PLUGIN_SYSTEM.md](PLUGIN_SYSTEM.md)).
 Every function below is real and tested — this is not aspirational API
 surface.
 
-Deliberately **not** shaped like Roblox's own Instance/DataModel API (no
-`game`/`workspace` globals, no `Instance.new()`, no property-indexing like
-`part.Position = Vector3.new(x, y, z)`). Building a partial look-alike of
-that API would be misleading — there is no Instance/DataModel translation
-layer in this engine. Entities are plain numbers (the underlying
-`core::EntityId`, opaque to script) and every function is a flat call on
-a global table: `world.setPosition(id, x, y, z)`.
+The Kronos API is a set of flat calls on global tables:
+`world.setPosition(id, x, y, z)`, with entities as plain numbers (the
+underlying `core::EntityId`, opaque to script).
+
+Roblox's API is being added alongside it (the 4.3 Roblox bridge, see
+[ROBLOX_BRIDGE.md](ROBLOX_BRIDGE.md)). Today every script also has Roblox's
+value types (`Vector3`, `CFrame`, `Color3`, `BrickColor`, `UDim2`, `Enum`,
+`TweenInfo`, ...) and Roblox's Instance tree (`game`, `workspace`, `script`,
+`Instance.new`, `FindFirstChild`, `Destroy`, ...). Events (`:Connect`) are next.
 
 ## Availability by context
 
 | Global | engine_runtime (gameplay `Script`) | Studio `ScriptedPlugin` | Studio Debug Console |
 |---|---|---|---|
 | `print`, `engine.log`, `task.*`, `events.*` | ✅ | ✅ | ✅ |
+| Roblox datatypes (`Vector3`, `CFrame`, `Color3`, `Enum`, ...), `typeof` | ✅ | ✅ | ✅ |
+| Roblox Instance tree (`game`, `workspace`, `Instance.new`) | ✅ (also during Studio Play) | ✅ | ✅ |
 | `world.*` (full) | ✅ (`core::ScriptWorldApi`) | ✅ (smaller — no Physics/Animation, see below) | ✅ (same as plugins) |
 | `world.spawnPlayer`, `avatar.*` | ✅ (`core::ScriptAvatarApi`) | ❌ | ❌ |
 | `network.*` | ✅ | ✅ | ❌ |
@@ -142,7 +146,7 @@ noted.
   (a `Transform`, plus a `Name` if given). No default mesh — an entity
   needs a Renderable attached some other way to be visible; this is a
   deliberate, honest minimum (see `ScriptWorldApi.hpp`'s own comment).
-- **`world.destroy(id)`** — destroys the entity.
+- **`world.destroy(id)`** — destroys the entity and all of its children.
 - **`world.findByName(name)`** → id or `nil`.
 - **`world.getPosition(id)`** → x, y, z (or nothing if the entity has no
   `Transform`).
@@ -150,7 +154,7 @@ noted.
 - **`world.getRotation(id)`** → x, y, z (Euler degrees).
 - **`world.setRotation(id, x, y, z)`** (Euler degrees).
 - **`world.rotateBy(id, x, y, z)`**: turns by Euler degrees about the world axes. Repeated calls spin smoothly.
-- **`script.entity`**: the id of the object this script is attached to (set for scripts attached to objects).
+- **`script`**: the script's own Instance (`script.Parent`, `script.Name`, see [ROBLOX_BRIDGE.md](ROBLOX_BRIDGE.md)). **`script.entity`** is still the id of the object, for the `world.*` functions.
 - **`world.setScale(id, x, y, z)`**
 - **`world.setColor(id, r, g, b, a?)`** — sets `Renderable::baseColor`;
   no-op if the entity has no `Renderable`.

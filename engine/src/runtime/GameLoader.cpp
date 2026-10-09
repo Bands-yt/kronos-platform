@@ -82,6 +82,11 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
         return false;
     }
 
+    // Like Studio and Roblox: a game starts at 2 pm with the clock stopped,
+    // however long the Player sat on its menus before.
+    app.timeOfDayState().hours = 14.0f;
+    app.setDayLengthSeconds(0.0f);
+
     core::MixerConfig mixer = core::MixerConfig::defaults();
     const std::filesystem::path mixerPath = projectPath.parent_path() / "mixer.kmixer";
     std::error_code ec;

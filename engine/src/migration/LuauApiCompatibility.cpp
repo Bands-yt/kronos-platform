@@ -126,20 +126,12 @@ LuauApiCompatibility::LuauApiCompatibility() {
     // alternative rather than just naming the problem -- a migration
     // report that only says "unsupported" leaves the author exactly as
     // stuck as the crash would have.
-    registry_.push_back({"game", false, ApiMappingStatus::Unmapped,
-                          "Kronos has no `game` DataModel. Use the `world` table for entities and `events` for "
-                          "lifecycle hooks (docs/LUA_API.md)."});
-    registry_.push_back({"workspace", false, ApiMappingStatus::Unmapped,
-                          "No `workspace` global. Entities are reached through `world.findByName()` / "
-                          "`world.createEntity()`."});
-    registry_.push_back({"Instance", false, ApiMappingStatus::Unmapped,
-                          "`Instance.new()` has no equivalent. Use `world.createEntity()` and the `world.set*` "
-                          "functions."});
-    registry_.push_back({"Enum", false, ApiMappingStatus::Unmapped,
-                          "No `Enum` namespace. Kronos APIs take plain strings and numbers."});
-    registry_.push_back({"script", false, ApiMappingStatus::Unmapped,
-                          "No `script` self-reference. A script's own top-level code runs at load; use the `events` "
-                          "table for hooks."});
+    // The Instance tree (core/InstanceTree.hpp, core/ScriptInstanceApi.hpp).
+    registry_.push_back({"game", false, ApiMappingStatus::Mapped, "Works as in Roblox (docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"workspace", false, ApiMappingStatus::Mapped, "Works as in Roblox (docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"Instance", false, ApiMappingStatus::Mapped,
+                          "`Instance.new` works for the classes in docs/ROBLOX_BRIDGE.md."});
+    registry_.push_back({"script", false, ApiMappingStatus::Mapped, "`script` is the script's own Instance."});
     registry_.push_back({"UserInputService", false, ApiMappingStatus::Unmapped,
                           "No UserInputService. Input is delivered through `events.onInteract`."});
     registry_.push_back({"TweenService", false, ApiMappingStatus::Unmapped,
@@ -147,14 +139,40 @@ LuauApiCompatibility::LuauApiCompatibility() {
                           "Mode timeline."});
     registry_.push_back({"RunService", false, ApiMappingStatus::Unmapped,
                           "No RunService. Per-frame work belongs in `events.onUpdate`."});
-    registry_.push_back({"ReplicatedStorage", false, ApiMappingStatus::Unmapped,
-                          "No ReplicatedStorage. Share modules with `require()` and replicate with "
-                          "`network.fireServer()` / `network.fireAllClients()`."});
+    registry_.push_back({"ReplicatedStorage", false, ApiMappingStatus::Mapped,
+                          "Works as a container. RemoteEvents inside it arrive in a later 4.3 step."});
     registry_.push_back({"Players", false, ApiMappingStatus::Unmapped,
                           "No Players service. Use `events.onPlayerJoin` / `events.onPlayerLeave`."});
     registry_.push_back({"Humanoid", false, ApiMappingStatus::Unmapped,
                           "No Humanoid type. Character state is driven through `world.playAnimation()` and the "
                           "avatar APIs."});
+
+    // Common Roblox APIs the 4.3 bridge will add (docs/ROADMAP.md). Listed so
+    // the compatibility score counts them; flip to Mapped as each lands.
+    const char* kBridgeGuidance = "Not in Kronos yet; planned for the 4.3 Roblox bridge (docs/ROADMAP.md).";
+    for (const char* global : {"wait", "spawn", "delay", "tick"}) {
+        registry_.push_back({global, false, ApiMappingStatus::Unmapped, kBridgeGuidance});
+    }
+    // Roblox datatypes (core/RobloxDatatypes.cpp).
+    for (const char* global : {"Vector3", "Vector2", "CFrame", "Color3", "BrickColor", "UDim", "UDim2", "Enum",
+                               "TweenInfo", "NumberRange", "NumberSequence", "ColorSequence", "Ray",
+                               "RaycastParams", "Random"}) {
+        registry_.push_back({global, false, ApiMappingStatus::Mapped, "Works as in Roblox."});
+    }
+    for (const char* method : {"GetService", "FindFirstChild", "FindFirstChildOfClass", "FindFirstChildWhichIsA",
+                               "FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA",
+                               "WaitForChild", "GetChildren", "GetDescendants", "Clone", "Destroy",
+                               "ClearAllChildren", "IsA", "IsDescendantOf", "IsAncestorOf", "GetFullName",
+                               "GetAttribute", "SetAttribute", "GetAttributes"}) {
+        registry_.push_back({method, true, ApiMappingStatus::Mapped, "Works as in Roblox."});
+    }
+    for (const char* method : {"Connect", "Once", "Disconnect", "GetPropertyChangedSignal", "FireServer",
+                               "FireClient", "FireAllClients", "InvokeServer", "InvokeClient",
+                               "GetPlayerFromCharacter", "GetPlayers", "TakeDamage", "MoveTo", "Create", "Play",
+                               "GetDataStore", "GetAsync", "SetAsync", "UpdateAsync", "IncrementAsync",
+                               "RemoveAsync", "AddItem", "AddTag", "GetTagged", "HasTag", "Raycast"}) {
+        registry_.push_back({method, true, ApiMappingStatus::Unmapped, kBridgeGuidance});
+    }
 
     // Handled automatically by ScriptCompatShimLoader -- reported so the
     // author knows a rewrite happened, not because anything is broken.
@@ -169,6 +187,8 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"network", false, ApiMappingStatus::Mapped, "Kronos `network` API."});
     registry_.push_back({"events", false, ApiMappingStatus::Mapped, "Kronos `events` API."});
     registry_.push_back({"ui", false, ApiMappingStatus::Mapped, "Kronos `ui` API."});
+    registry_.push_back({"print", false, ApiMappingStatus::Mapped, "Same as Roblox."});
+    registry_.push_back({"task", false, ApiMappingStatus::Mapped, "`task.wait`/`spawn`/`defer` work as in Roblox."});
 }
 
 std::vector<ApiCompatibilityFinding> LuauApiCompatibility::scan(const std::string& luauSource) const {
@@ -184,9 +204,21 @@ std::vector<ApiCompatibilityFinding> LuauApiCompatibility::scan(const std::strin
     // stay separate, because each is a distinct place to edit.
     std::unordered_map<std::string, int> lastReportedLine;
 
-    for (const IdentifierToken& token : tokenizeIdentifiers(luauSource)) {
+    // `local Players = game:GetService("Players")` declares a variable, not a
+    // use of the Players global; later uses of that name are the local too.
+    std::unordered_map<std::string, bool> locals;
+    const std::vector<IdentifierToken> tokens = tokenizeIdentifiers(luauSource);
+    for (size_t index = 0; index < tokens.size(); ++index) {
+        const IdentifierToken& token = tokens[index];
+        const std::string previous = index > 0 ? tokens[index - 1].text : std::string();
+        if (previous == "local" ||
+            (previous == "function" && index > 1 && tokens[index - 2].text == "local")) {
+            if (token.text != "function") locals[token.text] = true;
+            continue;
+        }
         const Entry* entry = nullptr;
         std::string reported = token.text;
+        if (!token.precededByColon && locals.count(token.text) != 0) continue;
         if (token.precededByColon) {
             const auto it = methods.find(token.text);
             if (it != methods.end()) {

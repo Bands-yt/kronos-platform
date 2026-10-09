@@ -13,6 +13,7 @@
 #include "core/Hierarchy.hpp"
 #include "core/Physics.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
+#include "core/ScriptInstanceApi.hpp"
 
 namespace engine::core {
 
@@ -71,7 +72,7 @@ int ScriptWorldApi::luaFindByName(lua_State* L) {
 
 int ScriptWorldApi::luaDestroy(lua_State* L) {
     EntityId entity = idFromLua(L, 1);
-    selfFromUpvalue(L)->ecs_.destroyEntity(entity);
+    hierarchy::destroyEntityRecursive(selfFromUpvalue(L)->ecs_, entity);
     return 0;
 }
 
@@ -323,6 +324,7 @@ void ScriptWorldApi::registerInto(lua_State* L) {
         lua_setfield(L, -2, entry.name);
     }
     lua_setglobal(L, "world");
+    registerInstanceApi(L, ecs_);
 }
 
 } // namespace engine::core

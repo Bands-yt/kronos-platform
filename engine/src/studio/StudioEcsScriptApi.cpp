@@ -6,6 +6,7 @@
 #include "core/Components.hpp"
 #include "core/ECS.hpp"
 #include "core/Hierarchy.hpp"
+#include "core/ScriptInstanceApi.hpp"
 
 namespace engine::studio {
 
@@ -114,6 +115,7 @@ void registerStudioEcsBindings(lua_State* L, core::ECS& ecs) {
         lua_setfield(L, -2, entry.name);
     }
     lua_setglobal(L, "world");
+    core::registerInstanceApi(L, ecs);
 }
 
 } // namespace engine::studio

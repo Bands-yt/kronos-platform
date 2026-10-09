@@ -15,7 +15,9 @@
 
 namespace engine::core {
 
+class AnimationDatabase;
 class Renderer;
+struct LocalProfile;
 
 struct PlayerAvatarLook {
     glm::vec4 skinTone{0.85f, 0.75f, 0.65f, 1.0f};
@@ -25,6 +27,11 @@ struct PlayerAvatarLook {
     AnimationOverrides animationOverrides{};
     ClothingFit clothingFit = ClothingFit::Tight;
 };
+
+// The look saved in the player's profile (Avatar page), with equipped
+// items from `loadout` and animation overrides resolved through `animations`.
+[[nodiscard]] PlayerAvatarLook playerAvatarLookFromProfile(const LocalProfile& profile, const AvatarLoadout& loadout,
+                                                           const AnimationDatabase& animations);
 
 // Builds the player's body, face, clothing, accessories and hair, appends
 // every entity to `outEntities`, and returns the controller that animates
@@ -39,5 +46,9 @@ struct PlayerAvatarLook {
 // Where a player should appear: above a part named "SpawnLocation" (or
 // "SpawnPoint") if the scene has one, like Roblox, otherwise `fallback`.
 [[nodiscard]] glm::vec3 findPlayerSpawnPosition(ECS& ecs, glm::vec3 fallback);
+
+// Camera yaw a player should start with: the SpawnLocation's front (-Z),
+// or with none, looking toward the middle of the world.
+[[nodiscard]] float findPlayerSpawnYawDegrees(ECS& ecs, glm::vec3 spawnPosition);
 
 } // namespace engine::core

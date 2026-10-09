@@ -1,5 +1,7 @@
 # Kronos 3D Model Maker & AI Model Generator — Roadmap
 
+Planned for 5.0 (see `ROADMAP.md`).
+
 Saved verbatim from the creator's own planning notes. **Not started** —
 this is forward-looking scope beyond the current Studio-declutter/
 starter-plugins/house-demo work in progress. Recorded here so it isn't

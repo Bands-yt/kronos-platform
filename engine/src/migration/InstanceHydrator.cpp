@@ -5,6 +5,7 @@
 
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
+#include "core/InstanceTree.hpp"
 #include "migration/PropertyDecoder.hpp"
 
 namespace engine::migration {
@@ -38,6 +39,74 @@ bool isGroupClass(const std::string& className) {
             className == "Tool";
 }
 
+// Enum item names for the tokens the hydrator stores; values match Roblox.
+std::string enumItemName(const std::string& enumType, int value) {
+    static const std::pair<int, const char*> kMaterial[] = {
+        {256, "Plastic"}, {272, "SmoothPlastic"}, {288, "Neon"}, {512, "Wood"}, {528, "WoodPlanks"},
+        {784, "Marble"}, {800, "Slate"}, {816, "Concrete"}, {832, "Granite"}, {848, "Brick"}, {864, "Pebble"},
+        {880, "Cobblestone"}, {1040, "CorrodedMetal"}, {1056, "DiamondPlate"}, {1072, "Foil"}, {1088, "Metal"},
+        {1280, "Grass"}, {1296, "Sand"}, {1312, "Fabric"}, {1536, "Ice"}, {1568, "Glass"}, {1584, "ForceField"},
+        {1792, "Air"}, {2048, "Water"}};
+    static const std::pair<int, const char*> kPartType[] = {
+        {0, "Ball"}, {1, "Block"}, {2, "Cylinder"}, {3, "Wedge"}, {4, "CornerWedge"}};
+    if (enumType == "Material") {
+        for (const auto& [v, item] : kMaterial) {
+            if (v == value) return item;
+        }
+    } else if (enumType == "PartType") {
+        for (const auto& [v, item] : kPartType) {
+            if (v == value) return item;
+        }
+    }
+    return {};
+}
+
+// Copies the properties scripts read (Anchored, Material, Value, ...) into
+// the entity's InstanceInfo.
+void storeProperties(const ImportedInstance& node, core::ECS& ecs, core::EntityId entity) {
+    using core::InstanceValue;
+    const core::InstanceRef ref = core::instances::refOf(ecs, entity);
+    auto set = [&](const char* property, const InstanceValue& value) {
+        if (const core::PropertyDef* def = core::instances::findProperty(node.className, property)) {
+            core::instances::setProperty(ecs, ref, *def, value);
+        }
+    };
+    if (core::instances::classIsA(node.className, "BasePart")) {
+        set("Anchored", InstanceValue::ofBool(decodeBool(node.properties, "Anchored", false)));
+        set("CanCollide", InstanceValue::ofBool(decodeBool(node.properties, "CanCollide", true)));
+        const int material = decodeInt(node.properties, "Material", 256);
+        const std::string materialName = enumItemName("Material", material);
+        if (!materialName.empty()) set("Material", InstanceValue::ofEnum("Material", materialName, material));
+        if (node.className == "Part") {
+            const int shape = hasProperty(node.properties, "shape") ? decodeInt(node.properties, "shape", 1)
+                                                                     : decodeInt(node.properties, "Shape", 1);
+            const std::string shapeName = enumItemName("PartType", shape);
+            // Stored directly: the hydrator already picked the mesh.
+            if (!shapeName.empty()) {
+                ecs.tryGetComponent<core::InstanceInfo>(entity)->properties["Shape"] =
+                    InstanceValue::ofEnum("PartType", shapeName, shape);
+            }
+        }
+    }
+    if (!hasProperty(node.properties, "Value")) return;
+    const core::PropertyDef* value = core::instances::findProperty(node.className, "Value");
+    if (value == nullptr) return;
+    switch (value->type) {
+        case core::PropertyType::Number:
+            set("Value", InstanceValue::ofNumber(decodeFloat(node.properties, "Value", 0.0f)));
+            break;
+        case core::PropertyType::String: set("Value", InstanceValue::ofString(decodeString(node.properties, "Value"))); break;
+        case core::PropertyType::Bool: set("Value", InstanceValue::ofBool(decodeBool(node.properties, "Value", false))); break;
+        case core::PropertyType::Vector3:
+            set("Value", InstanceValue::ofVector3(decodeVector3(node.properties, "Value")));
+            break;
+        case core::PropertyType::Color3:
+            set("Value", InstanceValue::ofColor3(decodeColor3(node.properties, "Value", glm::vec3(0.0f))));
+            break;
+        default: break;
+    }
+}
+
 // Roblox's Part.Shape token: 0 Ball, 1 Block, 2 Cylinder. Written as
 // <token name="shape">N</token>.
 uint32_t meshForPart(const ImportedInstance& node, const HydrationMeshes& meshes) {
@@ -53,14 +122,16 @@ uint32_t meshForPart(const ImportedInstance& node, const HydrationMeshes& meshes
 } // namespace
 
 bool InstanceHydrator::isSupportedClass(const std::string& className) {
-    return isPartClass(className) || isLightClass(className) || isScriptClass(className) || isGroupClass(className);
+    return isPartClass(className) || isLightClass(className) || isScriptClass(className) || isGroupClass(className) ||
+           core::instances::findClass(className) != nullptr;
 }
 
 HydrationResult InstanceHydrator::hydrate(const std::vector<ImportedInstance>& tree, core::ECS& ecs,
                                            const HydrationMeshes& meshes, const HydrationOptions& options) const {
     HydrationResult result;
     for (const ImportedInstance& root : tree) {
-        hydrateNode(root, ecs, core::kNullEntity, WorldTransform{}, meshes, options, result);
+        const core::EntityId entity = hydrateNode(root, ecs, core::kNullEntity, WorldTransform{}, meshes, options, result);
+        if (entity != core::kNullEntity) core::instances::updateWorldPresence(ecs, entity);
     }
     return result;
 }
@@ -71,7 +142,10 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
     const bool part = isPartClass(node.className);
     const bool light = isLightClass(node.className);
     const bool script = isScriptClass(node.className);
-    const bool group = isGroupClass(node.className);
+    // Any other class Kronos knows (Folder, IntValue, RemoteEvent, ...) is an
+    // entity with no visuals, so scripts can find it.
+    const bool group = isGroupClass(node.className) ||
+                       (!part && !light && !script && core::instances::findClass(node.className) != nullptr);
 
     if (!part && !light && !script && !group) {
         ++result.skippedCount;
@@ -92,20 +166,43 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
         return core::kNullEntity;
     }
 
+    // A service already in the scene (Workspace from an earlier import, say)
+    // takes the new children instead of getting a duplicate.
+    if (parent == core::kNullEntity) {
+        const core::ClassDef* def = core::instances::findClass(node.className);
+        if (def != nullptr && def->service) {
+            const core::EntityId existing =
+                core::instances::entityOf(ecs, core::instances::findService(ecs, node.className));
+            if (existing != core::kNullEntity) {
+                const core::instances::Pose pose = core::instances::worldPose(ecs, existing);
+                const WorldTransform existingWorld{pose.position, pose.rotation, pose.scale};
+                for (const ImportedInstance& child : node.children) {
+                    hydrateNode(child, ecs, existing, existingWorld, meshes, options, result);
+                }
+                return existing;
+            }
+        }
+    }
+
     const core::EntityId entity = ecs.createEntity(node.name);
     result.createdEntities.push_back(entity);
+    core::InstanceInfo info;
+    info.className = node.className;
+    ecs.addComponent<core::InstanceInfo>(entity, std::move(info));
 
     // --- transform ---------------------------------------------------------
-    // Decoded as WORLD-space, which is what a CFrame is.
-    WorldTransform world;
-    world.position = decodeCFramePosition(node.properties, "CFrame") * options.studsToUnits;
-    world.rotation = decodeCFrameRotation(node.properties, "CFrame");
+    // Decoded as WORLD-space, which is what a CFrame is. Things without a
+    // CFrame (lights, Folders, Models) sit at their parent.
+    WorldTransform world = parentWorld;
+    if (hasProperty(node.properties, "CFrame") || node.properties.count("CFrame.X") != 0) {
+        world.position = decodeCFramePosition(node.properties, "CFrame") * options.studsToUnits;
+        world.rotation = decodeCFrameRotation(node.properties, "CFrame");
+        world.scale = glm::vec3(1.0f);
+    }
     if (part) {
-        // Roblox's Size is the part's FULL extent; Kronos's box mesh is a
-        // unit cube built from half-extents, so scaling by Size directly
-        // would come in at double size in every axis.
+        // The hydration meshes are 1-unit shapes, so scale is the full Size.
         const glm::vec3 size = decodeVector3(node.properties, "size", glm::vec3(4.0f, 1.2f, 2.0f));
-        world.scale = glm::max(size * options.studsToUnits * 0.5f, glm::vec3(1e-3f));
+        world.scale = glm::max(size * options.studsToUnits, glm::vec3(1e-3f));
     }
 
     if (auto* transform = ecs.tryGetComponent<core::Transform>(entity)) {
@@ -170,6 +267,7 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
     }
 
     if (group) ++result.groupCount;
+    storeProperties(node, ecs, entity);
 
     // --- hierarchy ---------------------------------------------------------
     // Parented AFTER the transform is written. core::hierarchy::setParent

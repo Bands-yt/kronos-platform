@@ -1,9 +1,43 @@
 # Unified Architecture — Roblox-Style UGC Platform
 
-Status: draft v0.2 — 2026-08-01
+Status: target design v0.2 (2026-08-01). "What exists today" table added 2026-10-06.
 Scope: Engine Runtime, Studio IDE, Scripting Layer, Migration Layer, Cross-Platform Systems, Marketplace & Economy, AI Moderation & Safety, Anti-Cheat, Accessibility, Analytics
 
-Supersedes v0.1. Everything in v0.1 is preserved and extended below; nothing that shipped there was rolled back.
+> **Read this first.** Most of this document is the **target** design: where Kronos is heading, not what ships today. The table below says what is actually in the code right now. The release plan is in [`ROADMAP.md`](ROADMAP.md).
+>
+> **Done**: works and is used by the Player or Studio. **Partial**: some of it exists, or it exists but isn't used by the live game yet. **Planned**: on the roadmap, little or no code. **Idea**: not scheduled.
+
+## What exists today (2026-10-06)
+
+| § | Feature | Status | What's really there |
+|---|---|---|---|
+| 4.1 | Forward+ renderer | Done | Clustered forward lighting (`core/render/ClusteredLighting`), 4-cascade sun shadows with PCF, HDR bloom, ACES tonemapping, TAA, volumetric fog and clouds, SSAO/DOF/motion blur in the cinematic post stack. |
+| 4.1 | Hardware ray tracing | Done (optional) | Ray-query sun shadows, glossy reflections, one-bounce indirect light and AO (`shaders/kronos/raytracing.glsl`) on GPUs with `VK_KHR_ray_query`. Not a path tracer. |
+| 4.1 | Render graph | Partial | One `Renderer` class with fixed passes, not a general frame graph. Splitting it up is roadmap 4.5. |
+| 4.1 | DLSS / FSR2 upscaling | Planned | Not implemented. |
+| 4.1 | Adaptive Performance Controller and quality tiers | Planned | Not implemented. The Player has fixed quality presets in Settings. |
+| 4.2 | Networking | Done | ENet transport, server-authoritative sessions, LAN discovery, dedicated servers that host downloaded games, a `network` RPC table for scripts. |
+| 4.2 | Client prediction + reconciliation | Partial | `net/ClientPrediction` exists and is tested, but live movement uses `net/NetworkedMovement` instead of this replay loop. |
+| 4.2 | QUIC, DTLS encryption | Planned | Notes only (`anticheat/ENCRYPTED_CHANNEL_NOTES.md`). |
+| 4.3 | EnTT + Jolt + miniaudio | Done | Plus deterministic physics with rollback (`ROLLBACK.md`) and the audio mixer (`AUDIO_MIXER.md`). |
+| 5 | Desktop Studio | Done | Explorer, Inspector, Viewport, Script Editor with debugger, Play as your avatar, native plugins (C API, hot reload, Linux sandbox), shader graph, visual scripting, movie tools. |
+| 5 | Team Create | Partial | A small property-level CRDT (`net/StudioCollabState`) with tests. No live multi-user editing yet. |
+| 5 | Play Server + N Clients | Planned | Studio Play is single player. |
+| 5 | Studio Lite, Console Studio Lite, Cloud Studio | Idea | |
+| 6 | Luau scripting | Done | Real Luau, sandboxed (`luaL_sandbox`), an 8 ms per tick watchdog and a 256 MB memory cap per script, `task.wait/spawn/defer`. Scripts use Kronos' own `world`, `events`, `avatar`, `network`, `audio` and `ui` tables (`LUA_API.md`). |
+| 6 | Roblox object model (`game`, `Instance`, `CFrame`, `RunService`, `TweenService`, remotes with schemas) | Planned | This is the 4.3 Roblox bridge. |
+| 7 | `.rbxlx` importer and report | Partial | `engine/src/migration/` parses and converts `.rbxlx`, and Studio shows which script calls aren't supported. Binary `.rbxl`, the golden corpus and a compatibility score are 4.3 work. |
+| 8.1 | Windows and Linux | Done | Vulkan + SDL2. |
+| 8.1 | macOS, iOS, Android, consoles, Steam Deck | Idea | Nothing started. The platform matrix in §8.1 is a design. |
+| 8.2 | Unified input | Done | Keyboard, mouse and gamepad actions, rumble, key remapping in Settings. Adaptive triggers and gyro are no-ops. |
+| 8.3–8.6 | Responsive GUI objects, asset cooking, cross-play, compliance validator | Idea | |
+| 9 | Marketplace | Partial | Credits, the avatar shop and catalogue, game packages and releases with a moderation queue (backend + Player). The store payment adapters (Steam, Xbox, PSN, eShop, StoreKit, Play Billing) are stubs: no real money moves. |
+| 10 | Trust & Safety | Partial | Profanity filter, reports, mute/block, review queue, appeals, escalation log, policy engine, an online text-moderation client. The text, image and voice classifiers are stubs (`safety/*Stub`). |
+| 11 | Anti-cheat | Partial | Server authority, rate limits, interaction validation, a hashed device fingerprint, an exploit-signature list, currency anomaly checks. No behavioural ML model, no encrypted channel. |
+| 12 | Accessibility | Partial | Text size, interface scale, colourblind modes and reduced motion in Settings; remappable controls. No screen-reader bridge. |
+| 13 | Analytics | Partial | Crash reports, a telemetry queue and sender, a backend telemetry route. |
+
+Everything from §1 down is the original design text. Where it says "unchanged from v0.1" or describes something as working, check the table above.
 
 ---
 
@@ -87,7 +121,7 @@ The core is deliberately boring: it is the same ECS, render graph, Luau VM, and 
 
 ### 4.1 Render graph, adaptive performance
 
-The render graph is unchanged from v0.1 in shape (frame graph, clustered Forward+, CSM shadows, optional hybrid ray tracing, DLSS/FSR2 upscale — see v0.1 §4 for the full pass diagram). New in this revision: an **Adaptive Performance Controller** that sits above the graph and selects a quality tier per frame budget, which is what makes one render graph viable across a Steam Deck and a desktop 4090.
+Today's renderer is clustered Forward+ with cascaded sun shadows and optional ray-query shadows, reflections, AO and one-bounce GI (see the table at the top). DLSS/FSR2 upscaling and a general frame graph are still planned. The **Adaptive Performance Controller** below is also planned, not built: it would sit above the graph and pick a quality tier per frame budget, so one renderer can serve both a Steam Deck and a desktop 4090.
 
 | Tier | LOD bias | Shadow config | RT | Upscale | Typical target |
 |---|---|---|---|---|---|

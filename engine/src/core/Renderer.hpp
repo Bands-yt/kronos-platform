@@ -40,32 +40,9 @@
 
 namespace engine::core {
 
-// Vulkan bring-up *and* a real scene render path: instance -> physical
-// device -> logical device -> swapchain -> depth buffer -> a PBR graphics
-// pipeline -> a render loop that draws every Renderable entity, lit by one
-// directional light, and presents.
-//
-// This is still not the full frame graph described in docs/ARCHITECTURE.md
-// §4.1 (clustered Forward+, hybrid RT, DLSS/FSR2) -- there is one opaque
-// pipeline, one light, no light culling. There *is* now a real cascaded
-// shadow map for that one light: kCascadeCount camera-following ortho
-// depth passes (drawShadowPass()) into one array image, sampled with 3x3
-// PCF and per-fragment cascade selection in scene.frag -- see
-// computeCascades()'s doc comment for exactly what's simplified (no
-// cross-cascade blend band, fixed max shadow distance).
-//
-// Remaining deliberate simplifications versus the target architecture:
-//   - Raw Vulkan C API + volk instead of Vulkan-Hpp (see docs/ARCHITECTURE.md
-//     §3) -- unchanged reasoning from the first pass: fewer header
-//     surfaces to get wrong while verifying this compiles and runs.
-//   - One fixed pipeline (no material variants, no instancing) -- fine at
-//     the entity counts this skeleton creates; a real content pipeline
-//     needs pipeline permutations or bindless materials well before this
-//     scales.
-//   - VK_KHR_dynamic_rendering (core in 1.3) instead of classic
-//     VkRenderPass/VkFramebuffer -- this is *not* a simplification, it's
-//     the direction the real frame graph wants (passes declare
-//     attachments per-draw), kept from the first pass.
+// Vulkan renderer: clustered Forward+ PBR with cascaded and spot shadows,
+// TAA, post effects and optional ray-query lighting. Not a general frame
+// graph yet; see the "What exists today" table in docs/ARCHITECTURE.md.
 class SceneSpatialIndex;
 class StaticBatchSet;
 

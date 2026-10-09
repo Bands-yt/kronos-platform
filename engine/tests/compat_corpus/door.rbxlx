@@ -1,0 +1,18 @@
+<roblox version="4"><Item class="Workspace" referent="RBX7"><Properties><string name="Name">Workspace</string></Properties><Item class="Part" referent="RBX1"><Properties><string name="Name">Baseplate</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>40</X><Y>1</Y><Z>40</Z></Vector3><Color3uint8 name="Color3uint8">4284193356</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="SpawnLocation" referent="RBX2"><Properties><string name="Name">SpawnLocation</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>-12</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>1</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4279069100</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="Part" referent="RBX3"><Properties><string name="Name">WallLeft</string><CoordinateFrame name="CFrame"><X>-6</X><Y>4</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>8</X><Y>8</Y><Z>1</Z></Vector3><Color3uint8 name="Color3uint8">4285087784</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="Part" referent="RBX4"><Properties><string name="Name">WallRight</string><CoordinateFrame name="CFrame"><X>6</X><Y>4</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>8</X><Y>8</Y><Z>1</Z></Vector3><Color3uint8 name="Color3uint8">4285087784</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="Part" referent="RBX6"><Properties><string name="Name">Door</string><CoordinateFrame name="CFrame"><X>0</X><Y>4</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>4</X><Y>8</Y><Z>1</Z></Vector3><Color3uint8 name="Color3uint8">4288700213</Color3uint8><bool name="Anchored">true</bool></Properties><Item class="Script" referent="RBX5"><Properties><string name="Name">DoorScript</string><ProtectedString name="Source"><![CDATA[local TweenService = game:GetService("TweenService")
+local door = script.Parent
+local isOpen = false
+local info = TweenInfo.new(0.5)
+
+door.Touched:Connect(function(hit)
+	if isOpen or not hit.Parent:FindFirstChild("Humanoid") then
+		return
+	end
+	isOpen = true
+	TweenService:Create(door, info, {Transparency = 0.8}):Play()
+	door.CanCollide = false
+	wait(3)
+	TweenService:Create(door, info, {Transparency = 0}):Play()
+	door.CanCollide = true
+	isOpen = false
+end)
+]]></ProtectedString></Properties></Item></Item></Item></roblox>

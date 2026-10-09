@@ -10,6 +10,7 @@
 #include <imgui.h>
 
 #include "core/Components.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/ParticleSystem.hpp"
 
 namespace engine::studio::panels {
@@ -57,7 +58,7 @@ core::EntityId SceneSearchPanel::draw(core::ECS& ecs, core::EntityId currentSele
     std::vector<Match> matches;
 
     for (auto entity : ecs.view<core::Transform>()) {
-        if (ecs.hasComponent<core::PlayerAvatarPart>(entity)) continue;
+        if (ecs.hasComponent<core::PlayerAvatarPart>(entity) || core::instances::isDetached(ecs, entity)) continue;
         ++totalCount;
         bool hasRenderable = ecs.hasComponent<core::Renderable>(entity);
         bool hasRigidBody = ecs.hasComponent<core::RigidBody>(entity);

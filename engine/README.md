@@ -4241,7 +4241,7 @@ count of each planted issue), and the Creator Tools Phase 2 pass (see
 tick/toggle/evaluate set including a real 3-keyframe interpolation test
 and a 500-tick convergence stress test, plus both the material and
 particle preset tables' real distinctness/validity) --
-**3274 checks total**. The one deliberately non-obvious
+**3274 checks total at the time** (run `engine_tests` for today's count). The one deliberately non-obvious
 build-graph detail:
 `studio::PluginManifest`, `studio::plugins::ScriptedPlugin`,
 `studio::SceneManager`, `studio::plugins::PhysicsPreviewPlugin`,

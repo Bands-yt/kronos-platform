@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include "core/Hierarchy.hpp"
+#include "core/InstanceTree.hpp"
 #include "studio/MaterialPresets.hpp"
 #include "studio/StudioIcons.hpp"
 
@@ -222,7 +223,10 @@ void ExplorerPanel::draw(core::ECS& ecs) {
 
     std::array<std::vector<core::EntityId>, ExplorerPanel::kCategoryCount> groupedRoots;
     for (auto entity : ecs.view<core::Transform>()) {
-        if (!isTreeRoot(ecs, entity) || ecs.tryGetComponent<core::PlayerAvatarPart>(entity) != nullptr) continue;
+        if (!isTreeRoot(ecs, entity) || ecs.tryGetComponent<core::PlayerAvatarPart>(entity) != nullptr ||
+            core::instances::isDetached(ecs, entity)) {
+            continue;
+        }
         size_t categoryIndex = static_cast<size_t>(classifyEntity(ecs, entity));
         groupedRoots[categoryIndex].push_back(entity);
     }

@@ -177,7 +177,7 @@ std::string base64Decode(const std::string& input) {
 constexpr uint32_t kBinaryMagic = 0x4E435343; // "KSCN" as a little-endian u32 (bytes 'K','S','C','N')
 // v2 adds MaterialLayers after the renderable block and spot fields after the light block.
 // v3 appends Light::castsShadow.
-constexpr uint32_t kBinaryVersion = 7;
+constexpr uint32_t kBinaryVersion = 8;
 
 bool hasKronosExtension(const std::string& path) {
     constexpr std::string_view kExt = ".kronos";
@@ -320,6 +320,7 @@ bool SceneFile::writeText(std::ostream& out) const {
             out << "SCRIPT " << (e.scriptAutoRun ? 1 : 0) << ' ' << base64Encode(e.scriptSource) << "\n";
         }
         if (!e.visualScript.empty()) out << "VISUALSCRIPT " << base64Encode(e.visualScript) << "\n";
+        if (!e.instanceInfo.empty()) out << "INSTANCE " << e.instanceInfo << "\n";
     }
 
     out << "END\n";
@@ -525,6 +526,8 @@ bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFil
             iss >> autoRunInt >> encoded;
             current->scriptAutoRun = autoRunInt != 0;
             current->scriptSource = base64Decode(encoded);
+        } else if (line.rfind("INSTANCE ", 0) == 0 && current != nullptr) {
+            current->instanceInfo = line.substr(9);
         } else if (line == "END") {
             break;
         }
@@ -709,6 +712,7 @@ bool SceneFile::saveToBinaryFile(const std::string& path) const {
             w.writeU8(static_cast<uint8_t>((a.looping ? 1 : 0) | (a.playOnStart ? 2 : 0) | (a.spatial ? 4 : 0) |
                                            (a.category == AudioCategory::Music ? 8 : 0)));
         }
+        w.writeString(e.instanceInfo);
     }
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -932,6 +936,7 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
                 a.category = (flags & 8) != 0 ? AudioCategory::Music : AudioCategory::SFX;
             }
         }
+        if (version >= 8) e.instanceInfo = r.readString();
 
         loaded.entities.push_back(std::move(e));
     }

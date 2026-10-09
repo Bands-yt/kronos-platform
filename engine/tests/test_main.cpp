@@ -193,6 +193,8 @@
 #include "core/TerrainLod.hpp"
 #include "core/ScriptSecurity.hpp"
 #include "core/Scripting.hpp"
+#include "core/ScriptInstanceApi.hpp"
+#include "core/InstanceTree.hpp"
 #include "studio/panels/LuauSymbolIndex.hpp"
 #include "core/ScriptUiApi.hpp"
 #include "core/ScriptMeshApi.hpp"
@@ -308,6 +310,8 @@
 #include "migration/AssetModeration.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "migration/ProjectImporter.hpp"
+#include "migration/CompatibilityScore.hpp"
+#include "migration/RbxlxParser.hpp"
 #include "migration/PropertyDecoder.hpp"
 #include "studio/IKronosPlugin.hpp"
 #include "studio/KronosPluginHost.hpp"
@@ -5147,6 +5151,25 @@ void testScriptWorldApiCreateEntityAndHierarchy() {
     check(childHierarchy != nullptr && childHierarchy->parent == engine::core::kNullEntity,
           "world.unparent() real-clears the real Hierarchy::parent back to root");
 
+    engine::core::ScriptId destroyTreeId = scripting.loadAndRun(
+        "DestroyTreeTest", "local root = world.createEntity(\"Root\")\n"
+                           "local mid = world.createEntity(\"Mid\")\n"
+                           "local leaf = world.createEntity(\"Leaf\")\n"
+                           "world.setParent(root, world.findByName(\"Parent\"))\n"
+                           "world.setParent(mid, root)\n"
+                           "world.setParent(leaf, mid)\n"
+                           "world.destroy(root)\n");
+    check(destroyTreeId != engine::core::kInvalidScript, "world.destroy() on a parent runs with no error");
+    int leftovers = 0;
+    for (auto entity : ecs.view<engine::core::Name>()) {
+        const std::string& name = ecs.tryGetComponent<engine::core::Name>(entity)->value;
+        if (name == "Root" || name == "Mid" || name == "Leaf") ++leftovers;
+    }
+    check(leftovers == 0, "world.destroy() removes the entity's children and grandchildren too");
+    auto* parentHierarchy = ecs.tryGetComponent<engine::core::Hierarchy>(parentEntity);
+    check(parentHierarchy != nullptr && parentHierarchy->children.empty(),
+          "world.destroy() removes the destroyed entity from its parent's child list");
+
     scripting.shutdown();
 }
 
@@ -9978,6 +10001,10 @@ void testFindPlayerSpawnPosition() {
     (void)ecs.createEntity("Ground");
     const glm::vec3 fallback(0.0f, 3.0f, -6.0f);
     check(findPlayerSpawnPosition(ecs, fallback) == fallback, "no SpawnLocation -> the default spawn");
+    check(std::abs(findPlayerSpawnYawDegrees(ecs, fallback) - 90.0f) < 1e-3f,
+          "no SpawnLocation -> the player looks toward the middle of the world");
+    check(findPlayerSpawnYawDegrees(ecs, glm::vec3(0.0f, 3.0f, 0.0f)) == -90.0f,
+          "spawning right at the middle keeps the default facing");
 
     EntityId spawn = ecs.createEntity("SpawnLocation");
     auto& transform = *ecs.tryGetComponent<Transform>(spawn);
@@ -9990,6 +10017,41 @@ void testFindPlayerSpawnPosition() {
     check(std::abs(position.x - 4.0f) < 1e-4f && std::abs(position.z + 3.0f) < 1e-4f,
           "the player spawns over the SpawnLocation");
     check(position.y > 2.25f && position.y < 5.0f, "the player spawns just above the SpawnLocation's top");
+    check(std::abs(findPlayerSpawnYawDegrees(ecs, position) + 90.0f) < 1e-3f,
+          "the player faces the SpawnLocation's front (-Z)");
+    transform.rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    check(std::abs(std::abs(findPlayerSpawnYawDegrees(ecs, position)) - 180.0f) < 1e-3f,
+          "a turned SpawnLocation turns the player with it");
+}
+
+void testPlayerAvatarLookFromProfile() {
+    using namespace engine::core;
+    LocalProfile profile;
+    AvatarLoadout loadout;
+    AnimationDatabase animations;
+    PlayerAvatarLook defaults = playerAvatarLookFromProfile(profile, loadout, animations);
+    check(defaults.skinTone == kDefaultSkinToneColor && defaults.headShape == HeadShape::Oval,
+          "avatar look: a fresh profile gives the default tone and Classic head");
+
+    profile.skinToneIndex = 14;
+    profile.headShapeIndex = 1;
+    profile.bodyHeight = 1.1f;
+    profile.bodyShoulderWidth = 0.9f;
+    profile.clothingFitIndex = 1;
+    profile.animOverrideWalkId = "walk-1";
+    profile.animOverrideRunId = "missing";
+    AnimationManifest walk;
+    walk.item.id = "walk-1";
+    walk.item.clipPath = "anims/walk1.anim";
+    animations.upsert(walk);
+    PlayerAvatarLook look = playerAvatarLookFromProfile(profile, loadout, animations);
+    check(look.skinTone == skinTonePalette()[14].color, "avatar look: the chosen skin tone is used");
+    check(look.headShape == HeadShape::Sphere, "avatar look: the Round head is used");
+    check(look.bodyProportions.height == 1.1f && look.bodyProportions.shoulderWidth == 0.9f,
+          "avatar look: body sliders are used");
+    check(look.clothingFit == ClothingFit::Loose, "avatar look: clothing fit is used");
+    check(look.animationOverrides.walkClipPath == "anims/walk1.anim" && look.animationOverrides.runClipPath.empty(),
+          "avatar look: animation overrides resolve, unknown ones fall back to the default");
 }
 
 void testMyGamesSaveAndScan() {
@@ -42089,11 +42151,9 @@ void testInstanceHydration() {
           "the imported Part is bound to a real mesh handle, so it can actually draw");
     check(renderable != nullptr && renderable->visible, "an opaque imported Part is visible");
 
-    // Roblox Size is a FULL extent and Kronos's box is built from
-    // half-extents -- importing Size directly doubles every part.
     const auto* transform = ecs.tryGetComponent<engine::core::Transform>(wall);
-    check(transform != nullptr && nearlyEqual(transform->scale.y, 3.0f),
-          "a Part's Size is halved into Kronos's half-extent box scale");
+    check(transform != nullptr && nearlyEqual(transform->scale.y, 6.0f),
+          "a Part's Size becomes the scale of the 1-unit box mesh");
 
     // The wall's world position is 110; its parent Model sits at 100. A
     // CFrame is WORLD-absolute but core::Transform is parent-LOCAL, so
@@ -42135,7 +42195,7 @@ void testInstanceHydration() {
         const auto* name = scaledEcs.tryGetComponent<engine::core::Name>(entity);
         if (name == nullptr || name->value != "Wall") continue;
         const auto* scaledTransform = scaledEcs.tryGetComponent<engine::core::Transform>(entity);
-        check(scaledTransform != nullptr && nearlyEqual(scaledTransform->scale.y, 1.5f),
+        check(scaledTransform != nullptr && nearlyEqual(scaledTransform->scale.y, 3.0f),
               "stud scaling really scales imported part sizes");
     }
 
@@ -42326,6 +42386,7 @@ void testLuauApiCompatibilityScan() {
     check(compat.registrySize() > 0, "LuauApiCompatibility really registers APIs");
 
     const std::string script = R"LUA(
+wait(1)
 local Players = game:GetService("Players")
 local part = Instance.new("Part")
 part.Parent = workspace
@@ -42339,16 +42400,18 @@ world.setPosition(part, 1, 2, 3)
         }
         return false;
     };
-    check(found("game"), "the API scan finds an unmapped `game` reference");
-    check(found("Instance"), "the API scan finds an unmapped `Instance` reference");
-    check(found("workspace"), "the API scan finds an unmapped `workspace` reference");
+    check(found("wait"), "the API scan finds an unmapped `wait` reference");
+    check(found("game") && found("Instance") && found("workspace"), "the API scan finds `game`, `Instance` and `workspace`");
     check(found("world"), "the API scan also records the mapped Kronos APIs a script already uses");
 
     for (const auto& f : findings) {
-        if (f.identifier == "game") {
-            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`game` is classified as unmapped");
+        if (f.identifier == "wait") {
+            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`wait` is classified as unmapped");
             check(f.line == 2, "the API scan reports the real 1-based line of a finding");
             check(!f.guidance.empty(), "an unmapped API finding carries real migration guidance");
+        }
+        if (f.identifier == "game") {
+            check(f.status == engine::migration::ApiMappingStatus::Mapped, "`game` is mapped now the Instance tree exists");
         }
         if (f.identifier == "world") {
             check(f.status == engine::migration::ApiMappingStatus::Mapped, "`world` is classified as mapped");
@@ -42391,6 +42454,595 @@ local ungame = gamemode
 
 // Full-project ingestion: the end-to-end pipeline, plus the benchmark the
 // import pass is supposed to verify.
+void testRobloxDatatypes() {
+    engine::core::Scripting scripting;
+    check(scripting.initialize(), "Roblox datatypes test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+
+    const char* source = R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f) return not pcall(f) end
+local function near(a, b) return math.abs(a - b) < 1e-6 end
+
+-- Vector3
+expect("Vector3 adds", Vector3.new(1, 2, 3) + Vector3.new(4, 5, 6) == Vector3.new(5, 7, 9))
+expect("Vector3 Magnitude", Vector3.new(3, 4, 0).Magnitude == 5)
+expect("Vector3 Unit", Vector3.new(0, 0, 5).Unit == Vector3.zAxis)
+expect("Vector3 Cross is right-handed", Vector3.xAxis:Cross(Vector3.yAxis) == Vector3.zAxis)
+expect("Vector3 scales", 2 * Vector3.one == Vector3.new(2, 2, 2) and Vector3.new(2, 4, 6) / 2 == Vector3.new(1, 2, 3))
+expect("Vector3 negates", -Vector3.one == Vector3.new(-1, -1, -1))
+expect("Vector3 Lerp", Vector3.new(1, 0, 0):Lerp(Vector3.new(3, 0, 0), 0.5) == Vector3.new(2, 0, 0))
+expect("Vector3 tostring", tostring(Vector3.new(1, 2.5, -3)) == "1, 2.5, -3")
+expect("typeof names Roblox types", typeof(Vector3.new()) == "Vector3" and typeof(5) == "number" and typeof({}) == "table")
+expect("Vector3 is read-only", fails(function() local v = Vector3.new(); v.X = 5 end))
+expect("Vector3 rejects unknown members", fails(function() return Vector3.new().Foo end))
+expect("Vector3 library is read-only", fails(function() Vector3.new = nil end))
+expect("Vector2 basics", (Vector2.new(3, 4)).Magnitude == 5 and Vector2.new(1, 2) + Vector2.one == Vector2.new(2, 3))
+
+-- CFrame
+local cf = CFrame.new(5, 0, 0) * CFrame.Angles(0, math.pi, 0)
+expect("CFrame Position", CFrame.new(1, 2, 3).Position == Vector3.new(1, 2, 3))
+expect("CFrame.Angles turns +X to -Z", (CFrame.Angles(0, math.pi / 2, 0) * Vector3.new(1, 0, 0)):FuzzyEq(Vector3.new(0, 0, -1)))
+expect("CFrame LookVector is -Z", CFrame.new().LookVector == Vector3.new(0, 0, -1))
+expect("CFrame.lookAt", CFrame.lookAt(Vector3.zero, Vector3.new(10, 0, 0)).LookVector:FuzzyEq(Vector3.xAxis))
+expect("CFrame Inverse", (cf * cf:Inverse()):FuzzyEq(CFrame.identity))
+expect("CFrame object space", cf:PointToObjectSpace(cf * Vector3.new(1, 2, 3)):FuzzyEq(Vector3.new(1, 2, 3)))
+expect("CFrame + Vector3", (CFrame.new(1, 2, 3) + Vector3.one).Position == Vector3.new(2, 3, 4))
+local rx, ry, rz = CFrame.Angles(0.1, 0.2, 0.3):ToEulerAnglesXYZ()
+expect("CFrame ToEulerAnglesXYZ", near(rx, 0.1) and near(ry, 0.2) and near(rz, 0.3))
+local ox, oy, oz = CFrame.fromOrientation(0.1, 0.2, 0.3):ToOrientation()
+expect("CFrame ToOrientation", near(ox, 0.1) and near(oy, 0.2) and near(oz, 0.3))
+local half = CFrame.new():Lerp(CFrame.new(10, 0, 0) * CFrame.Angles(0, math.pi / 2, 0), 0.5)
+expect("CFrame Lerp", half:FuzzyEq(CFrame.new(5, 0, 0) * CFrame.Angles(0, math.pi / 4, 0)))
+expect("CFrame from quaternion", CFrame.new(1, 2, 3, 0, 0, 0, 1) == CFrame.new(1, 2, 3))
+expect("CFrame.fromAxisAngle", CFrame.fromAxisAngle(Vector3.yAxis, math.pi / 2):FuzzyEq(CFrame.Angles(0, math.pi / 2, 0)))
+expect("CFrame GetComponents", select("#", CFrame.new():GetComponents()) == 12)
+expect("typeof CFrame", typeof(cf) == "CFrame")
+
+-- Color3 and BrickColor
+expect("Color3.fromRGB", Color3.fromRGB(255, 0, 0) == Color3.new(1, 0, 0))
+expect("Color3.fromHex", Color3.fromHex("#00FF00") == Color3.new(0, 1, 0))
+expect("Color3 ToHex", Color3.new(1, 0.5, 0):ToHex() == "FF8000")
+expect("Color3.fromHSV", Color3.fromHSV(0.5, 1, 1) == Color3.new(0, 1, 1))
+local h, sat, val = Color3.new(0, 1, 1):ToHSV()
+expect("Color3 ToHSV", near(h, 0.5) and sat == 1 and val == 1)
+expect("BrickColor by name", BrickColor.new("Bright red").Number == 21)
+expect("BrickColor by number", BrickColor.new(21).Name == "Bright red")
+expect("BrickColor.Red", BrickColor.Red() == BrickColor.new("Bright red"))
+expect("BrickColor unknown name falls back", BrickColor.new("nope").Name == "Medium stone grey")
+expect("BrickColor nearest to a Color3", BrickColor.new(Color3.new(1, 0, 0)).Name == "Really red")
+expect("BrickColor tostring", tostring(BrickColor.Blue()) == "Bright blue")
+
+-- UDim2
+expect("UDim2 parts", UDim2.new(0.5, 10, 0, 20).X.Offset == 10)
+expect("UDim2 adds", UDim2.fromScale(1, 1) + UDim2.fromOffset(5, 5) == UDim2.new(1, 5, 1, 5))
+expect("UDim2 tostring", tostring(UDim2.new(0.5, 10, 0, 5)) == "{0.5, 10}, {0, 5}")
+
+-- Enum
+expect("Enum values", Enum.Material.Plastic.Value == 256 and Enum.KeyCode.E.Name == "E")
+expect("Enum tostring", tostring(Enum.Material.Neon) == "Enum.Material.Neon")
+expect("EnumType", Enum.Material.Neon.EnumType == Enum.Material and typeof(Enum.PartType.Ball) == "EnumItem")
+expect("GetEnumItems", #Enum.PartType:GetEnumItems() == 5)
+expect("FromValue", Enum.PartType:FromValue(2) == Enum.PartType.Cylinder)
+expect("unknown Enum item errors", fails(function() return Enum.Material.Cheese end))
+
+-- The rest
+local info = TweenInfo.new(2)
+expect("TweenInfo defaults", info.Time == 2 and info.EasingStyle == Enum.EasingStyle.Quad and info.EasingDirection == Enum.EasingDirection.Out)
+expect("NumberRange", NumberRange.new(1, 5).Max == 5 and fails(function() NumberRange.new(5, 1) end))
+local seq = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 3), NumberSequenceKeypoint.new(1, 0) })
+expect("NumberSequence", #NumberSequence.new(0, 1).Keypoints == 2 and seq.Keypoints[2].Value == 3)
+expect("ColorSequence", ColorSequence.new(Color3.new(1, 0, 0)).Keypoints[2].Value == Color3.new(1, 0, 0))
+local ray = Ray.new(Vector3.zero, Vector3.new(10, 0, 0))
+expect("Ray ClosestPoint and Distance", ray:ClosestPoint(Vector3.new(5, 5, 0)) == Vector3.new(5, 0, 0) and ray:Distance(Vector3.new(5, 5, 0)) == 5)
+local params = RaycastParams.new()
+params.FilterDescendantsInstances = {}
+expect("RaycastParams", params.FilterType == Enum.RaycastFilterType.Exclude and fails(function() params.Nope = 1 end))
+local a, b = Random.new(42), Random.new(42)
+local x = a:NextNumber()
+local roll = a:NextInteger(1, 6)
+expect("Random is seeded", x == b:NextNumber() and x >= 0 and x < 1 and roll >= 1 and roll <= 6)
+print("DONE")
+)LUAU";
+    scripting.loadAndRun("RobloxDatatypesTest", source);
+
+    bool done = false;
+    for (const std::string& line : output) {
+        if (line.find("DONE") != std::string::npos) done = true;
+        const size_t ok = line.find("OK ");
+        const size_t fail = line.find("FAIL ");
+        if (ok != std::string::npos) check(true, ("Roblox datatypes: " + line.substr(ok + 3)).c_str());
+        if (fail != std::string::npos) check(false, ("Roblox datatypes: " + line.substr(fail + 5)).c_str());
+        if (line.find("error") != std::string::npos) std::fprintf(stderr, "  %s\n", line.c_str());
+    }
+    check(done, "the Roblox datatypes test script runs to the end without an error");
+}
+
+// Runs a Luau test script; every "OK name" / "FAIL name" line becomes a check.
+void checkLuauExpectations(const char* label, const std::vector<std::string>& output) {
+    bool done = false;
+    for (const std::string& line : output) {
+        if (line.find("DONE") != std::string::npos) done = true;
+        const size_t ok = line.find("OK ");
+        const size_t fail = line.find("FAIL ");
+        if (ok != std::string::npos) check(true, (std::string(label) + ": " + line.substr(ok + 3)).c_str());
+        if (fail != std::string::npos) check(false, (std::string(label) + ": " + line.substr(fail + 5)).c_str());
+        if (line.find("error") != std::string::npos) std::fprintf(stderr, "  %s\n", line.c_str());
+    }
+    check(done, (std::string(label) + ": the test script runs to the end without an error").c_str());
+}
+
+void testRobloxInstanceTree() {
+    using namespace engine::core;
+    ECS ecs;
+    // A plain Kronos entity made before any script runs: a root, so it is in the workspace.
+    const EntityId floor = ecs.createEntity("Floor");
+    ecs.addComponent<Renderable>(floor);
+    auto& floorMesh = ecs.addComponent<MeshSource>(floor);
+    floorMesh.kind = MeshSourceKind::Box;
+    floorMesh.params = glm::vec3(0.5f);
+    ecs.tryGetComponent<Transform>(floor)->scale = glm::vec3(20.0f, 1.0f, 20.0f);
+    const EntityId scriptHolder = ecs.createEntity("Runner");
+    ecs.addComponent<Script>(scriptHolder);
+
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "Instance tree test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+
+    const char* source = R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	return not ok and (text == nil or string.find(tostring(err), text, 1, true) ~= nil)
+end
+
+-- game and workspace
+expect("game is a DataModel", game.ClassName == "DataModel" and game:IsA("Instance") and typeof(game) == "Instance")
+expect("workspace is under game", workspace.ClassName == "Workspace" and workspace.Parent == game and game.Parent == nil)
+expect("GetService finds the workspace", game:GetService("Workspace") == workspace and Workspace == workspace)
+expect("game and workspace can't move", fails(function() workspace.Parent = nil end, "locked") and fails(function() game.Parent = workspace end))
+expect("workspace can't be destroyed", fails(function() workspace:Destroy() end))
+expect("GetService only on game", fails(function() workspace:GetService("Players") end))
+
+-- script
+expect("script is its Instance", script.Name == "Runner" and script.ClassName == "Script" and script.Parent == workspace)
+expect("script.entity still works", type(script.entity) == "number")
+
+-- Existing Kronos entities are Instances
+local floor = workspace.Floor
+expect("an existing entity is a Part", floor.ClassName == "Part" and floor:IsA("BasePart"))
+expect("the same entity is the same object", rawequal(workspace.Floor, workspace:FindFirstChild("Floor")))
+expect("Size reads the real scale", floor.Size == Vector3.new(20, 1, 20))
+
+-- Instance.new
+local part = Instance.new("Part")
+expect("a new Part has no Parent", part.Parent == nil and part.Name == "Part" and part.ClassName == "Part")
+expect("IsA follows the class chain", part:IsA("BasePart") and part:IsA("PVInstance") and part:IsA("Instance") and not part:IsA("Model"))
+expect("unparented parts are not in the workspace", workspace:FindFirstChild("Part") == nil)
+part.Name = "Brick"
+part.Parent = workspace
+expect("Parent = workspace adds it", part.Parent == workspace and workspace:FindFirstChild("Brick") == part)
+local found = false
+for _, child in workspace:GetChildren() do if child == part then found = true end end
+expect("GetChildren lists it", found)
+expect("Instance.new with a parent", Instance.new("Folder", workspace).Parent == workspace)
+expect("Instance.new rejects unknown classes", fails(function() Instance.new("Banana") end, "Unable to create an Instance"))
+expect("Instance.new rejects services", fails(function() Instance.new("Workspace") end))
+
+-- Nesting
+local model = Instance.new("Model")
+model.Name = "House"
+model.Parent = workspace
+local wall = Instance.new("Part", model)
+wall.Name = "Wall"
+local door = Instance.new("Part", wall)
+door.Name = "Door"
+expect("GetFullName", door:GetFullName() == "Workspace.House.Wall.Door")
+expect("FindFirstChild is one level", model:FindFirstChild("Door") == nil and model:FindFirstChild("Door", true) == door)
+expect("GetDescendants", #model:GetDescendants() == 2)
+expect("IsDescendantOf / IsAncestorOf", door:IsDescendantOf(model) and door:IsDescendantOf(game) and model:IsAncestorOf(door) and not model:IsDescendantOf(door))
+expect("FindFirstChildOfClass", model:FindFirstChildOfClass("Part") == wall and model:FindFirstChildOfClass("Model") == nil)
+expect("FindFirstChildWhichIsA", model:FindFirstChildWhichIsA("BasePart") == wall)
+expect("FindFirstAncestor", door:FindFirstAncestor("House") == model and door:FindFirstAncestorOfClass("Model") == model and door:FindFirstAncestorWhichIsA("PVInstance") == wall)
+expect("children index by name", model.Wall.Door == door)
+expect("unknown members error", fails(function() return model.Nothing end, "is not a valid member of Model"))
+expect("a part can't be its own parent", fails(function() wall.Parent = wall end, "own parent"))
+expect("no cycles", fails(function() model.Parent = door end, "own parent") and model.Parent == workspace)
+expect("parts can't sit directly under game", fails(function() model.Parent = game end))
+
+-- Properties
+wall.Position = Vector3.new(10, 5, 0)
+expect("Position round-trips", wall.Position == Vector3.new(10, 5, 0))
+door.Position = Vector3.new(12, 5, 0)
+door.Parent = workspace
+expect("re-parenting keeps the world position", door.Position:FuzzyEq(Vector3.new(12, 5, 0)))
+door.Parent = wall
+wall.Position = Vector3.new(0, 5, 0)
+expect("children follow a moved parent (Kronos; Roblox needs welds)", door.Position:FuzzyEq(Vector3.new(2, 5, 0)))
+wall.Size = Vector3.new(8, 4, 1)
+expect("Size round-trips", wall.Size:FuzzyEq(Vector3.new(8, 4, 1)) and door.Size:FuzzyEq(Vector3.new(4, 1, 2)))
+wall.CFrame = CFrame.new(1, 2, 3) * CFrame.Angles(0, math.pi / 2, 0)
+expect("CFrame round-trips", wall.CFrame:FuzzyEq(CFrame.new(1, 2, 3) * CFrame.Angles(0, math.pi / 2, 0)))
+wall.Orientation = Vector3.new(0, 90, 0)
+expect("Orientation round-trips", wall.Orientation:FuzzyEq(Vector3.new(0, 90, 0)))
+wall.Color = Color3.new(1, 0, 0)
+expect("Color round-trips", wall.Color == Color3.new(1, 0, 0) and typeof(wall.BrickColor) == "BrickColor")
+wall.Transparency = 0.5
+expect("Transparency round-trips", math.abs(wall.Transparency - 0.5) < 1e-6)
+wall.Anchored = true
+expect("Anchored round-trips", wall.Anchored == true and part.Anchored == false)
+wall.Material = "Neon"
+expect("Material takes a name", wall.Material == Enum.Material.Neon)
+wall.Material = Enum.Material.Wood
+expect("Material takes an EnumItem", wall.Material == Enum.Material.Wood)
+expect("Material rejects other enums", fails(function() wall.Material = Enum.PartType.Ball end))
+expect("wrong types are refused", fails(function() wall.Anchored = "yes" end, "Unable to assign property Anchored. boolean expected, got string"))
+expect("read-only properties are refused", fails(function() wall.ClassName = "Model" end, "read only"))
+expect("unknown properties are refused", fails(function() wall.Banana = 1 end, "is not a valid member"))
+expect("defaults for stored properties", wall.CanCollide == true and wall.Archivable == true)
+
+-- Attributes
+wall:SetAttribute("Health", 50)
+wall:SetAttribute("Owner", "Sam")
+wall:SetAttribute("Spot", Vector3.new(1, 2, 3))
+expect("attributes round-trip", wall:GetAttribute("Health") == 50 and wall:GetAttribute("Owner") == "Sam" and wall:GetAttribute("Spot") == Vector3.new(1, 2, 3))
+expect("GetAttributes", wall:GetAttributes().Health == 50)
+wall:SetAttribute("Health", nil)
+expect("nil removes an attribute", wall:GetAttribute("Health") == nil)
+expect("Instances can't be attributes", fails(function() wall:SetAttribute("Bad", door) end))
+workspace:SetAttribute("Round", 3)
+expect("workspace has attributes", workspace:GetAttribute("Round") == 3)
+
+-- Value objects
+local count = Instance.new("IntValue")
+count.Value = 2.7
+expect("IntValue rounds", count.Value == 3)
+local label = Instance.new("StringValue")
+label.Value = "hi"
+expect("StringValue", label.Value == "hi")
+local link = Instance.new("ObjectValue")
+link.Value = wall
+expect("ObjectValue holds an Instance", link.Value == wall)
+
+-- Services
+local storage = game:GetService("ReplicatedStorage")
+expect("GetService makes a service once", storage.ClassName == "ReplicatedStorage" and game:GetService("ReplicatedStorage") == storage and game.ReplicatedStorage == storage)
+expect("services sit under game", storage.Parent == game and game:FindFirstChild("ReplicatedStorage") == storage)
+expect("FindService doesn't create", game:FindService("ServerStorage") == nil)
+expect("bad service names error", fails(function() game:GetService("Bananas") end, "is not a valid Service name"))
+expect("planned services say so", fails(function() game:GetService("TweenService") end, "planned"))
+local stored = Instance.new("Part")
+stored.Name = "Stored"
+stored.Parent = storage
+
+-- Clone
+wall.Archivable = true
+local secret = Instance.new("Part", model)
+secret.Name = "Secret"
+secret.Archivable = false
+local copy = model:Clone()
+expect("Clone is a detached copy", copy ~= model and copy.Parent == nil and copy.Name == "House")
+expect("Clone copies descendants", copy:FindFirstChild("Wall") ~= nil and copy.Wall:FindFirstChild("Door") ~= nil and copy.Wall ~= wall)
+expect("Clone skips non-Archivable", copy:FindFirstChild("Secret") == nil)
+expect("Clone keeps properties and attributes", copy.Wall.Anchored == true and copy.Wall:GetAttribute("Owner") == "Sam" and copy.Wall.Position:FuzzyEq(wall.Position))
+copy.Name = "House2"
+copy.Parent = workspace
+expect("a clone can be parented", workspace:FindFirstChild("House2") == copy and model.Name == "House")
+
+-- Destroy
+local doorRef = door
+model:Destroy()
+expect("Destroy removes it from the tree", workspace:FindFirstChild("House") == nil)
+expect("Destroy takes the descendants", doorRef.Parent == nil and wall.Parent == nil)
+expect("a destroyed object's Parent is locked", fails(function() doorRef.Parent = workspace end, "destroyed"))
+expect("destroying twice is fine", pcall(function() doorRef:Destroy() end))
+expect("tostring of a destroyed object", tostring(doorRef) == "<destroyed>")
+local fresh = Instance.new("Part")
+expect("a new object never aliases a destroyed one", fresh ~= doorRef and fresh.Parent == nil and doorRef.Parent == nil)
+copy:ClearAllChildren()
+expect("ClearAllChildren", #copy:GetChildren() == 0 and copy.Parent == workspace)
+
+-- WaitForChild
+expect("WaitForChild returns an existing child", workspace:WaitForChild("Floor") == floor)
+task.spawn(function()
+	local late = workspace:WaitForChild("Late")
+	print("GOT " .. late.Name)
+	print("TIMEOUT " .. tostring(workspace:WaitForChild("Never", 0.05)))
+end)
+print("DONE")
+)LUAU";
+    scripting.loadAndRun("RobloxInstanceTreeTest", source, SecurityIdentity::UserScript,
+                         static_cast<uint32_t>(entt::to_integral(scriptHolder)));
+    scripting.tick(0.016f);
+    scripting.loadAndRun("RobloxInstanceTreeLater", "local late = Instance.new('Folder') late.Name = 'Late' late.Parent = workspace");
+    for (int i = 0; i < 20; ++i) scripting.tick(0.016f);
+    checkLuauExpectations("Instance tree", output);
+    bool gotLate = false, timedOut = false;
+    for (const std::string& line : output) {
+        if (line.find("GOT Late") != std::string::npos) gotLate = true;
+        if (line.find("TIMEOUT nil") != std::string::npos) timedOut = true;
+    }
+    check(gotLate, "WaitForChild yields until the child appears");
+    check(timedOut, "WaitForChild with a timeout returns nil");
+
+    // The Luau side changed real entities.
+    EntityId brick = kNullEntity, stored = kNullEntity, house2 = kNullEntity;
+    size_t houses = 0;
+    for (EntityId e : ecs.view<Name>()) {
+        const std::string& n = ecs.tryGetComponent<Name>(e)->value;
+        if (n == "Brick") brick = e;
+        if (n == "Stored") stored = e;
+        if (n == "House2") house2 = e;
+        if (n == "House" || n == "Wall" || n == "Door" || n == "Secret") ++houses;
+    }
+    check(brick != kNullEntity && ecs.hasComponent<Renderable>(brick) && ecs.hasComponent<InstanceInfo>(brick),
+          "Instance.new('Part') makes a real entity with a Renderable");
+    check(houses == 0, "Destroy removed the model's entities and all of their children");
+    check(house2 != kNullEntity && ecs.tryGetComponent<Hierarchy>(house2) == nullptr ||
+              (house2 != kNullEntity && ecs.tryGetComponent<Hierarchy>(house2)->children.empty()),
+          "ClearAllChildren destroyed the clone's child entities");
+    check(stored != kNullEntity && !ecs.tryGetComponent<Renderable>(stored)->visible,
+          "a part in ReplicatedStorage doesn't draw");
+    check(ecs.tryGetComponent<Renderable>(brick)->visible, "a part in the workspace draws");
+
+    // Scene files keep the Roblox data.
+    InstanceInfo info;
+    info.className = "IntValue";
+    info.properties["Value"] = InstanceValue::ofNumber(7);
+    info.properties["Material"] = InstanceValue::ofEnum("Material", "Neon", 288);
+    info.attributes["Owner name"] = InstanceValue::ofString("Sam | 100%");
+    info.attributes["Spot"] = InstanceValue::ofVector3({1, 2, 3});
+    info.attributes["Turn"] = InstanceValue::ofCFrame({4, 5, 6}, glm::angleAxis(1.0f, glm::vec3(0, 1, 0)));
+    InstanceInfo back;
+    check(InstanceInfo::deserialize(info.serialize(), back) && back.className == "IntValue" &&
+              back.properties["Value"].number == 7 && back.properties["Material"].text == "Neon" &&
+              back.attributes["Owner name"].text == "Sam | 100%" && back.attributes["Spot"].vec == glm::vec3(1, 2, 3) &&
+              glm::abs(back.attributes["Turn"].rot.y - info.attributes["Turn"].rot.y) < 1e-5f,
+          "InstanceInfo survives its one-line text form, spaces and symbols included");
+    check(info.serialize().find('\n') == std::string::npos, "InstanceInfo's text form is one line");
+
+    SceneFile scene;
+    SceneEntityRecord record;
+    record.name = "Coins";
+    record.instanceInfo = info.serialize();
+    scene.entities.push_back(record);
+    SceneEntityRecord storedRecord;
+    storedRecord.name = "StoredBox";
+    storedRecord.hasRenderable = true;
+    storedRecord.parentName = "ReplicatedStorage";
+    scene.entities.push_back(storedRecord);
+    SceneEntityRecord storageRecord;
+    storageRecord.name = "ReplicatedStorage";
+    InstanceInfo storageInfo;
+    storageInfo.className = "ReplicatedStorage";
+    storageRecord.instanceInfo = storageInfo.serialize();
+    scene.entities.push_back(storageRecord);
+    for (const char* path : {"test_instance_scene.scene", "test_instance_scene.kscene"}) {
+        const bool binary = std::string(path).find(".kscene") != std::string::npos;
+        check(binary ? scene.saveToBinaryFile(path) : scene.saveToFile(path), "a scene with Roblox data saves");
+        SceneFile loaded;
+        check(binary ? loaded.loadFromBinaryFile(path) : loaded.loadFromFile(path), "a scene with Roblox data loads");
+        check(loaded.entities.size() == 3 && loaded.entities[0].instanceInfo == record.instanceInfo,
+              binary ? "binary scenes keep InstanceInfo" : "text scenes keep InstanceInfo");
+
+        ECS sceneEcs;
+        instantiateSceneEntities(loaded.entities, sceneEcs, SceneBuildContext{});
+        EntityId coins = kNullEntity, box = kNullEntity;
+        for (EntityId e : sceneEcs.view<Name>()) {
+            if (sceneEcs.tryGetComponent<Name>(e)->value == "Coins") coins = e;
+            if (sceneEcs.tryGetComponent<Name>(e)->value == "StoredBox") box = e;
+        }
+        check(coins != kNullEntity && sceneEcs.hasComponent<InstanceInfo>(coins) &&
+                  sceneEcs.tryGetComponent<InstanceInfo>(coins)->className == "IntValue",
+              "loading a scene gives entities their Roblox class back");
+        check(box != kNullEntity && sceneEcs.hasComponent<Renderable>(box) &&
+                  !sceneEcs.tryGetComponent<Renderable>(box)->visible,
+              "a loaded part inside ReplicatedStorage stays hidden");
+        SceneEntityRecord recaptured;
+        check(coins != kNullEntity && captureSceneEntity(sceneEcs, coins, recaptured) &&
+                  recaptured.instanceInfo == record.instanceInfo,
+              "saving the scene again writes the same Roblox data");
+    }
+
+    // The class table carries the reflection flags.
+    const PropertyDef* position = instances::findProperty("Part", "Position");
+    const PropertyDef* cframe = instances::findProperty("Part", "CFrame");
+    check(position != nullptr && !position->serialized && cframe != nullptr && cframe->serialized &&
+              cframe->replicated && cframe->studioVisible,
+          "Position is derived from CFrame, so only CFrame is saved");
+    check(instances::findProperty("Folder", "Position") == nullptr && instances::findProperty("Folder", "Name") != nullptr,
+          "properties come from the class and its superclasses only");
+    check(instances::classIsA("SpawnLocation", "BasePart") && !instances::classIsA("Folder", "BasePart"),
+          "classIsA follows superclasses");
+
+    // A script reading workspace.X after a Destroy must see the current tree,
+    // even for instances another script made (Studio's console runs each line apart).
+    output.clear();
+    scripting.loadAndRun("DuoA", "local p = Instance.new('Part') p.Name = 'Duo' p.Parent = workspace");
+    scripting.loadAndRun("DuoB", "local p = Instance.new('Part') p.Name = 'Duo' p.Parent = workspace");
+    scripting.loadAndRun("DuoC", "local a = workspace.Duo a:Destroy() local d = workspace.Duo "
+                                 "print((d ~= a and d.Parent == workspace and d:Clone() ~= nil) and 'DUO OK' or 'DUO STALE')");
+    bool duoOk = false;
+    for (const std::string& line : output) duoOk = duoOk || line.find("DUO OK") != std::string::npos;
+    check(duoOk, "workspace.Name is looked up again on every read (not cached when the script loads)");
+
+    // Parent = nil instances aren't saved (Roblox drops them too).
+    std::string createError;
+    const InstanceRef loose = instances::create(ecs, "Part", createError);
+    const EntityId looseEntity = instances::entityOf(ecs, loose);
+    SceneEntityRecord looseRecord;
+    check(looseEntity != kNullEntity && instances::isDetached(ecs, looseEntity) &&
+              !captureSceneEntity(ecs, looseEntity, looseRecord),
+          "an instance with Parent nil is left out of scene files");
+    check(instances::setParent(ecs, loose, kWorkspaceInstance, createError) && !instances::isDetached(ecs, looseEntity) &&
+              captureSceneEntity(ecs, looseEntity, looseRecord),
+          "once parented to the workspace it is saved");
+}
+
+void testRobloxImportedInstances() {
+    using namespace engine::migration;
+    using namespace engine::core;
+    ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+    const std::string place = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W"><Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Part" referent="P"><Properties><string name="Name">Lamp</string>
+      <CoordinateFrame name="CFrame"><X>10</X><Y>2</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame>
+      <Vector3 name="size"><X>2</X><Y>2</Y><Z>2</Z></Vector3>
+      <bool name="Anchored">true</bool><token name="Material">288</token><token name="shape">0</token></Properties>
+      <Item class="PointLight" referent="L"><Properties><string name="Name">Glow</string></Properties></Item>
+    </Item>
+    <Item class="Folder" referent="F"><Properties><string name="Name">Stats</string></Properties>
+      <Item class="IntValue" referent="I"><Properties><string name="Name">Coins</string><int64 name="Value">25</int64></Properties></Item>
+    </Item>
+    <Item class="Script" referent="S"><Properties><string name="Name">Main</string>
+      <string name="Source">local lamp = workspace:WaitForChild("Lamp")
+assert(lamp.Anchored and lamp.Material == Enum.Material.Neon and lamp.Shape == Enum.PartType.Ball)
+assert(workspace.Stats.Coins.Value == 25 and script.Parent == workspace)
+assert(lamp.Glow:IsA("Light") and lamp.Position == Vector3.new(10, 2, 0))
+lamp.Glow.Brightness = 3</string></Properties></Item>
+  </Item>
+  <Item class="ReplicatedStorage" referent="R"><Properties><string name="Name">ReplicatedStorage</string></Properties>
+    <Item class="Part" referent="P2"><Properties><string name="Name">Template</string></Properties></Item>
+  </Item>
+</roblox>)XML";
+    const ImportReport report = importer.importDocument(place, scanner);
+    check(report.parsed, "imported-instances test place parses");
+
+    ECS ecs;
+    const HydrationResult result = InstanceHydrator{}.hydrate(report.tree, ecs, HydrationMeshes{});
+    EntityId lamp = kNullEntity, glow = kNullEntity, coins = kNullEntity, templ = kNullEntity, workspaceEntity = kNullEntity;
+    for (EntityId e : ecs.view<Name>()) {
+        const std::string& n = ecs.tryGetComponent<Name>(e)->value;
+        if (n == "Lamp") lamp = e;
+        if (n == "Glow") glow = e;
+        if (n == "Coins") coins = e;
+        if (n == "Template") templ = e;
+        if (n == "Workspace") workspaceEntity = e;
+    }
+    check(lamp != kNullEntity && ecs.tryGetComponent<InstanceInfo>(lamp) != nullptr &&
+              ecs.tryGetComponent<InstanceInfo>(lamp)->className == "Part",
+          "every imported entity knows its Roblox class");
+    check(coins != kNullEntity && ecs.tryGetComponent<InstanceInfo>(coins)->properties.at("Value").number == 25,
+          "an imported IntValue keeps its Value");
+    check(lamp != kNullEntity && ecs.tryGetComponent<InstanceInfo>(lamp)->properties.at("Material").text == "Neon" &&
+              ecs.tryGetComponent<Renderable>(lamp)->emissiveIntensity > 0.0f,
+          "an imported Neon part glows");
+    check(glow != kNullEntity && glm::length(instances::worldPose(ecs, glow).position - glm::vec3(10, 2, 0)) < 1e-4f,
+          "a light with no CFrame sits at its parent part, not the world origin");
+    check(templ != kNullEntity && !ecs.tryGetComponent<Renderable>(templ)->visible,
+          "an imported part in ReplicatedStorage is hidden");
+    check(result.skippedCount == 0, "Folder and IntValue are no longer skipped");
+
+    // A second import of the same place merges into the existing services.
+    const HydrationResult again = InstanceHydrator{}.hydrate(report.tree, ecs, HydrationMeshes{});
+    size_t workspaces = 0;
+    for (EntityId e : ecs.view<InstanceInfo>()) {
+        if (ecs.tryGetComponent<InstanceInfo>(e)->className == "Workspace") ++workspaces;
+    }
+    check(workspaces == 1 && std::find(again.createdEntities.begin(), again.createdEntities.end(), workspaceEntity) ==
+                                 again.createdEntities.end(),
+          "a second import reuses the Workspace, and undo won't delete it");
+
+    CompatibilityScore score = scoreImport(report);
+    runImportedScripts(report, score);
+    check(score.scriptsRun == 1 && score.scriptsOk == 1,
+          "an imported script finds its parts through workspace, script.Parent and WaitForChild");
+    for (const CompatScriptRun& run : score.scripts) {
+        if (!run.ok) std::fprintf(stderr, "  %s: %s\n", run.path.c_str(), run.error.c_str());
+    }
+}
+
+void testRobloxCompatibilityScore() {
+    using namespace engine::migration;
+
+    // Roblox Studio writes script sources as CDATA. Before, the parser stopped
+    // at the first CDATA block and silently dropped the rest of the place.
+    const std::string studioStyle = "<roblox version=\"4\">"
+                                    "<Item class=\"Script\" referent=\"A\"><Properties>"
+                                    "<string name=\"Name\">Main</string>"
+                                    "<ProtectedString name=\"Source\"><![CDATA[if a < b and c > d then print(\"&amp;\") end]]>"
+                                    "</ProtectedString></Properties></Item>"
+                                    "<Item class=\"Part\" referent=\"B\"><Properties>"
+                                    "<string name=\"Name\">After&#9;Tab&#x21;</string></Properties></Item>"
+                                    "</roblox>";
+    const auto root = RbxlxParser::parse(studioStyle);
+    check(root.has_value() && root->children.size() == 2, "the .rbxlx parser keeps going after a CDATA script source");
+    if (root.has_value() && root->children.size() == 2) {
+        const auto tree = InstanceTreeBuilder::build(*root);
+        check(tree.size() == 2 && tree[0].properties.at("Source") ==
+                                      "if a < b and c > d then print(\"&amp;\") end",
+              "CDATA script text is kept exactly, with no entity decoding");
+        check(tree.size() == 2 && tree[1].name == "After\tTab!", "numeric XML entities (&#9; and &#x21;) decode");
+    }
+
+    LuauApiCompatibility api;
+    bool countedLocal = false;
+    for (const auto& finding : api.scan("local Players = game:GetService(\"Players\")\nPlayers.PlayerAdded:Connect(f)")) {
+        if (finding.identifier == "Players") countedLocal = true;
+    }
+    check(!countedLocal, "a local variable named like a Roblox service isn't counted as that service");
+
+    ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+    const std::string place = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W"><Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Part" referent="P"><Properties><string name="Name">Floor</string></Properties></Item>
+    <Item class="Script" referent="S1"><Properties><string name="Name">Hello</string>
+      <string name="Source">print("hi")</string></Properties></Item>
+    <Item class="Script" referent="S2"><Properties><string name="Name">Roblox</string>
+      <string name="Source">local players = game:GetService("Players")
+players.PlayerAdded:Connect(print)</string></Properties></Item>
+    <Item class="ModuleScript" referent="M"><Properties><string name="Name">Broken</string>
+      <string name="Source">return function(</string></Properties></Item>
+  </Item>
+  <Item class="StarterGui" referent="G"><Properties><string name="Name">StarterGui</string></Properties>
+    <Item class="ScreenGui" referent="SG"><Properties><string name="Name">Hud</string></Properties></Item>
+  </Item>
+</roblox>)XML";
+    const ImportReport report = importer.importDocument(place, scanner);
+    check(report.parsed, "compatibility score test place parses");
+
+    CompatibilityScore score = scoreImport(report);
+    check(score.instances == 7, "the score counts every instance");
+    check(score.instancesMapped == 6 && score.unmappedClasses.count("ScreenGui") == 1,
+          "classes Kronos can't build yet (ScreenGui) count as unmapped");
+    check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
+          "print, game and :GetService are supported; :Connect is not yet");
+    check(score.missingApis.count(":Connect") == 1, "the score lists the missing Roblox APIs by name");
+
+    runImportedScripts(report, score);
+    check(score.scriptsRun == 3 && score.scriptsOk == 1, "one of three scripts runs cleanly today");
+    bool sawRuntime = false, sawCompile = false;
+    for (const CompatScriptRun& run : score.scripts) {
+        if (run.path == "Workspace.Roblox") sawRuntime = !run.ok && run.error.find("runtime error") != std::string::npos;
+        if (run.path == "Workspace.Broken") sawCompile = !run.ok && run.error.find("compile error") != std::string::npos;
+    }
+    check(sawRuntime, "a script that uses a missing API (PlayerAdded) fails with its runtime error recorded");
+    check(sawCompile, "a ModuleScript with a syntax error is reported as a compile error");
+    check(score.overallPercent() > 0.0 && score.overallPercent() < 100.0, "the overall score is a real percentage");
+    check(score.summary().find("overall") != std::string::npos, "the score has a one-line summary");
+
+    // The shipped test places all import, and each has scripts to measure.
+    size_t places = 0;
+    for (const auto& entry : std::filesystem::directory_iterator("tests/compat_corpus")) {
+        if (entry.path().extension() != ".rbxlx") continue;
+        std::ifstream file(entry.path());
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        const ImportReport corpusReport = importer.importDocument(buffer.str(), scanner);
+        const CompatibilityScore corpusScore = scoreImport(corpusReport);
+        check(corpusReport.parsed && !corpusReport.blocked && corpusReport.stats.scriptCount > 0 &&
+                  corpusScore.apiUses > 0,
+              "a compatibility test place imports with scripts to score");
+        ++places;
+    }
+    check(places == 5, "all five compatibility test places are present");
+}
+
 void testProjectImportPipeline() {
     engine::migration::ProjectImporter importer;
     engine::safety::IPInfringementScanner scanner;
@@ -42406,7 +43058,7 @@ void testProjectImportPipeline() {
       <Item class="Script" referent="RBX3">
         <Properties>
           <string name="Name">Main</string>
-          <string name="Source">local p = game:GetService("Players")
+          <string name="Source">wait(1)
 local part = Instance.new("Part")</string>
         </Properties>
       </Item>
@@ -42438,18 +43090,18 @@ local part = Instance.new("Part")</string>
 
     // The unmapped APIs in Main must surface as warnings against the real
     // instance path, not vanish or throw.
-    bool warnedAboutGame = false;
+    bool warnedAboutWait = false;
     bool warnedAboutEmptySource = false;
     for (const auto& diagnostic : report.diagnostics) {
         if (diagnostic.subject.rfind("Workspace.Lobby.Main:", 0) == 0 &&
-            diagnostic.message.find("game") != std::string::npos) {
-            warnedAboutGame = true;
+            diagnostic.message.find("wait") != std::string::npos) {
+            warnedAboutWait = true;
             check(diagnostic.severity == engine::migration::ImportSeverity::Warning,
                   "an unmapped API is reported at Warning severity");
         }
         if (diagnostic.message.find("no Source property") != std::string::npos) warnedAboutEmptySource = true;
     }
-    check(warnedAboutGame, "ProjectImporter warns about unmapped APIs against the real instance path");
+    check(warnedAboutWait, "ProjectImporter warns about unmapped APIs against the real instance path");
     check(warnedAboutEmptySource, "ProjectImporter warns about a script that arrived with no Source");
     check(report.warningCount() > 0, "ProjectImporter's report really counts its warnings");
     check(!report.summary().empty(), "ProjectImporter produces a one-line summary");
@@ -42482,7 +43134,7 @@ local part = Instance.new("Part")</string>
         big += "<Properties><string name=\"Name\">Part" + std::to_string(i) + "</string></Properties></Item>";
         big += "<Item class=\"Script\" referent=\"S" + std::to_string(i) + "\">";
         big += "<Properties><string name=\"Name\">S" + std::to_string(i) + "</string>";
-        big += "<string name=\"Source\">local x = game.Workspace\nworld.createEntity()\n</string>";
+        big += "<string name=\"Source\">wait(1)\nlocal x = game.Workspace\nworld.createEntity()\n</string>";
         big += "</Properties></Item></Item>";
     }
     big += "</roblox>";
@@ -44678,6 +45330,10 @@ int main() {
     testRequirePathsAndCycles();
     testLuauApiCompatibilityScan();
     testProjectImportPipeline();
+    testRobloxCompatibilityScore();
+    testRobloxDatatypes();
+    testRobloxInstanceTree();
+    testRobloxImportedInstances();
     testEntitlementManager();
     testMovieModeScrubbingAndKeyDrag();
     testMovieModePlugin();
@@ -44953,6 +45609,7 @@ int main() {
     testAnimationPlayerReversed();
     testMyGamesSaveAndScan();
     testFindPlayerSpawnPosition();
+    testPlayerAvatarLookFromProfile();
     testPartColliderFitsAndFollowsScale();
     testAvatarControllerWalkRunHysteresis();
     testAvatarControllerBlendTreeTransitions();

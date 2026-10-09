@@ -1,6 +1,7 @@
 #include "migration/RbxlxParser.hpp"
 
 #include <cctype>
+#include <cstdlib>
 
 namespace engine::migration {
 
@@ -46,6 +47,32 @@ std::string decodeEntities(const std::string& raw) {
             if (raw.compare(i, 5, "&amp;") == 0) { out += '&'; i += 4; continue; }
             if (raw.compare(i, 6, "&quot;") == 0) { out += '"'; i += 5; continue; }
             if (raw.compare(i, 6, "&apos;") == 0) { out += '\''; i += 5; continue; }
+            if (raw.compare(i, 2, "&#") == 0) {
+                const size_t semi = raw.find(';', i);
+                const bool hex = i + 2 < raw.size() && (raw[i + 2] == 'x' || raw[i + 2] == 'X');
+                const size_t digits = i + (hex ? 3 : 2);
+                if (semi != std::string::npos && semi > digits && semi - i <= 10) {
+                    const unsigned long code = std::strtoul(raw.substr(digits, semi - digits).c_str(), nullptr,
+                                                            hex ? 16 : 10);
+                    if (code < 0x80) {
+                        out += static_cast<char>(code);
+                    } else if (code < 0x800) {
+                        out += static_cast<char>(0xC0 | (code >> 6));
+                        out += static_cast<char>(0x80 | (code & 0x3F));
+                    } else if (code < 0x10000) {
+                        out += static_cast<char>(0xE0 | (code >> 12));
+                        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                        out += static_cast<char>(0x80 | (code & 0x3F));
+                    } else {
+                        out += static_cast<char>(0xF0 | (code >> 18));
+                        out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+                        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                        out += static_cast<char>(0x80 | (code & 0x3F));
+                    }
+                    i = semi;
+                    continue;
+                }
+            }
         }
         out += raw[i];
     }
@@ -69,6 +96,14 @@ void parseChildren(Cursor& c, XmlNode& node) {
 
         if (c.src.compare(c.pos, 4, "<!--") == 0) {
             c.skipUntil("-->");
+            continue;
+        }
+        // Roblox Studio writes script sources as CDATA; its text is literal.
+        if (c.src.compare(c.pos, 9, "<![CDATA[") == 0) {
+            const size_t start = c.pos + 9;
+            const size_t end = c.src.find("]]>", start);
+            node.text += c.src.substr(start, (end == std::string::npos ? c.src.size() : end) - start);
+            c.pos = end == std::string::npos ? c.src.size() : end + 3;
             continue;
         }
         if (c.src.compare(c.pos, 2, "</") == 0) {

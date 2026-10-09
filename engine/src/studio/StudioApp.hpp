@@ -620,6 +620,7 @@ private:
     bool importDialogOpen_ = false;
     char importPathBuffer_[512] = {};
     std::string importSummary_;
+    std::vector<std::string> importCompatLines_;
     std::vector<std::string> importReportLines_;
     // The last parsed tree, kept so "Spawn Into Scene" is a separate,
     // deliberate step from reading the report -- and so redo can re-run

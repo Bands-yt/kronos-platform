@@ -8,10 +8,11 @@ feeling. Estimates are rough, and the big ones are weeks, not hours.
 |---|---|---|
 | 4.1 | Creators: publishing, scripting, held-back fixes | Done locally, ships in the public beta |
 | 4.2 | Scale: culling, batching, streaming, determinism, audio mixer | Done locally, ships in the public beta |
-| Launch | Public beta `4.1.0-beta`, first Reddit post (Friday 9 October 2026) | This week |
-| 4.3 | Roblox bridge: import a Roblox place and play it in Kronos | Next, the main track |
+| Launch | Public beta (4.1 and 4.2 together), first Reddit post | Date to be decided by the owner |
+| 4.3 | Roblox bridge: import a Roblox place and play it in Kronos | In progress: steps 1–3 done (score 57%) |
 | 4.4 | Polish from launch feedback, plus the small 4.2 leftovers | Alongside 4.3 |
-| Later | Next-gen graphics, web player, collaboration, media tools | Parked until the bridge works |
+| 4.5 | Foundations: Rust plugins, Python scripts, permanent object IDs, engine clean-up | After 4.3 and 4.4 |
+| 5.0 | Next-gen: graphics, web player, collaboration, media tools, 3D Model Maker | Parked until the bridge works |
 
 ## Already in the engine
 
@@ -25,9 +26,9 @@ These items from the AAA spec need hardening rather than building from scratch:
 
 ---
 
-## Launch — public beta (this week)
+## Launch — public beta (date to be decided)
 
-Goal: someone on Reddit downloads Kronos on Friday, it opens on the first
+Goal: someone on Reddit downloads Kronos on launch day, it opens on the first
 try, and they make or play something within five minutes. No new features
 until the post is up; this week is about making what exists work for a
 stranger.
@@ -36,7 +37,7 @@ stranger.
 |---|---|---|
 | Windows build passes CI with the MSVC runtime fix | `build.yml` is green on `4.1-creators` and the zip contains `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` | Claude |
 | Fresh-PC test | The Windows zip and installer start on a PC that never had Kronos or the VC++ redistributable, and the Linux download runs | Owner (Claude walks through it) |
-| First-run check | A new project opens from the template, Play works, closing Studio leaves no crash report, Broken Bones starts | Claude — Play and clean exit verified; new-project-from-template and Broken Bones start still to check |
+| First-run check | A new project opens from the template, Play works, closing Studio leaves no crash report, Broken Bones starts | Claude — done (2026-10-06): Player → Create → Launch Studio → template → Save Game → plays from the Player; Play, clean exit, Broken Bones and the custom look in games all verified |
 | Version bump and release `4.1.0-beta` | The three version numbers match, the tag is pushed, and the GitHub Release has every download | Claude, only after the owner says OK |
 | Licence decision | `LICENSE` and the website say the same thing (today `LICENSE` says "All Rights Reserved"; don't call Kronos "open source" unless that changes) | Owner decides |
 | Online or offline | Decide whether the post includes publishing and playing online. If yes: staging deploy with migration 011, publish → package → play verified, then production | Owner decides; deploys only with OK |
@@ -52,7 +53,8 @@ stranger.
 
 - **Play as your avatar in Studio**: Play spawns your avatar with the Player's controls and camera; Stop puts the scene and editor camera back. A part named `SpawnLocation` sets where players appear (Studio and Player). A long frame no longer stalls physics (Jolt is asked for at most 6 sub-steps).
 
-- **Avatar page Customize tab** (Player): skin tone, Classic/Round head and five body sliders, saved to the profile and shown in every game; the preview frames the whole body; the Shop filters fit the card.
+- **Avatar page Customize tab** (Player): skin tone, Classic/Round head and five body sliders, saved to the profile and shown in every game (including Broken Bones, which runs as its own process and now reads the profile too); the preview frames the whole body; the Shop filters fit the card.
+- **Games open in daylight, facing the build**: a game made in Studio starts at 2 pm with the day/night clock stopped, like Studio and Roblox (before, the Player's clock ran on its menus, so a game opened a few minutes after launch started at night, almost black). The player starts facing a `SpawnLocation`'s front, or the middle of the world when there is none (before, you started with your build behind you).
 - **Feedback channel**: GitHub issue forms for bugs (`bug_report.yml`) and ideas (`idea.yml`).
 - **README for newcomers**: what Kronos is, downloads, first game in five minutes, controls, where to report bugs, with `docs/images/studio-play.png`.
 
@@ -78,13 +80,18 @@ Rules for this track:
   marketing; describing the feature plainly ("imports `.rbxlx` places") is
   fine.
 - Every step ends with tests, a visual check in Studio, and a doc section.
+- Reflection first (third outside review, 7 October 2026): each class
+  declares its properties, methods and events once in a class table, and
+  `Instance.new`, the importer, the Studio inspector, saving and networking
+  all read that table. A new creator-facing feature decides its Instance/API
+  shape before it is built.
 
 | # | Step | Done when | Size |
 |---|---|---|---|
-| 1 | **Compatibility score and test corpus** | A folder of small test places (obby, tycoon button, door, leaderboard, GUI shop) plus a headless `kronos_compat` tool that imports each one, runs it for N seconds and prints % of instances mapped, % of API calls supported and script errors. Studio's import report shows the same score. | 1 week |
+| 1 | **Compatibility score and test corpus** | A folder of small test places (obby, tycoon button, door, leaderboard, GUI shop) plus a headless `kronos_compat` tool that imports each one, runs it for N seconds and prints % of instances mapped, % of API calls supported, script errors and whether each place's expected behaviour happened (door opens, coin counted, and so on). Studio's import report shows the same score. | 1 week |
 | 2 | **Datatypes** | `Vector3`, `CFrame`, `Color3`, `BrickColor`, `UDim`/`UDim2`, `Enum` (common items), `TweenInfo`, `NumberRange` work in Luau with Roblox's constructors, operators and common methods, checked against known values | 1–2 weeks |
-| 3 | **Instance tree** | `game`, `workspace`, `script`, `Instance.new`, `.Name`, `.Parent`, `:FindFirstChild`, `:WaitForChild`, `:GetChildren`, `:GetDescendants`, `:Clone`, `:Destroy`, `:IsA`, attributes. Part properties (`Position`, `Size`, `CFrame`, `Color`, `Anchored`, `CanCollide`, `Transparency`, `Material`) read and write the real ECS entity | 3–4 weeks |
-| 4 | **Events** | `:Connect`/`:Disconnect`/`:Once`/`:Wait`, `.Touched`/`.TouchEnded`, `.Changed`, `:GetPropertyChangedSignal`, `RunService.Heartbeat`/`Stepped`/`RenderStepped`, `wait`/`spawn`/`delay` mapped onto `task` | 1–2 weeks |
+| 3 | **Instance tree** | `game`, `workspace`, `script`, `Instance.new`, `.Name`, `.Parent`, `:FindFirstChild`, `:WaitForChild`, `:GetChildren`, `:GetDescendants`, `:Clone`, `:Destroy`, `:IsA`, attributes, built on the class table above. Part properties (`Position`, `Size`, `CFrame`, `Color`, `Anchored`, `CanCollide`, `Transparency`, `Material`) read and write the real ECS entity | 3–4 weeks |
+| 4 | **Events** | `:Connect`/`:Disconnect`/`:Once`/`:Wait`, `.Touched`/`.TouchEnded`, `.Changed`, `:GetPropertyChangedSignal`, `RunService.Heartbeat`/`Stepped`/`RenderStepped` (plus `PreSimulation`/`PostSimulation` in a fixed, documented frame order), `wait`/`spawn`/`delay` mapped onto `task` | 1–2 weeks |
 | 5 | **Players and characters** | `Players`, `LocalPlayer`, `PlayerAdded`/`PlayerRemoving`, `Character`/`CharacterAdded`, `Humanoid` (`WalkSpeed`, `JumpPower`, `Health`, `Died`, `MoveTo`) on the Kronos avatar; leaderstats show in the player list. The obby test place is playable start to finish | 3–4 weeks |
 | 6 | **Client/server** | `RemoteEvent`/`RemoteFunction`, `ReplicatedStorage`, `ServerScriptService`, `StarterPlayerScripts`, LocalScripts running only on clients, on top of the existing `network` layer | 2–3 weeks |
 | 7 | **DataStore** | `DataStoreService:GetDataStore`, `GetAsync`/`SetAsync`/`UpdateAsync`/`RemoveAsync`/`IncrementAsync` with Roblox-like limits. A local emulator file in Studio, and a backend table plus API for published games (backend deploy needs OK) | 2–3 weeks |
@@ -95,6 +102,11 @@ Rules for this track:
 
 Done means: the test corpus scores at least 90%, and the flagship demo runs
 start to finish without hand edits.
+
+### Done
+- **Step 1, compatibility score** (2026-10-07): `migration/CompatibilityScore`, the `kronos_compat` tool, five test places in `engine/tests/compat_corpus/`, and the score in Studio's Import window. Baseline: **34%** (instances 91%, API uses 3%, scripts 8%). The importer now reads Roblox Studio's CDATA script sources. Behaviour checks wait for scripts that run (steps 3–4). See `ROBLOX_BRIDGE.md`.
+- **Step 2, datatypes** (2026-10-07): `Vector3`, `Vector2`, `CFrame`, `Color3`, `BrickColor`, `UDim`/`UDim2`, 27 `Enum`s, `TweenInfo`, `NumberRange`, `NumberSequence`, `ColorSequence`, `Ray`, `RaycastParams`, `Random` and a `typeof` that names them, in every script (`core/RobloxDatatypes.cpp`), checked by 58 tests against Roblox's results. Score 34% → 36%. See `ROBLOX_BRIDGE.md`.
+- **Step 3, Instance tree** (2026-10-09): `game`, `workspace`, `script`, `Instance.new` and the common Instance methods (`FindFirstChild`, `WaitForChild`, `GetChildren`, `GetDescendants`, `Clone`, `Destroy`, `IsA`, attributes, ...) over the real ECS, built on a class table with about 60 classes whose properties carry saved/replicated/Studio flags (`core/InstanceTree.cpp`, `core/ScriptInstanceApi.cpp`). Part properties read and write the real entity. The importer keeps every known class and its stored properties, scenes save the Roblox data, and imported parts are now full size. Score 36% → 57%; scripts now stop at events (step 4). Checked in Studio's Debug Console and with an imported test place. See `ROBLOX_BRIDGE.md`.
 
 ---
 
@@ -108,6 +120,30 @@ Small, high-value items, picked up between bridge steps:
 - **Build cache** (from 4.2): a `KRONOS_COMPILER_CACHE` CMake option for sccache/ccache, and a content-hash cache for compiled shaders. 1 week. Distributed builds across machines only if build times become a real problem.
 - **Third-party plugin sandbox on Windows** (Linux has it; Windows skips third-party plugins today).
 - **Rollback-aware Luau**: scripts that run inside rollback matches.
+
+---
+
+## 4.5 — Foundations
+
+Decided on 6 October 2026 after two outside reviews of the code; steps 7–9
+added from a third review on 7 October. Some of
+this makes the engine easier to grow; some opens it to more languages.
+
+| # | Step | Done when | Size |
+|---|---|---|---|
+| 1 | **Permanent object IDs** | Every saved object has a GUID that survives renames, save/load and copy/paste, in both scene formats; old scenes get IDs when opened | 1 week |
+| 2 | **Rust plugins** | A `kronos` Rust crate wraps `plugin/kronos_plugin.h` safely; a template Rust plugin builds with `cargo` and loads in Studio (in-process and sandboxed) | 1 week |
+| 3 | **Python game scripts** | An embedded PocketPy runs `.py` scripts next to Luau with the same memory/time limits and security levels, and a first slice of the `world`/`events` API | 2–3 weeks |
+| 4 | **Tighter script limits** | A per-game script memory budget plus a smaller per-script limit (today 256 MB per script), with a warning before the hard stop | 2–3 days |
+| 5 | **Split the Renderer** | `Renderer.hpp`/`.cpp` (about 8,800 lines) split into context, frame, resource and pass pieces with no visible change, checked by tests and screenshots | 1–2 weeks |
+| 6 | **Server program without graphics** | A separate `kronos_server` that doesn't link SDL or Vulkan and runs published games | 1–2 weeks |
+| 7 | **Games out of the engine library** | Broken Bones, TNT Wars, Mining Sim, Despair and the trailer code move out of `engine_core` into their own targets; the network protocol carries generic messages instead of game ones (`FireWeapon`, `SelectClass`, ...) | 1–2 weeks |
+| 8 | **One version number** | `engine/CMakeLists.txt` `project(... VERSION ...)` is the single source; `KronosVersion.hpp` and the installer are generated from it | 1 day |
+| 9 | **Moderation data on the backend** | Reports and moderation logs go to the backend database, not files next to the game server | 3–5 days |
+
+Later in this track, once the above is done: a real render graph (passes
+declare what they read and write), a command buffer between scripts and the
+simulation, and Studio service interfaces for plugins.
 
 ---
 
@@ -176,7 +212,7 @@ Keyframe-bound audio and the build cache moved to 4.4 above.
 
 ---
 
-## Later — next-gen (parked)
+## 5.0 — Next-gen (parked)
 
 These stay on the list but wait until the Roblox bridge works, because a
 creator moving their game over matters more right now than new rendering
@@ -199,6 +235,8 @@ Large, independent tracks. Each could be its own release, and several need vendo
 | Gaussian splat viewer (NeRF much later, if at all) | 1–2 months |
 | ONNX Runtime / TensorRT inference for AI tooling | 3–6 weeks |
 | GPU destruction, unified physics, motion matching | 1–3 months each |
+| 3D Model Maker in Studio: primitives, vertex/edge/face editing, materials and UVs, import/export (see `MODEL_MAKER_AI_ROADMAP.md`) | 2–3 months |
+| AI model generator: first "Import AI Model" from outside tools, later an optional online generator (costs money to run) | 3–6 weeks for the first part |
 
 ## Out of scope for now
 

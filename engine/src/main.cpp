@@ -16,7 +16,13 @@
 
 #include <SDL2/SDL.h>
 
+#include "core/AnimationDatabase.hpp"
 #include "core/Application.hpp"
+#include "core/AvatarLoadout.hpp"
+#include "core/CatalogueDatabase.hpp"
+#include "core/CatalogueIndex.hpp"
+#include "core/InstanceTree.hpp"
+#include "core/LocalProfile.hpp"
 #include "core/PlayerAvatar.hpp"
 #include "core/ConsoleQuickEdit.hpp"
 #include "core/CrashReporter.hpp"
@@ -655,7 +661,20 @@ int main(int argc, char** argv) {
         uint32_t seed = std::random_device{}();
         engine::brokenbones::BrokenBonesGame game(app, materials, seed, "brokenbones_save.json");
         glm::vec3 provisionalSpawn(0.0f, engine::brokenbones::cliffHeightForLevel(1) + 1.2f, -14.0f);
-        if (!app.spawnLocalPlayerAvatar(provisionalSpawn)) {
+        // Same files the Player shell reads, so the avatar looks like it does on the Avatar page.
+        engine::core::LocalProfile profile;
+        (void)profile.loadFromFile("local_profile.profile");
+        engine::core::AvatarLoadout loadout;
+        (void)loadout.loadFromFile("local_avatar_loadout.loadout");
+        engine::core::CatalogueDatabase catalogueDatabase;
+        engine::core::CatalogueIndex catalogueIndex;
+        if (catalogueDatabase.loadFromFile("catalogue.json")) catalogueIndex.rebuild(catalogueDatabase);
+        engine::core::AnimationDatabase animationDatabase;
+        (void)animationDatabase.loadFromFile("animations.json");
+        const engine::core::PlayerAvatarLook look =
+            engine::core::playerAvatarLookFromProfile(profile, loadout, animationDatabase);
+        if (!app.spawnLocalPlayerAvatar(provisionalSpawn, look.skinTone, look.headShape, look.bodyProportions,
+                                         look.loadout, catalogueIndex, look.animationOverrides, look.clothingFit)) {
             std::fprintf(stderr, "engine_runtime: spawnLocalPlayerAvatar() failed for --brokenbones.\n");
             app.shutdown();
             return 1;
@@ -1988,6 +2007,13 @@ int main(int argc, char** argv) {
         renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 25.0f, 25.0f));
     uint32_t boxMesh = app.meshLibrary().registerMesh(engine::core::Mesh::createBox(
         renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), {0.5f, 0.5f, 0.5f}));
+    // Instance.new("Part") draws with these.
+    app.ecs().raw().ctx().insert_or_assign(engine::core::InstanceMeshes{
+        boxMesh,
+        app.meshLibrary().registerMesh(engine::core::Mesh::createCapsule(
+            renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.5f, 0.0f)),
+        app.meshLibrary().registerMesh(engine::core::Mesh::createCylinder(
+            renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.5f, 0.5f))});
     // Kronos ("Alpha v1 Polish" -- "world.spawnDynamicBox"): real, same
     // 1x1x1 unit-cube handle every other hand-placed box prop in this
     // bring-up scene already shares -- registered once here, for the
@@ -2607,7 +2633,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "engine_runtime: spawnLocalPlayerAvatar() failed for a Catalogue game.\n");
                 return engine::core::kNullEntity;
             }
-            app.characterController().setInitialCameraAngles(-90.0f, -15.0f);
+            app.characterController().setInitialCameraAngles(
+                engine::core::findPlayerSpawnYawDegrees(app.ecs(), spawnPosition), -15.0f);
             return app.characterController().entity();
         });
         shell->setTesterSafetyMode(testerSafetyMode);

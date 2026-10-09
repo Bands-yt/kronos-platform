@@ -367,6 +367,10 @@ add_library(engine_core STATIC
     migration/ProjectImporter.cpp
     migration/PropertyDecoder.cpp
     migration/InstanceHydrator.cpp
+    migration/CompatibilityScore.cpp
+    core/RobloxDatatypes.cpp
+    core/InstanceTree.cpp
+    core/ScriptInstanceApi.cpp
     migration/AssetModeration.cpp
 
     safety/TrustSafetyService.cpp
@@ -736,6 +740,10 @@ if(ENGINE_BUILD_RUNTIME)
     if(WIN32)
         target_link_libraries(kronos_lookdev PRIVATE SDL2::SDL2main)
     endif()
+
+    # Scores how much of an imported Roblox place Kronos runs (docs/ROBLOX_BRIDGE.md).
+    add_executable(kronos_compat migration/CompatMain.cpp)
+    target_link_libraries(kronos_compat PRIVATE engine_core)
 endif()
 
 # ---------------------------------------------------------------------------

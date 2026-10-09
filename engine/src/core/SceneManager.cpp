@@ -7,6 +7,7 @@
 #include "core/FbxLoader.hpp"
 #include "core/GltfLoader.hpp"
 #include "core/Hierarchy.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/ObjLoader.hpp"
 #include "core/ResourceManager.hpp"
 #include "core/SceneHistory.hpp"
@@ -227,6 +228,10 @@ void instantiateSceneEntities(const std::vector<SceneEntityRecord>& records, ECS
         }
 
         if (!record.visualScript.empty()) ecs.addComponent<VisualScript>(entity).graph = record.visualScript;
+        if (!record.instanceInfo.empty()) {
+            InstanceInfo info;
+            if (InstanceInfo::deserialize(record.instanceInfo, info)) ecs.addComponent<InstanceInfo>(entity, std::move(info));
+        }
         if (record.hasScript) {
             auto& script = ecs.addComponent<Script>(entity);
             script.source = record.scriptSource;
@@ -259,11 +264,18 @@ void instantiateSceneEntities(const std::vector<SceneEntityRecord>& records, ECS
         }
         hierarchy::setParent(ecs, childIt->second, parent);
     }
+
+    // Parts kept outside the workspace (ReplicatedStorage, Parent = nil) stay hidden.
+    for (const auto& [name, entity] : entityByName) {
+        const auto* h = ecs.tryGetComponent<Hierarchy>(entity);
+        if (h == nullptr || h->parent == kNullEntity) instances::updateWorldPresence(ecs, entity);
+    }
 }
 
 bool captureSceneEntity(ECS& ecs, EntityId entity, SceneEntityRecord& out) {
     const Name* name = ecs.tryGetComponent<Name>(entity);
     if (name == nullptr || name->value.empty()) return false; // unnamed entities can't round-trip, see SceneEntityRecord's comment
+    if (instances::isDetached(ecs, entity)) return false;
     SceneEntityRecord record;
     record.name = name->value;
 
@@ -329,6 +341,7 @@ bool captureSceneEntity(ECS& ecs, EntityId entity, SceneEntityRecord& out) {
         record.scriptAutoRun = script->autoRun;
     }
     if (const auto* visual = ecs.tryGetComponent<VisualScript>(entity)) record.visualScript = visual->graph;
+    if (const auto* info = ecs.tryGetComponent<InstanceInfo>(entity)) record.instanceInfo = info->serialize();
     if (const auto* sound = ecs.tryGetComponent<AudioSource>(entity)) {
         record.hasSound = true;
         record.sound = *sound;

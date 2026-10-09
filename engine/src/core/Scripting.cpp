@@ -15,7 +15,17 @@
 #include <lualib.h>
 #include <Luau/Compiler.h>
 
+#include "core/RobloxDatatypes.hpp"
+#include "core/ScriptInstanceApi.hpp"
+
 namespace engine::core {
+
+// typeof is replaced by the Roblox datatypes version, which also names
+// Vector3, CFrame and the rest; the fastcall would bypass it.
+static const char* const kDisabledBuiltins[] = {"typeof", nullptr};
+// Fields read through these change at runtime (workspace.Part can be destroyed),
+// so Luau must not resolve chains like workspace.Part once at load.
+static const char* const kMutableGlobals[] = {"game", "Game", "workspace", "Workspace", "script", "shared", "_G", nullptr};
 
 namespace {
 
@@ -589,13 +599,9 @@ void Scripting::registerBindings(lua_State* L) {
     lua_setfield(L, -2, "onPlayerLeave");
     lua_setglobal(L, "events");
 
-    // TODO(§6): `game`, `workspace`, and every DataModel service attach
-    // here once the Instance/ECS translation layer exists. Everything
-    // above is the full C++-function-exposure surface Scripting provides
-    // on its own; bindingsHook_ (below) is where a real entity/animation/
-    // material/physics API attaches instead -- see setBindingsHook()'s
-    // doc comment for why that's a separate seam from this TODO, not the
-    // same one.
+    // The Instance tree (game, workspace) needs an ECS, so the bindings
+    // hook installs it (core/ScriptInstanceApi.hpp).
+    registerRobloxDatatypes(L);
     if (bindingsHook_) bindingsHook_(L);
 }
 
@@ -716,6 +722,8 @@ int Scripting::luaRequire(lua_State* L) {
     }
 
     Luau::CompileOptions compileOptions;
+    compileOptions.disabledBuiltins = kDisabledBuiltins;
+    compileOptions.mutableGlobals = kMutableGlobals;
     compileOptions.optimizationLevel = 1;
     compileOptions.debugLevel = 1;
     std::string bytecode = Luau::compile(moduleSource, compileOptions);
@@ -855,10 +863,13 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     registerBindings(owner);
     registerModuleLoader(owner);
     if (entity != kNoScriptEntity) {
-        lua_newtable(owner);
-        lua_pushnumber(owner, static_cast<double>(entity));
-        lua_setfield(owner, -2, "entity");
-        lua_setreadonly(owner, -1, true);
+        // An Instance when the VM has the Instance API; `script.entity` works either way.
+        if (!pushScriptInstance(owner, entity)) {
+            lua_newtable(owner);
+            lua_pushnumber(owner, static_cast<double>(entity));
+            lua_setfield(owner, -2, "entity");
+            lua_setreadonly(owner, -1, true);
+        }
         lua_setglobal(owner, "script");
     }
     // Must run last: it freezes the global table, so every global this
@@ -880,6 +891,8 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
     }
 
     Luau::CompileOptions compileOptions;
+    compileOptions.disabledBuiltins = kDisabledBuiltins;
+    compileOptions.mutableGlobals = kMutableGlobals;
     compileOptions.optimizationLevel = debugger_ != nullptr ? 0 : 1;
     compileOptions.debugLevel = debugger_ != nullptr ? 2 : 1;
     std::string bytecode = Luau::compile(source, compileOptions);

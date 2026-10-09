@@ -1,0 +1,32 @@
+<roblox version="4"><Item class="Workspace" referent="RBX3"><Properties><string name="Name">Workspace</string></Properties><Item class="Part" referent="RBX1"><Properties><string name="Name">Baseplate</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>40</X><Y>1</Y><Z>40</Z></Vector3><Color3uint8 name="Color3uint8">4284193356</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="SpawnLocation" referent="RBX2"><Properties><string name="Name">SpawnLocation</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>1</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4279069100</Color3uint8><bool name="Anchored">true</bool></Properties></Item></Item><Item class="ReplicatedStorage" referent="RBX7"><Properties><string name="Name">ReplicatedStorage</string></Properties><Item class="RemoteEvent" referent="RBX4"><Properties><string name="Name">BuyItem</string></Properties></Item><Item class="Tool" referent="RBX6"><Properties><string name="Name">Sword</string></Properties><Item class="Part" referent="RBX5"><Properties><string name="Name">Handle</string><CoordinateFrame name="CFrame"><X>0</X><Y>0</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>1</X><Y>4</Y><Z>1</Z></Vector3><Color3uint8 name="Color3uint8">4288914085</Color3uint8><bool name="Anchored">false</bool></Properties></Item></Item></Item><Item class="ServerScriptService" referent="RBX10"><Properties><string name="Name">ServerScriptService</string></Properties><Item class="Script" referent="RBX8"><Properties><string name="Name">Leaderstats</string><ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+
+Players.PlayerAdded:Connect(function(player)
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local cash = Instance.new("IntValue")
+	cash.Name = "Cash"
+	cash.Value = 0
+	cash.Parent = leaderstats
+end)
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX9"><Properties><string name="Name">ShopServer</string><ProtectedString name="Source"><![CDATA[local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local buyItem = ReplicatedStorage:WaitForChild("BuyItem")
+local prices = { Sword = 10 }
+
+buyItem.OnServerEvent:Connect(function(player, itemName)
+	local price = prices[itemName]
+	local cash = player.leaderstats.Cash
+	if price and cash.Value >= price then
+		cash.Value -= price
+		ReplicatedStorage[itemName]:Clone().Parent = player.Backpack
+	end
+end)
+]]></ProtectedString></Properties></Item></Item><Item class="StarterGui" referent="RBX16"><Properties><string name="Name">StarterGui</string></Properties><Item class="ScreenGui" referent="RBX15"><Properties><string name="Name">ShopGui</string></Properties><Item class="Frame" referent="RBX14"><Properties><string name="Name">ShopFrame</string></Properties><Item class="TextLabel" referent="RBX11"><Properties><string name="Name">Title</string></Properties></Item><Item class="TextButton" referent="RBX13"><Properties><string name="Name">BuySword</string></Properties><Item class="LocalScript" referent="RBX12"><Properties><string name="Name">BuyButton</string><ProtectedString name="Source"><![CDATA[local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local buyItem = ReplicatedStorage:WaitForChild("BuyItem")
+local button = script.Parent
+
+button.MouseButton1Click:Connect(function()
+	buyItem:FireServer("Sword")
+end)
+]]></ProtectedString></Properties></Item></Item></Item></Item></Item></roblox>

@@ -109,6 +109,10 @@ struct SceneEntityRecord {
     bool scriptAutoRun = true;
     // core::VisualScript::graph; empty when the entity has none.
     std::string visualScript;
+
+    // InstanceInfo::serialize() text (Roblox class, stored properties,
+    // attributes); empty for plain entities.
+    std::string instanceInfo;
 };
 
 // A full scene -- every SceneEntityRecord worth persisting, plus the

@@ -1,0 +1,36 @@
+<roblox version="4"><Item class="Workspace" referent="RBX4"><Properties><string name="Name">Workspace</string></Properties><Item class="Part" referent="RBX1"><Properties><string name="Name">Baseplate</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>40</X><Y>1</Y><Z>40</Z></Vector3><Color3uint8 name="Color3uint8">4284193356</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="SpawnLocation" referent="RBX2"><Properties><string name="Name">SpawnLocation</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>1</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4279069100</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="Part" referent="RBX3"><Properties><string name="Name">PointsPad</string><CoordinateFrame name="CFrame"><X>10</X><Y>0.6</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>4</X><Y>0.2</Y><Z>4</Z></Vector3><Color3uint8 name="Color3uint8">4294298928</Color3uint8><bool name="Anchored">true</bool></Properties></Item></Item><Item class="ServerScriptService" referent="RBX6"><Properties><string name="Name">ServerScriptService</string></Properties><Item class="Script" referent="RBX5"><Properties><string name="Name">PointsLeaderboard</string><ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local store = DataStoreService:GetDataStore("PointsV1")
+
+Players.PlayerAdded:Connect(function(player)
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local points = Instance.new("IntValue")
+	points.Name = "Points"
+	points.Parent = leaderstats
+
+	local ok, saved = pcall(function()
+		return store:GetAsync(tostring(player.UserId))
+	end)
+	if ok and saved then
+		points.Value = saved
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	local points = player.leaderstats.Points.Value
+	pcall(function()
+		store:SetAsync(tostring(player.UserId), points)
+	end)
+end)
+
+local pad = workspace:WaitForChild("PointsPad")
+pad.Touched:Connect(function(hit)
+	local player = Players:GetPlayerFromCharacter(hit.Parent)
+	if player then
+		player.leaderstats.Points.Value += 1
+	end
+end)
+]]></ProtectedString></Properties></Item></Item></roblox>

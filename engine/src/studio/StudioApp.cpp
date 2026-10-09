@@ -26,6 +26,7 @@
 #include "core/GameManifest.hpp"
 #include "core/HiddenGemsSelector.hpp"
 #include "core/Hierarchy.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/Logger.hpp"
 #include "core/PhysicsMaterial.hpp"
 #include "core/KronosVersion.hpp"
@@ -69,6 +70,7 @@
 #include "migration/InstanceHydrator.hpp"
 #include "studio/PluginChrome.hpp"
 #include "migration/ProjectImporter.hpp"
+#include "migration/CompatibilityScore.hpp"
 #include "cinematic/CameraRail.hpp"
 #include "cinematic/RailCamera.hpp"
 #include "core/PhysicalCamera.hpp"
@@ -791,10 +793,14 @@ bool StudioApp::initialize(StudioMode mode) {
     hydrationMeshes_.box = meshLibrary_.registerMesh(
         core::Mesh::createBox(renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
                                {0.5f, 0.5f, 0.5f}));
+    // A capsule with no middle is a 1-unit ball (Part.Shape = Ball).
     hydrationMeshes_.capsule = meshLibrary_.registerMesh(core::Mesh::createCapsule(
-        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.35f, 1.0f));
+        renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.5f, 0.0f));
     hydrationMeshes_.cylinder = meshLibrary_.registerMesh(core::Mesh::createCylinder(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.5f, 0.5f));
+    // Instance.new("Part") draws with the same meshes.
+    ecs_.raw().ctx().insert_or_assign(
+        core::InstanceMeshes{hydrationMeshes_.box, hydrationMeshes_.capsule, hydrationMeshes_.cylinder});
 
     auto texturePreview = std::make_unique<plugins::TexturePreviewPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue());
@@ -1543,26 +1549,7 @@ void StudioApp::drawAboutPanel() {
 }
 
 core::PlayerAvatarLook StudioApp::localPlayerLook() const {
-    core::PlayerAvatarLook look;
-    look.skinTone = core::resolveSkinToneColor(localProfile_.skinToneIndex);
-    look.headShape = core::headShapeFromIndex(localProfile_.headShapeIndex);
-    look.bodyProportions = core::BodyProportions{localProfile_.bodyHeight, localProfile_.bodyWidth,
-                                                 localProfile_.bodyLimbScale, localProfile_.bodyTorsoLength,
-                                                 localProfile_.bodyShoulderWidth};
-    look.loadout = localAvatarLoadout_;
-    look.clothingFit = core::clothingFitFromIndex(localProfile_.clothingFitIndex);
-    auto clipPath = [&](const std::string& itemId) -> std::string {
-        if (itemId.empty()) return {};
-        const core::AnimationManifest* manifest = animationDatabase_.findById(itemId);
-        return manifest != nullptr ? manifest->item.clipPath : std::string();
-    };
-    look.animationOverrides.idleClipPath = clipPath(localProfile_.animOverrideIdleId);
-    look.animationOverrides.walkClipPath = clipPath(localProfile_.animOverrideWalkId);
-    look.animationOverrides.runClipPath = clipPath(localProfile_.animOverrideRunId);
-    look.animationOverrides.jumpStartClipPath = clipPath(localProfile_.animOverrideJumpStartId);
-    look.animationOverrides.jumpAirClipPath = clipPath(localProfile_.animOverrideJumpAirId);
-    look.animationOverrides.jumpLandClipPath = clipPath(localProfile_.animOverrideJumpLandId);
-    return look;
+    return core::playerAvatarLookFromProfile(localProfile_, localAvatarLoadout_, animationDatabase_);
 }
 
 std::vector<PaletteCommand> StudioApp::buildCommandPaletteCommands() {
@@ -2971,6 +2958,21 @@ void StudioApp::drawImportDialog() {
                 migration::ProjectImporter::logReport(report, importPathBuffer_);
 
                 importSummary_ = report.summary();
+                importCompatLines_.clear();
+                if (!report.blocked) {
+                    migration::CompatibilityScore score = migration::scoreImport(report);
+                    migration::runImportedScripts(report, score);
+                    importCompatLines_.push_back("Kronos compatibility: " + score.summary());
+                    std::vector<std::pair<std::string, size_t>> missing(score.missingApis.begin(),
+                                                                        score.missingApis.end());
+                    std::sort(missing.begin(), missing.end(),
+                              [](const auto& a, const auto& b) { return a.second > b.second; });
+                    std::string top = "Most-used missing APIs:";
+                    for (size_t i = 0; i < missing.size() && i < 6; ++i) {
+                        top += (i == 0 ? " " : ", ") + missing[i].first + " (" + std::to_string(missing[i].second) + ")";
+                    }
+                    if (!missing.empty()) importCompatLines_.push_back(top);
+                }
                 importedTree_ = report.tree;
                 importBlocked_ = report.blocked;
                 for (const migration::ImportDiagnostic& diagnostic : report.diagnostics) {
@@ -2989,6 +2991,7 @@ void StudioApp::drawImportDialog() {
         if (!importSummary_.empty()) {
             ImGui::Separator();
             ImGui::TextWrapped("%s", importSummary_.c_str());
+            for (const std::string& line : importCompatLines_) ImGui::TextWrapped("%s", line.c_str());
         }
 
         // Hydration is a separate, deliberate second step. The report is
@@ -3068,7 +3071,7 @@ void StudioApp::hydrateImportedTree() {
         "Import .rbxlx",
         [this, created]() {
             for (auto it = created.rbegin(); it != created.rend(); ++it) {
-                if (ecs_.raw().valid(*it)) ecs_.destroyEntity(*it);
+                if (ecs_.raw().valid(*it)) core::hierarchy::destroyEntityRecursive(ecs_, *it);
             }
             // Selection almost certainly pointed at something just
             // destroyed; clearing it beats leaving a dangling id.

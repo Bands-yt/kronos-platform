@@ -386,7 +386,7 @@
       <a href="#scripting">Scripting</a>
       <a href="#telemetry">Runtime</a>
       <a href="/discover">Discover Games</a>
-      <a class="btn" href="#" role="button">Source</a>
+      <a class="btn primary" href="https://github.com/Bands-yt/kronos-platform/releases/latest" role="button">Download</a>
     </nav>
   </div>
 </header>
@@ -399,7 +399,8 @@
         <h1>A game engine built to be<br /><span class="accent">read, not guessed at.</span></h1>
         <p class="sub">Kronos is a Vulkan-renderer engine with a real Forward+ pipeline, a bare EnTT-registry ECS, deterministic Jolt physics, and a sandboxed Luau layer that scripts against the same live state the editor does &mdash; no partial Instance-API illusion standing in for either.</p>
         <div class="cta-row">
-          <a class="btn primary" href="#scripting" role="button">Read the API &rarr;</a>
+          <a class="btn primary" href="https://github.com/Bands-yt/kronos-platform/releases/latest" role="button">Download the beta &rarr;</a>
+          <a class="btn" href="#scripting" role="button">Read the API</a>
           <a class="btn" href="#architecture" role="button">Architecture</a>
         </div>
       </div>
@@ -432,13 +433,13 @@
     <section class="block" id="architecture">
       <div class="block-head">
         <p class="eyebrow">Architecture</p>
-        <h2>Four subsystems, one frame graph.</h2>
+        <h2>Four subsystems, one renderer.</h2>
         <p>Nothing here is a stub behind a marketing name &mdash; each panel below is a real, load-bearing part of the runtime, not an aspirational roadmap item.</p>
       </div>
       <div class="arch-grid">
         <div class="arch-card">
           <p class="tag">Renderer</p>
-          <h3>Forward+, one real frame graph</h3>
+          <h3>Clustered Forward+</h3>
           <p>Opaque pass &rarr; cascaded shadow maps &rarr; SSAO/DOF/motion-blur &rarr; bloom &rarr; ACES or AgX tonemap &rarr; an optional sampled 3D LUT. Studio's own viewport and an offline capture rig render through the identical path, so what a creator previews is what gets exported.</p>
         </div>
         <div class="arch-card">
@@ -546,8 +547,8 @@
     <div class="shell row">
       <span>&copy; Kronos Engine. Built with C++20 and Vulkan.</span>
       <div class="flinks">
-        <a href="#">Source</a>
-        <a href="#">Docs</a>
+        <a href="https://github.com/Bands-yt/kronos-platform/releases/latest">Download</a>
+        <a href="https://github.com/Bands-yt/kronos-platform#readme">Docs</a>
         <a href="/discover">Discover Games</a>
       </div>
     </div>
