@@ -125,11 +125,14 @@ start to finish without hand edits.
 Small, high-value items, picked up between bridge steps:
 
 - **Launch feedback**: the crashes and confusing spots people report after Friday, fixed first.
-- **Per-source sound instances**: two entities using the same sound file can play at the same time (each `AudioSource` gets its own `ma_sound` via `ma_sound_init_copy`).
 - **Keyframe-bound audio** (from 4.2): timeline events play sounds at exact sample times, through the shared mixer. 2–3 weeks.
 - **Build cache** (from 4.2): a `KRONOS_COMPILER_CACHE` CMake option for sccache/ccache, and a content-hash cache for compiled shaders. 1 week. Distributed builds across machines only if build times become a real problem.
 - **Third-party plugin sandbox on Windows** (Linux has it; Windows skips third-party plugins today).
 - **Rollback-aware Luau**: scripts that run inside rollback matches.
+
+### Done
+- **Player polish, batch 1** (10 Oct 2026): the top bar's search box shrinks so it never covers the bell or profile in a small window; the profile icon shows your skin tone; the Avatar Shop's empty message points to the Customize tab with an "Open Customize" button; the spinning-logo panel hides when the window is narrower than 1180 px; games now use Studio's daytime light (clear blue sky, fixed exposure, no volumetric haze), so a game looks the same in the Player as in Studio Play.
+- **Per-source sound instances** (10 Oct 2026): each object with a sound gets its own voice (`ma_sound_init_copy`, or a buffer reference for generated sounds), so objects sharing a sound file play at the same time instead of cutting each other off. Voices are freed when the object is destroyed, rebuilt when the sound is reloaded, and released on Studio's Stop. Tested by mixing offline and measuring the output.
 
 ---
 

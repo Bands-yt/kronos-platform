@@ -63,8 +63,9 @@ SceneLighting computeLightingForTimeOfDay(float hours) {
     // (roughly -30%) to daytime ambient specifically -- night values
     // (the mix's other endpoint) are untouched, so the dawn/dusk/night
     // portion of the cycle keeps its existing character.
-    lighting.ambient = glm::mix(glm::vec3(0.03f, 0.04f, 0.08f), glm::vec3(0.08f, 0.10f, 0.15f), dayFactor);
-    lighting.ambientGround = glm::mix(glm::vec3(0.02f, 0.02f, 0.03f), glm::vec3(0.06f, 0.05f, 0.045f), dayFactor);
+    // Daytime values match Studio's editing light, so games look like Studio Play.
+    lighting.ambient = glm::mix(glm::vec3(0.03f, 0.04f, 0.08f), glm::vec3(0.34f, 0.38f, 0.46f), dayFactor);
+    lighting.ambientGround = glm::mix(glm::vec3(0.02f, 0.02f, 0.03f), glm::vec3(0.22f, 0.21f, 0.20f), dayFactor);
 
     // Real fog -- thicker and cooler at night (real atmospheric
     // convention), thinner during the day; see shaders/scene.frag's
@@ -75,12 +76,13 @@ SceneLighting computeLightingForTimeOfDay(float hours) {
     // softens the brighter ambient/sun either) to a real, still-modest
     // 0.010; night raised by the same proportion to keep the existing
     // day/night contrast rather than compressing it.
-    lighting.fogColor = glm::mix(glm::vec3(0.05f, 0.06f, 0.10f), glm::vec3(0.65f, 0.70f, 0.78f), dayFactor);
-    lighting.fogDensity = glm::mix(0.016f, 0.010f, dayFactor);
+    // Daytime fog is light and sky-blue, so games look like Studio's clear sky, not hazy.
+    lighting.fogColor = glm::mix(glm::vec3(0.05f, 0.06f, 0.10f), glm::vec3(0.62f, 0.74f, 0.90f), dayFactor);
+    lighting.fogDensity = glm::mix(0.016f, 0.005f, dayFactor);
 
-    lighting.skyZenithColor = glm::mix(glm::vec3(0.02f, 0.03f, 0.08f), glm::vec3(0.25f, 0.45f, 0.85f), dayFactor);
+    lighting.skyZenithColor = glm::mix(glm::vec3(0.02f, 0.03f, 0.08f), glm::vec3(0.12f, 0.36f, 0.86f), dayFactor);
     glm::vec3 dawnDuskHorizon(0.95f, 0.55f, 0.35f);
-    glm::vec3 dayHorizon(0.75f, 0.80f, 0.85f);
+    glm::vec3 dayHorizon(0.55f, 0.74f, 0.96f);
     glm::vec3 horizonDayColor = glm::mix(dawnDuskHorizon, dayHorizon, noonBlend);
     lighting.skyHorizonColor = glm::mix(glm::vec3(0.05f, 0.06f, 0.12f), horizonDayColor, dayFactor);
 

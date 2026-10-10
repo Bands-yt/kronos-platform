@@ -99,7 +99,9 @@ std::string resolveKronosBackendUrl() {
 // the chrome itself and every content panel that has to inset around it.
 constexpr float kSidebarWidth = 232.0f;
 constexpr float kTopBarHeight = 64.0f;
-constexpr float kBrandPanelWidth = 300.0f;
+constexpr float kBrandPanelFullWidth = 300.0f;
+// The logo panel is hidden in narrow windows so the pages keep their room.
+float brandPanelWidth() { return ImGui::GetMainViewport()->WorkSize.x < 1180.0f ? 0.0f : kBrandPanelFullWidth; }
 
 constexpr const char* kUpdateRepoOwner = "Bands-yt";
 constexpr const char* kUpdateRepoName = "kronos-platform";
@@ -1170,9 +1172,10 @@ void popPrimaryActionButtonColors() { ImGui::PopStyleColor(3); }
 // same character at profile-icon size, without needing a portrait asset
 // per user -- and, unlike a downloaded image, it is always available
 // offline and costs no GPU texture.
-void drawAvatarHeadGlyph(ImDrawList* drawList, ImVec2 center, float radius) {
+void drawAvatarHeadGlyph(ImDrawList* drawList, ImVec2 center, float radius,
+                         ImVec4 skinTone = ImVec4(0.93f, 0.87f, 0.80f, 1.0f)) {
     using namespace engine::core::kronos_palette;
-    const ImU32 skin = ImGui::GetColorU32(ImVec4(0.93f, 0.87f, 0.80f, 1.0f));
+    const ImU32 skin = ImGui::GetColorU32(skinTone);
     const ImU32 feature = ImGui::GetColorU32(ImVec4(0.13f, 0.13f, 0.14f, 1.0f));
     const ImU32 port = ImGui::GetColorU32(ImVec4(0.24f, 0.25f, 0.27f, 1.0f));
 
@@ -1274,7 +1277,7 @@ void drawAnimatedHourglass(ImDrawList* drawList, ImVec2 center, float halfWidth,
 void RuntimeShell::beginContentCanvas(const char* id) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - brandPanelWidth(),
                                      viewport->WorkSize.y - kTopBarHeight));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(core::kronos_palette::kCharcoal));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 18.0f));
@@ -1617,7 +1620,7 @@ void RuntimeShell::drawDirectoryPanel() {
     using namespace core::kronos_palette;
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - brandPanelWidth(),
                                      viewport->WorkSize.y - kTopBarHeight));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kCharcoal));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 18.0f));
@@ -2073,7 +2076,7 @@ void RuntimeShell::drawSessionBrowserPanel() {
     // viewport size here is what put this panel underneath the sidebar
     // and brand panel.
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - brandPanelWidth(),
                                      viewport->WorkSize.y - kTopBarHeight));
     ImGui::Begin("Session Browser", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
@@ -2601,7 +2604,7 @@ void RuntimeShell::drawAvatarShopPanel() {
         // viewport size here is what put this panel underneath the sidebar
         // and brand panel.
         ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - brandPanelWidth(),
                                          viewport->WorkSize.y - kTopBarHeight));
         ImGui::Begin("Avatar Shop", nullptr,
                       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
@@ -2641,7 +2644,9 @@ void RuntimeShell::drawAvatarShopPanel() {
 
         bool customizeTab = false;
         if (ImGui::BeginTabBar("##avatar_tabs")) {
-            if (ImGui::BeginTabItem("Customize")) {
+            const ImGuiTabItemFlags customizeFlags = openCustomizeTab_ ? ImGuiTabItemFlags_SetSelected : 0;
+            openCustomizeTab_ = false;
+            if (ImGui::BeginTabItem("Customize", nullptr, customizeFlags)) {
                 customizeTab = true;
                 ImGui::EndTabItem();
             }
@@ -2756,8 +2761,13 @@ void RuntimeShell::drawAvatarShopPanel() {
 
     ImGui::BeginChild("avatar_shop_grid");
     if (results.empty()) {
-        ImGui::TextDisabled(filter.textQuery.empty() ? "No items in the Marketplace yet."
-                                                       : "No items match your search.");
+        if (filter.textQuery.empty()) {
+            ImGui::TextDisabled("No items in the Shop yet.");
+            ImGui::TextWrapped("You can still change your skin tone, head and body on the Customize tab.");
+            if (ui::button("Open Customize", ui::ButtonKind::Primary)) openCustomizeTab_ = true;
+        } else {
+            ImGui::TextDisabled("No items match your search.");
+        }
     } else {
         ImGuiListClipper clipper;
         clipper.Begin(rowCount);
@@ -3284,7 +3294,7 @@ void RuntimeShell::drawSettingsPanel() {
         // viewport size here is what put this panel underneath the sidebar
         // and brand panel.
         ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - brandPanelWidth(),
                                          viewport->WorkSize.y - kTopBarHeight));
         ImGui::Begin("Settings", nullptr,
                       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
@@ -3692,7 +3702,7 @@ void RuntimeShell::drawSidebar() {
 void RuntimeShell::drawTopBar() {
     using namespace core::kronos_palette;
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    float contentWidth = viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth;
+    float contentWidth = viewport->WorkSize.x - kSidebarWidth - brandPanelWidth();
 
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y));
     ImGui::SetNextWindowSize(ImVec2(contentWidth, kTopBarHeight));
@@ -3706,9 +3716,20 @@ void RuntimeShell::drawTopBar() {
 
     const float controlHeight = 34.0f;
     const float rowY = (kTopBarHeight - controlHeight) * 0.5f;
+    std::optional<core::KronosUser> user = kronosApi_.currentUser();
+    const char* profileLabel = user.has_value()
+                                    ? (user->displayName.empty() ? user->email.c_str() : user->displayName.c_str())
+                                    : "Player";
+    const char* authLabel = user.has_value() ? "Sign Out" : (backendAuthInProgress_.load() ? "Waiting..." : "Sign In");
+    const float authWidth = ImGui::CalcTextSize(authLabel).x + 40.0f;
+    const float profileWidth = 34.0f + 8.0f + ImGui::CalcTextSize(profileLabel).x;
+    const float clusterWidth = controlHeight + 14.0f + profileWidth + 18.0f + authWidth;
+
     ImGui::SetCursorPos(ImVec2(24.0f, rowY));
     {
-        const float searchWidth = std::min(contentWidth * 0.45f, 460.0f);
+        // Never wider than the space left of the bell/profile/sign-in cluster.
+        const float searchWidth =
+            std::max(120.0f, std::min({contentWidth * 0.45f, 460.0f, contentWidth - 24.0f - clusterWidth - 40.0f}));
         const ImVec2 searchMin = ImGui::GetCursorScreenPos();
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(36.0f, (controlHeight - ImGui::GetTextLineHeight()) * 0.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, controlHeight * 0.5f);
@@ -3725,15 +3746,6 @@ void RuntimeShell::drawTopBar() {
                      ui::mix(paletteColor(kTextMuted), paletteColor(kSkyBlue), focusT));
     }
 
-    std::optional<core::KronosUser> user = kronosApi_.currentUser();
-    const char* profileLabel = user.has_value()
-                                    ? (user->displayName.empty() ? user->email.c_str() : user->displayName.c_str())
-                                    : "Player";
-    const char* authLabel = user.has_value() ? "Sign Out" : (backendAuthInProgress_.load() ? "Waiting..." : "Sign In");
-    const float authWidth = ImGui::CalcTextSize(authLabel).x + 40.0f;
-    const float profileWidth = 34.0f + 8.0f + ImGui::CalcTextSize(profileLabel).x;
-    const float clusterWidth = controlHeight + 14.0f + profileWidth + 18.0f + authWidth;
-
     ImGui::SetCursorPos(ImVec2(contentWidth - 24.0f - clusterWidth, rowY));
     if (ui::iconButton("##notifications", ui::Icon::Bell, controlHeight, notification::unreadCount(localProfile_) > 0)) {
         state_ = ShellState::Notifications;
@@ -3745,7 +3757,10 @@ void RuntimeShell::drawTopBar() {
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         const ImVec2 headCenter(origin.x + 17.0f, origin.y + controlHeight * 0.5f);
         drawList->AddCircleFilled(headCenter, 17.0f, ImGui::GetColorU32(paletteColor(kRaised)));
-        drawAvatarHeadGlyph(drawList, headCenter, 10.5f);
+        const int toneIndex = localProfile_.skinToneIndex;
+        const glm::vec4 tone = core::resolveSkinToneColor(toneIndex);
+        drawAvatarHeadGlyph(drawList, headCenter, 10.5f,
+                            toneIndex >= 0 ? ImVec4(tone.r, tone.g, tone.b, 1.0f) : ImVec4(0.93f, 0.87f, 0.80f, 1.0f));
         drawList->AddCircle(headCenter, 17.0f, ImGui::GetColorU32(paletteColor(kBorder)), 0, 1.0f);
         const float textY = origin.y + (controlHeight - ImGui::GetTextLineHeight()) * 0.5f;
         if (ImFont* medium = core::kronosMediumFont()) ImGui::PushFont(medium, 0.0f);
@@ -3772,9 +3787,10 @@ void RuntimeShell::drawTopBar() {
 void RuntimeShell::drawBrandPanel() {
     using namespace core::kronos_palette;
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    if (brandPanelWidth() <= 0.0f) return;
 
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - kBrandPanelWidth, viewport->WorkPos.y));
-    ImGui::SetNextWindowSize(ImVec2(kBrandPanelWidth, viewport->WorkSize.y));
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - kBrandPanelFullWidth, viewport->WorkPos.y));
+    ImGui::SetNextWindowSize(ImVec2(kBrandPanelFullWidth, viewport->WorkSize.y));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, paletteColor(kSurface));
     ImGui::Begin("##kronos_brand", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
@@ -3782,7 +3798,7 @@ void RuntimeShell::drawBrandPanel() {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     const ImVec2 windowPos = ImGui::GetWindowPos();
     drawList->AddLine(windowPos, ImVec2(windowPos.x, windowPos.y + viewport->WorkSize.y), ImGui::GetColorU32(paletteColor(kBorder)));
-    const ImVec2 center(windowPos.x + kBrandPanelWidth * 0.5f, windowPos.y + viewport->WorkSize.y * 0.36f);
+    const ImVec2 center(windowPos.x + kBrandPanelFullWidth * 0.5f, windowPos.y + viewport->WorkSize.y * 0.36f);
     const float time = static_cast<float>(ImGui::GetTime());
 
     // Soft accent halo behind the mark.
@@ -3800,7 +3816,7 @@ void RuntimeShell::drawBrandPanel() {
     ImGui::SetCursorPosY(viewport->WorkSize.y * 0.36f + 140.0f);
     auto centeredText = [&](const ImVec4& color, const char* text) {
         float width = ImGui::CalcTextSize(text).x;
-        ImGui::SetCursorPosX((kBrandPanelWidth - width) * 0.5f);
+        ImGui::SetCursorPosX((kBrandPanelFullWidth - width) * 0.5f);
         ImGui::TextColored(color, "%s", text);
     };
     if (ImFont* bold = core::kronosBoldFont()) ImGui::PushFont(bold, 22.0f);
@@ -4571,7 +4587,7 @@ void RuntimeShell::drawFriendsPanel() {
         // viewport size here is what put this panel underneath the sidebar
         // and brand panel.
         ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - brandPanelWidth(),
                                          viewport->WorkSize.y - kTopBarHeight));
         ImGui::Begin("Friends", nullptr,
                       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
@@ -4775,7 +4791,7 @@ void RuntimeShell::drawNotificationsPanel() {
         // viewport size here is what put this panel underneath the sidebar
         // and brand panel.
         ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kSidebarWidth, viewport->WorkPos.y + kTopBarHeight));
-        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - kBrandPanelWidth,
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - kSidebarWidth - brandPanelWidth(),
                                          viewport->WorkSize.y - kTopBarHeight));
         ImGui::Begin("Notifications", nullptr,
                       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);

@@ -82,7 +82,7 @@ int ScriptAudioApi::luaBusLevel(lua_State* L) {
 int ScriptAudioApi::luaPlay(lua_State* L) {
     AudioSource* source = sourceFor(L, self(L)->ecs_);
     if (!source) return 0;
-    self(L)->audio_.playFromOffset(source->soundHandle, 0.0);
+    source->restart = true;
     source->playing = true;
     lua_pushboolean(L, 1);
     return 1;
@@ -95,7 +95,7 @@ int ScriptAudioApi::luaStop(lua_State* L) {
 
 int ScriptAudioApi::luaIsPlaying(lua_State* L) {
     AudioSource* source = sourceFor(L, self(L)->ecs_);
-    lua_pushboolean(L, source && source->playing && self(L)->audio_.isSoundPlaying(source->soundHandle));
+    lua_pushboolean(L, source && source->playing);
     return 1;
 }
 

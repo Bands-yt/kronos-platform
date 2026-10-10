@@ -29030,7 +29030,7 @@ void testScriptAudioApi() {
     check(after.bus == "UI" && after.volume == 0.25f && after.pitch == 2.0f && after.playing, "entity sound controls");
     check(has(6, "true") && has(7, "") && output.size() == 8, "audio.play ignores entities without a sound");
     audio.mix(ecs, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    check(audio.soundBus(after.soundHandle) == "UI", "script bus choice reaches the mixer");
+    check(audio.entitySoundBus(speaker) == "UI", "script bus choice reaches the mixer");
     float block[480 * 2];
     for (int i = 0; i < 30; ++i) {
         audio.renderOffline(block, 480);
@@ -29040,6 +29040,64 @@ void testScriptAudioApi() {
     scripting.loadAndRun("audio_test2", "audio.play(" + id + ")\nprint(audio.isPlaying(" + id + "))\n");
     check(output.size() == 9 && output[8] == "true", "audio.play restarts a finished sound");
     scripting.shutdown();
+}
+
+void testAudioPerSourceVoices() {
+    using namespace engine::core;
+    using namespace mixer_test;
+    std::printf("\n-- per-source sound voices --\n");
+    Audio audio;
+    if (!audio.initializeOffline(2, 48000)) {
+        std::printf("  skipped: offline audio engine unavailable\n");
+        return;
+    }
+    const auto pcm = tone(330.0f, 0.25f, 1.0f);
+    const SoundHandle shared = audio.reserveSound();
+    audio.setSoundPcm(shared, pcm.data(), pcm.size() / 2, 2, 48000);
+
+    ECS ecs;
+    auto addSpeaker = [&](const char* name) {
+        const auto entity = ecs.createEntity(name);
+        AudioSource source;
+        source.soundHandle = shared;
+        source.spatial = false;
+        source.looping = true;
+        source.playing = true;
+        ecs.addComponent<AudioSource>(entity, source);
+        return entity;
+    };
+    const auto a = addSpeaker("A");
+    const auto b = addSpeaker("B");
+    const glm::vec3 listener(0.0f), forward(0.0f, 0.0f, -1.0f), up(0.0f, 1.0f, 0.0f);
+
+    audio.mix(ecs, listener, forward, up);
+    check(audio.voiceCount() == 2 && audio.isEntitySoundPlaying(a) && audio.isEntitySoundPlaying(b),
+          "two entities sharing one sound each get their own playing voice");
+    check(!audio.isSoundPlaying(shared), "the shared sound itself stays idle");
+    const float both = render(audio, 0.2f);
+
+    ecs.tryGetComponent<AudioSource>(b)->playing = false;
+    audio.mix(ecs, listener, forward, up);
+    const float one = render(audio, 0.2f);
+    check(audio.isEntitySoundPlaying(a) && !audio.isEntitySoundPlaying(b), "stopping one entity leaves the other playing");
+    check(near(one, 0.1768f, 0.01f) && both > one * 1.8f, "two voices play together instead of cutting each other off");
+
+    ecs.tryGetComponent<AudioSource>(b)->playing = true;
+    ecs.tryGetComponent<AudioSource>(b)->restart = true;
+    audio.mix(ecs, listener, forward, up);
+    ecs.destroyEntity(a);
+    audio.mix(ecs, listener, forward, up);
+    check(audio.voiceCount() == 1 && audio.isEntitySoundPlaying(b), "a destroyed entity's voice is freed");
+
+    const auto louder = tone(330.0f, 0.5f, 1.0f);
+    audio.setSoundPcm(shared, louder.data(), louder.size() / 2, 2, 48000);
+    audio.mix(ecs, listener, forward, up);
+    check(audio.voiceCount() == 1 && audio.isEntitySoundPlaying(b) && near(render(audio, 0.2f), 0.3536f, 0.02f),
+          "reloading the sound rebuilds the voice and it keeps playing");
+
+    audio.releaseVoices();
+    check(audio.voiceCount() == 0 && near(render(audio, 0.1f), 0.0f, 0.001f), "releaseVoices silences every entity");
+    audio.shutdown();
 }
 
 void testAudioMixerRuntime() {
@@ -29179,11 +29237,11 @@ void testAudioMixerRuntime() {
     source.bus = "UI";
     ecs.addComponent<AudioSource>(entity, source);
     audio.mix(ecs, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    check(audio.soundBus(source.soundHandle) == "UI", "AudioSource picks its bus");
+    check(audio.entitySoundBus(entity) == "UI", "AudioSource picks its bus");
     ecs.tryGetComponent<AudioSource>(entity)->bus.clear();
     ecs.tryGetComponent<AudioSource>(entity)->category = AudioCategory::Music;
     audio.mix(ecs, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    check(audio.soundBus(source.soundHandle) == "Music", "music sources default to the Music bus");
+    check(audio.entitySoundBus(entity) == "Music", "music sources default to the Music bus");
     audio.shutdown();
     check(!mixer.attached(), "shutdown detaches the mixer");
 }
@@ -48883,6 +48941,7 @@ int main() {
     testSamplePluginApiPlugin();
     testAudioMixerConfig();
     testAudioMixerRuntime();
+    testAudioPerSourceVoices();
     testScriptAudioApi();
     testSoundSavedInScenes();
     testSilentAudioMode();

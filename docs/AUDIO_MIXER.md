@@ -20,6 +20,9 @@ character talks.
 - **Snapshot**: a named set of changes (such as "Paused" or "Underwater") that
   a game can fade in and out. Each value in a snapshot is where that setting
   ends up at full strength. At half strength it's halfway there.
+- **Voices**: every object with a sound plays through its own voice, so ten
+  objects using the same sound file can all play at once, each from its own
+  position, volume and bus. Stopping one doesn't stop the others.
 
 ## The default mixer
 

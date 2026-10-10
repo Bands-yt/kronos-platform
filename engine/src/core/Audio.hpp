@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -125,6 +126,13 @@ public:
     // maxDistance) rather than hardcoded further than miniaudio's defaults.
     void mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward, glm::vec3 listenerUp);
 
+    // Each AudioSource entity plays through its own voice made by mix(), so entities sharing a
+    // sound file don't cut each other off. The handle's own sound stays for previews and one-shots.
+    void releaseVoices();
+    [[nodiscard]] size_t voiceCount() const { return voices_.size(); }
+    [[nodiscard]] bool isEntitySoundPlaying(EntityId entity) const;
+    [[nodiscard]] std::string entitySoundBus(EntityId entity) const;
+
     // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
     // Layer" -- "Audio: Master volume"): real, immediate -- forwards
     // directly to miniaudio's own real engine-level volume
@@ -141,7 +149,18 @@ public:
     void setCategoryVolume(AudioCategory category, float volume01);
 
 private:
+    struct Voice {
+        ma_sound* sound = nullptr;
+        void* bufferRef = nullptr; // ma_audio_buffer_ref*, for PCM-backed sounds
+        SoundHandle handle = kInvalidSoundHandle;
+        ma_sound* base = nullptr;
+        uint64_t lastMix = 0;
+    };
+
     bool finishInitialize();
+    ma_sound* makeVoice(SoundHandle handle, void*& bufferRef);
+    void destroyVoice(Voice& voice);
+    void releaseVoicesOf(SoundHandle handle, bool keepCursor);
     void releaseSilentContext();
 
     ma_context* silentContext_ = nullptr; // set when KRONOS_SILENT_AUDIO=1
@@ -149,6 +168,9 @@ private:
     AudioMixer mixer_;
     std::vector<ma_sound*> sounds_;
     std::vector<void*> buffers_; // ma_audio_buffer*, parallel to sounds_, set for PCM-backed sounds
+    std::unordered_map<EntityId, Voice> voices_;
+    std::unordered_map<EntityId, double> voiceResume_; // cursor to resume at after a sound is reloaded
+    uint64_t mixCount_ = 0;
     bool initialized_ = false;
     float masterVolume_ = 1.0f;
 };

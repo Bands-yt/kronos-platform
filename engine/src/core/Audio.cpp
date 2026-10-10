@@ -101,6 +101,7 @@ void Audio::setCategoryVolume(AudioCategory category, float volume01) {
 void Audio::shutdown() {
     if (!initialized_) return;
 
+    releaseVoices();
     for (SoundHandle handle = 0; handle < sounds_.size(); ++handle) unloadSound(handle);
     sounds_.clear();
     buffers_.clear();
@@ -139,6 +140,7 @@ SoundHandle Audio::loadSound(const std::string& path) {
 
 void Audio::unloadSound(SoundHandle handle) {
     if (handle >= sounds_.size()) return;
+    releaseVoicesOf(handle, false);
     if (sounds_[handle]) {
         mixer_.forget(sounds_[handle]);
         ma_sound_uninit(sounds_[handle]);
@@ -193,6 +195,7 @@ bool Audio::setSoundPcm(SoundHandle handle, const float* interleaved, uint64_t f
             if (ma_sound_get_cursor_in_seconds(old, &cursor) == MA_SUCCESS) resumeSeconds = cursor;
         }
     }
+    releaseVoicesOf(handle, true);
     unloadSound(handle);
     sounds_[handle] = sound;
     buffers_[handle] = buffer;
@@ -211,12 +214,7 @@ bool Audio::setSoundPcm(SoundHandle handle, const float* interleaved, uint64_t f
 
 void Audio::playOneShot(SoundHandle handle) {
     if (handle >= sounds_.size() || !sounds_[handle]) return;
-    // NOTE: reusing a single ma_sound instance means overlapping
-    // playOneShot() calls on the same handle cut each other off. A real
-    // SFX pool would clone `sounds_[handle]` per play via
-    // ma_sound_init_copy(); left as the obvious next step rather than
-    // built out here, since nothing yet calls this concurrently enough to
-    // need it.
+    // Overlapping calls on one handle restart it; entity sounds get their own voices in mix().
     ma_sound_seek_to_pcm_frame(sounds_[handle], 0);
     ma_sound_start(sounds_[handle]);
 }
@@ -265,8 +263,81 @@ bool Audio::isSoundPlaying(SoundHandle handle) const {
     return ma_sound_is_playing(sounds_[handle]) == MA_TRUE;
 }
 
+ma_sound* Audio::makeVoice(SoundHandle handle, void*& bufferRef) {
+    bufferRef = nullptr;
+    auto* voice = new ma_sound();
+    if (auto* buffer = static_cast<ma_audio_buffer*>(buffers_[handle])) {
+        auto* ref = new ma_audio_buffer_ref();
+        if (ma_audio_buffer_ref_init(buffer->ref.format, buffer->ref.channels, buffer->ref.pData, buffer->ref.sizeInFrames,
+                                     ref) != MA_SUCCESS) {
+            delete ref;
+            delete voice;
+            return nullptr;
+        }
+        ref->sampleRate = buffer->ref.sampleRate;
+        if (ma_sound_init_from_data_source(engine_, ref, 0, nullptr, voice) != MA_SUCCESS) {
+            ma_audio_buffer_ref_uninit(ref);
+            delete ref;
+            delete voice;
+            return nullptr;
+        }
+        bufferRef = ref;
+    } else if (ma_sound_init_copy(engine_, sounds_[handle], 0, nullptr, voice) != MA_SUCCESS) {
+        delete voice;
+        return nullptr;
+    }
+    return voice;
+}
+
+void Audio::destroyVoice(Voice& voice) {
+    if (voice.sound) {
+        mixer_.forget(voice.sound);
+        ma_sound_uninit(voice.sound);
+        delete voice.sound;
+        voice.sound = nullptr;
+    }
+    if (auto* ref = static_cast<ma_audio_buffer_ref*>(voice.bufferRef)) {
+        ma_audio_buffer_ref_uninit(ref);
+        delete ref;
+        voice.bufferRef = nullptr;
+    }
+}
+
+void Audio::releaseVoicesOf(SoundHandle handle, bool keepCursor) {
+    for (auto it = voices_.begin(); it != voices_.end();) {
+        if (it->second.handle != handle) {
+            ++it;
+            continue;
+        }
+        float cursor = 0.0f;
+        if (keepCursor && ma_sound_is_playing(it->second.sound) == MA_TRUE &&
+            ma_sound_get_cursor_in_seconds(it->second.sound, &cursor) == MA_SUCCESS) {
+            voiceResume_[it->first] = cursor;
+        }
+        destroyVoice(it->second);
+        it = voices_.erase(it);
+    }
+}
+
+void Audio::releaseVoices() {
+    for (auto& [entity, voice] : voices_) destroyVoice(voice);
+    voices_.clear();
+    voiceResume_.clear();
+}
+
+bool Audio::isEntitySoundPlaying(EntityId entity) const {
+    const auto it = voices_.find(entity);
+    return it != voices_.end() && ma_sound_is_playing(it->second.sound) == MA_TRUE;
+}
+
+std::string Audio::entitySoundBus(EntityId entity) const {
+    const auto it = voices_.find(entity);
+    return it != voices_.end() ? mixer_.busOf(it->second.sound) : std::string{};
+}
+
 void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward, glm::vec3 listenerUp) {
     if (!initialized_) return;
+    ++mixCount_;
 
     ma_engine_listener_set_position(engine_, 0, listenerPosition.x, listenerPosition.y, listenerPosition.z);
     ma_engine_listener_set_direction(engine_, 0, listenerForward.x, listenerForward.y, listenerForward.z);
@@ -276,8 +347,29 @@ void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward,
     for (auto entity : view) {
         auto& source = view.get<AudioSource>(entity);
         if (source.soundHandle == AudioSource::kInvalidHandle || source.soundHandle >= sounds_.size()) continue;
-        ma_sound* sound = sounds_[source.soundHandle];
-        if (!sound) continue;
+        ma_sound* base = sounds_[source.soundHandle];
+        if (!base) continue;
+
+        auto found = voices_.find(entity);
+        if (found != voices_.end() && (found->second.handle != source.soundHandle || found->second.base != base)) {
+            destroyVoice(found->second);
+            voices_.erase(found);
+            found = voices_.end();
+        }
+        if (found == voices_.end()) {
+            Voice voice;
+            voice.sound = makeVoice(source.soundHandle, voice.bufferRef);
+            if (!voice.sound) continue;
+            voice.handle = source.soundHandle;
+            voice.base = base;
+            found = voices_.emplace(entity, voice).first;
+            if (const auto resume = voiceResume_.find(entity); resume != voiceResume_.end()) {
+                if (source.playing) ma_sound_seek_to_second(voice.sound, static_cast<float>(resume->second));
+                voiceResume_.erase(resume);
+            }
+        }
+        found->second.lastMix = mixCount_;
+        ma_sound* sound = found->second.sound;
 
         glm::vec3 position = view.get<Transform>(entity).position;
         if (const auto* h = ecs.tryGetComponent<Hierarchy>(entity); h != nullptr && h->parent != entt::null) {
@@ -306,6 +398,16 @@ void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward,
         } else if (!source.playing && isPlaying) {
             ma_sound_stop(sound);
         }
+    }
+
+    // Voices whose entity is gone or lost its sound.
+    for (auto it = voices_.begin(); it != voices_.end();) {
+        if (it->second.lastMix == mixCount_) {
+            ++it;
+            continue;
+        }
+        destroyVoice(it->second);
+        it = voices_.erase(it);
     }
 }
 

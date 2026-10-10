@@ -481,6 +481,7 @@ private:
                                   const core::AnimationOverrides& animationOverrides, core::ClothingFit clothingFit)>
         spawnOfflinePlayerEntity_;
 
+    bool openCustomizeTab_ = false;
     ShellState state_ = ShellState::Home;
     ShellErrorInfo lastError_;
 

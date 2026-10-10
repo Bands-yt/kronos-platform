@@ -89,6 +89,12 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
     // however long the Player sat on its menus before.
     app.timeOfDayState().hours = 14.0f;
     app.setDayLengthSeconds(0.0f);
+    // Fixed exposure like Studio, so a game looks the same as in Studio Play.
+    if (!app.isHeadless()) {
+        app.renderer().setAutoExposureEnabled(false);
+        app.renderer().setExposure(1.0f);
+        app.renderer().setVolumetricFogEnabled(false);
+    }
 
     core::MixerConfig mixer = core::MixerConfig::defaults();
     const std::filesystem::path mixerPath = projectPath.parent_path() / "mixer.kmixer";

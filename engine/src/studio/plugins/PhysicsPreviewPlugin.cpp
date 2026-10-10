@@ -157,6 +157,7 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
             sound.playing = false;
             audio_->stopSound(sound.soundHandle);
         }
+        audio_->releaseVoices();
         audio_->mixer().clearSnapshots();
         (void)audio_->mixer().setConfig(mixerBeforePlay_);
     }
