@@ -1,3 +1,4 @@
+#include "core/RobloxServices.hpp"
 #include "core/Application.hpp"
 #include "core/Hierarchy.hpp"
 
@@ -30,6 +31,9 @@
 #include "core/OreNode.hpp"
 #include "core/PropAnimation.hpp"
 #include "core/RobloxPlayers.hpp"
+#include "core/RobloxRemoteNet.hpp"
+#include "core/RobloxReplication.hpp"
+#include "core/PartBodies.hpp"
 #include "core/ScriptHotReload.hpp"
 #include "core/Shop.hpp"
 #include "core/DeterministicMath.hpp"
@@ -480,7 +484,10 @@ bool Application::initialize(const CreateInfo& info) {
     gameLoop_->setPreTickHook([this](float dt) {
         signals::stepped(ecs_, dt);
         updateWorldStreaming();
-        if (headless_) return;
+        if (headless_) {
+            tickGameScripts(dt);
+            return;
+        }
         input_.addMouseWheel(window_.takeMouseWheel());
         input_.addKeyPresses(window_.takeKeyPresses());
         input_.update();
@@ -766,8 +773,7 @@ bool Application::initialize(const CreateInfo& info) {
         // shared free function so Studio's own Play-mode preview
         // (PhysicsPreviewPlugin) can run the identical logic rather than a
         // hand-copied second version.
-        core::tickScriptHotReload(ecs_, scripting_);
-        players::tick(ecs_, dt);
+        tickGameScripts(dt);
 
         // Kronos ("Native Plugin Architecture"): real per-tick forward to
         // every currently loaded native plugin -- see
@@ -842,8 +848,12 @@ bool Application::initialize(const CreateInfo& info) {
             renderer_.setLighting(avatarIndoorPreviewLighting());
             renderer_.setWeather(WeatherKind::Clear, 0.0f);
         } else if (!cameraShowcaseModeEnabled_) {
-            tickTimeOfDay(timeOfDayState_, dt, dayLengthSeconds_);
+            // A game's Lighting service owns the clock (scripts set ClockTime).
+            if (!services::lightingClock(ecs_, timeOfDayState_.hours)) {
+                tickTimeOfDay(timeOfDayState_, dt, dayLengthSeconds_);
+            }
             SceneLighting tickLighting = computeLightingForTimeOfDay(timeOfDayState_.hours);
+            services::applyLighting(ecs_, tickLighting);
             if (hasAtmosphereOverride_) {
                 tickLighting.fogColor = atmosphereOverride_.fogColor;
                 // Real fix for a real, live-flagged bug: shaders/scene.frag's
@@ -2952,6 +2962,11 @@ void Application::run() {
     gameLoop_->run();
 }
 
+void Application::tickLocalAvatarIdle(float dt) {
+    if (!avatarController_ || !ecs_.raw().valid(characterController_.entity())) return;
+    avatarController_->tick(dt, ecs_, characterController_.entity(), skinnedAvatarEntities_, true, glm::vec3(0.0f));
+}
+
 bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skinTone, HeadShape headShape,
                                           BodyProportions bodyProportions, const AvatarLoadout& loadout,
                                           const CatalogueIndex& catalogueIndex,
@@ -3146,12 +3161,36 @@ bool Application::startNetworking(const net::NetworkSession::Config& config) {
     // fires from the real JoinAccepted/roster broadcasts/Disconnect) --
     // one real Scripting call per hook, not two independently-drifting
     // notions of "a session/player joined."
-    networkSession_.setOnSessionJoined([this] { scripting_.fireSessionJoin(); });
-    networkSession_.setOnSessionLeft([this] { scripting_.fireSessionLeave(); });
-    networkSession_.setOnPlayerAdded(
-        [this](net::PlayerId player, const std::string& name) { scripting_.firePlayerJoin(player, name); });
-    networkSession_.setOnPlayerRemoving(
-        [this](net::PlayerId player, const std::string& name) { scripting_.firePlayerLeave(player, name); });
+    networkSession_.setOnSessionJoined([this] {
+        scripting_.fireSessionJoin();
+        robloxPlayerJoined(networkSession_.localPlayerId(), networkSession_.localDisplayName(), true);
+    });
+    networkSession_.setOnSessionLeft([this] {
+        scripting_.fireSessionLeave();
+        replication::stop(ecs_);
+        remotenet::detach(ecs_);
+    });
+    networkSession_.setOnPlayerAdded([this](net::PlayerId player, const std::string& name) {
+        scripting_.firePlayerJoin(player, name);
+        robloxPlayerJoined(player, name, false);
+    });
+    networkSession_.setOnPlayerRemoving([this](net::PlayerId player, const std::string& name) {
+        scripting_.firePlayerLeave(player, name);
+        const InstanceRef robloxPlayer = remotenet::playerFor(ecs_, player);
+        remotenet::removePlayer(ecs_, player);
+        replication::removeClient(ecs_, player);
+        if (robloxPlayer != kNoInstance) players::leave(ecs_, robloxPlayer);
+    });
+    // Roblox remotes travel over this session.
+    remotenet::attach(ecs_, config.mode == net::NetworkMode::Server ? remotenet::Side::Server : remotenet::Side::Client,
+                      [this](uint32_t target, std::vector<uint8_t> bytes, bool reliable) {
+                          networkSession_.sendInstanceRemote(target, bytes, reliable);
+                      });
+    networkSession_.setOnInstanceRemote([this](net::PlayerId sender, const uint8_t* data, size_t size) {
+        remotenet::receive(ecs_, sender, data, size);
+    });
+    if (config.mode == net::NetworkMode::Server) replication::startServer(ecs_);
+    else if (config.mode == net::NetworkMode::Client) replication::startClient(ecs_);
 
     // A real, minimal networked-player entity: Transform + Name (+
     // Renderable if the caller wants one visible -- left to the caller,
@@ -3176,6 +3215,30 @@ bool Application::startNetworking(const net::NetworkSession::Config& config) {
     }
 
     return networkSession_.initialize(config);
+}
+
+void Application::robloxPlayerJoined(net::PlayerId player, const std::string& name, bool local) {
+    if (player == net::kInvalidPlayer || remotenet::playerFor(ecs_, player) != kNoInstance) return;
+    EntityId root = kNullEntity;
+    int64_t userId = player;
+    if (local) {
+        root = networkedLocalPlayerEntity_ != kNullEntity ? networkedLocalPlayerEntity_ : characterController_.entity();
+    } else if (networkSession_.mode() == net::NetworkMode::Server) {
+        root = networkSession_.playerEntity(player);
+        if (const uint64_t profile = networkSession_.playerProfileId(player); profile != 0) {
+            userId = static_cast<int64_t>(profile);
+        }
+    }
+    remotenet::addPlayer(ecs_, player, players::join(ecs_, name, userId, root, local));
+    if (!local) replication::addClient(ecs_, player);
+}
+
+void Application::tickGameScripts(float dt) {
+    core::tickScriptHotReload(ecs_, scripting_);
+    players::tick(ecs_, dt);
+    remotenet::tick(ecs_, dt);
+    replication::tick(ecs_, dt);
+    partbodies::sync(ecs_, physics_, replication::active(ecs_) && !remotenet::isServer(ecs_));
 }
 
 bool Application::startRollbackMatch(const net::RollbackNetSession::Config& config, std::string* error) {

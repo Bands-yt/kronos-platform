@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright (c) 2026 Faris Nadim
 -- Kronos engine script API type definitions, for Luau.Analysis
 -- (Studio's native Script Editor -- see
 -- studio/panels/ColorTextEditBackend.cpp's own LuauLiveAnalyzer). Loaded

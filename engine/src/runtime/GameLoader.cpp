@@ -8,6 +8,7 @@
 #include "core/Application.hpp"
 #include "core/Audio.hpp"
 #include "core/ProjectFile.hpp"
+#include "core/RobloxDataStore.hpp"
 #include "core/SceneManager.hpp"
 
 namespace engine::runtime {
@@ -81,6 +82,8 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
                      game.manifest.name.c_str(), scenePath.string().c_str());
         return false;
     }
+
+    core::datastore::setFile(app.ecs(), core::datastore::defaultFile(game.manifest.name));
 
     // Like Studio and Roblox: a game starts at 2 pm with the clock stopped,
     // however long the Player sat on its menus before.

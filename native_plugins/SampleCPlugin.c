@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Faris Nadim */
 /* Sample plugin for the Kronos plugin API (engine/src/plugin/kronos_plugin.h).
  *
  * - A "Grid Snap" editor panel that snaps every object in the scene to a grid.

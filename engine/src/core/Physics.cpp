@@ -808,6 +808,15 @@ void Physics::detachBody(EntityId entity, ECS& ecs) {
     rb->joltBodyId = RigidBody::kInvalidBodyId;
 }
 
+void Physics::destroyBodyById(uint32_t joltBodyId) {
+    if (!physicsSystem_ || joltBodyId == RigidBody::kInvalidBodyId) return;
+    JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
+    const JPH::BodyID id(joltBodyId);
+    if (!bodyInterface.IsAdded(id)) return;
+    bodyInterface.RemoveBody(id);
+    bodyInterface.DestroyBody(id);
+}
+
 void Physics::moveKinematic(EntityId entity, ECS& ecs, glm::vec3 targetPosition, glm::quat targetRotation, float dt) {
     auto* rb = ecs.tryGetComponent<RigidBody>(entity);
     if (!rb || rb->joltBodyId == RigidBody::kInvalidBodyId || dt <= 0.0f) return;

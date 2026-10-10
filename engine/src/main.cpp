@@ -16,6 +16,7 @@
 
 #include <SDL2/SDL.h>
 
+#include "core/RobloxServices.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/Application.hpp"
 #include "core/AvatarLoadout.hpp"
@@ -1965,6 +1966,10 @@ int main(int argc, char** argv) {
         if (networkConfig.mode == engine::net::NetworkMode::Server && !hostingGame) {
             app.physics().createGroundPlane(app.ecs(), 25.0f, 25.0f);
         }
+        if (networkConfig.mode == engine::net::NetworkMode::Client && requestedGame.has_value() &&
+            !engine::runtime::loadGame(app, *requestedGame)) {
+            std::fprintf(stderr, "engine_runtime: failed to load \"%s\" for the client.\n", requestedGameSlug.c_str());
+        }
         std::fprintf(stdout, "engine_runtime: headless mode started (%s)\n",
                      networkConfig.mode == engine::net::NetworkMode::Server ? "server" : "offline/client");
         app.run();
@@ -2015,6 +2020,7 @@ int main(int argc, char** argv) {
             renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.5f, 0.0f)),
         app.meshLibrary().registerMesh(engine::core::Mesh::createCylinder(
             renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.5f, 0.5f))});
+    engine::core::services::setResources(app.ecs(), &app.resources());
     // Kronos ("Alpha v1 Polish" -- "world.spawnDynamicBox"): real, same
     // 1x1x1 unit-cube handle every other hand-placed box prop in this
     // bring-up scene already shares -- registered once here, for the
@@ -2083,13 +2089,16 @@ int main(int argc, char** argv) {
     // from `character` above (which stays real and spawned in every
     // mode, but only actually *drives movement* in Offline mode -- see
     // the pre-tick hook's own real branching in Application.cpp).
-    if (networkConfig.mode == engine::net::NetworkMode::Client) {
+    auto spawnClientNetworkedPlayer = [&app, capsuleMesh](glm::vec3 position) {
         auto networkedPlayer = app.ecs().createEntity("NetworkedPlayer");
         if (auto* transform = app.ecs().tryGetComponent<engine::core::Transform>(networkedPlayer)) {
-            transform->position = {2.0f, 0.9f, -6.0f}; // matches net::applyNetworkedMovement()'s kGroundHeight
+            transform->position = position;
         }
         makeRenderable(app.ecs(), networkedPlayer, capsuleMesh, {0.85f, 0.55f, 0.25f}, 0.05f, 0.55f);
         app.setNetworkedLocalPlayerEntity(networkedPlayer);
+    };
+    if (networkConfig.mode == engine::net::NetworkMode::Client) {
+        spawnClientNetworkedPlayer({2.0f, 0.9f, -6.0f}); // matches net::applyNetworkedMovement()'s kGroundHeight
     }
 
     // Runtime Interaction Examples (docs task category 7) -- six real,
@@ -2688,6 +2697,15 @@ int main(int argc, char** argv) {
     // happens synchronously, before app.run()'s render loop starts and
     // before any client could possibly have connected, so that
     // throwaway content is never actually seen by anyone.
+    // A client loads the same game so Roblox remotes and scripts match the server's.
+    if (networkConfig.mode == engine::net::NetworkMode::Client && requestedGame.has_value()) {
+        if (engine::runtime::loadGame(app, *requestedGame)) {
+            // Loading the scene cleared the world, including the player made above.
+            spawnClientNetworkedPlayer(engine::core::findPlayerSpawnPosition(app.ecs(), {2.0f, 0.9f, -6.0f}));
+        } else {
+            std::fprintf(stderr, "engine_runtime: failed to load \"%s\" for the client.\n", requestedGameSlug.c_str());
+        }
+    }
     if (networkConfig.mode == engine::net::NetworkMode::Server && requestedGame.has_value()) {
         if (engine::runtime::loadGame(app, *requestedGame)) {
             std::fprintf(stdout, "engine_runtime: dedicated server now hosting \"%s\" (slug \"%s\").\n",

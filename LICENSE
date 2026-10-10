@@ -2,7 +2,15 @@ Copyright (c) 2026 Faris Nadim. All Rights Reserved.
 
 This repository and all of its contents (including but not limited to
 source code, assets, documentation, and build/packaging scripts) are
-the proprietary property of the copyright holder named above.
+the proprietary property of the copyright holder named above, EXCEPT the
+files listed in LICENSING.md as the "plugin kit". Those files are
+licensed under the Apache License, Version 2.0 (see
+LICENSES/Apache-2.0.txt), and that licence, not this one, applies to
+them. Third-party libraries keep their own licences.
+
+Building third-party tools that work with Kronos (launchers, wrappers,
+plugins and similar) is permitted under the terms in
+docs/THIRD_PARTY_TOOLS.md.
 
 Permission is granted to view and evaluate this source code for
 personal, non-commercial reference purposes only.

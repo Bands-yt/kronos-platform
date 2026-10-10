@@ -1,9 +1,14 @@
 # Contributing to Kronos
 
-Thanks for testing Kronos during Alpha v1 — this is exactly the stage
-where bug reports and feedback matter most. This guide covers the three
-things most testers want to do: report a bug, share feedback, and try
-your own Luau scripts.
+Thanks for trying Kronos! It's in pre-beta, so bug reports and feedback
+matter a lot right now. This guide covers reporting a bug, sharing
+feedback and trying your own Luau scripts.
+
+**Building on Kronos?** Plugins, launchers and tools are welcome. The
+plugin kit is open source (Apache 2.0); see [LICENSING.md](LICENSING.md)
+and [docs/THIRD_PARTY_TOOLS.md](docs/THIRD_PARTY_TOOLS.md). Pull requests
+to the plugin kit are licensed under Apache 2.0. For changes anywhere
+else, open an issue first so we can talk about it before you write code.
 
 ## Reporting a bug or crash
 
@@ -56,7 +61,7 @@ poke at it:
   launch it from the Game Catalogue — the engine reloads a changed
   script the next time that game loads.
 - Found a binding that's missing, or one that behaves unexpectedly?
-  That's exactly the kind of Alpha feedback worth an issue — include
+  That's exactly the kind of feedback worth an issue — include
   the script snippet that triggered it.
 
 ## A note on scope

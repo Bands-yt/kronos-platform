@@ -51,6 +51,7 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UITheme.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UIWidgets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/RobloxLeaderboard.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/RobloxGui.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/Notification.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/EntityClassification.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/StudioIcons.cpp

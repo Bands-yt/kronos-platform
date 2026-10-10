@@ -67,6 +67,8 @@ enum class WireMessageType : uint8_t {
     // broadcast (the whole point of a DM, unlike ChatBroadcast).
     DirectMessageSend = 22,
     DirectMessageDeliver = 23,
+    // Roblox RemoteEvent/RemoteFunction calls; the body belongs to core::remotenet.
+    InstanceRemote = 24,
 };
 
 // Kronos ("Moderation Architecture v1", Phase 1): real, local, per-
@@ -602,6 +604,8 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
             handleTriggerUltimateServer(player, reader);
         } else if (messageType == WireMessageType::RemoteEventFire) {
             handleRemoteEventFireServer(player, reader);
+        } else if (messageType == WireMessageType::InstanceRemote) {
+            if (onInstanceRemote_ && serverPlayerEntities_.count(player) != 0) onInstanceRemote_(player, data + 1, size - 1);
         } else if (messageType == WireMessageType::JoinRequest) {
             handleJoinRequestServer(peer, player, reader);
         } else {
@@ -1443,6 +1447,26 @@ void NetworkSession::fireServerEvent(const std::string& name, const RemoteEvent:
     transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
 }
 
+void NetworkSession::sendInstanceRemote(PlayerId target, const std::vector<uint8_t>& body, bool reliable) {
+    if (config_.mode == NetworkMode::Offline) return;
+    std::vector<uint8_t> bytes;
+    bytes.reserve(body.size() + 1);
+    bytes.push_back(static_cast<uint8_t>(WireMessageType::InstanceRemote));
+    bytes.insert(bytes.end(), body.begin(), body.end());
+    const uint8_t channel = reliable ? kReliableChannel : kUnreliableChannel;
+    if (config_.mode == NetworkMode::Client) {
+        networkStats_.recordPacketSent(bytes.size());
+        transport_.send(ENetTransport::kBroadcast, bytes.data(), bytes.size(), channel, reliable);
+        return;
+    }
+    for (const auto& [peer, player] : serverPeerToPlayer_) {
+        if (serverPlayerEntities_.count(player) == 0) continue;
+        if (target != kInvalidPlayer && player != target) continue;
+        networkStats_.recordPacketSent(bytes.size());
+        transport_.send(peer, bytes.data(), bytes.size(), channel, reliable);
+    }
+}
+
 void NetworkSession::fireAllClientsEvent(const std::string& name, const RemoteEvent::Payload& payload) {
     if (config_.mode != NetworkMode::Server) return;
     ByteWriter writer;
@@ -1664,6 +1688,11 @@ void NetworkSession::tickClient(float dt, core::ECS& ecs, core::EntityId localPl
                 return;
             }
             if (onUltimateTriggered_) onUltimateTriggered_(player, ultimateType);
+            return;
+        }
+
+        if (messageType == WireMessageType::InstanceRemote) {
+            if (onInstanceRemote_) onInstanceRemote_(kInvalidPlayer, data + 1, size - 1);
             return;
         }
 

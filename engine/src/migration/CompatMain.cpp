@@ -1,5 +1,5 @@
-// kronos_compat: imports .rbxlx places and prints how much of each Kronos can run.
-//   kronos_compat [--min PERCENT] [file.rbxlx | folder]...
+// kronos_compat: imports .rbxlx/.rbxl places and prints how much of each Kronos can run.
+//   kronos_compat [--min PERCENT] [file.rbxlx | file.rbxl | folder]...
 // With no paths it scores tests/compat_corpus. --min makes it exit 1 when the
 // average overall score is below PERCENT.
 #include <algorithm>
@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
         if (arg == "--min" && i + 1 < argc) {
             minimum = std::atof(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
-            std::printf("usage: kronos_compat [--min PERCENT] [file.rbxlx | folder]...\n");
+            std::printf("usage: kronos_compat [--min PERCENT] [file.rbxlx | file.rbxl | folder]...\n");
             return 0;
         } else {
             inputs.emplace_back(arg);
@@ -51,7 +51,8 @@ int main(int argc, char** argv) {
     for (const fs::path& input : inputs) {
         if (fs::is_directory(input)) {
             for (const auto& entry : fs::directory_iterator(input)) {
-                if (entry.path().extension() == ".rbxlx") places.push_back(entry.path());
+                const auto ext = entry.path().extension();
+                if (ext == ".rbxlx" || ext == ".rbxl") places.push_back(entry.path());
             }
         } else {
             places.push_back(input);
@@ -59,7 +60,7 @@ int main(int argc, char** argv) {
     }
     std::sort(places.begin(), places.end());
     if (places.empty()) {
-        std::fprintf(stderr, "kronos_compat: no .rbxlx places found\n");
+        std::fprintf(stderr, "kronos_compat: no .rbxlx/.rbxl places found\n");
         return 2;
     }
 

@@ -115,6 +115,7 @@ void tick(ECS& ecs, Scripting& scripting) {
         const auto* script = ecs.tryGetComponent<Script>(e);
         const std::optional<RunContext> context = startContext(ecs, e);
         if (script == nullptr || script->source.empty() || !context) continue;
+        if (*context == RunContext::Client && signals::runService(ecs).awaitingReplication) continue;
         const std::string source = script->source;
         const std::string chunkName = instances::fullName(ecs, instances::refOf(ecs, e));
         // Recorded first: a script can destroy or edit itself while it starts.

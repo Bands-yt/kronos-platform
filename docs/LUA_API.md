@@ -18,7 +18,7 @@ value types (`Vector3`, `CFrame`, `Color3`, `BrickColor`, `UDim2`, `Enum`,
 `Touched`, `RunService.Heartbeat`, ...) and players and characters
 (`game.Players`, `PlayerAdded`, `Humanoid`, `leaderstats`), and client/server
 scripts (`Script`/`LocalScript` run rules, `require(ModuleScript)`,
-`RemoteEvent`, `RemoteFunction`).
+`RemoteEvent`, `RemoteFunction`), saving with `DataStoreService`, and `TweenService`, `Debris`, `CollectionService`, `Sound` and `Lighting`, and on-screen GUIs (`ScreenGui`, `Frame`, `TextButton`, ...).
 
 ## Availability by context
 
@@ -28,7 +28,10 @@ scripts (`Script`/`LocalScript` run rules, `require(ModuleScript)`,
 | Roblox datatypes (`Vector3`, `CFrame`, `Color3`, `Enum`, ...), `typeof` | ✅ | ✅ | ✅ |
 | Roblox Instance tree (`game`, `workspace`, `Instance.new`) | ✅ (also during Studio Play) | ✅ | ✅ |
 | Roblox players (`Players.LocalPlayer`, `Character`, `Humanoid`) | ✅ (also during Studio Play) | Only during Play | Only during Play |
-| `require(ModuleScript)`, remotes (`FireServer`, `InvokeServer`, ...) | ✅ (also during Studio Play; Roblox `Script`s run on the server side, `LocalScript`s on the client side) | ✅ | ✅ |
+| `require(ModuleScript)`, remotes (`FireServer`, `InvokeServer`, ...) | ✅ (also during Studio Play and over the network; Roblox `Script`s run on the server side, `LocalScript`s on the client side) | ✅ | ✅ |
+| `DataStoreService` (`GetAsync`, `SetAsync`, `UpdateAsync`, ...) | ✅ on the server side (saved in `datastores/<game>.json`; in memory during Studio Play) | ✅ (in memory) | ✅ (in memory) |
+| `TweenService`, `Debris`, `CollectionService`, `Sound`, `Lighting` | ✅ (tweens, Debris and sounds advance during Play; Lighting shows in the Player only) | Tags only; tweens and Debris wait until Play | Same as plugins |
+| Roblox GUI (`ScreenGui`, `Frame`, `TextLabel`, `TextButton`, `UIListLayout`, ...) | ✅ (drawn and clickable in the Player and during Studio Play) | Objects only, not drawn | Same as plugins (drawn during Play) |
 | `world.*` (full) | ✅ (`core::ScriptWorldApi`) | ✅ (smaller — no Physics/Animation, see below) | ✅ (same as plugins) |
 | `world.spawnPlayer`, `avatar.*` | ✅ (`core::ScriptAvatarApi`) | ❌ | ❌ |
 | `network.*` | ✅ | ✅ | ❌ |
@@ -344,3 +347,7 @@ other than `engine_runtime`'s plain, no-flag Home Screen launch path
 (see `main.cpp`'s `homeScreenMode` gating); Studio's `ScriptedPlugin`
 and Debug Console never set one, so these are `ui.*`-table members that
 exist everywhere `ui` does but only ever act in `engine_runtime`.
+
+---
+
+This document is licensed under the [Apache License 2.0](../LICENSES/Apache-2.0.txt). See [LICENSING.md](../LICENSING.md).

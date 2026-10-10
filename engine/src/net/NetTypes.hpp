@@ -23,7 +23,7 @@ inline constexpr PlayerId kInvalidPlayer = 0;
 // processes were built from different source," a hard reject, not a
 // range to negotiate. Bump this whenever a wire message's real layout
 // changes.
-inline constexpr uint32_t kNetworkProtocolVersion = 1;
+inline constexpr uint32_t kNetworkProtocolVersion = 2;
 
 // What a client sends, every local tick -- intent, never state. Matches
 // docs/ARCHITECTURE.md §4.2's "clients send input/intent, never state" and

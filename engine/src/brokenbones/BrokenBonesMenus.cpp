@@ -419,11 +419,14 @@ void BrokenBonesGame::drawMenu() {
         if (disabled) label += "  (LEVEL " + std::to_string(rebirthLevelRequired(progress_)) + ")";
         float y = listTop + 46.0f * static_cast<float>(i);
         glm::vec2 size = ui.measureText(label, 0.85f);
+        // The title list sits left of the avatar, which stands in the middle.
+        const float centerX = menu_ == Menu::Title ? std::max(screen.x * 0.2f, size.x * 0.5f + 40.0f) : screen.x * 0.5f;
         if (selected) {
-            ui.drawRect(glm::vec2((screen.x - size.x) * 0.5f - 24.0f, y - 6.0f), size + glm::vec2(48.0f, 12.0f),
+            ui.drawRect(glm::vec2(centerX - size.x * 0.5f - 24.0f, y - 6.0f), size + glm::vec2(48.0f, 12.0f),
                         glm::vec4(1.0f, 0.8f, 0.2f, 0.22f));
         }
-        centered(label, y, 0.85f, disabled ? glm::vec4(0.5f, 0.5f, 0.55f, 0.9f) : (selected ? kGold : kWhite));
+        ui.drawText(label, glm::vec2(centerX - size.x * 0.5f, y),
+                    0.85f, disabled ? glm::vec4(0.5f, 0.5f, 0.55f, 0.9f) : (selected ? kGold : kWhite));
     }
 
     const char* footer = menu_ == Menu::Settings      ? "[UP/DOWN] choose    [LEFT/RIGHT] change    [ESC] back"

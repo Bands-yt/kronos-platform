@@ -73,6 +73,28 @@ InstanceValue InstanceValue::ofInstance(uint32_t ref) {
     return out;
 }
 
+InstanceValue InstanceValue::ofVector2(float x, float y) {
+    InstanceValue out;
+    out.type = Type::Vector2;
+    out.vec = glm::vec3(x, y, 0.0f);
+    return out;
+}
+
+InstanceValue InstanceValue::ofUDim(float scale, float offset) {
+    InstanceValue out;
+    out.type = Type::UDim;
+    out.vec = glm::vec3(scale, offset, 0.0f);
+    return out;
+}
+
+InstanceValue InstanceValue::ofUDim2(float xScale, float xOffset, float yScale, float yOffset) {
+    InstanceValue out;
+    out.type = Type::UDim2;
+    out.vec = glm::vec3(xScale, xOffset, yScale);
+    out.number = yOffset;
+    return out;
+}
+
 const char* InstanceValue::typeName(Type type) {
     switch (type) {
         case Type::Nil: return "nil";
@@ -85,6 +107,9 @@ const char* InstanceValue::typeName(Type type) {
         case Type::BrickColor: return "BrickColor";
         case Type::Enum: return "EnumItem";
         case Type::Instance: return "Instance";
+        case Type::Vector2: return "Vector2";
+        case Type::UDim: return "UDim";
+        case Type::UDim2: return "UDim2";
     }
     return "nil";
 }
@@ -139,12 +164,15 @@ void writeValue(std::ostringstream& out, const InstanceValue& v) {
         case InstanceValue::Type::Enum: out << ' ' << escape(v.enumType) << ' ' << escape(v.text) << ' ' << v.number; break;
         // Instance links don't survive a reload (ids are per session).
         case InstanceValue::Type::Instance: break;
+        case InstanceValue::Type::Vector2:
+        case InstanceValue::Type::UDim: out << ' ' << v.vec.x << ' ' << v.vec.y; break;
+        case InstanceValue::Type::UDim2: out << ' ' << v.vec.x << ' ' << v.vec.y << ' ' << v.vec.z << ' ' << v.number; break;
     }
 }
 
 bool readValue(std::istringstream& in, InstanceValue& v) {
     int type = 0;
-    if (!(in >> type) || type < 0 || type > static_cast<int>(InstanceValue::Type::Instance)) return false;
+    if (!(in >> type) || type < 0 || type > static_cast<int>(InstanceValue::Type::UDim2)) return false;
     v = InstanceValue{};
     v.type = static_cast<InstanceValue::Type>(type);
     std::string a, b;
@@ -173,6 +201,9 @@ bool readValue(std::istringstream& in, InstanceValue& v) {
             v.text = unescape(b);
             break;
         case InstanceValue::Type::Instance: v.type = InstanceValue::Type::Nil; return true;
+        case InstanceValue::Type::Vector2:
+        case InstanceValue::Type::UDim: in >> v.vec.x >> v.vec.y; break;
+        case InstanceValue::Type::UDim2: in >> v.vec.x >> v.vec.y >> v.vec.z >> v.number; break;
     }
     return !in.fail();
 }
@@ -190,6 +221,10 @@ std::string InstanceInfo::serialize() const {
     for (const auto& [key, value] : attributes) {
         out << ' ' << escape(key) << ' ';
         writeValue(out, value);
+    }
+    if (!tags.empty()) {
+        out << ' ' << tags.size();
+        for (const std::string& tag : tags) out << ' ' << escape(tag);
     }
     return out.str();
 }
@@ -213,6 +248,10 @@ bool InstanceInfo::deserialize(const std::string& text, InstanceInfo& out) {
         InstanceValue value;
         if (!(in >> word) || !readValue(in, value)) return false;
         info.attributes[unescape(word)] = value;
+    }
+    // Tags came later; older lines end here.
+    if (in >> count) {
+        for (size_t i = 0; i < count && in >> word; ++i) info.tags.push_back(unescape(word));
     }
     out = std::move(info);
     return true;
@@ -242,6 +281,7 @@ bool sameValue(const InstanceValue& a, const InstanceValue& b) {
         case InstanceValue::Type::Enum: return a.enumType == b.enumType && a.text == b.text;
         case InstanceValue::Type::Instance: return a.ref == b.ref;
         case InstanceValue::Type::CFrame: return a.vec == b.vec && a.rot == b.rot;
+        case InstanceValue::Type::UDim2: return a.vec == b.vec && a.number == b.number;
         default: return a.vec == b.vec;
     }
 }
@@ -585,6 +625,82 @@ void roundIntValue(ECS& ecs, EntityId e, const InstanceValue& v) {
     ensureInfo(ecs, e).properties["Value"] = InstanceValue::ofNumber(std::round(v.number));
 }
 
+AudioSource* sound(ECS& ecs, EntityId e) { return ecs.tryGetComponent<AudioSource>(e); }
+InstanceValue getSoundId(ECS& ecs, EntityId e) {
+    const auto* s = sound(ecs, e);
+    return InstanceValue::ofString(s != nullptr ? s->path : "");
+}
+void setSoundId(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (auto* s = sound(ecs, e)) s->path = v.text;
+}
+InstanceValue getVolume(ECS& ecs, EntityId e) {
+    const auto* s = sound(ecs, e);
+    return InstanceValue::ofNumber(s != nullptr ? s->volume : 0.5);
+}
+void setVolume(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (auto* s = sound(ecs, e)) s->volume = std::clamp(static_cast<float>(v.number), 0.0f, 10.0f);
+}
+InstanceValue getPlaybackSpeed(ECS& ecs, EntityId e) {
+    const auto* s = sound(ecs, e);
+    return InstanceValue::ofNumber(s != nullptr ? s->pitch : 1.0);
+}
+void setPlaybackSpeed(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (auto* s = sound(ecs, e)) s->pitch = std::max(0.0f, static_cast<float>(v.number));
+}
+InstanceValue getLooped(ECS& ecs, EntityId e) {
+    const auto* s = sound(ecs, e);
+    return InstanceValue::ofBool(s != nullptr && s->looping);
+}
+void setLooped(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (auto* s = sound(ecs, e)) s->looping = v.boolean;
+}
+InstanceValue getPlaying(ECS& ecs, EntityId e) {
+    const auto* s = sound(ecs, e);
+    return InstanceValue::ofBool(s != nullptr && s->playing);
+}
+void setPlaying(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (auto* s = sound(ecs, e)) s->playing = v.boolean;
+}
+InstanceValue getRollOffMin(ECS& ecs, EntityId e) {
+    const auto* s = sound(ecs, e);
+    return InstanceValue::ofNumber(s != nullptr ? s->minDistance : 10.0);
+}
+void setRollOffMin(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (auto* s = sound(ecs, e)) s->minDistance = std::max(0.0f, static_cast<float>(v.number));
+}
+InstanceValue getRollOffMax(ECS& ecs, EntityId e) {
+    const auto* s = sound(ecs, e);
+    return InstanceValue::ofNumber(s != nullptr ? s->maxDistance : 10000.0);
+}
+void setRollOffMax(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (auto* s = sound(ecs, e)) s->maxDistance = std::max(0.0f, static_cast<float>(v.number));
+}
+
+// Lighting.TimeOfDay is ClockTime as "hh:mm:ss".
+InstanceValue getTimeOfDay(ECS& ecs, EntityId e) {
+    double hours = 14.0;
+    if (const auto* info = ecs.tryGetComponent<InstanceInfo>(e)) {
+        if (const auto it = info->properties.find("ClockTime"); it != info->properties.end()) hours = it->second.number;
+    }
+    const int seconds = static_cast<int>(std::lround(hours * 3600.0)) % 86400;
+    char text[16];
+    std::snprintf(text, sizeof text, "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60);
+    return InstanceValue::ofString(text);
+}
+void setTimeOfDay(ECS& ecs, EntityId e, const InstanceValue& v) {
+    int h = 0;
+    int m = 0;
+    int sec = 0;
+    if (std::sscanf(v.text.c_str(), "%d:%d:%d", &h, &m, &sec) < 1) return;
+    const PropertyDef* clock = findProperty("Lighting", "ClockTime");
+    setProperty(ecs, refOf(ecs, e), *clock, InstanceValue::ofNumber(h + m / 60.0 + sec / 3600.0));
+}
+void wrapClockTime(ECS& ecs, EntityId e, const InstanceValue& v) {
+    const double wrapped = std::fmod(std::fmod(v.number, 24.0) + 24.0, 24.0);
+    if (wrapped == v.number) return;
+    if (auto* info = ecs.tryGetComponent<InstanceInfo>(e)) info->properties["ClockTime"] = InstanceValue::ofNumber(wrapped);
+}
+
 PropertyDef prop(std::string name, PropertyType type, InstanceValue (*get)(ECS&, EntityId),
                  void (*set)(ECS&, EntityId, const InstanceValue&)) {
     PropertyDef def;
@@ -658,7 +774,8 @@ std::vector<ClassDef> buildClasses() {
                         "FindFirstChildWhichIsA", "FindFirstAncestor", "FindFirstAncestorOfClass",
                         "FindFirstAncestorWhichIsA", "WaitForChild", "IsA", "IsDescendantOf", "IsAncestorOf",
                         "Clone", "Destroy", "ClearAllChildren", "GetFullName", "GetAttribute", "SetAttribute",
-                        "GetAttributes", "GetPropertyChangedSignal", "GetAttributeChangedSignal"};
+                        "GetAttributes", "GetPropertyChangedSignal", "GetAttributeChangedSignal", "AddTag",
+                        "RemoveTag", "HasTag", "GetTags"};
     instance.events = {"Changed", "ChildAdded", "ChildRemoved", "DescendantAdded", "DescendantRemoving",
                        "AncestryChanged", "AttributeChanged", "Destroying"};
 
@@ -762,19 +879,106 @@ std::vector<ClassDef> buildClasses() {
     bindableEvent.methods = {"Fire"};
     bindableEvent.events = {"Event"};
     add("BindableFunction", "Instance", true).methods = {"Invoke"};
+    auto& soundClass = add("Sound", "Instance", true);
+    soundClass.properties = {
+        prop("SoundId", PropertyType::String, &getSoundId, &setSoundId),
+        prop("Volume", PropertyType::Number, &getVolume, &setVolume),
+        prop("PlaybackSpeed", PropertyType::Number, &getPlaybackSpeed, &setPlaybackSpeed),
+        prop("Looped", PropertyType::Bool, &getLooped, &setLooped),
+        prop("Playing", PropertyType::Bool, &getPlaying, &setPlaying),
+        derived(prop("IsPlaying", PropertyType::Bool, &getPlaying, nullptr)),
+        prop("RollOffMinDistance", PropertyType::Number, &getRollOffMin, &setRollOffMin),
+        prop("RollOffMaxDistance", PropertyType::Number, &getRollOffMax, &setRollOffMax),
+        stored("PlayOnRemove", PropertyType::Bool, InstanceValue::ofBool(false)),
+    };
+    soundClass.properties[5].readOnly = true;
+    soundClass.methods = {"Play", "Stop", "Pause", "Resume"};
+    soundClass.events = {"Played", "Ended", "Stopped", "Paused", "Resumed", "Loaded"};
+    add("SoundGroup", "Instance", true).properties = {stored("Volume", PropertyType::Number, InstanceValue::ofNumber(0.5))};
     // Present as objects; what they do arrives in later bridge steps.
-    add("Sound", "Instance", true);
     add("Tool", "Instance", true);
     add("Accessory", "Instance", true);
     add("StarterPlayerScripts", "Instance", false);
     add("StarterCharacterScripts", "Instance", false);
     add("PlayerScripts", "Instance", false);
-    add("GuiBase2d", "Instance", false);
+    // Layout writes AbsolutePosition/AbsoluteSize (core/RobloxGui.cpp).
+    auto layoutOutput = [](const char* name) {
+        PropertyDef def = derived(readOnlyStored(name, PropertyType::Vector2, InstanceValue::ofVector2(0.0f, 0.0f)));
+        def.replicated = false;
+        def.studioVisible = false;
+        return def;
+    };
+    add("GuiBase2d", "Instance", false).properties = {layoutOutput("AbsolutePosition"), layoutOutput("AbsoluteSize")};
     add("LayerCollector", "GuiBase2d", false).properties = {
         stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true)),
         stored("ResetOnSpawn", PropertyType::Bool, InstanceValue::ofBool(true)),
     };
-    add("ScreenGui", "LayerCollector", true);
+    add("ScreenGui", "LayerCollector", true).properties = {
+        stored("DisplayOrder", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("IgnoreGuiInset", PropertyType::Bool, InstanceValue::ofBool(false)),
+    };
+    auto rgb = [](float r, float g, float b) { return InstanceValue::ofColor3(glm::vec3(r, g, b) / 255.0f); };
+    auto& guiObject = add("GuiObject", "GuiBase2d", false);
+    guiObject.properties = {
+        stored("Size", PropertyType::UDim2, InstanceValue::ofUDim2(0, 100, 0, 100)),
+        stored("Position", PropertyType::UDim2, InstanceValue::ofUDim2(0, 0, 0, 0)),
+        stored("AnchorPoint", PropertyType::Vector2, InstanceValue::ofVector2(0, 0)),
+        stored("BackgroundColor3", PropertyType::Color3, rgb(255, 255, 255)),
+        stored("BackgroundTransparency", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("BorderColor3", PropertyType::Color3, rgb(27, 42, 53)),
+        stored("BorderSizePixel", PropertyType::Number, InstanceValue::ofNumber(1.0)),
+        stored("Visible", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("ZIndex", PropertyType::Number, InstanceValue::ofNumber(1.0)),
+        stored("LayoutOrder", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("ClipsDescendants", PropertyType::Bool, InstanceValue::ofBool(false)),
+        stored("Rotation", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("Active", PropertyType::Bool, InstanceValue::ofBool(false)),
+    };
+    guiObject.events = {"MouseEnter", "MouseLeave"};
+    add("Frame", "GuiObject", true);
+    const std::vector<PropertyDef> textProperties = {
+        stored("Text", PropertyType::String, InstanceValue::ofString("Label")),
+        stored("TextColor3", PropertyType::Color3, rgb(27, 42, 53)),
+        stored("TextSize", PropertyType::Number, InstanceValue::ofNumber(14.0)),
+        stored("TextScaled", PropertyType::Bool, InstanceValue::ofBool(false)),
+        stored("TextWrapped", PropertyType::Bool, InstanceValue::ofBool(false)),
+        stored("TextTransparency", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        storedEnum("TextXAlignment", "TextXAlignment", "Center", 2),
+        storedEnum("TextYAlignment", "TextYAlignment", "Center", 1),
+        storedEnum("Font", "Font", "SourceSans", 3),
+    };
+    const std::vector<PropertyDef> imageProperties = {
+        stored("Image", PropertyType::String, InstanceValue::ofString("")),
+        stored("ImageColor3", PropertyType::Color3, rgb(255, 255, 255)),
+        stored("ImageTransparency", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+    };
+    add("GuiLabel", "GuiObject", false);
+    add("TextLabel", "GuiLabel", true).properties = textProperties;
+    add("ImageLabel", "GuiLabel", true).properties = imageProperties;
+    auto& guiButton = add("GuiButton", "GuiObject", false);
+    guiButton.properties = {stored("AutoButtonColor", PropertyType::Bool, InstanceValue::ofBool(true))};
+    guiButton.events = {"MouseButton1Click", "MouseButton1Down", "MouseButton1Up", "Activated"};
+    add("TextButton", "GuiButton", true).properties = textProperties;
+    add("ImageButton", "GuiButton", true).properties = imageProperties;
+    add("UIComponent", "Instance", false);
+    add("UIBase", "UIComponent", false);
+    add("UICorner", "UIComponent", true).properties = {
+        stored("CornerRadius", PropertyType::UDim, InstanceValue::ofUDim(0, 8))};
+    add("UIPadding", "UIComponent", true).properties = {
+        stored("PaddingLeft", PropertyType::UDim, InstanceValue::ofUDim(0, 0)),
+        stored("PaddingRight", PropertyType::UDim, InstanceValue::ofUDim(0, 0)),
+        stored("PaddingTop", PropertyType::UDim, InstanceValue::ofUDim(0, 0)),
+        stored("PaddingBottom", PropertyType::UDim, InstanceValue::ofUDim(0, 0)),
+    };
+    add("UILayout", "UIComponent", false);
+    add("UIGridStyleLayout", "UILayout", false).properties = {
+        storedEnum("FillDirection", "FillDirection", "Vertical", 1),
+        storedEnum("SortOrder", "SortOrder", "LayoutOrder", 2),
+        storedEnum("HorizontalAlignment", "HorizontalAlignment", "Left", 1),
+        storedEnum("VerticalAlignment", "VerticalAlignment", "Top", 1),
+    };
+    add("UIListLayout", "UIGridStyleLayout", true).properties = {
+        stored("Padding", PropertyType::UDim, InstanceValue::ofUDim(0, 0))};
 
     add("DataModel", "Instance", false).methods = {"GetService", "FindService"};
     // Has no entity: game:GetService("RunService") is always the same object.
@@ -829,7 +1033,42 @@ std::vector<ClassDef> buildClasses() {
     humanoid.methods = {"TakeDamage", "MoveTo", "Move", "GetState", "ChangeState"};
     humanoid.events = {"Died", "HealthChanged", "MoveToFinished", "Running", "Jumping", "FreeFalling", "StateChanged"};
 
-    for (const char* service : {"Lighting", "ReplicatedStorage", "ReplicatedFirst", "ServerScriptService",
+    add("DataStoreService", "Instance", false, true).methods = {"GetDataStore", "GetGlobalDataStore"};
+    add("GlobalDataStore", "Instance", false).methods = {"GetAsync", "SetAsync", "UpdateAsync", "RemoveAsync",
+                                                         "IncrementAsync"};
+    add("DataStore", "GlobalDataStore", false);
+
+    auto& tweenBase = add("TweenBase", "Instance", false);
+    tweenBase.properties = {readOnlyStored("PlaybackState", PropertyType::Enum, InstanceValue::ofEnum("PlaybackState", "Begin", 0))};
+    tweenBase.properties[0].enumType = "PlaybackState";
+    tweenBase.methods = {"Play", "Pause", "Cancel"};
+    tweenBase.events = {"Completed"};
+    add("Tween", "TweenBase", false).properties = {readOnlyStored("Instance", PropertyType::Instance, InstanceValue{})};
+    add("TweenService", "Instance", false, true).methods = {"Create", "GetValue"};
+    auto& debris = add("Debris", "Instance", false, true);
+    debris.properties = {stored("MaxItems", PropertyType::Number, InstanceValue::ofNumber(1000.0))};
+    debris.methods = {"AddItem"};
+    auto& collection = add("CollectionService", "Instance", false, true);
+    collection.methods = {"AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags",
+                          "GetInstanceAddedSignal", "GetInstanceRemovedSignal"};
+
+    auto& lighting = add("Lighting", "Instance", false, true);
+    lighting.properties = {
+        stored("ClockTime", PropertyType::Number, InstanceValue::ofNumber(14.0), &wrapClockTime),
+        derived(prop("TimeOfDay", PropertyType::String, &getTimeOfDay, &setTimeOfDay)),
+        stored("Brightness", PropertyType::Number, InstanceValue::ofNumber(2.0)),
+        stored("Ambient", PropertyType::Color3, InstanceValue::ofColor3(glm::vec3(0.0f))),
+        stored("OutdoorAmbient", PropertyType::Color3, InstanceValue::ofColor3(glm::vec3(128.0f / 255.0f))),
+        stored("FogColor", PropertyType::Color3, InstanceValue::ofColor3(glm::vec3(192.0f / 255.0f))),
+        stored("FogStart", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("FogEnd", PropertyType::Number, InstanceValue::ofNumber(100000.0)),
+        stored("GlobalShadows", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("ExposureCompensation", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("GeographicLatitude", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+    };
+    lighting.methods = {"GetMinutesAfterMidnight", "SetMinutesAfterMidnight"};
+
+    for (const char* service : {"ReplicatedStorage", "ReplicatedFirst", "ServerScriptService",
                                 "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer", "SoundService", "Teams",
                                 "Chat"}) {
         add(service, "Instance", false, true);
@@ -891,8 +1130,7 @@ bool classHasEvent(const std::string& className, const std::string& event) {
 
 bool isPlannedService(const std::string& name) {
     static const char* const kPlanned[] = {
-        "TweenService", "UserInputService", "ContextActionService", "HttpService", "Debris",
-        "CollectionService", "DataStoreService", "MarketplaceService", "PhysicsService", "TextService",
+        "UserInputService", "ContextActionService", "HttpService", "MarketplaceService", "PhysicsService", "TextService",
         "GuiService", "PathfindingService", "BadgeService", "MessagingService", "TeleportService",
         "ProximityPromptService", "TextChatService", "LocalizationService", "GroupService", "SocialService",
         "VRService", "HapticService", "AnalyticsService", "MemoryStoreService", "AssetService", "InsertService",
@@ -1116,6 +1354,12 @@ InstanceRef createUnchecked(ECS& ecs, const std::string& cls) {
             l.outerConeDegrees = 45.0f;
             l.innerConeDegrees = 36.0f;
         }
+    } else if (cls == "Sound") {
+        auto& s = ecs.addComponent<AudioSource>(e);
+        s.volume = 0.5f;
+        s.minDistance = 10.0f;
+        s.maxDistance = 10000.0f;
+        s.spatial = false;
     } else if (classIsA(cls, "LuaSourceContainer")) {
         auto& script = ecs.addComponent<Script>(e);
         script.autoRun = false;
@@ -1317,6 +1561,44 @@ void setAttribute(ECS& ecs, InstanceRef ref, const std::string& attributeName, c
 std::map<std::string, InstanceValue> attributes(ECS& ecs, InstanceRef ref) {
     const InstanceInfo* info = findInfo(ecs, ref);
     return info != nullptr ? info->attributes : std::map<std::string, InstanceValue>{};
+}
+
+bool addTag(ECS& ecs, InstanceRef ref, const std::string& tag) {
+    if (!isAlive(ecs, ref) || hasTag(ecs, ref, tag)) return false;
+    infoFor(ecs, ref).tags.push_back(tag);
+    signals::tagChanged(ecs, ref, tag, true);
+    return true;
+}
+
+bool removeTag(ECS& ecs, InstanceRef ref, const std::string& tag) {
+    if (!hasTag(ecs, ref, tag)) return false;
+    std::erase(infoFor(ecs, ref).tags, tag);
+    signals::tagChanged(ecs, ref, tag, false);
+    return true;
+}
+
+bool hasTag(ECS& ecs, InstanceRef ref, const std::string& tag) {
+    const InstanceInfo* info = findInfo(ecs, ref);
+    return info != nullptr && std::find(info->tags.begin(), info->tags.end(), tag) != info->tags.end();
+}
+
+std::vector<std::string> tags(ECS& ecs, InstanceRef ref) {
+    const InstanceInfo* info = findInfo(ecs, ref);
+    return info != nullptr ? info->tags : std::vector<std::string>{};
+}
+
+std::vector<InstanceRef> tagged(ECS& ecs, const std::string& tag) {
+    std::vector<EntityId> found;
+    for (auto [e, info] : ecs.raw().view<InstanceInfo>().each()) {
+        if (std::find(info.tags.begin(), info.tags.end(), tag) != info.tags.end() && !isDetached(ecs, e)) {
+            found.push_back(e);
+        }
+    }
+    std::sort(found.begin(), found.end(),
+              [](EntityId a, EntityId b) { return entt::to_entity(a) < entt::to_entity(b); });
+    std::vector<InstanceRef> refs;
+    for (EntityId e : found) refs.push_back(refOf(ecs, e));
+    return refs;
 }
 
 bool isInWorld(ECS& ecs, EntityId entity) {

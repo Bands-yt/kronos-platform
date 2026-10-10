@@ -1,4 +1,5 @@
 #include "migration/ProjectImporter.hpp"
+#include "migration/RbxBinaryReader.hpp"
 
 #include <chrono>
 
@@ -53,7 +54,7 @@ size_t ImportReport::countOf(ImportSeverity severity) const {
 }
 
 std::string ImportReport::summary() const {
-    if (!parsed) return "import failed: the document could not be parsed as .rbxlx XML";
+    if (!parsed) return "import failed: the file could not be read as a Roblox place or model";
     std::string text = std::to_string(stats.instanceCount) + " instances, " + std::to_string(stats.scriptCount) +
                         " scripts, depth " + std::to_string(stats.maxDepth) + " -- " +
                         std::to_string(warningCount()) + " warning(s)";
@@ -66,11 +67,19 @@ ImportReport ProjectImporter::importDocument(const std::string& rbxlxSource,
     const auto started = std::chrono::steady_clock::now();
     ImportReport report;
 
-    auto document = RbxlxParser::parse(rbxlxSource);
-    if (!document.has_value()) {
-        report.diagnostics.push_back({ImportSeverity::Blocked, "<document>",
-                                       "could not be parsed as .rbxlx XML. Note that Roblox's BINARY formats "
-                                       "(.rbxl/.rbxm) are a different container entirely and are not supported."});
+    std::string error;
+    bool parsed = false;
+    if (isRobloxBinary(rbxlxSource)) {
+        parsed = readRobloxBinary(rbxlxSource, report.tree, error);
+        if (!parsed) error = "could not be read as a binary .rbxl/.rbxm file: " + error;
+    } else if (auto document = RbxlxParser::parse(rbxlxSource)) {
+        report.tree = InstanceTreeBuilder::build(*document);
+        parsed = true;
+    } else {
+        error = "could not be parsed as a Roblox file (.rbxl, .rbxm, .rbxlx or .rbxmx)";
+    }
+    if (!parsed) {
+        report.diagnostics.push_back({ImportSeverity::Blocked, "<document>", error});
         report.blocked = true;
         const auto finished = std::chrono::steady_clock::now();
         report.stats.elapsedMilliseconds =
@@ -78,7 +87,6 @@ ImportReport ProjectImporter::importDocument(const std::string& rbxlxSource,
         return report;
     }
     report.parsed = true;
-    report.tree = InstanceTreeBuilder::build(*document);
 
     // Safety first, before anything reports on the contents: an import
     // that must be refused should say so at the top of its report.

@@ -70,6 +70,8 @@ public:
         std::vector<SignalArg> values;
         std::string error;
     };
+    // An invoke answered from elsewhere (the network) with finishInvoke.
+    uint64_t beginInvoke();
     void finishInvoke(uint64_t id, bool ok, std::vector<SignalArg> values, std::string error);
     [[nodiscard]] bool invokeDone(uint64_t id) const;
     InvokeResult takeInvoke(uint64_t id);
@@ -131,6 +133,8 @@ struct RunServiceState {
     bool client = true;
     bool studio = false;
     bool running = true;
+    // A client holds its LocalScripts until the server's first copy of the game arrives.
+    bool awaitingReplication = false;
     double time = 0.0;
 };
 
@@ -149,6 +153,10 @@ void attributeChanged(ECS& ecs, InstanceRef ref, const std::string& attribute);
 void parentChanged(ECS& ecs, InstanceRef child, InstanceRef oldParent);
 // Before the instance and its descendants are destroyed.
 void destroying(ECS& ecs, InstanceRef ref);
+// CollectionService:GetInstanceAddedSignal/GetInstanceRemovedSignal fire on
+// the service under these event names.
+[[nodiscard]] std::string tagEventName(const std::string& tag, bool added);
+void tagChanged(ECS& ecs, InstanceRef ref, const std::string& tag, bool added);
 
 // Host loops: physics contacts and RunService. Stepped and PreSimulation run
 // before physics, PostSimulation and Heartbeat after it, RenderStepped and

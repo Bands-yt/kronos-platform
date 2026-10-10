@@ -134,9 +134,8 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"script", false, ApiMappingStatus::Mapped, "`script` is the script's own Instance."});
     registry_.push_back({"UserInputService", false, ApiMappingStatus::Unmapped,
                           "No UserInputService. Input is delivered through `events.onInteract`."});
-    registry_.push_back({"TweenService", false, ApiMappingStatus::Unmapped,
-                          "No TweenService. Animate from `events.onUpdate`, or author a curve in Studio's Movie "
-                          "Mode timeline."});
+    registry_.push_back({"TweenService", false, ApiMappingStatus::Mapped,
+                          "TweenService:Create and Tween Play/Pause/Cancel work as in Roblox (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"RunService", false, ApiMappingStatus::Mapped,
                           "Heartbeat, Stepped and RenderStepped work as in Roblox (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"ReplicatedStorage", false, ApiMappingStatus::Mapped,
@@ -174,11 +173,18 @@ LuauApiCompatibility::LuauApiCompatibility() {
         registry_.push_back({method, true, ApiMappingStatus::Mapped,
                               "Works as in Roblox within one game session (docs/ROBLOX_BRIDGE.md)."});
     }
-    for (const char* method : {"Create", "Play",
-                               "GetDataStore", "GetAsync", "SetAsync", "UpdateAsync", "IncrementAsync",
-                               "RemoveAsync", "AddItem", "AddTag", "GetTagged", "HasTag", "Raycast"}) {
-        registry_.push_back({method, true, ApiMappingStatus::Unmapped, kBridgeGuidance});
+    for (const char* method : {"GetDataStore", "GetGlobalDataStore", "GetAsync", "SetAsync", "UpdateAsync",
+                               "IncrementAsync", "RemoveAsync"}) {
+        registry_.push_back({method, true, ApiMappingStatus::Mapped,
+                              "Works as in Roblox; data is kept in a local file per game (docs/ROBLOX_BRIDGE.md)."});
     }
+    for (const char* method : {"Create", "Play", "Pause", "Cancel", "Stop", "Resume", "AddItem", "AddTag",
+                               "RemoveTag", "GetTagged", "HasTag", "GetTags", "GetInstanceAddedSignal",
+                               "GetInstanceRemovedSignal", "GetMinutesAfterMidnight", "SetMinutesAfterMidnight"}) {
+        registry_.push_back({method, true, ApiMappingStatus::Mapped,
+                              "Works as in Roblox (docs/ROBLOX_BRIDGE.md, \"Common services\")."});
+    }
+    registry_.push_back({"Raycast", true, ApiMappingStatus::Unmapped, kBridgeGuidance});
 
     // Handled automatically by ScriptCompatShimLoader -- reported so the
     // author knows a rewrite happened, not because anything is broken.

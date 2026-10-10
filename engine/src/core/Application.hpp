@@ -557,6 +557,8 @@ public:
         movementInputSuspended_ = suspended;
         input_.setOrbitDragEnabled(!suspended);
     }
+    // Plays the standing idle on the local avatar while movement is suspended (e.g. a game's menu).
+    void tickLocalAvatarIdle(float dt);
 
     // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
     // Layer" -- "Accessibility: Reduced motion mode"): real, same "caller
@@ -1162,6 +1164,9 @@ private:
     float rollbackTitleTimer_ = 0.0f;
     std::string baseWindowTitle_;
     uint32_t rollbackCapsuleMesh_ = Renderable::kInvalidHandle;
+    void robloxPlayerJoined(net::PlayerId player, const std::string& name, bool local);
+    // Game scripts, Roblox players and remotes; runs with or without a window.
+    void tickGameScripts(float dt);
     EntityId networkedLocalPlayerEntity_ = kNullEntity;
 
     // Kronos (beta, "restore the 18-bone humanoid for online play"): the

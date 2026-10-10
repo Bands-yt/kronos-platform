@@ -359,6 +359,7 @@ add_library(engine_core STATIC
     net/SessionBrowserSort.cpp
 
     migration/RbxlxParser.cpp
+    migration/RbxBinaryReader.cpp
     migration/InstanceTreeBuilder.cpp
     migration/AssetConverter.cpp
     migration/ScriptCompatShimLoader.cpp
@@ -373,6 +374,11 @@ add_library(engine_core STATIC
     core/InstanceSignals.cpp
     core/RobloxPlayers.cpp
     core/RobloxScripts.cpp
+    core/RobloxRemoteNet.cpp
+    core/RobloxReplication.cpp
+    core/RobloxDataStore.cpp
+    core/RobloxServices.cpp
+    core/PartBodies.cpp
     core/ScriptInstanceApi.cpp
     migration/AssetModeration.cpp
 
@@ -713,6 +719,7 @@ if(ENGINE_BUILD_RUNTIME)
         core/UITheme.cpp
         core/UIWidgets.cpp
         core/RobloxLeaderboard.cpp
+        core/RobloxGui.cpp
         # Kronos ("Home Screen Avatar Preview"): same real "one source
         # file, two targets" precedent as core/UITheme.cpp just above --
         # studio::PreviewScene/OffscreenTarget have zero real Studio-only
@@ -793,6 +800,7 @@ if(ENGINE_BUILD_STUDIO)
         core/UITheme.cpp
         core/UIWidgets.cpp
         core/RobloxLeaderboard.cpp
+        core/RobloxGui.cpp
         studio/Notification.cpp
         studio/EntityClassification.cpp
         studio/CreatorToolsSpawning.cpp

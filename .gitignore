@@ -20,6 +20,7 @@ imgui_*.ini.bak-pretest
 local_profile.profile
 local_avatar_loadout.loadout
 game_play_log.playlog
+datastores/
 transaction_log.transactions
 telemetry.log
 *_launch.log
@@ -44,6 +45,7 @@ test_world_metadata.json
 test_logger_file_sink.log
 test_instance_scene.*
 test_chat_review*.jsonl
+test_datastore/
 
 # Local game saves and Python caches
 brokenbones_save.json

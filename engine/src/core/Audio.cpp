@@ -2,6 +2,7 @@
 #include <miniaudio.h>
 
 #include "core/Audio.hpp"
+#include "core/Hierarchy.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -278,8 +279,11 @@ void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward,
         ma_sound* sound = sounds_[source.soundHandle];
         if (!sound) continue;
 
-        auto& transform = view.get<Transform>(entity);
-        ma_sound_set_position(sound, transform.position.x, transform.position.y, transform.position.z);
+        glm::vec3 position = view.get<Transform>(entity).position;
+        if (const auto* h = ecs.tryGetComponent<Hierarchy>(entity); h != nullptr && h->parent != entt::null) {
+            position = glm::vec3(hierarchy::computeWorldMatrix(ecs, entity)[3]);
+        }
+        ma_sound_set_position(sound, position.x, position.y, position.z);
         ma_sound_set_min_distance(sound, source.minDistance);
         ma_sound_set_max_distance(sound, source.maxDistance);
         ma_sound_set_volume(sound, source.volume);
@@ -288,6 +292,10 @@ void Audio::mix(ECS& ecs, glm::vec3 listenerPosition, glm::vec3 listenerForward,
         ma_sound_set_looping(sound, source.looping ? MA_TRUE : MA_FALSE);
         mixer_.route(sound, !source.bus.empty() ? source.bus : source.category == AudioCategory::Music ? "Music" : "SFX");
 
+        if (source.restart) {
+            ma_sound_seek_to_pcm_frame(sound, 0);
+            source.restart = false;
+        }
         const bool isPlaying = ma_sound_is_playing(sound) == MA_TRUE;
         if (source.playing && !isPlaying) {
             if (!source.looping && ma_sound_at_end(sound) == MA_TRUE) {

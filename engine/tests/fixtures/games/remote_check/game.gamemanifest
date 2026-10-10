@@ -1,0 +1,11 @@
+GAMEMANIFEST 1
+NAME Remote Check
+DESCRIPTION Test place for Roblox remotes over the network.
+THUMBNAILCOLOR 0.45 0.45 0.92 1
+EFFORTSCORE 0.5
+LAUNCHKIND ProjectPath
+PROJECTPATH project.project
+CLIFLAG 
+SAFETYSTATUS Safe
+UNSAFEREASON 
+END

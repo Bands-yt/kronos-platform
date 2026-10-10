@@ -8,10 +8,19 @@ Studio** for building your own games with parts, Luau scripts, physics
 and sound. Under the hood it's a C++ engine with a Vulkan renderer, Jolt
 Physics and Luau scripting. There's no third-party engine underneath.
 
-> Kronos is in **public beta**. Expect rough edges, and please
+New in **4.3**: Kronos speaks Roblox. Import a Roblox place (`.rbxl`,
+`.rbxm`, `.rbxlx` or `.rbxmx`) into Studio and its scripts run, using the
+same `game`, `workspace`, `Instance.new`, events, Players, Humanoids,
+RemoteEvents, DataStores, TweenService and GUI you already know.
+
+> Kronos **4.3** is a **pre-beta**. Expect rough edges, and please
 > [report anything that breaks](https://github.com/Bands-yt/kronos-platform/issues/new/choose).
 
 ![Playing as your avatar in Kronos Studio](docs/images/studio-play.png)
+
+| The Player | Your avatar | Broken Bones |
+|---|---|---|
+| ![The Player's Home page](docs/images/player-home.png) | ![Customizing your avatar](docs/images/player-avatar.png) | ![Falling in Broken Bones](docs/images/broken-bones.png) |
 
 ## Get it
 
@@ -43,6 +52,21 @@ start. If Windows says `VCRUNTIME140.dll was not found`, install the
 
 Want things to move? Select a part, open the **Script Editor** and write
 some Luau. The [Lua API](docs/LUA_API.md) lists everything scripts can do.
+
+## Bring a Roblox game
+
+1. In Roblox Studio, save your place (File → Save to File). The usual
+   `.rbxl` file is fine.
+2. In Kronos Studio, open **File → Import Roblox file**, paste the file's
+   path and press **Import**. The report shows how much of the place
+   Kronos understands, as a score.
+3. Press **Spawn Into Scene**, then **Play**. Scripts start like they do
+   in Roblox: Scripts on the server side, LocalScripts for the player.
+
+What works today, and what doesn't yet:
+[docs/ROBLOX_BRIDGE.md](docs/ROBLOX_BRIDGE.md). The command-line tool
+`kronos_compat` gives the same score for a whole folder of places. Only
+import places you made or have permission to use.
 
 ## Controls
 
@@ -92,18 +116,28 @@ are the biggest), so it takes a few minutes.
 | Build and run from source | [docs/QUICKSTART.md](docs/QUICKSTART.md) |
 | Fix a problem starting Kronos | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Script my game | [docs/LUA_CREATOR_EXPERIENCE.md](docs/LUA_CREATOR_EXPERIENCE.md), [docs/LUA_API.md](docs/LUA_API.md) |
+| Import a Roblox game, or see which Roblox APIs work | [docs/ROBLOX_BRIDGE.md](docs/ROBLOX_BRIDGE.md) |
 | Add music and sound | [docs/AUDIO_MIXER.md](docs/AUDIO_MIXER.md) |
 | Set up chat moderation (Gemini) | [docs/CHAT_MODERATION.md](docs/CHAT_MODERATION.md) |
 | Write a Studio plugin | [docs/PLUGIN_API.md](docs/PLUGIN_API.md) |
+| Build a launcher or tool for Kronos | [docs/THIRD_PARTY_TOOLS.md](docs/THIRD_PARTY_TOOLS.md) |
 | See what's coming next | [docs/ROADMAP.md](docs/ROADMAP.md) |
 | Understand how the engine fits together | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 
 ## License
 
-All rights reserved; see [LICENSE](LICENSE). The source is public for
-viewing and evaluation only. Copying, modifying, redistributing or using
-it (commercially or otherwise) needs the copyright holder's written
-permission.
+- **The plugin kit is open source** under the
+  [Apache License 2.0](LICENSES/Apache-2.0.txt): the C plugin API, the
+  example plugins, the Luau plugin template, the script type definitions
+  and the plugin and script API docs. Build anything with them, including
+  paid or closed-source tools. The full list is in
+  [LICENSING.md](LICENSING.md).
+- **Launchers, wrappers and other tools for Kronos are welcome.**
+  [docs/THIRD_PARTY_TOOLS.md](docs/THIRD_PARTY_TOOLS.md) explains what's
+  allowed and lists the launch options you can rely on.
+- **Everything else is all rights reserved** (see [LICENSE](LICENSE)): the
+  engine, Player, Studio and backend source is public to read, but copying,
+  changing or reusing it needs written permission.
 
 ## Repository layout
 

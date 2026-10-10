@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Faris Nadim
 // Kronos ("Native Plugin Architecture" -- Studio editor extensibility):
 // the reference native plugin proving out core::IHotReloadableModule +
 // studio::IStudioNativePluginExtension end-to-end -- a real, separately

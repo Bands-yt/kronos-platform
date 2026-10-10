@@ -1,0 +1,32 @@
+<roblox version="4"><Item class="Workspace" referent="RBX3"><Properties><string name="Name">Workspace</string></Properties><Item class="Part" referent="RBX1"><Properties><string name="Name">Baseplate</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>64</X><Y>1</Y><Z>64</Z></Vector3><Color3uint8 name="Color3uint8">4284193356</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="SpawnLocation" referent="RBX2"><Properties><string name="Name">SpawnLocation</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>1</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4279069100</Color3uint8><bool name="Anchored">true</bool></Properties></Item></Item><Item class="ReplicatedStorage" referent="RBX7"><Properties><string name="Name">ReplicatedStorage</string></Properties><Item class="RemoteEvent" referent="RBX4"><Properties><string name="Name">Paint</string></Properties></Item><Item class="RemoteFunction" referent="RBX5"><Properties><string name="Name">AskColor</string></Properties></Item><Item class="ModuleScript" referent="RBX6"><Properties><string name="Name">Colors</string><ProtectedString name="Source"><![CDATA[return { name = "Teal", r = 0, g = 170, b = 170 }
+]]></ProtectedString></Properties></Item></Item><Item class="ServerScriptService" referent="RBX9"><Properties><string name="Name">ServerScriptService</string></Properties><Item class="Script" referent="RBX13"><Properties><string name="Name">Saver</string><ProtectedString name="Source"><![CDATA[local store = game:GetService("DataStoreService"):GetDataStore("Visits")
+local before = store:GetAsync("count")
+local now = store:IncrementAsync("count", 1)
+print("SERVER visits " .. tostring(before) .. " -> " .. now)
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX8"><Properties><string name="Name">Server</string><ProtectedString name="Source"><![CDATA[local RS = game:GetService("ReplicatedStorage")
+local Colors = require(RS.Colors)
+RS.AskColor.OnServerInvoke = function(player)
+	return Colors.name
+end
+RS.Paint.OnServerEvent:Connect(function(player, word)
+	local p = Instance.new("Part")
+	p.Name = "PaintedBy" .. player.Name
+	p.Anchored = true
+	p.Size = Vector3.new(4, 4, 4)
+	p.Position = Vector3.new(0, 3, -12)
+	p.Color = Color3.fromRGB(Colors.r, Colors.g, Colors.b)
+	p.Parent = workspace
+	print("SERVER got " .. word .. " from " .. player.Name .. ", IsServer=" .. tostring(game:GetService("RunService"):IsServer()))
+	RS.Paint:FireClient(player, "painted")
+end)
+]]></ProtectedString></Properties></Item></Item><Item class="StarterPlayer" referent="RBX12"><Properties><string name="Name">StarterPlayer</string></Properties><Item class="StarterPlayerScripts" referent="RBX11"><Properties><string name="Name">StarterPlayerScripts</string></Properties><Item class="LocalScript" referent="RBX10"><Properties><string name="Name">Client</string><ProtectedString name="Source"><![CDATA[local RS = game:GetService("ReplicatedStorage")
+local Colors = require(RS:WaitForChild("Colors"))
+RS.Paint.OnClientEvent:Connect(function(msg)
+	print("CLIENT heard " .. msg)
+	local part = workspace:FindFirstChild("PaintedBy" .. game:GetService("Players").LocalPlayer.Name)
+	print("CLIENT sees " .. (part and (part.Name .. " green=" .. math.floor(part.Color.G * 255 + 0.5)) or "nothing"))
+end)
+local answer = RS.AskColor:InvokeServer()
+print("CLIENT asked, server said " .. answer .. ", module says " .. Colors.name .. ", hidden=" .. #game:GetService("ServerScriptService"):GetChildren())
+RS.Paint:FireServer("hello")
+]]></ProtectedString></Properties></Item></Item></Item></roblox>

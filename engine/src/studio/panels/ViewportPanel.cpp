@@ -18,6 +18,7 @@
 
 #include <ImGuizmo.h>
 
+#include "core/RobloxGui.hpp"
 #include "core/Components.hpp"
 #include "core/EditableMeshComponent.hpp"
 #include "core/Hierarchy.hpp"
@@ -1240,6 +1241,15 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
     }
 
     if (playerCameraActive_ && ecs != nullptr) {
+        // Roblox GUI over the game view during Play.
+        core::gui::Input guiInput;
+        guiInput.mouse = glm::vec2(ImGui::GetIO().MousePos.x - imageOrigin.x, ImGui::GetIO().MousePos.y - imageOrigin.y);
+        guiInput.pressed = hovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        guiInput.released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+        guiInput.down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        if (!hovered_) guiInput.mouse = glm::vec2(-1.0f);
+        core::gui::update(*ecs, glm::vec2(imageSize.x, imageSize.y), guiInput);
+        core::gui::draw(*ecs, drawList, glm::vec2(imageOrigin.x, imageOrigin.y));
         core::drawLeaderboard(*ecs, drawList, viewCubeOrigin(imageOrigin, imageSize).x - 10.0f, imageOrigin.y + 10.0f);
     }
 

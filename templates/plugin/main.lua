@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright (c) 2026 Faris Nadim
 -- Kronos Studio Plugin Template
 --
 -- A real, minimal, working plugin -- copy this whole folder, rename

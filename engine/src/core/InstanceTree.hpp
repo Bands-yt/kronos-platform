@@ -16,13 +16,16 @@ namespace engine::core {
 
 // A property or attribute value. BrickColor is kept as its colour.
 struct InstanceValue {
-    enum class Type : uint8_t { Nil, Bool, Number, String, Vector3, CFrame, Color3, BrickColor, Enum, Instance };
+    enum class Type : uint8_t { Nil, Bool, Number, String, Vector3, CFrame, Color3, BrickColor, Enum, Instance,
+                                Vector2, UDim, UDim2 };
     Type type = Type::Nil;
     bool boolean = false;
     double number = 0.0; // Number; Enum value
     std::string text;    // String; Enum item name
     std::string enumType;
-    glm::vec3 vec{0.0f}; // Vector3, Color3, BrickColor, CFrame position
+    // Vector3, Color3, BrickColor, CFrame position; Vector2 (x, y); UDim (scale, offset);
+    // UDim2 (X.Scale, X.Offset, Y.Scale) with Y.Offset in `number`.
+    glm::vec3 vec{0.0f};
     glm::quat rot{1.0f, 0.0f, 0.0f, 0.0f};
     uint32_t ref = ~0u; // Instance
 
@@ -35,6 +38,9 @@ struct InstanceValue {
     static InstanceValue ofBrickColor(glm::vec3 rgb);
     static InstanceValue ofEnum(std::string enumType, std::string item, int value);
     static InstanceValue ofInstance(uint32_t ref);
+    static InstanceValue ofVector2(float x, float y);
+    static InstanceValue ofUDim(float scale, float offset);
+    static InstanceValue ofUDim2(float xScale, float xOffset, float yScale, float yOffset);
 
     [[nodiscard]] static const char* typeName(Type type);
 };
@@ -53,6 +59,7 @@ struct InstanceInfo {
     bool detached = false; // Parent is nil
     std::map<std::string, InstanceValue> properties; // stored properties (Anchored, Value, ...)
     std::map<std::string, InstanceValue> attributes;
+    std::vector<std::string> tags; // CollectionService tags, in the order added
 
     // One-line text form for scene files.
     [[nodiscard]] std::string serialize() const;
@@ -66,7 +73,8 @@ struct InstanceMeshes {
     uint32_t cylinder = ~0u;
 };
 
-enum class PropertyType : uint8_t { Bool, Number, String, Vector3, CFrame, Color3, BrickColor, Enum, Instance };
+enum class PropertyType : uint8_t { Bool, Number, String, Vector3, CFrame, Color3, BrickColor, Enum, Instance,
+                                    Vector2, UDim, UDim2 };
 
 // Which side of a game may see or change a property.
 enum class PropertyContext : uint8_t { Any, ServerOnly, ClientOnly };
@@ -140,6 +148,14 @@ void setProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, const I
 [[nodiscard]] const InstanceValue* attribute(ECS& ecs, InstanceRef ref, const std::string& name);
 void setAttribute(ECS& ecs, InstanceRef ref, const std::string& name, const InstanceValue& value);
 [[nodiscard]] std::map<std::string, InstanceValue> attributes(ECS& ecs, InstanceRef ref);
+
+// CollectionService tags. add/remove return false when nothing changed.
+bool addTag(ECS& ecs, InstanceRef ref, const std::string& tag);
+bool removeTag(ECS& ecs, InstanceRef ref, const std::string& tag);
+[[nodiscard]] bool hasTag(ECS& ecs, InstanceRef ref, const std::string& tag);
+[[nodiscard]] std::vector<std::string> tags(ECS& ecs, InstanceRef ref);
+// Tagged instances inside the game (not detached), in creation order.
+[[nodiscard]] std::vector<InstanceRef> tagged(ECS& ecs, const std::string& tag);
 
 // Parts outside the workspace (in ReplicatedStorage, or with Parent nil)
 // don't draw. Re-checks the entity and its descendants.

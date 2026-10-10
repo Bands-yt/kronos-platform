@@ -6,6 +6,7 @@
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/InstanceTree.hpp"
+#include "core/OAuthPkce.hpp"
 #include "migration/PropertyDecoder.hpp"
 
 namespace engine::migration {
@@ -58,7 +59,80 @@ std::string enumItemName(const std::string& enumType, int value) {
             if (v == value) return item;
         }
     }
+    // GUI enums: names in value order (core/RobloxDatatypes.cpp has the same lists).
+    static const std::pair<const char*, std::vector<const char*>> kGuiEnums[] = {
+        {"TextXAlignment", {"Left", "Right", "Center"}},
+        {"TextYAlignment", {"Top", "Center", "Bottom"}},
+        {"FillDirection", {"Horizontal", "Vertical"}},
+        {"SortOrder", {"Name", "Custom", "LayoutOrder"}},
+        {"HorizontalAlignment", {"Center", "Left", "Right"}},
+        {"VerticalAlignment", {"Center", "Top", "Bottom"}},
+        {"Font", {"Legacy", "Arial", "ArialBold", "SourceSans", "SourceSansBold", "SourceSansLight",
+                  "SourceSansItalic", "Bodoni", "Garamond", "Cartoon", "Code", "Highway", "SciFi", "Arcade",
+                  "Fantasy", "Antique", "SourceSansSemibold", "Gotham", "GothamSemibold", "GothamBold",
+                  "GothamBlack"}},
+    };
+    for (const auto& [name, items] : kGuiEnums) {
+        if (enumType == name && value >= 0 && value < static_cast<int>(items.size())) return items[value];
+    }
     return {};
+}
+
+// GUI objects: every stored property the class table knows, by type.
+void storeGuiProperties(const ImportedInstance& node, core::ECS& ecs, core::InstanceRef ref) {
+    using core::InstanceValue;
+    using core::PropertyType;
+    const auto& props = node.properties;
+    for (const core::ClassDef* def = core::instances::findClass(node.className); def != nullptr;
+         def = core::instances::findClass(def->superclass)) {
+        for (const core::PropertyDef& property : def->properties) {
+            if (property.readOnly || property.get != nullptr || property.name == "Name") continue;
+            const std::string& n = property.name;
+            const auto has = [&](const char* field) { return hasProperty(props, n + field); };
+            InstanceValue value;
+            switch (property.type) {
+                case PropertyType::Number:
+                    if (!hasProperty(props, n)) continue;
+                    value = InstanceValue::ofNumber(decodeFloat(props, n));
+                    break;
+                case PropertyType::Bool:
+                    if (!hasProperty(props, n)) continue;
+                    value = InstanceValue::ofBool(decodeBool(props, n));
+                    break;
+                case PropertyType::String:
+                    if (!hasProperty(props, n)) continue;
+                    value = InstanceValue::ofString(decodeString(props, n));
+                    break;
+                case PropertyType::Color3:
+                    if (!hasProperty(props, n) && !has(".R")) continue;
+                    value = InstanceValue::ofColor3(decodeColor3(props, n));
+                    break;
+                case PropertyType::Vector2:
+                    if (!has(".X")) continue;
+                    value = InstanceValue::ofVector2(decodeFloat(props, n + ".X"), decodeFloat(props, n + ".Y"));
+                    break;
+                case PropertyType::UDim:
+                    if (!has(".S")) continue;
+                    value = InstanceValue::ofUDim(decodeFloat(props, n + ".S"), decodeFloat(props, n + ".O"));
+                    break;
+                case PropertyType::UDim2:
+                    if (!has(".XS")) continue;
+                    value = InstanceValue::ofUDim2(decodeFloat(props, n + ".XS"), decodeFloat(props, n + ".XO"),
+                                                   decodeFloat(props, n + ".YS"), decodeFloat(props, n + ".YO"));
+                    break;
+                case PropertyType::Enum: {
+                    if (!hasProperty(props, n)) continue;
+                    const int number = decodeInt(props, n);
+                    const std::string item = enumItemName(property.enumType, number);
+                    if (item.empty()) continue;
+                    value = InstanceValue::ofEnum(property.enumType, item, number);
+                    break;
+                }
+                default: continue;
+            }
+            core::instances::setProperty(ecs, ref, property, value);
+        }
+    }
 }
 
 // Copies the properties scripts read (Anchored, Material, Value, ...) into
@@ -85,6 +159,60 @@ void storeProperties(const ImportedInstance& node, core::ECS& ecs, core::EntityI
             if (!shapeName.empty()) {
                 ecs.tryGetComponent<core::InstanceInfo>(entity)->properties["Shape"] =
                     InstanceValue::ofEnum("PartType", shapeName, shape);
+            }
+        }
+    }
+    if (core::instances::classIsA(node.className, "GuiBase2d") ||
+        core::instances::classIsA(node.className, "UIComponent")) {
+        storeGuiProperties(node, ecs, ref);
+    }
+    if (node.className == "Sound") {
+        if (!ecs.hasComponent<core::AudioSource>(entity)) {
+            auto& sound = ecs.addComponent<core::AudioSource>(entity);
+            sound.volume = 0.5f;
+            sound.spatial = false;
+        }
+        const std::string id = hasProperty(node.properties, "SoundId.url") ? decodeString(node.properties, "SoundId.url")
+                                                                           : decodeString(node.properties, "SoundId");
+        set("SoundId", InstanceValue::ofString(id));
+        set("Volume", InstanceValue::ofNumber(decodeFloat(node.properties, "Volume", 0.5f)));
+        set("PlaybackSpeed", InstanceValue::ofNumber(decodeFloat(node.properties, "PlaybackSpeed", 1.0f)));
+        set("Looped", InstanceValue::ofBool(decodeBool(node.properties, "Looped", false)));
+        set("RollOffMinDistance", InstanceValue::ofNumber(decodeFloat(node.properties, "RollOffMinDistance", 10.0f)));
+        set("RollOffMaxDistance", InstanceValue::ofNumber(decodeFloat(node.properties, "RollOffMaxDistance", 10000.0f)));
+        set("PlayOnRemove", InstanceValue::ofBool(decodeBool(node.properties, "PlayOnRemove", false)));
+        // Playing from the file starts when the game runs, as in Roblox.
+        if (decodeBool(node.properties, "Playing", false)) ecs.tryGetComponent<core::AudioSource>(entity)->playOnStart = true;
+    }
+    if (node.className == "Lighting") {
+        for (const char* number : {"ClockTime", "Brightness", "FogStart", "FogEnd", "ExposureCompensation",
+                                   "GeographicLatitude"}) {
+            if (hasProperty(node.properties, number)) set(number, InstanceValue::ofNumber(decodeFloat(node.properties, number)));
+        }
+        for (const char* color : {"Ambient", "OutdoorAmbient", "FogColor"}) {
+            if (hasProperty(node.properties, color) || hasProperty(node.properties, std::string(color) + ".R")) {
+                set(color, InstanceValue::ofColor3(decodeColor3(node.properties, color)));
+            }
+        }
+        if (hasProperty(node.properties, "GlobalShadows")) {
+            set("GlobalShadows", InstanceValue::ofBool(decodeBool(node.properties, "GlobalShadows", true)));
+        }
+    }
+    // Tags: the names, each ending in a zero byte (base64 in XML files).
+    if (hasProperty(node.properties, "Tags")) {
+        std::string names = decodeString(node.properties, "Tags");
+        const auto type = node.properties.find("@type.Tags");
+        if (type != node.properties.end() && type->second == "BinaryString") {
+            std::erase_if(names, [](char c) { return c == '=' || c == '\n' || c == '\r' || c == ' '; });
+            std::replace(names.begin(), names.end(), '+', '-');
+            std::replace(names.begin(), names.end(), '/', '_');
+            names = core::base64UrlDecode(names);
+        }
+        size_t start = 0;
+        for (size_t i = 0; i <= names.size(); ++i) {
+            if (i == names.size() || names[i] == '\0') {
+                if (i > start) core::instances::addTag(ecs, ref, names.substr(start, i - start));
+                start = i + 1;
             }
         }
     }

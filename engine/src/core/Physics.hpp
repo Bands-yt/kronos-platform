@@ -189,6 +189,8 @@ public:
     // an entity that never had a body looks. Safe to call on an entity
     // with no live body at all (a real no-op, not an error).
     void detachBody(EntityId entity, ECS& ecs);
+    // For a body whose entity is already gone.
+    void destroyBodyById(uint32_t joltBodyId);
 
     // Moves a Kinematic body toward `targetPosition`/`targetRotation` over
     // `dt` using Jolt's real `BodyInterface::MoveKinematic` -- computes

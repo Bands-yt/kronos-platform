@@ -17,6 +17,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <atomic>
 #include <fstream>
@@ -196,6 +197,12 @@
 #include "core/InstanceSignals.hpp"
 #include "core/ScriptInstanceApi.hpp"
 #include "core/RobloxPlayers.hpp"
+#include "core/RobloxRemoteNet.hpp"
+#include "core/RobloxReplication.hpp"
+#include "core/PartBodies.hpp"
+#include "core/RobloxDataStore.hpp"
+#include "core/RobloxServices.hpp"
+#include "core/RobloxGui.hpp"
 #include "core/RobloxScripts.hpp"
 #include "core/InstanceTree.hpp"
 #include "studio/panels/LuauSymbolIndex.hpp"
@@ -315,6 +322,8 @@
 #include "migration/ProjectImporter.hpp"
 #include "migration/CompatibilityScore.hpp"
 #include "migration/RbxlxParser.hpp"
+#include "migration/RbxBinaryReader.hpp"
+#include "migration/InstanceTreeBuilder.hpp"
 #include "migration/PropertyDecoder.hpp"
 #include "studio/IKronosPlugin.hpp"
 #include "studio/KronosPluginHost.hpp"
@@ -42702,6 +42711,606 @@ void checkLuauExpectations(const char* label, const std::vector<std::string>& ou
     check(done, (std::string(label) + ": the test script runs to the end without an error").c_str());
 }
 
+void testRobloxBinaryFormat() {
+    using namespace engine::migration;
+    std::printf("\n-- Roblox binary files (.rbxl/.rbxm) --\n");
+    namespace fs = std::filesystem;
+    auto slurp = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    };
+    static const std::set<std::string> kCompared = {"string", "ProtectedString", "bool", "int", "float", "double",
+                                                     "token", "Vector3", "Vector2", "Color3", "CoordinateFrame",
+                                                     "UDim", "UDim2", "Color3uint8", "int64"};
+    size_t folders = 0;
+    size_t compared = 0;
+    size_t mismatches = 0;
+    size_t shapeErrors = 0;
+    std::function<void(const ImportedInstance&, const ImportedInstance&, const std::string&)> compare;
+    compare = [&](const ImportedInstance& xml, const ImportedInstance& bin, const std::string& where) {
+        if (xml.className != bin.className || xml.name != bin.name || xml.children.size() != bin.children.size()) {
+            ++shapeErrors;
+            std::printf("  shape differs at %s: %s/%s vs %s/%s\n", where.c_str(), xml.className.c_str(),
+                        xml.name.c_str(), bin.className.c_str(), bin.name.c_str());
+            return;
+        }
+        for (const auto& [key, value] : xml.properties) {
+            if (key.rfind("@type.", 0) == 0) continue;
+            const std::string base = key.substr(0, key.find('.'));
+            const auto type = xml.properties.find("@type." + base);
+            if (type == xml.properties.end() || kCompared.count(type->second) == 0) continue;
+            if (key == base && key != "Name" && type->second != "string" && type->second != "ProtectedString" &&
+                type->second != "bool" && type->second != "int" && type->second != "float" &&
+                type->second != "double" && type->second != "token" && type->second != "Color3uint8" &&
+                type->second != "int64") {
+                continue; // composite types keep their values in the dotted fields
+            }
+            // The two default-inserted-part files were saved with the part in different places.
+            if (where == "default-inserted-part/Part" && base == "CFrame") continue;
+            const auto other = bin.properties.find(key);
+            if (other == bin.properties.end()) {
+                ++mismatches;
+                std::printf("  %s: %s missing in binary\n", where.c_str(), key.c_str());
+                continue;
+            }
+            ++compared;
+            char* endA = nullptr;
+            char* endB = nullptr;
+            const double a = std::strtod(value.c_str(), &endA);
+            const double b = std::strtod(other->second.c_str(), &endB);
+            const bool numeric = !value.empty() && *endA == '\0' && !other->second.empty() && *endB == '\0';
+            const bool same = numeric ? (std::isnan(a) && std::isnan(b)) || a == b ||
+                                            std::abs(a - b) <= 1e-4 * std::max(1.0, std::abs(a))
+                                      : value == other->second;
+            if (!same) {
+                ++mismatches;
+                std::printf("  %s: %s xml=\"%s\" binary=\"%s\"\n", where.c_str(), key.c_str(), value.c_str(),
+                            other->second.c_str());
+            }
+        }
+        for (size_t i = 0; i < xml.children.size(); ++i) {
+            compare(xml.children[i], bin.children[i], where + "/" + xml.children[i].name);
+        }
+    };
+
+    for (const auto& entry : fs::directory_iterator("tests/fixtures/rbx-test-files")) {
+        if (!entry.is_directory()) continue;
+        const std::string binary = slurp(entry.path() / "binary.rbxm");
+        const auto document = RbxlxParser::parse(slurp(entry.path() / "xml.rbxmx"));
+        if (binary.empty() || !document.has_value()) continue;
+        ++folders;
+        const std::vector<ImportedInstance> xmlTree = InstanceTreeBuilder::build(*document);
+        std::vector<ImportedInstance> binTree;
+        std::string error;
+        if (!readRobloxBinary(binary, binTree, error) || binTree.size() != xmlTree.size()) {
+            ++shapeErrors;
+            std::printf("  %s: %s (%zu vs %zu roots)\n", entry.path().filename().c_str(), error.c_str(),
+                        binTree.size(), xmlTree.size());
+            continue;
+        }
+        for (size_t i = 0; i < xmlTree.size(); ++i) {
+            compare(xmlTree[i], binTree[i], entry.path().filename().string() + "/" + xmlTree[i].name);
+        }
+    }
+    check(folders >= 13, "binary format: every fixture folder is read");
+    check(shapeErrors == 0, "binary format: binary and XML give the same tree");
+    check(compared > 300, "binary format: hundreds of property values compared");
+    check(mismatches == 0, "binary format: every compared property matches the XML file");
+
+    // LZ4: "abcabcabcabc" as one literal run plus a match.
+    const unsigned char packed[] = {0x35, 'a', 'b', 'c', 0x03, 0x00, 0x00};
+    unsigned char out[13] = {};
+    check(lz4Decompress(packed, 6, out, 12) && std::string(reinterpret_cast<char*>(out), 12) == "abcabcabcabc",
+          "binary format: LZ4 match copies overlap correctly");
+    check(!lz4Decompress(packed, 6, out, 11), "binary format: LZ4 refuses a wrong output size");
+
+    const std::string tags = slurp("tests/fixtures/rbx-test-files/tags/binary.rbxm");
+    check(isRobloxBinary(tags) && !isRobloxBinary("<roblox version=\"4\">"), "binary format: detected by its header");
+    engine::migration::ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+    const auto report = importer.importDocument(tags, scanner);
+    check(report.parsed && !report.blocked && report.tree.size() == 1, "binary format: importDocument reads .rbxm");
+    engine::core::ECS ecs;
+    (void)InstanceHydrator{}.hydrate(report.tree, ecs, HydrationMeshes{});
+    bool tagged = false;
+    for (auto [e, info] : ecs.raw().view<engine::core::InstanceInfo>().each()) {
+        tagged = tagged || info.tags == std::vector<std::string>{"Cool", "My", "Tags"};
+    }
+    check(tagged, "binary format: raw Tags are imported");
+
+    for (size_t cut : {size_t{20}, tags.size() / 2, tags.size() - 9}) {
+        const auto broken = importer.importDocument(tags.substr(0, cut), scanner);
+        check(!broken.parsed && broken.blocked, "binary format: a cut-off file is refused, not crashed on");
+    }
+    std::string garbled = tags;
+    for (size_t i = 60; i < garbled.size(); i += 7) garbled[i] = static_cast<char>(garbled[i] ^ 0x5A);
+    (void)importer.importDocument(garbled, scanner);
+    check(true, "binary format: a garbled file doesn't crash");
+}
+
+void testRobloxGui() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox GUI --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "GUI test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    std::string error;
+    const InstanceRef body = instances::create(ecs, "Part", error);
+    (void)instances::setParent(ecs, body, kWorkspaceInstance, error);
+    (void)players::join(ecs, "Tester", 1, instances::entityOf(ecs, body), true);
+    signals::flush(ecs);
+
+    scripting.loadAndRun("GuiSetup", R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	return not ok and (text == nil or string.find(tostring(err), text, 1, true) ~= nil)
+end
+local gui = Instance.new("ScreenGui")
+gui.Parent = game:GetService("Players").LocalPlayer.PlayerGui
+local frame = Instance.new("Frame")
+frame.Name = "Panel"
+frame.Size = UDim2.new(0.5, 0, 0, 100)
+frame.Position = UDim2.fromScale(0.5, 0.5)
+frame.AnchorPoint = Vector2.new(0.5, 0.5)
+frame.Parent = gui
+local list = Instance.new("UIListLayout")
+list.Padding = UDim.new(0, 10)
+list.Parent = frame
+local buy = Instance.new("TextButton")
+buy.Name = "Buy"
+buy.Size = UDim2.new(1, 0, 0, 30)
+buy.LayoutOrder = 2
+buy.Parent = frame
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.Size = UDim2.new(1, 0, 0, 20)
+title.LayoutOrder = 1
+title.Parent = frame
+local hidden = Instance.new("TextButton")
+hidden.Visible = false
+hidden.Parent = frame
+buy.MouseButton1Click:Connect(function() print("CLICK") end)
+buy.Activated:Connect(function() print("ACTIVATED") end)
+buy.MouseButton1Down:Connect(function(x, y) print("DOWN " .. x .. " " .. y) end)
+buy.MouseEnter:Connect(function() print("ENTER") end)
+buy.MouseLeave:Connect(function() print("LEAVE") end)
+expect("UDim2 and Vector2 properties", frame.Size == UDim2.new(0.5, 0, 0, 100) and frame.AnchorPoint == Vector2.new(0.5, 0.5))
+expect("text defaults", buy.Text == "Label" and buy.TextSize == 14 and buy.Font == Enum.Font.SourceSans
+	and buy.TextXAlignment == Enum.TextXAlignment.Center)
+expect("UDim properties", list.Padding == UDim.new(0, 10) and list.FillDirection == Enum.FillDirection.Vertical)
+expect("wrong types fail", fails(function() frame.Size = Vector3.new() end, "UDim2 expected"))
+expect("AbsoluteSize is read only", fails(function() frame.AbsoluteSize = Vector2.new() end, "read only"))
+game:GetService("TweenService"):Create(title, TweenInfo.new(1, Enum.EasingStyle.Linear), {Size = UDim2.new(0.5, 0, 0, 40)}):Play()
+print("DONE")
+)LUAU");
+    gui::Input input;
+    gui::update(ecs, glm::vec2(800.0f, 600.0f), input);
+    auto rectOf = [&](const std::string& name) {
+        for (const gui::Item& item : gui::items(ecs)) {
+            if (instances::name(ecs, item.ref) == name) return glm::vec4(item.position, item.size);
+        }
+        return glm::vec4(-1.0f);
+    };
+    check(rectOf("Panel") == glm::vec4(200, 250, 400, 100), "scale, offset and AnchorPoint place the frame");
+    check(rectOf("Title") == glm::vec4(200, 250, 400, 20) && rectOf("Buy") == glm::vec4(200, 280, 400, 30),
+          "UIListLayout stacks by LayoutOrder with Padding");
+    check(gui::items(ecs).size() == 3, "invisible objects aren't laid out");
+
+    input.mouse = glm::vec2(300.0f, 290.0f);
+    gui::update(ecs, glm::vec2(800.0f, 600.0f), input);
+    check(gui::mouseOverButton(ecs), "the mouse is over the button");
+    input.pressed = true;
+    gui::update(ecs, glm::vec2(800.0f, 600.0f), input);
+    input.pressed = false;
+    input.released = true;
+    gui::update(ecs, glm::vec2(800.0f, 600.0f), input);
+    input.released = false;
+    signals::flush(ecs);
+    input.pressed = true;
+    gui::update(ecs, glm::vec2(800.0f, 600.0f), input);
+    input = gui::Input{};
+    input.mouse = glm::vec2(10.0f, 10.0f);
+    input.released = true;
+    gui::update(ecs, glm::vec2(800.0f, 600.0f), input);
+    signals::flush(ecs);
+    auto count = [&](const std::string& text) { return std::count(output.begin(), output.end(), text); };
+    check(count("ENTER") == 1 && count("LEAVE") == 1, "MouseEnter and MouseLeave fire once each");
+    check(count("DOWN 300 290") == 2, "MouseButton1Down gets the mouse position");
+    check(count("CLICK") == 1 && count("ACTIVATED") == 1, "a click fires MouseButton1Click and Activated; dragging off doesn't");
+
+    for (int i = 0; i < 10; ++i) signals::heartbeat(ecs, 0.05);
+    gui::update(ecs, glm::vec2(800.0f, 600.0f), gui::Input{});
+    check(std::abs(rectOf("Title").z - 300.0f) < 1.0f && std::abs(rectOf("Title").w - 30.0f) < 0.5f,
+          "UDim2 sizes tween");
+    scripting.loadAndRun("GuiCheck", R"LUAU(
+local panel = game:GetService("Players").LocalPlayer.PlayerGui.ScreenGui.Panel
+print((panel.AbsolutePosition == Vector2.new(200, 250) and panel.AbsoluteSize == Vector2.new(400, 100)) and "OK AbsolutePosition and AbsoluteSize" or "FAIL AbsolutePosition and AbsoluteSize")
+print("DONE")
+)LUAU");
+    checkLuauExpectations("GUI", output);
+
+    const std::string place = R"XML(<roblox version="4">
+  <Item class="StarterGui" referent="G"><Properties><string name="Name">StarterGui</string></Properties>
+    <Item class="ScreenGui" referent="S"><Properties><string name="Name">Hud</string></Properties>
+      <Item class="TextLabel" referent="T"><Properties><string name="Name">Coins</string>
+        <UDim2 name="Size"><XS>0</XS><XO>200</XO><YS>0</YS><YO>50</YO></UDim2>
+        <Vector2 name="AnchorPoint"><X>1</X><Y>0</Y></Vector2>
+        <Color3 name="BackgroundColor3"><R>0</R><G>0</G><B>1</B></Color3>
+        <string name="Text">Coins: 0</string><token name="TextXAlignment">0</token><bool name="TextScaled">true</bool></Properties>
+        <Item class="UICorner" referent="C"><Properties><string name="Name">UICorner</string>
+          <UDim name="CornerRadius"><S>0.5</S><O>0</O></UDim></Properties></Item>
+      </Item>
+    </Item>
+  </Item>
+</roblox>)XML";
+    engine::migration::ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+    const auto report = importer.importDocument(place, scanner);
+    ECS imported;
+    (void)engine::migration::InstanceHydrator{}.hydrate(report.tree, imported, engine::migration::HydrationMeshes{});
+    bool labelOk = false;
+    bool cornerOk = false;
+    for (auto [e, info] : imported.raw().view<InstanceInfo>().each()) {
+        auto value = [&](const char* name) {
+            const auto it = info.properties.find(name);
+            return it != info.properties.end() ? it->second : InstanceValue{};
+        };
+        if (info.className == "TextLabel") {
+            const InstanceValue size = value("Size");
+            labelOk = size.type == InstanceValue::Type::UDim2 && size.vec.y == 200.0f && size.number == 50.0 &&
+                      value("AnchorPoint").vec.x == 1.0f && value("Text").text == "Coins: 0" &&
+                      value("TextXAlignment").text == "Left" && value("TextScaled").boolean &&
+                      value("BackgroundColor3").vec == glm::vec3(0, 0, 1);
+        }
+        if (info.className == "UICorner") cornerOk = value("CornerRadius").vec.x == 0.5f;
+    }
+    check(labelOk, "imported TextLabels keep Size, AnchorPoint, colour, Text and alignment");
+    check(cornerOk, "imported UICorners keep CornerRadius");
+    InstanceInfo saved{"Frame"};
+    saved.properties["Size"] = InstanceValue::ofUDim2(0.5f, 10.0f, 0.25f, -4.0f);
+    saved.properties["AnchorPoint"] = InstanceValue::ofVector2(0.5f, 1.0f);
+    InstanceInfo loaded;
+    check(InstanceInfo::deserialize(saved.serialize(), loaded) && loaded.properties["Size"].number == -4.0 &&
+              loaded.properties["Size"].vec == glm::vec3(0.5f, 10.0f, 0.25f) &&
+              loaded.properties["AnchorPoint"].vec.y == 1.0f,
+          "UDim2 and Vector2 properties are saved in scenes");
+}
+
+void testRobloxServices() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox common services --\n");
+    check(std::abs(services::ease("Quad", "Out", 0.5) - 0.75) < 1e-9, "Quad Out at half way is 0.75");
+    check(std::abs(services::ease("Sine", "InOut", 0.5) - 0.5) < 1e-9, "Sine InOut is symmetric");
+    check(std::abs(services::ease("Bounce", "Out", 1.0) - 1.0) < 1e-9 && services::ease("Back", "In", 0.0) == 0.0,
+          "easing curves start at 0 and end at 1");
+    check(services::ease("Back", "Out", 0.5) > 1.0, "Back overshoots");
+
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "services test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto run = [&](const char* name, const char* source) {
+        scripting.loadAndRun(name, std::string(R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	return not ok and (text == nil or string.find(tostring(err), text, 1, true) ~= nil)
+end
+local function near(a, b) return math.abs(a - b) < 1e-3 end
+)LUAU") + source + "\nprint(\"DONE\")\n");
+    };
+    auto step = [&](double seconds) {
+        for (double t = 0.0; t < seconds - 1e-9; t += 0.05) {
+            scripting.tick(0.05f);
+            signals::heartbeat(ecs, 0.05);
+            signals::flush(ecs);
+        }
+    };
+    auto said = [&](const std::string& text) {
+        return std::find(output.begin(), output.end(), text) != output.end();
+    };
+
+    run("TweenSetup", R"LUAU(
+local TweenService = game:GetService("TweenService")
+local function part(name)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Anchored = true
+	p.Position = Vector3.new(0, 0, 0)
+	p.Parent = workspace
+	return p
+end
+local mover = part("Mover")
+local tween = TweenService:Create(mover, TweenInfo.new(1, Enum.EasingStyle.Linear), {Position = Vector3.new(10, 0, 0), Transparency = 1})
+expect("Create gives a Tween", tween:IsA("Tween") and tween.Instance == mover and tween.PlaybackState == Enum.PlaybackState.Begin)
+expect("GetValue", near(TweenService:GetValue(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), 0.25))
+expect("unknown properties fail", fails(function() TweenService:Create(mover, TweenInfo.new(), {Nope = 1}) end, "no property named 'Nope'"))
+expect("wrong types fail", fails(function() TweenService:Create(mover, TweenInfo.new(), {Position = 5}) end, "type mismatch"))
+expect("strings can't be tweened", fails(function() TweenService:Create(mover, TweenInfo.new(), {Name = "x"}) end))
+expect("TweenInfo is required", fails(function() TweenService:Create(mover, {}, {}) end, "TweenInfo"))
+tween.Completed:Connect(function(state) print("MOVER " .. state.Name) end)
+tween:Play()
+expect("Play starts it", tween.PlaybackState == Enum.PlaybackState.Playing)
+
+local paused = TweenService:Create(part("Paused"), TweenInfo.new(1, Enum.EasingStyle.Linear), {Transparency = 1})
+paused:Play()
+local pausedAt
+task.delay(0.25, function()
+	paused:Pause()
+	pausedAt = workspace.Paused.Transparency
+end)
+task.delay(1.0, function()
+	print("PAUSED held " .. tostring(pausedAt > 0 and workspace.Paused.Transparency == pausedAt) .. " " .. paused.PlaybackState.Name)
+	paused:Play()
+end)
+
+local cancelled = part("Cancelled")
+local c = TweenService:Create(cancelled, TweenInfo.new(1, Enum.EasingStyle.Linear), {Transparency = 1})
+c.Completed:Connect(function(state) print("CANCELLED " .. state.Name) end)
+c:Play()
+task.delay(0.5, function()
+	c:Cancel()
+	cancelled:SetAttribute("At", cancelled.Transparency)
+end)
+
+local shared = part("Shared")
+local first = TweenService:Create(shared, TweenInfo.new(1), {Position = Vector3.new(0, 5, 0)})
+first.Completed:Connect(function(state) print("FIRST " .. state.Name) end)
+first:Play()
+TweenService:Create(shared, TweenInfo.new(1), {Position = Vector3.new(0, -5, 0)}):Play()
+
+local bounce = part("Bounce")
+local b = TweenService:Create(bounce, TweenInfo.new(1, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, 1, true), {Position = Vector3.new(4, 0, 0)})
+b.Completed:Connect(function(state) print("BOUNCE " .. state.Name) end)
+b:Play()
+
+local late = TweenService:Create(part("Late"), TweenInfo.new(0.5, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, 0, false, 1), {Transparency = 1})
+late:Play()
+expect("a delayed tween waits", late.PlaybackState == Enum.PlaybackState.Delayed)
+
+game:GetService("Debris"):AddItem(part("Junk"), 1)
+game:GetService("Debris"):AddItem(part("Keep"))
+)LUAU");
+    step(0.5);
+    run("TweenHalf", R"LUAU(
+expect("half way after 0.5 s", near(workspace.Mover.Position.X, 5) and near(workspace.Mover.Transparency, 0.5))
+expect("the delayed tween hasn't moved", workspace.Late.Transparency == 0)
+expect("Debris waits", workspace:FindFirstChild("Junk") ~= nil)
+expect("the reversing tween is at the far end", near(workspace.Bounce.Position.X, 2))
+)LUAU");
+    step(0.6);
+    run("TweenEnd", R"LUAU(
+expect("the tween ends on the goal", workspace.Mover.Position == Vector3.new(10, 0, 0) and workspace.Mover.Transparency == 1)
+expect("Debris destroys after the lifetime", workspace:FindFirstChild("Junk") == nil and workspace:FindFirstChild("Keep") ~= nil)
+expect("Cancel leaves the part where it was",
+	workspace.Cancelled.Transparency > 0.3 and workspace.Cancelled.Transparency == workspace.Cancelled:GetAttribute("At"))
+expect("a newer tween takes over a property", workspace.Shared.Position.Y < -4)
+expect("the delayed tween started after its delay", workspace.Late.Transparency > 0)
+)LUAU");
+    step(3.0);
+    run("TweenLater", R"LUAU(
+expect("Pause holds and Play resumes", workspace.Paused.Transparency == 1)
+expect("reverses and repeats end at the start", workspace.Bounce.Position == Vector3.new(0, 0, 0))
+)LUAU");
+    check(said("MOVER Completed"), "Completed fires with Completed");
+    check(said("PAUSED held true Paused"), "a paused tween stays put");
+    check(said("CANCELLED Cancelled"), "Cancel fires Completed with Cancelled");
+    check(said("FIRST Cancelled"), "the overridden tween is cancelled");
+    check(said("BOUNCE Completed"), "a repeating tween completes once");
+
+    run("Tags", R"LUAU(
+local CollectionService = game:GetService("CollectionService")
+local a = Instance.new("Part")
+a.Name = "CoinA"
+a.Parent = workspace
+local b = Instance.new("Part")
+b.Name = "CoinB"
+b.Parent = workspace
+local loose = Instance.new("Part")
+CollectionService:GetInstanceAddedSignal("Coin"):Connect(function(i) print("ADDED " .. i.Name) end)
+CollectionService:GetInstanceRemovedSignal("Coin"):Connect(function(i) print("REMOVED " .. tostring(i)) end)
+CollectionService:AddTag(a, "Coin")
+b:AddTag("Coin")
+b:AddTag("Spin")
+loose:AddTag("Coin")
+expect("HasTag both ways", CollectionService:HasTag(a, "Coin") and a:HasTag("Coin") and not a:HasTag("Spin"))
+local tagged = CollectionService:GetTagged("Coin")
+expect("GetTagged lists tagged parts in the game", #tagged == 2 and tagged[1] == a and tagged[2] == b)
+expect("GetTags", #b:GetTags() == 2 and CollectionService:GetTags(b)[2] == "Spin")
+expect("GetAllTags", table.concat(CollectionService:GetAllTags(), ",") == "Coin,Spin")
+expect("Clone keeps tags", b:Clone():HasTag("Spin"))
+a:RemoveTag("Coin")
+)LUAU");
+    signals::flush(ecs);
+    run("TagsDestroy", "workspace.CoinB:Destroy()");
+    signals::flush(ecs);
+    check(said("ADDED CoinA") && said("ADDED CoinB"), "GetInstanceAddedSignal fires for tagged instances in the game");
+    check(said("REMOVED CoinA") && said("REMOVED <destroyed>"), "GetInstanceRemovedSignal fires on RemoveTag and Destroy");
+    check(std::count_if(output.begin(), output.end(), [](const std::string& l) { return l.rfind("ADDED", 0) == 0; }) == 2,
+          "tagging an instance outside the game fires nothing");
+    InstanceInfo info{"Part"};
+    info.tags = {"Coin", "Spin Fast"};
+    InstanceInfo back;
+    check(InstanceInfo::deserialize(info.serialize(), back) && back.tags == info.tags, "tags are saved in scenes");
+    InstanceInfo old;
+    check(InstanceInfo::deserialize("Part 0 0 0", old) && old.tags.empty(), "scene lines without tags still load");
+
+    run("Lighting", R"LUAU(
+local Lighting = game:GetService("Lighting")
+expect("games start at 2 pm", Lighting.ClockTime == 14 and Lighting.TimeOfDay == "14:00:00")
+Lighting.TimeOfDay = "06:30:00"
+expect("TimeOfDay sets ClockTime", Lighting.ClockTime == 6.5 and Lighting:GetMinutesAfterMidnight() == 390)
+Lighting:SetMinutesAfterMidnight(20 * 60)
+expect("SetMinutesAfterMidnight", Lighting.TimeOfDay == "20:00:00")
+Lighting.ClockTime = 25
+expect("ClockTime wraps", Lighting.ClockTime == 1)
+Lighting.ClockTime = 9
+Lighting.Brightness = 4
+Lighting.FogEnd = 100
+Lighting.FogColor = Color3.new(1, 0, 0)
+)LUAU");
+    float hours = 0.0f;
+    check(services::lightingClock(ecs, hours) && hours == 9.0f, "the host reads Lighting.ClockTime");
+    SceneLighting scene;
+    scene.intensity = 3.0f;
+    services::applyLighting(ecs, scene);
+    check(std::abs(scene.intensity - 6.0f) < 1e-4f && scene.fogDensity > 0.019f && scene.fogColor == glm::vec3(1, 0, 0),
+          "Brightness and fog reach the scene lighting");
+    ECS bare;
+    check(!services::lightingClock(bare, hours), "games without Lighting keep the host's clock");
+
+    run("Sounds", R"LUAU(
+local sound = Instance.new("Sound")
+sound.Name = "Beep"
+sound.Parent = workspace
+expect("Sound defaults", sound.Volume == 0.5 and sound.PlaybackSpeed == 1 and not sound.Looped and not sound.IsPlaying)
+sound.Played:Connect(function() print("PLAYED") end)
+sound.Paused:Connect(function() print("PAUSED") end)
+sound.Resumed:Connect(function() print("RESUMED") end)
+sound.Stopped:Connect(function() print("STOPPED") end)
+sound.Ended:Connect(function() print("ENDED") end)
+sound:Play()
+expect("Play", sound.IsPlaying and sound.Playing)
+sound:Pause()
+expect("Pause", not sound.IsPlaying)
+sound:Resume()
+sound:Stop()
+expect("IsPlaying is read only", fails(function() sound.IsPlaying = true end, "read only"))
+sound.SoundId = "rbxassetid://12345"
+sound:Play()
+)LUAU");
+    step(0.1);
+    EntityId beep = kNullEntity;
+    for (auto [e, n] : ecs.raw().view<Name>().each()) {
+        if (n.value == "Beep") beep = e;
+    }
+    auto* source = ecs.tryGetComponent<AudioSource>(beep);
+    check(source != nullptr && source->playing && source->restart && source->soundHandle == AudioSource::kInvalidHandle,
+          "Play restarts the sound; Roblox asset ids aren't downloaded");
+    if (source != nullptr) source->playing = false; // what Audio::mix does at the end
+    step(0.1);
+    check(said("PLAYED") && said("PAUSED") && said("RESUMED") && said("STOPPED"), "Sound events fire");
+    check(std::count(output.begin(), output.end(), std::string("ENDED")) == 1, "Ended fires once when a sound reaches its end");
+
+    checkLuauExpectations("services", output);
+
+    const std::string place = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W"><Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Part" referent="P"><Properties><string name="Name">Coin</string><BinaryString name="Tags">Q29pbgBTcGlu</BinaryString></Properties>
+      <Item class="Sound" referent="S"><Properties><string name="Name">Ding</string><Content name="SoundId"><url>sounds/ding.wav</url></Content>
+        <float name="Volume">0.8</float><bool name="Looped">true</bool><bool name="Playing">true</bool></Properties></Item>
+    </Item>
+  </Item>
+  <Item class="Lighting" referent="L"><Properties><string name="Name">Lighting</string><float name="ClockTime">18.5</float>
+    <float name="FogEnd">250</float></Properties></Item>
+</roblox>)XML";
+    engine::migration::ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+    const auto report = importer.importDocument(place, scanner);
+    ECS imported;
+    (void)engine::migration::InstanceHydrator{}.hydrate(report.tree, imported, engine::migration::HydrationMeshes{});
+    const auto coins = instances::tagged(imported, "Coin");
+    check(coins.size() == 1 && instances::hasTag(imported, coins[0], "Spin"), "imported Tags become CollectionService tags");
+    bool soundOk = false;
+    for (auto [e, info, s] : imported.raw().view<InstanceInfo, AudioSource>().each()) {
+        soundOk = info.className == "Sound" && s.path == "sounds/ding.wav" && std::abs(s.volume - 0.8f) < 1e-4f &&
+                  s.looping && s.playOnStart;
+    }
+    check(soundOk, "imported Sounds keep SoundId, Volume, Looped and Playing");
+    InstanceValue clock;
+    const InstanceRef lighting = instances::findService(imported, "Lighting");
+    check(lighting != kNoInstance &&
+              instances::getProperty(imported, lighting, *instances::findProperty("Lighting", "ClockTime"), clock) &&
+              clock.number == 18.5,
+          "imported Lighting keeps ClockTime");
+}
+
+void testRobloxDataStore() {
+    using namespace engine::core;
+    const std::string path = "test_datastore/game.json";
+    std::filesystem::remove_all("test_datastore");
+    {
+        ECS ecs;
+        datastore::setFile(ecs, path);
+        Scripting scripting;
+        scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+        check(scripting.initialize(), "DataStore test: Scripting initializes");
+        std::vector<std::string> output;
+        scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+        const char* source = R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	return not ok and (text == nil or string.find(tostring(err), text, 1, true) ~= nil)
+end
+local DSS = game:GetService("DataStoreService")
+local store = DSS:GetDataStore("Coins")
+expect("GetDataStore gives the same object for the same name", DSS:GetDataStore("Coins") == store and store.Name == "Coins")
+expect("a missing key is nil", store:GetAsync("p1") == nil)
+store:SetAsync("p1", {coins = 5, items = {"sword", "shield"}})
+local v = store:GetAsync("p1")
+expect("tables come back", v.coins == 5 and v.items[2] == "shield")
+v.coins = 99
+expect("GetAsync returns a copy", store:GetAsync("p1").coins == 5)
+expect("IncrementAsync starts from nothing", store:IncrementAsync("visits") == 1 and store:IncrementAsync("visits", 4) == 5)
+expect("UpdateAsync saves what the function returns",
+	store:UpdateAsync("visits", function(old) return old * 2 end) == 10 and store:GetAsync("visits") == 10)
+expect("UpdateAsync returning nil cancels",
+	store:UpdateAsync("visits", function() return nil end) == nil and store:GetAsync("visits") == 10)
+expect("RemoveAsync returns the old value", store:RemoveAsync("visits") == 10 and store:GetAsync("visits") == nil)
+expect("scopes are separate", DSS:GetDataStore("Coins", "other"):GetAsync("p1") == nil)
+expect("Instances can't be stored", fails(function() store:SetAsync("x", workspace) end, "Cannot store Instance"))
+expect("Vector3s can't be stored", fails(function() store:SetAsync("x", Vector3.new(1, 2, 3)) end, "Cannot store Vector3"))
+expect("mixed tables can't be stored", fails(function() store:SetAsync("x", {1, 2, a = 3}) end, "mixes"))
+expect("keys over 50 characters fail", fails(function() store:GetAsync(string.rep("k", 51)) end, "50 character limit"))
+expect("names over 50 characters fail", fails(function() DSS:GetDataStore(string.rep("n", 51)) end, "50 character limit"))
+expect("incrementing a table fails", fails(function() store:IncrementAsync("p1") end, "only increment a number"))
+expect("a transform's error reaches the caller",
+	fails(function() store:UpdateAsync("p1", function() error("boom") end) end, "boom"))
+expect("SetAsync with nil fails", fails(function() store:SetAsync("p1", nil) end))
+store:SetAsync("empty", {})
+local e = store:GetAsync("empty")
+expect("an empty table comes back", type(e) == "table" and next(e) == nil)
+expect("GetGlobalDataStore works", DSS:GetGlobalDataStore():GetAsync("none") == nil)
+print("DONE")
+)LUAU";
+        scripting.loadAndRun("DataStoreTest", source);
+        checkLuauExpectations("DataStore", output);
+    }
+    {
+        ECS ecs;
+        datastore::setFile(ecs, path);
+        nlohmann::json value;
+        check(datastore::get(ecs, "Coins", "global", "p1", value) && value["coins"] == 5,
+              "DataStore: saved data is there after a restart");
+    }
+    {
+        ECS ecs;
+        signals::runService(ecs).server = false;
+        Scripting scripting;
+        scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+        check(scripting.initialize(), "DataStore client test: Scripting initializes");
+        std::vector<std::string> output;
+        scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+        scripting.loadAndRun("DataStoreClient", R"LUAU(
+local ok, err = pcall(function() return game:GetService("DataStoreService"):GetDataStore("Coins") end)
+print((not ok and string.find(err, "can't be accessed from client", 1, true)) and "OK clients can't use DataStores" or "FAIL clients can't use DataStores")
+print("DONE")
+)LUAU");
+        checkLuauExpectations("DataStore", output);
+    }
+    {
+        const std::string saved = datastore::defaultFile("Remote Check");
+        check(saved.find("remote-check.json") != std::string::npos, "DataStore: each game gets its own file");
+    }
+}
+
 void testRobloxInstanceTree() {
     using namespace engine::core;
     ECS ecs;
@@ -42842,7 +43451,7 @@ expect("GetService makes a service once", storage.ClassName == "ReplicatedStorag
 expect("services sit under game", storage.Parent == game and game:FindFirstChild("ReplicatedStorage") == storage)
 expect("FindService doesn't create", game:FindService("ServerStorage") == nil)
 expect("bad service names error", fails(function() game:GetService("Bananas") end, "is not a valid Service name"))
-expect("planned services say so", fails(function() game:GetService("TweenService") end, "planned"))
+expect("planned services say so", fails(function() game:GetService("UserInputService") end, "planned"))
 local stored = Instance.new("Part")
 stored.Name = "Stored"
 stored.Parent = storage
@@ -43009,6 +43618,68 @@ print("DONE")
     check(instances::setParent(ecs, loose, kWorkspaceInstance, createError) && !instances::isDetached(ecs, looseEntity) &&
               captureSceneEntity(ecs, looseEntity, looseRecord),
           "once parented to the workspace it is saved");
+}
+
+void testRobloxLiveBodies() {
+    using namespace engine::core;
+    ECS ecs;
+    Physics physics;
+    std::string error;
+    check(physics.initialize(), "live bodies: physics initializes");
+    auto set = [&](InstanceRef ref, const char* name, InstanceValue value) {
+        instances::setProperty(ecs, ref, *instances::findProperty("Part", name), value);
+    };
+    auto part = [&](glm::vec3 size, glm::vec3 at, bool anchored) {
+        const InstanceRef ref = instances::create(ecs, "Part", error);
+        set(ref, "Size", InstanceValue::ofVector3(size));
+        set(ref, "CFrame", InstanceValue::ofCFrame(at, glm::quat(1, 0, 0, 0)));
+        set(ref, "Anchored", InstanceValue::ofBool(anchored));
+        (void)instances::setParent(ecs, ref, kWorkspaceInstance, error);
+        return ref;
+    };
+    auto body = [&](InstanceRef ref) { return ecs.tryGetComponent<RigidBody>(instances::entityOf(ecs, ref)); };
+    auto hasBody = [&](InstanceRef ref) {
+        const auto* b = body(ref);
+        return b != nullptr && b->joltBodyId != RigidBody::kInvalidBodyId;
+    };
+
+    const InstanceRef floor = part({20, 1, 20}, {0, 0, 0}, true);
+    const InstanceRef box = part({2, 2, 2}, {0, 5, 0}, false);
+    check(!hasBody(floor), "live bodies: a new part has no body until sync");
+    partbodies::sync(ecs, physics, false);
+    check(hasBody(floor) && body(floor)->motionType == RigidBodyMotionType::Static && hasBody(box) &&
+              body(box)->motionType == RigidBodyMotionType::Dynamic,
+          "live bodies: parts made while the game runs become solid");
+    for (int i = 0; i < 120; ++i) physics.step(1.0f / 60.0f, ecs);
+    const float y = instances::worldPose(ecs, instances::entityOf(ecs, box)).position.y;
+    check(y > 1.2f && y < 1.8f, "live bodies: an unanchored part falls and lands on an anchored one");
+
+    set(box, "Anchored", InstanceValue::ofBool(true));
+    partbodies::sync(ecs, physics, false);
+    check(hasBody(box) && body(box)->motionType == RigidBodyMotionType::Static, "live bodies: Anchored = true rebuilds it static");
+    set(box, "Size", InstanceValue::ofVector3({4, 4, 4}));
+    partbodies::sync(ecs, physics, false);
+    check(hasBody(box) && ecs.tryGetComponent<ColliderShape>(instances::entityOf(ecs, box))->params == glm::vec3(2.0f),
+          "live bodies: a new Size rebuilds it");
+
+    (void)instances::setParent(ecs, box, instances::getService(ecs, "ReplicatedStorage", error), error);
+    partbodies::sync(ecs, physics, false);
+    check(!hasBody(box), "live bodies: a part leaving the workspace loses its body");
+    (void)instances::setParent(ecs, box, kWorkspaceInstance, error);
+    partbodies::sync(ecs, physics, false);
+    check(hasBody(box), "live bodies: and gets it back when it returns");
+
+    const InstanceRef copy = part({1, 1, 1}, {5, 5, 5}, false);
+    partbodies::sync(ecs, physics, true);
+    check(hasBody(copy) && body(copy)->motionType == RigidBodyMotionType::Kinematic,
+          "live bodies: on a client, server-moved parts are kinematic");
+    const uint32_t before = physics.totalBodyCount();
+    instances::destroy(ecs, copy);
+    partbodies::sync(ecs, physics, true);
+    check(physics.totalBodyCount() == before - 1, "live bodies: a destroyed part's body goes too");
+    partbodies::detachAll(ecs, physics);
+    check(!hasBody(floor) && !hasBody(box) && physics.totalBodyCount() == before - 3,
+          "live bodies: detachAll removes them all");
 }
 
 void testRobloxPartPhysics() {
@@ -43804,6 +44475,470 @@ print("CLIENT DONE")
     scripting.shutdown();
 }
 
+namespace remotenet_test {
+struct End {
+    engine::core::ECS ecs;
+    engine::core::Scripting scripting;
+    std::vector<std::string> output;
+    std::deque<std::pair<uint32_t, std::vector<uint8_t>>> inbox;
+};
+
+// The same small place in every program, built in the same order.
+void buildPlace(engine::core::ECS& ecs) {
+    using namespace engine::core;
+    std::string error;
+    auto make = [&](const char* className, const char* name, InstanceRef parent) {
+        const InstanceRef ref = instances::create(ecs, className, error);
+        instances::setName(ecs, ref, name);
+        (void)instances::setParent(ecs, ref, parent, error);
+        return ref;
+    };
+    const InstanceRef storage = instances::getService(ecs, "ReplicatedStorage", error);
+    make("RemoteEvent", "Ping", storage);
+    make("UnreliableRemoteEvent", "Fast", storage);
+    make("RemoteFunction", "Ask", storage);
+    make("Part", "Item", make("Folder", "Box", kWorkspaceInstance));
+    make("Part", "Item", make("Model", "Box", kWorkspaceInstance));
+}
+} // namespace remotenet_test
+
+void testRobloxReplication() {
+    using namespace engine::core;
+    using remotenet_test::End;
+    std::string error;
+
+    auto server = std::make_unique<End>();
+    auto ana = std::make_unique<End>();
+    auto bo = std::make_unique<End>();
+    End* ends[] = {server.get(), ana.get(), bo.get()};
+    for (End* end : ends) remotenet_test::buildPlace(end->ecs);
+    auto find = [](ECS& ecs, InstanceRef parent, const char* name) {
+        for (InstanceRef child : instances::children(ecs, parent)) {
+            if (instances::name(ecs, child) == name) return child;
+        }
+        return kNoInstance;
+    };
+    auto make = [&](ECS& ecs, const char* className, const char* name, InstanceRef parent) {
+        const InstanceRef ref = instances::create(ecs, className, error);
+        instances::setName(ecs, ref, name);
+        (void)instances::setParent(ecs, ref, parent, error);
+        return ref;
+    };
+    auto prop = [](ECS& ecs, InstanceRef ref, const char* name) {
+        InstanceValue v;
+        if (const PropertyDef* def = instances::findProperty(instances::className(ecs, ref), name)) {
+            (void)instances::getProperty(ecs, ref, *def, v);
+        }
+        return v;
+    };
+    auto setProp = [](ECS& ecs, InstanceRef ref, const char* name, const InstanceValue& v) {
+        instances::setProperty(ecs, ref, *instances::findProperty(instances::className(ecs, ref), name), v);
+    };
+
+    // The clients loaded the place file; the server has since removed Stale.
+    for (End* end : {ana.get(), bo.get()}) make(end->ecs, "Part", "Stale", kWorkspaceInstance);
+    const InstanceRef anaBoxItem = find(ana->ecs, find(ana->ecs, kWorkspaceInstance, "Box"), "Item");
+    make(server->ecs, "Part", "Secret", instances::getService(server->ecs, "ServerStorage", error));
+
+    remotenet::attach(server->ecs, remotenet::Side::Server, [&](uint32_t target, std::vector<uint8_t> bytes, bool) {
+        if (target == 0 || target == 5) ana->inbox.emplace_back(0, bytes);
+        if (target == 0 || target == 6) bo->inbox.emplace_back(0, bytes);
+    });
+    remotenet::attach(ana->ecs, remotenet::Side::Client, [](uint32_t, std::vector<uint8_t>, bool) {});
+    remotenet::attach(bo->ecs, remotenet::Side::Client, [](uint32_t, std::vector<uint8_t>, bool) {});
+    replication::startServer(server->ecs);
+    replication::startClient(ana->ecs);
+    replication::startClient(bo->ecs);
+    check(signals::runService(ana->ecs).awaitingReplication, "replication: a client holds LocalScripts at first");
+
+    const InstanceRef serverAna = players::join(server->ecs, "Ana", 42, kNullEntity, false);
+    remotenet::addPlayer(server->ecs, 5, serverAna);
+    const InstanceRef anaSelf = players::join(ana->ecs, "Ana", 42, kNullEntity, true);
+    remotenet::addPlayer(ana->ecs, 5, anaSelf);
+    const InstanceRef stats = make(server->ecs, "Folder", "leaderstats", serverAna);
+    const InstanceRef cash = make(server->ecs, "IntValue", "Cash", stats);
+    setProp(server->ecs, cash, "Value", InstanceValue::ofNumber(10));
+    replication::addClient(server->ecs, 5);
+
+    size_t delivered = 0;
+    auto pump = [&](int frames) {
+        for (int i = 0; i < frames; ++i) {
+            for (End* end : ends) {
+                std::deque<std::pair<uint32_t, std::vector<uint8_t>>> inbox;
+                inbox.swap(end->inbox);
+                delivered += inbox.size();
+                for (const auto& [sender, bytes] : inbox) remotenet::receive(end->ecs, sender, bytes.data(), bytes.size());
+                replication::tick(end->ecs, 0.1);
+            }
+        }
+    };
+    pump(2);
+    ECS& a = ana->ecs;
+    check(replication::snapshotApplied(a) && !signals::runService(a).awaitingReplication,
+          "replication: the first copy arrives and LocalScripts may start");
+    check(find(a, kWorkspaceInstance, "Stale") == kNoInstance, "replication: what the server removed goes on the client");
+    check(find(a, find(a, kWorkspaceInstance, "Box"), "Item") == anaBoxItem &&
+              instances::children(a, kWorkspaceInstance).size() == instances::children(server->ecs, kWorkspaceInstance).size(),
+          "replication: loaded instances are matched, not copied twice");
+    const InstanceRef anaCash = find(a, find(a, anaSelf, "leaderstats"), "Cash");
+    check(anaCash != kNoInstance && prop(a, anaCash, "Value").number == 10,
+          "replication: leaderstats arrive under the client's own Player");
+    check(find(a, anaSelf, "Backpack") != kNoInstance && find(a, anaSelf, "PlayerGui") != kNoInstance,
+          "replication: the client keeps its own Backpack and PlayerGui");
+    const InstanceRef anaStorage = instances::findService(a, "ServerStorage");
+    check(anaStorage == kNoInstance || instances::children(a, anaStorage).empty(),
+          "replication: ServerStorage stays on the server");
+    check(!replication::snapshotApplied(bo->ecs), "replication: a client that hasn't joined gets nothing");
+
+    // Changes after the first copy.
+    const InstanceRef teal = make(server->ecs, "Part", "Teal", kWorkspaceInstance);
+    setProp(server->ecs, teal, "Color", InstanceValue::ofColor3({0.0f, 0.5f, 0.5f}));
+    setProp(server->ecs, teal, "CFrame", InstanceValue::ofCFrame({1, 5, 2}, glm::quat(1, 0, 0, 0)));
+    instances::setAttribute(server->ecs, teal, "Owner", InstanceValue::ofString("Ana"));
+    const InstanceRef pointer = make(server->ecs, "ObjectValue", "Target", find(server->ecs, kWorkspaceInstance, "Box"));
+    setProp(server->ecs, pointer, "Value", InstanceValue::ofInstance(teal));
+    setProp(server->ecs, cash, "Value", InstanceValue::ofNumber(25));
+    instances::destroy(server->ecs, find(server->ecs, kWorkspaceInstance, "Box"));
+    pump(2);
+    const InstanceRef anaTeal = find(a, kWorkspaceInstance, "Teal");
+    check(anaTeal != kNoInstance && prop(a, anaTeal, "Color").vec == glm::vec3(0.0f, 0.5f, 0.5f) &&
+              glm::distance(prop(a, anaTeal, "CFrame").vec, glm::vec3(1, 5, 2)) < 1e-4f,
+          "replication: a part the server makes appears with its colour and place");
+    const InstanceValue* owner = anaTeal != kNoInstance ? instances::attribute(a, anaTeal, "Owner") : nullptr;
+    check(owner != nullptr && owner->text == "Ana", "replication: attributes arrive");
+    check(prop(a, anaCash, "Value").number == 25, "replication: a changed value arrives");
+    const InstanceRef anaBoxLeft = find(a, kWorkspaceInstance, "Box");
+    check(anaBoxLeft != kNoInstance && instances::className(a, anaBoxLeft) == "Model" && !instances::isAlive(a, anaBoxItem),
+          "replication: a destroyed instance goes, with its children");
+
+    // An Instance-valued property points at the client's own copy.
+    const InstanceRef serverModelBox = find(server->ecs, kWorkspaceInstance, "Box");
+    const InstanceRef pointer2 = make(server->ecs, "ObjectValue", "Target", serverModelBox);
+    setProp(server->ecs, pointer2, "Value", InstanceValue::ofInstance(teal));
+    instances::setAttribute(server->ecs, teal, "Owner", InstanceValue{});
+    pump(2);
+    const InstanceRef anaPointer = find(a, find(a, kWorkspaceInstance, "Box"), "Target");
+    check(anaPointer != kNoInstance && prop(a, anaPointer, "Value").ref == anaTeal,
+          "replication: an ObjectValue points at the client's copy");
+    check(instances::attribute(a, anaTeal, "Owner") == nullptr, "replication: a removed attribute goes");
+
+    // Moving into ServerStorage hides it; moving back brings a new copy.
+    (void)instances::setParent(server->ecs, teal, instances::findService(server->ecs, "ServerStorage"), error);
+    pump(2);
+    check(find(a, kWorkspaceInstance, "Teal") == kNoInstance, "replication: moving to ServerStorage removes it");
+    (void)instances::setParent(server->ecs, teal, kWorkspaceInstance, error);
+    pump(2);
+    check(find(a, kWorkspaceInstance, "Teal") != kNoInstance, "replication: moving it back brings it back");
+
+    // Nothing changed: nothing is sent.
+    pump(2);
+    delivered = 0;
+    pump(4);
+    check(delivered == 0, "replication: an unchanged game sends nothing");
+
+    // A late joiner gets everything, and sees the other player's leaderstats.
+    const InstanceRef boAna = players::join(bo->ecs, "Ana", 42, kNullEntity, false);
+    remotenet::addPlayer(bo->ecs, 5, boAna);
+    remotenet::addPlayer(bo->ecs, 6, players::join(bo->ecs, "Bo", 7, kNullEntity, true));
+    remotenet::addPlayer(server->ecs, 6, players::join(server->ecs, "Bo", 7, kNullEntity, false));
+    replication::addClient(server->ecs, 6);
+    pump(2);
+    ECS& b = bo->ecs;
+    const InstanceRef boCash = find(b, find(b, boAna, "leaderstats"), "Cash");
+    check(replication::snapshotApplied(b) && boCash != kNoInstance && prop(b, boCash, "Value").number == 25,
+          "replication: a late joiner sees another player's leaderstats");
+    check(find(b, kWorkspaceInstance, "Teal") != kNoInstance && find(b, kWorkspaceInstance, "Stale") == kNoInstance,
+          "replication: a late joiner gets the game as it is now");
+    check(instances::children(b, instances::findService(b, "Players")).size() == 2,
+          "replication: Players are matched to the client's own, not copied");
+
+    // A remote sent right after making an instance arrives after the instance.
+    pump(2);
+    const InstanceRef gift = make(server->ecs, "Part", "Gift", kWorkspaceInstance);
+    const InstanceRef ping = find(server->ecs, instances::findService(server->ecs, "ReplicatedStorage"), "Ping");
+    check(remotenet::fireClient(server->ecs, ping, serverAna, {SignalArg::of(InstanceValue::ofInstance(gift))}, error) &&
+              ana->inbox.size() == 2 && ana->inbox.front().second[0] == remotenet::kFirstRawKind,
+          "replication: changes go out before a remote event");
+    pump(1);
+    check(find(a, kWorkspaceInstance, "Gift") != kNoInstance, "replication: the instance from the remote is there");
+
+    // A damaged message is ignored.
+    const uint8_t junk[] = {remotenet::kFirstRawKind, 1, 0, 0, 0, 0xFF};
+    remotenet::receive(a, 0, junk, sizeof junk);
+    check(instances::isAlive(a, anaTeal) || find(a, kWorkspaceInstance, "Teal") != kNoInstance,
+          "replication: a damaged message changes nothing");
+    replication::stop(a);
+    check(!replication::active(a), "replication: stop turns it off");
+}
+
+void testRobloxRemoteNetwork() {
+    using namespace engine::core;
+    using remotenet_test::End;
+
+    // Values survive the trip; things the other side can't have arrive as nil.
+    {
+        ECS ecs;
+        remotenet_test::buildPlace(ecs);
+        std::string error;
+        const InstanceRef detached = instances::create(ecs, "Part", error);
+        SignalArg table;
+        table.isTable = true;
+        table.keys = {SignalArg::of(InstanceValue::ofString("pos")), SignalArg::of(InstanceValue::ofNumber(1))};
+        table.values = {SignalArg::of(InstanceValue::ofVector3({1, 2, 3})), SignalArg::of(InstanceValue::ofBool(true))};
+        const InstanceRef secondItem = instances::children(ecs, instances::children(ecs, kWorkspaceInstance)[1])[0];
+        const std::vector<SignalArg> sent = {
+            SignalArg::of(InstanceValue::ofNumber(2.5)),
+            table,
+            SignalArg::of(InstanceValue::ofCFrame({4, 5, 6}, glm::quat(0.0f, 0.0f, 1.0f, 0.0f))),
+            SignalArg::of(InstanceValue::ofEnum("Material", "Neon", 288)),
+            SignalArg::of(InstanceValue::ofInstance(secondItem)),
+            SignalArg::of(InstanceValue::ofInstance(detached)),
+        };
+        const std::vector<uint8_t> bytes = remotenet::encodeArgs(ecs, sent);
+        std::vector<SignalArg> got;
+        check(remotenet::decodeArgs(ecs, bytes.data(), bytes.size(), got) && got.size() == 6,
+              "remote args: decode what was encoded");
+        check(got.size() == 6 && got[0].value.number == 2.5 && got[1].isTable && got[1].keys.size() == 2 &&
+                  got[1].values[0].value.vec == glm::vec3(1, 2, 3) && got[1].values[1].value.boolean,
+              "remote args: numbers and nested tables arrive");
+        check(got.size() == 6 && got[2].value.type == InstanceValue::Type::CFrame && got[2].value.vec.z == 6.0f &&
+                  got[2].value.rot.y == 1.0f && got[3].value.text == "Neon" && got[3].value.number == 288,
+              "remote args: CFrames and Enums arrive");
+        check(got.size() == 6 && got[4].value.ref == secondItem,
+              "remote args: an instance is found by path, even among same-named siblings");
+        check(got.size() == 6 && got[5].value.type == InstanceValue::Type::Nil,
+              "remote args: an instance with no parent arrives as nil");
+        std::vector<SignalArg> junk;
+        const uint8_t garbage[] = {3, 0, 11, 0xFF, 0xFF, 0xFF, 0x7F};
+        check(!remotenet::decodeArgs(ecs, garbage, sizeof garbage, junk), "remote args: a broken message is refused");
+    }
+
+    // A server and two clients (Ana = 5, Bo = 6), each its own ECS and scripts,
+    // joined by in-memory pipes in place of the network.
+    auto server = std::make_unique<End>();
+    auto ana = std::make_unique<End>();
+    auto bo = std::make_unique<End>();
+    End* ends[] = {server.get(), ana.get(), bo.get()};
+    for (End* end : ends) {
+        remotenet_test::buildPlace(end->ecs);
+        end->scripting.setBindingsHook([e = end](lua_State* L) { registerInstanceApi(L, e->ecs); });
+        check(end->scripting.initialize(), "remote network: Scripting initializes");
+        end->scripting.setOutputCallback([e = end](const std::string& line) { e->output.push_back(line); });
+    }
+    signals::runService(server->ecs).client = false;
+    signals::runService(ana->ecs).server = false;
+    signals::runService(bo->ecs).server = false;
+
+    remotenet::attach(server->ecs, remotenet::Side::Server, [&](uint32_t target, std::vector<uint8_t> bytes, bool) {
+        if (target == 0 || target == 5) ana->inbox.emplace_back(0, bytes);
+        if (target == 0 || target == 6) bo->inbox.emplace_back(0, bytes);
+    });
+    remotenet::attach(ana->ecs, remotenet::Side::Client,
+                      [&](uint32_t, std::vector<uint8_t> bytes, bool) { server->inbox.emplace_back(5, std::move(bytes)); });
+    remotenet::attach(bo->ecs, remotenet::Side::Client,
+                      [&](uint32_t, std::vector<uint8_t> bytes, bool) { server->inbox.emplace_back(6, std::move(bytes)); });
+    remotenet::addPlayer(server->ecs, 5, players::join(server->ecs, "Ana", 42, kNullEntity, false));
+    remotenet::addPlayer(server->ecs, 6, players::join(server->ecs, "Bo", 7, kNullEntity, false));
+    remotenet::addPlayer(ana->ecs, 5, players::join(ana->ecs, "Ana", 42, kNullEntity, true));
+    remotenet::addPlayer(ana->ecs, 6, players::join(ana->ecs, "Bo", 7, kNullEntity, false));
+    remotenet::addPlayer(bo->ecs, 5, players::join(bo->ecs, "Ana", 42, kNullEntity, false));
+    remotenet::addPlayer(bo->ecs, 6, players::join(bo->ecs, "Bo", 7, kNullEntity, true));
+
+    auto pump = [&](int frames) {
+        for (int i = 0; i < frames; ++i) {
+            for (End* end : ends) {
+                std::deque<std::pair<uint32_t, std::vector<uint8_t>>> inbox;
+                inbox.swap(end->inbox);
+                for (const auto& [sender, bytes] : inbox) remotenet::receive(end->ecs, sender, bytes.data(), bytes.size());
+                signals::flush(end->ecs);
+                end->scripting.tick(0.1f);
+                signals::flush(end->ecs);
+                remotenet::tick(end->ecs, 0.1);
+            }
+        }
+    };
+    auto count = [](const End& end, const char* text) {
+        int n = 0;
+        for (const std::string& line : end.output) n += line.find(text) != std::string::npos ? 1 : 0;
+        return n;
+    };
+    auto run = [](End& end, const char* name, const std::string& source, const char* className, RunContext context) {
+        std::string error;
+        const InstanceRef holder = instances::create(end.ecs, className, error);
+        instances::setName(end.ecs, holder, name);
+        (void)instances::setParent(end.ecs, holder, instances::getService(end.ecs, "ServerScriptService", error), error);
+        end.scripting.loadAndRun(name, source, SecurityIdentity::UserScript,
+                                 static_cast<uint32_t>(instances::entityOf(end.ecs, holder)), context);
+    };
+    const std::string helpers = R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	if ok or string.find(tostring(err), text, 1, true) == nil then print("unexpected: " .. tostring(err)) end
+	return not ok and string.find(tostring(err), text, 1, true) ~= nil
+end
+local rs = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local function secondBox()
+	local found = 0
+	for _, child in workspace:GetChildren() do
+		if child.Name == "Box" then
+			found += 1
+			if found == 2 then return child end
+		end
+	end
+end
+)LUAU";
+
+    run(*server, "Server", helpers + R"LUAU(
+rs.Ping.OnServerEvent:Connect(function(player, a, t, part, v)
+	print("server got " .. player.Name .. " " .. a .. " " .. t.x .. " " .. tostring(t.f) .. " " .. part:GetFullName() .. " " .. tostring(v))
+	rs.Ping:FireClient(player, "pong", player)
+end)
+rs.Fast.OnServerEvent:Connect(function(player, s) print("fast " .. player.Name .. " " .. #s) end)
+rs.Ask.OnServerInvoke = function(player, a, b)
+	if a == "fail" then error("server says no") end
+	task.wait(0.1)
+	return a + b, player.Name
+end
+task.wait(1)
+expect("InvokeClient gets that client's answer", rs.Ask:InvokeClient(Players.Bo, "hi") == "hi from Bo")
+rs.Ping:FireAllClients("all", secondBox().Item)
+expect("a payload over the limit is refused", fails(function() rs.Ping:FireAllClients(string.rep("x", 70000)) end, "too large"))
+print("SERVER DONE")
+)LUAU", "Script", RunContext::Server);
+
+    run(*ana, "AnaClient", helpers + R"LUAU(
+rs.Ping.OnClientEvent:Connect(function(word, x)
+	if word == "pong" then print("Ana pong " .. tostring(x == Players.LocalPlayer)) end
+	if word == "all" then print("Ana all " .. x.Parent.ClassName) end
+end)
+rs.Ping:FireServer(7, {x = 3, f = function() end}, workspace.Box.Item, Vector3.new(1, 2, 3))
+rs.Fast:FireServer(string.rep("y", 2000))
+rs.Fast:FireServer("ok")
+local sum, name = rs.Ask:InvokeServer(2, 3)
+expect("InvokeServer gets the server's answer", sum == 5 and name == "Ana")
+expect("a server error reaches the client", fails(function() rs.Ask:InvokeServer("fail") end, "server says no"))
+print("ANA DONE")
+)LUAU", "LocalScript", RunContext::Client);
+
+    run(*bo, "BoClient", helpers + R"LUAU(
+rs.Ask.OnClientInvoke = function(q) return q .. " from " .. Players.LocalPlayer.Name end
+rs.Ping.OnClientEvent:Connect(function(word, x)
+	if word == "pong" then print("Bo pong") end
+	if word == "all" then print("Bo all " .. x.Parent.ClassName) end
+end)
+print("BO DONE")
+)LUAU", "LocalScript", RunContext::Client);
+
+    pump(30);
+    checkLuauExpectations("remote network server", server->output);
+    checkLuauExpectations("remote network Ana", ana->output);
+    checkLuauExpectations("remote network Bo", bo->output);
+    check(count(*server, "server got Ana 7 3 nil Workspace.Box.Item 1, 2, 3") == 1,
+          "remote network: FireServer arrives with the player, tables, instances and Vector3s");
+    check(count(*ana, "Ana pong true") == 1, "remote network: FireClient reaches that player, and a Player argument is them");
+    check(count(*bo, "Bo pong") == 0, "remote network: FireClient doesn't reach other players");
+    check(count(*ana, "Ana all Model") == 1 && count(*bo, "Bo all Model") == 1,
+          "remote network: FireAllClients reaches every client with the right same-named instance");
+    check(count(*server, "fast Ana 2") == 1 && count(*server, "fast Ana 2000") == 0,
+          "remote network: an UnreliableRemoteEvent over 900 bytes is dropped");
+
+    // A client flooding the server is cut off at the burst limit.
+    run(*bo, "Flood", "for i = 1, 300 do game:GetService('ReplicatedStorage').Fast:FireServer('z') end",
+        "LocalScript", RunContext::Client);
+    pump(2);
+    check(count(*server, "fast Bo 1") == static_cast<int>(remotenet::kServerReceiveBurst),
+          "remote network: the server drops remote calls past the per-player burst");
+
+    // A message from a connection that isn't a player is ignored.
+    const size_t before = server->output.size();
+    const std::vector<uint8_t> stray = remotenet::encodeArgs(server->ecs, {});
+    remotenet::receive(server->ecs, 99, stray.data(), stray.size());
+    pump(1);
+    check(server->output.size() == before, "remote network: unknown senders are ignored");
+
+    // InvokeClient to a player who leaves fails instead of waiting forever.
+    run(*server, "Leaver", R"LUAU(
+local ok, err = pcall(function() return game:GetService("ReplicatedStorage").Ask:InvokeClient(game:GetService("Players").Ana, "x") end)
+print("left: " .. tostring(ok) .. " " .. tostring(err))
+)LUAU", "Script", RunContext::Server);
+    pump(3);
+    remotenet::removePlayer(server->ecs, 5);
+    pump(3);
+    check(count(*server, "left: false Player has left the game") == 1,
+          "remote network: InvokeClient fails when the player leaves");
+
+    // Losing the connection fails a waiting InvokeServer.
+    run(*bo, "Lost", R"LUAU(
+local ok, err = pcall(function() return game:GetService("ReplicatedStorage").Ask:InvokeServer(1, 1) end)
+print("lost: " .. tostring(err))
+)LUAU", "LocalScript", RunContext::Client);
+    server->inbox.clear();
+    pump(1);
+    server->inbox.clear();
+    remotenet::detach(bo->ecs);
+    pump(2);
+    check(count(*bo, "lost: The connection was lost") == 1, "remote network: a lost connection fails InvokeServer");
+    for (End* end : ends) end->scripting.shutdown();
+}
+
+#if !defined(_WIN32)
+// The real session carries remote messages both ways.
+void testInstanceRemoteOverSession() {
+    constexpr uint16_t kTestPort = 17873;
+    engine::core::ECS serverEcs, clientEcs;
+    engine::net::NetworkSession serverSession, clientSession;
+    engine::net::NetworkSession::Config serverConfig;
+    serverConfig.mode = engine::net::NetworkMode::Server;
+    serverConfig.port = kTestPort;
+    check(serverSession.initialize(serverConfig), "instance remote: the server starts");
+    serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) {
+        const engine::core::EntityId entity = ecs.createEntity("Player");
+        ecs.addComponent<engine::core::Transform>(entity);
+        return entity;
+    });
+    std::vector<std::pair<engine::net::PlayerId, std::string>> atServer;
+    std::vector<std::string> atClient;
+    serverSession.setOnInstanceRemote([&](engine::net::PlayerId sender, const uint8_t* data, size_t size) {
+        atServer.emplace_back(sender, std::string(reinterpret_cast<const char*>(data), size));
+    });
+    clientSession.setOnInstanceRemote([&](engine::net::PlayerId sender, const uint8_t* data, size_t size) {
+        if (sender == engine::net::kInvalidPlayer) atClient.emplace_back(reinterpret_cast<const char*>(data), size);
+    });
+    engine::net::NetworkSession::Config clientConfig;
+    clientConfig.mode = engine::net::NetworkMode::Client;
+    clientConfig.serverAddress = "127.0.0.1";
+    clientConfig.port = kTestPort;
+    check(clientSession.initialize(clientConfig), "instance remote: the client connects");
+    const engine::core::EntityId avatar = clientEcs.createEntity("Me");
+    clientEcs.addComponent<engine::core::Transform>(avatar);
+    auto pump = [&](int iterations) {
+        for (int i = 0; i < iterations; ++i) {
+            serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
+            clientSession.tick(0.05f, clientEcs, avatar);
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+    };
+    for (int i = 0; i < 200 && clientSession.localPlayerId() == engine::net::kInvalidPlayer; ++i) pump(1);
+    check(clientSession.localPlayerId() != engine::net::kInvalidPlayer, "instance remote: the client joins");
+
+    const std::string up = "to the server";
+    clientSession.sendInstanceRemote(engine::net::kInvalidPlayer, std::vector<uint8_t>(up.begin(), up.end()), true);
+    for (int i = 0; i < 100 && atServer.empty(); ++i) pump(1);
+    check(atServer.size() == 1 && atServer[0].first == clientSession.localPlayerId() && atServer[0].second == up,
+          "instance remote: the server gets the bytes and who sent them");
+    const std::string down = "to you";
+    serverSession.sendInstanceRemote(clientSession.localPlayerId(), std::vector<uint8_t>(down.begin(), down.end()), true);
+    serverSession.sendInstanceRemote(clientSession.localPlayerId() + 100, std::vector<uint8_t>(up.begin(), up.end()), true);
+    for (int i = 0; i < 100 && atClient.empty(); ++i) pump(1);
+    pump(5);
+    check(atClient.size() == 1 && atClient[0] == down, "instance remote: the client gets only what was sent to it");
+    clientSession.shutdown();
+    serverSession.shutdown();
+}
+#endif
+
 void testRobloxPlayers() {
     using namespace engine::core;
     ECS ecs;
@@ -44154,13 +45289,12 @@ void testRobloxCompatibilityScore() {
     <Item class="Script" referent="S1"><Properties><string name="Name">Hello</string>
       <string name="Source">print("hi")</string></Properties></Item>
     <Item class="Script" referent="S2"><Properties><string name="Name">Roblox</string>
-      <string name="Source">local debris = game:GetService("Debris")
-debris:AddItem(workspace, 1)</string></Properties></Item>
+      <string name="Source">local result = workspace:Raycast(Vector3.new(), Vector3.new(0, -10, 0))</string></Properties></Item>
     <Item class="ModuleScript" referent="M"><Properties><string name="Name">Broken</string>
       <string name="Source">return function(</string></Properties></Item>
   </Item>
   <Item class="StarterGui" referent="G"><Properties><string name="Name">StarterGui</string></Properties>
-    <Item class="Frame" referent="SG"><Properties><string name="Name">Hud</string></Properties></Item>
+    <Item class="ScrollingFrame" referent="SG"><Properties><string name="Name">Hud</string></Properties></Item>
   </Item>
 </roblox>)XML";
     const ImportReport report = importer.importDocument(place, scanner);
@@ -44168,11 +45302,11 @@ debris:AddItem(workspace, 1)</string></Properties></Item>
 
     CompatibilityScore score = scoreImport(report);
     check(score.instances == 7, "the score counts every instance");
-    check(score.instancesMapped == 6 && score.unmappedClasses.count("Frame") == 1,
-          "classes Kronos can't build yet (Frame) count as unmapped");
+    check(score.instancesMapped == 6 && score.unmappedClasses.count("ScrollingFrame") == 1,
+          "classes Kronos can't build yet (ScrollingFrame) count as unmapped");
     check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
-          "print, game and :GetService are supported; :AddItem is not yet");
-    check(score.missingApis.count(":AddItem") == 1, "the score lists the missing Roblox APIs by name");
+          "print, game and Vector3 are supported; :Raycast is not yet");
+    check(score.missingApis.count(":Raycast") == 1, "the score lists the missing Roblox APIs by name");
 
     runImportedScripts(report, score);
     check(score.scriptsRun == 3 && score.scriptsOk == 1, "one of three scripts runs cleanly today");
@@ -44181,7 +45315,7 @@ debris:AddItem(workspace, 1)</string></Properties></Item>
         if (run.path == "Workspace.Roblox") sawRuntime = !run.ok && run.error.find("runtime error") != std::string::npos;
         if (run.path == "Workspace.Broken") sawCompile = !run.ok && run.error.find("compile error") != std::string::npos;
     }
-    check(sawRuntime, "a script that uses a missing API (Debris) fails with its runtime error recorded");
+    check(sawRuntime, "a script that uses a missing API (Raycast) fails with its runtime error recorded");
     check(sawCompile, "a ModuleScript with a syntax error is reported as a compile error");
     check(score.overallPercent() > 0.0 && score.overallPercent() < 100.0, "the overall score is a real percentage");
     check(score.summary().find("overall") != std::string::npos, "the score has a one-line summary");
@@ -46504,6 +47638,16 @@ int main() {
     testRobloxScriptRunRules();
     testRobloxModuleScripts();
     testRobloxRemotes();
+    testRobloxRemoteNetwork();
+    testRobloxReplication();
+    testRobloxLiveBodies();
+    testRobloxDataStore();
+    testRobloxServices();
+    testRobloxGui();
+    testRobloxBinaryFormat();
+#if !defined(_WIN32)
+    testInstanceRemoteOverSession();
+#endif
     testEntitlementManager();
     testMovieModeScrubbingAndKeyDrag();
     testMovieModePlugin();

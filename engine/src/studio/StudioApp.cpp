@@ -1,5 +1,6 @@
 #include "studio/StudioApp.hpp"
 
+#include "core/RobloxServices.hpp"
 #include "core/AvatarSkinTone.hpp"
 
 #include <algorithm>
@@ -802,6 +803,7 @@ bool StudioApp::initialize(StudioMode mode) {
     // Instance.new("Part") draws with the same meshes.
     ecs_.raw().ctx().insert_or_assign(
         core::InstanceMeshes{hydrationMeshes_.box, hydrationMeshes_.capsule, hydrationMeshes_.cylinder});
+    core::services::setResources(ecs_, &resources_);
 
     auto texturePreview = std::make_unique<plugins::TexturePreviewPlugin>(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue());
@@ -1786,7 +1788,7 @@ void StudioApp::drawFileMenu() {
     }
 
     ImGui::Separator();
-    if (ImGui::MenuItem("Import .rbxlx...")) {
+    if (ImGui::MenuItem("Import Roblox file...")) {
         importDialogOpen_ = true;
         importReportLines_.clear();
         importSummary_.clear();
@@ -2929,16 +2931,15 @@ void StudioApp::drawImportDialog() {
     if (!importDialogOpen_) return;
 
     ImGui::SetNextWindowSize(ImVec2(680.0f, 460.0f), ImGuiCond_Appearing);
-    if (ImGui::Begin("Import .rbxlx", &importDialogOpen_)) {
-        ImGui::TextDisabled("Roblox XML place/model files (.rbxlx / .rbxmx). The binary .rbxl/.rbxm formats are a "
-                             "different container and are not supported.");
+    if (ImGui::Begin("Import Roblox file", &importDialogOpen_)) {
+        ImGui::TextDisabled("Roblox place/model files: .rbxl / .rbxm (Roblox Studio's default) or .rbxlx / .rbxmx (XML).");
         ImGui::Separator();
 
         ImGui::SetNextItemWidth(-200.0f);
         ImGui::InputText("##importpath", importPathBuffer_, sizeof(importPathBuffer_));
         ImGui::SameLine();
         browseButton("rbxlx", importPathBuffer_, sizeof(importPathBuffer_),
-                     {"Import Roblox Place", {"*.rbxlx", "*.rbxmx"}, "Roblox XML files"});
+                     {"Import Roblox Place", {"*.rbxl", "*.rbxm", "*.rbxlx", "*.rbxmx"}, "Roblox files"});
         ImGui::SameLine();
         const bool hasPath = importPathBuffer_[0] != '\0';
         ImGui::BeginDisabled(!hasPath);
@@ -3069,7 +3070,7 @@ void StudioApp::hydrateImportedTree() {
     std::vector<migration::ImportedInstance> tree = importedTree_;
     migration::HydrationMeshes meshes = hydrationMeshes_;
     undoStack_.push(UndoStack::Command{
-        "Import .rbxlx",
+        "Import Roblox file",
         [this, created]() {
             for (auto it = created.rbegin(); it != created.rend(); ++it) {
                 if (ecs_.raw().valid(*it)) core::hierarchy::destroyEntityRecursive(ecs_, *it);

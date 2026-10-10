@@ -17,6 +17,7 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_vulkan.h>
 
+#include "core/RobloxGui.hpp"
 #include "core/AvatarSkinTone.hpp"
 #include "core/CredentialStore.hpp"
 #include "core/Components.hpp"
@@ -1102,6 +1103,17 @@ void RuntimeShell::tick(float dt) {
                         fg->AddLine(ImVec2(center.x - 6.0f, center.y), ImVec2(center.x + 6.0f, center.y), crosshairColor, 1.5f);
                         fg->AddLine(ImVec2(center.x, center.y - 6.0f), ImVec2(center.x, center.y + 6.0f), crosshairColor, 1.5f);
                     }
+                    {
+                        // Roblox GUI: under ImGui windows (chat), over the 3D view.
+                        const ImGuiIO& io = ImGui::GetIO();
+                        core::gui::Input guiInput;
+                        guiInput.mouse = glm::vec2(io.MousePos.x, io.MousePos.y);
+                        guiInput.pressed = !io.WantCaptureMouse && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                        guiInput.released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+                        guiInput.down = io.MouseDown[0];
+                        core::gui::update(app_.ecs(), glm::vec2(io.DisplaySize.x, io.DisplaySize.y), guiInput);
+                        core::gui::draw(app_.ecs(), ImGui::GetBackgroundDrawList(), glm::vec2(0.0f));
+                    }
                     core::drawLeaderboard(app_.ecs(), ImGui::GetForegroundDrawList(),
                                           ImGui::GetIO().DisplaySize.x - 12.0f, 12.0f);
                     drawPlayerListOverlay();
@@ -1433,15 +1445,28 @@ void RuntimeShell::drawToolManagerSection() {
         if (ImFont* medium = core::kronosMediumFont()) ImGui::PushFont(medium, 0.0f);
         ImGui::TextColored(paletteColor(kTextBright), "%s", entry.label);
         if (core::kronosMediumFont()) ImGui::PopFont();
+        const float actionWidth = 92.0f;
+        const float rightEdge = ImGui::GetWindowPos().x + columnWidth - 14.0f;
+        const bool showBadge = installed && !updateAvailable_;
+        // The badge sits on the name row; a button needs the right side of both rows.
+        const float blurbWidth = (showBadge ? rightEdge : rightEdge - actionWidth - 10.0f) - (tileMax.x + 14.0f);
         ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.9f);
-        ImGui::TextColored(paletteColor(kTextMuted), "%s", style.blurb);
+        std::string blurb = style.blurb;
+        if (ImGui::CalcTextSize(blurb.c_str()).x > blurbWidth) {
+            while (!blurb.empty() && ImGui::CalcTextSize((blurb + "...").c_str()).x > blurbWidth) blurb.pop_back();
+            while (!blurb.empty() && blurb.back() == ' ') blurb.pop_back();
+            blurb += "...";
+        }
+        ImGui::TextColored(paletteColor(kTextMuted), "%s", blurb.c_str());
         ImGui::PopFont();
         ImGui::EndGroup();
 
-        const float actionWidth = 92.0f;
-        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + columnWidth - 14.0f - actionWidth, origin.y + 8.0f));
-        if (installed && !updateAvailable_) {
-            ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + columnWidth - 14.0f - 86.0f, origin.y + 12.0f));
+        ImGui::SetCursorScreenPos(ImVec2(rightEdge - actionWidth, origin.y + 8.0f));
+        if (showBadge) {
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.82f);
+            const float badgeWidth = ImGui::CalcTextSize("Installed").x + 14.0f;
+            ImGui::PopFont();
+            ImGui::SetCursorScreenPos(ImVec2(rightEdge - badgeWidth, origin.y + 2.0f));
             ui::badge("Installed", paletteColor(kGreen));
         } else if (ui::button(installed ? "Update" : "Install", installed ? ui::ButtonKind::Primary : ui::ButtonKind::Success,
                               ImVec2(actionWidth, 0.0f))) {

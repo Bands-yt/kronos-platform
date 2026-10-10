@@ -235,6 +235,7 @@ public:
     // called, so every existing caller/test keeps compiling and passing
     // unchanged. Server mode ignores this entirely.
     void setLocalDisplayName(std::string name) { localDisplayName_ = std::move(name); }
+    [[nodiscard]] const std::string& localDisplayName() const { return localDisplayName_; }
 
     // Kronos ("Moderation Architecture v2", "Account System v1"): the
     // real, stable core::LocalProfile::profileId and self-declared
@@ -672,6 +673,18 @@ public:
     // setOnProjectileSpawned() already use. core::ScriptNetworkApi
     // dispatches by event name to whichever Luau network.onClientEvent()
     // handlers are registered for it.
+    // Roblox remotes (core::remotenet). Server: target kInvalidPlayer means
+    // every joined player. Client: target is ignored. The callback's sender is
+    // kInvalidPlayer on a client.
+    void sendInstanceRemote(PlayerId target, const std::vector<uint8_t>& body, bool reliable);
+    void setOnInstanceRemote(std::function<void(PlayerId sender, const uint8_t* data, size_t size)> callback) {
+        onInstanceRemote_ = std::move(callback);
+    }
+    [[nodiscard]] uint64_t playerProfileId(PlayerId player) const {
+        const auto it = serverPlayerProfileIds_.find(player);
+        return it == serverPlayerProfileIds_.end() ? 0 : it->second;
+    }
+
     void setOnClientEventReceived(std::function<void(const std::string&, const RemoteEvent::Payload&)> callback) {
         onClientEventReceived_ = std::move(callback);
     }
@@ -878,6 +891,7 @@ private:
     // (onClientEventReceived_ below).
     std::unordered_map<std::string, RemoteEvent> remoteEvents_;
     std::function<void(const std::string&, const RemoteEvent::Payload&)> onClientEventReceived_;
+    std::function<void(PlayerId, const uint8_t*, size_t)> onInstanceRemote_;
 
     // Client-side: this client's own player id (assigned by the server
     // on connect via a real handshake payload), the last decoded

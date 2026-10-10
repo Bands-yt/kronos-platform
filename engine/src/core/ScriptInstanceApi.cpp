@@ -1,9 +1,13 @@
+#include "core/RobloxServices.hpp"
 #include "core/ScriptInstanceApi.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
+#include <unordered_map>
 
 #include <Luau/Compiler.h>
 #include <lua.h>
@@ -13,7 +17,9 @@
 #include "core/ECS.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/InstanceTree.hpp"
+#include "core/RobloxDataStore.hpp"
 #include "core/RobloxPlayers.hpp"
+#include "core/RobloxRemoteNet.hpp"
 #include "core/Scripting.hpp"
 
 namespace engine::core {
@@ -163,6 +169,19 @@ void pushValue(lua_State* L, const InstanceValue& v) {
             }
             return;
         case InstanceValue::Type::Instance: pushInstance(L, v.ref); return;
+        case InstanceValue::Type::Vector2:
+        case InstanceValue::Type::UDim:
+            lua_pushnumber(L, v.vec.x);
+            lua_pushnumber(L, v.vec.y);
+            callConstructor(L, v.type == InstanceValue::Type::Vector2 ? "Vector2" : "UDim", "new", 2);
+            return;
+        case InstanceValue::Type::UDim2:
+            lua_pushnumber(L, v.vec.x);
+            lua_pushnumber(L, v.vec.y);
+            lua_pushnumber(L, v.vec.z);
+            lua_pushnumber(L, v.number);
+            callConstructor(L, "UDim2", "new", 4);
+            return;
     }
     lua_pushnil(L);
 }
@@ -205,6 +224,18 @@ bool toAnyValue(lua_State* L, int index, InstanceValue& out) {
             lua_pop(L, 1);
         }
         out = InstanceValue::ofCFrame(rawVec(L, index, "X", "Y", "Z"), glm::normalize(glm::quat_cast(m)));
+    } else if (type == "Vector2") {
+        const glm::vec3 v = rawVec(L, index, "X", "Y", "X");
+        out = InstanceValue::ofVector2(v.x, v.y);
+    } else if (type == "UDim") {
+        out = InstanceValue::ofUDim(static_cast<float>(rawNumber(L, index, "Scale")),
+                                    static_cast<float>(rawNumber(L, index, "Offset")));
+    } else if (type == "UDim2") {
+        lua_rawgetfield(L, index, "X");
+        lua_rawgetfield(L, index, "Y");
+        out = InstanceValue::ofUDim2(static_cast<float>(rawNumber(L, -2, "Scale")), static_cast<float>(rawNumber(L, -2, "Offset")),
+                                     static_cast<float>(rawNumber(L, -1, "Scale")), static_cast<float>(rawNumber(L, -1, "Offset")));
+        lua_pop(L, 2);
     } else if (type == "EnumItem") {
         lua_rawgetfield(L, index, "EnumType");
         const std::string enumType = luaL_tolstring(L, -1, nullptr);
@@ -273,6 +304,9 @@ bool toPropertyValue(lua_State* L, int index, const PropertyDef& property, Insta
         case PropertyType::CFrame: return datatypeOf(L, index) == "CFrame" && toAnyValue(L, index, out);
         case PropertyType::Color3: return datatypeOf(L, index) == "Color3" && toAnyValue(L, index, out);
         case PropertyType::BrickColor: return datatypeOf(L, index) == "BrickColor" && toAnyValue(L, index, out);
+        case PropertyType::Vector2: return datatypeOf(L, index) == "Vector2" && toAnyValue(L, index, out);
+        case PropertyType::UDim: return datatypeOf(L, index) == "UDim" && toAnyValue(L, index, out);
+        case PropertyType::UDim2: return datatypeOf(L, index) == "UDim2" && toAnyValue(L, index, out);
     }
     return false;
 }
@@ -288,6 +322,9 @@ const char* propertyTypeName(const PropertyDef& property) {
         case PropertyType::BrickColor: return "BrickColor";
         case PropertyType::Enum: return "EnumItem";
         case PropertyType::Instance: return "Instance";
+        case PropertyType::Vector2: return "Vector2";
+        case PropertyType::UDim: return "UDim";
+        case PropertyType::UDim2: return "UDim2";
     }
     return "value";
 }
@@ -298,9 +335,7 @@ bool isPlannedMember(const char* key) {
         "Kick", "GetMouse", "Team", "TeamColor", "LoadAnimation", "EquipTool", "UnequipTools", "Animator",
         "Play", "Stop", "Pause", "Resume", "GetPivot",
         "PivotTo", "MoveTo", "SetPrimaryPartCFrame", "GetPrimaryPartCFrame", "GetMass", "ApplyImpulse",
-        "AssemblyLinearVelocity", "Velocity", "SoundId", "Volume", "Looped", "Playing", "MouseButton1Click",
-        "MouseButton1Down", "MouseButton1Up", "Activated", "MouseEnter", "MouseLeave", "Text", "Visible",
-        "BindToRenderStep", "UnbindFromRenderStep"};
+        "AssemblyLinearVelocity", "Velocity", "BindToRenderStep", "UnbindFromRenderStep"};
     for (const char* planned : kPlanned) {
         if (std::strcmp(key, planned) == 0) return true;
     }
@@ -834,7 +869,11 @@ int mFireServer(lua_State* L) {
     const InstanceRef self = checkSelf(L, "FireServer");
     checkClass(L, ecs, self, "BaseRemoteEvent", "FireServer");
     if (runContextOf(L) == RunContext::Server) luaL_error(L, "FireServer can only be called from the client");
-    if (signals::runService(ecs).server) hubOf(L).fire(self, "OnServerEvent", argsFrom(L, 2, {localPlayerArg(ecs)}));
+    if (signals::runService(ecs).server) {
+        hubOf(L).fire(self, "OnServerEvent", argsFrom(L, 2, {localPlayerArg(ecs)}));
+    } else if (std::string error; !remotenet::fireServer(ecs, self, argsFrom(L, 2), error)) {
+        luaL_error(L, "%s", error.c_str());
+    }
     return 0;
 }
 
@@ -844,7 +883,13 @@ int mFireClient(lua_State* L) {
     checkClass(L, ecs, self, "BaseRemoteEvent", "FireClient");
     if (runContextOf(L) == RunContext::Client) luaL_error(L, "FireClient can only be called from the server");
     const InstanceRef player = playerArg(L, ecs, 2, "FireClient");
-    if (hasLocalClient(ecs, player)) hubOf(L).fire(self, "OnClientEvent", argsFrom(L, 3));
+    if (hasLocalClient(ecs, player)) {
+        hubOf(L).fire(self, "OnClientEvent", argsFrom(L, 3));
+    } else if (remotenet::netIdFor(ecs, player) != 0) {
+        if (std::string error; !remotenet::fireClient(ecs, self, player, argsFrom(L, 3), error)) {
+            luaL_error(L, "%s", error.c_str());
+        }
+    }
     return 0;
 }
 
@@ -854,6 +899,11 @@ int mFireAllClients(lua_State* L) {
     checkClass(L, ecs, self, "BaseRemoteEvent", "FireAllClients");
     if (runContextOf(L) == RunContext::Client) luaL_error(L, "FireAllClients can only be called from the server");
     if (signals::runService(ecs).client) hubOf(L).fire(self, "OnClientEvent", argsFrom(L, 2));
+    if (remotenet::isServer(ecs)) {
+        if (std::string error; !remotenet::fireAllClients(ecs, self, argsFrom(L, 2), error)) {
+            luaL_error(L, "%s", error.c_str());
+        }
+    }
     return 0;
 }
 
@@ -872,12 +922,26 @@ int invokeStart(lua_State* L) {
     } else if (method == "InvokeServer") {
         checkClass(L, ecs, self, "RemoteFunction", "InvokeServer");
         if (context == RunContext::Server) luaL_error(L, "InvokeServer can only be called from the client");
+        if (!signals::runService(ecs).server) {
+            std::string error;
+            const uint64_t id = remotenet::invokeServer(ecs, self, argsFrom(L, 3), error);
+            if (id == 0) luaL_error(L, "%s", error.c_str());
+            lua_pushnumber(L, static_cast<double>(id));
+            return 1;
+        }
         args = argsFrom(L, 3, {localPlayerArg(ecs)});
         callback = "OnServerInvoke";
     } else {
         checkClass(L, ecs, self, "RemoteFunction", "InvokeClient");
         if (context == RunContext::Client) luaL_error(L, "InvokeClient can only be called from the server");
         const InstanceRef player = playerArg(L, ecs, 3, "InvokeClient");
+        if (!hasLocalClient(ecs, player) && remotenet::netIdFor(ecs, player) != 0) {
+            std::string error;
+            const uint64_t id = remotenet::invokeClient(ecs, self, player, argsFrom(L, 4), error);
+            if (id == 0) luaL_error(L, "%s", error.c_str());
+            lua_pushnumber(L, static_cast<double>(id));
+            return 1;
+        }
         if (!hasLocalClient(ecs, player)) {
             luaL_error(L, "InvokeClient: %s's client isn't running in this process", instances::name(ecs, player).c_str());
         }
@@ -957,6 +1021,337 @@ bool readStudio(const RunServiceState& s) { return s.studio; }
 bool readRunning(const RunServiceState& s) { return s.running; }
 bool readRunMode(const RunServiceState& s) { return s.studio && s.running; }
 bool readEdit(const RunServiceState& s) { return s.studio && !s.running; }
+
+// --- DataStoreService ---------------------------------------------------------
+
+struct DataStoreHandle {
+    std::string name;
+    std::string scope;
+};
+
+struct DataStoreHandles {
+    std::map<std::pair<std::string, std::string>, InstanceRef> byName;
+    std::unordered_map<InstanceRef, DataStoreHandle> byRef;
+};
+
+void requireServer(lua_State* L) {
+    const RunContext context = runContextOf(L);
+    const bool server = context == RunContext::Own ? signals::runService(ecsOf(L)).server : context == RunContext::Server;
+    if (!server) luaL_error(L, "DataStore can't be accessed from client");
+}
+
+int mGetDataStore(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "GetDataStore");
+    requireServer(L);
+    const std::string name = luaL_checkstring(L, 2);
+    const std::string scope = luaL_optstring(L, 3, "global");
+    if (const std::string error = datastore::checkName(name); !error.empty()) luaL_error(L, "%s", error.c_str());
+    auto& handles = ecs.raw().ctx().emplace<DataStoreHandles>();
+    const auto found = handles.byName.find({name, scope});
+    InstanceRef ref = found != handles.byName.end() ? found->second : kNoInstance;
+    if (ref == kNoInstance || !instances::isAlive(ecs, ref)) {
+        ref = instances::createUnchecked(ecs, "DataStore");
+        instances::setName(ecs, ref, name);
+        handles.byName[{name, scope}] = ref;
+        handles.byRef[ref] = DataStoreHandle{name, scope};
+    }
+    pushInstance(L, ref);
+    return 1;
+}
+
+int mGetGlobalDataStore(lua_State* L) {
+    lua_settop(L, 1);
+    lua_pushstring(L, "GlobalDataStore");
+    return mGetDataStore(L);
+}
+
+// The store behind `self`, after the shared checks; the key is argument 2.
+const DataStoreHandle& checkStoreCall(lua_State* L, const char* method, std::string& key) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, method);
+    requireServer(L);
+    auto& handles = ecs.raw().ctx().emplace<DataStoreHandles>();
+    const auto found = handles.byRef.find(self);
+    if (found == handles.byRef.end()) luaL_error(L, "%s is not a valid member of %s", method, instances::className(ecs, self).c_str());
+    key = luaL_checkstring(L, 2);
+    if (const std::string error = datastore::checkKey(key); !error.empty()) luaL_error(L, "%s", error.c_str());
+    return found->second;
+}
+
+std::string writeKey(const DataStoreHandle& store, const std::string& key) {
+    return store.name + '\n' + store.scope + '\n' + key;
+}
+
+void storeValue(lua_State* L, const DataStoreHandle& store, const std::string& key, const nlohmann::json& value) {
+    std::string text;
+    std::string error;
+    if (!datastore::encode(value, text, error)) luaL_error(L, "%s", error.c_str());
+    datastore::set(ecsOf(L), store.name, store.scope, key, value);
+}
+
+nlohmann::json checkValue(lua_State* L, int index) {
+    nlohmann::json value;
+    std::string error;
+    if (!datastore::toJson(L, index, value, error)) luaL_error(L, "%s", error.c_str());
+    return value;
+}
+
+int mGetAsync(lua_State* L) {
+    std::string key;
+    const DataStoreHandle& store = checkStoreCall(L, "GetAsync", key);
+    datastore::charge(ecsOf(L), datastore::Request::Get, {});
+    nlohmann::json value;
+    if (datastore::get(ecsOf(L), store.name, store.scope, key, value)) datastore::pushJson(L, value);
+    else lua_pushnil(L);
+    return 1;
+}
+
+int mSetAsync(lua_State* L) {
+    std::string key;
+    const DataStoreHandle& store = checkStoreCall(L, "SetAsync", key);
+    const nlohmann::json value = checkValue(L, 3);
+    if (value.is_null()) luaL_error(L, "Argument 2 missing or nil");
+    datastore::charge(ecsOf(L), datastore::Request::Set, writeKey(store, key));
+    storeValue(L, store, key, value);
+    return 0;
+}
+
+int mUpdateAsync(lua_State* L) {
+    std::string key;
+    const DataStoreHandle& store = checkStoreCall(L, "UpdateAsync", key);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+    ECS& ecs = ecsOf(L);
+    datastore::charge(ecs, datastore::Request::Get, {});
+    nlohmann::json old;
+    const bool had = datastore::get(ecs, store.name, store.scope, key, old);
+    lua_pushvalue(L, 3);
+    if (had) datastore::pushJson(L, old);
+    else lua_pushnil(L);
+    // The transform can't yield, like in Roblox.
+    if (lua_pcall(L, 1, 1, 0) != 0) lua_error(L);
+    if (lua_isnil(L, -1)) return 1; // cancelled
+    const nlohmann::json value = checkValue(L, -1);
+    datastore::charge(ecs, datastore::Request::Set, writeKey(store, key));
+    storeValue(L, store, key, value);
+    datastore::pushJson(L, value);
+    return 1;
+}
+
+int mIncrementAsync(lua_State* L) {
+    std::string key;
+    const DataStoreHandle& store = checkStoreCall(L, "IncrementAsync", key);
+    const double delta = luaL_optnumber(L, 3, 1.0);
+    if (delta != std::floor(delta)) luaL_error(L, "IncrementAsync delta must be an integer");
+    ECS& ecs = ecsOf(L);
+    datastore::charge(ecs, datastore::Request::Set, writeKey(store, key));
+    nlohmann::json old;
+    double current = 0.0;
+    if (datastore::get(ecs, store.name, store.scope, key, old) && !old.is_null()) {
+        if (!old.is_number()) luaL_error(L, "IncrementAsync can only increment a number, but the stored value is not one");
+        current = old.get<double>();
+    }
+    const nlohmann::json value = std::floor(current) + delta;
+    storeValue(L, store, key, value);
+    lua_pushnumber(L, value.get<double>());
+    return 1;
+}
+
+int mRemoveAsync(lua_State* L) {
+    std::string key;
+    const DataStoreHandle& store = checkStoreCall(L, "RemoveAsync", key);
+    ECS& ecs = ecsOf(L);
+    datastore::charge(ecs, datastore::Request::Set, writeKey(store, key));
+    nlohmann::json old;
+    if (datastore::remove(ecs, store.name, store.scope, key, old)) datastore::pushJson(L, old);
+    else lua_pushnil(L);
+    return 1;
+}
+
+// --- TweenService, Debris, Sound, CollectionService, Lighting -------------------
+
+// An EnumItem's name (EasingStyle.Quad -> "Quad"), or `fallback` for nil.
+std::string enumItemName(lua_State* L, int index, const char* enumType, const char* fallback) {
+    if (lua_isnoneornil(L, index)) return fallback;
+    if (datatypeOf(L, index) == "EnumItem") {
+        lua_rawgetfield(L, index, "EnumType");
+        const std::string type = luaL_tolstring(L, -1, nullptr);
+        lua_pop(L, 2);
+        if (type == enumType) {
+            lua_rawgetfield(L, index, "Name");
+            std::string item = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            return item;
+        }
+    }
+    luaL_error(L, "Unable to cast %s to Enum.%s", luauTypeName(L, index), enumType);
+    return fallback;
+}
+
+int mCreate(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "Create");
+    const InstanceRef target = checkInstanceArg(L, 2, "Create");
+    if (datatypeOf(L, 3) != "TweenInfo") luaL_error(L, "Unable to cast %s to TweenInfo", luauTypeName(L, 3));
+    luaL_checktype(L, 4, LUA_TTABLE);
+    services::TweenSettings settings;
+    settings.time = rawNumber(L, 3, "Time");
+    lua_rawgetfield(L, 3, "EasingStyle");
+    settings.style = enumItemName(L, lua_gettop(L), "EasingStyle", "Quad");
+    lua_rawgetfield(L, 3, "EasingDirection");
+    settings.direction = enumItemName(L, lua_gettop(L), "EasingDirection", "Out");
+    lua_pop(L, 2);
+    settings.repeatCount = static_cast<int>(rawNumber(L, 3, "RepeatCount"));
+    lua_rawgetfield(L, 3, "Reverses");
+    settings.reverses = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    settings.delay = rawNumber(L, 3, "DelayTime");
+
+    const std::string cls = instances::className(ecs, target);
+    std::vector<std::pair<const PropertyDef*, InstanceValue>> goals;
+    lua_pushnil(L);
+    while (lua_next(L, 4) != 0) {
+        const char* key = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : "?";
+        const PropertyDef* property = instances::findProperty(cls, key);
+        if (property == nullptr || property->readOnly || property->name == "Parent" || property->name == "Name") {
+            luaL_error(L, "TweenService:Create no property named '%s' for object '%s'", key,
+                       instances::name(ecs, target).c_str());
+        }
+        InstanceValue goal;
+        if (!services::canTween(property->type) || !toPropertyValue(L, -1, *property, goal)) {
+            luaL_error(L, "TweenService:Create property named '%s' cannot be tweened due to type mismatch "
+                          "(property is a '%s', but given type is '%s')",
+                       key, propertyTypeName(*property), luauTypeName(L, -1));
+        }
+        goals.emplace_back(property, std::move(goal));
+        lua_pop(L, 1);
+    }
+    pushInstance(L, services::createTween(ecs, target, settings, std::move(goals)));
+    return 1;
+}
+
+int mGetValue(lua_State* L) {
+    checkSelf(L, "GetValue");
+    const double alpha = luaL_checknumber(L, 2);
+    const std::string style = enumItemName(L, 3, "EasingStyle", "Linear");
+    const std::string direction = enumItemName(L, 4, "EasingDirection", "In");
+    lua_pushnumber(L, services::ease(style, direction, alpha));
+    return 1;
+}
+
+// Play, Pause, Stop and Resume are shared by Tweens and Sounds.
+template <void (*TweenAction)(ECS&, InstanceRef), void (*SoundAction)(ECS&, InstanceRef)>
+int playbackMethod(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "Play");
+    const std::string cls = instances::className(ecs, self);
+    if constexpr (TweenAction != nullptr) {
+        if (instances::classIsA(cls, "TweenBase")) TweenAction(ecs, self);
+    }
+    if constexpr (SoundAction != nullptr) {
+        if (cls == "Sound") SoundAction(ecs, self);
+    }
+    return 0;
+}
+
+int mAddItem(lua_State* L) {
+    checkSelf(L, "AddItem");
+    const InstanceRef item = checkInstanceArg(L, 2, "AddItem");
+    services::addDebris(ecsOf(L), item, luaL_optnumber(L, 3, 10.0));
+    return 0;
+}
+
+// Instance:AddTag(tag) or CollectionService:AddTag(instance, tag).
+InstanceRef tagTarget(lua_State* L, const char* method, int& tagIndex) {
+    const InstanceRef self = checkSelf(L, method);
+    if (Proxy* other = toProxy(L, 2); other != nullptr && instances::className(ecsOf(L), self) == "CollectionService") {
+        tagIndex = 3;
+        return other->ref;
+    }
+    tagIndex = 2;
+    return self;
+}
+
+int mAddTag(lua_State* L) {
+    int tagIndex = 2;
+    const InstanceRef target = tagTarget(L, "AddTag", tagIndex);
+    instances::addTag(ecsOf(L), target, luaL_checkstring(L, tagIndex));
+    return 0;
+}
+
+int mRemoveTag(lua_State* L) {
+    int tagIndex = 2;
+    const InstanceRef target = tagTarget(L, "RemoveTag", tagIndex);
+    instances::removeTag(ecsOf(L), target, luaL_checkstring(L, tagIndex));
+    return 0;
+}
+
+int mHasTag(lua_State* L) {
+    int tagIndex = 2;
+    const InstanceRef target = tagTarget(L, "HasTag", tagIndex);
+    lua_pushboolean(L, instances::hasTag(ecsOf(L), target, luaL_checkstring(L, tagIndex)) ? 1 : 0);
+    return 1;
+}
+
+void pushStrings(lua_State* L, const std::vector<std::string>& strings) {
+    lua_createtable(L, static_cast<int>(strings.size()), 0);
+    for (size_t i = 0; i < strings.size(); ++i) {
+        lua_pushlstring(L, strings[i].data(), strings[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+}
+
+int mGetTags(lua_State* L) {
+    const InstanceRef self = checkSelf(L, "GetTags");
+    Proxy* other = toProxy(L, 2);
+    pushStrings(L, instances::tags(ecsOf(L), other != nullptr ? other->ref : self));
+    return 1;
+}
+
+int mGetTagged(lua_State* L) {
+    checkSelf(L, "GetTagged");
+    pushList(L, instances::tagged(ecsOf(L), luaL_checkstring(L, 2)));
+    return 1;
+}
+
+int mGetAllTags(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "GetAllTags");
+    std::vector<std::string> all;
+    for (auto [e, info] : ecs.raw().view<InstanceInfo>().each()) {
+        if (info.tags.empty() || instances::isDetached(ecs, e)) continue;
+        for (const std::string& tag : info.tags) {
+            if (std::find(all.begin(), all.end(), tag) == all.end()) all.push_back(tag);
+        }
+    }
+    std::sort(all.begin(), all.end());
+    pushStrings(L, all);
+    return 1;
+}
+
+template <bool Added>
+int tagSignal(lua_State* L) {
+    const InstanceRef self = checkSelf(L, Added ? "GetInstanceAddedSignal" : "GetInstanceRemovedSignal");
+    pushSignal(L, self, signals::tagEventName(luaL_checkstring(L, 2), Added));
+    return 1;
+}
+
+int mGetMinutesAfterMidnight(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    InstanceValue clock;
+    (void)instances::getProperty(ecs, checkSelf(L, "GetMinutesAfterMidnight"),
+                                 *instances::findProperty("Lighting", "ClockTime"), clock);
+    lua_pushnumber(L, clock.number * 60.0);
+    return 1;
+}
+
+int mSetMinutesAfterMidnight(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "SetMinutesAfterMidnight");
+    instances::setProperty(ecs, self, *instances::findProperty("Lighting", "ClockTime"),
+                           InstanceValue::ofNumber(luaL_checknumber(L, 2) / 60.0));
+    return 0;
+}
 
 // --- Players and Humanoid ----------------------------------------------------
 
@@ -1313,6 +1708,31 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"FireServer", &mFireServer},
         {"FireClient", &mFireClient},
         {"FireAllClients", &mFireAllClients},
+        {"GetDataStore", &mGetDataStore},
+        {"GetGlobalDataStore", &mGetGlobalDataStore},
+        {"GetAsync", &mGetAsync},
+        {"SetAsync", &mSetAsync},
+        {"UpdateAsync", &mUpdateAsync},
+        {"IncrementAsync", &mIncrementAsync},
+        {"RemoveAsync", &mRemoveAsync},
+        {"Create", &mCreate},
+        {"GetValue", &mGetValue},
+        {"Play", &playbackMethod<&services::playTween, &services::playSound>},
+        {"Pause", &playbackMethod<&services::pauseTween, &services::pauseSound>},
+        {"Cancel", &playbackMethod<&services::cancelTween, nullptr>},
+        {"Stop", &playbackMethod<nullptr, &services::stopSound>},
+        {"Resume", &playbackMethod<nullptr, &services::resumeSound>},
+        {"AddItem", &mAddItem},
+        {"AddTag", &mAddTag},
+        {"RemoveTag", &mRemoveTag},
+        {"HasTag", &mHasTag},
+        {"GetTags", &mGetTags},
+        {"GetTagged", &mGetTagged},
+        {"GetAllTags", &mGetAllTags},
+        {"GetInstanceAddedSignal", &tagSignal<true>},
+        {"GetInstanceRemovedSignal", &tagSignal<false>},
+        {"GetMinutesAfterMidnight", &mGetMinutesAfterMidnight},
+        {"SetMinutesAfterMidnight", &mSetMinutesAfterMidnight},
     };
     lua_newtable(L);
     for (const Method& method : kMethods) {

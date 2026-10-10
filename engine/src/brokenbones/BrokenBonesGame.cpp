@@ -274,6 +274,24 @@ void BrokenBonesGame::tick(float dt) {
         backPressed = false;
     }
     if (menu_ != Menu::None) {
+        if (phase_ == Phase::Walking) {
+            app_.tickLocalAvatarIdle(dt);
+            const bool fromTitle = menu_ == Menu::Title || (menu_ != Menu::Pause && menu_ != Menu::Rebirth &&
+                                                             settingsReturn_ == Menu::Title);
+            const auto* body = app_.ecs().tryGetComponent<core::Transform>(app_.characterController().entity());
+            if (fromTitle && body != nullptr) {
+                // Look at the avatar from the front.
+                glm::vec3 facing = body->rotation * glm::vec3(0.0f, 0.0f, 1.0f);
+                facing.y = 0.0f;
+                facing = glm::length(facing) > 0.01f ? glm::normalize(facing) : glm::vec3(0.0f, 0.0f, 1.0f);
+                const glm::vec3 focus = body->position + glm::vec3(0.0f, 0.35f, 0.0f);
+                core::Camera& camera = app_.camera();
+                camera.position = focus + facing * 5.5f + glm::vec3(0.0f, 0.7f, 0.0f);
+                const glm::vec3 look = glm::normalize(focus - camera.position);
+                camera.yawDegrees = glm::degrees(std::atan2(look.z, look.x));
+                camera.pitchDegrees = glm::degrees(std::asin(look.y));
+            }
+        }
         tickMenu(backPressed);
         updateSounds(dt);
         updateMusic(dt);

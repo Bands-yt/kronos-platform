@@ -173,3 +173,7 @@ Limits:
 The engine tests (`testPluginApiInProcess`, `testPluginApiSandbox`, `testSamplePluginApiPlugin`)
 load C plugins from `engine/tests/plugin_fixtures/` both ways. They check that inside the sandbox
 a plugin really can't open sockets, fork, write files, read outside its folder or signal the editor.
+
+---
+
+This document is licensed under the [Apache License 2.0](../LICENSES/Apache-2.0.txt). See [LICENSING.md](../LICENSING.md).

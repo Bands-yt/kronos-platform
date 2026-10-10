@@ -301,6 +301,7 @@ struct AudioSource {
     float maxDistance = 50.0f;
     bool looping = false;
     bool playing = false; // a sound that isn't looping sets this back to false when it ends
+    bool restart = false; // the mixer jumps back to the start, then clears this
     bool spatial = true;
     AudioCategory category = AudioCategory::SFX;
     std::string bus; // mixer bus; empty uses the category's bus (Music or SFX)

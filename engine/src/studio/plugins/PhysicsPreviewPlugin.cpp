@@ -5,11 +5,13 @@
 
 #include <imgui.h>
 
+#include "core/RobloxServices.hpp"
 #include "core/Audio.hpp"
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/Logger.hpp"
+#include "core/PartBodies.hpp"
 #include "core/RobloxPlayers.hpp"
 #include "core/RobloxScripts.hpp"
 #include "core/ScriptHotReload.hpp"
@@ -114,6 +116,7 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
     physics_.setTouchRecording(true);
 
     core::players::reset(ecs);
+    core::services::reset(ecs);
     playing_ = true;
     paused_ = false;
     if (onPlay_) onPlay_(ecs, physics_);
@@ -127,6 +130,7 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
     if (!playing_) return;
     if (onStop_) onStop_(ecs);
     for (core::EntityId entity : attachedEntities_) physics_.detachBody(entity, ecs);
+    core::partbodies::detachAll(ecs, physics_);
     attachedEntities_.clear();
     recentContacts_.clear();
     hasTestRay_ = false;
@@ -144,6 +148,7 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
     }
     scripting_.shutdown();
     core::robloxScripts::reset(ecs);
+    core::services::reset(ecs);
     scriptAudioApi_.reset();
     physics_.setTouchRecording(false);
     core::signals::runService(ecs).running = false;
@@ -191,6 +196,7 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
     scripting_.tick(dt);
     core::players::tick(ecs, dt);
     core::signals::flush(ecs);
+    core::partbodies::sync(ecs, physics_, false);
 
     if (!paused_) {
         physics_.step(dt, ecs);

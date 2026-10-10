@@ -1,4 +1,5 @@
 #include "core/InstanceSignals.hpp"
+#include "core/RobloxServices.hpp"
 
 #include <algorithm>
 
@@ -271,6 +272,12 @@ uint64_t SignalHub::invoke(InstanceRef ref, const std::string& name, std::vector
     return id;
 }
 
+uint64_t SignalHub::beginInvoke() {
+    const uint64_t id = nextInvokeId_++;
+    invokes_[id];
+    return id;
+}
+
 void SignalHub::finishInvoke(uint64_t id, bool ok, std::vector<SignalArg> values, std::string error) {
     const auto found = invokes_.find(id);
     if (found == invokes_.end() || found->second.done) return;
@@ -391,6 +398,11 @@ void destroying(ECS& ecs, InstanceRef ref) {
     // on the way out still reaches the handlers.
     hub->setForceDelivery(true);
     for (InstanceRef r : all) hub->fire(r, "Destroying");
+    const bool inGame = !instances::isDetached(ecs, instances::entityOf(ecs, ref));
+    for (InstanceRef r : all) {
+        if (!inGame) break;
+        for (const std::string& tag : instances::tags(ecs, r)) tagChanged(ecs, r, tag, false);
+    }
     const InstanceRef oldParent = instances::parent(ecs, ref);
     if (oldParent != kNoInstance) {
         propertyChanged(ecs, ref, "Parent", InstanceValue{});
@@ -398,6 +410,17 @@ void destroying(ECS& ecs, InstanceRef ref) {
     }
     hub->setForceDelivery(false);
     hub->forgetInstances(all);
+}
+
+std::string tagEventName(const std::string& tag, bool added) {
+    return (added ? "TagAdded:" : "TagRemoved:") + tag;
+}
+
+void tagChanged(ECS& ecs, InstanceRef ref, const std::string& tag, bool added) {
+    SignalHub* hub = findHub(ecs);
+    if (hub == nullptr || instances::isDetached(ecs, instances::entityOf(ecs, ref))) return;
+    const InstanceRef service = instances::findService(ecs, "CollectionService");
+    if (service != kNoInstance) hub->fire(service, tagEventName(tag, added), {SignalArg::of(InstanceValue::ofInstance(ref))});
 }
 
 void touch(ECS& ecs, EntityId a, EntityId b, bool began) {
@@ -422,6 +445,7 @@ void stepped(ECS& ecs, double dt) {
 }
 
 void heartbeat(ECS& ecs, double dt) {
+    services::tick(ecs, dt);
     SignalHub* hub = findHub(ecs);
     if (hub == nullptr) return;
     hub->fire(kRunServiceInstance, "PostSimulation", {SignalArg::of(InstanceValue::ofNumber(dt))});

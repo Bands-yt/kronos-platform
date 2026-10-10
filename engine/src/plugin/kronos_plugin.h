@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Faris Nadim */
 /*
  * Kronos plugin API: the stable C interface for native plugins.
  *
