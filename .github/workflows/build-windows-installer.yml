@@ -30,7 +30,7 @@ jobs:
       # separate Vulkan SDK install (windows-latest ships neither) --
       # plain `cmake -G Ninja` alone fails to configure without both.
       - name: Install Windows dependencies (vcpkg)
-        run: vcpkg install sdl2:x64-windows zlib:x64-windows curl:x64-windows
+        run: vcpkg install "sdl2[vulkan]:x64-windows" zlib:x64-windows curl:x64-windows
 
       - name: Install Vulkan SDK
         uses: jakoch/install-vulkan-sdk-action@v1

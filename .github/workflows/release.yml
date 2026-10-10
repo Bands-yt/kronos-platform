@@ -144,7 +144,7 @@ jobs:
       # Same real recipe as build.yml's own Windows job -- see that
       # job's own comments for why each step is here.
       - name: Install Windows dependencies (vcpkg)
-        run: vcpkg install sdl2:x64-windows zlib:x64-windows curl:x64-windows
+        run: vcpkg install "sdl2[vulkan]:x64-windows" zlib:x64-windows curl:x64-windows
 
       - name: Install Vulkan SDK
         uses: jakoch/install-vulkan-sdk-action@v1

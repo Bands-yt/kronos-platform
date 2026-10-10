@@ -38,6 +38,10 @@ std::string classifySdlFailure(const std::string& context, const std::string& ra
             "headless/virtual session, Windows may not expose a real display to Kronos -- try a local session, "
             "or a remote tool with GPU passthrough (e.g. Parsec, or RDP with RemoteFX/GPU redirection enabled) "
             "instead.";
+    } else if (lower.find("not configured in sdl") != std::string::npos) {
+        // SDL's own wording when SDL2.dll was built without Vulkan; not the user's GPU.
+        hint = "The SDL2 library shipped with this copy of Kronos was built without Vulkan support. This is a "
+               "problem with the download, not your graphics card: please get the latest release.";
     } else if (lower.find("vulkan") != std::string::npos || lower.find("icd") != std::string::npos) {
         hint =
             "This looks like a missing or broken Vulkan runtime/driver (ICD). Install or update your GPU driver "

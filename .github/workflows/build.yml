@@ -162,7 +162,7 @@ jobs:
       # Linux job.
       - name: Install Windows dependencies (vcpkg)
         run: |
-          vcpkg install sdl2:x64-windows zlib:x64-windows curl:x64-windows
+          vcpkg install "sdl2[vulkan]:x64-windows" zlib:x64-windows curl:x64-windows
 
       # windows-latest runners have no Vulkan SDK preinstalled at all --
       # unlike the Linux job's libvulkan-dev, this single install covers

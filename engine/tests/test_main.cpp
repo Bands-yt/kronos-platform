@@ -15570,6 +15570,12 @@ void testWindowClassifySdlFailure() {
     std::string vulkanIcd = engine::core::classifySdlFailure("Window creation", "Failed to load Vulkan ICD");
     check(vulkanIcd.find("Vulkan Runtime") != std::string::npos, "a Vulkan/ICD error gets the real Vulkan-runtime hint");
 
+    std::string sdlWithoutVulkan = engine::core::classifySdlFailure(
+        "Window creation", "Vulkan support is either not configured in SDL or not available in current SDL video driver (windows) or platform");
+    check(sdlWithoutVulkan.find("not your graphics card") != std::string::npos &&
+              sdlWithoutVulkan.find("vulkan.lunarg.com") == std::string::npos,
+          "an SDL built without Vulkan is blamed on the download, not the GPU");
+
     std::string driverIssue = engine::core::classifySdlFailure("Window creation", "graphics driver returned an error");
     check(driverIssue.find("graphics driver") != std::string::npos, "a driver-mentioning error gets the real driver-update hint");
 
