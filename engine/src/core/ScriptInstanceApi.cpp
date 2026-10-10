@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -17,6 +18,8 @@
 #include "core/ECS.hpp"
 #include "core/InstanceSignals.hpp"
 #include "core/InstanceTree.hpp"
+#include "core/PartBodies.hpp"
+#include "core/Physics.hpp"
 #include "core/RobloxDataStore.hpp"
 #include "core/RobloxPlayers.hpp"
 #include "core/RobloxRemoteNet.hpp"
@@ -1395,6 +1398,106 @@ glm::vec3 checkVector3(lua_State* L, int index, const char* method) {
     return value.vec;
 }
 
+bool underAny(ECS& ecs, InstanceRef ref, const std::vector<InstanceRef>& roots) {
+    for (int depth = 0; depth < 256 && ref != kNoInstance; ++depth) {
+        if (std::find(roots.begin(), roots.end(), ref) != roots.end()) return true;
+        ref = instances::parent(ecs, ref);
+    }
+    return false;
+}
+
+void pushRaycastResultMeta(lua_State* L) {
+    if (luaL_newmetatable(L, "kronos.RaycastResult")) {
+        lua_pushstring(L, "RaycastResult");
+        lua_setfield(L, -2, "__type");
+        lua_setreadonly(L, -1, true);
+    }
+}
+
+// workspace:Raycast(origin, direction, params?)
+int mRaycast(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "Raycast");
+    const glm::vec3 origin = checkVector3(L, 2, "Raycast");
+    const glm::vec3 direction = checkVector3(L, 3, "Raycast");
+    std::vector<InstanceRef> filter;
+    bool include = false;
+    bool respectCanCollide = false;
+    if (!lua_isnoneornil(L, 4)) {
+        if (datatypeOf(L, 4) != "RaycastParams") luaL_error(L, "Raycast expects RaycastParams as argument 3");
+        lua_rawgetfield(L, 4, "FilterDescendantsInstances");
+        if (lua_istable(L, -1)) {
+            for (int i = 1;; ++i) {
+                lua_rawgeti(L, -1, i);
+                if (lua_isnil(L, -1)) {
+                    lua_pop(L, 1);
+                    break;
+                }
+                if (Proxy* proxy = toProxy(L, -1)) filter.push_back(proxy->ref);
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        lua_rawgetfield(L, 4, "FilterType");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "Name");
+            const char* name = lua_tostring(L, -1);
+            include = name != nullptr && (std::strcmp(name, "Include") == 0 || std::strcmp(name, "Whitelist") == 0);
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+        lua_rawgetfield(L, 4, "RespectCanCollide");
+        respectCanCollide = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+    }
+
+    Physics* physics = partbodies::physicsOf(ecs);
+    const float length = glm::length(direction);
+    if (physics == nullptr || length < 1e-6f) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const std::function<bool(EntityId)> accept = [&](EntityId e) {
+        if (!ecs.raw().valid(e) || ecs.tryGetComponent<PlayerAvatarPart>(e) != nullptr) return false;
+        const InstanceRef ref = instances::refOf(ecs, e);
+        if (ref == kNoInstance || !instances::isInWorld(ecs, e)) return false;
+        if (respectCanCollide && !instances::canCollide(ecs, e)) return false;
+        return underAny(ecs, ref, filter) == include;
+    };
+    const Physics::RaycastHit hit = physics->raycast(origin, direction, length, accept);
+    const InstanceRef ref = hit.hit ? instances::refOf(ecs, hit.entity) : kNoInstance;
+    if (ref == kNoInstance) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    lua_createtable(L, 0, 5);
+    pushInstance(L, ref);
+    lua_setfield(L, -2, "Instance");
+    pushValue(L, InstanceValue::ofVector3(hit.point));
+    lua_setfield(L, -2, "Position");
+    pushValue(L, InstanceValue::ofVector3(glm::normalize(hit.normal)));
+    lua_setfield(L, -2, "Normal");
+    lua_pushnumber(L, hit.distance);
+    lua_setfield(L, -2, "Distance");
+    InstanceValue material;
+    if (const PropertyDef* def = instances::findProperty(instances::className(ecs, ref), "Material");
+        def != nullptr && instances::getProperty(ecs, ref, *def, material)) {
+        pushValue(L, material);
+    } else {
+        lua_getglobal(L, "Enum");
+        lua_getfield(L, -1, "Material");
+        lua_getfield(L, -1, "Plastic");
+        lua_remove(L, -2);
+        lua_remove(L, -2);
+    }
+    lua_setfield(L, -2, "Material");
+    pushRaycastResultMeta(L);
+    lua_setmetatable(L, -2);
+    lua_setreadonly(L, -1, true);
+    return 1;
+}
+
 int mTakeDamage(lua_State* L) {
     const EntityId humanoid = checkHumanoid(L, "TakeDamage");
     players::takeDamage(ecsOf(L), humanoid, luaL_checknumber(L, 2));
@@ -1723,6 +1826,7 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"Stop", &playbackMethod<nullptr, &services::stopSound>},
         {"Resume", &playbackMethod<nullptr, &services::resumeSound>},
         {"AddItem", &mAddItem},
+        {"Raycast", &mRaycast},
         {"AddTag", &mAddTag},
         {"RemoveTag", &mRemoveTag},
         {"HasTag", &mHasTag},

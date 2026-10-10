@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -327,6 +328,9 @@ public:
     [[nodiscard]] RaycastHit raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance) const;
     // Same, but passes straight through `ignore`'s own body.
     [[nodiscard]] RaycastHit raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance, EntityId ignore) const;
+    // Same, but only bodies whose entity `accept` returns true for can be hit.
+    [[nodiscard]] RaycastHit raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance,
+                                     const std::function<bool(EntityId)>& accept) const;
 
     struct CollisionEvent {
         EntityId first = kNullEntity;
@@ -419,11 +423,20 @@ public:
     // Loosens a joint to near-free rotation (e.g. a broken bone).
     void setRagdollJointLimp(RagdollHandle handle, int partIndex);
 
+    // Holds two bodies in their current relative pose (Roblox welds). Returns 0 if it can't
+    // (a missing body, or neither body can move). Destroying either body removes the joint.
+    [[nodiscard]] uint32_t addFixedJoint(uint32_t bodyA, uint32_t bodyB);
+    void removeFixedJoint(uint32_t joint);
+    [[nodiscard]] size_t fixedJointCount() const;
+
 private:
     void syncTransforms(ECS& ecs);
 
     struct RagdollStore;
     std::unique_ptr<RagdollStore> ragdolls_;
+    struct JointStore;
+    std::unique_ptr<JointStore> joints_;
+    void removeJointsOf(uint32_t bodyId);
 
     std::unique_ptr<JPH::TempAllocatorImpl> tempAllocator_;
     std::unique_ptr<JPH::JobSystemThreadPool> jobSystem_;

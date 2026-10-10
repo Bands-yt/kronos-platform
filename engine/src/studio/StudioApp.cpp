@@ -1527,16 +1527,16 @@ void StudioApp::drawAboutPanel() {
             case StudioMode::ThreeDMaker:
                 blurb = "Kronos 3D Tools is the dedicated PBR material/texture painting workspace of the Kronos "
                         "platform: live viewport, Material Editor, PBR Texture Inspector, and Brush & Stamp "
-                        "compute-paint tools, all in one Alpha build.";
+                        "compute-paint tools, all in one app.";
                 break;
             case StudioMode::MovieMaker:
                 blurb = "Kronos Movie Maker is the dedicated cinematic authoring workspace of the Kronos platform: "
                         "Sequencer Timeline, Camera Rail, Clip Inspector, and offline Render Export, all in one "
-                        "Alpha build.";
+                        "app.";
                 break;
             case StudioMode::Audio:
                 blurb = "Kronos Audio is the dedicated sound-design workspace of the Kronos platform: DSP Node "
-                        "Graph and Viseme Timeline lip-sync authoring, all in one Alpha build.";
+                        "Graph and Viseme Timeline lip-sync authoring, all in one app.";
                 break;
             case StudioMode::Full:
             default:

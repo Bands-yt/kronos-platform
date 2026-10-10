@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -47,6 +48,15 @@ struct HydrationResult {
     size_t groupCount = 0;
     size_t skippedCount = 0; // instances with no Kronos representation
     std::vector<std::string> notes;
+
+    // Instance-valued properties (Part0, PrimaryPart, ...) are linked once every referent has an entity.
+    struct PendingRef {
+        core::EntityId entity;
+        std::string property;
+        std::string referent;
+    };
+    std::unordered_map<std::string, core::EntityId> entitiesByReferent;
+    std::vector<PendingRef> pendingRefs;
 };
 
 // Turns an ImportedInstance tree into live ECS entities.

@@ -2043,7 +2043,7 @@ void RuntimeShell::drawSplashPanel() {
     ImGui::SetWindowFontScale(2.6f);
     ImGui::TextColored(ImVec4(0.28f, 0.55f, 0.95f, 1.0f), "KRONOS");
     ImGui::SetWindowFontScale(1.0f);
-    ImGui::TextDisabled("Alpha %s", core::kKronosVersion);
+    ImGui::TextDisabled("%s", core::kKronosVersion);
     ImGui::EndGroup();
     ImGui::End();
 }

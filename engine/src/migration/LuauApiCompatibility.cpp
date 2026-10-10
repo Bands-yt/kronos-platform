@@ -184,7 +184,8 @@ LuauApiCompatibility::LuauApiCompatibility() {
         registry_.push_back({method, true, ApiMappingStatus::Mapped,
                               "Works as in Roblox (docs/ROBLOX_BRIDGE.md, \"Common services\")."});
     }
-    registry_.push_back({"Raycast", true, ApiMappingStatus::Unmapped, kBridgeGuidance});
+    registry_.push_back(
+        {"Raycast", true, ApiMappingStatus::Mapped, "Works as in Roblox (docs/ROBLOX_BRIDGE.md, \"Raycasts\")."});
 
     // Handled automatically by ScriptCompatShimLoader -- reported so the
     // author knows a rewrite happened, not because anything is broken.

@@ -1,5 +1,6 @@
 #include "core/PartBodies.hpp"
 
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 
@@ -19,8 +20,16 @@ struct PartBodyState {
 };
 
 // Bodies sync() looks after, so a destroyed part's body can be removed too.
+struct WeldJoint {
+    uint32_t joint = 0; // 0 when neither part can move
+    uint32_t bodyA = 0;
+    uint32_t bodyB = 0;
+};
+
 struct TrackedBodies {
     std::unordered_map<EntityId, uint32_t> bodies;
+    std::unordered_map<EntityId, WeldJoint> welds;
+    Physics* physics = nullptr;
 };
 
 TrackedBodies& tracked(ECS& ecs) { return ecs.raw().ctx().emplace<TrackedBodies>(); }
@@ -53,9 +62,60 @@ bool anchored(ECS& ecs, InstanceRef ref) {
 
 bool sameShape(const ColliderShape& a, const ColliderShape& b) { return a.kind == b.kind && a.params == b.params; }
 
+uint32_t bodyOf(ECS& ecs, EntityId part) {
+    const auto* body = ecs.tryGetComponent<RigidBody>(part);
+    return body != nullptr ? body->joltBodyId : RigidBody::kInvalidBodyId;
+}
+
+void setActive(ECS& ecs, EntityId weld, bool active) {
+    auto& value = ecs.raw().get<InstanceInfo>(weld).properties["Active"];
+    value = InstanceValue::ofBool(active);
+}
+
+void syncWelds(ECS& ecs, Physics& physics) {
+    auto& welds = tracked(ecs).welds;
+    std::vector<EntityId> moved;
+    if (auto* changed = ecs.raw().ctx().find<instances::WeldOffsetsChanged>()) moved.swap(changed->parts);
+    auto wasMoved = [&](EntityId part) { return std::find(moved.begin(), moved.end(), part) != moved.end(); };
+
+    std::vector<EntityId> live;
+    for (auto [weld, info] : ecs.raw().view<InstanceInfo>().each()) {
+        if (info.className == "WeldConstraint") live.push_back(weld);
+    }
+    for (EntityId weld : live) {
+        EntityId a = kNullEntity, b = kNullEntity;
+        const bool joined = instances::weldParts(ecs, weld, a, b);
+        setActive(ecs, weld, joined);
+        const auto found = welds.find(weld);
+        const uint32_t bodyA = joined ? bodyOf(ecs, a) : RigidBody::kInvalidBodyId;
+        const uint32_t bodyB = joined ? bodyOf(ecs, b) : RigidBody::kInvalidBodyId;
+        if (found != welds.end()) {
+            if (found->second.bodyA == bodyA && found->second.bodyB == bodyB && !wasMoved(a) && !wasMoved(b)) continue;
+            physics.removeFixedJoint(found->second.joint);
+            welds.erase(found);
+        }
+        if (!joined || bodyA == RigidBody::kInvalidBodyId || bodyB == RigidBody::kInvalidBodyId) continue;
+        // A part moved alone reaches its new place in the next physics step; join after that.
+        if (ecs.tryGetComponent<instances::PhysicsPoseWrite>(a) != nullptr ||
+            ecs.tryGetComponent<instances::PhysicsPoseWrite>(b) != nullptr) {
+            continue;
+        }
+        welds[weld] = WeldJoint{physics.addFixedJoint(bodyA, bodyB), bodyA, bodyB};
+    }
+    for (auto it = welds.begin(); it != welds.end();) {
+        if (std::find(live.begin(), live.end(), it->first) != live.end()) {
+            ++it;
+            continue;
+        }
+        physics.removeFixedJoint(it->second.joint);
+        it = welds.erase(it);
+    }
+}
+
 } // namespace
 
 void sync(ECS& ecs, Physics& physics, bool serverMoved) {
+    tracked(ecs).physics = &physics;
     dropDeadBodies(ecs, physics);
     auto& bodies = tracked(ecs).bodies;
     std::vector<EntityId> parts;
@@ -101,17 +161,28 @@ void sync(ECS& ecs, Physics& physics, bool serverMoved) {
             bodies.erase(e);
         }
     }
+    syncWelds(ecs, physics);
 }
 
 void detachAll(ECS& ecs, Physics& physics) {
     dropDeadBodies(ecs, physics);
     tracked(ecs).bodies.clear();
+    for (auto& [weld, joint] : tracked(ecs).welds) physics.removeFixedJoint(joint.joint);
+    tracked(ecs).welds.clear();
+    tracked(ecs).physics = nullptr;
     std::vector<EntityId> list;
     for (EntityId e : ecs.raw().view<PartBodyState>()) list.push_back(e);
     for (EntityId e : list) {
         physics.detachBody(e, ecs);
         ecs.raw().remove<PartBodyState>(e);
     }
+}
+
+void setPhysics(ECS& ecs, Physics* physics) { tracked(ecs).physics = physics; }
+
+Physics* physicsOf(ECS& ecs) {
+    const auto* state = ecs.raw().ctx().find<TrackedBodies>();
+    return state != nullptr ? state->physics : nullptr;
 }
 
 } // namespace engine::core::partbodies

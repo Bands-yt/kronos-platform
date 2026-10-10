@@ -283,6 +283,17 @@ HydrationResult InstanceHydrator::hydrate(const std::vector<ImportedInstance>& t
         const core::EntityId entity = hydrateNode(root, ecs, core::kNullEntity, WorldTransform{}, meshes, options, result);
         if (entity != core::kNullEntity) core::instances::updateWorldPresence(ecs, entity);
     }
+    for (const HydrationResult::PendingRef& pending : result.pendingRefs) {
+        const auto target = result.entitiesByReferent.find(pending.referent);
+        const std::string cls = core::instances::className(ecs, core::instances::refOf(ecs, pending.entity));
+        const core::PropertyDef* def = core::instances::findProperty(cls, pending.property);
+        if (target == result.entitiesByReferent.end() || def == nullptr || def->type != core::PropertyType::Instance ||
+            def->name == "Parent") {
+            continue;
+        }
+        core::instances::setProperty(ecs, core::instances::refOf(ecs, pending.entity), *def,
+                                     core::InstanceValue::ofInstance(core::instances::refOf(ecs, target->second)));
+    }
     return result;
 }
 
@@ -417,6 +428,15 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
 
     if (group) ++result.groupCount;
     storeProperties(node, ecs, entity);
+    if (!node.referent.empty()) result.entitiesByReferent[node.referent] = entity;
+    for (const auto& [key, type] : node.properties) {
+        if (type != "Ref" || key.rfind("@type.", 0) != 0) continue;
+        const std::string property = key.substr(6);
+        const auto value = node.properties.find(property);
+        if (value != node.properties.end() && !value->second.empty() && value->second != "null") {
+            result.pendingRefs.push_back({entity, property, value->second});
+        }
+    }
 
     // --- hierarchy ---------------------------------------------------------
     // Parented AFTER the transform is written. core::hierarchy::setParent

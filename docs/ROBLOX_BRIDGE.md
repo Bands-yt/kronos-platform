@@ -761,6 +761,83 @@ builds three named, coloured, tilted parts, and Undo removes them.
   `AttributesSerialize`. Those properties keep their Kronos defaults.
 - Kronos can't save `.rbxl`/`.rbxm` files; it only imports them.
 
+## Raycasts (4.4)
+
+`workspace:Raycast(origin, direction, params)` shoots a ray through the real
+physics world (Jolt) and returns the first part it hits, or `nil`.
+
+```lua
+local params = RaycastParams.new()
+params.FilterDescendantsInstances = { player.Character }
+local result = workspace:Raycast(head.Position, Vector3.new(0, -50, 0), params)
+if result then
+	print(result.Instance.Name, result.Position, result.Normal, result.Distance, result.Material)
+end
+```
+
+### What works
+
+- The ray is as long as `direction` (so `Vector3.new(0, -50, 0)` checks 50
+  studs down), like in Roblox.
+- The result has `Instance`, `Position`, `Normal`, `Distance` and `Material`.
+  It's read only, and `typeof(result)` is `"RaycastResult"`.
+- `RaycastParams`: `FilterDescendantsInstances` with `FilterType` `Exclude`
+  (the default) or `Include`. Listing a Model also covers its descendants.
+  `RespectCanCollide = true` skips parts with `CanCollide = false`; by default
+  they're hit, like in Roblox.
+- Only parts in the workspace are hit. The avatar's capsule is hit as its
+  `HumanoidRootPart`; the avatar's visible body pieces aren't.
+- Works in Studio Play, the Player, servers and the compatibility tool.
+
+### Differences from Roblox (known limits)
+
+- A part made by a script gets its physics body at the end of the frame, so
+  a ray cast in the same frame it was made misses it. Roblox hits it at once.
+- `CollisionGroup`, `IgnoreWater` and `CanQuery` aren't used yet.
+- Terrain isn't hit, and `Material` is the part's `Material` property.
+- No `Blockcast`, `Spherecast` or `Shapecast` yet.
+
+## Welds (4.4)
+
+`WeldConstraint` glues two parts so they move as one, like in Roblox.
+
+```lua
+local weld = Instance.new("WeldConstraint")
+weld.Part0 = car.Body
+weld.Part1 = car.Wheel
+weld.Parent = car.Body
+```
+
+### What works
+
+- `Part0`, `Part1`, `Enabled` and the read-only `Active`. A weld joins its
+  parts while it's enabled, sits in the workspace and both parts are in the
+  workspace. It keeps the offset the parts had when it was made.
+- Unanchored parts welded together fall, slide and land as one. A part welded
+  to an anchored part stays where it is.
+- Setting `CFrame` on a welded part moves every part welded to it. Setting
+  `Position` or `Orientation` moves only that part, and the weld keeps the new
+  offset (both like Roblox).
+- Two welded parts don't collide with each other, so overlapping parts (common
+  in Roblox models) don't push apart.
+- `Enabled = false`, destroying the weld, or destroying a part lets go.
+- Imported places keep their welds: `Part0`/`Part1` links (and other
+  Instance-valued properties such as `PrimaryPart` and `ObjectValue.Value`)
+  are linked after the whole place is read, for `.rbxlx` and `.rbxl`.
+
+### Differences from Roblox (known limits)
+
+- Kronos joins welded parts with a physics joint (Jolt's fixed constraint);
+  Roblox merges them into one rigid body. Very long chains can bend a little
+  under heavy loads.
+- Only parts welded directly to each other ignore each other's collisions; in a
+  chain A–B–C, A and C still collide (Roblox ignores the whole assembly).
+- After `Position` changes, the weld rejoins one frame later.
+- Welds aren't saved in Kronos scene files yet, because `Part0`/`Part1` need
+  permanent object IDs (planned for 4.5). They work after an import and in
+  scripts.
+- Legacy `Weld` (with `C0`/`C1`) and `Motor6D` aren't built yet.
+
 ## From entity ids to Instances
 
 Older Kronos scripts use the `world` table with numeric entity ids. That still

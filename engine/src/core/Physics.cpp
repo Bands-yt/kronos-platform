@@ -1,4 +1,5 @@
 #include "core/Physics.hpp"
+#include "core/WeldGroupFilter.hpp"
 #include "core/DeterministicMath.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/InstanceTree.hpp"
@@ -35,6 +36,7 @@
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Body/BodyManager.h>
 #include <Jolt/Physics/Collision/GroupFilterTable.h>
+#include <Jolt/Physics/Constraints/FixedConstraint.h>
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
 #include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include <Jolt/Physics/Ragdoll/Ragdoll.h>
@@ -287,6 +289,19 @@ struct Physics::RagdollStore {
     }
 };
 
+struct Physics::JointStore {
+    JPH::Ref<JPH::GroupFilter> filter = weldfilter::create();
+    struct Entry {
+        JPH::Ref<JPH::Constraint> constraint;
+        uint32_t bodyA = 0;
+        uint32_t bodyB = 0;
+    };
+    std::unordered_map<uint32_t, Entry> entries;
+    uint32_t nextHandle = 1;
+
+    void forgetPair(uint32_t a, uint32_t b) { weldfilter::removePair(filter.GetPtr(), a, b); }
+};
+
 Physics::Physics() = default;
 Physics::~Physics() { shutdown(); }
 
@@ -328,6 +343,7 @@ bool Physics::initialize(int workerThreadCount) {
     physicsSystem_->SetContactListener(contactListener_.get());
 
     ragdolls_ = std::make_unique<RagdollStore>();
+    joints_ = std::make_unique<JointStore>();
 
     initialized_ = true;
     std::fprintf(stdout, "Physics: Jolt initialized (%d worker threads)\n", workerThreads);
@@ -449,6 +465,10 @@ void Physics::shutdown() {
     if (!initialized_) return;
 
     ragdolls_.reset(); // ragdoll destructors destroy their bodies through physicsSystem_
+    if (joints_) {
+        for (auto& [handle, entry] : joints_->entries) physicsSystem_->RemoveConstraint(entry.constraint);
+        joints_.reset();
+    }
 
     contactListener_.reset(); // must outlive physicsSystem_'s use of it, so reset before it
     physicsSystem_.reset();
@@ -801,6 +821,7 @@ void Physics::detachBody(EntityId entity, ECS& ecs) {
     auto* rb = ecs.tryGetComponent<RigidBody>(entity);
     if (!rb || rb->joltBodyId == RigidBody::kInvalidBodyId) return;
 
+    removeJointsOf(rb->joltBodyId);
     JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
     JPH::BodyID id(rb->joltBodyId);
     bodyInterface.RemoveBody(id);
@@ -813,8 +834,68 @@ void Physics::destroyBodyById(uint32_t joltBodyId) {
     JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
     const JPH::BodyID id(joltBodyId);
     if (!bodyInterface.IsAdded(id)) return;
+    removeJointsOf(joltBodyId);
     bodyInterface.RemoveBody(id);
     bodyInterface.DestroyBody(id);
+}
+
+uint32_t Physics::addFixedJoint(uint32_t bodyA, uint32_t bodyB) {
+    if (!initialized_ || !joints_ || bodyA == bodyB || bodyA == RigidBody::kInvalidBodyId ||
+        bodyB == RigidBody::kInvalidBodyId) {
+        return 0;
+    }
+    JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
+    const JPH::BodyID a(bodyA), b(bodyB);
+    if (!bodyInterface.IsAdded(a) || !bodyInterface.IsAdded(b)) return 0;
+    if (bodyInterface.GetMotionType(a) != JPH::EMotionType::Dynamic &&
+        bodyInterface.GetMotionType(b) != JPH::EMotionType::Dynamic) {
+        return 0;
+    }
+    JPH::FixedConstraintSettings settings;
+    settings.mAutoDetectPoint = true;
+    JPH::TwoBodyConstraint* constraint = bodyInterface.CreateConstraint(&settings, a, b);
+    if (constraint == nullptr) return 0;
+    physicsSystem_->AddConstraint(constraint);
+    for (uint32_t body : {bodyA, bodyB}) {
+        const JPH::GroupFilter* current = bodyInterface.GetCollisionGroup(JPH::BodyID(body)).GetGroupFilter();
+        if (current == nullptr || current == joints_->filter.GetPtr()) {
+            bodyInterface.SetCollisionGroup(JPH::BodyID(body), JPH::CollisionGroup(joints_->filter, body, 0));
+        }
+    }
+    weldfilter::addPair(joints_->filter.GetPtr(), bodyA, bodyB);
+    bodyInterface.ActivateBody(a);
+    bodyInterface.ActivateBody(b);
+    const uint32_t handle = joints_->nextHandle++;
+    joints_->entries.emplace(handle, JointStore::Entry{constraint, bodyA, bodyB});
+    return handle;
+}
+
+void Physics::removeFixedJoint(uint32_t joint) {
+    if (!joints_) return;
+    const auto it = joints_->entries.find(joint);
+    if (it == joints_->entries.end()) return;
+    physicsSystem_->RemoveConstraint(it->second.constraint);
+    joints_->forgetPair(it->second.bodyA, it->second.bodyB);
+    JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
+    for (uint32_t body : {it->second.bodyA, it->second.bodyB}) {
+        if (bodyInterface.IsAdded(JPH::BodyID(body))) bodyInterface.ActivateBody(JPH::BodyID(body));
+    }
+    joints_->entries.erase(it);
+}
+
+size_t Physics::fixedJointCount() const { return joints_ ? joints_->entries.size() : 0; }
+
+void Physics::removeJointsOf(uint32_t bodyId) {
+    if (!joints_) return;
+    for (auto it = joints_->entries.begin(); it != joints_->entries.end();) {
+        if (it->second.bodyA != bodyId && it->second.bodyB != bodyId) {
+            ++it;
+            continue;
+        }
+        physicsSystem_->RemoveConstraint(it->second.constraint);
+        joints_->forgetPair(it->second.bodyA, it->second.bodyB);
+        it = joints_->entries.erase(it);
+    }
 }
 
 void Physics::moveKinematic(EntityId entity, ECS& ecs, glm::vec3 targetPosition, glm::quat targetRotation, float dt) {
@@ -1004,16 +1085,17 @@ Physics::GroundInfo Physics::checkGround(EntityId entity, ECS& ecs, float capsul
 }
 
 namespace {
-class IgnoreEntityBodyFilter final : public JPH::BodyFilter {
+class AcceptEntityBodyFilter final : public JPH::BodyFilter {
 public:
-    explicit IgnoreEntityBodyFilter(EntityId ignore) : ignore_(ignore) {}
+    explicit AcceptEntityBodyFilter(const std::function<bool(EntityId)>& accept) : accept_(accept) {}
     bool ShouldCollideLocked(const JPH::Body& body) const override {
-        return static_cast<EntityId>(static_cast<uint32_t>(body.GetUserData())) != ignore_;
+        return accept_(static_cast<EntityId>(static_cast<uint32_t>(body.GetUserData())));
     }
 
 private:
-    EntityId ignore_;
+    const std::function<bool(EntityId)>& accept_;
 };
+
 } // namespace
 
 Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance) const {
@@ -1021,6 +1103,12 @@ Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, floa
 }
 
 Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance, EntityId ignore) const {
+    if (ignore == kNullEntity) return raycast(origin, direction, maxDistance, std::function<bool(EntityId)>{});
+    return raycast(origin, direction, maxDistance, [ignore](EntityId e) { return e != ignore; });
+}
+
+Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, float maxDistance,
+                                     const std::function<bool(EntityId)>& accept) const {
     RaycastHit result;
     if (!initialized_) return result;
 
@@ -1032,10 +1120,10 @@ Physics::RaycastHit Physics::raycast(glm::vec3 origin, glm::vec3 direction, floa
 
     JPH::RayCastResult hit;
     bool found = false;
-    if (ignore == kNullEntity) {
+    if (!accept) {
         found = physicsSystem_->GetNarrowPhaseQuery().CastRay(ray, hit);
     } else {
-        IgnoreEntityBodyFilter filter(ignore);
+        AcceptEntityBodyFilter filter(accept);
         found = physicsSystem_->GetNarrowPhaseQuery().CastRay(ray, hit, {}, {}, filter);
     }
     if (!found) return result;

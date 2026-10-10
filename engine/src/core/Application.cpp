@@ -3234,6 +3234,7 @@ void Application::robloxPlayerJoined(net::PlayerId player, const std::string& na
 }
 
 void Application::tickGameScripts(float dt) {
+    partbodies::setPhysics(ecs_, &physics_);
     core::tickScriptHotReload(ecs_, scripting_);
     players::tick(ecs_, dt);
     remotenet::tick(ecs_, dt);

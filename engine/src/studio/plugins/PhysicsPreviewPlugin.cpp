@@ -193,6 +193,7 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
     // Playing gets diffed and (re)loaded here, then ticked -- see
     // core::tickScriptHotReload()'s own comment. Physics/ECS/camera are
     // completely untouched by this.
+    core::partbodies::setPhysics(ecs, &physics_);
     core::tickScriptHotReload(ecs, scripting_);
     scripting_.tick(dt);
     core::players::tick(ecs, dt);

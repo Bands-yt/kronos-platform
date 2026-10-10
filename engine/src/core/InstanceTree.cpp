@@ -433,17 +433,41 @@ glm::quat fromRotationXYZ(glm::vec3 degrees) {
 Renderable* renderable(ECS& ecs, EntityId e) { return ecs.tryGetComponent<Renderable>(e); }
 
 InstanceValue getPosition(ECS& ecs, EntityId e) { return InstanceValue::ofVector3(worldPose(ecs, e).position); }
+void weldOffsetChanged(ECS& ecs, EntityId e) { ecs.raw().ctx().emplace<WeldOffsetsChanged>().parts.push_back(e); }
+
+bool isDescendantOfAny(ECS& ecs, EntityId e, const std::vector<EntityId>& roots) {
+    for (EntityId at = parentEntity(ecs, e); at != kNullEntity; at = parentEntity(ecs, at)) {
+        if (std::find(roots.begin(), roots.end(), at) != roots.end()) return true;
+    }
+    return false;
+}
+
 void setPosition(ECS& ecs, EntityId e, const InstanceValue& v) {
     setWorldPose(ecs, e, v.vec, worldPose(ecs, e).rotation);
     markBodyMoved(ecs, e);
+    weldOffsetChanged(ecs, e);
 }
 InstanceValue getCFrame(ECS& ecs, EntityId e) {
     const Pose pose = worldPose(ecs, e);
     return InstanceValue::ofCFrame(pose.position, pose.rotation);
 }
+// Setting CFrame moves every part welded to this one, like in Roblox.
 void setCFrame(ECS& ecs, EntityId e, const InstanceValue& v) {
-    setWorldPose(ecs, e, v.vec, glm::normalize(v.rot));
+    const Pose before = worldPose(ecs, e);
+    const glm::quat rotation = glm::normalize(v.rot);
+    const glm::quat turn = rotation * glm::inverse(before.rotation);
+    const std::vector<EntityId> assembly = weldedAssembly(ecs, e);
+    setWorldPose(ecs, e, v.vec, rotation);
     markBodyMoved(ecs, e);
+    std::vector<EntityId> moved{e};
+    for (size_t i = 1; i < assembly.size(); ++i) {
+        const EntityId other = assembly[i];
+        if (isDescendantOfAny(ecs, other, moved)) continue;
+        const Pose pose = worldPose(ecs, other);
+        setWorldPose(ecs, other, v.vec + turn * (pose.position - before.position), glm::normalize(turn * pose.rotation));
+        markBodyMoved(ecs, other);
+        moved.push_back(other);
+    }
 }
 InstanceValue getOrientation(ECS& ecs, EntityId e) {
     return InstanceValue::ofVector3(orientationOf(worldPose(ecs, e).rotation));
@@ -451,6 +475,7 @@ InstanceValue getOrientation(ECS& ecs, EntityId e) {
 void setOrientation(ECS& ecs, EntityId e, const InstanceValue& v) {
     setWorldPose(ecs, e, worldPose(ecs, e).position, fromOrientation(v.vec));
     markBodyMoved(ecs, e);
+    weldOffsetChanged(ecs, e);
 }
 InstanceValue getRotation(ECS& ecs, EntityId e) {
     return InstanceValue::ofVector3(rotationXYZOf(worldPose(ecs, e).rotation));
@@ -458,6 +483,7 @@ InstanceValue getRotation(ECS& ecs, EntityId e) {
 void setRotation(ECS& ecs, EntityId e, const InstanceValue& v) {
     setWorldPose(ecs, e, worldPose(ecs, e).position, fromRotationXYZ(v.vec));
     markBodyMoved(ecs, e);
+    weldOffsetChanged(ecs, e);
 }
 InstanceValue getSize(ECS& ecs, EntityId e) {
     return InstanceValue::ofVector3(glm::abs(worldPose(ecs, e).scale * sizeFactor(ecs, e)));
@@ -815,7 +841,7 @@ std::vector<ClassDef> buildClasses() {
 
     auto& model = add("Model", "PVInstance", true);
     model.properties = {stored("PrimaryPart", PropertyType::Instance, InstanceValue{})};
-    add("WorldRoot", "Model", false);
+    add("WorldRoot", "Model", false).methods = {"Raycast"};
     add("Workspace", "WorldRoot", false, true).properties = {
         stored("Gravity", PropertyType::Number, InstanceValue::ofNumber(196.2)),
         stored("FallenPartsDestroyHeight", PropertyType::Number, InstanceValue::ofNumber(-500.0)),
@@ -823,6 +849,16 @@ std::vector<ClassDef> buildClasses() {
 
     add("Folder", "Instance", true);
     add("Configuration", "Instance", true);
+
+    PropertyDef weldActive = readOnlyStored("Active", PropertyType::Bool, InstanceValue::ofBool(false));
+    weldActive.serialized = false;
+    weldActive.replicated = false;
+    add("WeldConstraint", "Instance", true).properties = {
+        stored("Part0", PropertyType::Instance, InstanceValue{}),
+        stored("Part1", PropertyType::Instance, InstanceValue{}),
+        stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        weldActive,
+    };
 
     add("LuaSourceContainer", "Instance", false);
     add("BaseScript", "LuaSourceContainer", false).properties = {
@@ -1705,6 +1741,45 @@ void markBodyMoved(ECS& ecs, EntityId entity, bool resetVelocity) {
 void teleport(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation, bool resetVelocity) {
     setWorldPose(ecs, entity, position, rotation);
     markBodyMoved(ecs, entity, resetVelocity);
+}
+
+bool weldParts(ECS& ecs, EntityId weld, EntityId& part0, EntityId& part1) {
+    const auto* info = ecs.tryGetComponent<InstanceInfo>(weld);
+    if (info == nullptr || info->className != "WeldConstraint" || !isInWorld(ecs, weld)) return false;
+    auto stored = [&](const char* name) -> const InstanceValue* {
+        const auto it = info->properties.find(name);
+        return it != info->properties.end() ? &it->second : nullptr;
+    };
+    if (const InstanceValue* enabled = stored("Enabled"); enabled != nullptr && !enabled->boolean) return false;
+    const InstanceValue* a = stored("Part0");
+    const InstanceValue* b = stored("Part1");
+    if (a == nullptr || b == nullptr || a->type != InstanceValue::Type::Instance || b->type != InstanceValue::Type::Instance) {
+        return false;
+    }
+    part0 = entityOf(ecs, a->ref);
+    part1 = entityOf(ecs, b->ref);
+    auto usable = [&](EntityId p) {
+        return valid(ecs, p) && classIsA(entityClass(ecs, p), "BasePart") && isInWorld(ecs, p);
+    };
+    return part0 != part1 && usable(part0) && usable(part1);
+}
+
+std::vector<EntityId> weldedAssembly(ECS& ecs, EntityId part) {
+    std::vector<EntityId> assembly{part};
+    std::vector<std::pair<EntityId, EntityId>> links;
+    for (auto [weld, info] : ecs.raw().view<InstanceInfo>().each()) {
+        EntityId a = kNullEntity, b = kNullEntity;
+        if (info.className == "WeldConstraint" && weldParts(ecs, weld, a, b)) links.emplace_back(a, b);
+    }
+    for (size_t i = 0; i < assembly.size(); ++i) {
+        for (const auto& [a, b] : links) {
+            const EntityId other = a == assembly[i] ? b : b == assembly[i] ? a : kNullEntity;
+            if (other != kNullEntity && std::find(assembly.begin(), assembly.end(), other) == assembly.end()) {
+                assembly.push_back(other);
+            }
+        }
+    }
+    return assembly;
 }
 
 void setWorldPose(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation) {

@@ -81,6 +81,10 @@ jobs:
       - name: Build
         run: cmake --build "$BUILD_DIR" --config Release --parallel --target engine_runtime studio engine_tests
 
+      - name: Run tests
+        working-directory: engine
+        run: ./build/tests/engine_tests
+
       # Kronos ("In-App Auto-Updater"): the real updater helper ships
       # INSIDE the release archive, next to the binaries it replaces --
       # RuntimeShell::startUpdateDownload() resolves it relative to the
@@ -135,6 +139,11 @@ jobs:
       # checksum check" on the installer side would have nothing real
       # to check against (GitHub's own Releases API doesn't publish
       # asset checksums itself).
+      - name: Smoke-test the package
+        run: |
+          sudo apt-get install -y -o Acquire::Retries=5 mesa-vulkan-drivers xvfb
+          scripts/linux/smoke-test.sh kronos-linux-x64
+
       - name: Generate checksum
         run: sha256sum "kronos-${{ github.ref_name }}-linux-x64.tar.gz" > "kronos-${{ github.ref_name }}-linux-x64.tar.gz.sha256"
 
@@ -195,6 +204,12 @@ jobs:
       # --target scoping as the Linux job above.
       - name: Build
         run: cmake --build "$env:BUILD_DIR" --config Release --parallel --target engine_runtime studio engine_tests
+
+      - name: Run tests
+        working-directory: engine
+        run: |
+          .\build\tests\Release\engine_tests.exe
+          if ($LASTEXITCODE) { exit 1 }
 
       # Same real reasoning as the Linux job's own updater-helper step.
       - name: Build updater helper
@@ -264,6 +279,11 @@ jobs:
       # step -- real, sha256sum-compatible output format (hash, two
       # spaces, filename) so both platforms' installer code can parse
       # it identically.
+      - name: Smoke-test the package
+        run: |
+          & "$env:GITHUB_WORKSPACE\scripts\windows\smoke-test.ps1" -AppDir kronos-windows-x64
+          if ($LASTEXITCODE) { exit 1 }
+
       - name: Generate checksum
         run: |
           $hash = (Get-FileHash "kronos-${{ github.ref_name }}-windows-x64.zip" -Algorithm SHA256).Hash.ToLower()

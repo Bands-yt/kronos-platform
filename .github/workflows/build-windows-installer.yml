@@ -89,6 +89,11 @@ jobs:
       - name: Stage installer/ tools into the install tree
         run: cmake --install installer/build --config Release --prefix installer/dist
 
+      - name: Smoke-test the install tree
+        run: |
+          & "$env:GITHUB_WORKSPACE\scripts\windows\smoke-test.ps1" -AppDir installer\dist
+          if ($LASTEXITCODE) { exit 1 }
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 

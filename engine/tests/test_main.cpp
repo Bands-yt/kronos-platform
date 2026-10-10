@@ -43684,6 +43684,216 @@ print("DONE")
           "once parented to the workspace it is saved");
 }
 
+void testRobloxWeldConstraint() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox WeldConstraint --\n");
+    ECS ecs;
+    Physics physics;
+    check(physics.initialize(), "weld test: physics initializes");
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "weld test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto run = [&](const char* name, const char* source) {
+        scripting.loadAndRun(name, std::string(R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function near(a, b, e) return math.abs(a - b) < (e or 1e-3) end
+)LUAU") + source + "\nprint(\"DONE\")\n");
+    };
+    auto simulate = [&](float seconds) {
+        for (float t = 0.0f; t < seconds; t += 1.0f / 60.0f) {
+            partbodies::sync(ecs, physics, false);
+            physics.step(1.0f / 60.0f, ecs);
+        }
+    };
+
+    run("WeldSetup", R"LUAU(
+local function part(name, pos, anchored)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = Vector3.new(2, 2, 2)
+	p.Anchored = anchored
+	p.Position = pos
+	p.Parent = workspace
+	return p
+end
+local floor = part("Floor", Vector3.new(0, 0, 0), true)
+floor.Size = Vector3.new(60, 1, 60)
+local function weld(name, a, b)
+	local w = Instance.new("WeldConstraint")
+	w.Name = name
+	w.Part0 = a
+	w.Part1 = b
+	w.Parent = workspace
+	return w
+end
+local w = weld("PairWeld", part("A", Vector3.new(0, 6, 0), false), part("B", Vector3.new(2, 6, 0), false))
+expect("WeldConstraint defaults", w.Enabled and not w.Active and w.Part0.Name == "A")
+weld("HangWeld", part("Post", Vector3.new(10, 5, 0), true), part("Hanging", Vector3.new(12, 5, 0), false))
+part("Loose", Vector3.new(20, 5, 0), false)
+weld("OverlapWeld", part("O1", Vector3.new(30, 6, 0), false), part("O2", Vector3.new(31, 6, 0), false))
+)LUAU");
+    simulate(2.0f);
+    check(physics.fixedJointCount() == 3, "each WeldConstraint makes one physics joint");
+
+    run("WeldFall", R"LUAU(
+local A, B = workspace.A, workspace.B
+expect("Active once both parts are in the world", workspace.PairWeld.Active)
+expect("welded parts fall and land together", near(A.Position.Y, 1.5, 0.1) and near(B.Position.Y, 1.5, 0.1))
+expect("and keep their offset", near((B.Position - A.Position).Magnitude, 2, 0.05))
+expect("a part welded to an anchored one doesn't fall", near(workspace.Hanging.Position.Y, 5, 0.05))
+expect("an unwelded part falls (control)", near(workspace.Loose.Position.Y, 1.5, 0.1))
+expect("overlapping welded parts don't push apart", near((workspace.O2.Position - workspace.O1.Position).Magnitude, 1, 0.02))
+workspace.OverlapWeld:Destroy()
+A.CFrame = CFrame.new(0, 10, -10) * CFrame.Angles(0, math.rad(90), 0)
+expect("setting CFrame moves the welded part too", (B.Position - Vector3.new(0, 10, -12)).Magnitude < 1e-3)
+)LUAU");
+    simulate(1.5f);
+    run("WeldOffset", R"LUAU(
+local A, B = workspace.A, workspace.B
+expect("the moved assembly lands together", near(A.Position.Y, 1.5, 0.1) and near((B.Position - A.Position).Magnitude, 2, 0.05))
+workspace.Hanging.Position = Vector3.new(10, 5, 4)
+)LUAU");
+    simulate(1.0f);
+    run("WeldDisable", R"LUAU(
+local hanging = workspace.Hanging
+expect("setting Position moves one part and the weld keeps the new offset", (hanging.Position - Vector3.new(10, 5, 4)).Magnitude < 0.05)
+workspace.HangWeld.Enabled = false
+)LUAU");
+    simulate(2.0f);
+    run("WeldGone", R"LUAU(
+expect("Enabled = false lets go", near(workspace.Hanging.Position.Y, 1.5, 0.1) and not workspace.HangWeld.Active)
+workspace.PairWeld:Destroy()
+)LUAU");
+    simulate(0.1f);
+    check(physics.fixedJointCount() == 0, "destroyed and disabled welds remove their joints");
+    run("WeldPartGone", R"LUAU(
+local w = Instance.new("WeldConstraint")
+w.Part0 = workspace.A
+w.Part1 = workspace.B
+w.Parent = workspace
+)LUAU");
+    simulate(0.1f);
+    check(physics.fixedJointCount() == 1, "a new weld joins again");
+    run("WeldPartDestroy", "workspace.B:Destroy()");
+    simulate(0.1f);
+    check(physics.fixedJointCount() == 0, "destroying a welded part removes its joint");
+    checkLuauExpectations("weld", output);
+    partbodies::detachAll(ecs, physics);
+    scripting.shutdown();
+
+    // Part0/Part1 links survive an import.
+    const std::string place = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W"><Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Part" referent="P1"><Properties><string name="Name">Body</string></Properties></Item>
+    <Item class="Part" referent="P2"><Properties><string name="Name">Wheel</string></Properties></Item>
+    <Item class="WeldConstraint" referent="WC"><Properties><string name="Name">Glue</string>
+      <Ref name="Part0">P1</Ref><Ref name="Part1">P2</Ref></Properties></Item>
+  </Item>
+</roblox>)XML";
+    engine::migration::ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+    const auto report = importer.importDocument(place, scanner);
+    ECS imported;
+    engine::migration::InstanceHydrator hydrator;
+    (void)hydrator.hydrate(report.tree, imported, engine::migration::HydrationMeshes{});
+    EntityId glue = kNullEntity, body = kNullEntity, wheel = kNullEntity;
+    for (auto [e, n] : imported.raw().view<Name>().each()) {
+        if (n.value == "Glue") glue = e;
+        if (n.value == "Body") body = e;
+        if (n.value == "Wheel") wheel = e;
+    }
+    EntityId a = kNullEntity, b = kNullEntity;
+    check(glue != kNullEntity && instances::weldParts(imported, glue, a, b) && a == body && b == wheel,
+          "an imported WeldConstraint keeps its Part0/Part1 links");
+}
+
+void testRobloxRaycast() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox workspace:Raycast --\n");
+    ECS ecs;
+    Physics physics;
+    check(physics.initialize(), "raycast test: physics initializes");
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "raycast test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto run = [&](const char* name, const char* source) {
+        scripting.loadAndRun(name, std::string(R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f, text)
+	local ok, err = pcall(f)
+	return not ok and (text == nil or string.find(tostring(err), text, 1, true) ~= nil)
+end
+local function near(a, b) return math.abs(a - b) < 1e-3 end
+)LUAU") + source + "\nprint(\"DONE\")\n");
+    };
+
+    run("RaycastSetup", R"LUAU(
+local function part(name, size, pos, parent)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Anchored = true
+	p.Size = size
+	p.Position = pos
+	p.Parent = parent or workspace
+	return p
+end
+part("Floor", Vector3.new(20, 1, 20), Vector3.new(0, 0, 0)).Material = Enum.Material.Grass
+part("Ghost", Vector3.new(4, 4, 1), Vector3.new(0, 2, -5)).CanCollide = false
+local model = Instance.new("Model")
+model.Name = "Tower"
+model.Parent = workspace
+part("Block", Vector3.new(2, 2, 2), Vector3.new(6, 1.5, 0), model)
+part("Stored", Vector3.new(2, 2, 2), Vector3.new(-6, 1.5, 0), game:GetService("ReplicatedStorage"))
+expect("no physics yet: Raycast returns nil", workspace:Raycast(Vector3.new(0, 10, 0), Vector3.new(0, -20, 0)) == nil)
+)LUAU");
+    partbodies::sync(ecs, physics, false);
+
+    run("RaycastQueries", R"LUAU(
+local down = workspace:Raycast(Vector3.new(0, 10, 0), Vector3.new(0, -20, 0))
+expect("a ray down hits the floor", down ~= nil and down.Instance.Name == "Floor")
+expect("Position, Normal and Distance", near(down.Position.Y, 0.5) and near(down.Normal.Y, 1) and near(down.Distance, 9.5))
+expect("Material is the part's", down.Material == Enum.Material.Grass)
+expect("typeof is RaycastResult", typeof(down) == "RaycastResult")
+expect("results are read only", fails(function() down.Distance = 1 end))
+expect("the direction's length is the ray's length", workspace:Raycast(Vector3.new(0, 10, 0), Vector3.new(0, -5, 0)) == nil)
+expect("a zero direction hits nothing", workspace:Raycast(Vector3.new(0, 10, 0), Vector3.zero) == nil)
+
+local side = workspace:Raycast(Vector3.new(0, 2, 5), Vector3.new(0, 0, -20))
+expect("CanCollide = false parts are still hit", side ~= nil and side.Instance.Name == "Ghost")
+local params = RaycastParams.new()
+params.RespectCanCollide = true
+expect("RespectCanCollide skips them", workspace:Raycast(Vector3.new(0, 2, 5), Vector3.new(0, 0, -20), params) == nil)
+
+local exclude = RaycastParams.new()
+exclude.FilterDescendantsInstances = { workspace.Floor }
+expect("Exclude skips listed parts", workspace:Raycast(Vector3.new(0, 10, 0), Vector3.new(0, -20, 0), exclude) == nil)
+exclude.FilterDescendantsInstances = { workspace.Tower }
+expect("Exclude covers descendants", workspace:Raycast(Vector3.new(6, 10, 0), Vector3.new(0, -20, 0), exclude).Instance.Name == "Floor")
+local include = RaycastParams.new()
+include.FilterType = Enum.RaycastFilterType.Include
+include.FilterDescendantsInstances = { workspace.Tower }
+expect("Include hits only listed parts", workspace:Raycast(Vector3.new(6, 10, 0), Vector3.new(0, -20, 0), include).Instance.Name == "Block")
+expect("Include misses everything else", workspace:Raycast(Vector3.new(0, 10, 0), Vector3.new(0, -20, 0), include) == nil)
+
+expect("parts outside the workspace aren't hit", workspace:Raycast(Vector3.new(-6, 10, 0), Vector3.new(0, -20, 0)).Instance.Name == "Floor")
+expect("bad arguments error", fails(function() workspace:Raycast(1, 2) end, "expects a Vector3"))
+expect("bad params error", fails(function() workspace:Raycast(Vector3.zero, Vector3.yAxis, {}) end, "RaycastParams"))
+expect("only WorldRoots have Raycast", fails(function() workspace.Floor:Raycast(Vector3.zero, Vector3.yAxis) end))
+workspace.Tower.Block:Destroy()
+)LUAU");
+    partbodies::sync(ecs, physics, false);
+    run("RaycastDestroyed", R"LUAU(
+expect("a destroyed part isn't hit", workspace:Raycast(Vector3.new(6, 10, 0), Vector3.new(0, -20, 0)).Instance.Name == "Floor")
+)LUAU");
+    checkLuauExpectations("raycast", output);
+    partbodies::detachAll(ecs, physics);
+    scripting.shutdown();
+}
+
 void testRobloxLiveBodies() {
     using namespace engine::core;
     ECS ecs;
@@ -45353,7 +45563,7 @@ void testRobloxCompatibilityScore() {
     <Item class="Script" referent="S1"><Properties><string name="Name">Hello</string>
       <string name="Source">print("hi")</string></Properties></Item>
     <Item class="Script" referent="S2"><Properties><string name="Name">Roblox</string>
-      <string name="Source">local result = workspace:Raycast(Vector3.new(), Vector3.new(0, -10, 0))</string></Properties></Item>
+      <string name="Source">local mouse = UserInputService.MouseEnabled</string></Properties></Item>
     <Item class="ModuleScript" referent="M"><Properties><string name="Name">Broken</string>
       <string name="Source">return function(</string></Properties></Item>
   </Item>
@@ -45369,8 +45579,8 @@ void testRobloxCompatibilityScore() {
     check(score.instancesMapped == 6 && score.unmappedClasses.count("ScrollingFrame") == 1,
           "classes Kronos can't build yet (ScrollingFrame) count as unmapped");
     check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
-          "print, game and Vector3 are supported; :Raycast is not yet");
-    check(score.missingApis.count(":Raycast") == 1, "the score lists the missing Roblox APIs by name");
+          "print is supported; UserInputService is not yet");
+    check(score.missingApis.count("UserInputService") == 1, "the score lists the missing Roblox APIs by name");
 
     runImportedScripts(report, score);
     check(score.scriptsRun == 3 && score.scriptsOk == 1, "one of three scripts runs cleanly today");
@@ -47705,6 +47915,8 @@ int main() {
     testRobloxRemoteNetwork();
     testRobloxReplication();
     testRobloxLiveBodies();
+    testRobloxRaycast();
+    testRobloxWeldConstraint();
     testRobloxDataStore();
     testRobloxServices();
     testRobloxGui();

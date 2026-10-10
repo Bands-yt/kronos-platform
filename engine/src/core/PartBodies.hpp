@@ -15,6 +15,9 @@ namespace partbodies {
 void sync(ECS& ecs, Physics& physics, bool serverMoved);
 // Removes every body sync() made or adopted.
 void detachAll(ECS& ecs, Physics& physics);
+// The physics world workspace:Raycast uses. Hosts set it before scripts run; detachAll() clears it.
+void setPhysics(ECS& ecs, Physics* physics);
+Physics* physicsOf(ECS& ecs);
 
 } // namespace partbodies
 } // namespace engine::core

@@ -191,5 +191,14 @@ void markBodyMoved(ECS& ecs, EntityId entity, bool resetVelocity = false);
 // Moves a part and its body, e.g. a respawning character.
 void teleport(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation, bool resetVelocity);
 
+// The two parts an enabled WeldConstraint in the workspace joins; false if it joins nothing.
+bool weldParts(ECS& ecs, EntityId weld, EntityId& part0, EntityId& part1);
+// Every part joined to `part` through welds, `part` first.
+std::vector<EntityId> weldedAssembly(ECS& ecs, EntityId part);
+// Parts moved alone (Position/Orientation) since the last weld rebuild; their welds keep the new offset.
+struct WeldOffsetsChanged {
+    std::vector<EntityId> parts;
+};
+
 } // namespace instances
 } // namespace engine::core

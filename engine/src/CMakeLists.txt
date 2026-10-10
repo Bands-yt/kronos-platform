@@ -283,6 +283,7 @@ add_library(engine_core STATIC
     core/Hierarchy.cpp
     core/PluginRegistry.cpp
     core/Physics.cpp
+    core/WeldGroupFilter.cpp
     core/PhysicsMaterial.cpp
     core/CollisionLayers.cpp
     core/OreNode.cpp
@@ -1091,4 +1092,9 @@ if(ENGINE_BUILD_RUNTIME OR ENGINE_BUILD_STUDIO)
             ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/${_kronos_plugin}.lua
             DESTINATION plugins)
     endforeach()
+endif()
+
+# Subclasses a Jolt class; Jolt is built without RTTI, so this file must be too.
+if(NOT MSVC)
+    set_source_files_properties(core/WeldGroupFilter.cpp PROPERTIES COMPILE_OPTIONS "-fno-rtti")
 endif()
