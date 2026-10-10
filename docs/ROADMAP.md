@@ -1,6 +1,6 @@
 # Kronos Roadmap
 
-The current release is `4.3.0-pre-beta` (4.1, 4.2 and the 4.3 Roblox bridge together). This is what we're building, in order. Every step
+The current release is `4.3.1-pre-beta` (4.1, 4.2, the 4.3 Roblox bridge and the first 4.4 fixes). This is what we're building, in order. Every step
 says when it counts as done, so progress is something you can check, not a
 feeling. Estimates are rough, and the big ones are weeks, not hours.
 
@@ -10,7 +10,7 @@ feeling. Estimates are rough, and the big ones are weeks, not hours.
 | 4.2 | Scale: culling, batching, streaming, determinism, audio mixer | Released in 4.3.0-pre-beta |
 | Launch | Public beta (4.1 and 4.2 together), first Reddit post | Date to be decided by the owner |
 | 4.3 | Roblox bridge: import a Roblox place and play it in Kronos | Released in 4.3.0-pre-beta: steps 1–10 and replication (score 100% on the test places); step 11 (flagship demo) waits for a Roblox-made place |
-| 4.4 | Polish from launch feedback, plus the small 4.2 leftovers | Alongside 4.3 |
+| 4.4 | Polish from launch feedback, plus the small 4.2 leftovers | In progress; first fixes released in 4.3.1-pre-beta |
 | 4.5 | Foundations: Rust plugins, Python scripts, permanent object IDs, engine clean-up | After 4.3 and 4.4 |
 | 5.0 | Next-gen: graphics, web player, collaboration, media tools, 3D Model Maker | Parked until the bridge works |
 
