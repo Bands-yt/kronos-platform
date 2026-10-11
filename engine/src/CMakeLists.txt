@@ -371,6 +371,7 @@ add_library(engine_core STATIC
     migration/InstanceHydrator.cpp
     migration/CompatibilityScore.cpp
     migration/BridgeDoctor.cpp
+    migration/ProjectValidator.cpp
     core/RobloxDatatypes.cpp
     core/InstanceTree.cpp
     core/InstanceSignals.cpp
@@ -829,6 +830,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/panels/StatsPanel.cpp
         studio/panels/PerformanceOverlayPanel.cpp
         studio/panels/SceneSearchPanel.cpp
+        studio/panels/ValidateProjectPanel.cpp
         studio/panels/DebugConsolePanel.cpp
         studio/plugins/AnimatorPlugin.cpp
         studio/plugins/AlignPlugin.cpp

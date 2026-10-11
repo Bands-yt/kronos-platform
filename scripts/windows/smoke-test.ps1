@@ -25,6 +25,10 @@ $null = $p.Handle
 if (-not $p.WaitForExit(180000)) { $p.Kill(); Write-Error "engine_runtime --self-test timed out"; exit 1 }
 Get-Content $log
 if ($p.ExitCode -ne 0 -or -not (Select-String -Path $log -Pattern "--self-test PASSED" -SimpleMatch -Quiet)) {
+  Write-Host "ICD: $($icd.FullName)"
+  Get-Content $icd.FullName
+  Get-ChildItem (Split-Path $icd.FullName) | Select-Object -ExpandProperty Name
+  if (Get-Command vulkaninfo -ErrorAction SilentlyContinue) { vulkaninfo --summary 2>&1 | Select-Object -First 40 }
   Write-Error "engine_runtime --self-test failed (exit $($p.ExitCode))"
   exit 1
 }

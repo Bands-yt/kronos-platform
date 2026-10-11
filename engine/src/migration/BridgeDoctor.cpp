@@ -151,6 +151,10 @@ void sortFindings(std::vector<DoctorFinding>& findings) {
 
 } // namespace
 
+std::string doctorJsonEscape(const std::string& text) { return jsonEscape(text); }
+std::string doctorMarkdownCell(const std::string& text) { return mdCell(text); }
+int doctorLineFromError(const std::string& error, const std::string& script) { return lineFromError(error, script); }
+
 const char* doctorCategoryName(DoctorCategory category) {
     switch (category) {
         case DoctorCategory::Blocker: return "blocker";

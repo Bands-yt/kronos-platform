@@ -321,6 +321,7 @@
 #include "migration/InstanceHydrator.hpp"
 #include "migration/ProjectImporter.hpp"
 #include "migration/BridgeDoctor.hpp"
+#include "migration/ProjectValidator.hpp"
 #include "migration/CompatibilityScore.hpp"
 #include "migration/RbxlxParser.hpp"
 #include "migration/RbxBinaryReader.hpp"
@@ -45599,6 +45600,140 @@ lamp.Glow.Brightness = 3</string></Properties></Item>
     }
 }
 
+void testValidateProject() {
+    using namespace engine::migration;
+    using namespace engine::core;
+    std::printf("\n-- Validate Project --\n");
+    ECS ecs;
+    auto make = [&](const char* cls, const char* name, InstanceRef parent = kWorkspaceInstance) {
+        const InstanceRef ref = instances::createUnchecked(ecs, cls);
+        instances::setName(ecs, ref, name);
+        std::string error;
+        instances::setParent(ecs, ref, parent, error);
+        return ref;
+    };
+    auto setSource = [&](InstanceRef ref, const char* source) {
+        const EntityId e = instances::entityOf(ecs, ref);
+        if (ecs.tryGetComponent<Script>(e) == nullptr) ecs.addComponent<Script>(e);
+        ecs.tryGetComponent<Script>(e)->source = source;
+    };
+    auto findingFor = [](const ValidationReport& r, const std::string& code) -> const ProjectFinding* {
+        for (const ProjectFinding& f : r.findings) {
+            if (f.finding.code == code) return &f;
+        }
+        return nullptr;
+    };
+
+    // Empty and clean scenes.
+    const ValidationReport empty = validateProject(ecs);
+    check(empty.overall() == CheckStatus::Pass && empty.findings.empty() && empty.scripts == 0,
+          "validate: an empty scene passes with no findings");
+    check(empty.check("last-play") && empty.check("last-play")->status == CheckStatus::NotRun,
+          "validate: without a Play, runtime errors are NOT RUN, not PASS");
+    check(empty.check("multiplayer")->status == CheckStatus::Unavailable &&
+              empty.check("packaging")->status == CheckStatus::Unavailable,
+          "validate: multiplayer and packaging say UNAVAILABLE");
+
+    const InstanceRef door = make("Part", "Door");
+    const InstanceRef good = make("Script", "Opener", door);
+    setSource(good, "local door = script.Parent\ndoor.Transparency = 0.5\n");
+    ValidationInput played;
+    played.lastPlayErrors = std::vector<std::string>{"Server started", "player joined"};
+    const ValidationReport clean = validateProject(ecs, played);
+    check(clean.overall() == CheckStatus::Pass && clean.scripts == 1 && clean.findings.empty(),
+          "validate: a clean scene with one script passes");
+    check(clean.check("scripts-compile")->status == CheckStatus::Pass &&
+              clean.check("last-play")->status == CheckStatus::Pass,
+          "validate: the script compiles and the last Play had no errors");
+    check(validationJson(clean) == validationJson(validateProject(ecs, played)) &&
+              validationMarkdown(clean) == validationMarkdown(validateProject(ecs, played)),
+          "validate: reports are byte-for-byte stable");
+
+    // Broken scene: syntax error, missing API, dead reference, empty weld, missing file, Roblox asset, Play error.
+    const InstanceRef bad = make("Script", "Broken", door);
+    setSource(bad, "local a = 1\nlocal b = 2\nif a then\n");
+    const InstanceRef input = make("LocalScript", "Input");
+    setSource(input, "local x = 1\nlocal mouse = UserInputService.MouseEnabled\n");
+    const InstanceRef keep = make("Part", "Keep");
+    const InstanceRef gone = make("Part", "Gone");
+    const InstanceRef weld = make("WeldConstraint", "Weld", keep);
+    auto& weldInfo = *ecs.tryGetComponent<InstanceInfo>(instances::entityOf(ecs, weld));
+    weldInfo.properties["Part0"] = InstanceValue::ofInstance(keep);
+    weldInfo.properties["Part1"] = InstanceValue::ofInstance(gone);
+    instances::destroy(ecs, gone);
+    const InstanceRef loose = make("WeldConstraint", "LooseWeld", keep);
+    (void)loose;
+    const EntityId music = instances::entityOf(ecs, make("Part", "Speaker"));
+    ecs.addComponent<AudioSource>(music).path = "no/such/folder/music.ogg";
+    ecs.tryGetComponent<InstanceInfo>(instances::entityOf(ecs, keep))->properties["TextureID"] =
+        InstanceValue::ofString("rbxassetid://12345");
+    ValidationInput afterPlay;
+    afterPlay.lastPlayErrors = std::vector<std::string>{
+        "runtime error in \"Workspace.Door.Opener\": [string \"Workspace.Door.Opener\"]:2: attempt to index nil",
+        "runtime error in \"Workspace.Door.Opener\": [string \"Workspace.Door.Opener\"]:2: attempt to index nil",
+        "just some info"};
+    const ValidationReport broken = validateProject(ecs, afterPlay);
+    check(broken.overall() == CheckStatus::Fail, "validate: the broken scene fails");
+    const ProjectFinding* compile = findingFor(broken, "compile-error");
+    check(compile && compile->finding.line == 4 && compile->finding.script == "Workspace.Door.Broken" &&
+              compile->entity == static_cast<uint32_t>(entt::to_integral(instances::entityOf(ecs, bad))),
+          "validate: the syntax error points at the script, its line and its object");
+    const ProjectFinding* api = findingFor(broken, "missing-api");
+    check(api && api->finding.subject == "UserInputService" && api->finding.line == 2 &&
+              broken.check("roblox-api")->status == CheckStatus::Warning,
+          "validate: a missing Roblox API is a warning with its line");
+    const ProjectFinding* ref = findingFor(broken, "broken-reference");
+    check(ref && ref->finding.subject == "Workspace.Keep.Weld.Part1" &&
+              broken.check("references")->status == CheckStatus::Fail,
+          "validate: a reference to a destroyed part is caught");
+    const ProjectFinding* empty0 = findingFor(broken, "weld-incomplete");
+    check(empty0 && empty0->finding.subject.rfind("Workspace.Keep.LooseWeld.Part", 0) == 0,
+          "validate: a weld with no parts set is flagged");
+    const ProjectFinding* file = findingFor(broken, "missing-asset-file");
+    check(file && file->finding.message.find("no/such/folder/music.ogg") != std::string::npos &&
+              broken.check("assets")->status == CheckStatus::Fail,
+          "validate: a sound file that doesn't exist is caught");
+    const ProjectFinding* hosted = findingFor(broken, "asset-unavailable");
+    check(hosted && hosted->finding.subject == "Part.TextureID", "validate: Roblox-hosted asset ids are listed");
+    const ProjectFinding* runtime = findingFor(broken, "runtime-error");
+    check(runtime && runtime->finding.count == 2 && runtime->finding.line == 2 &&
+              runtime->entity == static_cast<uint32_t>(entt::to_integral(instances::entityOf(ecs, good))),
+          "validate: errors from the last Play are grouped and point at their script and line");
+    check(findingFor(broken, "welds-not-saved") && broken.check("saving")->status == CheckStatus::Warning,
+          "validate: welds that won't be saved are a warning");
+
+    // Garbage input: odd log lines and junk script text don't break it.
+    ValidationInput junk;
+    junk.lastPlayErrors = std::vector<std::string>{"runtime error in \"", "compile error", std::string(3, '\0')};
+    setSource(input, "\xff\xfe@@@ ]]]] [[");
+    const ValidationReport garbage = validateProject(ecs, junk);
+    check(garbage.overall() == CheckStatus::Fail && findingFor(garbage, "runtime-error") != nullptr,
+          "validate: junk log lines and junk script text are reported, not crashed on");
+
+    // Fix two things and compare.
+    setSource(bad, "local a = 1\n");
+    setSource(input, "local x = 1\n");
+    const ValidationReport fixed = validateProject(ecs, afterPlay);
+    const ValidationDiff diff = compareValidations(broken, fixed);
+    check(diff.added.empty() && diff.resolved.size() == 2 && diff.unchanged == fixed.findings.size(),
+          "validate: comparing runs shows the two fixed problems as resolved");
+    setSource(bad, "\n\nlocal a = 1\nlocal b = 2\nif a then\n");
+    const ValidationDiff moved = compareValidations(broken, validateProject(ecs, afterPlay));
+    check(std::find(moved.added.begin(), moved.added.end(), compile->stableId()) == moved.added.end(),
+          "validate: a finding keeps its id when its line moves");
+
+    // Exports.
+    const std::string json = validationJson(broken);
+    check(json.find("\"overall\": \"FAIL\"") != std::string::npos && json.find("\"code\": \"compile-error\"") !=
+              std::string::npos && json.find("if a then") == std::string::npos,
+          "validate: the JSON report has the result and no script source");
+    check(validationMarkdown(broken).find("| Scripts compile | FAIL |") != std::string::npos,
+          "validate: the Markdown report has the checks table");
+    std::string error;
+    check(!writeDoctorFile("/nonexistent-dir/x/report.json", json, error) && !error.empty(),
+          "validate: writing to a folder that doesn't exist fails with a reason");
+}
+
 void testBridgeDoctor() {
     using namespace engine::migration;
     std::printf("\n-- Bridge Doctor --\n");
@@ -48145,6 +48280,7 @@ int main() {
     testProjectImportPipeline();
     testRobloxCompatibilityScore();
     testBridgeDoctor();
+    testValidateProject();
     testRobloxDatatypes();
     testRobloxInstanceTree();
     testRobloxImportedInstances();
@@ -48291,7 +48427,9 @@ int main() {
     testScanLocalGameDirectoryHandlesMissingDirectory();
     testShippedGamesDiscoverAndLoadReal();
     testBuildGameCatalogueEntriesAggregatesRealShippedGames();
+#if defined(__linux__) // Linux-only feature or path
     testLaunchProcessRealSpawnSucceedsAndFailsHonestly();
+#endif
     testScriptingOnUpdateFiresEveryTickWithRealDt();
     testScriptDebuggerBreakpointsAndStepping();
     testLuauSymbolIndex();
@@ -48373,7 +48511,9 @@ int main() {
     testFriendsServiceSendAcceptDeclineTransitions();
     testFriendsServiceMessagingScopesPerFriend();
     testFriendsServicePresenceDefaultsToOfflineWithNoRealData();
+#if defined(__linux__) // Linux-only feature or path
     testFriendsServicePresenceOnlineCarriesRealGameNameDetail();
+#endif
     testUpdateCheckParsesRealVersionStrings();
     testUpdateCheckComparesRealVersionsIncludingPrereleasePrecedence();
     testOAuthPkceSha256MatchesKnownTestVectors();
@@ -48750,7 +48890,9 @@ int main() {
     testProfilerWriteRecordingToJsonFileRoundTrips();
     testProfilerStressManyFramesRealisticWorkload();
     testProcessStatsSamplerFirstSampleReportsZeroCpuPercent();
+#if defined(__linux__) // Linux-only feature or path
     testProcessStatsSamplerReportsRealNonZeroMemory();
+#endif
     testProcessStatsSamplerSecondSampleComputesRealCpuPercent();
     testPhysicsActiveAndTotalBodyCountZeroBeforeAnyBodyCreated();
     testPhysicsTotalBodyCountIncreasesAfterCreatingBodies();
@@ -49117,7 +49259,9 @@ int main() {
     testSessionBrowserSortOrdersCorrectly();
     testSessionBrowserFilterToFriendsMatchesByHostDisplayName();
     testLanDiscoveryHeaderRejectsWrongMagicOrKind();
+#if defined(__linux__) // Linux-only feature or path
     testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing();
+#endif
     testLanSessionBrowserPrunesStaleSessionAfterAnnouncerStops();
     testLanSessionBrowserDedupesRepeatedAnnouncesBySessionId();
 #if !defined(_WIN32)

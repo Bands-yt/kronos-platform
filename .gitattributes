@@ -1,0 +1,6 @@
+# Roblox test files are compared byte for byte; keep their line endings on Windows.
+*.rbxlx -text
+*.rbxmx -text
+*.rbxl binary
+*.rbxm binary
+engine/tests/fixtures/** -text

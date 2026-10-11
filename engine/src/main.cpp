@@ -501,9 +501,8 @@ int main(int argc, char** argv) {
 
     if (!app.initialize(info)) {
         std::fprintf(stderr, "engine_runtime: Application::initialize failed.\n");
-        // No dialog in headless/server mode -- that's a real, unattended
-        // process, not a windowed launch someone is watching.
-        if (!headless) {
+        // No dialog when nobody is watching (headless, server, --self-test).
+        if (!headless && !selfTestMode) {
             SDL_ShowSimpleMessageBox(
                 SDL_MESSAGEBOX_ERROR, "Kronos - Fatal Error",
                 "Kronos failed to start (often a missing/outdated GPU driver or Vulkan runtime).\n\n"

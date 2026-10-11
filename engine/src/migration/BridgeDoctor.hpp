@@ -63,6 +63,11 @@ struct DoctorReport {
 // False with a reason when the file can't be written.
 bool writeDoctorFile(const std::string& path, const std::string& text, std::string& error);
 
+// Shared with Validate Project.
+[[nodiscard]] std::string doctorJsonEscape(const std::string& text);
+[[nodiscard]] std::string doctorMarkdownCell(const std::string& text);
+[[nodiscard]] int doctorLineFromError(const std::string& error, const std::string& script);
+
 [[nodiscard]] const std::vector<std::string>& doctorChecksPerformed();
 [[nodiscard]] const std::vector<std::string>& doctorKnownLimits();
 

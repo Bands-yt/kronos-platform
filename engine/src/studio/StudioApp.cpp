@@ -1788,6 +1788,10 @@ void StudioApp::drawFileMenu() {
     }
 
     ImGui::Separator();
+    if (ImGui::MenuItem("Validate Project...")) validateProjectPanel_.open();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Checks scripts, references and files in this scene,\nand errors from the last Play.");
+    }
     if (ImGui::MenuItem("Import Roblox file...")) {
         importDialogOpen_ = true;
         importReportLines_.clear();
@@ -2711,6 +2715,18 @@ void StudioApp::run() {
             scriptEditorPanel_.openAndJumpToLine(ecs_, jump->entity, jump->oneBasedLine);
         }
         drawImportDialog();
+        validateProjectPanel_.notePlayState(physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying());
+        std::vector<std::string> assetRoots{""};
+        if (!currentProjectPath_.empty()) {
+            assetRoots.push_back(currentProjectPath_);
+            assetRoots.push_back(std::filesystem::path(currentProjectPath_).parent_path().string());
+        }
+        if (auto found = validateProjectPanel_.draw(ecs_, assetRoots)) {
+            explorerPanel_.setSelected(found->entity);
+            if (ecs_.hasComponent<core::Script>(found->entity)) {
+                scriptEditorPanel_.openAndJumpToLine(ecs_, found->entity, std::max(1, found->line));
+            }
+        }
 
         // Sprint 8 ("Performance Stats & Debug Tools"): compose this
         // frame's full metrics -- Renderer's real render-only numbers,

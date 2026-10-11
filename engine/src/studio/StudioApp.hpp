@@ -45,6 +45,7 @@
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
 #include "studio/panels/SceneSearchPanel.hpp"
+#include "studio/panels/ValidateProjectPanel.hpp"
 #include "core/ScriptDebugger.hpp"
 #include "studio/panels/ScriptEditorPanel.hpp"
 #include "studio/panels/PerformanceOverlayPanel.hpp"
@@ -466,6 +467,7 @@ private:
     // class comment.
     panels::PerformanceOverlayPanel performanceOverlay_;
     panels::SceneSearchPanel sceneSearchPanel_;
+    panels::ValidateProjectPanel validateProjectPanel_;
     panels::DebugConsolePanel debugConsolePanel_;
 
     // First-party plugins (Animator, Align & Distribute, Material Editor,

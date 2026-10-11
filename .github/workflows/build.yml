@@ -209,7 +209,7 @@ jobs:
         working-directory: engine
         run: |
           .\build\tests\Release\engine_tests.exe
-          if ($LASTEXITCODE) { exit 1 }
+          if ($LASTEXITCODE) { Write-Host ("engine_tests exit code 0x{0:X8}" -f $LASTEXITCODE); exit 1 }
 
       # Same real reasoning as the Linux job's own updater-helper step.
       - name: Build updater helper
