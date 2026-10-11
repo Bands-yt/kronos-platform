@@ -18,6 +18,6 @@ public:
 
 } // namespace
 
-extern "C" int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
-extern "C" engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new CounterModuleV1(); }
-extern "C" void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* module) { delete module; }
+extern "C" KRONOS_HOTRELOAD_EXPORT int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
+extern "C" KRONOS_HOTRELOAD_EXPORT engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new CounterModuleV1(); }
+extern "C" KRONOS_HOTRELOAD_EXPORT void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* module) { delete module; }

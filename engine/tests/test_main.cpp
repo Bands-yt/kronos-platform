@@ -412,6 +412,10 @@ void check(bool condition, const char* description) {
 }
 
 bool nearlyEqual(float a, float b, float epsilon = 1e-4f) { return std::fabs(a - b) < epsilon; }
+// Windows paths may mix / and \.
+bool samePath(const std::string& a, const std::string& b) {
+    return std::filesystem::path(a).lexically_normal() == std::filesystem::path(b).lexically_normal();
+}
 
 // Minimal PNG/JPEG byte builders for AssetSafetyGuard tests below --
 // AssetSafetyGuard's parser deliberately never validates chunk/segment
@@ -27970,7 +27974,7 @@ void testNativePluginManagerDiscoversLoadsAndUnloadsRealPlugins() {
     for (const auto& plugin : discovered) {
         if (plugin.name == v1Stem) {
             foundV1 = true;
-            check(plugin.libraryPath == std::string(HOTRELOAD_MODULE_V1_PATH),
+            check(samePath(plugin.libraryPath, HOTRELOAD_MODULE_V1_PATH),
                   "discover() reports the real, exact build-tree path for a real match");
         }
     }
@@ -27989,7 +27993,7 @@ void testNativePluginManagerDiscoversLoadsAndUnloadsRealPlugins() {
           ("NativePluginManager real-loads a plugin: " + error).c_str());
     check(manager.isPluginLoaded("terrainTool"), "manager reports the real plugin loaded");
     check(manager.pluginCount() == 1, "manager tracks exactly the one real loaded plugin");
-    check(manager.listLoadedPlugins()[0].libraryPath == std::string(HOTRELOAD_MODULE_V1_PATH),
+    check(!manager.listLoadedPlugins().empty() && samePath(manager.listLoadedPlugins()[0].libraryPath, HOTRELOAD_MODULE_V1_PATH),
           "manager's own bookkeeping records the real source path a plugin was loaded from");
 
     manager.tick(1.0f / 60.0f, ecs);
@@ -27998,7 +28002,7 @@ void testNativePluginManagerDiscoversLoadsAndUnloadsRealPlugins() {
     check(manager.loadPlugin("terrainTool", HOTRELOAD_MODULE_V2_PATH, ecs, error),
           ("NativePluginManager real-swaps a plugin's own code: " + error).c_str());
     check(manager.pluginCount() == 1, "hot-swapping an already-loaded plugin name doesn't grow the tracked count");
-    check(manager.listLoadedPlugins()[0].libraryPath == std::string(HOTRELOAD_MODULE_V2_PATH),
+    check(!manager.listLoadedPlugins().empty() && samePath(manager.listLoadedPlugins()[0].libraryPath, HOTRELOAD_MODULE_V2_PATH),
           "manager's bookkeeping reflects the real, newly loaded source path after a swap");
 
     manager.tick(1.0f / 60.0f, ecs);
@@ -28097,7 +28101,7 @@ void testNativePluginAutoReload() {
     writeTextFile(plugin, "not a shared library");
     bumpWriteTime(plugin);
     check(manager.checkForChanges(ecs) == 0, "a broken build does not count as reloaded");
-    check(!manager.listLoadedPlugins()[0].lastError.empty(), "the failed reload is reported");
+    check(!manager.listLoadedPlugins().empty() && !manager.listLoadedPlugins()[0].lastError.empty(), "the failed reload is reported");
     manager.tick(0.016f, ecs);
     check(probe().ticks == 21, "the previous build keeps running after a failed reload");
     check(manager.checkForChanges(ecs) == 0, "a failed build is not retried until it changes again");
@@ -28107,7 +28111,7 @@ void testNativePluginAutoReload() {
     check(manager.update(ecs) == 0, "auto reload waits for the file to settle");
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     check(manager.update(ecs) == 1, "auto reload picks up the settled file");
-    check(manager.listLoadedPlugins()[0].lastError.empty(), "a good reload clears the previous error");
+    check(!manager.listLoadedPlugins().empty() && manager.listLoadedPlugins()[0].lastError.empty(), "a good reload clears the previous error");
     check(manager.status("spinner")->transfer == engine::core::HotReloadStateTransfer::Migrated,
           "auto reload migrates a changed layout");
     manager.tick(0.016f, ecs);
@@ -49579,6 +49583,10 @@ void testBrokenBonesBombLaunchClearsTheCliff() {
 } // namespace
 
 int main() {
+#if defined(_WIN32)
+    // Unbuffered, so the last lines before a crash are in order with the engine log.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+#endif
     testKronosLaunchUriParsing();
     testGameSlugResolution();
 #if !defined(_WIN32)
@@ -50715,7 +50723,9 @@ int main() {
     testFabrikWithPoleSteersInteriorJointsWithoutLosingTheTarget();
     testBuildIKChainResolvesRealSkeletonJointsAndFailsLoudly();
     testSolvedChainRotationsPointBonesAlongTheSolvedDirections();
+#if defined(__linux__) // LAN discovery is Linux-only so far
     testLanDiscoveryOptOutViaAdvertiseOnLanFalse();
+#endif
     testShellStateTransitionsHomeToSessionBrowserAndBack();
     testShellStateTransitionsHomeThroughGameCatalogueToInGame();
     testShellStateTransitionsGameCatalogueReturnsHome();

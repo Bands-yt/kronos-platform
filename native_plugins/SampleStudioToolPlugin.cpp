@@ -105,7 +105,7 @@ private:
 
 } // namespace
 
-extern "C" int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
-extern "C" unsigned long long kronosHotReloadLayoutFingerprint() { return engine::core::kHotReloadLayoutFingerprint; }
-extern "C" engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new SampleStudioToolPlugin(); }
-extern "C" void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* module) { delete module; }
+extern "C" KRONOS_HOTRELOAD_EXPORT int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
+extern "C" KRONOS_HOTRELOAD_EXPORT unsigned long long kronosHotReloadLayoutFingerprint() { return engine::core::kHotReloadLayoutFingerprint; }
+extern "C" KRONOS_HOTRELOAD_EXPORT engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new SampleStudioToolPlugin(); }
+extern "C" KRONOS_HOTRELOAD_EXPORT void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* module) { delete module; }

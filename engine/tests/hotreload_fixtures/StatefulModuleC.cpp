@@ -25,7 +25,7 @@ public:
 
 KRONOS_HOT_RELOAD_STATE(StatefulCounterV2, 2)
 
-extern "C" int kronosHotReloadMigrateState(const KronosHotReloadStateLayout* oldLayout, void* oldState, void* newState) {
+extern "C" KRONOS_HOTRELOAD_EXPORT int kronosHotReloadMigrateState(const KronosHotReloadStateLayout* oldLayout, void* oldState, void* newState) {
     if (oldLayout->version != 1 || oldLayout->size != sizeof(StatefulCounter)) return 0;
     auto& from = *static_cast<StatefulCounter*>(oldState);
     auto& to = *static_cast<StatefulCounterV2*>(newState);
@@ -36,6 +36,6 @@ extern "C" int kronosHotReloadMigrateState(const KronosHotReloadStateLayout* old
     return 1;
 }
 
-extern "C" int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
-extern "C" engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new StatefulModuleC(); }
-extern "C" void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* module) { delete module; }
+extern "C" KRONOS_HOTRELOAD_EXPORT int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
+extern "C" KRONOS_HOTRELOAD_EXPORT engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new StatefulModuleC(); }
+extern "C" KRONOS_HOTRELOAD_EXPORT void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* module) { delete module; }

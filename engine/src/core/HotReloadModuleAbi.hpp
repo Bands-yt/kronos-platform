@@ -97,12 +97,19 @@ inline constexpr int kHotReloadModuleAbiVersion = 3;
 // exact header in the exact same real build -- a genuine, stated
 // constraint, not a general cross-compiler C++ plugin ABI):
 //
-//   extern "C" int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
-//   extern "C" engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new MyModule(); }
-//   extern "C" void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* m) { delete m; }
+//   extern "C" KRONOS_HOTRELOAD_EXPORT int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
+//   extern "C" KRONOS_HOTRELOAD_EXPORT engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new MyModule(); }
+//   extern "C" KRONOS_HOTRELOAD_EXPORT void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* m) { delete m; }
 //
 // See tests/hotreload_fixtures/CounterModuleV1.cpp / CounterModuleV2.cpp
 // for two real, complete, minimal examples.
+// Windows only exports functions marked for it.
+#ifdef _WIN32
+#define KRONOS_HOTRELOAD_EXPORT __declspec(dllexport)
+#else
+#define KRONOS_HOTRELOAD_EXPORT __attribute__((visibility("default")))
+#endif
+
 using HotReloadAbiVersionFn = int (*)();
 using HotReloadCreateModuleFn = IHotReloadableModule* (*)();
 using HotReloadDestroyModuleFn = void (*)(IHotReloadableModule*);

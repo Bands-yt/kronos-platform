@@ -30,9 +30,9 @@ public:
     }
 };
 
-extern "C" int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
-extern "C" engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new Spinner(); }
-extern "C" void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* m) { delete m; }
+extern "C" KRONOS_HOTRELOAD_EXPORT int kronosHotReloadAbiVersion() { return engine::core::kHotReloadModuleAbiVersion; }
+extern "C" KRONOS_HOTRELOAD_EXPORT engine::core::IHotReloadableModule* kronosCreateHotReloadModule() { return new Spinner(); }
+extern "C" KRONOS_HOTRELOAD_EXPORT void kronosDestroyHotReloadModule(engine::core::IHotReloadableModule* m) { delete m; }
 ```
 
 ## What survives a rebuild
@@ -52,7 +52,7 @@ changing size. On a layout change the new state is default-constructed. To carry
 function. It receives the old layout and both objects; return nonzero when values were copied:
 
 ```cpp
-extern "C" int kronosHotReloadMigrateState(const KronosHotReloadStateLayout* old, void* from, void* to) {
+extern "C" KRONOS_HOTRELOAD_EXPORT int kronosHotReloadMigrateState(const KronosHotReloadStateLayout* old, void* from, void* to) {
     if (old->version != 1) return 0;
     auto& a = *static_cast<SpinnerStateV1*>(from);
     auto& b = *static_cast<SpinnerState*>(to);
