@@ -89,6 +89,8 @@ if(WIN32)
     # documented "I provide my own main()" opt-out rather than pulling in
     # a GUI entry point it has no use for.
     target_compile_definitions(engine_tests PRIVATE SDL_MAIN_HANDLED)
+    target_sources(engine_tests PRIVATE WindowsCrashInfo.cpp)
+    target_link_libraries(engine_tests PRIVATE dbghelp)
 
     # Kronos ("Windows Release CI" -- real build failure): test_main.cpp
     # is one, deliberately single-file assertion suite (14000+ real

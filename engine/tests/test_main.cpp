@@ -49582,10 +49582,15 @@ void testBrokenBonesBombLaunchClearsTheCliff() {
 
 } // namespace
 
+#if defined(_WIN32)
+void installWindowsCrashInfo();
+#endif
+
 int main() {
 #if defined(_WIN32)
     // Unbuffered, so the last lines before a crash are in order with the engine log.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    installWindowsCrashInfo();
 #endif
     testKronosLaunchUriParsing();
     testGameSlugResolution();
