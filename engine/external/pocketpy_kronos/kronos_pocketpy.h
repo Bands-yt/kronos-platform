@@ -6,6 +6,13 @@
 #include <stdint.h>
 #include <time.h>
 
+#if defined(KRONOS_PY_INTERNAL) && defined(_MSC_VER) && !defined(__clang__)
+// MSVC's __forceinline leaves no linkable copy of functions other files call (PyObject__dict, ...).
+#include "pocketpy/export.h"
+#undef PK_INLINE
+#define PK_INLINE
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
