@@ -1,6 +1,6 @@
 # Kronos Roadmap
 
-The current release is `4.4.0-pre-beta`, called "v4 pre-beta" (4.1, 4.2, the 4.3 Roblox bridge, 4.4 polish and the first 4.5 steps). This is what we're building, in order. Every step
+The current release is `4.4.1-pre-beta`, "v4 pre-beta (update 1)" (4.1, 4.2, the 4.3 Roblox bridge, 4.4 polish and the first 4.5 steps). This is what we're building, in order. Every step
 says when it counts as done, so progress is something you can check, not a
 feeling. Estimates are rough, and the big ones are weeks, not hours.
 

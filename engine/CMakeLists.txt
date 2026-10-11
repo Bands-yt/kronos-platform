@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(RobloxStyleEngine
-    VERSION 4.4.0
+    VERSION 4.4.1
     DESCRIPTION "Kronos engine, Player and Studio"
     LANGUAGES C CXX
 )
