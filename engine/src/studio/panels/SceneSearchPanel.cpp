@@ -1,4 +1,5 @@
 #include "studio/panels/SceneSearchPanel.hpp"
+#include "core/UnionGeometry.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -58,7 +59,10 @@ core::EntityId SceneSearchPanel::draw(core::ECS& ecs, core::EntityId currentSele
     std::vector<Match> matches;
 
     for (auto entity : ecs.view<core::Transform>()) {
-        if (ecs.hasComponent<core::PlayerAvatarPart>(entity) || core::instances::isDetached(ecs, entity)) continue;
+        if (ecs.hasComponent<core::PlayerAvatarPart>(entity) || core::unions::isPiece(ecs, entity) ||
+            core::instances::isDetached(ecs, entity)) {
+            continue;
+        }
         ++totalCount;
         bool hasRenderable = ecs.hasComponent<core::Renderable>(entity);
         bool hasRigidBody = ecs.hasComponent<core::RigidBody>(entity);

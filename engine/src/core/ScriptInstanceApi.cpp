@@ -1,16 +1,20 @@
 #include "core/RobloxServices.hpp"
 #include "core/ScriptInstanceApi.hpp"
+#include "core/UnionGeometry.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <charconv>
+#include <limits>
 #include <map>
 #include <string>
 #include <unordered_map>
 
 #include <Luau/Compiler.h>
+#include <glm/gtc/quaternion.hpp>
 #include <lua.h>
 #include <lualib.h>
 
@@ -131,6 +135,15 @@ void callConstructor(lua_State* L, const char* global, const char* constructor, 
     lua_call(L, argCount, 1);
 }
 
+// A float as the shortest decimal that reads back as the same float, so
+// Color3.new(0.3, 0, 0).R prints 0.3 instead of 0.30000001192092896.
+void pushFloat(lua_State* L, float f) {
+    char text[32];
+    const auto result = std::to_chars(text, text + sizeof text, f);
+    *result.ptr = '\0';
+    lua_pushnumber(L, result.ec == std::errc() ? std::strtod(text, nullptr) : static_cast<double>(f));
+}
+
 void pushValue(lua_State* L, const InstanceValue& v) {
     switch (v.type) {
         case InstanceValue::Type::Nil: lua_pushnil(L); return;
@@ -138,26 +151,26 @@ void pushValue(lua_State* L, const InstanceValue& v) {
         case InstanceValue::Type::Number: lua_pushnumber(L, v.number); return;
         case InstanceValue::Type::String: lua_pushlstring(L, v.text.data(), v.text.size()); return;
         case InstanceValue::Type::Vector3:
-            lua_pushnumber(L, v.vec.x);
-            lua_pushnumber(L, v.vec.y);
-            lua_pushnumber(L, v.vec.z);
+            pushFloat(L, v.vec.x);
+            pushFloat(L, v.vec.y);
+            pushFloat(L, v.vec.z);
             callConstructor(L, "Vector3", "new", 3);
             return;
         case InstanceValue::Type::Color3:
         case InstanceValue::Type::BrickColor:
-            lua_pushnumber(L, v.vec.x);
-            lua_pushnumber(L, v.vec.y);
-            lua_pushnumber(L, v.vec.z);
+            pushFloat(L, v.vec.x);
+            pushFloat(L, v.vec.y);
+            pushFloat(L, v.vec.z);
             callConstructor(L, "Color3", "new", 3);
             if (v.type == InstanceValue::Type::BrickColor) callConstructor(L, "BrickColor", "new", 1);
             return;
         case InstanceValue::Type::CFrame: {
             const glm::mat3 m = glm::mat3_cast(v.rot);
-            lua_pushnumber(L, v.vec.x);
-            lua_pushnumber(L, v.vec.y);
-            lua_pushnumber(L, v.vec.z);
+            pushFloat(L, v.vec.x);
+            pushFloat(L, v.vec.y);
+            pushFloat(L, v.vec.z);
             for (int row = 0; row < 3; ++row) {
-                for (int column = 0; column < 3; ++column) lua_pushnumber(L, m[column][row]);
+                for (int column = 0; column < 3; ++column) pushFloat(L, m[column][row]);
             }
             callConstructor(L, "CFrame", "new", 12);
             return;
@@ -174,14 +187,14 @@ void pushValue(lua_State* L, const InstanceValue& v) {
         case InstanceValue::Type::Instance: pushInstance(L, v.ref); return;
         case InstanceValue::Type::Vector2:
         case InstanceValue::Type::UDim:
-            lua_pushnumber(L, v.vec.x);
-            lua_pushnumber(L, v.vec.y);
+            pushFloat(L, v.vec.x);
+            pushFloat(L, v.vec.y);
             callConstructor(L, v.type == InstanceValue::Type::Vector2 ? "Vector2" : "UDim", "new", 2);
             return;
         case InstanceValue::Type::UDim2:
-            lua_pushnumber(L, v.vec.x);
-            lua_pushnumber(L, v.vec.y);
-            lua_pushnumber(L, v.vec.z);
+            pushFloat(L, v.vec.x);
+            pushFloat(L, v.vec.y);
+            pushFloat(L, v.vec.z);
             lua_pushnumber(L, v.number);
             callConstructor(L, "UDim2", "new", 4);
             return;
@@ -336,8 +349,7 @@ const char* propertyTypeName(const PropertyDef& property) {
 bool isPlannedMember(const char* key) {
     static const char* const kPlanned[] = {
         "Kick", "GetMouse", "Team", "TeamColor", "LoadAnimation", "EquipTool", "UnequipTools", "Animator",
-        "Play", "Stop", "Pause", "Resume", "GetPivot",
-        "PivotTo", "MoveTo", "SetPrimaryPartCFrame", "GetPrimaryPartCFrame", "GetMass", "ApplyImpulse",
+        "Play", "Stop", "Pause", "Resume", "MoveTo", "GetMass", "ApplyImpulse",
         "AssemblyLinearVelocity", "Velocity", "BindToRenderStep", "UnbindFromRenderStep"};
     for (const char* planned : kPlanned) {
         if (std::strcmp(key, planned) == 0) return true;
@@ -606,6 +618,10 @@ int instanceNewIndex(lua_State* L) {
     if ((ref == kGameInstance || ref == kWorkspaceInstance || ref == kRunServiceInstance || ref == kCameraInstance) &&
         property->name == "Name") {
         luaL_error(L, "Unable to rename %s", instances::name(ecs, ref).c_str());
+    }
+    // NaN or infinity would break the physics world (a client can send them through a remote).
+    if (!instances::isFinite(value) && instances::classIsA(cls, "PVInstance")) {
+        luaL_error(L, "Unable to assign property %s. It can't be NaN or infinity", key);
     }
     instances::setProperty(ecs, ref, *property, value);
     return 0;
@@ -1417,6 +1433,138 @@ void pushRaycastResultMeta(lua_State* L) {
 }
 
 // workspace:Raycast(origin, direction, params?)
+// --- pivots ------------------------------------------------------------------
+
+struct Pose {
+    glm::vec3 position{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
+Pose partPose(ECS& ecs, InstanceRef part) {
+    InstanceValue v;
+    instances::getProperty(ecs, part, *instances::findProperty("BasePart", "CFrame"), v);
+    return {v.vec, v.rot};
+}
+
+std::vector<InstanceRef> pivotParts(ECS& ecs, InstanceRef self) {
+    std::vector<InstanceRef> parts;
+    if (instances::classIsA(instances::className(ecs, self), "BasePart")) parts.push_back(self);
+    for (InstanceRef d : instances::descendants(ecs, self)) {
+        if (instances::classIsA(instances::className(ecs, d), "BasePart")) parts.push_back(d);
+    }
+    return parts;
+}
+
+InstanceRef primaryPart(ECS& ecs, InstanceRef model) {
+    InstanceValue v;
+    const PropertyDef* def = instances::findProperty("Model", "PrimaryPart");
+    if (def == nullptr || !instances::getProperty(ecs, model, *def, v) || v.type != InstanceValue::Type::Instance ||
+        !instances::isAlive(ecs, v.ref)) {
+        return kNoInstance;
+    }
+    return v.ref;
+}
+
+// Part: its CFrame. Model: its PrimaryPart, else the pivot PivotTo last set, else
+// the centre of its parts' bounding box.
+Pose pivotOf(ECS& ecs, InstanceRef self) {
+    if (instances::classIsA(instances::className(ecs, self), "BasePart")) return partPose(ecs, self);
+    if (const InstanceRef primary = primaryPart(ecs, self); primary != kNoInstance) return partPose(ecs, primary);
+    if (const auto* info = ecs.tryGetComponent<InstanceInfo>(instances::entityOf(ecs, self))) {
+        if (const auto it = info->properties.find("WorldPivot");
+            it != info->properties.end() && it->second.type == InstanceValue::Type::CFrame) {
+            return {it->second.vec, it->second.rot};
+        }
+    }
+    glm::vec3 lo(std::numeric_limits<float>::max());
+    glm::vec3 hi(-std::numeric_limits<float>::max());
+    bool any = false;
+    for (InstanceRef part : pivotParts(ecs, self)) {
+        const Pose pose = partPose(ecs, part);
+        InstanceValue size;
+        instances::getProperty(ecs, part, *instances::findProperty("BasePart", "Size"), size);
+        const glm::mat3 axes = glm::mat3_cast(pose.rotation);
+        const glm::vec3 half = glm::abs(axes[0]) * size.vec.x * 0.5f + glm::abs(axes[1]) * size.vec.y * 0.5f +
+                               glm::abs(axes[2]) * size.vec.z * 0.5f;
+        lo = glm::min(lo, pose.position - half);
+        hi = glm::max(hi, pose.position + half);
+        any = true;
+    }
+    return {any ? (lo + hi) * 0.5f : glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+}
+
+void moveByPivot(lua_State* L, ECS& ecs, InstanceRef self, const Pose& from, const Pose& to) {
+    const glm::quat turn = glm::normalize(to.rotation * glm::inverse(from.rotation));
+    const PropertyDef& cframe = *instances::findProperty("BasePart", "CFrame");
+    std::vector<std::pair<InstanceRef, InstanceValue>> targets;
+    for (InstanceRef part : pivotParts(ecs, self)) {
+        const Pose pose = partPose(ecs, part);
+        targets.emplace_back(part, InstanceValue::ofCFrame(to.position + turn * (pose.position - from.position),
+                                                           glm::normalize(turn * pose.rotation)));
+    }
+    for (const auto& [part, value] : targets) instances::setProperty(ecs, part, cframe, value);
+    (void)L;
+}
+
+InstanceValue checkCFrameArg(lua_State* L, int index, const char* method) {
+    InstanceValue value;
+    if (!toAnyValue(L, index, value) || value.type != InstanceValue::Type::CFrame) {
+        luaL_error(L, "%s expects a CFrame as argument %d", method, index - 1);
+    }
+    if (!instances::isFinite(value)) luaL_error(L, "%s: the CFrame can't contain NaN or infinity", method);
+    return value;
+}
+
+int mGetPivot(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "GetPivot");
+    checkClass(L, ecs, self, "PVInstance", "GetPivot");
+    const Pose pose = pivotOf(ecs, self);
+    pushValue(L, InstanceValue::ofCFrame(pose.position, pose.rotation));
+    return 1;
+}
+
+int mPivotTo(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "PivotTo");
+    checkClass(L, ecs, self, "PVInstance", "PivotTo");
+    const InstanceValue target = checkCFrameArg(L, 2, "PivotTo");
+    const Pose to{target.vec, target.rot};
+    moveByPivot(L, ecs, self, pivotOf(ecs, self), to);
+    if (!instances::classIsA(instances::className(ecs, self), "BasePart") &&
+        primaryPart(ecs, self) == kNoInstance) {
+        if (auto* info = ecs.tryGetComponent<InstanceInfo>(instances::entityOf(ecs, self))) {
+            info->properties["WorldPivot"] = target;
+        }
+    }
+    return 0;
+}
+
+int mGetPrimaryPartCFrame(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "GetPrimaryPartCFrame");
+    checkClass(L, ecs, self, "Model", "GetPrimaryPartCFrame");
+    const InstanceRef primary = primaryPart(ecs, self);
+    if (primary == kNoInstance) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const Pose pose = partPose(ecs, primary);
+    pushValue(L, InstanceValue::ofCFrame(pose.position, pose.rotation));
+    return 1;
+}
+
+int mSetPrimaryPartCFrame(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "SetPrimaryPartCFrame");
+    checkClass(L, ecs, self, "Model", "SetPrimaryPartCFrame");
+    const InstanceValue target = checkCFrameArg(L, 2, "SetPrimaryPartCFrame");
+    const InstanceRef primary = primaryPart(ecs, self);
+    if (primary == kNoInstance) luaL_error(L, "Model:SetPrimaryPartCFrame() failed because no PrimaryPart has been set");
+    moveByPivot(L, ecs, self, partPose(ecs, primary), {target.vec, target.rot});
+    return 0;
+}
+
 int mRaycast(lua_State* L) {
     ECS& ecs = ecsOf(L);
     checkSelf(L, "Raycast");
@@ -1460,6 +1608,7 @@ int mRaycast(lua_State* L) {
         return 1;
     }
     const std::function<bool(EntityId)> accept = [&](EntityId e) {
+        e = unions::owner(ecs, e);
         if (!ecs.raw().valid(e) || ecs.tryGetComponent<PlayerAvatarPart>(e) != nullptr) return false;
         const InstanceRef ref = instances::refOf(ecs, e);
         if (ref == kNoInstance || !instances::isInWorld(ecs, e)) return false;
@@ -1467,7 +1616,7 @@ int mRaycast(lua_State* L) {
         return underAny(ecs, ref, filter) == include;
     };
     const Physics::RaycastHit hit = physics->raycast(origin, direction, length, accept);
-    const InstanceRef ref = hit.hit ? instances::refOf(ecs, hit.entity) : kNoInstance;
+    const InstanceRef ref = hit.hit ? instances::refOf(ecs, unions::owner(ecs, hit.entity)) : kNoInstance;
     if (ref == kNoInstance) {
         lua_pushnil(L);
         return 1;
@@ -1869,6 +2018,10 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"Resume", &playbackMethod<nullptr, &services::resumeSound>},
         {"AddItem", &mAddItem},
         {"Raycast", &mRaycast},
+        {"GetPivot", &mGetPivot},
+        {"PivotTo", &mPivotTo},
+        {"GetPrimaryPartCFrame", &mGetPrimaryPartCFrame},
+        {"SetPrimaryPartCFrame", &mSetPrimaryPartCFrame},
         {"ScreenPointToRay", &mScreenPointToRay},
         {"ViewportPointToRay", &mViewportPointToRay},
         {"WorldToScreenPoint", &mWorldToScreenPoint},

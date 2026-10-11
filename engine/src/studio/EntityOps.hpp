@@ -16,7 +16,8 @@ public:
     static EntitySnapshot capture(core::ECS& ecs, const std::vector<core::EntityId>& roots);
 
     // Recreates every captured entity and returns the root ids.
-    std::vector<core::EntityId> restore(core::ECS& ecs) const;
+    // `freshIds` gives the restored objects new permanent ids (paste); undo keeps them.
+    std::vector<core::EntityId> restore(core::ECS& ecs, bool freshIds = false) const;
 
     [[nodiscard]] bool empty() const { return nodes_.empty(); }
 

@@ -621,6 +621,11 @@ private:
     void drawImportDialog();
     bool importDialogOpen_ = false;
     char importPathBuffer_[512] = {};
+    // Warns before the same file is spawned into the scene twice.
+    std::string lastSpawnPath_;
+    std::vector<core::EntityId> lastSpawned_;
+    bool confirmSecondSpawn_ = false;
+    bool importReplacesGround_ = true;
     std::string importSummary_;
     std::vector<std::string> importCompatLines_;
     std::vector<std::string> importReportLines_;
@@ -710,6 +715,7 @@ private:
     core::SceneManager sceneManager_;
     core::ProjectFile currentProject_;
     std::string currentProjectPath_;
+    [[nodiscard]] std::vector<std::string> movieSoundRoots() const;
     size_t lastSeenUndoCount_ = 0; // see SceneManager.hpp's class comment on dirty-tracking
 
     // Kronos (Alpha Completion Checklist, "Project System Finalization" --

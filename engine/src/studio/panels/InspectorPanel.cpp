@@ -4,6 +4,8 @@
 #include "studio/panels/InspectorPanel.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <string>
 #include <cstdio>
 
 #include <imgui.h>
@@ -12,6 +14,7 @@
 #include "core/Navigation.hpp"
 #include "core/OreNode.hpp"
 #include "core/PhysicsMaterial.hpp"
+#include "core/RobloxDatatypes.hpp"
 #include "core/ResourceManager.hpp"
 #include "core/SceneTypes.hpp"
 #include "core/UIWidgets.hpp"
@@ -73,6 +76,8 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
     // than each DragFloat3's own label ("Position"/"Rotation"/"Scale")
     // pushing the drag widgets to a different X per row.
     ImGui::PushItemWidth(-1.0f);
+
+    if (!multiSelected) drawRobloxProperties(ecs, selected, undoStack);
 
     if (auto* transform = ecs.tryGetComponent<core::Transform>(selected);
         transform != nullptr &&
@@ -806,6 +811,232 @@ void InspectorPanel::drawSoundSection(core::ECS& ecs, core::EntityId selected, U
                             loadSoundFile(ecs, selected, resources);
                         },
                         [&ecs, selected]() { ecs.removeComponent<core::AudioSource>(selected); }});
+    }
+}
+
+
+
+namespace {
+
+std::string lowerText(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return std::tolower(c); });
+    return text;
+}
+
+} // namespace
+
+namespace {
+
+// Roblox Studio's property categories, in its order. nullptr: use the class name.
+std::pair<const char*, int> robloxPropertyCategory(const std::string& name, const std::string& className) {
+    static const std::pair<const char*, std::vector<const char*>> kCategories[] = {
+        {"Appearance", {"Color", "BrickColor", "Material", "MaterialVariant", "Reflectance", "Transparency",
+                        "CastShadow", "BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel",
+                        "BorderMode", "Visible", "LightInfluence", "Texture", "TextureID", "Shadows", "Face"}},
+        {"Data", {"Value", "Archivable", "Source", "RunContext", "LinkedSource"}},
+        {"Text", {"Text", "TextColor3", "TextSize", "TextScaled", "TextWrapped", "TextXAlignment", "TextYAlignment",
+                  "TextTransparency", "TextStrokeColor3", "TextStrokeTransparency", "RichText", "Font", "LineHeight",
+                  "PlaceholderText", "PlaceholderColor3", "ClearTextOnFocus", "MaxVisibleGraphemes"}},
+        {"Image", {"Image", "ImageColor3", "ImageTransparency", "ScaleType", "SliceCenter", "TileSize"}},
+        {"Transform", {"Size", "Position", "Orientation", "Rotation", "AnchorPoint", "ZIndex", "LayoutOrder",
+                       "SizeConstraint", "AutomaticSize", "WorldPivot", "PivotOffset"}},
+        {"Parts", {"Part0", "Part1", "C0", "C1", "Transform", "PrimaryPart", "MaxVelocity", "Active"}},
+        {"Behavior", {"Anchored", "CanCollide", "CanTouch", "CanQuery", "Locked", "Massless", "Disabled", "Enabled",
+                      "AutoLocalize", "ResetOnSpawn", "IgnoreGuiInset", "DisplayOrder", "Selectable", "Modal",
+                      "AutoButtonColor", "ClipsDescendants", "Interactable"}},
+        {"Character", {"Health", "MaxHealth", "WalkSpeed", "JumpPower", "JumpHeight", "UseJumpPower", "HipHeight",
+                       "AutoRotate", "DisplayName", "RigType", "Sit", "PlatformStand", "RespawnTime",
+                       "CharacterAutoLoads"}},
+        {"Light", {"Brightness", "Range", "Angle", "ClockTime", "GlobalShadows", "Ambient", "OutdoorAmbient",
+                   "FogColor", "FogStart", "FogEnd"}},
+        {"Sound", {"SoundId", "Volume", "PlaybackSpeed", "TimePosition", "Looped", "Playing", "PlayOnRemove",
+                   "RollOffMinDistance", "RollOffMaxDistance", "RollOffMode"}},
+        {"Collision", {"CollisionGroup"}},
+        {"Part", {"Shape"}},
+    };
+    const bool gui = core::instances::classIsA(className, "GuiObject");
+    int rank = 0;
+    for (const auto& [category, names] : kCategories) {
+        for (const char* n : names) {
+            if (name == n) {
+                // A light's Color and a GUI's Rotation still go with their kind.
+                if (name == "Color" && core::instances::classIsA(className, "Light")) return {"Light", 8};
+                if (name == "Active" && gui) return {"Behavior", 6};
+                return {category, rank};
+            }
+        }
+        ++rank;
+    }
+    return {nullptr, rank};
+}
+
+} // namespace
+
+void InspectorPanel::drawRobloxProperties(core::ECS& ecs, core::EntityId selected, UndoStack& undoStack) {
+    namespace inst = core::instances;
+    using Type = core::PropertyType;
+    const core::InstanceRef ref = inst::refOf(ecs, selected);
+    const std::string cls = inst::className(ecs, ref);
+    if (inst::findClass(cls) == nullptr) return;
+    if (!ImGui::CollapsingHeader(("Properties  (" + cls + ")###roblox_properties").c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##property_filter", "Filter properties", propertyFilter_, sizeof(propertyFilter_));
+    const std::string filter = lowerText(propertyFilter_);
+
+    auto pushUndo = [&](const core::PropertyDef& def, const core::InstanceValue& before, const core::InstanceValue& after) {
+        const std::string name = def.name;
+        auto apply = [&ecs, ref, cls, name](const core::InstanceValue& v) {
+            if (!core::instances::isAlive(ecs, ref)) return;
+            if (const core::PropertyDef* d = core::instances::findProperty(cls, name)) core::instances::setProperty(ecs, ref, *d, v);
+        };
+        undoStack.push({"Edit " + name, [apply, before]() { apply(before); }, [apply, after]() { apply(after); }});
+    };
+
+    struct Shown {
+        const core::PropertyDef* def;
+        std::string category;
+        int rank;
+    };
+    std::vector<Shown> shown;
+    for (const core::ClassDef* def = inst::findClass(cls); def != nullptr;
+         def = def->superclass.empty() ? nullptr : inst::findClass(def->superclass)) {
+        for (const core::PropertyDef& p : def->properties) {
+            if (!p.studioVisible || !p.serialized || p.type == Type::CFrame || p.name == "Name" || p.name == "Parent") continue;
+            if (!filter.empty() && lowerText(p.name).find(filter) == std::string::npos) continue;
+            if (std::any_of(shown.begin(), shown.end(), [&](const Shown& s) { return s.def->name == p.name; })) continue;
+            const auto [category, rank] = robloxPropertyCategory(p.name, cls);
+            shown.push_back({&p, category != nullptr ? category : def->name, rank});
+        }
+    }
+    std::stable_sort(shown.begin(), shown.end(), [](const Shown& a, const Shown& b) { return a.rank < b.rank; });
+    std::string header;
+    {
+        for (const Shown& entry : shown) {
+            const core::PropertyDef& p = *entry.def;
+            core::InstanceValue value;
+            if (!inst::getProperty(ecs, ref, p, value)) continue;
+            if (entry.category != header) {
+                ImGui::SeparatorText(entry.category.c_str());
+                header = entry.category;
+            }
+            ImGui::PushID(p.name.c_str());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(p.name.c_str());
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.42f);
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::BeginDisabled(p.readOnly);
+            const core::InstanceValue before = value;
+            bool changed = false;
+            bool discrete = false; // pushes its undo step at once
+            switch (p.type) {
+                case Type::Bool:
+                    changed = ImGui::Checkbox("##v", &value.boolean);
+                    discrete = true;
+                    break;
+                case Type::Number: {
+                    float n = static_cast<float>(value.number);
+                    changed = ImGui::DragFloat("##v", &n, 0.05f);
+                    if (changed) value.number = n;
+                    break;
+                }
+                case Type::String: {
+                    char buffer[512];
+                    std::snprintf(buffer, sizeof(buffer), "%s", value.text.c_str());
+                    changed = ImGui::InputText("##v", buffer, sizeof(buffer));
+                    if (changed) value.text = buffer;
+                    break;
+                }
+                case Type::Vector3: changed = ImGui::DragFloat3("##v", &value.vec.x, 0.1f); break;
+                case Type::Color3:
+                case Type::BrickColor: changed = ImGui::ColorEdit3("##v", &value.vec.x); break;
+                case Type::Vector2:
+                case Type::UDim: changed = ImGui::DragFloat2("##v", &value.vec.x, 0.01f); break;
+                case Type::UDim2: {
+                    float v[4] = {value.vec.x, value.vec.y, value.vec.z, static_cast<float>(value.number)};
+                    changed = ImGui::DragFloat4("##v", v, 0.01f);
+                    if (changed) {
+                        value.vec = glm::vec3(v[0], v[1], v[2]);
+                        value.number = v[3];
+                    }
+                    break;
+                }
+                case Type::Enum: {
+                    const auto items = core::robloxEnumItems(p.enumType);
+                    if (items.empty()) {
+                        ImGui::TextUnformatted(value.text.c_str());
+                        break;
+                    }
+                    if (ImGui::BeginCombo("##v", value.text.c_str())) {
+                        for (const auto& [item, number] : items) {
+                            if (ImGui::Selectable(item.c_str(), item == value.text)) {
+                                value = core::InstanceValue::ofEnum(p.enumType, item, number);
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    discrete = true;
+                    break;
+                }
+                case Type::Instance: {
+                    const bool set = value.ref != core::kNoInstance && inst::isAlive(ecs, value.ref);
+                    const std::string label = set ? inst::name(ecs, value.ref) : "(none)";
+                    if (p.readOnly) {
+                        ImGui::TextDisabled("%s", label.c_str());
+                        break;
+                    }
+                    discrete = true;
+                    if (!ImGui::BeginCombo("##v", label.c_str(), ImGuiComboFlags_HeightLarge)) break;
+                    if (ImGui::IsWindowAppearing()) {
+                        refPickFilter_[0] = '\0';
+                        ImGui::SetKeyboardFocusHere();
+                    }
+                    ImGui::InputTextWithHint("##pick", "Search", refPickFilter_, sizeof(refPickFilter_));
+                    if (ImGui::Selectable("(none)", !set)) {
+                        value = core::InstanceValue::ofInstance(core::kNoInstance);
+                        changed = true;
+                    }
+                    // Joints and PrimaryPart only take parts; PrimaryPart only from inside the model.
+                    const bool partsOnly = p.name == "Part0" || p.name == "Part1" || p.name == "PrimaryPart";
+                    const std::vector<core::InstanceRef> pool =
+                        inst::descendants(ecs, p.name == "PrimaryPart" ? ref : core::kGameInstance);
+                    const std::string pickFilter = lowerText(refPickFilter_);
+                    int listed = 0;
+                    for (core::InstanceRef candidate : pool) {
+                        if (candidate == ref || inst::entityOf(ecs, candidate) == core::kNullEntity) continue;
+                        if (partsOnly && !inst::classIsA(inst::className(ecs, candidate), "BasePart")) continue;
+                        const std::string path = inst::fullName(ecs, candidate);
+                        if (!pickFilter.empty() && lowerText(path).find(pickFilter) == std::string::npos) continue;
+                        ImGui::PushID(static_cast<int>(candidate));
+                        if (ImGui::Selectable(path.c_str(), candidate == value.ref)) {
+                            value = core::InstanceValue::ofInstance(candidate);
+                            changed = true;
+                        }
+                        ImGui::PopID();
+                        if (++listed >= 300) {
+                            ImGui::TextDisabled("Showing the first 300; search to narrow.");
+                            break;
+                        }
+                    }
+                    ImGui::EndCombo();
+                    break;
+                }
+                case Type::CFrame: break;
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemActivated() && !discrete) propertyBeforeEdit_ = before;
+            if (changed && !p.readOnly) {
+                inst::setProperty(ecs, ref, p, value);
+                if (discrete) pushUndo(p, before, value);
+            }
+            if (!discrete && ImGui::IsItemDeactivatedAfterEdit()) {
+                core::InstanceValue after;
+                if (inst::getProperty(ecs, ref, p, after)) pushUndo(p, propertyBeforeEdit_, after);
+            }
+            ImGui::PopID();
+        }
     }
 }
 

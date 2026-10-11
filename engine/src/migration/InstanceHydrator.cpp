@@ -7,7 +7,9 @@
 #include "core/Hierarchy.hpp"
 #include "core/InstanceTree.hpp"
 #include "core/OAuthPkce.hpp"
+#include "core/UnionGeometry.hpp"
 #include "migration/PropertyDecoder.hpp"
+#include "migration/RbxBinaryReader.hpp"
 
 namespace engine::migration {
 namespace {
@@ -252,6 +254,49 @@ uint32_t meshForPart(const ImportedInstance& node, const HydrationMeshes& meshes
     return meshes.box;
 }
 
+// A union keeps the parts it was made from as a small binary model in
+// ChildData2 (newer files) or ChildData.
+bool readUnionChildren(const ImportedInstance& node, std::vector<ImportedInstance>& out) {
+    std::string blob = decodeString(node.properties, "ChildData2");
+    if (blob.empty()) {
+        blob = decodeString(node.properties, "ChildData");
+        if (propertyType(node.properties, "ChildData") == "BinaryString") blob = decodeBase64(blob);
+    }
+    std::string error;
+    return isRobloxBinary(blob) && readRobloxBinary(blob, out, error);
+}
+
+bool isPieceClass(const std::string& className) {
+    return className == "Part" || className == "WedgePart" || className == "CornerWedgePart" ||
+           className == "TrussPart" || className == "SpawnLocation" || className == "Seat";
+}
+
+// In the union's local space. Subtracted parts (NegateOperation) are counted, not drawn.
+void collectUnionPieces(const std::vector<ImportedInstance>& nodes, glm::vec3 offset, glm::quat turn,
+                        std::vector<core::unions::Piece>& out, int& negated, int depth) {
+    for (const ImportedInstance& n : nodes) {
+        const glm::vec3 position = offset + turn * decodeCFramePosition(n.properties, "CFrame");
+        const glm::quat rotation = turn * decodeCFrameRotation(n.properties, "CFrame");
+        if (n.className == "NegateOperation") {
+            ++negated;
+        } else if (n.className == "UnionOperation" && depth < 8) {
+            std::vector<ImportedInstance> inner;
+            if (readUnionChildren(n, inner)) collectUnionPieces(inner, position, rotation, out, negated, depth + 1);
+        } else if (isPieceClass(n.className)) {
+            core::unions::Piece piece;
+            piece.position = position;
+            piece.rotation = rotation;
+            piece.size = decodeVector3(n.properties, "size", glm::vec3(4.0f, 1.2f, 2.0f));
+            piece.color = hasProperty(n.properties, "Color3uint8") ? decodeColor3(n.properties, "Color3uint8", glm::vec3(0.64f))
+                                                                   : decodeColor3(n.properties, "Color", glm::vec3(0.64f));
+            piece.shape = n.className == "Part" ? (hasProperty(n.properties, "shape") ? decodeInt(n.properties, "shape", 1)
+                                                                                       : decodeInt(n.properties, "Shape", 1))
+                                                : 1;
+            out.push_back(piece);
+        }
+    }
+}
+
 // Roblox starts a Script on Play when it isn't Disabled and sits in the
 // Workspace or ServerScriptService (or in a loose model). LocalScripts and
 // ModuleScripts don't start on their own.
@@ -428,6 +473,31 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
 
     if (group) ++result.groupCount;
     storeProperties(node, ecs, entity);
+    if (node.className == "UnionOperation") {
+        std::vector<ImportedInstance> children;
+        std::vector<core::unions::Piece> pieces;
+        int negated = 0;
+        if (readUnionChildren(node, children)) collectUnionPieces(children, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), pieces, negated, 0);
+        if (!pieces.empty()) {
+            const glm::vec3 size = decodeVector3(node.properties, "size", glm::vec3(4.0f, 1.2f, 2.0f));
+            const glm::vec3 initial = glm::max(decodeVector3(node.properties, "InitialSize", size), glm::vec3(1e-3f));
+            const bool usePartColor = decodeBool(node.properties, "UsePartColor", false);
+            const glm::vec3 unionColor = glm::vec3(ecs.tryGetComponent<core::Renderable>(entity)->baseColor);
+            for (core::unions::Piece& piece : pieces) {
+                piece.position /= initial;
+                piece.size /= initial;
+                if (usePartColor) piece.color = unionColor;
+            }
+            ecs.tryGetComponent<core::InstanceInfo>(entity)->properties[core::unions::kPiecesProperty] =
+                core::InstanceValue::ofString(core::unions::encodePieces(pieces));
+        } else {
+            result.notes.push_back(node.name + " (UnionOperation): its shape couldn't be read, drawn as a box");
+        }
+        if (negated > 0) {
+            result.notes.push_back(node.name + " (UnionOperation): " + std::to_string(negated) +
+                                   " subtracted part(s) aren't cut out yet");
+        }
+    }
     if (!node.referent.empty()) result.entitiesByReferent[node.referent] = entity;
     for (const auto& [key, type] : node.properties) {
         if (type != "Ref" || key.rfind("@type.", 0) != 0) continue;

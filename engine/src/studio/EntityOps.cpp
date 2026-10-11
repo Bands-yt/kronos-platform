@@ -7,6 +7,7 @@
 #include <unordered_set>
 
 #include "core/EditableMeshComponent.hpp"
+#include "core/Guid.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/Interactable.hpp"
 #include "core/Navigation.hpp"
@@ -29,7 +30,7 @@ using SnapshotTypes =
              core::PhysicsMaterial, core::AudioSource, core::Light, core::Script, core::SkinnedRenderable,
              core::MovingPlatform, core::ParticleEmitter, core::EditableMeshComponent, core::WorldProp,
              core::LampState, core::Interactable, core::NavMarker, core::TeleportPad, core::PropAnimationHook,
-             core::VideoPlaneComponent, core::SurfaceGraphMaterial, core::VisualScript, core::ResourceRefs>;
+             core::VideoPlaneComponent, core::SurfaceGraphMaterial, core::VisualScript, core::ResourceRefs, core::Guid>;
 
 template <typename T>
 void captureOne(entt::registry& registry, entt::entity entity,
@@ -74,6 +75,7 @@ core::EntityId cloneSubtree(core::ECS& ecs, core::EntityId source, core::EntityI
         if (storage.contains(source) && !storage.contains(clone)) storage.push(clone, storage.value(source));
     }
     resetRuntimeState(ecs, clone);
+    if (registry.all_of<core::Guid>(clone)) registry.replace<core::Guid>(clone, core::Guid::generate());
     if (renameRoot) {
         if (auto* name = ecs.tryGetComponent<core::Name>(clone)) name->value = nextUniqueName(ecs, name->value);
     }
@@ -108,7 +110,7 @@ EntitySnapshot EntitySnapshot::capture(core::ECS& ecs, const std::vector<core::E
     return snapshot;
 }
 
-std::vector<core::EntityId> EntitySnapshot::restore(core::ECS& ecs) const {
+std::vector<core::EntityId> EntitySnapshot::restore(core::ECS& ecs, bool freshIds) const {
     entt::registry& registry = ecs.raw();
     std::unordered_map<core::EntityId, core::EntityId> remap;
     std::vector<core::EntityId> roots;
@@ -117,6 +119,7 @@ std::vector<core::EntityId> EntitySnapshot::restore(core::ECS& ecs) const {
         remap[node.id] = entity;
         for (const auto& apply : node.components) apply(registry, entity);
         resetRuntimeState(ecs, entity);
+        if (freshIds && registry.all_of<core::Guid>(entity)) registry.replace<core::Guid>(entity, core::Guid::generate());
         if (node.root) roots.push_back(entity);
     }
     for (const Node& node : nodes_) {

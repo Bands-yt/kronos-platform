@@ -16,6 +16,8 @@ build plugins, tools and scripts for Kronos.
 | `native_plugins/SampleCPlugin.c` | Example native plugin in C |
 | `native_plugins/SampleStudioToolPlugin.cpp` | Example native Studio plugin in C++ |
 | `templates/plugin/` | The Luau Studio plugin template |
+| `sdk/rust/kronos/` | The `kronos` Rust crate for writing plugins in Rust |
+| `templates/rust-plugin/` | The Rust plugin template |
 | `engine/assets/luau/kronos_globals.d.lua` | Luau type definitions for the script API (autocomplete, type checking) |
 | `docs/PLUGIN_API.md` | Plugin API documentation |
 | `docs/LUA_API.md` | Script API documentation |
@@ -36,7 +38,7 @@ name a tool that works with Kronos.
 ## Third-party libraries
 
 Kronos is built with libraries that keep their own licences, including
-Jolt Physics, Luau, EnTT, Dear ImGui, ENet, glm and nlohmann/json (MIT)
+Jolt Physics, Luau, PocketPy, EnTT, Dear ImGui, ENet, glm and nlohmann/json (MIT)
 and SDL2 (zlib). Test files in `engine/tests/fixtures/rbx-test-files/`
 come from rbx-dom (MIT; see the licence file in that folder).
 

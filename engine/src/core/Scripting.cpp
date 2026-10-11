@@ -94,7 +94,23 @@ std::string normaliseModulePath(std::string path) {
 struct AllocatorState {
     size_t used = 0;
     size_t budget = 0;
+    Scripting::MemoryPool* game = nullptr;
+    std::string name;
+    bool warned = false;
+    bool warnPending = false;
 };
+
+// Warns once at 80% of a limit, again only after dropping below 60%.
+template <typename T>
+void trackWarning(T& owner) {
+    if (owner.budget == 0) return;
+    if (!owner.warned && owner.used > owner.budget / 5 * 4) {
+        owner.warned = true;
+        owner.warnPending = true;
+    } else if (owner.warned && owner.used < owner.budget / 5 * 3) {
+        owner.warned = false;
+    }
+}
 
 std::string chunkFromSource(const char* source) {
     if (source == nullptr) return {};
@@ -257,6 +273,11 @@ void* Scripting::budgetAllocator(void* ud, void* ptr, size_t oldSize, size_t new
         if (ptr) {
             std::free(ptr);
             state->used -= oldSize;
+            trackWarning(*state);
+            if (state->game) {
+                state->game->used -= oldSize;
+                trackWarning(*state->game);
+            }
         }
         return nullptr;
     }
@@ -264,20 +285,55 @@ void* Scripting::budgetAllocator(void* ud, void* ptr, size_t oldSize, size_t new
     size_t effectiveOld = ptr ? oldSize : 0;
     if (newSize > effectiveOld) {
         size_t growth = newSize - effectiveOld;
-        if (state->used + growth > state->budget) {
-            // Hard ceiling hit -- ScriptContext.MaxMemory from
-            // docs/ARCHITECTURE.md §6. Returning null on growth is exactly
-            // how a lua_Alloc signals out-of-memory; Luau turns this into
-            // a normal catchable LUA_ERRMEM, not a crash.
-            return nullptr;
-        }
+        // Returning null is how a lua_Alloc signals out-of-memory; Luau raises a catchable error.
+        if (state->used + growth > state->budget) return nullptr;
+        if (state->game && state->game->budget != 0 && state->game->used + growth > state->game->budget) return nullptr;
     }
 
     void* newPtr = std::realloc(ptr, newSize);
     if (!newPtr) return nullptr;
 
     state->used = state->used - effectiveOld + newSize;
+    trackWarning(*state);
+    if (state->game) {
+        state->game->used = state->game->used - effectiveOld + newSize;
+        trackWarning(*state->game);
+    }
     return newPtr;
+}
+
+void* Scripting::newAllocatorState(const std::string& name, size_t limit) {
+    auto* state = new AllocatorState;
+    state->budget = limit;
+    state->game = &gameMemory_;
+    state->name = name;
+    return state;
+}
+
+void Scripting::flushMemoryWarnings() {
+    constexpr double kMb = 1024.0 * 1024.0;
+    auto warn = [&](AllocatorState* state) {
+        if (!state || !state->warnPending) return;
+        state->warnPending = false;
+        char message[320];
+        std::snprintf(message, sizeof(message),
+                      "warning: %s is using %.1f MB of its %.0f MB script memory limit; at the limit it stops with "
+                      "an out-of-memory error",
+                      state->name.c_str(), state->used / kMb, state->budget / kMb);
+        reportError(message);
+    };
+    for (const auto& script : scripts_) {
+        if (script.alive) warn(static_cast<AllocatorState*>(script.allocatorState));
+    }
+    for (const ContextVm& context : contextVms_) warn(static_cast<AllocatorState*>(context.allocatorState));
+    if (gameMemory_.warnPending) {
+        gameMemory_.warnPending = false;
+        char message[256];
+        std::snprintf(message, sizeof(message),
+                      "warning: this game's scripts are using %.1f MB of the %.0f MB game script memory budget",
+                      gameMemory_.used / kMb, gameMemory_.budget / kMb);
+        reportError(message);
+    }
 }
 
 void Scripting::scriptInterrupt(lua_State* L, int gc) {
@@ -1034,7 +1090,9 @@ lua_State* Scripting::contextVm(RunContext context) const {
 lua_State* Scripting::ensureContextVm(RunContext context) {
     ContextVm& slot = contextVms_[context == RunContext::Server ? 0 : 1];
     if (slot.vm != nullptr) return slot.vm;
-    auto* allocState = new AllocatorState{0, maxMemoryBytesPerScript_};
+    // One VM holds all of this side's scripts, so it gets the whole game budget.
+    auto* allocState = static_cast<AllocatorState*>(newAllocatorState(
+        context == RunContext::Server ? "the server scripts" : "the client scripts", gameMemory_.budget));
     lua_State* vm = lua_newstate(&Scripting::budgetAllocator, allocState);
     if (vm == nullptr) {
         delete allocState;
@@ -1097,7 +1155,7 @@ ScriptId Scripting::loadAndRun(const std::string& chunkName, const std::string& 
             return kInvalidScript;
         }
     } else {
-        allocState = new AllocatorState{0, maxMemoryBytesPerScript_};
+        allocState = static_cast<AllocatorState*>(newAllocatorState("script \"" + chunkName + "\"", maxMemoryBytesPerScript_));
         owner = lua_newstate(&Scripting::budgetAllocator, allocState);
         if (!owner) {
             std::fprintf(stderr, "Scripting: lua_newstate failed for \"%s\" (allocator budget too small?)\n", chunkName.c_str());
@@ -1294,6 +1352,7 @@ void Scripting::tick(float dt) {
         if (debugPaused()) return;
     }
     clock_ += dt;
+    flushMemoryWarnings();
 
     // 1. Run anything task.defer()'d during the previous tick, per
     //    Roblox's "runs after this resumption cycle" ordering.

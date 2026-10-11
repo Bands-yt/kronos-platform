@@ -166,18 +166,41 @@ void MovieModePlugin::update(float dt, core::ECS& ecs, core::EntityId, const std
         }
     }
 
-    if (!sequence_.isPlaying()) return;
-    // Scrubbing takes the transport over for as long as the gesture
-    // lasts. Without this, update() advances the playhead and the drag
-    // then sets it back every frame -- so a held scrub re-fires the same
-    // audio cues and script triggers on every single frame, and the
-    // playhead visibly fights the cursor.
-    if (isScrubbing()) {
+    if (sequence_.isPlaying()) {
+        // Scrubbing takes the transport over for as long as the gesture
+        // lasts. Without this, update() advances the playhead and the drag
+        // then sets it back every frame -- so a held scrub re-fires the same
+        // audio cues and script triggers on every single frame, and the
+        // playhead visibly fights the cursor.
         lastFiredEvents_.clear();
+        if (!isScrubbing()) sequence_.advance(dt, lastFiredEvents_);
+    }
+    updateAudio();
+}
+
+void MovieModePlugin::setAudio(core::Audio* audio, std::function<std::vector<std::string>()> soundRoots) {
+    if (audio_ != nullptr && audio_ != audio) {
+        audioPlayer_.stop(*audio_);
+        sounds_.clear(*audio_);
+    }
+    audio_ = audio;
+    soundRoots_ = std::move(soundRoots);
+    audioWasPlaying_ = false;
+}
+
+void MovieModePlugin::updateAudio() {
+    if (audio_ == nullptr) return;
+    const bool playing = sequence_.isPlaying() && !isScrubbing();
+    if (playing && !audioWasPlaying_) {
+        sounds_.setRoots(soundRoots_ ? soundRoots_() : std::vector<std::string>{});
+        sounds_.forgetMissing();
+    }
+    audioWasPlaying_ = playing;
+    if (!playing) {
+        audioPlayer_.stop(*audio_);
         return;
     }
-    lastFiredEvents_.clear();
-    sequence_.advance(dt, lastFiredEvents_);
+    audioPlayer_.update(sequence_, *audio_, [this](const std::string& payload) { return sounds_.resolve(*audio_, payload); });
 }
 
 cinematic::TrackChannel* MovieModePlugin::selectedChannel() {

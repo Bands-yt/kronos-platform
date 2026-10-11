@@ -14,6 +14,16 @@ if (-not $icd) { Write-Error "lavapipe ICD json not found in $mesaDir\x64"; exit
 
 $env:VK_DRIVER_FILES = $icd.FullName
 $env:VK_ICD_FILENAMES = $icd.FullName
+# The Vulkan loader ignores those variables in elevated processes (CI runners are admin),
+# so register the driver where it always looks.
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+  [Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdmin) {
+  $drivers = "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers"
+  if (-not (Test-Path $drivers)) { New-Item -Path $drivers -Force | Out-Null }
+  New-ItemProperty -Path $drivers -Name $icd.FullName -PropertyType DWord -Value 0 -Force | Out-Null
+  Write-Host "Registered $($icd.FullName) for the Vulkan loader (elevated process)"
+}
 $env:KRONOS_SILENT_AUDIO = "1"
 $env:SDL_AUDIODRIVER = "dummy"
 

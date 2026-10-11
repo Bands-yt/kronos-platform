@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -7,6 +8,7 @@
 
 #include "cinematic/CameraRail.hpp"
 #include "cinematic/OfflineExport.hpp"
+#include "cinematic/SequenceAudio.hpp"
 #include "cinematic/Sequencer.hpp"
 #include "cinematic/TimelineLayout.hpp"
 #include "entitlement/EntitlementManager.hpp"
@@ -86,6 +88,11 @@ public:
     void renderPreview(VkCommandBuffer cmd, core::Renderer& renderer);
     void shutdown(core::Renderer& renderer);
 
+    // Plays Audio-track events through `audio`; payloads are looked up under the folders
+    // `soundRoots` returns (asked again each time playback starts).
+    void setAudio(core::Audio* audio, std::function<std::vector<std::string>()> soundRoots);
+    [[nodiscard]] const cinematic::SequenceAudioPlayer& audioPlayer() const { return audioPlayer_; }
+
     // --- read/written by ViewportPanel's rail overlay ---------------------
     [[nodiscard]] cinematic::CameraRail& rail() { return rail_; }
     [[nodiscard]] const cinematic::CameraRail& rail() const { return rail_; }
@@ -124,6 +131,7 @@ public:
 
 private:
     void seedDefaultSequence();
+    void updateAudio();
 
     void drawTransport();
     // The 6-track timeline: header column, time ruler, per-track key rows,
@@ -209,6 +217,11 @@ private:
     // Events the transport crossed on the last update, shown in the
     // footer so a script trigger firing is visible while scrubbing.
     std::vector<cinematic::TrackEvent> lastFiredEvents_;
+    core::Audio* audio_ = nullptr;
+    std::function<std::vector<std::string>()> soundRoots_;
+    cinematic::SequenceAudioPlayer audioPlayer_;
+    cinematic::SoundPayloadCache sounds_;
+    bool audioWasPlaying_ = false;
 };
 
 } // namespace engine::studio::plugins

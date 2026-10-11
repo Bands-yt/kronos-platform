@@ -334,8 +334,11 @@ made inside `PlayerAdded` catches the first character.
 - The character has no `Head`, `Torso` or limb parts, only
   `HumanoidRootPart`; the avatar mesh is drawn on top of it. Scripts that
   look for `character.Head` don't work yet.
-- On death the avatar just stands still: no falling apart, no death sound,
-  no health regeneration script.
+- On death the avatar goes limp as a ragdoll (4.4) and the camera follows
+  it until the respawn. Meanwhile `HumanoidRootPart` is parked 200 studs
+  below where the player died, so scripts reading its position after death
+  see that. No death sound and no health regeneration script yet; other
+  players' deaths aren't shown as ragdolls.
 - `Player:Kick`, `GetMouse`, `Teams`/`TeamColor`, `Humanoid:LoadAnimation`
   and tools (`EquipTool`) are planned; using them gives a "planned" error.
 - Broken Bones and the bring-up world don't create players (they have their
@@ -480,6 +483,18 @@ Limits, like Roblox's:
 | One message | 64 KiB | the call errors with "Remote payload is too large" |
 | `UnreliableRemoteEvent` | 900 bytes | dropped with a warning in the log |
 | Calls from one player to the server | 240 at once, then 120 per second | extra calls are dropped with a warning |
+
+The server doesn't trust what a client sends (4.4):
+
+- An object a client names must be one its computer can see. Anything in
+  `ServerStorage` or `ServerScriptService`, or in another player's
+  `PlayerGui` or `PlayerScripts`, arrives as `nil`, so a cheating client
+  can't hand server scripts a server-only object or fire a remote kept
+  there.
+- Positions, sizes and CFrames of parts and models can't be set to NaN or
+  infinity (the assignment errors), so a value from a client can't break
+  the physics world. The physics engine also ignores such values from any
+  other path.
 
 An `InvokeClient` to a player who leaves fails with "Player has left the
 game". When the connection drops, waiting invokes fail with "The connection
@@ -833,10 +848,17 @@ weld.Parent = car.Body
 - Only parts welded directly to each other ignore each other's collisions; in a
   chain A–B–C, A and C still collide (Roblox ignores the whole assembly).
 - After `Position` changes, the weld rejoins one frame later.
-- Welds aren't saved in Kronos scene files yet, because `Part0`/`Part1` need
-  permanent object IDs (planned for 4.5). They work after an import and in
-  scripts.
-- Legacy `Weld` (with `C0`/`C1`) and `Motor6D` aren't built yet.
+- Since 4.5, welds are saved in Kronos scene files: `Part0`/`Part1` (and every
+  other object link) are stored as the target's permanent ID and linked again
+  when the scene opens. A link to an object that isn't saved (no name, or
+  `Parent = nil`) comes back empty; Validate Project warns about those.
+
+### Weld, ManualWeld and Motor6D
+
+- `Weld`, `ManualWeld` and `Motor6D` (all `JointInstance`) have `Part0`, `Part1`, `C0`, `C1`, `Enabled` and `Active`, and join their parts with the same physics joint as `WeldConstraint`.
+- Part1 is placed at `Part0.CFrame * C0 * C1:Inverse()`, like Roblox. Setting `C0`, `C1`, `Part0`, `Part1` or `Enabled` on a joint that's already in the world moves Part1 at once; a new joint snaps Part1 on the next physics step.
+- `Motor6D.Transform` is applied between `C0` and `C1`, so scripts can turn a limb. `MaxVelocity`, `DesiredAngle` and animations (`Animator`, `KeyframeSequence`) aren't supported, and characters still use the Kronos avatar rather than Motor6D rigs.
+- Saved in scene files like WeldConstraint (4.5).
 
 ## Camera (4.4)
 
@@ -861,6 +883,24 @@ local point, onScreen = camera:WorldToViewportPoint(workspace.Coin.Position)
 - `CurrentCamera` can't be replaced, and the camera can't be destroyed or hold children.
 - Only `Custom` and `Scriptable` change behaviour; other camera types act like `Custom`.
 - Checked by tests (no screenshot check yet).
+
+## Pivots (4.4)
+
+`GetPivot()` and `PivotTo(cframe)` work on parts and models; `Model:GetPrimaryPartCFrame()` and `Model:SetPrimaryPartCFrame(cframe)` work too.
+
+- A part's pivot is its CFrame. A model's pivot is, in order: its `PrimaryPart`'s CFrame, the one `PivotTo` last set, or the centre of its parts' bounding box (no rotation).
+- `PivotTo` moves and turns every part in the model around the pivot, and welded parts follow.
+- Limits: `PivotOffset` and `WorldPivot` aren't read from imported files or readable as properties; a model's remembered pivot doesn't follow parts that move on their own.
+
+## Unions (4.4)
+
+A `UnionOperation` keeps the parts it was made from inside the file (`ChildData2`, or `ChildData` in older files). Kronos reads them on import and draws and collides each piece, so a staircase made into one union keeps its steps instead of becoming one solid box.
+
+- Scripts still see one part: the pieces aren't children, and `Touched` and `workspace:Raycast` report the union. Clicking a piece in Studio selects the union.
+- The union's Transparency, visibility and shadow apply to its pieces; moving it moves them.
+- Saved scenes keep the union's piece list, and the pieces are rebuilt when the scene opens.
+- `SharedString` properties are now read from both `.rbxlx` (`<SharedStrings>`) and binary files (`SSTR` chunk).
+- Limits: subtracted parts (`NegateOperation`) aren't cut out (the import notes say how many); a union whose shape lives on Roblox's servers (`AssetId`) stays a box; wedges are drawn as boxes; changing a union's `Color` or `Size` at runtime doesn't recolor or reshape the pieces; unanchored unions collide as their bounding box; pieces aren't replicated to clients yet (a client rebuilds them only if it loaded the same scene).
 
 ## From entity ids to Instances
 
@@ -892,6 +932,11 @@ To use an id with the old API from an Instance, read `instance.entity`.
 - Undoing an import removes everything it added, including children.
 - Imported `Script`s start when you press Play (they used to stay switched
   off); see "Players and characters".
+- Pressing Spawn Into Scene again for a file that's already in the scene asks first
+  ("Spawn another copy" / "Cancel"), so a place isn't stacked on itself by accident.
+- When the place has its own `Baseplate` in the Workspace, the template scene's
+  `Ground` is removed so the two don't flicker in the same plane (a checkbox in the
+  Import window turns this off). Undo brings the Ground back.
 
 - Roblox Studio saves script sources inside `<![CDATA[ ... ]]>`. The importer
   used to stop at the first one and drop the rest of the place; it now reads

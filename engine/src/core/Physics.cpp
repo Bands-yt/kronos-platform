@@ -4,6 +4,7 @@
 #include "core/Hierarchy.hpp"
 #include "core/InstanceTree.hpp"
 
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <atomic>
@@ -52,6 +53,14 @@
 namespace engine::core {
 
 namespace {
+
+bool finiteVec(glm::vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+
+bool finitePose(const engine::core::instances::Pose& pose) {
+    return finiteVec(pose.position) && finiteVec(pose.scale) &&
+           std::isfinite(pose.rotation.w) && std::isfinite(pose.rotation.x) && std::isfinite(pose.rotation.y) &&
+           std::isfinite(pose.rotation.z);
+}
 
 // --- Layers --------------------------------------------------------------
 // Object layers map 1:1 onto CollisionLayers.hpp's real, named
@@ -513,6 +522,7 @@ void Physics::step(float dt, ECS& ecs) {
             const JPH::BodyID id(rb->joltBodyId);
             if (!bodyInterface.IsAdded(id)) continue;
             const instances::Pose pose = instances::worldPose(ecs, entity);
+            if (!finitePose(pose)) continue;
             const bool isStatic = rb->motionType == RigidBodyMotionType::Static;
             bodyInterface.SetPositionAndRotation(id, JPH::RVec3(pose.position.x, pose.position.y, pose.position.z),
                                                  JPH::Quat(pose.rotation.x, pose.rotation.y, pose.rotation.z,
@@ -795,6 +805,10 @@ bool Physics::attachBodyToEntity(EntityId entity, ECS& ecs, const ColliderShape&
 
     // Parts inside a Model or Folder sit at their world pose.
     const instances::Pose pose = instances::worldPose(ecs, entity);
+    if (!finitePose(pose) || !finiteVec(shape.params)) {
+        std::fprintf(stderr, "Physics: attachBodyToEntity refused a body with NaN or infinite placement or size.\n");
+        return false;
+    }
     JPH::BodyCreationSettings creationSettings(
         shapeResult.Get(), JPH::RVec3(pose.position.x, pose.position.y, pose.position.z),
         toJolt(pose.rotation), joltMotionType, toObjectLayer(layer));
@@ -1034,6 +1048,7 @@ void Physics::setPosition(EntityId entity, ECS& ecs, glm::vec3 position) {
     auto* rb = ecs.tryGetComponent<RigidBody>(entity);
     if (!rb || rb->joltBodyId == RigidBody::kInvalidBodyId) return;
 
+    if (!finiteVec(position)) return;
     JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
     bodyInterface.SetPosition(JPH::BodyID(rb->joltBodyId), JPH::RVec3(position.x, position.y, position.z),
                                JPH::EActivation::DontActivate);
@@ -1233,6 +1248,7 @@ Physics::RagdollHandle Physics::createRagdoll(const RagdollDesc& desc, const glm
         body.mRotation = bindWorld[i].GetQuaternion();
         body.mMotionType = JPH::EMotionType::Dynamic;
         body.mObjectLayer = toObjectLayer(layer);
+        body.mUserData = static_cast<JPH::uint64>(static_cast<uint32_t>(kNullEntity)); // not an entity
         body.mMotionQuality = JPH::EMotionQuality::LinearCast; // falls reach tens of m/s
         body.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
         body.mMassPropertiesOverride.mMass = std::max(part.mass, 0.1f);

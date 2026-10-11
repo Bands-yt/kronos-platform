@@ -8,12 +8,26 @@ Studio** for building your own games with parts, Luau scripts, physics
 and sound. Under the hood it's a C++ engine with a Vulkan renderer, Jolt
 Physics and Luau scripting. There's no third-party engine underneath.
 
-New in **4.3**: Kronos speaks Roblox. Import a Roblox place (`.rbxl`,
-`.rbxm`, `.rbxlx` or `.rbxmx`) into Studio and its scripts run, using the
-same `game`, `workspace`, `Instance.new`, events, Players, Humanoids,
-RemoteEvents, DataStores, TweenService and GUI you already know.
+Kronos speaks Roblox. Import a Roblox place (`.rbxl`, `.rbxm`, `.rbxlx`
+or `.rbxmx`) into Studio and its scripts run, using the same `game`,
+`workspace`, `Instance.new`, events, Players, Humanoids, RemoteEvents,
+DataStores, TweenService, raycasts, welds and GUI you already know.
 
-> Kronos **4.3** is a **pre-beta**. Expect rough edges, and please
+Recently added:
+
+- **Python game scripts (preview).** A game can include `Scripts/Main.py`
+  next to its Luau scripts. Each Python script runs in its own sandbox
+  with memory and time limits. See [docs/PYTHON_SCRIPTS.md](docs/PYTHON_SCRIPTS.md).
+- **Rust plugins.** Write Studio plugins in Rust with the `kronos` crate.
+  See [docs/PLUGIN_API.md](docs/PLUGIN_API.md).
+- **Objects keep their identity** when you save and reopen a game, so
+  welds and other links between parts are saved too.
+- **Stricter chat filter** that catches spaced-out letters, symbols and
+  look-alike letters, and blocks requests for personal details.
+- **Windows fixes:** the window opens on more PCs, and Broken Bones now
+  starts from the Player.
+
+> Kronos is a **pre-beta**. Expect rough edges, and please
 > [report anything that breaks](https://github.com/Bands-yt/kronos-platform/issues/new/choose).
 
 ![Playing as your avatar in Kronos Studio](docs/images/studio-play.png)
@@ -116,9 +130,10 @@ are the biggest), so it takes a few minutes.
 | Build and run from source | [docs/QUICKSTART.md](docs/QUICKSTART.md) |
 | Fix a problem starting Kronos | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Script my game | [docs/LUA_CREATOR_EXPERIENCE.md](docs/LUA_CREATOR_EXPERIENCE.md), [docs/LUA_API.md](docs/LUA_API.md) |
+| Script my game in Python (preview) | [docs/PYTHON_SCRIPTS.md](docs/PYTHON_SCRIPTS.md) |
 | Import a Roblox game, or see which Roblox APIs work | [docs/ROBLOX_BRIDGE.md](docs/ROBLOX_BRIDGE.md) |
 | Add music and sound | [docs/AUDIO_MIXER.md](docs/AUDIO_MIXER.md) |
-| Set up chat moderation (Gemini) | [docs/CHAT_MODERATION.md](docs/CHAT_MODERATION.md) |
+| Learn how chat is filtered | [docs/CHAT_MODERATION.md](docs/CHAT_MODERATION.md) |
 | Write a Studio plugin | [docs/PLUGIN_API.md](docs/PLUGIN_API.md) |
 | Build a launcher or tool for Kronos | [docs/THIRD_PARTY_TOOLS.md](docs/THIRD_PARTY_TOOLS.md) |
 | See what's coming next | [docs/ROADMAP.md](docs/ROADMAP.md) |

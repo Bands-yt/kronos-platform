@@ -13,7 +13,7 @@ Each check reports one of: `PASS`, `FAIL`, `WARNING`, `NOT RUN`, `UNAVAILABLE`, 
 | Object references point to real objects | An Instance property points to a deleted object, or a WeldConstraint has no Part0/Part1 |
 | Asset files exist | A sound, mesh or mesh-collider file is missing, or a Roblox-hosted asset (`rbxassetid://...`) is used |
 | No script errors in the last Play | Script errors were logged during the last Play. `NOT RUN` until you press Play once |
-| Everything in the scene can be saved | The scene has WeldConstraints (not saved in scenes yet) |
+| Everything in the scene can be saved | An object link (Weld.Part0, ObjectValue.Value, ...) points at an object that isn't saved (no name, or Parent = nil) |
 | Works with more than one player | Always `UNAVAILABLE` for now |
 | Game packages and starts in the Player | Always `UNAVAILABLE` for now |
 

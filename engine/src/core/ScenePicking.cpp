@@ -1,4 +1,5 @@
 #include "core/ScenePicking.hpp"
+#include "core/UnionGeometry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +43,7 @@ ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin,
 
     float closestT = 1.0f; // t in [0,1] along origin->worldEnd; 1.0 = "nothing closer than maxDistance yet"
     auto testEntity = [&](EntityId entity, const glm::mat4& world) {
+        if (excludeEntity != kNullEntity && unions::owner(ecs, entity) == excludeEntity) return;
         const Renderable* renderable = ecs.tryGetComponent<Renderable>(entity);
         if (renderable == nullptr || !renderable->visible) return;
         const Mesh* mesh = meshLibrary.get(renderable->meshHandle);
@@ -55,7 +57,7 @@ ScenePickResult pickEntity(ECS& ecs, MeshLibrary& meshLibrary, glm::vec3 origin,
         if (rayIntersectsAabb(localOrigin, localEnd, mesh->localBoundsMin(), mesh->localBoundsMax(), t) && t < closestT) {
             closestT = t;
             result.hit = true;
-            result.entity = entity;
+            result.entity = unions::owner(ecs, entity); // a union piece picks its union
             result.distance = t * maxDistance;
             result.point = origin + unitDir * result.distance;
         }

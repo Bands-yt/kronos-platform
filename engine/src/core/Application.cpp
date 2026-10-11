@@ -272,6 +272,11 @@ bool Application::initialize(const CreateInfo& info) {
     // callback sees pre-formatted text, not a real LogLevel from
     // Scripting itself, which has no such enum in its own public output
     // path).
+    python_.setWorld(&ecs_, &physics_);
+    python_.setOutputCallback([](const std::string& line) {
+        if (line.rfind("[python]", 0) == 0) logError("Python", "%s", line.c_str());
+        else logInfo("Python", "%s", line.c_str());
+    });
     scripting_.setOutputCallback([](const std::string& line) {
         if (line.rfind("compile error", 0) == 0 || line.rfind("runtime error", 0) == 0 ||
             line.find("callback error") != std::string::npos) {
@@ -2557,6 +2562,7 @@ bool Application::initialize(const CreateInfo& info) {
     gameLoop_->setPostPhysicsHook([this](float dt) {
         for (const auto& event : physics_.drainCollisionEvents()) {
             scripting_.fireCollision(static_cast<uint32_t>(event.first), static_cast<uint32_t>(event.second));
+            python_.fireCollision(static_cast<uint32_t>(event.first), static_cast<uint32_t>(event.second));
         }
         for (const auto& touch : physics_.drainTouchEvents()) signals::touch(ecs_, touch.a, touch.b, touch.began);
         signals::heartbeat(ecs_, dt);
@@ -3240,6 +3246,7 @@ void Application::tickGameScripts(float dt) {
     instances::setScriptCamera(ecs_, headless_ ? nullptr : &camera_,
                                glm::vec2(static_cast<float>(window_.width()), static_cast<float>(window_.height())));
     core::tickScriptHotReload(ecs_, scripting_);
+    python_.tick(dt);
     players::tick(ecs_, dt);
     remotenet::tick(ecs_, dt);
     replication::tick(ecs_, dt);
@@ -3312,12 +3319,24 @@ PhysicsRollback* Application::beginRollbackMatch(uint32_t players, uint32_t loca
     rollbackSettings.maxRollbackFrames = 16;
     rollbackSettings.frameDt = rollbackFrameDt_;
     std::vector<uint8_t> facing(players * sizeof(float), 0);
+    matchScript_.reset();
+    if (!matchScriptSource_.empty()) {
+        auto script = std::make_shared<RollbackScript>();
+        std::string error;
+        std::vector<uint8_t> scriptState;
+        if (script->load(matchScriptName_, matchScriptSource_, error) && script->initialState(players, scriptState, error)) {
+            facing.insert(facing.end(), scriptState.begin(), scriptState.end());
+            matchScript_ = std::move(script);
+        } else {
+            std::fprintf(stderr, "Application: match script %s not used: %s\n", matchScriptName_.c_str(), error.c_str());
+        }
+    }
     std::vector<EntityId> platforms;
     for (auto entity : ecs_.view<MovingPlatform, RigidBody>()) platforms.push_back(entity);
     std::sort(platforms.begin(), platforms.end());
     rollback_ = std::make_unique<PhysicsRollback>(
         physics_, ecs_, rollbackSettings,
-        [characters = rollbackPlayers_, settings, platforms](RollbackFrameContext& frame) {
+        [characters = rollbackPlayers_, settings, platforms, script = matchScript_](RollbackFrameContext& frame) {
             for (EntityId entity : platforms) {
                 const auto* platform = frame.ecs.tryGetComponent<MovingPlatform>(entity);
                 const auto* transform = frame.ecs.tryGetComponent<Transform>(entity);
@@ -3335,6 +3354,7 @@ PhysicsRollback* Application::beginRollbackMatch(uint32_t players, uint32_t loca
                                                       frame.dt, yaw);
                 std::memcpy(frame.gameState.data() + p * sizeof(float), &yaw, sizeof(float));
             }
+            if (script) script->step(frame, frame.playerCount * sizeof(float), characters);
         },
         std::move(facing));
     return rollback_.get();
@@ -3427,6 +3447,7 @@ void Application::shutdown() {
     rollback_.reset();
     worldStreamer_.close();
     gameLoop_.reset();
+    python_.unloadAll();
     input_.shutdown();
         if (!headless_) {
             // Ordering contract from Renderer::shutdown()'s NOTE: mesh/texture GPU

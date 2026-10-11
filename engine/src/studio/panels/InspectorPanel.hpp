@@ -7,6 +7,7 @@
 
 #include "core/Components.hpp"
 #include "core/ECS.hpp"
+#include "core/InstanceTree.hpp"
 #include "studio/MathExpressionPopup.hpp"
 #include "studio/UndoStack.hpp"
 
@@ -63,6 +64,11 @@ public:
     }
 
 private:
+    // Roblox-style Properties: every property of the selected object's class.
+    void drawRobloxProperties(core::ECS& ecs, core::EntityId selected, UndoStack& undoStack);
+    core::InstanceValue propertyBeforeEdit_;
+    char propertyFilter_[64] = "";
+    char refPickFilter_[64] = "";
     void drawPhysicsSection(core::ECS& ecs, core::EntityId selected);
     // Sprint 6 ("World Systems & Environment") task category 4's "Studio"
     // half of teleport-pad support: real authoring for TeleportPad's

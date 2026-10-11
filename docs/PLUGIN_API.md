@@ -125,6 +125,45 @@ within a panel. In a sandboxed plugin a click reaches the plugin one frame later
 Opening an existing channel with a different version or size returns `KRONOS_CONFLICT`. Channels
 outlive the plugin that opened them, so they also keep a plugin's state across reloads and crashes.
 
+## Rust
+
+`sdk/rust/kronos` is a Rust crate over the same API, so you never touch raw pointers: implement
+`kronos::Plugin`, register panels and importers through `kronos::Host`, and export it with
+`kronos::export_plugin!`. Closures are kept until the plugin unloads, and a panic inside a callback
+is caught instead of crashing Studio (the call just fails). `templates/rust-plugin` is the Rust
+version of `SampleCPlugin.c`; copy the folder and point its `kronos` dependency at your copy of
+`sdk/rust/kronos`.
+
+```rust
+use kronos::{caps, Host, Info, Plugin};
+
+struct Hello;
+
+impl Plugin for Hello {
+    const INFO: Info = Info {
+        id: c"com.example.hello",
+        name: c"Hello",
+        version: c"1.0.0",
+        author: c"You",
+        capabilities: caps::EDITOR_PANELS | caps::SCENE_READ,
+    };
+
+    fn load(host: Host) -> kronos::Result<Self> {
+        host.register_panel("com.example.hello.panel", "Hello", 1, move |ui| {
+            ui.text(&format!("{} objects in the scene", host.entity_count()));
+        })?;
+        Ok(Hello)
+    }
+}
+
+kronos::export_plugin!(Hello);
+```
+
+Build it with `cargo build --release` (the crate type must be `cdylib`) and put
+`target/release/libyour_plugin.so` (`your_plugin.dll` on Windows) in a plugin folder. It runs
+in-process and in the sandbox like a C plugin. The engine tests build the template and run the
+same checks as the C sample in both modes when `cargo` is installed (Linux and macOS for now).
+
 ## Versioning rules
 
 - `KRONOS_PLUGIN_API_MAJOR` changes only for breaking changes. The editor refuses a plugin built for

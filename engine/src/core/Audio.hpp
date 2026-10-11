@@ -133,6 +133,14 @@ public:
     [[nodiscard]] bool isEntitySoundPlaying(EntityId entity) const;
     [[nodiscard]] std::string entitySoundBus(EntityId entity) const;
 
+    // Cues: copies of a sound that start at an exact engine frame (sample-accurate) and may overlap.
+    [[nodiscard]] uint64_t engineTimeFrames() const;
+    // Returns the cue id, or 0 when the sound can't be played.
+    uint64_t scheduleCue(SoundHandle handle, uint64_t startFrame, const std::string& bus = "SFX");
+    // Stops cues that haven't started yet at `frame` (all cues when `onlyPending` is false).
+    void cancelCues(uint64_t frame, bool onlyPending);
+    [[nodiscard]] size_t cueCount() const { return cues_.size(); }
+
     // Kronos ("Settings Panel v2 + Input Remapping + Accessibility
     // Layer" -- "Audio: Master volume"): real, immediate -- forwards
     // directly to miniaudio's own real engine-level volume
@@ -158,7 +166,7 @@ private:
     };
 
     bool finishInitialize();
-    ma_sound* makeVoice(SoundHandle handle, void*& bufferRef);
+    ma_sound* makeVoice(SoundHandle handle, void*& bufferRef, unsigned flags = 0);
     void destroyVoice(Voice& voice);
     void releaseVoicesOf(SoundHandle handle, bool keepCursor);
     void releaseSilentContext();
@@ -170,6 +178,14 @@ private:
     std::vector<void*> buffers_; // ma_audio_buffer*, parallel to sounds_, set for PCM-backed sounds
     std::unordered_map<EntityId, Voice> voices_;
     std::unordered_map<EntityId, double> voiceResume_; // cursor to resume at after a sound is reloaded
+    struct Cue {
+        Voice voice;
+        uint64_t id = 0;
+        uint64_t startFrame = 0;
+    };
+    void reapCues();
+    std::vector<Cue> cues_;
+    uint64_t nextCueId_ = 1;
     uint64_t mixCount_ = 0;
     bool initialized_ = false;
     float masterVolume_ = 1.0f;

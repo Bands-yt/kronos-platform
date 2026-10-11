@@ -74,7 +74,7 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/ColorTextEditBackendText.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/LuauSymbolIndex.cpp
 )
-target_link_libraries(engine_tests PRIVATE engine_core imgui::imgui)
+target_link_libraries(engine_tests PRIVATE engine_core kronos_brokenbones imgui::imgui)
 if(TARGET kronos::shaderc)
     target_link_libraries(engine_tests PRIVATE kronos::shaderc)
 endif()
@@ -179,6 +179,23 @@ endforeach()
 if(TARGET sample_c_plugin)
     add_dependencies(engine_tests sample_c_plugin)
     target_compile_definitions(engine_tests PRIVATE SAMPLE_C_PLUGIN_PATH="$<TARGET_FILE:sample_c_plugin>")
+endif()
+# The Rust template plugin (templates/rust-plugin over sdk/rust/kronos), when cargo is installed.
+if(NOT WIN32)
+    find_program(KRONOS_CARGO cargo)
+endif()
+if(KRONOS_CARGO)
+    set(_rust_dir ${CMAKE_CURRENT_SOURCE_DIR}/../../templates/rust-plugin)
+    set(_rust_lib ${CMAKE_BINARY_DIR}/rust/release/${CMAKE_SHARED_LIBRARY_PREFIX}kronos_sample_rust_plugin${CMAKE_SHARED_LIBRARY_SUFFIX})
+    file(GLOB _rust_sources ${_rust_dir}/src/*.rs ${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/rust/kronos/src/*.rs)
+    add_custom_command(OUTPUT ${_rust_lib}
+        COMMAND ${KRONOS_CARGO} build --release --offline --quiet --manifest-path ${_rust_dir}/Cargo.toml
+                --target-dir ${CMAKE_BINARY_DIR}/rust
+        DEPENDS ${_rust_sources} ${_rust_dir}/Cargo.toml ${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/rust/kronos/Cargo.toml
+        COMMENT "Building the Rust template plugin")
+    add_custom_target(sample_rust_plugin DEPENDS ${_rust_lib})
+    add_dependencies(engine_tests sample_rust_plugin)
+    target_compile_definitions(engine_tests PRIVATE SAMPLE_RUST_PLUGIN_PATH="${_rust_lib}")
 endif()
 if(TARGET kronos_plugin_sandbox)
     add_dependencies(engine_tests kronos_plugin_sandbox)

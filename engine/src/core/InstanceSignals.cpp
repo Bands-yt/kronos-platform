@@ -1,4 +1,5 @@
 #include "core/InstanceSignals.hpp"
+#include "core/UnionGeometry.hpp"
 #include "core/RobloxServices.hpp"
 
 #include <algorithm>
@@ -424,6 +425,9 @@ void tagChanged(ECS& ecs, InstanceRef ref, const std::string& tag, bool added) {
 }
 
 void touch(ECS& ecs, EntityId a, EntityId b, bool began) {
+    a = unions::owner(ecs, a);
+    b = unions::owner(ecs, b);
+    if (a == b) return;
     SignalHub* hub = findHub(ecs);
     const char* event = began ? "Touched" : "TouchEnded";
     if (hub == nullptr || !hub->anyConnections(event)) return;

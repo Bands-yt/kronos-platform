@@ -42,6 +42,8 @@ Build options (pass as `-D<OPTION>=ON/OFF` at configure time):
 | `ENGINE_BUILD_RUNTIME` | `ON` | Build `engine_runtime` |
 | `ENGINE_BUILD_STUDIO` | `ON` | Build `studio` (pulls in Dear ImGui) |
 | `ENGINE_BUILD_TESTS` | `ON` | Build `engine_tests` and register it with `ctest` |
+| `KRONOS_COMPILER_CACHE` | empty | `auto`, `ccache` or `sccache`: reuse compiled C++ between builds (the tool must be installed) |
+| `KRONOS_SHADER_CACHE_DIR` | empty | A folder for compiled shaders, keyed by the shader, the shared shader library, the flags and the `glslc` version; clean builds copy them instead of recompiling |
 
 ## Run
 

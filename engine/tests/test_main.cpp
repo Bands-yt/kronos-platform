@@ -185,6 +185,13 @@
 #include "cinematic/OfflineExport.hpp"
 #include "cinematic/RailCamera.hpp"
 #include "cinematic/Sequencer.hpp"
+#include "cinematic/SequenceAudio.hpp"
+#include "core/RollbackScript.hpp"
+#include "core/PythonScripting.hpp"
+#include "core/SingleInstance.hpp"
+#include "core/Guid.hpp"
+#include <lua.h>
+#include <lualib.h>
 #include "cinematic/SequenceApplier.hpp"
 #include "cinematic/TimelineLayout.hpp"
 #include "cinematic/CurveInterpolation.hpp"
@@ -320,6 +327,8 @@
 #include "migration/AssetModeration.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "migration/ProjectImporter.hpp"
+#include "core/RobloxDatatypes.hpp"
+#include "core/UnionGeometry.hpp"
 #include "migration/BridgeDoctor.hpp"
 #include "migration/ProjectValidator.hpp"
 #include "migration/CompatibilityScore.hpp"
@@ -7797,6 +7806,12 @@ void testUpdateCheckParsesRealVersionStrings() {
     check(v.valid && v.major == 0 && v.minor == 2 && v.patch == 0 && v.prerelease == "alpha",
           "parseVersion real-parses this project's own real kKronosVersion shape");
 
+    const engine::core::SemanticVersion current = parseVersion(engine::core::kKronosVersion);
+    check(current.valid && current.major == engine::core::kKronosVersionMajor &&
+              current.minor == engine::core::kKronosVersionMinor && current.patch == engine::core::kKronosVersionPatch &&
+              std::string(engine::core::kKronosVersion).rfind(engine::core::kKronosVersionNumeric, 0) == 0,
+          "the generated version header agrees with itself (one version number from CMake)");
+
     engine::core::SemanticVersion tagged = parseVersion("v1.4.2");
     check(tagged.valid && tagged.major == 1 && tagged.minor == 4 && tagged.patch == 2 && tagged.prerelease.empty(),
           "parseVersion real-accepts the leading 'v' a real GitHub tag carries, and a real final (non-prerelease) "
@@ -12635,6 +12650,327 @@ void testPhysicsPreviewPluginPlayAttachesAndStopDetaches() {
     const auto* keptParent = ecs.tryGetComponent<engine::core::Hierarchy>(plainProp);
     check(!ecs.raw().valid(madeInPlay) && (keptParent == nullptr || keptParent->children.empty()),
           "stop() removes an entity made during Play from its kept parent's children");
+}
+
+// A minimal Roblox binary model writer, enough for union pieces.
+struct RbxBinaryWriterForTest {
+    struct Part {
+        std::string className;
+        std::string name;
+        glm::vec3 position{0.0f};
+        glm::vec3 size{1.0f};
+        std::string sharedChildData; // as ChildData2, empty for none
+    };
+    static void u32(std::string& out, uint32_t v) {
+        for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>(v >> (8 * i) & 0xFF));
+    }
+    static void str(std::string& out, const std::string& v) {
+        u32(out, static_cast<uint32_t>(v.size()));
+        out += v;
+    }
+    static void interleaved(std::string& out, const std::vector<uint32_t>& values) {
+        for (int plane = 3; plane >= 0; --plane) {
+            for (uint32_t v : values) out.push_back(static_cast<char>(v >> (8 * plane) & 0xFF));
+        }
+    }
+    static uint32_t rotatedFloat(float f) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, 4);
+        return bits << 1 | bits >> 31;
+    }
+    static void chunk(std::string& out, const char* name, const std::string& body) {
+        out.append(name, 4);
+        u32(out, 0);
+        u32(out, static_cast<uint32_t>(body.size()));
+        u32(out, 0);
+        out += body;
+    }
+    static std::string write(const std::vector<Part>& parts) {
+        std::vector<std::string> classes;
+        for (const Part& p : parts) {
+            if (std::find(classes.begin(), classes.end(), p.className) == classes.end()) classes.push_back(p.className);
+        }
+        std::string out("<roblox!");
+        out += std::string("\x89\xff\r\n\x1a\n", 6);
+        out.push_back(0);
+        out.push_back(0);
+        u32(out, static_cast<uint32_t>(classes.size()));
+        u32(out, static_cast<uint32_t>(parts.size()));
+        out.append(8, '\0');
+        std::vector<std::string> shared;
+        for (const Part& p : parts) {
+            if (!p.sharedChildData.empty()) shared.push_back(p.sharedChildData);
+        }
+        if (!shared.empty()) {
+            std::string body;
+            u32(body, 0);
+            u32(body, static_cast<uint32_t>(shared.size()));
+            for (const std::string& v : shared) {
+                body.append(16, '\0');
+                str(body, v);
+            }
+            chunk(out, "SSTR", body);
+        }
+        uint32_t sharedIndex = 0;
+        for (uint32_t c = 0; c < classes.size(); ++c) {
+            std::vector<const Part*> members;
+            std::vector<uint32_t> refs;
+            for (uint32_t i = 0; i < parts.size(); ++i) {
+                if (parts[i].className != classes[c]) continue;
+                members.push_back(&parts[i]);
+                refs.push_back(i);
+            }
+            std::string inst;
+            u32(inst, c);
+            str(inst, classes[c]);
+            inst.push_back(0);
+            u32(inst, static_cast<uint32_t>(refs.size()));
+            std::vector<uint32_t> deltas;
+            int32_t previous = 0;
+            for (uint32_t ref : refs) {
+                const int32_t d = static_cast<int32_t>(ref) - previous;
+                previous = static_cast<int32_t>(ref);
+                deltas.push_back(static_cast<uint32_t>((d << 1) ^ (d >> 31)));
+            }
+            interleaved(inst, deltas);
+            chunk(out, "INST", inst);
+
+            std::string names;
+            u32(names, c);
+            str(names, "Name");
+            names.push_back(0x01);
+            for (const Part* p : members) str(names, p->name);
+            chunk(out, "PROP", names);
+
+            std::string size;
+            u32(size, c);
+            str(size, "size");
+            size.push_back(0x0E);
+            for (int axis = 0; axis < 3; ++axis) {
+                std::vector<uint32_t> column;
+                for (const Part* p : members) column.push_back(rotatedFloat(p->size[axis]));
+                interleaved(size, column);
+            }
+            chunk(out, "PROP", size);
+
+            std::string cframe;
+            u32(cframe, c);
+            str(cframe, "CFrame");
+            cframe.push_back(0x10);
+            for (size_t i = 0; i < members.size(); ++i) cframe.push_back(0x02); // identity rotation
+            for (int axis = 0; axis < 3; ++axis) {
+                std::vector<uint32_t> column;
+                for (const Part* p : members) column.push_back(rotatedFloat(p->position[axis]));
+                interleaved(cframe, column);
+            }
+            chunk(out, "PROP", cframe);
+
+            if (!members.front()->sharedChildData.empty()) {
+                std::string childData;
+                u32(childData, c);
+                str(childData, "ChildData2");
+                childData.push_back(0x1C);
+                std::vector<uint32_t> indices;
+                for (size_t i = 0; i < members.size(); ++i) indices.push_back(sharedIndex++);
+                interleaved(childData, indices);
+                chunk(out, "PROP", childData);
+            }
+        }
+        chunk(out, "END\0", "</roblox>");
+        return out;
+    }
+};
+
+void testRobloxUnionPieces() {
+    using namespace engine::core;
+    // Two pillars with a gap between them, in the union's local space.
+    const std::string pieces = RbxBinaryWriterForTest::write({
+        {"Part", "Left", {-1.5f, 0.0f, 0.0f}, {1.0f, 3.0f, 2.0f}, ""},
+        {"Part", "Right", {1.5f, 0.0f, 0.0f}, {1.0f, 3.0f, 2.0f}, ""},
+        {"NegateOperation", "Hole", {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, ""},
+    });
+    std::vector<engine::migration::ImportedInstance> decoded;
+    std::string error;
+    check(engine::migration::readRobloxBinary(pieces, decoded, error) && decoded.size() == 3,
+          "union: the test writer makes a readable binary model");
+
+    std::string b64 = base64UrlEncode(pieces);
+    std::replace(b64.begin(), b64.end(), '-', '+');
+    std::replace(b64.begin(), b64.end(), '_', '/');
+    const std::string document = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W">
+    <Properties><string name="Name">Workspace</string></Properties>
+    <Item class="UnionOperation" referent="U">
+      <Properties>
+        <string name="Name">Gate</string>
+        <bool name="Anchored">true</bool>
+        <Vector3 name="size"><X>4</X><Y>3</Y><Z>2</Z></Vector3>
+        <Vector3 name="InitialSize"><X>4</X><Y>3</Y><Z>2</Z></Vector3>
+        <CoordinateFrame name="CFrame"><X>10</X><Y>1.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame>
+        <SharedString name="ChildData2">key1</SharedString>
+      </Properties>
+    </Item>
+  </Item>
+  <SharedStrings><SharedString md5="key1">)XML" + b64 + R"XML(</SharedString></SharedStrings>
+</roblox>)XML";
+    auto parsed = engine::migration::RbxlxParser::parse(document);
+    check(parsed.has_value(), "union: the place parses");
+    const auto tree = engine::migration::InstanceTreeBuilder::build(*parsed);
+
+    ECS ecs;
+    ecs.raw().ctx().insert_or_assign(InstanceMeshes{0, 1, 2});
+    engine::migration::HydrationMeshes meshes;
+    meshes.box = 0;
+    meshes.capsule = 1;
+    meshes.cylinder = 2;
+    const auto result = engine::migration::InstanceHydrator{}.hydrate(tree, ecs, meshes);
+    EntityId gate = kNullEntity;
+    for (EntityId e : result.createdEntities) {
+        if (ecs.tryGetComponent<Name>(e)->value == "Gate") gate = e;
+    }
+    check(gate != kNullEntity && unions::hasPieces(ecs, gate), "union: the XML SharedString's pieces are read on import");
+    check(std::any_of(result.notes.begin(), result.notes.end(),
+                      [](const std::string& n) { return n.find("1 subtracted part") != std::string::npos; }),
+          "union: a subtracted part is reported");
+
+    unions::sync(ecs);
+    std::vector<EntityId> helpers;
+    for (EntityId e : ecs.raw().view<unions::UnionPiece>()) helpers.push_back(e);
+    check(helpers.size() == 2, "union: one helper per piece, none for the subtracted part");
+    check(ecs.tryGetComponent<Renderable>(gate)->meshHandle == Renderable::kInvalidHandle,
+          "union: its own box isn't drawn");
+    check(instances::children(ecs, instances::refOf(ecs, gate)).empty(), "union: scripts don't see the pieces");
+    bool placed = false;
+    for (EntityId e : helpers) {
+        const auto* t = ecs.tryGetComponent<Transform>(e);
+        if (glm::length(t->position - glm::vec3(11.5f, 1.5f, 0.0f)) < 1e-3f &&
+            glm::length(t->scale - glm::vec3(1.0f, 3.0f, 2.0f)) < 1e-3f) {
+            placed = true;
+        }
+    }
+    check(placed, "union: a piece sits at its place in the world with its own size");
+    check(unions::owner(ecs, helpers.front()) == gate, "union: a piece belongs to its union");
+
+    Physics physics;
+    check(physics.initialize(), "union: physics starts");
+    partbodies::sync(ecs, physics, false);
+    const auto* gateBody = ecs.tryGetComponent<RigidBody>(gate);
+    check(gateBody == nullptr || gateBody->joltBodyId == RigidBody::kInvalidBodyId, "union: no box body for an anchored union");
+    const auto gap = physics.raycast({10.0f, 10.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, 20.0f);
+    check(!gap.hit, "union: a ray falls through the gap between its pieces");
+    const auto pillar = physics.raycast({11.5f, 10.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, 20.0f);
+    check(pillar.hit && std::abs(pillar.point.y - 3.0f) < 0.05f && unions::owner(ecs, pillar.entity) == gate,
+          "union: a ray lands on a piece, which reports the union");
+
+    // Moving the union moves its pieces and their bodies.
+    ecs.tryGetComponent<Transform>(gate)->position.y += 5.0f;
+    partbodies::sync(ecs, physics, false);
+    const auto moved = physics.raycast({11.5f, 20.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, 30.0f);
+    check(moved.hit && std::abs(moved.point.y - 8.0f) < 0.05f, "union: pieces follow the union");
+
+    instances::destroy(ecs, instances::refOf(ecs, gate));
+    unions::sync(ecs);
+    check(ecs.raw().view<unions::UnionPiece>().size() == 0, "union: destroying it removes its pieces");
+    partbodies::detachAll(ecs, physics);
+
+    // Binary places keep shared strings in an SSTR chunk.
+    const std::string place = RbxBinaryWriterForTest::write({{"UnionOperation", "Gate", {0.0f, 1.5f, 0.0f}, {4.0f, 3.0f, 2.0f}, pieces}});
+    std::vector<engine::migration::ImportedInstance> binTree;
+    check(engine::migration::readRobloxBinary(place, binTree, error) && binTree.size() == 1 &&
+              binTree.front().properties.count("ChildData2") != 0 && binTree.front().properties.at("ChildData2") == pieces,
+          "union: a binary place's SharedString is read from SSTR");
+}
+
+void testDeathRagdoll() {
+    using namespace engine::core;
+    Physics physics;
+    check(physics.initialize(), "death ragdoll: physics starts");
+    ECS ecs;
+    physics.createStaticBox(ecs, {0.0f, -0.5f, 0.0f}, {30.0f, 0.5f, 30.0f});
+    CharacterController controller;
+    const EntityId character = controller.spawn(ecs, physics, {0.0f, 1.2f, 0.0f});
+    players::setFallbackSpawn(ecs, {0.0f, 1.2f, 0.0f});
+    players::requestJoin(ecs, "P", 1, character, true);
+
+    const Skeleton skeleton = buildHumanoidSkeleton();
+    AvatarController avatar(skeleton);
+    const EntityId body = ecs.createEntity("Body");
+    SkinnedRenderable skin;
+    skin.skinningMatrices.assign(skeleton.joints.size(), glm::mat4(1.0f));
+    ecs.addComponent<SkinnedRenderable>(body, skin);
+    const std::vector<EntityId> skinned{body};
+    engine::platform_adapters::UnifiedInput input;
+    Camera camera;
+    auto step = [&](int frames) {
+        for (int i = 0; i < frames; ++i) {
+            players::tick(ecs, 1.0f / 60.0f);
+            controller.tick(1.0f / 60.0f, ecs, physics, input, camera, &avatar, &skinned);
+            physics.step(1.0f / 60.0f, ecs);
+        }
+    };
+    step(30);
+    check(!controller.deathRagdollActive(), "death ragdoll: none while alive");
+
+    InstanceRef humanoid = kNoInstance;
+    const InstanceRef model = instances::parent(ecs, instances::refOf(ecs, character));
+    for (InstanceRef child : instances::children(ecs, model)) {
+        if (instances::className(ecs, child) == "Humanoid") humanoid = child;
+    }
+    check(humanoid != kNoInstance, "death ragdoll: the character has a Humanoid");
+    instances::setProperty(ecs, humanoid, *instances::findProperty("Humanoid", "Health"), InstanceValue::ofNumber(0.0));
+    step(2);
+    check(controller.deathRagdollActive(), "death ragdoll: dying starts the ragdoll");
+    check(instances::worldPose(ecs, character).position.y < -100.0f, "death ragdoll: the capsule is parked out of the way");
+    step(120);
+    const glm::vec3 lying = glm::vec3(ecs.tryGetComponent<Transform>(body)->position);
+    check(lying.y > -0.5f && lying.y < 0.9f, "death ragdoll: the body falls and lies on the floor");
+    check(std::abs(camera.position.y - lying.y) < 10.0f, "death ragdoll: the camera watches the body, not the capsule");
+    bool posed = false;
+    for (const glm::mat4& m : ecs.tryGetComponent<SkinnedRenderable>(body)->skinningMatrices) {
+        if (m != glm::mat4(1.0f)) posed = true;
+    }
+    check(posed, "death ragdoll: the ragdoll poses the avatar mesh");
+
+    step(60 * 6); // RespawnTime is 5 s
+    check(!controller.deathRagdollActive(), "death ragdoll: respawning removes it");
+    check(std::abs(instances::worldPose(ecs, character).position.y - 1.2f) < 1.5f, "death ragdoll: the character is back at spawn");
+}
+
+void testStudioPlayKeepsGroundStill() {
+    using namespace engine::core;
+    ECS ecs;
+    auto addStatic = [&](const char* name, glm::vec3 pos, glm::vec3 half) {
+        EntityId e = ecs.createEntity(name);
+        ecs.tryGetComponent<Transform>(e)->position = pos;
+        ecs.addComponent<ColliderShape>(e, ColliderShape{ColliderShapeKind::Box, half, ""});
+        ecs.addComponent<PhysicsMaterial>(e, makePhysicsMaterial(0.5f, 0.0f, 1000.0f));
+        ecs.addComponent<RigidBody>(e, RigidBody{RigidBody::kInvalidBodyId, RigidBodyMotionType::Static});
+        return e;
+    };
+    EntityId ground = addStatic("Ground", {0.0f, -1.0f, 0.0f}, {32.0f, 0.5f, 32.0f});
+    addStatic("StarterBox", {0.0f, 0.5f, 0.0f}, {0.5f, 0.5f, 0.5f});
+    {
+        std::string error;
+        const InstanceRef part = instances::create(ecs, "Part", error);
+        instances::setProperty(ecs, part, *instances::findProperty("BasePart", "Position"), InstanceValue::ofVector3({0.0f, 2.0f, 0.0f}));
+        instances::setProperty(ecs, part, *instances::findProperty("BasePart", "Anchored"), InstanceValue::ofBool(true));
+        check(instances::setParent(ecs, part, instances::refOf(ecs, ground), error), "repro: part goes in Ground");
+    }
+    engine::studio::plugins::PhysicsPreviewPlugin plugin;
+    CharacterController controller;
+    engine::platform_adapters::UnifiedInput input;
+    Camera camera;
+    plugin.setPlayHooks([&](ECS& e, Physics& p) {
+        controller.spawn(e, p, {0.0f, 3.0f, -6.0f});
+        players::requestJoin(e, "P", 1, controller.entity(), true);
+    }, [](ECS&) {});
+    plugin.play(ecs);
+    for (int i = 0; i < 1200; ++i) {
+        controller.tick(1.0f / 60.0f, ecs, plugin.physics(), input, camera);
+        plugin.update(1.0f / 60.0f, ecs, kNullEntity, {});
+    }
+    check(std::abs(ecs.tryGetComponent<Transform>(ground)->position.y + 1.0f) < 1e-3f, "Play: the template Ground stays put");
+    plugin.stop(ecs);
 }
 
 void testPhysicsPreviewPluginSkipsMeshColliders() {
@@ -19943,9 +20279,50 @@ void testProfanityFilterRemoveWordStopsDetecting() {
 
 void testProfanityFilterWordCountReflectsSeedList() {
     engine::moderation::ProfanityFilter filter;
-    check(filter.wordCount() == 8, "ProfanityFilter's real seed list has the real documented 8 words");
+    const size_t seeded = filter.wordCount();
+    check(seeded >= 60, "the filter starts with a real word list (60+ words), not a handful");
     filter.addWord("newword");
-    check(filter.wordCount() == 9, "addWord() real-increments wordCount()");
+    check(filter.wordCount() == seeded + 1, "addWord() real-increments wordCount()");
+}
+
+void testProfanityFilterCatchesDodges() {
+    std::printf("\n-- profanity filter dodges --\n");
+    engine::moderation::ProfanityFilter filter;
+    const char* caught[] = {
+        "fuck", "FUCK", "fucking", "fuckin", "motherfucker", "fuuuuck", "f u c k", "f.u.c.k", "f-u-c-k", "f*ck",
+        "fu ck", "phuck", "fuk", "fck", "sh1t", "shiiit", "$hit", "shitty", "bullshit", "sh it", "b1tch",
+        "bitches", "@ss", "a$$", "asshole", "a s s h o l e", "dumbass", "cunt", "c\xC3\xBCnt",
+        "\xD1\x95hit",            // Cyrillic s
+        "fu\xE2\x80\x8B" "ck",    // zero-width space
+        "\xEF\xBD\x86\xEF\xBD\x95\xEF\xBD\x83\xEF\xBD\x8B", // full-width
+        "crappy", "damned", "pissed", "dickhead", "wtf", "stfu", "n1gger", "niggaaa", "f4ggot", "retarded",
+        "porn", "nudes", "whore", "slut", "wanker", "bollocks", "tits", "sexy", "hoes",
+    };
+    std::vector<std::string> missed;
+    for (const char* text : caught) {
+        auto result = filter.check(text);
+        if (!result.containsProfanity || result.censored.find_first_not_of("* .-") != std::string::npos) missed.push_back(text);
+    }
+    check(missed.empty(), "leetspeak, look-alike letters, stretched letters, endings and spaced-out spellings are all censored");
+    for (const auto& word : missed) std::printf("  missed: %s\n", word.c_str());
+
+    const char* clean[] = {
+        "hello", "shell", "class", "assume", "assassin", "bass", "passed", "cocktail", "peacock", "cockpit",
+        "title", "Dickens", "cumulative", "cumin", "document", "Sussex", "grape", "scrape", "spicy",
+        "cocky", "booby trap", "Scunthorpe", "shiitake", "skyscraper", "he'll be back", "I'll go", "it's fine",
+        "push it", "is hit", "night", "Niger", "therapist", "analysis",
+        "a b c", "I am so sad", "100 points", "go to the shop", "assets", "glass", "kitty",
+    };
+    std::vector<std::string> wrong;
+    for (const char* text : clean) {
+        if (filter.check(text).containsProfanity) wrong.push_back(text);
+    }
+    check(wrong.empty(), "ordinary words that look like swear words are left alone");
+    for (const auto& word : wrong) std::printf("  wrongly censored: %s\n", word.c_str());
+
+    check(filter.check("you are a f u c k ing idiot").censored.substr(0, 10) == "you are a ",
+          "only the spelled-out word is censored, not the words before it");
+    check(filter.check("go to hell lol").censored == "go to **** lol", "censoring keeps the message's length and layout");
 }
 
 void testProfanityFilterPreservesNonProfaneWordsUncensored() {
@@ -22098,7 +22475,7 @@ void testLanSessionBrowserDedupesRepeatedAnnouncesBySessionId() {
                                 "sessionId, no matter how many real repeated announces arrive");
     auto finalSessions = browser.discoveredSessions();
     check(finalSessions.size() == 1, "dedup test: exactly one real entry survives after many real repeated announces");
-    check(finalSessions[0].lastSeenSeconds > firstSeenAt,
+    check(!finalSessions.empty() && finalSessions[0].lastSeenSeconds > firstSeenAt,
           "the real entry's own lastSeenSeconds really keeps advancing with each real repeated announce, not stuck "
           "at its first real value");
 
@@ -27217,6 +27594,47 @@ void testScriptSandboxMemoryCapRaisesCatchableErrorInsteadOfCrashing() {
     scripting.shutdown();
 }
 
+void testScriptMemoryBudgets() {
+    std::printf("\n-- script memory budgets --\n");
+    {
+        engine::core::Scripting defaults;
+        check(defaults.maxMemoryBytesPerScript() == 64u * 1024u * 1024u &&
+                  defaults.gameMemoryBudget() == 256u * 1024u * 1024u,
+              "scripts get 64 MB each and 256 MB per game by default");
+    }
+    engine::core::Scripting scripting;
+    scripting.setMaxMemoryBytesPerScript(4u * 1024u * 1024u);
+    scripting.setGameMemoryBudget(6u * 1024u * 1024u);
+    check(scripting.initialize(), "memory budget test: Scripting initializes");
+    std::string output;
+    scripting.setOutputCallback([&output](const std::string& line) { output += line + "\n"; });
+
+    const auto holder = scripting.loadAndRun("Holder", "local keep = buffer.create(3 * 1024 * 1024)\ntask.delay(1e6, function() print(buffer.len(keep)) end)");
+    check(output.empty(), "a script can hold 3 MB under a 4 MB limit");
+    scripting.tick(0.0f);
+    check(output.find("warning: script \"Holder\" is using") != std::string::npos &&
+              output.find("4 MB script memory limit") != std::string::npos,
+          "a script past 80% of its limit gets a warning before the hard stop");
+    output.clear();
+    scripting.tick(0.0f);
+    check(output.empty(), "the warning is printed once");
+
+    (void)scripting.loadAndRun("Second", "local keep = buffer.create(3 * 1024 * 1024)\ntask.delay(1e6, function() print(buffer.len(keep)) end)");
+    check(output.find("memory") != std::string::npos,
+          "a second script that would push the game past its budget fails, though it's under its own limit");
+    output.clear();
+    scripting.tick(0.0f);
+    check(output.find("game script memory budget") != std::string::npos,
+          "the game budget warns when it's nearly used up");
+
+    scripting.unload(holder);
+    output.clear();
+    (void)scripting.loadAndRun("Third", "local keep = buffer.create(2 * 1024 * 1024)\ntask.delay(1e6, function() print(buffer.len(keep)) end)");
+    check(output.empty(), "unloading a script gives its memory back to the game budget");
+    scripting.setOutputCallback(nullptr);
+    scripting.shutdown();
+}
+
 void testScriptSecurityIdentityDefaultsToLeastPrivilegeAndIsUnforgeable() {
     engine::core::Scripting scripting;
     check(scripting.initialize(), "security identity test: Scripting::initialize() succeeds");
@@ -28275,6 +28693,528 @@ void testPhysicsRollbackPeers() {
     check(verification.firstMismatch == 200, "replay: a changed input is caught at its frame");
 }
 
+void testPermanentObjectIds() {
+    using namespace engine::core;
+    std::printf("\n-- permanent object ids --\n");
+    const Guid a = Guid::generate();
+    const Guid b = Guid::generate();
+    check(a.valid() && b.valid() && !(a == b), "new ids are valid and different");
+    const std::string text = a.toString();
+    check(text.size() == 36 && text[14] == '4' && Guid::parse(text) == a, "an id round-trips through its text form");
+    check(!Guid::parse("not-a-guid") && !Guid::parse("00000000-0000-0000-0000-000000000000") &&
+              !Guid::parse(text.substr(0, 35) + "g"),
+          "malformed or empty ids are rejected");
+
+    // Two models with the same name, each holding a child with the same name.
+    ECS ecs;
+    const EntityId modelA = ecs.createEntity("Model");
+    const EntityId modelB = ecs.createEntity("Model");
+    const EntityId partA = ecs.createEntity("Part");
+    const EntityId partB = ecs.createEntity("Part");
+    hierarchy::setParent(ecs, partA, modelA);
+    hierarchy::setParent(ecs, partB, modelB);
+    ecs.raw().get<Transform>(partB).position = {5.0f, 0.0f, 0.0f};
+    Camera camera;
+    SceneManager sceneManager;
+    SceneFile captured = sceneManager.captureScene(ecs, camera);
+    const Guid idA = guids::of(ecs, modelA);
+    const Guid idPartB = guids::of(ecs, partB);
+    check(idA.valid() && idPartB.valid() && guids::find(ecs, idPartB) == partB, "saving gives every object an id");
+    ecs.raw().get<Name>(modelA).value = "Renamed";
+    check(guids::of(ecs, modelA) == idA, "renaming keeps the id");
+
+    const std::string textPath = "test_guid_scene.scene";
+    const std::string binaryPath = "test_guid_scene.kscene";
+    captured = sceneManager.captureScene(ecs, camera);
+    check(captured.saveToFile(textPath) && captured.saveToBinaryFile(binaryPath), "scene with ids saves in both formats");
+    for (int binary = 0; binary < 2; ++binary) {
+        SceneFile file;
+        check(binary ? file.loadFromBinaryFile(binaryPath) : file.loadFromFile(textPath), "scene with ids loads");
+        ECS loaded;
+        instantiateSceneEntities(file.entities, loaded, SceneBuildContext{});
+        const EntityId model = guids::find(loaded, idA);
+        const EntityId part = guids::find(loaded, idPartB);
+        const auto* partHierarchy = part != kNullEntity ? loaded.tryGetComponent<Hierarchy>(part) : nullptr;
+        check(model != kNullEntity && loaded.raw().get<Name>(model).value == "Renamed",
+              binary ? "binary scenes keep ids across save/load" : "text scenes keep ids across save/load");
+        check(partHierarchy && partHierarchy->parent == guids::find(loaded, guids::of(ecs, modelB)) &&
+                  loaded.raw().get<Transform>(part).position.x == 5.0f,
+              "children with repeated names find the right parent through its id");
+    }
+
+    {
+        // Links between objects survive save/load through ids.
+        ECS world;
+        const EntityId part0 = world.createEntity("Part");
+        const EntityId part1 = world.createEntity("Part");
+        const EntityId weld = world.createEntity("WeldConstraint");
+        world.addComponent<InstanceInfo>(part0, InstanceInfo{"Part"});
+        world.addComponent<InstanceInfo>(part1, InstanceInfo{"Part"});
+        InstanceInfo weldInfo{"WeldConstraint"};
+        weldInfo.properties["Part0"] = InstanceValue::ofInstance(instances::refOf(world, part0));
+        weldInfo.properties["Part1"] = InstanceValue::ofInstance(instances::refOf(world, part1));
+        world.addComponent<InstanceInfo>(weld, std::move(weldInfo));
+        hierarchy::setParent(world, weld, part0);
+        const Guid part1Id = guids::ensure(world, part1);
+        SceneFile file = sceneManager.captureScene(world, camera);
+        check(file.saveToFile(textPath), "scene with a weld saves");
+        SceneFile reread;
+        check(reread.loadFromFile(textPath), "scene with a weld loads");
+        ECS loaded;
+        instantiateSceneEntities(reread.entities, loaded, SceneBuildContext{});
+        EntityId loadedWeld = kNullEntity;
+        for (auto [entity, info] : loaded.raw().view<InstanceInfo>().each()) {
+            if (info.className == "WeldConstraint") loadedWeld = entity;
+        }
+        const auto* info = loadedWeld != kNullEntity ? loaded.tryGetComponent<InstanceInfo>(loadedWeld) : nullptr;
+        check(info && instances::entityOf(loaded, info->properties.at("Part1").ref) == guids::find(loaded, part1Id) &&
+                  instances::entityOf(loaded, info->properties.at("Part0").ref) != kNullEntity &&
+                  info->properties.at("Part1").text.empty(),
+              "a weld's Part0/Part1 are linked again after save/load");
+    }
+
+    // A scene from before 4.5 has no ids.
+    SceneFile old = captured;
+    for (auto& record : old.entities) record.guid.clear(), record.parentGuid.clear();
+    ECS fromOld;
+    instantiateSceneEntities(old.entities, fromOld, SceneBuildContext{});
+    std::unordered_set<Guid, GuidHash> seen;
+    size_t withId = 0;
+    for (auto [entity, guid] : fromOld.raw().view<Guid>().each()) {
+        withId += guid.valid() ? 1 : 0;
+        seen.insert(guid);
+    }
+    check(withId == 4 && seen.size() == 4, "objects from old scenes get new, distinct ids when opened");
+
+    // Loading the same scene twice into one world doesn't duplicate ids.
+    ECS twice;
+    instantiateSceneEntities(captured.entities, twice, SceneBuildContext{});
+    instantiateSceneEntities(captured.entities, twice, SceneBuildContext{});
+    seen.clear();
+    for (auto [entity, guid] : twice.raw().view<Guid>().each()) seen.insert(guid);
+    check(seen.size() == 8, "a second copy of a scene gets its own ids");
+
+    // Studio: duplicate and paste make new ids, undo restores the same ones.
+    const EntityId copy = engine::studio::duplicateEntity(ecs, modelA);
+    check(guids::of(ecs, copy).valid() && !(guids::of(ecs, copy) == idA), "a duplicate gets a new id");
+    const auto snapshot = engine::studio::EntitySnapshot::capture(ecs, {modelB});
+    const Guid idB = guids::of(ecs, modelB);
+    hierarchy::destroyEntityRecursive(ecs, modelB);
+    const auto restored = snapshot.restore(ecs);
+    check(restored.size() == 1 && guids::of(ecs, restored[0]) == idB, "undoing a delete brings back the same id");
+    const auto pasted = snapshot.restore(ecs, true);
+    check(pasted.size() == 1 && guids::of(ecs, pasted[0]).valid() && !(guids::of(ecs, pasted[0]) == idB),
+          "pasting gives new ids");
+}
+
+void testSingleInstanceLock() {
+    std::printf("\n-- single Player instance --\n");
+    const std::string name = "kronos-test-lock-" + std::to_string(static_cast<long long>(std::time(nullptr)));
+    auto first = std::make_unique<engine::core::SingleInstance>();
+    check(first->acquire(name), "the first Player gets the lock");
+    engine::core::SingleInstance second;
+    check(!second.acquire(name), "a second Player sees the first one is open");
+    first.reset();
+    engine::core::SingleInstance third;
+    check(third.acquire(name), "the lock is free again once the first Player closes");
+}
+
+void testSiblingExecutable() {
+    std::printf("\n-- sibling executables --\n");
+    // The Player relaunches itself for Broken Bones; on Windows that path needs ".exe".
+    const std::string self = engine::core::siblingExecutable("engine_tests");
+    check(std::filesystem::is_regular_file(self), "the path built for a program next to this one points at a real file");
+#ifdef _WIN32
+    check(self.size() > 4 && self.compare(self.size() - 4, 4, ".exe") == 0, "on Windows it ends in .exe");
+#else
+    check(self.size() < 4 || self.compare(self.size() - 4, 4, ".exe") != 0, "outside Windows there's no .exe");
+#endif
+}
+
+void testPythonScripts() {
+    std::printf("\n-- python game scripts --\n");
+    using engine::core::PythonScripting;
+    engine::core::ECS ecs;
+    auto crate = ecs.createEntity("Crate");
+    PythonScripting python;
+    python.setWorld(&ecs, nullptr);
+    std::string output;
+    python.setOutputCallback([&output](const std::string& line) { output += line + "\n"; });
+
+    auto game = python.load("Game", R"PY(
+crate = world.find("Crate")
+print("found", world.name(crate), world.find("Nope"))
+ticks = 0
+
+@events.on_update
+def spin(dt):
+    global ticks
+    ticks += 1
+    x, y, z = world.get_position(crate)
+    world.set_position(crate, x + 1, 2, 3)
+    if ticks == 2:
+        print("ticks", ticks, "time", round(world.time(), 2))
+)PY");
+    check(game != PythonScripting::kInvalidScript, "a Python script loads");
+    check(output.find("found Crate None") != std::string::npos, "print and world.find/world.name work");
+    python.tick(0.5f);
+    python.tick(0.5f);
+    const auto* transform = ecs.tryGetComponent<engine::core::Transform>(crate);
+    check(transform != nullptr && transform->position == glm::vec3(2.0f, 2.0f, 3.0f),
+          "an on_update handler moves an entity each tick");
+    check(output.find("ticks 2 time 1.0") != std::string::npos, "handlers get dt and world.time() counts game time");
+
+    output.clear();
+    auto sandbox = python.load("Sandbox", R"PY(
+def blocked(code):
+    try:
+        exec(code)
+        return "open"
+    except BaseException as e:
+        return "blocked"
+for code in ["import os", "open('x')", "import socket", "import stdc", "import pkpy", "import pickle",
+             "exit(3)", "input()", "import time\ntime.sleep(100)", "import mymodule"]:
+    print(code.split("\n")[-1], blocked(code))
+import math, json, random
+print("stdlib", math.floor(2.5), json.dumps([1, 2]))
+)PY");
+    check(sandbox != PythonScripting::kInvalidScript, "the sandbox probe runs (and exit() did not end the process)");
+    check(output.find(" open\n") == std::string::npos,
+          "files, the OS, sockets, raw memory, the watchdog, pickle, exit, input, sleep and file imports are blocked");
+    check(output.find("stdlib 2 [1, 2]") != std::string::npos, "math, json and random still work");
+
+    output.clear();
+    auto crashers = python.load("Crashers", R"PY(
+import json
+def deep(make):
+    x = []
+    for i in range(50000):
+        x = make(x)
+    return x
+results = []
+for name, code in [("repr", lambda: repr(deep(lambda x: [x]))),
+                   ("json", lambda: json.dumps(deep(lambda x: [x]))),
+                   ("hash", lambda: hash(deep(lambda x: (x,)))),
+                   ("dict", lambda: str(deep(lambda x: {'a': x}))),
+                   ("parse", lambda: eval('(' * 100000)),
+                   ("strmul", lambda: len('ab' * (2 ** 62)))]:
+    try:
+        code()
+        results.append(name + ":ok")
+    except BaseException as e:
+        results.append(name + ":" + type(e).__name__)
+print(" ".join(results))
+)PY");
+    check(crashers != PythonScripting::kInvalidScript && output.find("repr:RecursionError json:RecursionError hash:RecursionError "
+                                                                     "dict:RecursionError parse:SyntaxError strmul:ValueError") != std::string::npos,
+          "deep nesting and huge string repeats raise errors instead of crashing the engine");
+
+    output.clear();
+    auto spinner = python.load("Spinner", "while True:\n    try:\n        while True: pass\n    except BaseException:\n        pass\n");
+    check(spinner == PythonScripting::kInvalidScript && output.find("Spinner stopped: ran longer than") != std::string::npos,
+          "an endless loop is stopped, even one that catches the timeout");
+
+    output.clear();
+    auto hog = python.load("Hog", "@events.on_update\ndef hog(dt):\n    while True: pass\n");
+    check(hog != PythonScripting::kInvalidScript, "a script with a bad handler still loads");
+    python.tick(0.016f);
+    check(!python.isRunning(hog) && output.find("Hog stopped: ran longer than its 8 ms limit") != std::string::npos,
+          "a handler that runs too long stops its script");
+    check(python.isRunning(game), "other scripts keep running");
+
+    python.setMaxMemoryBytesPerScript(16u * 1024u * 1024u);
+    output.clear();
+    auto grower = python.load("Grower", "x = []\nwhile True:\n    x.append('a' * 1000)\n");
+    check(grower == PythonScripting::kInvalidScript && output.find("Grower stopped: used more than its 16 MB memory limit") != std::string::npos,
+          "a script that keeps allocating is stopped at its memory limit");
+    output.clear();
+    auto huge = python.load("Huge", "x = 'a' * (10 ** 9)\n");
+    check(huge == PythonScripting::kInvalidScript && output.find("Huge stopped: used more than") != std::string::npos,
+          "a single huge allocation is refused and the script stopped");
+    output.clear();
+    auto bigList = python.load("BigList", "x = [0] * (10 ** 10)\n");
+    check(bigList == PythonScripting::kInvalidScript && output.find("BigList stopped: used more than") != std::string::npos,
+          "a huge list is refused too");
+    output.clear();
+    python.setMaxMillisForLoad(10000.0);
+    auto names = python.load("Names", "class O: pass\no = O()\nfor i in range(10 ** 8):\n    getattr(o, 'n' + str(i), None)\n");
+    python.setMaxMillisForLoad(250.0);
+    check(names == PythonScripting::kInvalidScript && output.find("Names stopped: used more than") != std::string::npos,
+          "names a script makes up count against its memory, though PocketPy shares and keeps them");
+
+    output.clear();
+    auto after = python.load("After", "print('still fine', sum(range(10)))\n");
+    check(after != PythonScripting::kInvalidScript && output.find("still fine 45") != std::string::npos,
+          "VMs freed by stopped scripts can be used again");
+    check(python.memoryUsed(after) > 0 && python.memoryUsed(after) < 16u * 1024u * 1024u, "a script's memory use is counted");
+
+    output.clear();
+    auto failing = python.load("Typo", "@events.on_update\ndef f(dt):\n    undefined_name\n");
+    python.tick(0.016f);
+    python.tick(0.016f);
+    check(python.isRunning(failing) && output.find("NameError") != std::string::npos &&
+              output.find("NameError") == output.rfind("NameError"),
+          "a handler error is reported once and the script keeps running");
+
+    output.clear();
+    auto goodbye = python.load("Bye", "events.on_unload(lambda: print('bye'))\n");
+    python.unload(goodbye);
+    check(output.find("bye") != std::string::npos && !python.isRunning(goodbye), "on_unload runs when a script is unloaded");
+
+    python.unloadAll();
+    std::vector<PythonScripting::ScriptId> many;
+    for (int i = 0; i < PythonScripting::kMaxScripts; ++i) many.push_back(python.load("S" + std::to_string(i), "pass"));
+    check(std::count(many.begin(), many.end(), PythonScripting::kInvalidScript) == 0, "15 Python scripts can run at once");
+    output.clear();
+    check(python.load("Extra", "pass") == PythonScripting::kInvalidScript && output.find("too many Python scripts") != std::string::npos,
+          "a 16th script is refused with a clear message");
+    python.unloadAll();
+    check(python.load("Again", "pass") != PythonScripting::kInvalidScript, "unloading frees the VMs");
+}
+
+void testRollbackScript() {
+    using namespace rollback_physics_test;
+    using engine::core::PhysicsRollback;
+    using engine::core::RollbackInput;
+    using engine::core::RollbackScript;
+    std::printf("\n-- rollback match scripts --\n");
+
+    const std::string source = R"(
+local SPEED = 6
+local tuning = { jumpSpeed = 5 }
+
+function init(players)
+    local state = { jumps = {}, coin = vector.create(0, 0, 0), touches = 0, wave = 0 }
+    for p = 1, players do state.jumps[p] = 0 end
+    return state
+end
+
+function step(state, ctx)
+    for p = 1, ctx.players do
+        local input = ctx.input(p)
+        local body = ctx.player(p)
+        local v = ctx.velocity(body)
+        local up = v.y
+        if input.jump and math.abs(v.y) < 0.05 then
+            up = tuning.jumpSpeed
+            state.jumps[p] += 1
+        end
+        ctx.setVelocity(body, vector.create(input.moveX * SPEED, up, input.moveZ * SPEED))
+    end
+    state.touches += #ctx.contacts()
+    state.wave = math.sin(ctx.frame * 0.1) + math.atan2(1, 2)
+    if ctx.frame % 30 == 0 then
+        state.coin = vector.create(math.random(-10, 10), 0.5, math.random() * 10)
+    end
+end
+)";
+
+    {
+        RollbackScript bad;
+        std::string error;
+        check(!bad.load("bad", "local count = 0\nfunction step(state, ctx)\n  count += 1\nend\n", error) &&
+                  error.find("line 3") != std::string::npos && error.find("count") != std::string::npos,
+              "a match script that changes a top-level local inside a function is refused with its line");
+        RollbackScript noStep;
+        check(!noStep.load("nostep", "function init() return {} end", error) && error.find("step") != std::string::npos,
+              "a match script without step() is refused");
+        RollbackScript syntax;
+        check(!syntax.load("syntax", "function step(", error) && !error.empty(), "a syntax error is reported");
+        RollbackScript fine;
+        check(fine.load("fine", "function step(state, ctx)\n  local n = 0\n  local f = function() n += 1 end\n  f()\nend\n",
+                        error),
+              "changing a step-local from a nested function is allowed");
+    }
+    {
+        RollbackScript sandboxed;
+        std::string error;
+        check(sandboxed.load("sandbox", R"(
+local config = { speed = 1 }
+function step(state, ctx)
+    if ctx.frame == 0 then config.speed = 2 end
+    if ctx.frame == 1 then leaked = 1 end
+    if ctx.frame == 2 then while true do end end
+    if ctx.frame == 3 then state.bad = function() end end
+    if ctx.frame == 4 then state.ok = (os == nil) and (math.exp == nil) and (debug == nil) end
+end
+)",
+                              error),
+              "sandbox test script loads");
+        World world;
+        check(build(world), "sandbox test world builds");
+        std::vector<uint8_t> game;
+        check(sandboxed.initialState(2, game, error), "a script without init starts with an empty state");
+        const std::vector<uint8_t> start = game;
+        engine::core::RollbackInputs inputs{};
+        std::vector<engine::core::Physics::CollisionEvent> contacts;
+        auto run = [&](uint32_t frame) {
+            engine::core::RollbackFrameContext ctx{world.physics, world.ecs, inputs, 2, frame, 1.0f / 60.0f, game, contacts};
+            sandboxed.step(ctx, 0, world.players);
+        };
+        run(0);
+        check(sandboxed.errorCount() == 1 && sandboxed.lastError().find("readonly") != std::string::npos && game == start,
+              "tables outside state are read-only, and a failing step leaves the state unchanged");
+        run(1);
+        check(sandboxed.errorCount() == 2 && sandboxed.lastError().find("readonly") != std::string::npos,
+              "a match script can't create globals");
+        run(2);
+        check(sandboxed.errorCount() == 3 && sandboxed.lastError().find("too long") != std::string::npos,
+              "an endless loop is stopped by the instruction budget");
+        run(3);
+        check(sandboxed.errorCount() == 4 && sandboxed.lastError().find("function") != std::string::npos,
+              "state can't hold functions");
+        run(4);
+        check(sandboxed.errorCount() == 4 && game != start, "a good step saves its state");
+    }
+    {
+        // The example in docs/ROLLBACK.md.
+        RollbackScript example;
+        std::string error;
+        World world;
+        std::vector<uint8_t> game;
+        check(build(world) && example.load("example", R"(
+local SPEED = 6
+
+function init(players)
+    local state = { jumps = {} }
+    for p = 1, players do state.jumps[p] = 0 end
+    return state
+end
+
+function step(state, ctx)
+    for p = 1, ctx.players do
+        local input = ctx.input(p)
+        local body = ctx.player(p)
+        if input.jump then state.jumps[p] += 1 end
+        if input.primary then ctx.impulse(body, vector.create(0, 5, 0)) end
+    end
+    if ctx.frame % 60 == 0 then
+        local pad = ctx.find("BoostPad")
+        if pad then ctx.moveKinematic(pad, vector.create(math.random(-5, 5), 0.5, 0)) end
+    end
+end
+)", error) && example.initialState(2, game, error),
+              "the ROLLBACK.md example loads");
+        engine::core::RollbackInputs inputs{};
+        inputs[0] = RollbackInput::make({}, 0.0f, 0.0f, RollbackInput::Jump | RollbackInput::Primary);
+        std::vector<engine::core::Physics::CollisionEvent> contacts;
+        const std::vector<uint8_t> start = game;
+        for (uint32_t frame = 0; frame < 3; ++frame) {
+            engine::core::RollbackFrameContext ctx{world.physics, world.ecs, inputs, 2, frame, 1.0f / 60.0f, game, contacts};
+            example.step(ctx, 0, world.players);
+        }
+        check(example.errorCount() == 0 && game != start, "the ROLLBACK.md example runs");
+    }
+    {
+        // Equal tables encode to equal bytes whatever order their keys were added in.
+        lua_State* L = luaL_newstate();
+        lua_newtable(L);
+        lua_pushnumber(L, 1);
+        lua_setfield(L, -2, "b");
+        lua_pushnumber(L, 2);
+        lua_setfield(L, -2, "a");
+        lua_pushboolean(L, 1);
+        lua_rawseti(L, -2, 3);
+        lua_newtable(L);
+        lua_pushboolean(L, 1);
+        lua_rawseti(L, -2, 3);
+        lua_pushnumber(L, 2);
+        lua_setfield(L, -2, "a");
+        lua_pushnumber(L, 1);
+        lua_setfield(L, -2, "b");
+        std::vector<uint8_t> first, second;
+        std::string error;
+        check(engine::core::rollback_state::encode(L, -2, first, error) &&
+                  engine::core::rollback_state::encode(L, -1, second, error) && first == second,
+              "match state encoding doesn't depend on key order");
+        size_t at = 0;
+        check(engine::core::rollback_state::decode(L, first.data(), first.size(), at) && at == first.size(),
+              "match state decodes");
+        std::vector<uint8_t> again;
+        check(engine::core::rollback_state::encode(L, -1, again, error) && again == first, "decoding then encoding round-trips");
+        at = 0;
+        check(!engine::core::rollback_state::decode(L, first.data(), first.size() - 2, at), "truncated state is rejected");
+        lua_close(L);
+    }
+
+    constexpr uint32_t kFrames = 240;
+    const std::vector<RollbackInput> scripted[2] = {script(5, kFrames), script(13, kFrames)};
+    auto makeStep = [](RollbackScript& runner, World& world) {
+        return [&runner, &world](engine::core::RollbackFrameContext& frame) { runner.step(frame, 0, world.players); };
+    };
+    auto start = [&](RollbackScript& runner, std::vector<uint8_t>& game) {
+        std::string error;
+        return runner.load("match", source, error) && runner.initialState(2, game, error);
+    };
+
+    World referenceWorld;
+    RollbackScript referenceScript;
+    std::vector<uint8_t> referenceStart;
+    check(build(referenceWorld) && start(referenceScript, referenceStart), "reference match script starts");
+    PhysicsRollback reference(referenceWorld.physics, referenceWorld.ecs, {2, 0, 8, 1.0f / 60.0f, true},
+                              makeStep(referenceScript, referenceWorld), referenceStart);
+    for (uint32_t f = 0; f < kFrames; ++f) {
+        reference.addRemoteInput(1, f, scripted[1][f]);
+        reference.advance(scripted[0][f]);
+    }
+    reference.synchronize();
+    check(referenceScript.errorCount() == 0, "the reference match script runs without errors");
+    check(reference.gameState() != referenceStart, "the match script's state changes as it plays");
+
+    World worlds[2];
+    RollbackScript scripts[2];
+    std::vector<uint8_t> starts[2];
+    check(build(worlds[0]) && build(worlds[1]) && start(scripts[0], starts[0]) && start(scripts[1], starts[1]),
+          "peer match scripts start");
+    PhysicsRollback sessions[2] = {PhysicsRollback(worlds[0].physics, worlds[0].ecs, {2, 0, 8, 1.0f / 60.0f, true},
+                                                   makeStep(scripts[0], worlds[0]), starts[0]),
+                                   PhysicsRollback(worlds[1].physics, worlds[1].ecs, {2, 1, 8, 1.0f / 60.0f},
+                                                   makeStep(scripts[1], worlds[1]), starts[1])};
+    engine::net::RollbackPeer peers[2] = {engine::net::RollbackPeer(sessions[0]), engine::net::RollbackPeer(sessions[1])};
+    uint32_t rng = 4242;
+    auto next = [&] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+    struct Packet { uint32_t deliverTick; int to; std::vector<uint8_t> bytes; };
+    std::vector<Packet> inFlight;
+    for (uint32_t tick = 0; tick < 3000; ++tick) {
+        for (int p = 0; p < 2; ++p) {
+            const uint32_t f = sessions[p].currentFrame();
+            if (f < kFrames) peers[p].tick(scripted[p][f]);
+            if (next() % 100 < 20) continue;
+            inFlight.push_back({tick + 2 + next() % 6, 1 - p, peers[p].buildPacket()});
+        }
+        for (size_t i = 0; i < inFlight.size();) {
+            if (inFlight[i].deliverTick <= tick) {
+                peers[inFlight[i].to].receive(inFlight[i].bytes.data(), inFlight[i].bytes.size());
+                inFlight[i] = std::move(inFlight.back());
+                inFlight.pop_back();
+            } else {
+                ++i;
+            }
+        }
+        if (sessions[0].confirmedFrame() == kFrames - 1 && sessions[1].confirmedFrame() == kFrames - 1 &&
+            tick > kFrames + 200) {
+            break;
+        }
+    }
+    for (auto& session : sessions) session.synchronize();
+    check(sessions[0].stats().rollbacks + sessions[1].stats().rollbacks > 0, "the scripted match really rolls back");
+    check(sessions[0].gameState() == reference.gameState() && sessions[1].gameState() == reference.gameState() &&
+              sessions[0].checksum(kFrames) == reference.checksum(kFrames) &&
+              sessions[1].checksum(kFrames) == reference.checksum(kFrames),
+          "match scripts on two peers over a lossy link end with the same state as a run without rollbacks");
+    check(!sessions[0].desyncFrame() && !sessions[1].desyncFrame(), "scripted peers never desync");
+
+    World replayWorld;
+    RollbackScript replayScript;
+    std::vector<uint8_t> replayStart;
+    check(build(replayWorld, 3) && start(replayScript, replayStart), "replay match script starts");
+    const auto verification = sessions[0].replay().verify(replayWorld.physics, replayWorld.ecs,
+                                                          makeStep(replayScript, replayWorld));
+    check(verification.firstMismatch == -1 && verification.framesChecked == kFrames &&
+              verification.finalGame == reference.gameState(),
+          "a recorded scripted match replays bit-identically");
+}
+
 void testRollbackPacketCodec() {
     using namespace engine::net;
     RollbackPacket packet;
@@ -28589,8 +29529,7 @@ void testPluginApiInProcess() {
     std::filesystem::remove_all(dir, ec);
 }
 
-void testSamplePluginApiPlugin() {
-#if defined(SAMPLE_C_PLUGIN_PATH)
+void testSamplePluginApiPlugin(const char* path, const char* panelId, const char* label) {
     using namespace plugin_api_test;
     using engine::plugin::PluginHost;
     for (const bool sandbox : {false, true}) {
@@ -28612,26 +29551,26 @@ void testSamplePluginApiPlugin() {
         host.setScene(&ecs);
         std::string error;
 #if defined(KRONOS_PLUGIN_SANDBOX_PATH)
-        if (!host.load(SAMPLE_C_PLUGIN_PATH, options, error)) {
+        if (!host.load(path, options, error)) {
 #else
-        if (!host.load(SAMPLE_C_PLUGIN_PATH, {}, error)) {
+        if (!host.load(path, {}, error)) {
 #endif
-            check(sandbox && error.find("Landlock") != std::string::npos, "sample plugin: loads");
+            check(sandbox && error.find("Landlock") != std::string::npos, (std::string(label) + ": loads").c_str());
             continue;
         }
         RecordingUi ui;
         KronosUi table = ui.table();
-        host.drawPanel("kronos.sample.grid-snap", table);
+        host.drawPanel(panelId, table);
         ui.reset();
         ui.click = "Snap everything";
-        host.drawPanel("kronos.sample.grid-snap", table);
+        host.drawPanel(panelId, table);
         if (sandbox) {
             ui.reset();
-            host.drawPanel("kronos.sample.grid-snap", table);
+            host.drawPanel(panelId, table);
         }
         const auto pa = ecs.tryGetComponent<engine::core::Transform>(a)->position;
         check(pa == glm::vec3(0.0f, 2.3f, -2.0f) && !ui.texts.empty() && ui.texts.back() == "Snapped 1 of 2 objects.",
-              sandbox ? "sample plugin: grid snap (sandboxed)" : "sample plugin: grid snap");
+              (std::string(label) + (sandbox ? ": grid snap (sandboxed)" : ": grid snap")).c_str());
         std::vector<uint8_t> out;
         std::string ext;
         check(host.importAsset("hill.pgm", bytes("P2\n# tiny\n2 2\n255\n0 255\n51 0\n"), out, ext, error) &&
@@ -28639,9 +29578,18 @@ void testSamplePluginApiPlugin() {
                   text(out).find("v -0.500 0.000 -0.500\nv 0.500 10.000 -0.500\nv -0.500 2.000 0.500\n") !=
                       std::string::npos &&
                   text(out).find("f 1 3 2\nf 2 3 4\n") != std::string::npos,
-              sandbox ? "sample plugin: heightmap to OBJ (sandboxed)" : "sample plugin: heightmap to OBJ");
-        check(!host.importAsset("bad.pgm", bytes("P2 1 1 255 0"), out, ext, error), "sample plugin: bad heightmap refused");
+              (std::string(label) + (sandbox ? ": heightmap to OBJ (sandboxed)" : ": heightmap to OBJ")).c_str());
+        check(!host.importAsset("bad.pgm", bytes("P2 1 1 255 0"), out, ext, error), (std::string(label) + ": bad heightmap refused").c_str());
     }
+}
+
+void testSamplePluginApiPlugin() {
+#if defined(SAMPLE_C_PLUGIN_PATH)
+    testSamplePluginApiPlugin(SAMPLE_C_PLUGIN_PATH, "kronos.sample.grid-snap", "sample plugin");
+#endif
+#if defined(SAMPLE_RUST_PLUGIN_PATH)
+    std::printf("\n-- Rust plugin (sdk/rust/kronos) --\n");
+    testSamplePluginApiPlugin(SAMPLE_RUST_PLUGIN_PATH, "kronos.sample.rust.grid-snap", "Rust plugin");
 #endif
 }
 
@@ -29099,6 +30047,148 @@ void testAudioPerSourceVoices() {
 
     audio.releaseVoices();
     check(audio.voiceCount() == 0 && near(render(audio, 0.1f), 0.0f, 0.001f), "releaseVoices silences every entity");
+    audio.shutdown();
+}
+
+void testSequenceAudioCues() {
+    using namespace engine::core;
+    using namespace engine::cinematic;
+    std::printf("\n-- keyframe-bound audio --\n");
+    Audio audio;
+    if (!audio.initializeOffline(2, 48000)) {
+        std::printf("  skipped: offline audio engine unavailable\n");
+        return;
+    }
+    std::vector<float> click(240 * 2, 0.5f);
+    const SoundHandle clickSound = audio.reserveSound();
+    audio.setSoundPcm(clickSound, click.data(), 240, 2, 48000);
+    const auto resolve = [&](const std::string& payload) {
+        return payload == "click" ? clickSound : kInvalidSoundHandle;
+    };
+
+    // Plays the sequence at 60 fps for `seconds` and returns the frames where a click starts.
+    auto run = [&](Sequence& sequence, SequenceAudioPlayer& player, float seconds, uint64_t& startFrame) {
+        std::vector<uint64_t> onsets;
+        std::vector<float> chunk(800 * 2);
+        std::vector<TrackEvent> fired;
+        startFrame = audio.engineTimeFrames();
+        bool wasLoud = false;
+        player.update(sequence, audio, resolve);
+        for (int frame = 0; frame < static_cast<int>(seconds * 60.0f); ++frame) {
+            sequence.advance(1.0f / 60.0f, fired);
+            audio.renderOffline(chunk.data(), 800);
+            for (size_t i = 0; i < 800; ++i) {
+                const bool loud = std::abs(chunk[i * 2]) > 1e-4f;
+                if (loud && !wasLoud) onsets.push_back(static_cast<uint64_t>(frame) * 800 + i);
+                wasLoud = loud;
+            }
+            player.update(sequence, audio, resolve);
+        }
+        return onsets;
+    };
+
+    {
+        Sequence sequence;
+        auto& cues = sequence.addTrack("Audio", TrackKind::Audio);
+        cues.events.push_back(TrackEvent{0.3f, "click"});
+        cues.events.push_back(TrackEvent{0.5004f, "click"});
+        cues.events.push_back(TrackEvent{0.45f, "missing"});
+        auto& muted = sequence.addTrack("Muted", TrackKind::Audio);
+        muted.muted = true;
+        muted.events.push_back(TrackEvent{0.4f, "click"});
+        sequence.addTrack("Script", TrackKind::ScriptTrigger).events.push_back(TrackEvent{0.35f, "click"});
+        SequenceAudioPlayer player;
+        sequence.play();
+        uint64_t start = 0;
+        const auto onsets = run(sequence, player, 0.8f, start);
+        const uint64_t second = static_cast<uint64_t>(std::llround(static_cast<double>(0.5004f) * 48000.0));
+        check(onsets.size() == 2, "only the two unmuted audio cues with a sound play");
+        check(onsets.size() == 2 && onsets[0] == 14400 && onsets[1] == second,
+              "audio cues start on the exact sample of their keyframe, not on a frame boundary");
+    }
+    {
+        Sequence sequence;
+        sequence.addTrack("Audio", TrackKind::Audio).events.push_back(TrackEvent{0.1f, "click"});
+        sequence.setLoopRegion(0.0f, 0.5f);
+        SequenceAudioPlayer player;
+        sequence.play();
+        uint64_t start = 0;
+        const auto onsets = run(sequence, player, 1.2f, start);
+        check(onsets.size() == 3 && onsets[0] == 4800 && onsets[1] == 28800 && onsets[2] == 52800,
+              "a looping sequence plays its cue on the exact sample every loop");
+    }
+    {
+        Sequence sequence;
+        sequence.addTrack("Audio", TrackKind::Audio).events.push_back(TrackEvent{0.3f, "click"});
+        SequenceAudioPlayer player;
+        sequence.play();
+        uint64_t start = 0;
+        run(sequence, player, 0.25f, start);
+        check(audio.cueCount() == 1, "a cue inside the lookahead is scheduled before its time");
+        sequence.pause();
+        const auto silent = run(sequence, player, 0.3f, start);
+        check(silent.empty() && audio.cueCount() == 0, "pausing cancels cues that haven't started");
+        sequence.play();
+        sequence.setPlayhead(0.0f);
+        const auto again = run(sequence, player, 0.5f, start);
+        check(again.size() == 1 && again[0] == 14400, "after a jump the cue plays at its new time");
+    }
+    {
+        const std::filesystem::path root = "test_sequence_audio";
+        std::filesystem::remove_all(root);
+        std::filesystem::create_directories(root / "music");
+        const std::vector<float> beep(480, 0.5f);
+        check(encodeFloatMonoToWavFile((root / "music" / "opening_stinger.wav").string(), beep, 48000),
+              "test sound written");
+        SoundPayloadCache cache;
+        cache.setRoots({"test_sequence_audio_nowhere", root.string()});
+        const SoundHandle found = cache.resolve(audio, "music/opening_stinger");
+        check(found != kInvalidSoundHandle, "an audio payload without an extension finds the .wav under a root");
+        check(cache.resolve(audio, "music/opening_stinger") == found, "a payload's sound is loaded once");
+        check(cache.resolve(audio, "music/later") == kInvalidSoundHandle, "a missing payload resolves to no sound");
+        (void)encodeFloatMonoToWavFile((root / "music" / "later.wav").string(), beep, 48000);
+        check(cache.resolve(audio, "music/later") == kInvalidSoundHandle, "misses are cached");
+        cache.forgetMissing();
+        check(cache.resolve(audio, "music/later") != kInvalidSoundHandle, "forgetMissing retries files added since");
+        check(cache.loadedCount() == 2, "the cache counts the two loaded sounds");
+        cache.clear(audio);
+        check(cache.loadedCount() == 0, "clear unloads the cached sounds");
+
+        // Movie Mode's default sequence has an Audio event at 0.5 s named music/opening_stinger.
+        MeshLibrary meshLibrary;
+        TextureLibrary textureLibrary;
+        engine::entitlement::EntitlementManager entitlements;
+        engine::studio::plugins::MovieModePlugin plugin(meshLibrary, textureLibrary, entitlements);
+        plugin.setAudio(&audio, [root] { return std::vector<std::string>{root.string()}; });
+        ECS ecs;
+        plugin.sequence().setPlayhead(0.0f);
+        plugin.sequence().play();
+        std::vector<float> chunk(800 * 2);
+        std::vector<uint64_t> onsets;
+        bool wasLoud = false;
+        for (int frame = 0; frame < 60; ++frame) {
+            plugin.update(1.0f / 60.0f, ecs, kNullEntity, {});
+            audio.renderOffline(chunk.data(), 800);
+            for (size_t i = 0; i < 800; ++i) {
+                const bool loud = std::abs(chunk[i * 2]) > 1e-4f;
+                if (loud && !wasLoud) onsets.push_back(static_cast<uint64_t>(frame) * 800 + i);
+                wasLoud = loud;
+            }
+        }
+        // The first update advances the playhead one frame before the audio clock starts.
+        check(onsets.size() == 1 && onsets[0] == 23200, "Movie Mode plays its Audio-track keyframe on the exact sample");
+        check(plugin.audioPlayer().scheduledCount() == 1, "Movie Mode scheduled the one audio cue");
+        plugin.sequence().setPlayhead(0.45f);
+        plugin.update(1.0f / 60.0f, ecs, kNullEntity, {});
+        check(audio.cueCount() == 1, "the cue just ahead of the playhead is scheduled");
+        plugin.setScrubbingForTest(true);
+        plugin.update(1.0f / 60.0f, ecs, kNullEntity, {});
+        check(audio.cueCount() == 0, "scrubbing in Movie Mode cancels pending audio cues");
+        plugin.setScrubbingForTest(false);
+        plugin.sequence().pause();
+        plugin.update(1.0f / 60.0f, ecs, kNullEntity, {});
+        check(audio.cueCount() == 0, "a paused sequence schedules no audio");
+    }
     audio.shutdown();
 }
 
@@ -43686,6 +44776,157 @@ print("DONE")
           "once parented to the workspace it is saved");
 }
 
+void testRobloxWeldAndMotor6D() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox Weld and Motor6D --\n");
+    ECS ecs;
+    Physics physics;
+    check(physics.initialize(), "joint test: physics initializes");
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "joint test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto run = [&](const char* name, const char* source) {
+        scripting.loadAndRun(name, std::string(R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function near(a, b) return (a - b).Magnitude < 1e-2 end
+)LUAU") + source + "\nprint(\"DONE\")\n");
+    };
+    auto simulate = [&](float seconds) {
+        for (float t = 0.0f; t < seconds; t += 1.0f / 60.0f) {
+            partbodies::sync(ecs, physics, false);
+            physics.step(1.0f / 60.0f, ecs);
+        }
+    };
+
+    run("JointSetup", R"LUAU(
+local function part(name, pos, anchored)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = Vector3.new(1, 1, 1)
+	p.Anchored = anchored
+	p.Position = pos
+	p.Parent = workspace
+	return p
+end
+local a = part("A", Vector3.new(0, 10, 0), true)
+local b = part("B", Vector3.new(20, 2, 20), false)
+local w = Instance.new("Weld")
+w.Name = "W"
+w.Part0 = a
+w.Part1 = b
+w.C0 = CFrame.new(0, 0, -3)
+w.Parent = a
+expect("Weld is a JointInstance", w:IsA("JointInstance") and w.C1 == CFrame.new())
+local c = part("C", Vector3.new(5, 10, 0), true)
+local d = part("D", Vector3.new(-20, 2, 0), false)
+local m = Instance.new("Motor6D")
+m.Name = "M"
+m.Part0 = c
+m.Part1 = d
+m.C0 = CFrame.new(2, 0, 0)
+m.Parent = c
+expect("ManualWeld can be made too", Instance.new("ManualWeld"):IsA("JointInstance"))
+)LUAU");
+    simulate(1.0f);
+    check(physics.fixedJointCount() == 2, "a Weld and a Motor6D each make one physics joint");
+
+    run("JointCheck", R"LUAU(
+local a, b, c, d = workspace.A, workspace.B, workspace.C, workspace.D
+expect("Part1 snaps to Part0 * C0 and stays there", near(b.Position, Vector3.new(0, 10, -3)))
+expect("the Motor6D's Part1 snaps too", near(d.Position, Vector3.new(7, 10, 0)))
+a.W.C0 = CFrame.new(0, 2, 0)
+expect("changing C0 moves Part1 at once", near(b.Position, Vector3.new(0, 12, 0)))
+a.W.C1 = CFrame.new(0, -1, 0)
+expect("C1 is applied inverted", near(b.Position, Vector3.new(0, 13, 0)))
+c.M.Transform = CFrame.Angles(0, math.rad(90), 0)
+expect("Motor6D.Transform turns Part1", math.abs(d.CFrame.LookVector.X) > 0.99 and near(d.Position, Vector3.new(7, 10, 0)))
+a.CFrame = CFrame.new(0, 20, 0)
+expect("moving Part0 by CFrame takes Part1 along", near(b.Position, Vector3.new(0, 23, 0)))
+)LUAU");
+    simulate(1.0f);
+    run("JointHold", R"LUAU(
+expect("an unanchored Part1 hangs on its weld instead of falling", near(workspace.B.Position, Vector3.new(0, 23, 0)))
+workspace.A.W.Enabled = false
+)LUAU");
+    simulate(1.0f);
+    check(physics.fixedJointCount() == 1, "disabling a Weld removes its joint");
+    run("JointDrop", R"LUAU(
+expect("with the weld disabled, Part1 falls onto Part0 below it", math.abs(workspace.B.Position.Y - 21) < 0.05)
+)LUAU");
+    check(std::find(output.begin(), output.end(), "DONE") != output.end(), "joint test: scripts ran");
+    checkLuauExpectations("joint", output);
+}
+
+void testRobloxEnumItems() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox enum items for Studio --\n");
+    const auto material = robloxEnumItems("Material");
+    check(material.size() >= 20 && material.front() == std::make_pair(std::string("Plastic"), 256),
+          "enum items: Material lists Plastic=256 first, like the Luau Enum table");
+    const auto shape = robloxEnumItems("PartType");
+    check(shape.size() == 5 && shape[1] == std::make_pair(std::string("Block"), 1), "enum items: PartType has Block=1");
+    check(robloxEnumItems("NotAnEnum").empty(), "enum items: an unknown enum gives an empty list");
+}
+
+void testRobloxPivots() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox GetPivot / PivotTo --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "pivot test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    scripting.loadAndRun("Pivots", R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function near(a, b) return (a - b).Magnitude < 1e-3 end
+local function part(name, pos, parent)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = Vector3.new(2, 2, 2)
+	p.Anchored = true
+	p.Position = pos
+	p.Parent = parent
+	return p
+end
+local solo = part("Solo", Vector3.new(1, 2, 3), workspace)
+expect("a part's pivot is its CFrame", near(solo:GetPivot().Position, Vector3.new(1, 2, 3)))
+solo.Color = Color3.new(0.3, 0.2, 0.1)
+solo.Position = Vector3.new(0.1, 0.7, 1.3)
+expect("float properties print without float noise", tostring(solo.Color) == "0.3, 0.2, 0.1" and tostring(solo.Position) == "0.1, 0.7, 1.3")
+solo.Position = Vector3.new(1, 2, 3)
+solo:PivotTo(CFrame.new(5, 5, 5))
+expect("PivotTo moves a part", near(solo.Position, Vector3.new(5, 5, 5)))
+
+local m = Instance.new("Model")
+m.Parent = workspace
+local a = part("A", Vector3.new(0, 1, 0), m)
+local b = part("B", Vector3.new(4, 1, 0), m)
+expect("a model without PrimaryPart pivots at its bounding-box centre", near(m:GetPivot().Position, Vector3.new(2, 1, 0)))
+m:PivotTo(CFrame.new(10, 1, 0))
+expect("PivotTo moves every part of the model", near(a.Position, Vector3.new(8, 1, 0)) and near(b.Position, Vector3.new(12, 1, 0)))
+expect("and GetPivot returns the new pivot", near(m:GetPivot().Position, Vector3.new(10, 1, 0)))
+m:PivotTo(CFrame.new(10, 1, 0) * CFrame.Angles(0, math.rad(90), 0))
+expect("rotating the pivot turns the model around it", near(a.Position, Vector3.new(10, 1, 2)) and near(b.Position, Vector3.new(10, 1, -2)))
+
+m.PrimaryPart = b
+m:PivotTo(CFrame.new(0, 20, 0))
+expect("with a PrimaryPart, the pivot is that part", near(b.Position, Vector3.new(0, 20, 0)) and near((a.Position - b.Position), Vector3.new(-4, 0, 0)))
+m:SetPrimaryPartCFrame(CFrame.new(0, 30, 0))
+expect("SetPrimaryPartCFrame moves the model", near(m:GetPrimaryPartCFrame().Position, Vector3.new(0, 30, 0)) and near(a.Position, Vector3.new(-4, 30, 0)))
+local folder = Instance.new("Folder")
+expect("Folders have no pivot", not pcall(function() folder:GetPivot() end))
+expect("PivotTo needs a CFrame", not pcall(function() solo:PivotTo(Vector3.new()) end))
+local empty = Instance.new("Model")
+expect("SetPrimaryPartCFrame without a PrimaryPart errors", not pcall(function() empty:SetPrimaryPartCFrame(CFrame.new()) end))
+print("DONE")
+)LUAU");
+    check(std::find(output.begin(), output.end(), "DONE") != output.end(), "pivot test: the script ran to the end");
+    checkLuauExpectations("pivot", output);
+}
+
 void testRobloxWeldConstraint() {
     using namespace engine::core;
     std::printf("\n-- Roblox WeldConstraint --\n");
@@ -45020,6 +46261,82 @@ void testRobloxReplication() {
     check(!replication::active(a), "replication: stop turns it off");
 }
 
+void testRobloxRemoteSecurity() {
+    using namespace engine::core;
+    using remotenet_test::End;
+    auto server = std::make_unique<End>();
+    auto client = std::make_unique<End>();
+    std::string error;
+    for (End* end : {server.get(), client.get()}) {
+        remotenet_test::buildPlace(end->ecs);
+        // A client loads the place file too, so it has the server-only objects locally.
+        const InstanceRef storage = instances::getService(end->ecs, "ServerStorage", error);
+        const InstanceRef secret = instances::create(end->ecs, "Part", error);
+        instances::setName(end->ecs, secret, "Secret");
+        (void)instances::setParent(end->ecs, secret, storage, error);
+        const InstanceRef hidden = instances::create(end->ecs, "RemoteEvent", error);
+        instances::setName(end->ecs, hidden, "Hidden");
+        (void)instances::setParent(end->ecs, hidden, storage, error);
+    }
+    server->scripting.setBindingsHook([e = server.get()](lua_State* L) { registerInstanceApi(L, e->ecs); });
+    check(server->scripting.initialize(), "remote security: server scripting starts");
+    server->scripting.setOutputCallback([e = server.get()](const std::string& line) { e->output.push_back(line); });
+    signals::runService(server->ecs).client = false;
+    remotenet::attach(server->ecs, remotenet::Side::Server, [](uint32_t, std::vector<uint8_t>, bool) {});
+    remotenet::attach(client->ecs, remotenet::Side::Client,
+                      [&](uint32_t, std::vector<uint8_t> bytes, bool) { server->inbox.emplace_back(5, std::move(bytes)); });
+    remotenet::addPlayer(server->ecs, 5, players::join(server->ecs, "Ana", 42, kNullEntity, false));
+    remotenet::addPlayer(client->ecs, 5, players::join(client->ecs, "Ana", 42, kNullEntity, true));
+
+    const InstanceRef holder = instances::create(server->ecs, "Script", error);
+    (void)instances::setParent(server->ecs, holder, instances::getService(server->ecs, "ServerScriptService", error), error);
+    server->scripting.loadAndRun("Guard", R"LUAU(
+local rs = game:GetService("ReplicatedStorage")
+rs.Ping.OnServerEvent:Connect(function(player, secret, item, bad)
+	print("SECRET " .. tostring(secret == nil))
+	print("ITEM " .. tostring(item ~= nil and item.Name == "Item"))
+	local ok = pcall(function() item.Position = bad end)
+	print("NAN " .. tostring(ok) .. " " .. tostring(item.Position.X == item.Position.X))
+end)
+game:GetService("ServerStorage").Hidden.OnServerEvent:Connect(function() print("HIDDEN FIRED") end)
+)LUAU", SecurityIdentity::UserScript, static_cast<uint32_t>(instances::entityOf(server->ecs, holder)), RunContext::Server);
+
+    auto childNamed = [](ECS& ecs, InstanceRef parent, const char* name) {
+        for (InstanceRef child : instances::children(ecs, parent)) {
+            if (instances::name(ecs, child) == name) return child;
+        }
+        return kNoInstance;
+    };
+    ECS& c = client->ecs;
+    const InstanceRef storage = instances::getService(c, "ReplicatedStorage", error);
+    const InstanceRef serverStorage = instances::getService(c, "ServerStorage", error);
+    const InstanceRef item = childNamed(c, childNamed(c, kWorkspaceInstance, "Box"), "Item");
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    check(remotenet::fireServer(c, childNamed(c, storage, "Ping"),
+                                {SignalArg::of(InstanceValue::ofInstance(childNamed(c, serverStorage, "Secret"))),
+                                 SignalArg::of(InstanceValue::ofInstance(item)),
+                                 SignalArg::of(InstanceValue::ofVector3({nan, 0.0f, 0.0f}))},
+                                error),
+          "remote security: the client sends");
+    (void)remotenet::fireServer(c, childNamed(c, serverStorage, "Hidden"), {}, error);
+    for (int i = 0; i < 3; ++i) {
+        std::deque<std::pair<uint32_t, std::vector<uint8_t>>> inbox;
+        inbox.swap(server->inbox);
+        for (const auto& [sender, bytes] : inbox) remotenet::receive(server->ecs, sender, bytes.data(), bytes.size());
+        signals::flush(server->ecs);
+        server->scripting.tick(0.1f);
+        signals::flush(server->ecs);
+    }
+    auto saw = [&](const char* text) {
+        return std::any_of(server->output.begin(), server->output.end(),
+                           [&](const std::string& line) { return line.find(text) != std::string::npos; });
+    };
+    check(saw("SECRET true"), "remote security: a server-only object named by a client arrives as nil");
+    check(saw("ITEM true"), "remote security: objects the client can see still arrive");
+    check(saw("NAN false true"), "remote security: a NaN position from a client is refused, the part stays put");
+    check(!saw("HIDDEN FIRED"), "remote security: a client can't fire a remote kept in ServerStorage");
+}
+
 void testRobloxRemoteNetwork() {
     using namespace engine::core;
     using remotenet_test::End;
@@ -45699,8 +47016,8 @@ void testValidateProject() {
     check(runtime && runtime->finding.count == 2 && runtime->finding.line == 2 &&
               runtime->entity == static_cast<uint32_t>(entt::to_integral(instances::entityOf(ecs, good))),
           "validate: errors from the last Play are grouped and point at their script and line");
-    check(findingFor(broken, "welds-not-saved") && broken.check("saving")->status == CheckStatus::Warning,
-          "validate: welds that won't be saved are a warning");
+    check(!findingFor(broken, "welds-not-saved") && broken.check("saving")->status == CheckStatus::Pass,
+          "validate: welds are saved now, so they no longer warn");
 
     // Garbage input: odd log lines and junk script text don't break it.
     ValidationInput junk;
@@ -48292,10 +49609,16 @@ int main() {
     testRobloxModuleScripts();
     testRobloxRemotes();
     testRobloxRemoteNetwork();
+    testRobloxRemoteSecurity();
     testRobloxReplication();
     testRobloxLiveBodies();
     testRobloxRaycast();
     testRobloxWeldConstraint();
+    testRobloxPivots();
+    testRobloxWeldAndMotor6D();
+    testRobloxEnumItems();
+    testRobloxUnionPieces();
+    testDeathRagdoll();
     testRobloxCurrentCamera();
     testRobloxDataStore();
     testRobloxServices();
@@ -48629,6 +49952,7 @@ int main() {
     testAttachAndDetachBodyToExistingEntity();
     testAttachBodyToEntityMeshRequiresRealMeshData();
     testPhysicsPreviewPluginPlayAttachesAndStopDetaches();
+    testStudioPlayKeepsGroundStill();
     testPhysicsPreviewPluginSkipsMeshColliders();
     testPhysicsPreviewPluginCastTestRay();
     testPhysicsPreviewPluginPauseSuspendsAutoStepAndStepOnceAdvancesExactly();
@@ -49144,6 +50468,7 @@ int main() {
     testProfanityFilterRemoveWordStopsDetecting();
     testProfanityFilterWordCountReflectsSeedList();
     testProfanityFilterPreservesNonProfaneWordsUncensored();
+    testProfanityFilterCatchesDodges();
     testProfanityFilterEmptyTextNoProfanity();
     testProfanityFilterSubstringOfProfaneWordNotFlagged();
     testMuteBlockRegistryMuteAndIsMuted();
@@ -49261,9 +50586,9 @@ int main() {
     testLanDiscoveryHeaderRejectsWrongMagicOrKind();
 #if defined(__linux__) // Linux-only feature or path
     testLanSessionAnnouncerRealLoopbackReachesBrowserWithRealPing();
-#endif
     testLanSessionBrowserPrunesStaleSessionAfterAnnouncerStops();
     testLanSessionBrowserDedupesRepeatedAnnouncesBySessionId();
+#endif
 #if !defined(_WIN32)
     testLanSessionBrowserRejectsAnnouncementWithWrongProtocolVersion();
 #endif
@@ -49513,6 +50838,7 @@ int main() {
     testScriptSandboxFreezesGlobalsAndBuiltinMetatables();
     testScriptSandboxWatchdogTerminatesRealInfiniteLoop();
     testScriptSandboxMemoryCapRaisesCatchableErrorInsteadOfCrashing();
+    testScriptMemoryBudgets();
     testScriptSecurityIdentityDefaultsToLeastPrivilegeAndIsUnforgeable();
     testScriptModuleResolverIsIdentityAwareAndRejectsTraversal();
     testTickScriptHotReloadLoadsNewScript();
@@ -49533,6 +50859,11 @@ int main() {
     testWorldStreamingCells();
     testPhysicsDeterminism();
     testPhysicsRollbackPeers();
+    testRollbackScript();
+    testPythonScripts();
+    testSiblingExecutable();
+    testSingleInstanceLock();
+    testPermanentObjectIds();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();
@@ -49542,6 +50873,7 @@ int main() {
     testAudioMixerConfig();
     testAudioMixerRuntime();
     testAudioPerSourceVoices();
+    testSequenceAudioCues();
     testScriptAudioApi();
     testSoundSavedInScenes();
     testSilentAudioMode();

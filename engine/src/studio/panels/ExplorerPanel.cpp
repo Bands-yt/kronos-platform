@@ -1,7 +1,12 @@
 #include "studio/panels/ExplorerPanel.hpp"
+#include "core/UnionGeometry.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <iterator>
+#include <optional>
+#include <string>
 
 #include <imgui.h>
 
@@ -61,6 +66,74 @@ void collectRowsRecursive(core::ECS& ecs, core::EntityId entity, int depth, std:
         for (core::EntityId child : hierarchy->children) collectRowsRecursive(ecs, child, depth + 1, rows);
     }
 }
+// Roblox-style class icon; nullopt falls back to the category icon.
+std::optional<Icon> classIcon(core::ECS& ecs, core::EntityId entity) {
+    namespace inst = core::instances;
+    const std::string cls = inst::className(ecs, inst::refOf(ecs, entity));
+    if (inst::classIsA(cls, "LuaSourceContainer")) return Icon::Script;
+    if (inst::classIsA(cls, "BasePart")) return Icon::Part;
+    if (cls == "Model") return Icon::Group;
+    if (cls == "Folder" || (inst::findClass(cls) != nullptr && inst::findClass(cls)->service)) return Icon::Folder;
+    if (inst::classIsA(cls, "Light")) return Icon::Lighting;
+    if (inst::classIsA(cls, "GuiBase")) return Icon::Layout;
+    if (cls == "WeldConstraint") return Icon::Anchor;
+    return std::nullopt;
+}
+
+// Right-click > Insert Object; returns the new object or kNullEntity.
+core::EntityId insertObjectMenu(core::ECS& ecs, core::InstanceRef parent) {
+    namespace inst = core::instances;
+    static const std::pair<const char*, std::vector<const char*>> kGroups[] = {
+        {"Parts", {"Part", "SpawnLocation", "Seat", "WedgePart", "Model", "Folder"}},
+        {"Scripts", {"Script", "LocalScript", "ModuleScript"}},
+        {"Effects", {"PointLight", "SpotLight", "Sound"}},
+        {"Joints", {"WeldConstraint"}},
+        {"GUI", {"ScreenGui", "Frame", "TextLabel", "TextButton", "ImageLabel", "UIListLayout", "UICorner"}},
+        {"Events and values",
+         {"RemoteEvent", "RemoteFunction", "BindableEvent", "BoolValue", "IntValue", "NumberValue", "StringValue"}},
+    };
+    core::EntityId made = core::kNullEntity;
+    if (!ImGui::BeginMenu("Insert Object")) return made;
+    for (const auto& [group, classes] : kGroups) {
+        ImGui::SeparatorText(group);
+        for (const char* cls : classes) {
+            const core::ClassDef* def = inst::findClass(cls);
+            if (def == nullptr || !def->creatable || !ImGui::MenuItem(cls)) continue;
+            std::string error;
+            const core::InstanceRef ref = inst::create(ecs, cls, error);
+            if (ref == core::kNoInstance) continue;
+            inst::setName(ecs, ref, cls);
+            if (inst::classIsA(cls, "BasePart")) {
+                glm::vec3 at(0.0f, 4.0f, 0.0f);
+                if (inst::classIsA(inst::className(ecs, parent), "BasePart")) {
+                    core::InstanceValue p;
+                    inst::getProperty(ecs, parent, *inst::findProperty("BasePart", "Position"), p);
+                    at = p.vec + glm::vec3(0.0f, 3.0f, 0.0f);
+                }
+                inst::setProperty(ecs, ref, *inst::findProperty("BasePart", "Position"), core::InstanceValue::ofVector3(at));
+                inst::setProperty(ecs, ref, *inst::findProperty("BasePart", "Anchored"), core::InstanceValue::ofBool(true));
+            }
+            if (!inst::setParent(ecs, ref, parent, error)) {
+                inst::destroy(ecs, ref);
+                continue;
+            }
+            made = inst::entityOf(ecs, ref);
+        }
+    }
+    ImGui::EndMenu();
+    return made;
+}
+
+// Roblox Studio's Explorer order for services.
+int serviceRank(const std::string& cls) {
+    static const char* const kOrder[] = {"Players", "Lighting", "MaterialService", "ReplicatedFirst",
+                                         "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterGui",
+                                         "StarterPack", "StarterPlayer", "Teams", "SoundService", "Chat"};
+    for (int i = 0; i < static_cast<int>(std::size(kOrder)); ++i) {
+        if (cls == kOrder[i]) return i;
+    }
+    return static_cast<int>(std::size(kOrder));
+}
 } // namespace
 
 float ExplorerPanel::animateOpenAmount(float current, float target, float dt, float rate) {
@@ -77,9 +150,11 @@ void ExplorerPanel::drawEntityNode(core::ECS& ecs, core::EntityId entity, int& r
     bool hasChildren = hierarchy && !hierarchy->children.empty();
 
     EntityCategory category = classifyEntity(ecs, entity);
-    Icon icon = iconForCategory(category);
-    IconCategoryColor color = iconCategoryColor(icon);
-    if (category != EntityCategory::Other) drawInlineIcon(icon, color);
+    if (const std::optional<Icon> icon = classIcon(ecs, entity)) {
+        drawInlineIcon(*icon, iconCategoryColor(*icon));
+    } else if (category != EntityCategory::Other) {
+        drawInlineIcon(iconForCategory(category), iconCategoryColor(iconForCategory(category)));
+    }
 
     const core::Name* nameComponent = ecs.tryGetComponent<core::Name>(entity);
     char label[64];
@@ -173,6 +248,10 @@ void ExplorerPanel::drawEntityNode(core::ECS& ecs, core::EntityId entity, int& r
     }
 
     if (ImGui::BeginPopupContextItem()) {
+        if (const core::EntityId made = insertObjectMenu(ecs, core::instances::refOf(ecs, entity)); made != core::kNullEntity) {
+            setSelected(made);
+            inserted_ = made;
+        }
         bool hasParent = hierarchy && hierarchy->parent != core::kNullEntity;
         if (!hasParent) ImGui::BeginDisabled();
         if (ImGui::MenuItem("Unparent")) core::hierarchy::unparent(ecs, entity);
@@ -199,8 +278,91 @@ void ExplorerPanel::drawEntityNode(core::ECS& ecs, core::EntityId entity, int& r
     }
 }
 
+void ExplorerPanel::drawRobloxTree(core::ECS& ecs) {
+    namespace inst = core::instances;
+    auto entitiesOf = [&](const std::vector<core::InstanceRef>& refs) {
+        std::vector<core::EntityId> out;
+        for (core::InstanceRef ref : refs) {
+            const core::EntityId e = inst::entityOf(ecs, ref);
+            if (e != core::kNullEntity && ecs.tryGetComponent<core::PlayerAvatarPart>(e) == nullptr) out.push_back(e);
+        }
+        return out;
+    };
+    const std::vector<core::EntityId> workspaceChildren = entitiesOf(inst::children(ecs, core::kWorkspaceInstance));
+    std::vector<core::EntityId> services;
+    for (core::InstanceRef ref : inst::children(ecs, core::kGameInstance)) {
+        if (ref == core::kWorkspaceInstance || inst::children(ecs, ref).empty()) continue;
+        for (core::EntityId e : entitiesOf({ref})) services.push_back(e);
+    }
+    std::stable_sort(services.begin(), services.end(), [&](core::EntityId a, core::EntityId b) {
+        return serviceRank(inst::className(ecs, inst::refOf(ecs, a))) <
+               serviceRank(inst::className(ecs, inst::refOf(ecs, b)));
+    });
+
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##explorer_search", "Search objects", search_, sizeof(search_));
+    if (search_[0] != '\0') {
+        std::string needle(search_);
+        std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) { return std::tolower(c); });
+        int shown = 0;
+        for (core::InstanceRef ref : inst::descendants(ecs, core::kGameInstance)) {
+            const core::EntityId e = inst::entityOf(ecs, ref);
+            if (e == core::kNullEntity) continue;
+            std::string name = inst::name(ecs, ref);
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+            if (name.find(needle) == std::string::npos) continue;
+            const std::string path = inst::fullName(ecs, ref);
+            const bool isSelected = std::find(selection_.begin(), selection_.end(), e) != selection_.end();
+            if (const std::optional<Icon> icon = classIcon(ecs, e)) drawInlineIcon(*icon, iconCategoryColor(*icon));
+            ImGui::PushID(static_cast<int>(entt::to_integral(e)));
+            if (ImGui::Selectable(path.c_str(), isSelected)) setSelected(e);
+            ImGui::PopID();
+            if (++shown >= 500) break;
+        }
+        if (shown == 0) ImGui::TextDisabled("No objects named like that.");
+        return;
+    }
+
+    std::vector<core::EntityId> rows;
+    for (core::EntityId e : workspaceChildren) collectRowsRecursive(ecs, e, 0, rows);
+    for (core::EntityId e : services) collectRowsRecursive(ecs, e, 0, rows);
+    int rowCursor = 0;
+
+    drawInlineIcon(Icon::Folder, iconCategoryColor(Icon::Folder));
+    const bool workspaceOpen =
+        ImGui::TreeNodeEx("Workspace##roblox_workspace", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+    if (ImGui::BeginPopupContextItem("workspace_menu")) {
+        if (const core::EntityId made = insertObjectMenu(ecs, core::kWorkspaceInstance); made != core::kNullEntity) {
+            setSelected(made);
+            inserted_ = made;
+        }
+        ImGui::EndPopup();
+    }
+    if (workspaceOpen) {
+        for (core::EntityId e : workspaceChildren) drawEntityNode(ecs, e, rowCursor, rows);
+        ImGui::TreePop();
+    } else {
+        for (core::EntityId e : workspaceChildren) {
+            std::vector<core::EntityId> subtree;
+            collectRowsRecursive(ecs, e, 0, subtree);
+            rowCursor += static_cast<int>(subtree.size());
+        }
+    }
+    for (core::EntityId e : services) drawEntityNode(ecs, e, rowCursor, rows);
+}
+
 void ExplorerPanel::draw(core::ECS& ecs) {
     ImGui::Begin("Explorer");
+    if (ImGui::RadioButton("Tree", robloxTree_)) robloxTree_ = true;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Groups", !robloxTree_)) robloxTree_ = false;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Group objects by kind (the older view).");
+    ImGui::Separator();
+    if (robloxTree_) {
+        drawRobloxTree(ecs);
+        ImGui::End();
+        return;
+    }
 
     // Every entity has a Transform (ECS::createEntity always adds one),
     // so that's the "list every entity" view -- see header comment on why
@@ -224,6 +386,7 @@ void ExplorerPanel::draw(core::ECS& ecs) {
     std::array<std::vector<core::EntityId>, ExplorerPanel::kCategoryCount> groupedRoots;
     for (auto entity : ecs.view<core::Transform>()) {
         if (!isTreeRoot(ecs, entity) || ecs.tryGetComponent<core::PlayerAvatarPart>(entity) != nullptr ||
+            core::unions::isPiece(ecs, entity) ||
             core::instances::isDetached(ecs, entity)) {
             continue;
         }

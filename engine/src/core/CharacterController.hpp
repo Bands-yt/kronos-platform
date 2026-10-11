@@ -6,6 +6,7 @@
 
 #include "core/AvatarController.hpp"
 #include "core/Camera.hpp"
+#include "core/DeathRagdoll.hpp"
 #include "core/ECS.hpp"
 #include "core/Physics.hpp"
 #include "core/PhysicsRollback.hpp"
@@ -182,6 +183,9 @@ public:
               AvatarController* avatarController = nullptr, const std::vector<EntityId>* skinnedEntities = nullptr);
 
     [[nodiscard]] EntityId entity() const { return entity_; }
+    // Removes a death ragdoll, e.g. when Studio's Play stops.
+    void releaseDeathRagdoll(Physics& physics) { deathRagdoll_.release(physics); }
+    [[nodiscard]] bool deathRagdollActive() const { return deathRagdoll_.active(); }
 
     // Rollback matches: the character's body is moved by the rollback
     // simulation (simulateRollback), so tick() only handles mouse look,
@@ -214,6 +218,7 @@ public:
                                                         EntityId ignore);
 
 private:
+    DeathRagdoll deathRagdoll_;
     Settings settings_;
     EntityId entity_ = kNullEntity;
     EntityId noseEntity_ = kNullEntity;

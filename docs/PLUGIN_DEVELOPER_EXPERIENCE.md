@@ -42,7 +42,7 @@ a gameplay script does, not a separate, weaker plugin-specific sandbox.
 Restated here for discoverability from a plugin-author's own starting
 point:
 
-- Real memory ceiling (256 MB default) and real per-tick execution-time
+- Real memory ceiling (64 MB per script, 256 MB per game by default) and real per-tick execution-time
   budget (8 ms default) — a runaway loop gets interrupted, not left to
   hang the whole editor.
 - No filesystem/network access beyond the real, explicit `world`/

@@ -31,6 +31,9 @@ namespace engine::core {
 // "no packaged-layout candidate available", not an error.
 [[nodiscard]] std::string executableDirectory();
 
+// Path of another Kronos program next to this one, with ".exe" on Windows.
+[[nodiscard]] std::string siblingExecutable(const std::string& name);
+
 // Pure, real, and independently testable (takes `exeDir` as a parameter
 // rather than calling executableDirectory() itself): prefers
 // `exeDir + "/" + subdirName` if it's a real, existing directory (the

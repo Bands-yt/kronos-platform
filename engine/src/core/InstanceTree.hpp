@@ -29,6 +29,7 @@ struct InstanceValue {
     glm::vec3 vec{0.0f};
     glm::quat rot{1.0f, 0.0f, 0.0f, 0.0f};
     uint32_t ref = ~0u; // Instance
+    // Instance, in saved scenes only: the target's Guid text until the loader links it.
 
     static InstanceValue ofBool(bool v);
     static InstanceValue ofNumber(double v);
@@ -168,6 +169,8 @@ void setCameraRotation(Camera& camera, const glm::quat& rotation);
 
 bool getProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, InstanceValue& out);
 void setProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, const InstanceValue& value);
+// False when a number, vector or CFrame holds NaN or infinity.
+[[nodiscard]] bool isFinite(const InstanceValue& value);
 
 [[nodiscard]] const InstanceValue* attribute(ECS& ecs, InstanceRef ref, const std::string& name);
 void setAttribute(ECS& ecs, InstanceRef ref, const std::string& name, const InstanceValue& value);
@@ -216,7 +219,11 @@ void markBodyMoved(ECS& ecs, EntityId entity, bool resetVelocity = false);
 void teleport(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation, bool resetVelocity);
 
 // The two parts an enabled WeldConstraint in the workspace joins; false if it joins nothing.
+// WeldConstraint, Weld, ManualWeld and Motor6D all hold two parts together.
+[[nodiscard]] bool isWeldClass(const std::string& className);
 bool weldParts(ECS& ecs, EntityId weld, EntityId& part0, EntityId& part1);
+// Weld/Motor6D: moves Part1 to Part0 * C0 * Transform * C1:Inverse(). False when nothing moved.
+bool snapJoint(ECS& ecs, EntityId joint, float tolerance = 1e-4f);
 // Every part joined to `part` through welds, `part` first.
 std::vector<EntityId> weldedAssembly(ECS& ecs, EntityId part);
 // Parts moved alone (Position/Orientation) since the last weld rebuild; their welds keep the new offset.

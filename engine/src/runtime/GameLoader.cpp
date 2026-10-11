@@ -61,6 +61,7 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
     core::Scripting& scripting = app.scripting();
     physics.shutdown();
     scripting.shutdown();
+    app.python().unloadAll();
     if (!physics.initialize() || !scripting.initialize()) {
         std::fprintf(stderr, "GameLoader: \"%s\" failed to re-initialize physics/scripting during reset\n",
                      game.manifest.name.c_str());
@@ -116,11 +117,20 @@ bool loadGame(core::Application& app, const core::DiscoveredGame& game) {
     // manifest's own directory" convention. A game with no such file
     // (e.g. games/SkyGarden, a pure static scene) is real and valid --
     // no entry script is a real, honest no-op, not an error.
+    std::string matchSource;
+    for (const char* file : {"Match.luau", "Match.lua"}) {
+        matchSource = readWholeFile((gameDir / "Scripts" / file).string());
+        if (!matchSource.empty()) break;
+    }
+    app.setMatchScript(game.manifest.name + "/Match", matchSource);
+
     std::filesystem::path scriptPath = gameDir / "Scripts" / "Main.lua";
     std::string scriptSource = readWholeFile(scriptPath.string());
     if (!scriptSource.empty()) {
         scripting.loadAndRun(game.manifest.name + "/Main", scriptSource);
     }
+    std::string pythonSource = readWholeFile((gameDir / "Scripts" / "Main.py").string());
+    if (!pythonSource.empty()) (void)app.python().load(game.manifest.name + "/Main.py", pythonSource);
 
     return true;
 }

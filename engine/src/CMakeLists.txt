@@ -49,10 +49,26 @@ file(GLOB ENGINE_SHADER_LIBRARY CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/sh
 set(ENGINE_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${ENGINE_SHADER_OUTPUT_DIR})
 
+# Sets KRONOS_GLSLC_COMMAND to the command that compiles source into output,
+# through the shader cache when KRONOS_SHADER_CACHE_DIR is set.
+function(kronos_glslc_command source output)
+    set(flags --target-env=vulkan1.2 ${ARGN})
+    if(KRONOS_SHADER_CACHE_DIR)
+        list(JOIN flags "|" joined)
+        set(command ${CMAKE_COMMAND} -DGLSLC=${GLSLC_EXECUTABLE} -DSOURCE=${source} -DOUTPUT=${output}
+            "-DFLAGS=${joined}" -DLIBRARY_DIR=${CMAKE_CURRENT_SOURCE_DIR}/shaders/kronos
+            -DCACHE_DIR=${KRONOS_SHADER_CACHE_DIR} -P ${PROJECT_SOURCE_DIR}/cmake/CachedGlslc.cmake)
+    else()
+        set(command ${GLSLC_EXECUTABLE} ${flags} ${source} -o ${output})
+    endif()
+    set(KRONOS_GLSLC_COMMAND ${command} PARENT_SCOPE)
+endfunction()
+
 set(ENGINE_COMPILED_SHADERS "")
 foreach(shader_source ${ENGINE_SHADER_SOURCES})
     get_filename_component(shader_name ${shader_source} NAME)
     set(shader_output ${ENGINE_SHADER_OUTPUT_DIR}/${shader_name}.spv)
+    kronos_glslc_command(${shader_source} ${shader_output})
     add_custom_command(
         OUTPUT ${shader_output}
         # Sprint 14 ("RTX Upgrade"): --target-env=vulkan1.2 (SPIR-V 1.5)
@@ -61,7 +77,7 @@ foreach(shader_source ${ENGINE_SHADER_SOURCES})
         # 1.4+). Every other shader here still compiles unchanged under
         # the newer target; this is a strict superset, not a behavior
         # change for anything not using newer features.
-        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${shader_source} -o ${shader_output}
+        COMMAND ${KRONOS_GLSLC_COMMAND}
         DEPENDS ${shader_source} ${ENGINE_SHADER_LIBRARY}
         COMMENT "Compiling shader ${shader_name} -> SPIR-V"
         VERBATIM
@@ -76,10 +92,10 @@ endforeach()
 # descriptor indexing, so a device without it keeps running exactly the
 # shader that shipped before rather than failing to create a pipeline.
 set(ENGINE_BINDLESS_FRAG ${ENGINE_SHADER_OUTPUT_DIR}/scene_bindless.frag.spv)
+kronos_glslc_command(${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag ${ENGINE_BINDLESS_FRAG} -DKRONOS_BINDLESS)
 add_custom_command(
     OUTPUT ${ENGINE_BINDLESS_FRAG}
-    COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DKRONOS_BINDLESS
-            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag -o ${ENGINE_BINDLESS_FRAG}
+    COMMAND ${KRONOS_GLSLC_COMMAND}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.frag ${ENGINE_SHADER_LIBRARY}
     COMMENT "Compiling shader scene.frag [KRONOS_BINDLESS] -> SPIR-V"
     VERBATIM
@@ -89,10 +105,10 @@ list(APPEND ENGINE_COMPILED_SHADERS ${ENGINE_BINDLESS_FRAG})
 # scene_rt.frag is the ray-query variant of scene.frag and is preferred
 # whenever the device supports ray tracing, so it needs a bindless variant too.
 set(ENGINE_BINDLESS_RT_FRAG ${ENGINE_SHADER_OUTPUT_DIR}/scene_rt_bindless.frag.spv)
+kronos_glslc_command(${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag ${ENGINE_BINDLESS_RT_FRAG} -DKRONOS_BINDLESS)
 add_custom_command(
     OUTPUT ${ENGINE_BINDLESS_RT_FRAG}
-    COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DKRONOS_BINDLESS
-            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag -o ${ENGINE_BINDLESS_RT_FRAG}
+    COMMAND ${KRONOS_GLSLC_COMMAND}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_rt.frag ${ENGINE_SHADER_LIBRARY}
     COMMENT "Compiling shader scene_rt.frag [KRONOS_BINDLESS] -> SPIR-V"
     VERBATIM
@@ -112,10 +128,11 @@ foreach(cost_variant "scene;" "scene;-DKRONOS_BINDLESS" "scene_rt;" "scene_rt;-D
         set(cost_suffix "_bindless")
     endif()
     set(cost_output ${ENGINE_SHADER_OUTPUT_DIR}/${cost_source}${cost_suffix}_cost.frag.spv)
+    kronos_glslc_command(${CMAKE_CURRENT_SOURCE_DIR}/shaders/${cost_source}.frag ${cost_output}
+        -DKRONOS_SHADER_CLOCK ${cost_define})
     add_custom_command(
         OUTPUT ${cost_output}
-        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DKRONOS_SHADER_CLOCK ${cost_define}
-                ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${cost_source}.frag -o ${cost_output}
+        COMMAND ${KRONOS_GLSLC_COMMAND}
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${cost_source}.frag ${ENGINE_SHADER_LIBRARY}
         COMMENT "Compiling shader ${cost_source}.frag [KRONOS_SHADER_CLOCK${cost_define}] -> SPIR-V"
         VERBATIM
@@ -209,6 +226,10 @@ add_library(engine_core STATIC
     core/StaticBatching.cpp
     core/WorldStreaming.cpp
     core/PhysicsRollback.cpp
+    core/RollbackScript.cpp
+    core/PythonScripting.cpp
+    core/SingleInstance.cpp
+    core/Guid.cpp
     core/GpuFeatures.cpp
     core/RenderResourceLoaders.cpp
     core/AssetRegistry.cpp
@@ -269,6 +290,7 @@ add_library(engine_core STATIC
     cinematic/CurveInterpolation.cpp
     cinematic/CameraRail.cpp
     cinematic/Sequencer.cpp
+    cinematic/SequenceAudio.cpp
     cinematic/TimelineLayout.cpp
     cinematic/OfflineExport.cpp
     cinematic/SequenceApplier.cpp
@@ -307,6 +329,8 @@ add_library(engine_core STATIC
     core/ConsoleQuickEdit.cpp
     core/ResourcePaths.cpp
     core/Audio.cpp
+    core/UnionGeometry.cpp
+    core/DeathRagdoll.cpp
     core/AudioMixer.cpp
     core/ScriptAudioApi.cpp
     core/Scripting.cpp
@@ -428,20 +452,6 @@ add_library(engine_core STATIC
     publishing/WorldRegistry.cpp
     publishing/ThumbnailCapture.cpp
 
-    brokenbones/RockMesh.cpp
-    brokenbones/CliffGenerator.cpp
-    brokenbones/CliffMap.cpp
-    brokenbones/RunRules.cpp
-    brokenbones/Shop.cpp
-    brokenbones/Boosts.cpp
-    brokenbones/SoundBank.cpp
-    brokenbones/Meta.cpp
-    brokenbones/BrokenBonesMenus.cpp
-    brokenbones/BrokenBonesInjuries.cpp
-    brokenbones/Injuries.cpp
-    brokenbones/Effects.cpp
-    brokenbones/Music.cpp
-    brokenbones/BrokenBonesGame.cpp
     tntwars/ClassSystem.cpp
     tntwars/Team.cpp
     tntwars/UltimateCharge.cpp
@@ -563,6 +573,7 @@ add_library(engine_core STATIC
 
 target_include_directories(engine_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${PROJECT_BINARY_DIR}/generated
 )
 
 target_compile_features(engine_core PUBLIC cxx_std_20)
@@ -630,6 +641,7 @@ target_link_libraries(engine_core PUBLIC
     Jolt
     Luau.VM
     Luau.Compiler
+    kronos_pocketpy
     enet
     miniaudio::miniaudio
     stb::image
@@ -697,6 +709,25 @@ endif()
 # docking dockspace); this is a real, separate, much smaller ImGui use
 # than Studio's own dockable panel host, not a shared surface with it.
 # ---------------------------------------------------------------------------
+# Broken Bones, the built-in game: its own library so engine_core stays game-free.
+add_library(kronos_brokenbones STATIC
+    brokenbones/RockMesh.cpp
+    brokenbones/CliffGenerator.cpp
+    brokenbones/CliffMap.cpp
+    brokenbones/RunRules.cpp
+    brokenbones/Shop.cpp
+    brokenbones/Boosts.cpp
+    brokenbones/SoundBank.cpp
+    brokenbones/Meta.cpp
+    brokenbones/BrokenBonesMenus.cpp
+    brokenbones/BrokenBonesInjuries.cpp
+    brokenbones/Injuries.cpp
+    brokenbones/Effects.cpp
+    brokenbones/Music.cpp
+    brokenbones/BrokenBonesGame.cpp
+)
+target_link_libraries(kronos_brokenbones PUBLIC engine_core)
+
 # Runs one third-party plugin in a locked-down process (plugin/SandboxMain.cpp).
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(kronos_plugin_sandbox plugin/SandboxMain.cpp)
@@ -736,7 +767,7 @@ if(ENGINE_BUILD_RUNTIME)
         studio/PreviewScene.cpp
         $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos.rc>
     )
-    target_link_libraries(engine_runtime PRIVATE engine_core imgui::imgui)
+    target_link_libraries(engine_runtime PRIVATE engine_core kronos_brokenbones imgui::imgui)
     if(WIN32)
         # SDL2's own SDL_main.h (pulled in transitively via SDL.h)
         # #defines main to SDL_main on Windows -- the real WinMain that

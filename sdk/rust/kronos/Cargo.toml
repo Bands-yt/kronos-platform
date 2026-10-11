@@ -1,0 +1,10 @@
+[package]
+name = "kronos"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.77"
+license = "Apache-2.0"
+description = "Write Kronos Studio plugins in Rust: a safe layer over the Kronos C plugin API (kronos_plugin.h)."
+
+[lib]
+path = "src/lib.rs"

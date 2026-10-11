@@ -10,8 +10,8 @@ Every message goes through the same steps, both online and when you play alone:
 
 1. **Chat allowed?** World chat must be on, and the sender must not be muted (for this session or on their account).
 2. **Rate limit.** Three messages per second. Extra messages are refused with "You're sending messages too fast."
-3. **Profanity filter.** Swear words are replaced with `****` in what other players see.
-4. **Local classifier** (`safety::TrustSafetyService`). It flags risky messages and blocks hard-block categories. A blocked message is not shown, and the sender sees why.
+3. **Profanity filter** (`moderation::ProfanityFilter`). Swear words and slurs are replaced with `****` in what other players see. It also catches the usual dodges: leetspeak (`sh1t`, `@ss`), look-alike letters (Cyrillic, accented, full-width), hidden zero-width characters, stretched letters (`fuuuck`), endings (`fucking`, `shitty`) and words spelled across spaces or dots (`f u c k`, `s.h.i.t`). Ordinary words that happen to contain a listed word (`class`, `hello`, `Scunthorpe`) stay clean.
+4. **Local classifier** (`safety::TrustSafetyService`). It flags risky messages and blocks hard-block categories, such as threats ("kill yourself") and attempts to get personal details from players ("where do you live", "what school do you go to", "add me on snap"). A blocked message is not shown, and the sender sees why.
 5. **Gemini** (only when `GEMINI_API_KEY` is set). The message waits up to 2.5 s for Gemini's verdict:
    - safe: the message is shown
    - flagged: the message shows as `[Message removed by moderation]`
@@ -24,6 +24,8 @@ When you play alone, the Player runs these steps itself. Refusals show up in the
 ```
 GEMINI_API_KEY=your-key ./engine_runtime
 ```
+
+Gemini only runs where a key is set. The Player you download has no key in it, and none should ever be added there: anyone could pull it out of the file. To use Gemini for online games, the key goes on the game servers only. Gemini is not trained on Kronos chat; it uses Google's general model with a moderation prompt.
 
 The Engine Log then says `Gemini chat moderation active (model gemini-flash-lite-latest)`. Without a key it says chat runs on local filters only.
 

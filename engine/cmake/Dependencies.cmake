@@ -344,6 +344,20 @@ if(NOT imnodes_POPULATED)
     FetchContent_Populate(imnodes)
 endif()
 
+# PocketPy (MIT) for Python game scripts. Populate-only: Kronos builds its own copy with
+# the sandbox patches and glue in external/pocketpy_kronos (see docs/PYTHON_SCRIPTS.md).
+FetchContent_Declare(
+    pocketpy
+    GIT_REPOSITORY https://github.com/pocketpy/pocketpy.git
+    GIT_TAG v2.2.0
+    GIT_SHALLOW TRUE
+    GIT_SUBMODULES ""
+)
+FetchContent_GetProperties(pocketpy)
+if(NOT pocketpy_POPULATED)
+    FetchContent_Populate(pocketpy)
+endif()
+
 FetchContent_MakeAvailable(entt glm volk joltphysics luau enet imgui imguizmo imguicolortextedit nlohmann_json)
 
 # enet's own CMakeLists.txt uses directory-scoped include_directories()
@@ -494,3 +508,83 @@ add_library(stb::image ALIAS stb_image)
 add_library(tinyexr INTERFACE)
 target_include_directories(tinyexr INTERFACE ${CMAKE_SOURCE_DIR}/external/vendor/tinyexr)
 add_library(tinyexr::tinyexr ALIAS tinyexr)
+
+# --- PocketPy, sandboxed --------------------------------------------------
+# Left out: raw memory (stdc), watchdog control (pkpy), terminal, bytecode, pickle, compiling to files.
+file(GLOB_RECURSE KRONOS_POCKETPY_SOURCES ${pocketpy_SOURCE_DIR}/src/*.c)
+list(FILTER KRONOS_POCKETPY_SOURCES EXCLUDE REGEX
+    "/src/modules/(stdc|pkpy|conio|picoterm|dis|pickle)\\.c$|/src/interpreter/py_compile\\.c$|/src/debugger/dap\\.c$|/src/common/socket\\.c$")
+
+# Each patch is checked, so a PocketPy update can't silently drop one.
+set(KRONOS_POCKETPY_PATCHED_DIR ${CMAKE_BINARY_DIR}/generated/pocketpy)
+function(kronos_pocketpy_patch rel)
+    set(src ${pocketpy_SOURCE_DIR}/${rel})
+    file(READ ${src} text)
+    # ARGV<n> keeps each argument whole (C code is full of semicolons).
+    math(EXPR last "${ARGC} - 1")
+    foreach(i RANGE 1 ${last} 2)
+        math(EXPR j "${i} + 1")
+        set(from "${ARGV${i}}")
+        set(to "${ARGV${j}}")
+        string(FIND "${text}" "${from}" at)
+        if(at EQUAL -1)
+            message(FATAL_ERROR "PocketPy patch anchor not found in ${rel}: ${from}")
+        endif()
+        string(REPLACE "${from}" "${to}" text "${text}")
+    endforeach()
+    set(out ${KRONOS_POCKETPY_PATCHED_DIR}/${rel})
+    set(old "")
+    if(EXISTS ${out})
+        file(READ ${out} old)
+    endif()
+    if(NOT old STREQUAL text)
+        file(WRITE ${out} "${text}")
+    endif()
+    list(REMOVE_ITEM KRONOS_POCKETPY_SOURCES ${src})
+    list(APPEND KRONOS_POCKETPY_SOURCES ${out})
+    set(KRONOS_POCKETPY_SOURCES ${KRONOS_POCKETPY_SOURCES} PARENT_SCOPE)
+endfunction()
+
+# The watchdog keeps firing once tripped (a script can't catch its way out), and also checks stack depth.
+kronos_pocketpy_patch(src/interpreter/ceval.c
+    "if(py_debugger_status() == 0 && clock() > self->watchdog_info.max_reset_time) {
+            self->watchdog_info.max_reset_time = 0;
+            TimeoutError(\"watchdog timeout\");"
+    "if(kronos_py_check()) {")
+# Native recursion (repr/hash/eq, iterators, json, the compiler) stops before the C stack runs out.
+kronos_pocketpy_patch(src/public/StackOps.c
+    "bool py_call(py_Ref f, int argc, py_Ref argv) {\n"
+    "bool py_call(py_Ref f, int argc, py_Ref argv) {\n    if(kronos_py_check()) return false;\n")
+kronos_pocketpy_patch(src/public/PythonOps.c
+    "int py_next(py_Ref val) {\n"
+    "int py_next(py_Ref val) {\n    if(kronos_py_check()) return -1;\n")
+kronos_pocketpy_patch(src/modules/json.c
+    "static bool json__write_object(c11_sbuf* buf, py_TValue* obj, int indent, int depth) {\n"
+    "static bool json__write_object(c11_sbuf* buf, py_TValue* obj, int indent, int depth) {\n    if(kronos_py_check()) return false;\n")
+kronos_pocketpy_patch(src/compiler/compiler.c
+    "static Error* parse_expression(Compiler* self, int precedence, bool allow_slice) {\n"
+    "static Error* parse_expression(Compiler* self, int precedence, bool allow_slice) {\n    if(kronos_py_stack_low()) return SyntaxError(self, \"expression is nested too deeply\");\n"
+    "static Error* compile_stmt(Compiler* self) {\n    Error* err;\n"
+    "static Error* compile_stmt(Compiler* self) {\n    Error* err;\n    if(kronos_py_stack_low()) return SyntaxError(self, \"code is nested too deeply\");\n")
+# Upstream bug: traceback entries leave locals/globals unset unless the debugger is on, and the GC marks them.
+kronos_pocketpy_patch(src/public/PyException.c
+    "    frame_dump->name = func_name ? c11_string__new(func_name) : NULL;\n"
+    "    frame_dump->name = func_name ? c11_string__new(func_name) : NULL;\n    py_newnil(&frame_dump->locals);\n    py_newnil(&frame_dump->globals);\n")
+# str * n could overflow the size and write past the buffer.
+kronos_pocketpy_patch(src/bindings/py_str.c
+    "char* p = py_newstrn(py_retval(), self->size * n);"
+    "if(n > 0x3fffffff / (self->size > 0 ? self->size : 1)) return ValueError(\"string is too long\");\n            char* p = py_newstrn(py_retval(), self->size * n);")
+
+add_library(kronos_pocketpy STATIC ${KRONOS_POCKETPY_SOURCES} ${CMAKE_SOURCE_DIR}/external/pocketpy_kronos/kronos_pocketpy.c)
+target_include_directories(kronos_pocketpy PUBLIC ${pocketpy_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/external/pocketpy_kronos)
+target_compile_definitions(kronos_pocketpy
+    PUBLIC PK_ENABLE_OS=0 PK_ENABLE_THREADS=0 PK_ENABLE_DLL=0 PK_ENABLE_WATCHDOG=1 PK_ENABLE_MIMALLOC=0
+    PRIVATE KRONOS_PY_INTERNAL)
+set_source_files_properties(${pocketpy_SOURCE_DIR}/src/common/name.c ${pocketpy_SOURCE_DIR}/src/public/GlobalSetup.c
+    PROPERTIES COMPILE_DEFINITIONS KRONOS_PY_GLOBAL_ALLOC)
+if(MSVC)
+    target_compile_options(kronos_pocketpy PRIVATE "/FI${CMAKE_SOURCE_DIR}/external/pocketpy_kronos/kronos_pocketpy.h" /w)
+else()
+    target_compile_options(kronos_pocketpy PRIVATE "SHELL:-include ${CMAKE_SOURCE_DIR}/external/pocketpy_kronos/kronos_pocketpy.h" -w)
+endif()
+set_target_properties(kronos_pocketpy PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)

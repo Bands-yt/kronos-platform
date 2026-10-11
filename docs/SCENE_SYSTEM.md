@@ -137,6 +137,21 @@ here explicitly rather than silently claimed as visually verified.
 
 ## 4. Scene file persistence
 
+**Permanent object IDs (4.5).** Every saved object has a `core::Guid`
+component, a random 128-bit id written as `GUID <id>` (text) or in binary
+version 9. It survives renames, save/load and undo; Duplicate, Paste and
+Roblox `Clone()` give the copy a new one. Objects from older scenes get an id
+when the scene opens, and an id already used in the world (the same scene
+loaded twice) is replaced. Parents are saved as `PARENTID <id>` next to the
+old `PARENT <name>`; the loader uses the id first and the name only for old
+files, so objects with the same name no longer mix up their parents. Object
+links in Roblox properties (`Weld.Part0`, `ObjectValue.Value`, ...) are saved
+as `guid:<id>` and linked again on load. Code: `core/Guid.*`,
+`SceneManager.cpp` (`captureSceneEntity`, `instantiateSceneEntities`), test
+`testPermanentObjectIds`.
+
+The rest of this section describes the original name-based format.
+
 **Extended — `core::SceneFile`/`core::SceneEntityRecord`.** A new
 `parentName` field (empty = root), serialized as an optional `PARENT
 <name>` line right after `ENTITY <name>` — same "field just doesn't

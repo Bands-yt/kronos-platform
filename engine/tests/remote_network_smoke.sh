@@ -40,6 +40,7 @@ expect server 'SERVER got hello from Player, IsServer=true'
 expect client 'CLIENT heard painted'
 expect client 'CLIENT sees PaintedByPlayer green=170'
 expect server 'SERVER visits 41 -> 42'
+expect server 'PYTHON ticked 3 times'
 if grep -q '"count": *42' "$work/server/datastores/remote-check.json"; then
     echo "ok   server: DataStore file holds 42"
 else

@@ -113,6 +113,9 @@ struct SceneEntityRecord {
     // InstanceInfo::serialize() text (Roblox class, stored properties,
     // attributes); empty for plain entities.
     std::string instanceInfo;
+    // Permanent ids (core::Guid text); empty in scenes saved before 4.5.
+    std::string guid;
+    std::string parentGuid;
 };
 
 // A full scene -- every SceneEntityRecord worth persisting, plus the

@@ -1,6 +1,7 @@
 #include "core/RobloxDatatypes.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include <Luau/Compiler.h>
@@ -779,6 +780,30 @@ bool registerRobloxDatatypes(lua_State* L) {
     }
     lua_pop(L, 1);
     return true;
+}
+
+std::vector<std::pair<std::string, int>> robloxEnumItems(const std::string& enumType) {
+    std::vector<std::pair<std::string, int>> items;
+    const std::string key = "\t" + enumType + " = \"";
+    for (const char* part : kSourceParts) {
+        const std::string text(part);
+        const size_t at = text.find(key);
+        if (at == std::string::npos) continue;
+        const size_t start = at + key.size();
+        const std::string list = text.substr(start, text.find('"', start) - start);
+        size_t pos = 0;
+        while (pos < list.size()) {
+            size_t end = list.find(' ', pos);
+            if (end == std::string::npos) end = list.size();
+            const std::string item = list.substr(pos, end - pos);
+            if (const size_t eq = item.find('='); eq != std::string::npos) {
+                items.emplace_back(item.substr(0, eq), std::atoi(item.c_str() + eq + 1));
+            }
+            pos = end + 1;
+        }
+        break;
+    }
+    return items;
 }
 
 } // namespace engine::core

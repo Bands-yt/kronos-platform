@@ -75,7 +75,7 @@ std::optional<ValidateProjectPanel::Jump> ValidateProjectPanel::draw(core::ECS& 
         runRequested_ = false;
     }
     std::optional<Jump> jump;
-    ImGui::SetNextWindowSize(ImVec2(720.0f, 560.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(760.0f, 700.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Validate Project", &open_)) {
         ImGui::End();
         return std::nullopt;

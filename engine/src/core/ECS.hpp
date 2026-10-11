@@ -75,6 +75,7 @@ public:
     void update(float /*dt*/) {}
 
     [[nodiscard]] entt::registry& raw() { return registry_; }
+    [[nodiscard]] const entt::registry& raw() const { return registry_; }
 
     // NOT storage<entt::entity>()->size() -- the entity pool uses EnTT's
     // swap_only deletion policy (destroyed entities are recycled via a

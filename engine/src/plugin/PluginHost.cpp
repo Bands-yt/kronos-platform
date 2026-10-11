@@ -603,7 +603,7 @@ bool PluginHost::load(const std::string& path, const LoadOptions& options, std::
     } else {
         fresh->sandbox = std::make_unique<SandboxProcess>();
         const std::string executable = options.sandboxExecutable.empty()
-                                           ? (fs::path(core::executableDirectory()) / "kronos_plugin_sandbox").string()
+                                           ? core::siblingExecutable("kronos_plugin_sandbox")
                                            : options.sandboxExecutable;
         std::string spawnError;
         if (!fresh->sandbox->spawn(executable, absolute, spawnError)) return discard(spawnError);

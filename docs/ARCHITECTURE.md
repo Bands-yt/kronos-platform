@@ -24,7 +24,7 @@ Scope: Engine Runtime, Studio IDE, Scripting Layer, Migration Layer, Cross-Platf
 | 5 | Team Create | Partial | A small property-level CRDT (`net/StudioCollabState`) with tests. No live multi-user editing yet. |
 | 5 | Play Server + N Clients | Planned | Studio Play is single player. |
 | 5 | Studio Lite, Console Studio Lite, Cloud Studio | Idea | |
-| 6 | Luau scripting | Done | Real Luau, sandboxed (`luaL_sandbox`), an 8 ms per tick watchdog and a 256 MB memory cap per script, `task.wait/spawn/defer`. Scripts use Kronos' own `world`, `events`, `avatar`, `network`, `audio` and `ui` tables (`LUA_API.md`). |
+| 6 | Luau scripting | Done | Real Luau, sandboxed (`luaL_sandbox`), an 8 ms per tick watchdog, a 64 MB memory cap per script and 256 MB per game, `task.wait/spawn/defer`. Scripts use Kronos' own `world`, `events`, `avatar`, `network`, `audio` and `ui` tables (`LUA_API.md`). |
 | 6 | Roblox object model (`game`, `Instance`, `CFrame`, `RunService`, `TweenService`, remotes with schemas) | Planned | This is the 4.3 Roblox bridge. |
 | 7 | `.rbxlx` importer and report | Partial | `engine/src/migration/` parses and converts `.rbxlx`, and Studio shows which script calls aren't supported. Binary `.rbxl`, the golden corpus and a compatibility score are 4.3 work. |
 | 8.1 | Windows and Linux | Done | Vulkan + SDL2. |
@@ -234,7 +234,8 @@ tween:Play()
 ```lua
 -- Engine-level config, not user-facing script API
 ScriptContext.MaxExecutionTimePerFrame = 8   -- ms, watchdog kills on sustained overrun
-ScriptContext.MaxMemory = 256 * 1024 * 1024  -- bytes, per script context
+ScriptContext.MaxMemory = 64 * 1024 * 1024        -- bytes, per script (warning at 80%)
+ScriptContext.GameMemoryBudget = 256 * 1024 * 1024 -- bytes, all of a game's scripts together
 ```
 
 No `io`, no `os` escape hatches, no `debug` library access from user scripts (Studio's own debugger uses a privileged host-side hook, not the sandboxed script's view). `HttpService` calls proxy through an engine-mediated allowlist that also feeds the moderation pipeline (§10).

@@ -4,11 +4,14 @@
 #include <unordered_map>
 #include <vector>
 
+#include <glm/gtc/epsilon.hpp>
+
 #include "core/Components.hpp"
 #include "core/InstanceTree.hpp"
 #include "core/Physics.hpp"
 #include "core/PhysicsMaterial.hpp"
 #include "core/RobloxPlayers.hpp"
+#include "core/UnionGeometry.hpp"
 
 namespace engine::core::partbodies {
 namespace {
@@ -24,6 +27,14 @@ struct WeldJoint {
     uint32_t joint = 0; // 0 when neither part can move
     uint32_t bodyA = 0;
     uint32_t bodyB = 0;
+};
+
+// A union piece's body, rebuilt when the piece moves or changes size.
+struct PieceBodyState {
+    ColliderShape shape;
+    glm::vec3 position{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    bool sensor = false;
 };
 
 struct TrackedBodies {
@@ -80,7 +91,7 @@ void syncWelds(ECS& ecs, Physics& physics) {
 
     std::vector<EntityId> live;
     for (auto [weld, info] : ecs.raw().view<InstanceInfo>().each()) {
-        if (info.className == "WeldConstraint") live.push_back(weld);
+        if (instances::isWeldClass(info.className)) live.push_back(weld);
     }
     for (EntityId weld : live) {
         EntityId a = kNullEntity, b = kNullEntity;
@@ -95,6 +106,8 @@ void syncWelds(ECS& ecs, Physics& physics) {
             welds.erase(found);
         }
         if (!joined || bodyA == RigidBody::kInvalidBodyId || bodyB == RigidBody::kInvalidBodyId) continue;
+        // Weld/Motor6D: Part1 goes where C0/C1 put it before the joint holds it there.
+        if (instances::snapJoint(ecs, weld, 0.01f)) continue;
         // A part moved alone reaches its new place in the next physics step; join after that.
         if (ecs.tryGetComponent<instances::PhysicsPoseWrite>(a) != nullptr ||
             ecs.tryGetComponent<instances::PhysicsPoseWrite>(b) != nullptr) {
@@ -112,10 +125,52 @@ void syncWelds(ECS& ecs, Physics& physics) {
     }
 }
 
+void syncPieces(ECS& ecs, Physics& physics) {
+    auto& bodies = tracked(ecs).bodies;
+    std::vector<EntityId> pieces;
+    for (EntityId e : ecs.raw().view<unions::UnionPiece>()) pieces.push_back(e);
+    for (EntityId e : pieces) {
+        const EntityId owner = ecs.raw().get<unions::UnionPiece>(e).owner;
+        const bool hasBody = bodyOf(ecs, e) != RigidBody::kInvalidBodyId;
+        const InstanceRef ownerRef = instances::refOf(ecs, owner);
+        if (!ecs.raw().valid(owner) || !instances::isInWorld(ecs, owner) || !anchored(ecs, ownerRef)) {
+            if (hasBody) physics.detachBody(e, ecs);
+            ecs.raw().remove<PieceBodyState>(e);
+            bodies.erase(e);
+            continue;
+        }
+        const instances::Pose pose = instances::worldPose(ecs, e);
+        PieceBodyState wanted;
+        const glm::vec3 half = glm::max(glm::abs(pose.scale) * 0.5f, glm::vec3(0.01f));
+        wanted.shape = ecs.raw().get<unions::UnionPiece>(e).shape == 0
+                           ? ColliderShape{ColliderShapeKind::Sphere, glm::vec3(std::min({half.x, half.y, half.z})), ""}
+                           : ColliderShape{ColliderShapeKind::Box, half, ""};
+        wanted.position = pose.position;
+        wanted.rotation = pose.rotation;
+        wanted.sensor = !instances::canCollide(ecs, owner);
+        if (hasBody) {
+            const auto* have = ecs.tryGetComponent<PieceBodyState>(e);
+            if (have != nullptr && sameShape(have->shape, wanted.shape) && have->sensor == wanted.sensor &&
+                glm::all(glm::epsilonEqual(have->position, wanted.position, 1e-4f)) &&
+                std::abs(glm::dot(have->rotation, wanted.rotation)) > 0.99999f) {
+                continue;
+            }
+            physics.detachBody(e, ecs);
+        }
+        const PhysicsMaterial* material = ecs.tryGetComponent<PhysicsMaterial>(owner);
+        if (physics.attachBodyToEntity(e, ecs, wanted.shape, material != nullptr ? *material : PhysicsMaterial{},
+                                       RigidBodyMotionType::Static, 0.0f, CollisionLayer::Default, wanted.sensor)) {
+            ecs.raw().emplace_or_replace<PieceBodyState>(e, wanted);
+            bodies[e] = bodyOf(ecs, e);
+        }
+    }
+}
+
 } // namespace
 
 void sync(ECS& ecs, Physics& physics, bool serverMoved) {
     tracked(ecs).physics = &physics;
+    unions::sync(ecs);
     dropDeadBodies(ecs, physics);
     auto& bodies = tracked(ecs).bodies;
     std::vector<EntityId> parts;
@@ -128,6 +183,13 @@ void sync(ECS& ecs, Physics& physics, bool serverMoved) {
         auto& body = ecs.raw().get<RigidBody>(e);
         const bool hasBody = body.joltBodyId != RigidBody::kInvalidBodyId;
         if (!instances::isInWorld(ecs, e)) {
+            if (hasBody) physics.detachBody(e, ecs);
+            ecs.raw().remove<PartBodyState>(e);
+            bodies.erase(e);
+            continue;
+        }
+        if (unions::hasPieces(ecs, e) && anchored(ecs, ref)) {
+            // Its pieces collide instead.
             if (hasBody) physics.detachBody(e, ecs);
             ecs.raw().remove<PartBodyState>(e);
             bodies.erase(e);
@@ -161,6 +223,7 @@ void sync(ECS& ecs, Physics& physics, bool serverMoved) {
             bodies.erase(e);
         }
     }
+    syncPieces(ecs, physics);
     syncWelds(ecs, physics);
 }
 
@@ -172,9 +235,11 @@ void detachAll(ECS& ecs, Physics& physics) {
     tracked(ecs).physics = nullptr;
     std::vector<EntityId> list;
     for (EntityId e : ecs.raw().view<PartBodyState>()) list.push_back(e);
+    for (EntityId e : ecs.raw().view<PieceBodyState>()) list.push_back(e);
     for (EntityId e : list) {
         physics.detachBody(e, ecs);
         ecs.raw().remove<PartBodyState>(e);
+        ecs.raw().remove<PieceBodyState>(e);
     }
 }
 

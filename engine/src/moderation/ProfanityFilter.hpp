@@ -1,57 +1,36 @@
 #pragma once
 
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace engine::moderation {
 
-// A real, matched-in-place text result -- `censored` is the original
-// text with every profane word replaced by `*` characters of the same
-// length (word boundaries preserved), not a fully-collapsed/normalized
-// string. `containsProfanity` lets a caller (chat moderation) decide
-// whether to log/flag the message independently of whether it chooses
-// to display the censored or original text.
+// `censored` is the original text with each matched word replaced by '*' bytes of the same length.
 struct ProfanityCheckResult {
     bool containsProfanity = false;
     std::string censored;
 };
 
-// Sprint 12 ("Moderation & Safety Systems") task 1's "Add profanity
-// filter" -- a real, simple, curated word-list filter. Deliberately
-// separate from safety::TextClassifierStub (which flags *categories* of
-// risk -- harassment, PII solicitation, ... -- for the async escalation
-// pipeline, see safety/TextClassifierStub.hpp): this is literal bad-word
-// matching for immediate in-place censoring, a different and much
-// simpler concern than calibrated toxicity/risk classification. Chat
-// moderation runs a message through both -- this filter censors it,
-// safety::TrustSafetyService::onChatMessage() separately scores it.
-//
-// Per-word normalization reuses safety::normalizeChar() (the same
-// leetspeak/case table IPInfringementScanner and CreatorIdentityGuard
-// already share) so obfuscated variants ("d4mn", "D4MN!") are still
-// caught -- but unlike safety::normalizeAscii(), which deliberately
-// collapses an entire phrase into one token to catch multi-word evasion,
-// this filter normalizes word-by-word and preserves word boundaries,
-// since it needs to know *which* word matched to censor just that word
-// in place rather than the whole message.
+// Censors swear words and slurs in place, including the usual dodges: leetspeak (sh1t, @ss), look-alike
+// letters (Cyrillic, accents, full-width), stretched letters (fuuuck), endings (fucking, shitty) and
+// spelling across spaces or dots (f u c k, s.h.i.t). Separate from safety::TextClassifierStub, which flags
+// risky phrases (grooming, threats, ...) for blocking and review.
 class ProfanityFilter {
 public:
-    // Seeds a real, modest, curated word list -- small and deliberately
-    // not exhaustive (a real deployment's word list is a trust & safety
-    // content decision, not an engineering one, the same reasoning
-    // safety::RiskScore's own header comment gives for its escalation
-    // thresholds being named constants rather than derived from
-    // anything).
     ProfanityFilter();
 
-    void addWord(std::string word);
+    // An `anywhere` word is also caught inside longer words (motherfucker); the others only alone or with
+    // a common ending (crappy, damned), so "class" or "hello" stay clean.
+    void addWord(std::string word, bool anywhere = false);
     void removeWord(const std::string& word);
     [[nodiscard]] size_t wordCount() const { return words_.size(); }
 
     [[nodiscard]] ProfanityCheckResult check(const std::string& text) const;
 
 private:
-    std::unordered_set<std::string> words_; // stored pre-normalized
+    [[nodiscard]] bool matches(const std::string& folded, bool exactOnly) const;
+
+    std::unordered_map<std::string, bool> words_; // normalized word -> anywhere
 };
 
 } // namespace engine::moderation

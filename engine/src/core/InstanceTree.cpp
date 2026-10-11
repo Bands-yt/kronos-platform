@@ -1,4 +1,6 @@
 #include "core/InstanceTree.hpp"
+#include "core/Guid.hpp"
+#include "core/UnionGeometry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -7,6 +9,9 @@
 #include <functional>
 #include <sstream>
 #include <unordered_map>
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
@@ -162,8 +167,10 @@ void writeValue(std::ostringstream& out, const InstanceValue& v) {
                 << v.rot.y << ' ' << v.rot.z;
             break;
         case InstanceValue::Type::Enum: out << ' ' << escape(v.enumType) << ' ' << escape(v.text) << ' ' << v.number; break;
-        // Instance links don't survive a reload (ids are per session).
-        case InstanceValue::Type::Instance: break;
+        // Saved as the target's permanent id, which the scene loader turns back into a link.
+        case InstanceValue::Type::Instance:
+            if (!v.text.empty()) out << " guid:" << v.text;
+            break;
         case InstanceValue::Type::Vector2:
         case InstanceValue::Type::UDim: out << ' ' << v.vec.x << ' ' << v.vec.y; break;
         case InstanceValue::Type::UDim2: out << ' ' << v.vec.x << ' ' << v.vec.y << ' ' << v.vec.z << ' ' << v.number; break;
@@ -200,7 +207,16 @@ bool readValue(std::istringstream& in, InstanceValue& v) {
             v.enumType = unescape(a);
             v.text = unescape(b);
             break;
-        case InstanceValue::Type::Instance: v.type = InstanceValue::Type::Nil; return true;
+        case InstanceValue::Type::Instance: {
+            const auto at = in.tellg();
+            if (in >> a && a.rfind("guid:", 0) == 0 && Guid::parse(std::string_view(a).substr(5))) {
+                v.text = a.substr(5);
+            } else {
+                in.clear();
+                in.seekg(at);
+            }
+            return true;
+        }
         case InstanceValue::Type::Vector2:
         case InstanceValue::Type::UDim: in >> v.vec.x >> v.vec.y; break;
         case InstanceValue::Type::UDim2: in >> v.vec.x >> v.vec.y >> v.vec.z >> v.number; break;
@@ -292,7 +308,9 @@ EntityId parentEntity(ECS& ecs, EntityId e) {
     return h != nullptr && valid(ecs, h->parent) ? h->parent : kNullEntity;
 }
 
-bool hidden(ECS& ecs, EntityId e) { return ecs.tryGetComponent<PlayerAvatarPart>(e) != nullptr; }
+bool hidden(ECS& ecs, EntityId e) {
+    return ecs.tryGetComponent<PlayerAvatarPart>(e) != nullptr || ecs.tryGetComponent<unions::UnionPiece>(e) != nullptr;
+}
 
 std::string inferClassName(ECS& ecs, EntityId e) {
     if (ecs.hasComponent<Script>(e)) return "Script";
@@ -454,6 +472,12 @@ InstanceValue getCFrame(ECS& ecs, EntityId e) {
     const Pose pose = worldPose(ecs, e);
     return InstanceValue::ofCFrame(pose.position, pose.rotation);
 }
+void snapJointProperty(ECS& ecs, EntityId joint, const InstanceValue&) {
+    EntityId a = kNullEntity, b = kNullEntity;
+    if (weldParts(ecs, joint, a, b)) weldOffsetChanged(ecs, b);
+    snapJoint(ecs, joint);
+}
+
 // Setting CFrame moves every part welded to this one, like in Roblox.
 void setCFrame(ECS& ecs, EntityId e, const InstanceValue& v) {
     const Pose before = worldPose(ecs, e);
@@ -877,7 +901,7 @@ std::vector<ClassDef> buildClasses() {
     instance.events = {"Changed", "ChildAdded", "ChildRemoved", "DescendantAdded", "DescendantRemoving",
                        "AncestryChanged", "AttributeChanged", "Destroying"};
 
-    add("PVInstance", "Instance", false);
+    add("PVInstance", "Instance", false).methods = {"GetPivot", "PivotTo"};
     auto& basePart = add("BasePart", "PVInstance", false);
     basePart.properties = {
         derived(prop("Position", PropertyType::Vector3, &getPosition, &setPosition)),
@@ -913,6 +937,7 @@ std::vector<ClassDef> buildClasses() {
 
     auto& model = add("Model", "PVInstance", true);
     model.properties = {stored("PrimaryPart", PropertyType::Instance, InstanceValue{})};
+    model.methods = {"GetPrimaryPartCFrame", "SetPrimaryPartCFrame"};
     add("WorldRoot", "Model", false).methods = {"Raycast"};
     PropertyDef currentCamera = readOnly("CurrentCamera", PropertyType::Instance);
     currentCamera.get = &getCurrentCamera;
@@ -951,6 +976,24 @@ std::vector<ClassDef> buildClasses() {
         stored("Part1", PropertyType::Instance, InstanceValue{}),
         stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true)),
         weldActive,
+    };
+    const InstanceValue identity = InstanceValue::ofCFrame(glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    add("JointInstance", "Instance", false).properties = {
+        stored("Part0", PropertyType::Instance, InstanceValue{}, &snapJointProperty),
+        stored("Part1", PropertyType::Instance, InstanceValue{}, &snapJointProperty),
+        stored("C0", PropertyType::CFrame, identity, &snapJointProperty),
+        stored("C1", PropertyType::CFrame, identity, &snapJointProperty),
+        stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true), &snapJointProperty),
+        weldActive,
+    };
+    add("Weld", "JointInstance", true);
+    add("ManualWeld", "JointInstance", true);
+    PropertyDef motorTransform = stored("Transform", PropertyType::CFrame, identity, &snapJointProperty);
+    motorTransform.serialized = false;
+    motorTransform.replicated = false;
+    add("Motor6D", "JointInstance", true).properties = {
+        motorTransform,
+        stored("MaxVelocity", PropertyType::Number, InstanceValue::ofNumber(0.0)),
     };
 
     add("LuaSourceContainer", "Instance", false);
@@ -1695,6 +1738,27 @@ bool getProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, Instanc
     return true;
 }
 
+bool isFinite(const InstanceValue& value) {
+    using T = InstanceValue::Type;
+    switch (value.type) {
+    case T::Number:
+        return std::isfinite(value.number);
+    case T::Vector3:
+    case T::Color3:
+    case T::Vector2:
+    case T::UDim:
+    case T::UDim2:
+        return std::isfinite(value.vec.x) && std::isfinite(value.vec.y) && std::isfinite(value.vec.z) &&
+               std::isfinite(value.number);
+    case T::CFrame:
+        return std::isfinite(value.vec.x) && std::isfinite(value.vec.y) && std::isfinite(value.vec.z) &&
+               std::isfinite(value.rot.w) && std::isfinite(value.rot.x) && std::isfinite(value.rot.y) &&
+               std::isfinite(value.rot.z);
+    default:
+        return true;
+    }
+}
+
 void setProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, const InstanceValue& value) {
     if (property.name == "Name") {
         setName(ecs, ref, value.text);
@@ -1895,9 +1959,37 @@ void teleport(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotation,
     markBodyMoved(ecs, entity, resetVelocity);
 }
 
+bool isWeldClass(const std::string& cls) {
+    return cls == "WeldConstraint" || cls == "Weld" || cls == "ManualWeld" || cls == "Motor6D";
+}
+
+bool snapJoint(ECS& ecs, EntityId joint, float tolerance) {
+    EntityId a = kNullEntity, b = kNullEntity;
+    const auto* info = ecs.tryGetComponent<InstanceInfo>(joint);
+    if (info == nullptr || info->className == "WeldConstraint" || !weldParts(ecs, joint, a, b)) return false;
+    auto offset = [&](const char* name) {
+        const auto it = info->properties.find(name);
+        return it != info->properties.end() && it->second.type == InstanceValue::Type::CFrame
+                   ? glm::translate(glm::mat4(1.0f), it->second.vec) * glm::mat4_cast(glm::normalize(it->second.rot))
+                   : glm::mat4(1.0f);
+    };
+    const Pose p0 = worldPose(ecs, a);
+    const glm::mat4 target = glm::translate(glm::mat4(1.0f), p0.position) * glm::mat4_cast(p0.rotation) * offset("C0") *
+                             offset("Transform") * glm::inverse(offset("C1"));
+    const glm::vec3 position(target[3]);
+    const glm::quat rotation = glm::normalize(glm::quat_cast(glm::mat3(target)));
+    const Pose p1 = worldPose(ecs, b);
+    if (glm::length(p1.position - position) < tolerance && std::abs(glm::dot(p1.rotation, rotation)) > 1.0f - tolerance * tolerance) {
+        return false;
+    }
+    setWorldPose(ecs, b, position, rotation);
+    markBodyMoved(ecs, b, true);
+    return true;
+}
+
 bool weldParts(ECS& ecs, EntityId weld, EntityId& part0, EntityId& part1) {
     const auto* info = ecs.tryGetComponent<InstanceInfo>(weld);
-    if (info == nullptr || info->className != "WeldConstraint" || !isInWorld(ecs, weld)) return false;
+    if (info == nullptr || !isWeldClass(info->className) || !isInWorld(ecs, weld)) return false;
     auto stored = [&](const char* name) -> const InstanceValue* {
         const auto it = info->properties.find(name);
         return it != info->properties.end() ? &it->second : nullptr;
@@ -1921,7 +2013,7 @@ std::vector<EntityId> weldedAssembly(ECS& ecs, EntityId part) {
     std::vector<std::pair<EntityId, EntityId>> links;
     for (auto [weld, info] : ecs.raw().view<InstanceInfo>().each()) {
         EntityId a = kNullEntity, b = kNullEntity;
-        if (info.className == "WeldConstraint" && weldParts(ecs, weld, a, b)) links.emplace_back(a, b);
+        if (isWeldClass(info.className) && weldParts(ecs, weld, a, b)) links.emplace_back(a, b);
     }
     for (size_t i = 0; i < assembly.size(); ++i) {
         for (const auto& [a, b] : links) {

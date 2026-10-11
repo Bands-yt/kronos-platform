@@ -99,9 +99,12 @@ and every `debug` entry except `debug.traceback`. `_G`, the builtin
 libraries, and the string metatable are all frozen.
 
 Runaway scripts are bounded rather than trusted: exceeding the per-tick
-execution budget (8 ms by default) or the per-script memory ceiling
-(256 MB by default) raises an ordinary catchable Luau error and kills
-only that script — never the host process.
+execution budget (8 ms by default) or the memory limits raises an ordinary
+catchable Luau error and kills only that script — never the host process.
+Each script may use 64 MB, and all of a game's scripts together 256 MB (the
+shared Roblox server and client script VMs each count as one, against the
+game budget). At 80% of either limit the Output shows a warning, so you can
+fix a leak before scripts start failing.
 
 ## `task` — scheduling
 

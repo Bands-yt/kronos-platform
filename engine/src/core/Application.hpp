@@ -31,6 +31,8 @@
 #include "core/RiggedAvatar.hpp"
 #include "core/RiggedMesh.hpp"
 #include "net/NetworkSession.hpp"
+#include "core/RollbackScript.hpp"
+#include "core/PythonScripting.hpp"
 #include "net/RollbackNetSession.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/ScriptAvatarApi.hpp"
@@ -135,6 +137,7 @@ public:
     [[nodiscard]] Physics& physics() { return physics_; }
     [[nodiscard]] Audio& audio() { return audio_; }
     [[nodiscard]] Scripting& scripting() { return scripting_; }
+    [[nodiscard]] PythonScripting& python() { return python_; }
     // Kronos ("Native Plugin Architecture"): real, currently loaded
     // native (.so/.dll) engine plugins -- discovered once from the
     // packaged/dev "plugins" directory in initialize() and ticked
@@ -447,6 +450,12 @@ public:
     bool startRollbackMatch(const net::RollbackNetSession::Config& config, std::string* error = nullptr);
     [[nodiscard]] net::RollbackNetSession& rollbackMatch() { return rollbackNet_; }
     [[nodiscard]] const std::vector<EntityId>& rollbackPlayers() const { return rollbackPlayers_; }
+    // The game's match script (Scripts/Match.luau), run inside the rollback simulation. See ROLLBACK.md.
+    void setMatchScript(std::string name, std::string source) {
+        matchScriptName_ = std::move(name);
+        matchScriptSource_ = std::move(source);
+    }
+    [[nodiscard]] const RollbackScript* matchScript() const { return matchScript_.get(); }
 
     // The real, simple (Transform + Name + Renderable, no physics
     // capsule) networked-player entity this process's own local input
@@ -748,6 +757,7 @@ private:
     Physics physics_;
     Audio audio_;
     Scripting scripting_;
+    PythonScripting python_;
     NativePluginManager nativePlugins_;
     plugin::PluginHost pluginApi_;
     MeshLibrary meshLibrary_;
@@ -1159,6 +1169,9 @@ private:
     std::unique_ptr<PhysicsRollback> rollback_;
     net::RollbackNetSession rollbackNet_; // after rollback_: holds a pointer to it
     std::vector<EntityId> rollbackPlayers_;
+    std::string matchScriptName_;
+    std::string matchScriptSource_;
+    std::shared_ptr<RollbackScript> matchScript_;
     float rollbackFrameDt_ = 1.0f / 120.0f;
     net::RollbackNetSession::Phase rollbackShownPhase_ = net::RollbackNetSession::Phase::Idle;
     float rollbackTitleTimer_ = 0.0f;

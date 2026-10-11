@@ -398,7 +398,7 @@ void ColorTextEditBackend::moveCaretToLine(int oneBasedLine) {
 void ColorTextEditBackend::reanalyze() {
     ++textVersion_;
     lines_ = editor_->GetTextLines();
-    diagnostics_ = analyzer_->analyze(editor_->GetText());
+    diagnostics_ = analyzer_->analyze(source());
     symbols_ = findSymbols(lines_);
 }
 

@@ -6,9 +6,20 @@
 namespace engine::safety {
 
 namespace {
+// Lowercase, apostrophes dropped and spaces squeezed, so "What's  your" and "whats your" read the same.
 std::string toLower(const std::string& s) {
-    std::string out = s;
-    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return std::tolower(c); });
+    std::string out;
+    for (unsigned char c : s) {
+        if (c == '\'') continue;
+        char lower = static_cast<char>(std::tolower(c));
+        if (std::isspace(c)) {
+            if (!out.empty() && out.back() != ' ') out.push_back(' ');
+        } else {
+            out.push_back(lower);
+        }
+    }
+    // A curly apostrophe is three UTF-8 bytes.
+    for (size_t at = out.find("\xE2\x80\x99"); at != std::string::npos; at = out.find("\xE2\x80\x99")) out.erase(at, 3);
     return out;
 }
 bool containsAny(const std::string& haystackLower, std::initializer_list<const char*> needles) {
@@ -31,22 +42,25 @@ bool containsAny(const std::string& haystackLower, std::initializer_list<const c
 // TextClassification by hand rather than going through classify().
 bool TextClassifierStub::containsHarassmentMarker(const std::string& message) {
     std::string lower = toLower(message);
-    return containsAny(lower, {"you're worthless", "nobody likes you", "everyone hates you", "kys", "you should quit"});
+    return containsAny(lower, {"youre worthless", "nobody likes you", "everyone hates you", "kys", "you should quit", "kill yourself",
+                               "go die", "neck yourself", "end yourself"});
 }
 
 bool TextClassifierStub::containsSexualContentMarker(const std::string& message) {
     std::string lower = toLower(message);
-    return containsAny(lower, {"send nudes", "send a nude", "show me your body", "let's have sex"});
+    return containsAny(lower, {"send nudes", "send a nude", "show me your body", "lets have sex", "send pics"});
 }
 
 bool TextClassifierStub::containsPiiSolicitationMarker(const std::string& message) {
     std::string lower = toLower(message);
-    return containsAny(lower, {"what's your address", "give me your number", "send a pic", "how old are you"});
+    return containsAny(lower, {"whats your address", "where do you live", "give me your number", "whats your number", "send a pic",
+                               "how old are you", "what school do you go to", "whats your real name"});
 }
 
 bool TextClassifierStub::containsOffPlatformRedirectMarker(const std::string& message) {
     std::string lower = toLower(message);
-    return containsAny(lower, {"add me on discord", "text me at", "let's talk on snap", "off this app"});
+    return containsAny(lower, {"add me on discord", "text me at", "lets talk on snap", "off this app", "add me on snap", "whats your snap",
+                               "whats your discord", "dm me on"});
 }
 
 // Kronos ("Moderation Architecture v1", Phase 1): a real, distinct
@@ -55,13 +69,13 @@ bool TextClassifierStub::containsOffPlatformRedirectMarker(const std::string& me
 // conversation escalates through, not a re-labeling of the other two.
 bool TextClassifierStub::containsGroomingMarker(const std::string& message) {
     std::string lower = toLower(message);
-    return containsAny(lower, {"don't tell your parents", "keep this between us", "our little secret",
-                                "you're mature for your age", "meet in person", "meet up in real life"});
+    return containsAny(lower, {"dont tell your parents", "keep this between us", "our little secret",
+                                "youre mature for your age", "meet in person", "meet up in real life", "are you alone"});
 }
 
 bool TextClassifierStub::containsHateMarker(const std::string& message) {
     std::string lower = toLower(message);
-    return containsAny(lower, {"go back to your country", "subhuman", "kill all", "your kind isn't welcome"});
+    return containsAny(lower, {"go back to your country", "subhuman", "kill all", "your kind isnt welcome"});
 }
 
 bool TextClassifierStub::containsSelfHarmMarker(const std::string& message) {
@@ -71,7 +85,7 @@ bool TextClassifierStub::containsSelfHarmMarker(const std::string& message) {
 
 bool TextClassifierStub::containsThreatMarker(const std::string& message) {
     std::string lower = toLower(message);
-    return containsAny(lower, {"i will kill you", "i know where you live", "i'm going to hurt you", "i will find you"});
+    return containsAny(lower, {"i will kill you", "i know where you live", "im going to hurt you", "i will find you", "ill kill you"});
 }
 
 bool TextClassifierStub::containsSpamMarker(const std::string& message) {

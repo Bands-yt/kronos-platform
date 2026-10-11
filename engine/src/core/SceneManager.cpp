@@ -1,10 +1,13 @@
 #include "core/SceneManager.hpp"
+#include "core/UnionGeometry.hpp"
 
 #include <cstdio>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "core/FbxLoader.hpp"
+#include "core/Guid.hpp"
 #include "core/GltfLoader.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/InstanceTree.hpp"
@@ -106,13 +109,25 @@ void instantiateSceneEntities(const std::vector<SceneEntityRecord>& records, ECS
     // later in the file (see SceneEntityRecord::parentName's own comment).
     std::unordered_map<std::string, EntityId> entityByName;
     entityByName.reserve(records.size());
+    // Same order as `records`; names can repeat, so this (not entityByName) finds a record's entity.
+    std::vector<EntityId> entities;
+    entities.reserve(records.size());
+    std::unordered_map<std::string, EntityId> entityByGuid;
+    std::unordered_set<Guid, GuidHash> takenGuids;
+    for (auto [entity, guid] : ecs.raw().view<Guid>().each()) takenGuids.insert(guid);
     std::unordered_map<std::string, uint32_t> localShared;
     std::unordered_map<std::string, uint32_t>& sharedMeshes =
         context.sharedMeshes != nullptr ? *context.sharedMeshes : localShared;
 
     for (const auto& record : records) {
         EntityId entity = ecs.createEntity(record.name);
-        entityByName[record.name] = entity;
+        entityByName.try_emplace(record.name, entity);
+        entities.push_back(entity);
+        // Old scenes, and ids already in use (a scene loaded twice), get a new id.
+        const std::optional<Guid> saved = Guid::parse(record.guid);
+        const Guid guid = saved && takenGuids.insert(*saved).second ? *saved : Guid::generate();
+        ecs.raw().emplace_or_replace<Guid>(entity, guid);
+        if (saved && guid == *saved) entityByGuid.emplace(record.guid, entity);
         if (created != nullptr) created->push_back(entity);
         if (auto* transform = ecs.tryGetComponent<Transform>(entity)) {
             transform->position = record.position;
@@ -219,23 +234,51 @@ void instantiateSceneEntities(const std::vector<SceneEntityRecord>& records, ECS
     // Hierarchy component write) so a corrupted/hand-edited scene file
     // still gets the same cycle/self-parent rejection a live setParent()
     // call would apply.
-    for (const auto& record : records) {
-        if (record.parentName.empty()) continue;
-        auto childIt = entityByName.find(record.name);
-        auto parentIt = entityByName.find(record.parentName);
-        EntityId parent = parentIt != entityByName.end() ? parentIt->second : findNamedEntity(ecs, record.parentName);
-        if (childIt == entityByName.end() || parent == kNullEntity) {
+    for (size_t i = 0; i < records.size(); ++i) {
+        const SceneEntityRecord& record = records[i];
+        if (record.parentName.empty() && record.parentGuid.empty()) continue;
+        EntityId parent = kNullEntity;
+        if (!record.parentGuid.empty()) {
+            auto it = entityByGuid.find(record.parentGuid);
+            if (it != entityByGuid.end()) {
+                parent = it->second;
+            } else if (const auto guid = Guid::parse(record.parentGuid)) {
+                parent = guids::find(ecs, *guid);
+            }
+        }
+        if (parent == kNullEntity && !record.parentName.empty()) {
+            auto parentIt = entityByName.find(record.parentName);
+            parent = parentIt != entityByName.end() ? parentIt->second : findNamedEntity(ecs, record.parentName);
+        }
+        if (parent == kNullEntity || parent == entities[i]) {
             std::fprintf(stderr,
                           "SceneManager: \"%s\" real-references parent \"%s\" which wasn't found in this scene -- "
                           "loaded as a root instead\n",
-                          record.name.c_str(), record.parentName.c_str());
+                          record.name.c_str(), record.parentName.empty() ? record.parentGuid.c_str() : record.parentName.c_str());
             continue;
         }
-        hierarchy::setParent(ecs, childIt->second, parent);
+        hierarchy::setParent(ecs, entities[i], parent);
+    }
+
+    // Links between objects (Weld.Part0, ObjectValue.Value, ...) were saved as ids.
+    for (const EntityId entity : entities) {
+        auto* info = ecs.tryGetComponent<InstanceInfo>(entity);
+        if (info == nullptr) continue;
+        for (auto& [key, value] : info->properties) {
+            if (value.type != InstanceValue::Type::Instance || value.text.empty()) continue;
+            EntityId target = kNullEntity;
+            if (auto it = entityByGuid.find(value.text); it != entityByGuid.end()) {
+                target = it->second;
+            } else if (const auto guid = Guid::parse(value.text)) {
+                target = guids::find(ecs, *guid);
+            }
+            value.ref = target != kNullEntity ? instances::refOf(ecs, target) : InstanceValue{}.ref;
+            value.text.clear();
+        }
     }
 
     // Parts kept outside the workspace (ReplicatedStorage, Parent = nil) stay hidden.
-    for (const auto& [name, entity] : entityByName) {
+    for (const EntityId entity : entities) {
         const auto* h = ecs.tryGetComponent<Hierarchy>(entity);
         if (h == nullptr || h->parent == kNullEntity) instances::updateWorldPresence(ecs, entity);
     }
@@ -244,11 +287,10 @@ void instantiateSceneEntities(const std::vector<SceneEntityRecord>& records, ECS
     // pose. Parts outside the workspace get none; CanCollide = false parts
     // become sensors.
     if (physics == nullptr) return;
-    for (const auto& record : records) {
+    for (size_t i = 0; i < records.size(); ++i) {
+        const SceneEntityRecord& record = records[i];
         if (!record.hasRigidBody || !record.hasColliderShape) continue;
-        auto it = entityByName.find(record.name);
-        if (it == entityByName.end()) continue;
-        const EntityId entity = it->second;
+        const EntityId entity = entities[i];
         if (!instances::isInWorld(ecs, entity)) continue;
         std::vector<glm::vec3> meshPositions;
         std::vector<uint32_t> meshIndices;
@@ -282,6 +324,7 @@ bool captureSceneEntity(ECS& ecs, EntityId entity, SceneEntityRecord& out) {
     if (instances::isDetached(ecs, entity)) return false;
     SceneEntityRecord record;
     record.name = name->value;
+    record.guid = guids::ensure(ecs, entity).toString();
 
     if (const auto* transform = ecs.tryGetComponent<Transform>(entity)) {
         record.position = transform->position;
@@ -345,7 +388,16 @@ bool captureSceneEntity(ECS& ecs, EntityId entity, SceneEntityRecord& out) {
         record.scriptAutoRun = script->autoRun;
     }
     if (const auto* visual = ecs.tryGetComponent<VisualScript>(entity)) record.visualScript = visual->graph;
-    if (const auto* info = ecs.tryGetComponent<InstanceInfo>(entity)) record.instanceInfo = info->serialize();
+    if (const auto* info = ecs.tryGetComponent<InstanceInfo>(entity)) {
+        InstanceInfo saved = *info;
+        for (auto& [key, value] : saved.properties) {
+            if (value.type != InstanceValue::Type::Instance) continue;
+            const EntityId target = instances::entityOf(ecs, value.ref);
+            const Name* targetName = target != kNullEntity && ecs.raw().valid(target) ? ecs.tryGetComponent<Name>(target) : nullptr;
+            if (targetName != nullptr && !targetName->value.empty()) value.text = guids::ensure(ecs, target).toString();
+        }
+        record.instanceInfo = saved.serialize();
+    }
     if (const auto* sound = ecs.tryGetComponent<AudioSource>(entity)) {
         record.hasSound = true;
         record.sound = *sound;
@@ -364,6 +416,7 @@ bool captureSceneEntity(ECS& ecs, EntityId entity, SceneEntityRecord& out) {
         const Name* parentName = ecs.tryGetComponent<Name>(hierarchy->parent);
         if (parentName != nullptr && !parentName->value.empty()) {
             record.parentName = parentName->value;
+            record.parentGuid = guids::ensure(ecs, hierarchy->parent).toString();
         } else {
             std::fprintf(stderr,
                           "SceneManager: \"%s\"'s real parent has no name -- saved as a root instead\n",
@@ -397,7 +450,7 @@ SceneFile SceneManager::captureScene(ECS& ecs, const Camera& camera, const cinem
     }
 
     for (auto entity : ecs.view<Transform>()) {
-        if (ecs.raw().all_of<StreamedCell>(entity)) continue;
+        if (ecs.raw().all_of<StreamedCell>(entity) || unions::isPiece(ecs, entity)) continue;
         SceneEntityRecord record;
         if (captureSceneEntity(ecs, entity, record)) file.entities.push_back(std::move(record));
     }

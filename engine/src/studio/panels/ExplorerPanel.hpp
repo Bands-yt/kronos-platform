@@ -57,6 +57,13 @@ public:
     // replacing any multi-select) -- for other panels that want to "jump
     // to" an entity (see panels/SceneSearchPanel.hpp) without duplicating
     // Explorer's selection state. entity == kNullEntity clears selection.
+    // The object made by Insert Object this frame, once, for undo.
+    [[nodiscard]] core::EntityId takeInserted() {
+        const core::EntityId made = inserted_;
+        inserted_ = core::kNullEntity;
+        return made;
+    }
+
     void setSelected(core::EntityId entity) {
         selected_ = entity;
         selection_.clear();
@@ -99,6 +106,11 @@ private:
     // upfront, before any drawing -- exactly like the pre-Hierarchy flat
     // list this replaced), used only for the shift-click range lookup.
     void drawEntityNode(core::ECS& ecs, core::EntityId entity, int& rowCursor, const std::vector<core::EntityId>& rows);
+    // Workspace, then the services that hold something, like Roblox Studio.
+    void drawRobloxTree(core::ECS& ecs);
+    bool robloxTree_ = true;
+    core::EntityId inserted_ = core::kNullEntity;
+    char search_[96] = "";
 
     core::EntityId selected_ = core::kNullEntity; // primary selection -- last entity clicked, any modifier
     std::vector<core::EntityId> selection_;        // full multi-select set, always contains selected_ when non-null

@@ -319,6 +319,9 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
     // tick-stale one.
     if (avatarController != nullptr && skinnedEntities != nullptr) {
         avatarController->tick(dt, ecs, physics, entity_, *skinnedEntities);
+        const players::HumanoidControl life = players::control(ecs, entity_);
+        deathRagdoll_.update(life.found && life.dead, ecs, physics, avatarController->skeleton(), entity_,
+                             *skinnedEntities);
 
         // Kronos ("Avatar 2.0" -- "Performance and LOD" -- "Add
         // distance-based LOD levels for clothing meshes, accessories,
@@ -333,7 +336,8 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
         // a player's own face/accessories/clothing never disappear
         // during normal gameplay -- this only engages for a genuinely
         // far camera.
-        updateAvatarLOD(ecs, *skinnedEntities, glm::length(camera.position - characterPos));
+        updateAvatarLOD(ecs, *skinnedEntities,
+                        glm::length(camera.position - (deathRagdoll_.active() ? deathRagdoll_.pelvisPosition() : characterPos)));
     }
 
     // Third-person follow camera -- orbits at a fixed distance behind
@@ -347,7 +351,9 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
     camera.yawDegrees = cameraYawDegrees_;
     camera.pitchDegrees = cameraPitchDegrees_;
 
-    glm::vec3 targetFocus = characterPos + glm::vec3(0.0f, settings_.cameraHeight, 0.0f);
+    // While dead the camera watches the ragdoll; the capsule is parked.
+    const glm::vec3 focusBase = deathRagdoll_.active() ? deathRagdoll_.pelvisPosition() : characterPos;
+    glm::vec3 targetFocus = focusBase + glm::vec3(0.0f, settings_.cameraHeight, 0.0f);
     // A respawn or teleport cuts straight to the new place.
     if (!cameraFocusInitialized_ || glm::length(targetFocus - smoothedCameraFocus_) > 25.0f) {
         smoothedCameraFocus_ = targetFocus;
@@ -365,7 +371,19 @@ void CharacterController::tick(float dt, ECS& ecs, Physics& physics, platform_ad
     shoulderBlend_ += ((shiftLocked ? 1.0f : 0.0f) - shoulderBlend_) * (1.0f - std::exp(-10.0f * dt));
     glm::vec3 desired = smoothedCameraFocus_ - camera.forward() * (settings_.cameraDistance * cameraZoom_) +
                         camRight * (settings_.shiftLockShoulderOffset * shoulderBlend_);
-    camera.position = keepCameraOutOfWalls(physics, smoothedCameraFocus_, desired, entity_);
+    if (deathRagdoll_.active()) {
+        // The ragdoll's own limbs mustn't pull the camera in.
+        const glm::vec3 toCamera = desired - smoothedCameraFocus_;
+        const float distance = glm::length(toCamera);
+        camera.position = desired;
+        if (distance > 0.01f) {
+            const Physics::RaycastHit hit = physics.raycast(smoothedCameraFocus_, toCamera / distance, distance + 0.3f,
+                                                            [&](EntityId e) { return e != kNullEntity && e != entity_; });
+            if (hit.hit) camera.position = smoothedCameraFocus_ + toCamera / distance * std::clamp(hit.distance - 0.3f, 0.2f, distance);
+        }
+    } else {
+        camera.position = keepCameraOutOfWalls(physics, smoothedCameraFocus_, desired, entity_);
+    }
 
     // A camera squeezed right up against the character would sit inside its
     // head, so hide the avatar then, as Roblox does.

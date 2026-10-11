@@ -177,7 +177,7 @@ std::string base64Decode(const std::string& input) {
 constexpr uint32_t kBinaryMagic = 0x4E435343; // "KSCN" as a little-endian u32 (bytes 'K','S','C','N')
 // v2 adds MaterialLayers after the renderable block and spot fields after the light block.
 // v3 appends Light::castsShadow.
-constexpr uint32_t kBinaryVersion = 8;
+constexpr uint32_t kBinaryVersion = 9;
 
 bool hasKronosExtension(const std::string& path) {
     constexpr std::string_view kExt = ".kronos";
@@ -247,7 +247,9 @@ bool SceneFile::writeText(std::ostream& out) const {
         // line means root on load, same "field just doesn't appear" outer
         // convention hasRenderable/hasMeshSource/hasParticleEmitter above
         // already use for their own optional blocks.
+        if (!e.guid.empty()) out << "GUID " << e.guid << "\n";
         if (!e.parentName.empty()) out << "PARENT " << e.parentName << "\n";
+        if (!e.parentGuid.empty()) out << "PARENTID " << e.parentGuid << "\n";
         out << "TRANSFORM " << e.position.x << ' ' << e.position.y << ' ' << e.position.z << ' ' << e.rotation.x
             << ' ' << e.rotation.y << ' ' << e.rotation.z << ' ' << e.rotation.w << ' ' << e.scale.x << ' '
             << e.scale.y << ' ' << e.scale.z << "\n";
@@ -412,6 +414,10 @@ bool SceneFile::loadFromFile(const std::string& path, const polyglot::VirtualFil
             loaded.entities.emplace_back();
             loaded.entities.back().name = line.substr(7);
             current = &loaded.entities.back(); // refreshed here, never held across a later emplace_back
+        } else if (line.rfind("GUID ", 0) == 0 && current != nullptr) {
+            current->guid = line.substr(5);
+        } else if (line.rfind("PARENTID ", 0) == 0 && current != nullptr) {
+            current->parentGuid = line.substr(9);
         } else if (line.rfind("PARENT ", 0) == 0 && current != nullptr) {
             current->parentName = line.substr(7);
         } else if (line.rfind("TRANSFORM ", 0) == 0 && current != nullptr) {
@@ -713,6 +719,8 @@ bool SceneFile::saveToBinaryFile(const std::string& path) const {
                                            (a.category == AudioCategory::Music ? 8 : 0)));
         }
         w.writeString(e.instanceInfo);
+        w.writeString(e.guid);
+        w.writeString(e.parentGuid);
     }
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -937,6 +945,10 @@ bool SceneFile::loadFromBinaryFile(const std::string& path) {
             }
         }
         if (version >= 8) e.instanceInfo = r.readString();
+        if (version >= 9) {
+            e.guid = r.readString();
+            e.parentGuid = r.readString();
+        }
 
         loaded.entities.push_back(std::move(e));
     }

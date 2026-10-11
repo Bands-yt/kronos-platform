@@ -1,0 +1,16 @@
+[package]
+name = "kronos_sample_rust_plugin"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Point this at your copy of the Kronos repository's sdk/rust/kronos.
+kronos = { path = "../../sdk/rust/kronos" }
+
+[profile.release]
+panic = "unwind"

@@ -44,6 +44,7 @@
 #include "core/PhysicsMaterial.hpp"
 #include "core/ProcessLaunch.hpp"
 #include "core/ResourcePaths.hpp"
+#include "core/SingleInstance.hpp"
 #include "core/Shop.hpp"
 #include "core/Terrain.hpp"
 #include "core/UpgradeSystem.hpp"
@@ -481,6 +482,20 @@ int main(int argc, char** argv) {
     bool homeScreenMode = networkConfig.mode == engine::net::NetworkMode::Offline && !trailerMode && !miningSimMode && !brokenBonesMode &&
                            !renderShowcaseMode && !tntWarsMode && !houseDemoMode && !despairMode && !rollbackConfig;
 
+    // One Player home screen at a time; games it starts (Broken Bones, ...), servers and kronos:// links
+    // don't count. KRONOS_ALLOW_MULTIPLE=1 turns this off for testing two players on one PC.
+    engine::core::SingleInstance playerLock;
+    const char* allowMultiple = std::getenv("KRONOS_ALLOW_MULTIPLE");
+    if (homeScreenMode && !headless && kronosLaunchGameSlug.empty() && !(allowMultiple != nullptr && std::string(allowMultiple) == "1") &&
+        !playerLock.acquire("kronos-player")) {
+        std::fprintf(stdout, "engine_runtime: Kronos Player is already open\n");
+        if (!engine::core::bringWindowToFront("Kronos Player")) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Kronos Player",
+                                     "Kronos is already open. Switch to the window that's already running.", nullptr);
+        }
+        return 0;
+    }
+
     engine::core::Application app;
 
     engine::core::Application::CreateInfo info;
@@ -805,7 +820,7 @@ int main(int argc, char** argv) {
             // core::launchProcess() self-relaunch RuntimeShell::
             // selectGame() already uses for a CLI-flag game mode -- this
             // process's own job is done once the new one is spawned.
-            std::string selfPath = engine::core::executableDirectory() + "/engine_runtime";
+            std::string selfPath = engine::core::siblingExecutable("engine_runtime");
             if (!engine::core::launchProcess(selfPath, {"--despair"})) {
                 std::fprintf(stderr, "engine_runtime: failed to relaunch for Escape-to-restart.\n");
                 return 1;

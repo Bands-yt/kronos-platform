@@ -23,6 +23,9 @@ struct ImportedInstance {
     std::vector<ImportedInstance> children;
 };
 
+// Standard base64 (as in .rbxlx BinaryString/SharedString values).
+[[nodiscard]] std::string decodeBase64(std::string text);
+
 class InstanceTreeBuilder {
 public:
     // Walks a parsed .rbxlx document's <roblox> root and reconstructs the
@@ -30,7 +33,8 @@ public:
     [[nodiscard]] static std::vector<ImportedInstance> build(const XmlNode& root);
 
 private:
-    static ImportedInstance buildItem(const XmlNode& itemNode);
+    using SharedStrings = std::unordered_map<std::string, std::string>;
+    static ImportedInstance buildItem(const XmlNode& itemNode, const SharedStrings& shared);
 };
 
 } // namespace engine::migration

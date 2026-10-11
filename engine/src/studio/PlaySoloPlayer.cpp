@@ -72,8 +72,9 @@ void PlaySoloPlayer::tick(float dt, core::ECS& ecs, core::Physics& physics, core
     controller_.tick(dt, ecs, physics, input_, camera, avatar_.get(), avatar_ ? &avatarEntities_ : nullptr);
 }
 
-void PlaySoloPlayer::end(core::ECS& ecs, core::Camera& camera) {
+void PlaySoloPlayer::end(core::ECS& ecs, core::Camera& camera, core::Physics* physics) {
     if (!active_) return;
+    if (physics != nullptr) controller_.releaseDeathRagdoll(*physics);
     if (const core::InstanceRef player = core::players::localPlayer(ecs); player != core::kNoInstance) {
         core::players::leave(ecs, player);
     }

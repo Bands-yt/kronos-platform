@@ -152,7 +152,17 @@ struct Document {
     std::map<uint32_t, std::vector<int32_t>> classRefs;
     std::map<int32_t, Instance> instances;
     std::vector<int32_t> parentOrder;
+    std::vector<std::string> sharedStrings;
 };
+
+void readSharedStrings(Reader& r, Document& doc) {
+    (void)r.u32(); // version
+    const uint32_t count = r.u32();
+    for (uint32_t i = 0; i < count && r.ok(); ++i) {
+        (void)r.take(16); // md5
+        doc.sharedStrings.push_back(r.str());
+    }
+}
 
 void setProperty(Instance& inst, const std::string& name, const std::string& type, const std::string& value) {
     inst.properties[name] = value;
@@ -287,6 +297,15 @@ void readProperty(Reader& r, Document& doc) {
                                         static_cast<uint32_t>(bytes[n + i]) << 8 | bytes[2 * n + i];
                 setProperty(inst, name, "Color3uint8", std::to_string(packed));
             });
+            break;
+        }
+        case 0x1C: { // SharedString: indices into the SSTR chunk
+            const std::vector<uint64_t> indices = r.interleaved(n, 4);
+            for (size_t i = 0; i < indices.size() && i < n; ++i) {
+                const uint64_t index = indices[i];
+                setProperty(doc.instances[refs[i]], name, "SharedString",
+                            index < doc.sharedStrings.size() ? doc.sharedStrings[index] : std::string());
+            }
             break;
         }
         case 0x1B: { // Int64
@@ -428,6 +447,7 @@ bool readRobloxBinary(const std::string& data, std::vector<ImportedInstance>& ou
         if (chunk == "INST") readInstances(r, doc);
         else if (chunk == "PROP") readProperty(r, doc);
         else if (chunk == "PRNT") readParents(r, doc);
+        else if (chunk == "SSTR") readSharedStrings(r, doc);
         else if (chunk == "END") ended = true;
         if (!r.ok()) {
             error = "a " + chunk + " chunk is damaged";

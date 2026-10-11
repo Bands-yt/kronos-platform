@@ -187,12 +187,19 @@ ValidationReport validateProject(core::ECS& ecs, const ValidationInput& input) {
 
     // Object references.
     const std::vector<core::EntityId> infos = sortedView<core::InstanceInfo>(ecs);
-    size_t weldCount = 0;
+    size_t unsavedLinks = 0;
     for (core::EntityId e : infos) {
         const auto* info = ecs.tryGetComponent<core::InstanceInfo>(e);
         const std::string path = pathOf(ecs, e);
         const bool weld = info->className == "WeldConstraint";
-        weldCount += weld ? 1 : 0;
+        // Links are saved as the target's id; a target that isn't saved itself (no name, or Parent = nil) is lost.
+        for (const auto& [key, value] : info->properties) {
+            if (value.type != core::InstanceValue::Type::Instance || value.ref == core::kNoInstance || key == "Parent") continue;
+            const core::EntityId target = core::instances::entityOf(ecs, value.ref);
+            if (target == core::kNullEntity || !ecs.raw().valid(target)) continue;
+            const auto* name = ecs.tryGetComponent<core::Name>(target);
+            if (!name || name->value.empty() || core::instances::isDetached(ecs, target)) ++unsavedLinks;
+        }
         if (weld) {
             for (const char* name : {"Part0", "Part1"}) {
                 const auto it = info->properties.find(name);
@@ -311,15 +318,15 @@ ValidationReport validateProject(core::ECS& ecs, const ValidationInput& input) {
     }
 
     // Things the scene file can't keep yet.
-    if (weldCount > 0) {
+    if (unsavedLinks > 0) {
         b.add("saving", noEntity(),
-              {DoctorCategory::GameplayRisk, "welds-not-saved", "WeldConstraint", {}, 0, weldCount,
-               std::to_string(weldCount) + " WeldConstraint(s) are not saved in Kronos scenes yet.",
-               "They are lost when the scene is saved and opened again.",
-               "Keep the Roblox file and import it again, or anchor the parts."});
+              {DoctorCategory::GameplayRisk, "links-not-saved", "Instance links", {}, 0, unsavedLinks,
+               std::to_string(unsavedLinks) + " object link(s) point at objects that aren't saved (no name, or Parent = nil).",
+               "Those links are empty when the scene is opened again.",
+               "Give the target a name and keep it in the scene."});
     }
-    b.check("saving", "Everything in the scene can be saved", weldCount ? CheckStatus::Warning : CheckStatus::Pass,
-            weldCount ? "WeldConstraints are not saved yet." : "Nothing known to be lost on save.");
+    b.check("saving", "Everything in the scene can be saved", unsavedLinks ? CheckStatus::Warning : CheckStatus::Pass,
+            unsavedLinks ? "Some object links can't be saved." : "Nothing known to be lost on save.");
 
     b.check("multiplayer", "Works with more than one player", CheckStatus::Unavailable,
             "Studio can't run a server with several players yet.");

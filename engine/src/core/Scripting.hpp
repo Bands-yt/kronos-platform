@@ -124,6 +124,18 @@ public:
     // from docs/ARCHITECTURE.md §6.
     void setMaxExecutionMillisPerTick(double ms) { maxExecutionMillisPerTick_ = ms; }
     void setMaxMemoryBytesPerScript(size_t bytes) { maxMemoryBytesPerScript_ = bytes; }
+    // All of a game's scripts together; the shared Roblox server/client VMs count as a whole.
+    // Applies to VMs created after the call. A warning is printed at 80% of either limit.
+    void setGameMemoryBudget(size_t bytes) { gameMemory_.budget = bytes; }
+    [[nodiscard]] size_t maxMemoryBytesPerScript() const { return maxMemoryBytesPerScript_; }
+    [[nodiscard]] size_t gameMemoryBudget() const { return gameMemory_.budget; }
+
+    struct MemoryPool {
+        size_t used = 0;
+        size_t budget = 0;
+        bool warned = false;
+        bool warnPending = false;
+    };
 
     // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
     // Performance Profiler" -- "Lua runtime memory allocations"): real,
@@ -406,7 +418,10 @@ private:
 
     double clock_ = 0.0;
     double maxExecutionMillisPerTick_ = 8.0;   // ScriptContext.MaxExecutionTimePerFrame default, §6
-    size_t maxMemoryBytesPerScript_ = 256u * 1024u * 1024u; // ScriptContext.MaxMemory default, §6
+    size_t maxMemoryBytesPerScript_ = 64u * 1024u * 1024u;
+    MemoryPool gameMemory_{0, 256u * 1024u * 1024u};
+    void* newAllocatorState(const std::string& name, size_t limit);
+    void flushMemoryWarnings();
     bool initialized_ = false;
     uint64_t generation_ = 1;
 };

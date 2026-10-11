@@ -263,7 +263,7 @@ bool Audio::isSoundPlaying(SoundHandle handle) const {
     return ma_sound_is_playing(sounds_[handle]) == MA_TRUE;
 }
 
-ma_sound* Audio::makeVoice(SoundHandle handle, void*& bufferRef) {
+ma_sound* Audio::makeVoice(SoundHandle handle, void*& bufferRef, unsigned flags) {
     bufferRef = nullptr;
     auto* voice = new ma_sound();
     if (auto* buffer = static_cast<ma_audio_buffer*>(buffers_[handle])) {
@@ -275,14 +275,14 @@ ma_sound* Audio::makeVoice(SoundHandle handle, void*& bufferRef) {
             return nullptr;
         }
         ref->sampleRate = buffer->ref.sampleRate;
-        if (ma_sound_init_from_data_source(engine_, ref, 0, nullptr, voice) != MA_SUCCESS) {
+        if (ma_sound_init_from_data_source(engine_, ref, flags, nullptr, voice) != MA_SUCCESS) {
             ma_audio_buffer_ref_uninit(ref);
             delete ref;
             delete voice;
             return nullptr;
         }
         bufferRef = ref;
-    } else if (ma_sound_init_copy(engine_, sounds_[handle], 0, nullptr, voice) != MA_SUCCESS) {
+    } else if (ma_sound_init_copy(engine_, sounds_[handle], flags, nullptr, voice) != MA_SUCCESS) {
         delete voice;
         return nullptr;
     }
@@ -317,12 +317,65 @@ void Audio::releaseVoicesOf(SoundHandle handle, bool keepCursor) {
         destroyVoice(it->second);
         it = voices_.erase(it);
     }
+    for (auto it = cues_.begin(); it != cues_.end();) {
+        if (it->voice.handle != handle) {
+            ++it;
+            continue;
+        }
+        destroyVoice(it->voice);
+        it = cues_.erase(it);
+    }
 }
 
 void Audio::releaseVoices() {
     for (auto& [entity, voice] : voices_) destroyVoice(voice);
     voices_.clear();
+    cancelCues(0, false);
     voiceResume_.clear();
+}
+
+uint64_t Audio::engineTimeFrames() const { return initialized_ ? ma_engine_get_time_in_pcm_frames(engine_) : 0; }
+
+uint64_t Audio::scheduleCue(SoundHandle handle, uint64_t startFrame, const std::string& bus) {
+    if (!initialized_ || handle >= sounds_.size() || !sounds_[handle]) return 0;
+    reapCues();
+    Cue cue;
+    cue.voice.handle = handle;
+    cue.voice.base = sounds_[handle];
+    // No resampler (and its one-frame delay) unless the sound's rate differs from the engine's.
+    cue.voice.sound = makeVoice(handle, cue.voice.bufferRef, MA_SOUND_FLAG_NO_PITCH);
+    if (!cue.voice.sound) return 0;
+    ma_sound_set_spatialization_enabled(cue.voice.sound, MA_FALSE);
+    ma_sound_set_looping(cue.voice.sound, MA_FALSE);
+    mixer_.route(cue.voice.sound, bus);
+    ma_sound_set_start_time_in_pcm_frames(cue.voice.sound, startFrame);
+    ma_sound_start(cue.voice.sound);
+    cue.id = nextCueId_++;
+    cue.startFrame = startFrame;
+    cues_.push_back(cue);
+    return cue.id;
+}
+
+void Audio::cancelCues(uint64_t frame, bool onlyPending) {
+    for (auto it = cues_.begin(); it != cues_.end();) {
+        if (onlyPending && it->startFrame <= frame) {
+            ++it;
+            continue;
+        }
+        destroyVoice(it->voice);
+        it = cues_.erase(it);
+    }
+}
+
+void Audio::reapCues() {
+    for (auto it = cues_.begin(); it != cues_.end();) {
+        if (ma_sound_at_end(it->voice.sound) == MA_TRUE) {
+            destroyVoice(it->voice);
+            it = cues_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool Audio::isEntitySoundPlaying(EntityId entity) const {

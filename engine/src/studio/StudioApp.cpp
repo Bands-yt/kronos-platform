@@ -1,4 +1,5 @@
 #include "studio/StudioApp.hpp"
+#include "core/UnionGeometry.hpp"
 
 #include "core/RobloxServices.hpp"
 #include "core/AvatarSkinTone.hpp"
@@ -624,7 +625,7 @@ bool StudioApp::initialize(StudioMode mode) {
                 ImGui::SetWindowFocus("Viewport");
             },
             [this](core::ECS& ecs) {
-                playSoloPlayer_.end(ecs, viewportPanel_.camera());
+                playSoloPlayer_.end(ecs, viewportPanel_.camera(), &physicsPreviewPlugin_->physics());
                 viewportPanel_.setPlayerCameraActive(false);
             });
     }
@@ -762,6 +763,7 @@ bool StudioApp::initialize(StudioMode mode) {
     // physicsPreviewPlugin_ already uses for its collider overlays.
     auto movieMode = std::make_unique<plugins::MovieModePlugin>(meshLibrary_, textureLibrary_, studioEntitlementManager_);
     movieModePlugin_ = movieMode.get();
+    movieModePlugin_->setAudio(&audio_, [this] { return movieSoundRoots(); });
     pluginManager_.registerPlugin(std::move(movieMode));
 
     // Kronos ("Movie Maker NLE" -- CapCut-style clip timeline): the
@@ -842,6 +844,7 @@ bool StudioApp::initialize(StudioMode mode) {
         // plugin a 3D Maker or Audio user actually opens.
         auto movieMode = std::make_unique<plugins::MovieModePlugin>(meshLibrary_, textureLibrary_, studioEntitlementManager_);
         movieModePlugin_ = movieMode.get();
+        movieModePlugin_->setAudio(&audio_, [this] { return movieSoundRoots(); });
         pluginManager_.registerPlugin(std::move(movieMode));
 
         if (mode_ == StudioMode::ThreeDMaker) {
@@ -2603,6 +2606,9 @@ void StudioApp::run() {
         // (the "Scene Tree" the brief names) stops appearing in modes that
         // don't list it.
         if (showSceneTree()) explorerPanel_.draw(ecs_);
+        if (const core::EntityId inserted = explorerPanel_.takeInserted(); inserted != core::kNullEntity) {
+            pushCreationUndo("Insert Object", {inserted});
+        }
         if (showInspector()) {
             inspectorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities(), undoStack_);
         }
@@ -2793,6 +2799,7 @@ void StudioApp::run() {
             playSoloPlayer_.tick(deltaTime, ecs_, physicsPreviewPlugin_->physics(), viewportPanel_.camera(), overGame,
                                  io.WantTextInput, overGame ? io.MouseWheel : 0.0f);
         }
+        core::unions::sync(ecs_);
         pluginManager_.update(deltaTime, ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
         if (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying()) {
             core::instances::applyScriptCamera(ecs_);
@@ -3026,7 +3033,16 @@ void StudioApp::drawImportDialog() {
         if (!importedTree_.empty()) {
             ImGui::Separator();
             ImGui::BeginDisabled(importBlocked_);
-            if (ImGui::Button("Spawn Into Scene", ImVec2(160.0f, 0.0f))) hydrateImportedTree();
+            const bool alreadySpawned =
+                lastSpawnPath_ == importPathBuffer_ &&
+                std::any_of(lastSpawned_.begin(), lastSpawned_.end(), [this](core::EntityId e) { return ecs_.raw().valid(e); });
+            if (ImGui::Button("Spawn Into Scene", ImVec2(160.0f, 0.0f))) {
+                if (alreadySpawned) {
+                    confirmSecondSpawn_ = true;
+                } else {
+                    hydrateImportedTree();
+                }
+            }
             ImGui::EndDisabled();
             if (importBlocked_) {
                 ImGui::SameLine();
@@ -3038,6 +3054,17 @@ void StudioApp::drawImportDialog() {
             ImGui::SameLine();
             studio::helpMarker("Roblox measures in studs (1 stud = 0.28 m by its own convention). Kronos scenes are authored "
                         "at 1 unit = 1 m, so 1.0 keeps an imported place the size it was authored at.");
+            ImGui::Checkbox("Replace the template Ground with the place's Baseplate", &importReplacesGround_);
+            if (confirmSecondSpawn_ && alreadySpawned) {
+                ImGui::TextColored(ImVec4(0.92f, 0.78f, 0.38f, 1.0f),
+                                   "This place is already in the scene. Another copy would sit on top of it.");
+                if (ImGui::Button("Spawn another copy")) {
+                    confirmSecondSpawn_ = false;
+                    hydrateImportedTree();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) confirmSecondSpawn_ = false;
+            }
         }
 
         if (!importReportLines_.empty()) {
@@ -3089,21 +3116,56 @@ void StudioApp::hydrateImportedTree() {
     // same hydration, which is why the tree is kept rather than the
     // entity ids -- the ids are invalid the moment undo runs.
     std::vector<core::EntityId> created = result.createdEntities;
+    lastSpawnPath_ = importPathBuffer_;
+    lastSpawned_ = created;
     std::vector<migration::ImportedInstance> tree = importedTree_;
     migration::HydrationMeshes meshes = hydrationMeshes_;
+
+    // The place's own Baseplate replaces the template Ground (they'd sit in the same plane and flicker).
+    struct Ground {
+        std::vector<core::EntityId> ids;
+        EntitySnapshot snapshot;
+    };
+    auto ground = std::make_shared<Ground>();
+    auto removeGround = [this, ground] {
+        ground->ids.clear();
+        for (core::EntityId e : ecs_.view<core::Name>()) {
+            const auto* h = ecs_.tryGetComponent<core::Hierarchy>(e);
+            if (ecs_.tryGetComponent<core::Name>(e)->value == "Ground" && (h == nullptr || h->parent == core::kNullEntity) &&
+                ecs_.tryGetComponent<core::InstanceInfo>(e) == nullptr) {
+                ground->ids.push_back(e);
+            }
+        }
+        if (ground->ids.empty()) return;
+        ground->snapshot = EntitySnapshot::capture(ecs_, ground->ids);
+        for (core::EntityId e : ground->ids) core::hierarchy::destroyEntityRecursive(ecs_, e);
+    };
+    bool placeHasBaseplate = false;
+    for (const migration::ImportedInstance& root : tree) {
+        if (root.className != "Workspace") continue;
+        for (const migration::ImportedInstance& child : root.children) placeHasBaseplate |= child.name == "Baseplate";
+    }
+    const bool replaceGround = placeHasBaseplate && importReplacesGround_;
+    if (replaceGround) {
+        removeGround();
+        if (!ground->ids.empty()) notifications_.push("Removed the template Ground: the place has its own Baseplate", NotificationSeverity::Info);
+    }
+
     undoStack_.push(UndoStack::Command{
         "Import Roblox file",
-        [this, created]() {
+        [this, created, ground]() {
             for (auto it = created.rbegin(); it != created.rend(); ++it) {
                 if (ecs_.raw().valid(*it)) core::hierarchy::destroyEntityRecursive(ecs_, *it);
             }
+            if (!ground->ids.empty()) ground->ids = ground->snapshot.restore(ecs_);
             // Selection almost certainly pointed at something just
             // destroyed; clearing it beats leaving a dangling id.
             explorerPanel_.setSelected(core::kNullEntity);
         },
-        [this, tree, meshes, options]() {
+        [this, tree, meshes, options, replaceGround, removeGround]() {
             migration::InstanceHydrator redoHydrator;
             (void)redoHydrator.hydrate(tree, ecs_, meshes, options);
+            if (replaceGround) removeGround();
         }});
 }
 
@@ -3199,7 +3261,7 @@ void StudioApp::copySelection() {
 
 void StudioApp::pasteClipboard() {
     if (clipboard_.empty() || editingLocked()) return;
-    std::vector<core::EntityId> roots = clipboard_.restore(ecs_);
+    std::vector<core::EntityId> roots = clipboard_.restore(ecs_, true);
     for (core::EntityId root : roots) {
         if (auto* name = ecs_.tryGetComponent<core::Name>(root)) {
             int sameName = 0;
@@ -3450,6 +3512,19 @@ void StudioApp::togglePlay() {
     } else {
         physicsPreviewPlugin_->play(ecs_);
     }
+}
+
+std::vector<std::string> StudioApp::movieSoundRoots() const {
+    std::vector<std::string> roots;
+    if (!currentProjectPath_.empty()) {
+        const auto projectDir = std::filesystem::path(currentProjectPath_).parent_path();
+        roots.push_back(projectDir.string());
+        roots.push_back((projectDir / "audio").string());
+    }
+    const std::string assets = core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR);
+    roots.push_back(assets);
+    roots.push_back(assets + "/audio");
+    return roots;
 }
 
 } // namespace engine::studio

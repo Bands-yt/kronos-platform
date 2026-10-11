@@ -50,6 +50,15 @@ std::string executableDirectory() {
 #endif
 }
 
+std::string siblingExecutable(const std::string& name) {
+#ifdef _WIN32
+    const std::string file = name + ".exe";
+#else
+    const std::string& file = name;
+#endif
+    return (std::filesystem::path(executableDirectory()) / file).string();
+}
+
 std::string resolveResourceDir(const std::string& exeDir, const std::string& subdirName,
                                 const std::string& compileTimeFallback) {
     if (!exeDir.empty()) {

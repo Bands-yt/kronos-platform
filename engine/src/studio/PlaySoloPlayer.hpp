@@ -35,7 +35,7 @@ public:
     // Fires PlayerRemoving, removes the avatar and restores the editor
     // camera. Call before the scene is restored; the capsule and the
     // character Model go with the scene restore.
-    void end(core::ECS& ecs, core::Camera& camera);
+    void end(core::ECS& ecs, core::Camera& camera, core::Physics* physics = nullptr);
 
     [[nodiscard]] bool active() const { return active_; }
     [[nodiscard]] bool shiftLocked() const { return shiftLocked_; }

@@ -80,6 +80,73 @@ from the frame number, the inputs and the rollback state:
   simulation code. The C library's versions can differ in the last bit
   between operating systems.
 
-Scripts still run during a match and are fine for anything that doesn't
-touch physics (UI, sounds, effects). Rollback-aware Luau, where scripts run
-inside the simulation with their state rolled back, is a follow-up.
+Normal scripts still run during a match and are fine for anything that doesn't
+touch physics (UI, sounds, effects). Game logic that changes physics goes in a
+match script (below).
+
+## Match scripts
+
+A game can ship `Scripts/Match.luau` (or `Match.lua`). In a rollback match it
+runs inside the simulation, once per simulated frame, on every player's machine,
+and is rewound and replayed with the physics.
+
+```lua
+local SPEED = 6
+
+-- Optional: the starting state.
+function init(players)
+    local state = { jumps = {} }
+    for p = 1, players do state.jumps[p] = 0 end
+    return state
+end
+
+-- Every frame. Everything that must survive to the next frame goes in `state`.
+function step(state, ctx)
+    for p = 1, ctx.players do
+        local input = ctx.input(p)
+        local body = ctx.player(p)
+        if input.jump then state.jumps[p] += 1 end
+        if input.primary then ctx.impulse(body, vector.create(0, 5, 0)) end
+    end
+    if ctx.frame % 60 == 0 then
+        local pad = ctx.find("BoostPad")
+        if pad then ctx.moveKinematic(pad, vector.create(math.random(-5, 5), 0.5, 0)) end
+    end
+end
+```
+
+`ctx` has `frame`, `dt`, `players` and:
+
+| Function | Does |
+|---|---|
+| `input(p)` | Player `p`'s input: `moveX`, `moveZ` (-1..1), `yaw`, `pitch` (radians), `jump`, `primary`, `secondary`, `sprint`, `crouch` |
+| `player(p)` | Player `p`'s character body |
+| `find(name)` | The entity with that name (lowest id if several) |
+| `position(e)`, `velocity(e)` | As a `vector` |
+| `setPosition(e, v)`, `setVelocity(e, v)`, `impulse(e, v)`, `moveKinematic(e, v)` | Change a physics body |
+| `contacts()` | The previous frame's contacts, as `{a = entity, b = entity}` |
+
+The rules that keep every player's game the same:
+
+- **State lives in `state`.** It can hold numbers, strings, booleans, vectors
+  and tables of those (no functions or metatables, at most 1 MB). It is saved
+  with every snapshot and checked in every checksum. Tables are copied, so two
+  keys pointing at one table become two tables.
+- Everything else is read-only once the script has loaded: globals, and tables
+  reachable from them or from top-level locals. Changing a top-level local
+  inside a function is refused when the script loads, with its line number.
+- `math.random` uses a generator stored in the state, so it rolls back too
+  (`math.randomseed` sets it). `math.sin/cos/tan/atan/atan2/asin/acos` use the
+  engine's deterministic versions. `math.exp`, `log`, `pow` and the hyperbolic
+  functions are removed because they can differ between systems; `x ^ y` still
+  works but is only safe for whole-number powers. `os`, `debug` and
+  `collectgarbage` aren't available.
+- A step is stopped after about 2 million loop iterations or calls (the same
+  count on every machine). A step that errors changes nothing in `state`; the
+  error is printed once.
+- `print` repeats when frames are resimulated after a rollback.
+- The script's text is part of the match's first checksum, so a player with a
+  different `Match.luau` is stopped when the match starts, like a different scene.
+
+Code: `core/RollbackScript.*`; the match step in `Application::beginRollbackMatch`
+runs it after the characters move.

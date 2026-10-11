@@ -1,20 +1,18 @@
 cmake_minimum_required(VERSION 3.24)
 project(RobloxStyleEngine
-    VERSION 0.1.0
-    DESCRIPTION "Five Platforms, One Core -- reference engine skeleton"
+    VERSION 4.4.0
+    DESCRIPTION "Kronos engine, Player and Studio"
     LANGUAGES C CXX
 )
 
-# Kronos ("Versioning"): the full, real alpha version string --
-# project()'s own VERSION field above is numeric-only (CMake can't parse
-# a "-alpha" suffix into it), so it stays at the plain 0.1.0 it always
-# was; this is the one place a build script or packaging step should
-# read the full string from. core/KronosVersion.hpp's kKronosVersion is
-# the actual single source of truth every real UI surface (Studio's
-# About panel, RuntimeShell's Home/Settings screens, the generated
-# project README) reads at runtime -- keep both in sync by hand on each
-# real version bump, same as that header's own comment already states.
-set(KRONOS_VERSION_STRING "4.3.1-pre-beta")
+# The one place the version is set. Bump VERSION above (and the suffix) for a release;
+# core/KronosVersion.hpp and the installer's kronos_version.iss are generated from them.
+set(KRONOS_VERSION_SUFFIX "-pre-beta")
+set(KRONOS_VERSION_STRING "${PROJECT_VERSION}${KRONOS_VERSION_SUFFIX}")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/core/KronosVersion.hpp.in
+               ${CMAKE_CURRENT_BINARY_DIR}/generated/core/KronosVersion.hpp @ONLY)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../installer/kronos_version.iss.in
+               ${CMAKE_CURRENT_BINARY_DIR}/generated/kronos_version.iss @ONLY)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -59,6 +57,7 @@ option(ENGINE_BUILD_POLYGLOT_CORE "Build the polyglot_core static lib (linked in
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+include(cmake/CompilerCache.cmake)
 include(cmake/Dependencies.cmake)
 include(cmake/ShaderCompiler.cmake)
 

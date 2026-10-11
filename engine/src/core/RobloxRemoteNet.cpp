@@ -56,6 +56,7 @@ struct LinkState {
     RawReceiver rawReceiver;
     std::function<void()> beforeServerSend;
     bool inBeforeSend = false;
+    InstanceRef readingFrom = kNoInstance; // on the server: the player whose message is being read
 };
 
 LinkState& link(ECS& ecs) { return ecs.raw().ctx().emplace<LinkState>(); }
@@ -203,6 +204,17 @@ void writeArg(ECS& ecs, Writer& w, const SignalArg& arg, int depth) {
     }
 }
 
+// A client can only name what its computer knows about: not the server-only
+// folders, nor another player's GUI or scripts. Anything else arrives as nil.
+bool clientCanSee(ECS& ecs, InstanceRef ref, InstanceRef player) {
+    for (InstanceRef up = ref; up != kNoInstance && up != kGameInstance; up = instances::parent(ecs, up)) {
+        const std::string cls = instances::className(ecs, up);
+        if (cls == "ServerStorage" || cls == "ServerScriptService") return false;
+        if ((cls == "PlayerGui" || cls == "PlayerScripts") && instances::parent(ecs, up) != player) return false;
+    }
+    return true;
+}
+
 bool readArg(ECS& ecs, Reader& r, SignalArg& out, int depth) {
     if (depth > kMaxDepth) return false;
     const auto tag = static_cast<Tag>(r.u8());
@@ -251,7 +263,11 @@ bool readArg(ECS& ecs, Reader& r, SignalArg& out, int depth) {
             const uint16_t index = r.u16();
             path.emplace_back(std::move(name), index);
         }
-        if (r.ok()) out.value = InstanceValue::ofInstance(resolvePath(ecs, path));
+        if (!r.ok()) break;
+        InstanceRef found = resolvePath(ecs, path);
+        const InstanceRef viewer = link(ecs).readingFrom;
+        if (viewer != kNoInstance && !clientCanSee(ecs, found, viewer)) found = kNoInstance;
+        out.value = InstanceValue::ofInstance(found);
         break;
     }
     case Tag::Player:
@@ -511,11 +527,13 @@ void receive(ECS& ecs, uint32_t sender, const uint8_t* data, size_t size) {
     }
     Reader r(data, size);
     const auto kind = static_cast<Kind>(r.u8());
+    state.readingFrom = state.side == Side::Server ? playerFor(ecs, sender) : kNoInstance;
     if (kind == Kind::Fire || kind == Kind::Invoke) {
         receiveCall(ecs, state, kind, sender, r);
     } else if (kind == Kind::Result) {
         receiveResult(ecs, state, sender, r);
     }
+    link(ecs).readingFrom = kNoInstance;
 }
 
 void tick(ECS& ecs, double dt) {

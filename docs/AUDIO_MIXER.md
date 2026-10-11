@@ -105,6 +105,15 @@ end)
 audio.setBusVolume("Music", -12)
 ```
 
+## Movie Mode audio
+
+Events on a Movie Mode **Audio** track play a sound at the event's time, through the **SFX** bus.
+
+- The event's text names the sound: a path, or a name looked up next to the open project, in the project's `audio/` folder and in Kronos's `assets/` and `assets/audio/`. The extension is optional (`.wav`, `.ogg`, `.mp3`, `.flac` are tried). Each sound loads once; a missing one is looked for again the next time you press Play.
+- Sounds start on the exact sample of their keyframe: they are scheduled about 0.1 s ahead on the audio clock (`cinematic::SequenceAudioPlayer`, `Audio::scheduleCue`), so a slow frame doesn't make them late.
+- Looping repeats them every loop. Pausing, scrubbing or jumping the playhead cancels sounds that haven't started yet; ones already playing finish.
+- Muted tracks stay silent. Scripts that drive the timeline (`cinematic.play`, `cinematic.setPlayhead`, `cinematic.addEvent`) get the same sound.
+
 ## The `.kmixer` file
 
 `mixer.kmixer` is a plain text file, one item per line. Names are in double

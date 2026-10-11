@@ -55,6 +55,9 @@ release.
 | `KRONOS_SHELL_PAGE` | Opens the Player on a page: `discover`, `avatar`, `create`, `settings`, `directory` or `notifications` (unset: Home) |
 | `KRONOS_SILENT_AUDIO=1` | Starts with all sound muted |
 | `KRONOS_DATASTORE_DIR` | Folder where games save DataStore data |
+| `KRONOS_ALLOW_MULTIPLE=1` | Lets a second Player home screen open (normally only one runs at a time) |
+
+Only one Player home screen runs at a time. Opening it again brings the open one to the front on Windows, or shows a short message on Linux. Launches with `--server`, `--client`, `--game`, `--headless` or a `kronos://` link are not affected.
 
 ### Plugin API
 

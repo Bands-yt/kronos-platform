@@ -692,22 +692,19 @@ void RuntimeShell::selectGame(const core::GameCatalogueEntry& game) {
     }
 
     if (game.manifest.launchKind == core::GameLaunchKind::CliFlag) {
+        // A still-hardcoded mode (Broken Bones, TNT Wars, ...) runs in a fresh copy of this program.
+        std::vector<std::string> args;
+        if (!game.manifest.cliFlag.empty()) args.push_back(game.manifest.cliFlag);
+        if (!core::launchProcess(core::siblingExecutable("engine_runtime"), args)) {
+            std::fprintf(stderr, "RuntimeShell: failed to relaunch engine_runtime for \"%s\" (%s)\n",
+                         game.manifest.name.c_str(), game.manifest.cliFlag.c_str());
+            return;
+        }
         ensureGamePlayLogLoaded();
         gamePlayLog_.recordSessionStart(game.manifest.name, nowUnixSeconds());
         gamePlayLog_.recordSessionEnd(game.manifest.name, nowUnixSeconds(), /*crashed=*/false);
         (void)gamePlayLog_.saveToFile(kGamePlayLogPath);
         gamesScanned_ = false;
-        // A still-hardcoded rich mode (TNT Wars/Mining Sim/House Demo) --
-        // relaunch this same binary with its real flag and leave this
-        // process's own shell state untouched (the new process owns its
-        // own real bring-up from here).
-        std::string selfPath = core::executableDirectory() + "/engine_runtime";
-        std::vector<std::string> args;
-        if (!game.manifest.cliFlag.empty()) args.push_back(game.manifest.cliFlag);
-        if (!core::launchProcess(selfPath, args)) {
-            std::fprintf(stderr, "RuntimeShell: failed to relaunch engine_runtime for \"%s\" (%s)\n",
-                         game.manifest.name.c_str(), game.manifest.cliFlag.c_str());
-        }
         return;
     }
 
