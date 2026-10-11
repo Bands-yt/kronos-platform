@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 
 #include <nlohmann/json.hpp>
@@ -421,8 +422,11 @@ bool saveProgress(const Progress& progress, const std::string& path, std::string
             return false;
         }
     }
-    if (std::rename(tmpPath.c_str(), path.c_str()) != 0) {
-        outError = "cannot replace " + path;
+    // std::filesystem::rename replaces an existing save on Windows too; std::rename doesn't.
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, path, ec);
+    if (ec) {
+        outError = "cannot replace " + path + ": " + ec.message();
         return false;
     }
     return true;

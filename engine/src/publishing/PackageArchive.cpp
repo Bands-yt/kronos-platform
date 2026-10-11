@@ -232,7 +232,7 @@ bool writeWorldPackageArchive(const WorldPackage& package, const std::string& as
         manifest << relativePath << "\t" << archivedName << "\n";
     }
     {
-        std::ofstream manifestOut(tempDir + "/" + assetManifestFileName(), std::ios::trunc);
+        std::ofstream manifestOut(tempDir + "/" + assetManifestFileName(), std::ios::binary | std::ios::trunc);
         manifestOut << manifest.str();
     }
 
@@ -291,6 +291,7 @@ bool extractWorldPackageArchive(const std::string& archivePath, const std::strin
     std::istringstream manifestIn(manifestText);
     std::string line;
     while (std::getline(manifestIn, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back(); // packages written on Windows before the fix
         if (line.empty()) continue;
         size_t tab = line.find('\t');
         if (tab == std::string::npos) continue;
