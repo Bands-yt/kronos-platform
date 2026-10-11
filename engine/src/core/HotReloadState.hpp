@@ -78,15 +78,23 @@ template <typename T>
 
 using engine::core::kronosState;
 
+#ifndef KRONOS_HOTRELOAD_EXPORT
+#ifdef _WIN32
+#define KRONOS_HOTRELOAD_EXPORT __declspec(dllexport)
+#else
+#define KRONOS_HOTRELOAD_EXPORT __attribute__((visibility("default")))
+#endif
+#endif
+
 #define KRONOS_HOT_RELOAD_STATE(Type, Version)                                                                       \
     static_assert(!std::is_polymorphic_v<Type>, "hot reload state must not have a vtable");                          \
-    extern "C" void kronosHotReloadStateLayout(KronosHotReloadStateLayout* out) {                                    \
+    extern "C" KRONOS_HOTRELOAD_EXPORT void kronosHotReloadStateLayout(KronosHotReloadStateLayout* out) {                                    \
         out->size = sizeof(Type);                                                                                    \
         out->alignment = alignof(Type);                                                                              \
         out->typeHash = engine::core::hotReloadStateTypeHash(#Type);                                                 \
         out->version = (Version);                                                                                    \
     }                                                                                                                \
-    extern "C" void kronosHotReloadConstructState(void* state) { ::new (state) Type(); }                             \
-    extern "C" void kronosHotReloadDestroyState(void* state) { static_cast<Type*>(state)->~Type(); }                 \
+    extern "C" KRONOS_HOTRELOAD_EXPORT void kronosHotReloadConstructState(void* state) { ::new (state) Type(); }                             \
+    extern "C" KRONOS_HOTRELOAD_EXPORT void kronosHotReloadDestroyState(void* state) { static_cast<Type*>(state)->~Type(); }                 \
     extern "C" void* kronosHotReloadStatePointer = nullptr;                                                          \
-    extern "C" void kronosHotReloadBindState(void* state) { kronosHotReloadStatePointer = state; }
+    extern "C" KRONOS_HOTRELOAD_EXPORT void kronosHotReloadBindState(void* state) { kronosHotReloadStatePointer = state; }

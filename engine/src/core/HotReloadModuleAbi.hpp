@@ -104,10 +104,12 @@ inline constexpr int kHotReloadModuleAbiVersion = 3;
 // See tests/hotreload_fixtures/CounterModuleV1.cpp / CounterModuleV2.cpp
 // for two real, complete, minimal examples.
 // Windows only exports functions marked for it.
+#ifndef KRONOS_HOTRELOAD_EXPORT
 #ifdef _WIN32
 #define KRONOS_HOTRELOAD_EXPORT __declspec(dllexport)
 #else
 #define KRONOS_HOTRELOAD_EXPORT __attribute__((visibility("default")))
+#endif
 #endif
 
 using HotReloadAbiVersionFn = int (*)();
