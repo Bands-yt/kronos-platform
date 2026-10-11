@@ -603,7 +603,8 @@ int instanceNewIndex(lua_State* L) {
         if (!instances::setParent(ecs, ref, value.ref, error)) luaL_error(L, "%s", error.c_str());
         return 0;
     }
-    if ((ref == kGameInstance || ref == kWorkspaceInstance || ref == kRunServiceInstance) && property->name == "Name") {
+    if ((ref == kGameInstance || ref == kWorkspaceInstance || ref == kRunServiceInstance || ref == kCameraInstance) &&
+        property->name == "Name") {
         luaL_error(L, "Unable to rename %s", instances::name(ecs, ref).c_str());
     }
     instances::setProperty(ecs, ref, *property, value);
@@ -740,7 +741,8 @@ int mClone(lua_State* L) {
 int mDestroy(lua_State* L) {
     ECS& ecs = ecsOf(L);
     const InstanceRef self = checkSelf(L, "Destroy");
-    if (self == kGameInstance || self == kWorkspaceInstance || self == kRunServiceInstance) {
+    if (self == kGameInstance || self == kWorkspaceInstance || self == kRunServiceInstance ||
+        self == kCameraInstance) {
         luaL_error(L, "%s cannot be destroyed", instances::name(ecs, self).c_str());
     }
     instances::destroy(ecs, self);
@@ -1498,6 +1500,46 @@ int mRaycast(lua_State* L) {
     return 1;
 }
 
+// Kronos has no GUI inset, so screen and viewport points are the same.
+int pointToRay(lua_State* L, const char* method) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, method);
+    const double x = luaL_checknumber(L, 2);
+    const double y = luaL_checknumber(L, 3);
+    const double depth = luaL_optnumber(L, 4, 0.0);
+    const glm::vec2 size = ecs.raw().ctx().emplace<instances::ScriptCamera>().viewportSize;
+    const Camera& camera = instances::scriptCamera(ecs);
+    glm::vec3 origin;
+    glm::vec3 direction;
+    camera.screenPointToRay(static_cast<float>(2.0 * x / size.x - 1.0), static_cast<float>(2.0 * y / size.y - 1.0),
+                            size.x / size.y, origin, direction);
+    origin = camera.position + direction * static_cast<float>(depth);
+    pushValue(L, InstanceValue::ofVector3(origin));
+    pushValue(L, InstanceValue::ofVector3(direction));
+    callConstructor(L, "Ray", "new", 2);
+    return 1;
+}
+int mScreenPointToRay(lua_State* L) { return pointToRay(L, "ScreenPointToRay"); }
+int mViewportPointToRay(lua_State* L) { return pointToRay(L, "ViewportPointToRay"); }
+
+int worldToPoint(lua_State* L, const char* method) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, method);
+    const glm::vec3 world = checkVector3(L, 2, method);
+    const glm::vec2 size = ecs.raw().ctx().emplace<instances::ScriptCamera>().viewportSize;
+    const Camera& camera = instances::scriptCamera(ecs);
+    const glm::vec4 clip = camera.projectionMatrix(size.x / size.y) * camera.viewMatrix() * glm::vec4(world, 1.0f);
+    const float depth = glm::dot(world - camera.position, camera.forward());
+    glm::vec2 point{0.0f};
+    if (std::abs(clip.w) > 1e-6f) point = {(clip.x / clip.w + 1.0f) * 0.5f * size.x, (clip.y / clip.w + 1.0f) * 0.5f * size.y};
+    const bool onScreen = depth > 0.0f && point.x >= 0.0f && point.y >= 0.0f && point.x <= size.x && point.y <= size.y;
+    pushValue(L, InstanceValue::ofVector3(glm::vec3(point, depth)));
+    lua_pushboolean(L, onScreen ? 1 : 0);
+    return 2;
+}
+int mWorldToScreenPoint(lua_State* L) { return worldToPoint(L, "WorldToScreenPoint"); }
+int mWorldToViewportPoint(lua_State* L) { return worldToPoint(L, "WorldToViewportPoint"); }
+
 int mTakeDamage(lua_State* L) {
     const EntityId humanoid = checkHumanoid(L, "TakeDamage");
     players::takeDamage(ecsOf(L), humanoid, luaL_checknumber(L, 2));
@@ -1827,6 +1869,10 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"Resume", &playbackMethod<nullptr, &services::resumeSound>},
         {"AddItem", &mAddItem},
         {"Raycast", &mRaycast},
+        {"ScreenPointToRay", &mScreenPointToRay},
+        {"ViewportPointToRay", &mViewportPointToRay},
+        {"WorldToScreenPoint", &mWorldToScreenPoint},
+        {"WorldToViewportPoint", &mWorldToViewportPoint},
         {"AddTag", &mAddTag},
         {"RemoveTag", &mRemoveTag},
         {"HasTag", &mHasTag},

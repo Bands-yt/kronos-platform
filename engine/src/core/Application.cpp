@@ -26,6 +26,7 @@
 #include "core/Economy.hpp"
 #include "core/EmoteSystem.hpp"
 #include "core/InstanceSignals.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/Inventory.hpp"
 #include "core/Logger.hpp"
 #include "core/OreNode.hpp"
@@ -456,6 +457,7 @@ bool Application::initialize(const CreateInfo& info) {
     gameLoop_->setFrameStartHook([this](float dt) {
         signals::renderStepped(ecs_, dt);
         signals::flush(ecs_);
+        instances::applyScriptCamera(ecs_);
     });
 
     // The pre-tick hook (see GameLoop.hpp's doc comment): sample input,
@@ -3235,6 +3237,8 @@ void Application::robloxPlayerJoined(net::PlayerId player, const std::string& na
 
 void Application::tickGameScripts(float dt) {
     partbodies::setPhysics(ecs_, &physics_);
+    instances::setScriptCamera(ecs_, headless_ ? nullptr : &camera_,
+                               glm::vec2(static_cast<float>(window_.width()), static_cast<float>(window_.height())));
     core::tickScriptHotReload(ecs_, scripting_);
     players::tick(ecs_, dt);
     remotenet::tick(ecs_, dt);

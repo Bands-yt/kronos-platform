@@ -320,6 +320,7 @@
 #include "migration/AssetModeration.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "migration/ProjectImporter.hpp"
+#include "migration/BridgeDoctor.hpp"
 #include "migration/CompatibilityScore.hpp"
 #include "migration/RbxlxParser.hpp"
 #include "migration/RbxBinaryReader.hpp"
@@ -43809,6 +43810,79 @@ w.Parent = workspace
           "an imported WeldConstraint keeps its Part0/Part1 links");
 }
 
+void testRobloxCurrentCamera() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox workspace.CurrentCamera --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "camera test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto run = [&](const char* name, const char* source) {
+        scripting.loadAndRun(name, std::string(R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f) return not pcall(f) end
+local function near(a, b, eps) return math.abs(a - b) < (eps or 1e-3) end
+local function nearV(a, b, eps) return near(a.X, b.X, eps) and near(a.Y, b.Y, eps) and near(a.Z, b.Z, eps) end
+local cam = workspace.CurrentCamera
+)LUAU") + source + "\nprint(\"DONE\")\n");
+    };
+
+    Camera host;
+    instances::setScriptCamera(ecs, &host, glm::vec2(800.0f, 600.0f));
+    run("CameraBasics", R"LUAU(
+expect("CurrentCamera is a Camera", cam ~= nil and cam.ClassName == "Camera" and cam:IsA("Camera"))
+expect("it lives in workspace", cam.Parent == workspace and workspace:FindFirstChild("Camera") == cam)
+expect("it can't be destroyed", fails(function() cam:Destroy() end))
+expect("nothing can be put inside it", fails(function() Instance.new("Part").Parent = cam end))
+expect("CurrentCamera is read-only", fails(function() workspace.CurrentCamera = nil end))
+expect("ViewportSize is the host's view", cam.ViewportSize.X == 800 and cam.ViewportSize.Y == 600)
+cam.CFrame = CFrame.lookAt(Vector3.new(1, 2, 3), Vector3.new(11, 2, 3))
+expect("CFrame reads back", nearV(cam.CFrame.Position, Vector3.new(1, 2, 3)) and nearV(cam.CFrame.LookVector, Vector3.xAxis))
+cam.FieldOfView = 50
+expect("FieldOfView reads back", near(cam.FieldOfView, 50))
+local mid, onScreen = cam:WorldToViewportPoint(Vector3.new(21, 2, 3))
+expect("a point ahead is in the middle", onScreen and near(mid.X, 400, 0.01) and near(mid.Y, 300, 0.01) and near(mid.Z, 20))
+local _, behind = cam:WorldToScreenPoint(Vector3.new(-9, 2, 3))
+expect("a point behind is off screen", not behind)
+local up = cam:WorldToViewportPoint(Vector3.new(21, 5, 3))
+expect("up is up on screen", up.Y < 300)
+local ray = cam:ViewportPointToRay(400, 300)
+expect("the middle ray looks forward", nearV(ray.Direction, Vector3.xAxis) and nearV(ray.Origin, Vector3.new(1, 2, 3)))
+local edge = cam:ScreenPointToRay(800, 300, 5)
+expect("an edge ray turns right", edge.Direction.Z > 0.1 and near(edge.Direction.Magnitude, 1) and near((edge.Origin - Vector3.new(1, 2, 3)).Magnitude, 5))
+expect("CameraType starts Custom", cam.CameraType == Enum.CameraType.Custom)
+)LUAU");
+    check(glm::length(host.position - glm::vec3(1, 2, 3)) < 1e-3f, "camera: setting CFrame moves the host camera");
+    check(glm::length(host.forward() - glm::vec3(1, 0, 0)) < 1e-3f, "camera: setting CFrame turns the host camera");
+    check(std::abs(host.verticalFovDegrees - 50.0f) < 1e-3f, "camera: FieldOfView sets the host's field of view");
+
+    host.position = glm::vec3(0.0f, 50.0f, 0.0f);
+    instances::applyScriptCamera(ecs);
+    check(host.position.y == 50.0f, "camera: a Custom camera follows the host's own control");
+
+    run("CameraScriptable", R"LUAU(
+cam.CameraType = Enum.CameraType.Scriptable
+cam.CFrame = CFrame.new(0, 10, 0) * CFrame.Angles(math.rad(-30), 0, math.rad(15))
+)LUAU");
+    host.position = glm::vec3(5.0f, 5.0f, 5.0f);
+    host.yawDegrees = 12.0f;
+    instances::applyScriptCamera(ecs);
+    check(glm::length(host.position - glm::vec3(0, 10, 0)) < 1e-3f, "camera: a Scriptable camera keeps the script's position");
+    run("CameraScriptableRead", R"LUAU(
+local want = CFrame.new(0, 10, 0) * CFrame.Angles(math.rad(-30), 0, math.rad(15))
+expect("a tilted, rolled CFrame reads back", nearV(cam.CFrame.LookVector, want.LookVector) and nearV(cam.CFrame.UpVector, want.UpVector))
+)LUAU");
+
+    instances::resetScriptCamera(ecs);
+    run("CameraReset", R"LUAU(
+expect("Stop resets CameraType", cam.CameraType == Enum.CameraType.Custom)
+)LUAU");
+    checkLuauExpectations("camera", output);
+    scripting.shutdown();
+}
+
 void testRobloxRaycast() {
     using namespace engine::core;
     std::printf("\n-- Roblox workspace:Raycast --\n");
@@ -45523,6 +45597,174 @@ lamp.Glow.Brightness = 3</string></Properties></Item>
     for (const CompatScriptRun& run : score.scripts) {
         if (!run.ok) std::fprintf(stderr, "  %s: %s\n", run.path.c_str(), run.error.c_str());
     }
+}
+
+void testBridgeDoctor() {
+    using namespace engine::migration;
+    std::printf("\n-- Bridge Doctor --\n");
+    auto readFile = [](const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        return buffer.str();
+    };
+
+    // A corpus place with its behaviour checks: everything passes, nothing to fix.
+    const std::string door = readFile("tests/compat_corpus/door.rbxlx");
+    const std::string doorChecks = readFile("tests/compat_corpus/door.checks.luau");
+    check(!doorChecks.empty(), "doctor: the door place has a behaviour checks file");
+    const DoctorPlace good = diagnosePlace("door.rbxlx", door, doorChecks);
+    check(good.parsed && !good.blocked && good.scriptsRan && good.format == "rbxlx (XML)",
+          "doctor: the door place imports as XML and its scripts run");
+    check(good.score.behaviourRan && good.score.behaviour.size() == 3, "doctor: the door place's 3 behaviour checks ran");
+    bool allPassed = true;
+    for (const auto& c : good.score.behaviour) allPassed = allPassed && c.passed;
+    check(allPassed && good.findings.empty(), "doctor: the door opens and closes, with no findings");
+    const DoctorPlace noChecks = diagnosePlace("door.rbxlx", door);
+    check(!noChecks.score.behaviourRan && noChecks.score.behaviour.empty(),
+          "doctor: without a checks file, behaviour is 'not run', not 'passed'");
+
+    // The same door with its script removed: the import is fine, the behaviour isn't.
+    std::string brokenDoor = door;
+    const size_t scriptAt = brokenDoor.find("<Item class=\"Script\"");
+    const size_t scriptEnd = brokenDoor.find("</Item>", scriptAt);
+    check(scriptAt != std::string::npos && scriptEnd != std::string::npos, "doctor: the door place has its script");
+    brokenDoor.erase(scriptAt, scriptEnd + 7 - scriptAt);
+    const DoctorPlace broken = diagnosePlace("door-broken.rbxlx", brokenDoor, doorChecks);
+    size_t failed = 0;
+    for (const auto& c : broken.score.behaviour) failed += c.passed ? 0 : 1;
+    check(broken.parsed && broken.score.overallPercent() == 100.0 && failed == 1,
+          "doctor: a door without its script still scores 100% but fails the 'opens' behaviour check");
+    check(broken.countOf(DoctorCategory::GameplayRisk) == 1 && broken.findings.front().code == "behaviour-failed",
+          "doctor: failed behaviour checks are gameplay risks");
+
+    // One finding of each kind.
+    const std::string mixed = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W"><Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Part" referent="P"><Properties><string name="Name">Floor</string>
+      <BinaryString name="AttributesSerialize">AQAAAAUAAABTY29yZQMAAAAAAAAkQA==</BinaryString>
+      <token name="BackSurface">0</token></Properties>
+      <Item class="Decal" referent="D"><Properties><string name="Name">Logo</string></Properties></Item>
+    </Item>
+    <Item class="ProximityPrompt" referent="X"><Properties><string name="Name">Prompt</string></Properties></Item>
+    <Item class="Sound" referent="S"><Properties><string name="Name">Music</string>
+      <Content name="SoundId"><url>rbxassetid://1234567</url></Content></Properties></Item>
+    <Item class="Script" referent="A"><Properties><string name="Name">Broken</string>
+      <ProtectedString name="Source"><![CDATA[local x = 1
+local y = nil + x
+print(y)]]></ProtectedString></Properties></Item>
+    <Item class="Script" referent="B"><Properties><string name="Name">Uses</string>
+      <ProtectedString name="Source"><![CDATA[local ok = true
+
+local mouse = UserInputService.MouseEnabled]]></ProtectedString></Properties></Item>
+    <Item class="ModuleScript" referent="C"><Properties><string name="Name">Bad"Name</string>
+      <ProtectedString name="Source"><![CDATA[return {]]></ProtectedString></Properties></Item>
+  </Item>
+</roblox>)XML";
+    const DoctorPlace place = diagnosePlace("mixed.rbxlx", mixed);
+    auto find = [&](const std::string& code) -> const DoctorFinding* {
+        for (const DoctorFinding& f : place.findings) {
+            if (f.code == code) return &f;
+        }
+        return nullptr;
+    };
+    const DoctorFinding* runtime = find("runtime-error");
+    check(runtime != nullptr && runtime->category == DoctorCategory::Blocker && runtime->script == "Workspace.Broken",
+          "doctor: a script that errors while starting is a blocker");
+    check(runtime != nullptr && runtime->line == 2, "doctor: the runtime error keeps the line the engine reported");
+    const DoctorFinding* compile = find("compile-error");
+    check(compile != nullptr && compile->category == DoctorCategory::Blocker, "doctor: a syntax error is a blocker");
+    const DoctorFinding* api = find("missing-api");
+    check(api != nullptr && api->category == DoctorCategory::GameplayRisk && api->subject == "UserInputService" &&
+              api->script == "Workspace.Uses" && api->line == 3,
+          "doctor: a missing API is a gameplay risk at its script and line");
+    bool decalVisual = false;
+    bool promptRisk = false;
+    for (const DoctorFinding& f : place.findings) {
+        if (f.code == "unsupported-class" && f.subject == "Decal") decalVisual = f.category == DoctorCategory::VisualAudio;
+        if (f.code == "unsupported-class" && f.subject == "ProximityPrompt") {
+            promptRisk = f.category == DoctorCategory::GameplayRisk;
+        }
+    }
+    check(decalVisual && promptRisk, "doctor: unsupported classes are split into visual and gameplay ones");
+    const DoctorFinding* asset = find("asset-unavailable");
+    check(asset != nullptr && asset->category == DoctorCategory::VisualAudio &&
+              asset->message.find("rbxassetid://1234567") != std::string::npos,
+          "doctor: a Roblox asset reference is a visual/audio finding (nothing downloaded)");
+    const DoctorFinding* attributes = find("attributes-not-imported");
+    check(attributes != nullptr && attributes->category == DoctorCategory::GameplayRisk,
+          "doctor: saved attributes are reported because Kronos doesn't import them");
+    const DoctorFinding* unread = find("unread-properties");
+    check(unread != nullptr && unread->category == DoctorCategory::Info &&
+              unread->message.find("BackSurface") != std::string::npos,
+          "doctor: unread properties are grouped per class as information");
+    bool sorted = true;
+    for (size_t i = 1; i < place.findings.size(); ++i) {
+        sorted = sorted && place.findings[i - 1].category <= place.findings[i].category;
+    }
+    check(sorted && place.findings.front().category == DoctorCategory::Blocker, "doctor: findings are sorted by severity");
+    bool noLineInvented = true;
+    for (const DoctorFinding& f : place.findings) {
+        if (f.script.empty() && f.line != 0) noLineInvented = false;
+    }
+    check(noLineInvented, "doctor: findings outside scripts never get a line number");
+
+    // Exports: valid, stable, and free of script source.
+    DoctorReport report;
+    report.kronosVersion = "test";
+    report.places = {good, place};
+    const std::string json = doctorReportJson(report);
+    check(json == doctorReportJson(report), "doctor: the JSON report is the same every time");
+    DoctorReport again;
+    again.kronosVersion = "test";
+    again.places = {diagnosePlace("door.rbxlx", door, doorChecks), diagnosePlace("mixed.rbxlx", mixed)};
+    check(doctorReportJson(again) == json && doctorReportMarkdown(again) == doctorReportMarkdown(report),
+          "doctor: diagnosing the same files again gives byte-identical reports");
+    const auto parsed = nlohmann::json::parse(json, nullptr, false);
+    check(!parsed.is_discarded() && parsed["schema"] == 1 && parsed["kronosVersion"] == "test" &&
+              parsed["places"].size() == 2,
+          "doctor: the JSON report parses with the schema, version and places");
+    if (!parsed.is_discarded() && parsed["places"].size() == 2) {
+        const auto& m = parsed["places"][0]["metrics"];
+        check(m["behaviour"]["ran"] == true && m["behaviour"]["passed"] == 3 && m["apiUses"]["total"].is_number() &&
+                  m["classes"]["total"].is_number() && m["scripts"]["withoutErrors"].is_number(),
+              "doctor: classes, API uses, script runs and behaviour are separate metrics");
+        const auto& f = parsed["places"][1]["findings"];
+        bool fieldsOk = f.size() == place.findings.size();
+        for (const auto& item : f) {
+            fieldsOk = fieldsOk && item.contains("category") && item.contains("code") && item.contains("why") &&
+                       item.contains("help") && (item["line"].is_null() || item["line"].is_number());
+        }
+        check(fieldsOk, "doctor: every JSON finding has category, code, line, why and help");
+        check(parsed["places"][1]["metrics"]["behaviour"]["ran"] == false, "doctor: unchecked behaviour shows ran=false");
+    }
+    check(json.find("nil + x") == std::string::npos && json.find("local ok = true") == std::string::npos,
+          "doctor: the JSON report doesn't contain script source");
+    const std::string markdown = doctorReportMarkdown(report);
+    check(markdown.find("### Blockers") != std::string::npos && markdown.find("not run (no checks file)") != std::string::npos &&
+              markdown.find("## Known limits") != std::string::npos,
+          "doctor: the Markdown report has the severity sections, behaviour status and limits");
+
+    // Bad input and bad output paths.
+    const DoctorPlace junk = diagnosePlace("junk.rbxlx", "this is not a place");
+    check(!junk.parsed && junk.format == "unknown" && junk.findings.size() == 1 &&
+              junk.findings[0].category == DoctorCategory::Blocker && !junk.scriptsRan,
+          "doctor: a file that isn't a place is one blocker and nothing runs");
+    const DoctorPlace empty = diagnosePlace("empty.rbxlx", "");
+    check(!empty.parsed && empty.countOf(DoctorCategory::Blocker) == 1, "doctor: an empty file is a blocker");
+    const DoctorPlace truncated = diagnosePlace("cut.rbxl", std::string("<roblox!\x89\xff\x0d\x0a\x1a\x0a", 14));
+    check(!truncated.parsed && truncated.format == "rbxl/rbxm (binary)", "doctor: a cut-off binary place is reported, not crashed on");
+    DoctorReport junkReport;
+    junkReport.places = {junk};
+    check(!nlohmann::json::parse(doctorReportJson(junkReport), nullptr, false).is_discarded(),
+          "doctor: a failed import still gives a valid JSON report");
+    std::string error;
+    check(!writeDoctorFile("/nonexistent-kronos-dir/report.json", json, error) && !error.empty(),
+          "doctor: writing to a missing folder fails with a reason");
+    error.clear();
+    check(!writeDoctorFile("", json, error) && !error.empty(), "doctor: an empty output path fails with a reason");
+    check(writeDoctorFile("test_bridge_doctor.json", json, error) && readFile("test_bridge_doctor.json") == json,
+          "doctor: a report is written exactly");
 }
 
 void testRobloxCompatibilityScore() {
@@ -47902,6 +48144,7 @@ int main() {
     testLuauApiCompatibilityScan();
     testProjectImportPipeline();
     testRobloxCompatibilityScore();
+    testBridgeDoctor();
     testRobloxDatatypes();
     testRobloxInstanceTree();
     testRobloxImportedInstances();
@@ -47917,6 +48160,7 @@ int main() {
     testRobloxLiveBodies();
     testRobloxRaycast();
     testRobloxWeldConstraint();
+    testRobloxCurrentCamera();
     testRobloxDataStore();
     testRobloxServices();
     testRobloxGui();

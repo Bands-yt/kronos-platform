@@ -370,6 +370,7 @@ add_library(engine_core STATIC
     migration/PropertyDecoder.cpp
     migration/InstanceHydrator.cpp
     migration/CompatibilityScore.cpp
+    migration/BridgeDoctor.cpp
     core/RobloxDatatypes.cpp
     core/InstanceTree.cpp
     core/InstanceSignals.cpp

@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/Camera.hpp"
 #include "core/ECS.hpp"
 
 // Roblox's Instance tree (game, workspace, Parent, children, properties) as a
@@ -51,6 +52,7 @@ inline constexpr InstanceRef kNoInstance = ~0u;
 inline constexpr InstanceRef kGameInstance = ~0u - 1;
 inline constexpr InstanceRef kWorkspaceInstance = ~0u - 2;
 inline constexpr InstanceRef kRunServiceInstance = ~0u - 3;
+inline constexpr InstanceRef kCameraInstance = ~0u - 4; // workspace.CurrentCamera
 
 // Roblox-side data for an entity. Entities without it get a class from their
 // components (see className()).
@@ -141,6 +143,28 @@ void destroy(ECS& ecs, InstanceRef ref);
 InstanceRef getService(ECS& ecs, const std::string& name, std::string& error);
 // Only finds it.
 [[nodiscard]] InstanceRef findService(ECS& ecs, const std::string& name);
+
+// workspace.CurrentCamera drives the host's camera. Without a host (server,
+// tests) it drives a camera of its own.
+struct ScriptCamera {
+    Camera* host = nullptr;
+    Camera own;
+    glm::vec2 viewportSize{1280.0f, 720.0f};
+    bool posed = false; // a script set CFrame or FieldOfView
+    glm::vec3 position{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    float fieldOfView = 70.0f;
+};
+void setScriptCamera(ECS& ecs, Camera* camera, glm::vec2 viewportSize);
+[[nodiscard]] Camera& scriptCamera(ECS& ecs);
+[[nodiscard]] bool cameraIsScriptable(ECS& ecs);
+// Hosts call this after their own camera control: a Scriptable camera keeps
+// the pose scripts gave it.
+void applyScriptCamera(ECS& ecs);
+// Forgets the host and what scripts set (Studio Stop).
+void resetScriptCamera(ECS& ecs);
+[[nodiscard]] glm::quat cameraRotation(const Camera& camera);
+void setCameraRotation(Camera& camera, const glm::quat& rotation);
 
 bool getProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, InstanceValue& out);
 void setProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, const InstanceValue& value);

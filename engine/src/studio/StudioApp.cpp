@@ -2766,6 +2766,11 @@ void StudioApp::run() {
             worldStreamer_.update({viewportPanel_.camera().position});
         }
         resources_.update();
+        if (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying()) {
+            const VkExtent2D extent = viewportPanel_.desiredExtent();
+            core::instances::setScriptCamera(ecs_, &viewportPanel_.camera(),
+                                             glm::vec2(static_cast<float>(extent.width), static_cast<float>(extent.height)));
+        }
         if (playSoloPlayer_.active() && !physicsPreviewPlugin_->isPaused() && !physicsPreviewPlugin_->scriptDebugPaused()) {
             const ImGuiIO& io = ImGui::GetIO();
             const bool overGame = viewportPanel_.isHovered();
@@ -2774,6 +2779,7 @@ void StudioApp::run() {
         }
         pluginManager_.update(deltaTime, ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
         if (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying()) {
+            core::instances::applyScriptCamera(ecs_);
             const core::Camera& camera = viewportPanel_.camera();
             audio_.mix(ecs_, camera.position, camera.forward(), glm::vec3(0.0f, 1.0f, 0.0f));
         }

@@ -12,8 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "migration/BridgeDoctor.hpp"
 #include "migration/CompatibilityScore.hpp"
-#include "safety/IPInfringementScanner.hpp"
 
 namespace fs = std::filesystem;
 using namespace engine::migration;
@@ -33,13 +33,21 @@ std::vector<std::pair<std::string, size_t>> topEntries(const std::map<std::strin
 
 int main(int argc, char** argv) {
     double minimum = -1.0;
+    std::string jsonPath;
+    std::string markdownPath;
     std::vector<fs::path> inputs;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--min" && i + 1 < argc) {
             minimum = std::atof(argv[++i]);
+        } else if (arg == "--report-json" && i + 1 < argc) {
+            jsonPath = argv[++i];
+        } else if (arg == "--report-md" && i + 1 < argc) {
+            markdownPath = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
-            std::printf("usage: kronos_compat [--min PERCENT] [file.rbxlx | file.rbxl | folder]...\n");
+            std::printf("usage: kronos_compat [--min PERCENT] [--report-json FILE] [--report-md FILE] "
+                        "[file.rbxlx | file.rbxl | folder]...\n"
+                        "A place's behaviour checks are read from <place>.checks.luau next to it.\n");
             return 0;
         } else {
             inputs.emplace_back(arg);
@@ -64,9 +72,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    ProjectImporter importer;
-    engine::safety::IPInfringementScanner scanner;
+    DoctorReport doctor;
     CompatibilityScore total;
+    size_t checksPassed = 0;
+    size_t checksRun = 0;
     double overallSum = 0.0;
     size_t scored = 0;
 
@@ -78,18 +87,38 @@ int main(int argc, char** argv) {
         }
         std::stringstream buffer;
         buffer << file.rdbuf();
-        const ImportReport report = importer.importDocument(buffer.str(), scanner);
-        if (!report.parsed || report.blocked) {
-            std::printf("%s: %s\n", place.filename().string().c_str(), report.blocked ? "blocked" : "did not parse");
+        std::string checks;
+        fs::path checksPath = place;
+        checksPath.replace_extension(".checks.luau");
+        if (std::ifstream checksFile(checksPath); checksFile) {
+            std::stringstream text;
+            text << checksFile.rdbuf();
+            checks = text.str();
+        }
+        doctor.places.push_back(diagnosePlace(place.filename().string(), buffer.str(), checks));
+        const DoctorPlace& diagnosed = doctor.places.back();
+        if (!diagnosed.parsed || diagnosed.blocked) {
+            std::printf("%s: %s\n", place.filename().string().c_str(), diagnosed.blocked ? "blocked" : "did not parse");
             continue;
         }
 
-        CompatibilityScore score = scoreImport(report);
-        runImportedScripts(report, score);
+        const CompatibilityScore& score = diagnosed.score;
         std::printf("%s: %s\n", place.filename().string().c_str(), score.summary().c_str());
         for (const CompatScriptRun& run : score.scripts) {
             if (!run.started) std::printf("    not started   %s (Roblox wouldn't run it here)\n", run.path.c_str());
             if (!run.ok) std::printf("    script error  %s\n", run.error.c_str());
+        }
+        if (score.behaviourRan) {
+            size_t passed = 0;
+            for (const CompatBehaviourCheck& check : score.behaviour) {
+                passed += check.passed ? 1 : 0;
+                if (!check.passed) {
+                    std::printf("    check failed  %s %s\n", check.name.c_str(), check.detail.c_str());
+                }
+            }
+            std::printf("    behaviour checks %zu/%zu passed\n", passed, score.behaviour.size());
+            checksPassed += passed;
+            checksRun += score.behaviour.size();
         }
 
         overallSum += score.overallPercent();
@@ -104,10 +133,25 @@ int main(int argc, char** argv) {
         for (const auto& [name, count] : score.unmappedClasses) total.unmappedClasses[name] += count;
     }
 
+    int writeFailures = 0;
+    auto writeReport = [&](const std::string& path, const std::string& text) {
+        if (path.empty()) return;
+        std::string error;
+        if (writeDoctorFile(path, text, error)) {
+            std::printf("Bridge Doctor report written to %s\n", path.c_str());
+        } else {
+            std::fprintf(stderr, "kronos_compat: %s\n", error.c_str());
+            ++writeFailures;
+        }
+    };
+    if (!jsonPath.empty()) writeReport(jsonPath, doctorReportJson(doctor));
+    if (!markdownPath.empty()) writeReport(markdownPath, doctorReportMarkdown(doctor));
+    if (writeFailures > 0) return 3;
     if (scored == 0) return 2;
     const double average = overallSum / static_cast<double>(scored);
     std::printf("\nAll places (%zu): %s\n", scored, total.summary().c_str());
     std::printf("Average score: %.1f%%\n", average);
+    if (checksRun > 0) std::printf("Behaviour checks: %zu/%zu passed (not part of the score)\n", checksPassed, checksRun);
 
     std::printf("\nMost-used missing APIs:\n");
     for (const auto& [name, count] : topEntries(total.missingApis, 15)) std::printf("  %-28s %zu\n", name.c_str(), count);

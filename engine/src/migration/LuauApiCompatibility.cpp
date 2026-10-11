@@ -186,6 +186,10 @@ LuauApiCompatibility::LuauApiCompatibility() {
     }
     registry_.push_back(
         {"Raycast", true, ApiMappingStatus::Mapped, "Works as in Roblox (docs/ROBLOX_BRIDGE.md, \"Raycasts\")."});
+    for (const char* method : {"ScreenPointToRay", "ViewportPointToRay", "WorldToScreenPoint", "WorldToViewportPoint"}) {
+        registry_.push_back({method, true, ApiMappingStatus::Mapped,
+                              "Works on workspace.CurrentCamera (docs/ROBLOX_BRIDGE.md, \"Camera\")."});
+    }
 
     // Handled automatically by ScriptCompatShimLoader -- reported so the
     // author knows a rewrite happened, not because anything is broken.

@@ -125,7 +125,9 @@ start to finish without hand edits.
 Small, high-value items, picked up between bridge steps:
 
 - **Launch feedback**: the crashes and confusing spots people report after Friday, fixed first.
-- **Roblox basics from the advisor**: `workspace:Raycast` ✔, `WeldConstraint` ✔, `workspace.CurrentCamera`, then legacy `Weld`/`Motor6D` and more server security.
+- **Roblox basics from the advisor**: `workspace:Raycast` ✔, `WeldConstraint` ✔, `workspace.CurrentCamera` ✔, then `GetPivot`/`PivotTo` (the first real Roblox place used it), legacy `Weld`/`Motor6D` and more server security.
+- **Studio feel**: the owner found Roblox Studio nicer to use. In small, tested steps: audit what Studio's panels already do; a roomier, resizable layout with Reset Layout; a real Explorer tree (indentation, class icons, hide empty Roblox services); grouped, searchable Inspector.
+- **Import fixes from the first Roblox-made place**: warn before spawning a second copy; let an imported baseplate replace the template ground; ragdoll on death.
 - **Keyframe-bound audio** (from 4.2): timeline events play sounds at exact sample times, through the shared mixer. 2–3 weeks.
 - **Build cache** (from 4.2): a `KRONOS_COMPILER_CACHE` CMake option for sccache/ccache, and a content-hash cache for compiled shaders. 1 week. Distributed builds across machines only if build times become a real problem.
 - **Third-party plugin sandbox on Windows** (Linux has it; Windows skips third-party plugins today).
@@ -136,6 +138,8 @@ Small, high-value items, picked up between bridge steps:
 - **Per-source sound instances** (10 Oct 2026): each object with a sound gets its own voice (`ma_sound_init_copy`, or a buffer reference for generated sounds), so objects sharing a sound file play at the same time instead of cutting each other off. Voices are freed when the object is destroyed, rebuilt when the sound is reloaded, and released on Studio's Stop. Tested by mixing offline and measuring the output.
 - **`workspace:Raycast`** (10 Oct 2026): rays through the real physics world with `RaycastParams` (Exclude/Include filters with descendants, `RespectCanCollide`); results have Instance, Position, Normal, Distance and Material. See ROBLOX_BRIDGE "Raycasts".
 - **`WeldConstraint`** (10 Oct 2026): welded parts move as one (a Jolt fixed joint per weld); setting `CFrame` moves the whole assembly, `Position` moves one part and keeps the new offset; imported places keep their `Part0`/`Part1` links (all Instance-valued properties are now linked on import). See ROBLOX_BRIDGE "Welds".
+- **`workspace.CurrentCamera`** (11 Oct 2026): scripts read and move the player's camera (`CFrame`, `FieldOfView`, `CameraType` Scriptable/Custom) and convert between screen and world (`ViewportPointToRay`, `WorldToViewportPoint`). See ROBLOX_BRIDGE "Camera".
+- **Bridge Doctor** (11 Oct 2026): `kronos_compat --report-md/--report-json` explains what a Roblox place needs: findings sorted into blockers, gameplay risks, visual/audio and information, with script lines when Kronos has them, and byte-stable Markdown/JSON reports. Places can carry behaviour checks (`<place>.checks.luau`); the five test places now have 16, all passing. First real Roblox-made place (the owner's obby, built in Roblox Studio): imports, all 3 scripts run, 5/5 behaviour checks pass (kill brick kills, finish pad reacts). See BRIDGE_DOCTOR.md.
 
 ---
 

@@ -17,6 +17,13 @@ struct CompatScriptRun {
     std::string error;
 };
 
+// One behaviour check from a place's .checks.luau file.
+struct CompatBehaviourCheck {
+    std::string name;
+    bool passed = false;
+    std::string detail;
+};
+
 struct CompatibilityScore {
     size_t instances = 0;
     size_t instancesMapped = 0;
@@ -27,6 +34,8 @@ struct CompatibilityScore {
     std::map<std::string, size_t> missingApis;        // identifier -> uses
     std::map<std::string, size_t> unmappedClasses;    // class -> instances
     std::vector<CompatScriptRun> scripts;
+    bool behaviourRan = false; // a checks file was given; kept apart from the percentages
+    std::vector<CompatBehaviourCheck> behaviour;
 
     [[nodiscard]] double instancePercent() const;
     [[nodiscard]] double apiPercent() const;
@@ -43,6 +52,8 @@ struct CompatibilityScore {
 // contexts, a test player joining, Starter copies) and records which Scripts
 // and LocalScripts run without an error. ModuleScripts are compiled here and
 // run when something requires them.
-void runImportedScripts(const ImportReport& report, CompatibilityScore& score);
+// checks: optional Luau run after the scripts start, with one player in the
+// game. It reports with check(name, ok, detail) and may call touch(part, hit).
+void runImportedScripts(const ImportReport& report, CompatibilityScore& score, const std::string& checks = {});
 
 } // namespace engine::migration

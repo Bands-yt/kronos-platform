@@ -838,6 +838,30 @@ weld.Parent = car.Body
   scripts.
 - Legacy `Weld` (with `C0`/`C1`) and `Motor6D` aren't built yet.
 
+## Camera (4.4)
+
+`workspace.CurrentCamera` is the view the player sees.
+
+```lua
+local camera = workspace.CurrentCamera
+camera.CameraType = Enum.CameraType.Scriptable
+camera.CFrame = CFrame.lookAt(Vector3.new(0, 20, 30), Vector3.zero)
+camera.FieldOfView = 50
+local point, onScreen = camera:WorldToViewportPoint(workspace.Coin.Position)
+```
+
+### What works
+- `CFrame` (position, direction and roll), `FieldOfView`, `ViewportSize`, `CameraType` (`Custom`, `Scriptable`), `Focus` and `CameraSubject` (stored).
+- With `Custom`, the normal follow camera keeps control; a `CFrame` set in `RenderStepped` shows for that frame. With `Scriptable`, the camera stays exactly where scripts put it.
+- `ViewportPointToRay`, `ScreenPointToRay` (Kronos has no GUI inset, so both are the same), `WorldToViewportPoint`, `WorldToScreenPoint`.
+- Studio's Stop resets the camera type and pose.
+
+### Limits
+- `Focus` and `CameraSubject` are stored but don't steer the camera yet.
+- `CurrentCamera` can't be replaced, and the camera can't be destroyed or hold children.
+- Only `Custom` and `Scriptable` change behaviour; other camera types act like `Custom`.
+- Checked by tests (no screenshot check yet).
+
 ## From entity ids to Instances
 
 Older Kronos scripts use the `world` table with numeric entity ids. That still

@@ -10,6 +10,7 @@
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/InstanceSignals.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/Logger.hpp"
 #include "core/PartBodies.hpp"
 #include "core/RobloxPlayers.hpp"
@@ -152,6 +153,7 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
     scriptAudioApi_.reset();
     physics_.setTouchRecording(false);
     core::signals::runService(ecs).running = false;
+    core::instances::resetScriptCamera(ecs);
     if (audio_ != nullptr) {
         for (auto [entity, sound] : ecs.raw().view<core::AudioSource>().each()) {
             sound.playing = false;

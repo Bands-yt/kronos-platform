@@ -265,6 +265,7 @@ struct VirtualInstances {
     InstanceInfo game{"DataModel"};
     InstanceInfo workspace{"Workspace"};
     InstanceInfo runService{"RunService"};
+    InstanceInfo camera{"Camera"};
 };
 
 constexpr glm::vec3 kDefaultPartColor{163.0f / 255.0f, 162.0f / 255.0f, 165.0f / 255.0f};
@@ -358,17 +359,19 @@ EntityId workspaceEntity(ECS& ecs) {
 InstanceInfo& infoFor(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance) return ecs.raw().ctx().emplace<VirtualInstances>().game;
     if (ref == kRunServiceInstance) return ecs.raw().ctx().emplace<VirtualInstances>().runService;
+    if (ref == kCameraInstance) return ecs.raw().ctx().emplace<VirtualInstances>().camera;
     const EntityId e = entityOf(ecs, ref);
     if (valid(ecs, e)) return ensureInfo(ecs, e);
     return ecs.raw().ctx().emplace<VirtualInstances>().workspace;
 }
 
 const InstanceInfo* findInfo(ECS& ecs, InstanceRef ref) {
-    if (ref == kGameInstance || ref == kRunServiceInstance ||
+    if (ref == kGameInstance || ref == kRunServiceInstance || ref == kCameraInstance ||
         (ref == kWorkspaceInstance && !valid(ecs, workspaceEntity(ecs)))) {
         auto* virtuals = ecs.raw().ctx().find<VirtualInstances>();
         if (virtuals == nullptr) return nullptr;
         if (ref == kRunServiceInstance) return &virtuals->runService;
+        if (ref == kCameraInstance) return &virtuals->camera;
         return ref == kGameInstance ? &virtuals->game : &virtuals->workspace;
     }
     return ecs.tryGetComponent<InstanceInfo>(entityOf(ecs, ref));
@@ -727,6 +730,75 @@ void wrapClockTime(ECS& ecs, EntityId e, const InstanceValue& v) {
     if (auto* info = ecs.tryGetComponent<InstanceInfo>(e)) info->properties["ClockTime"] = InstanceValue::ofNumber(wrapped);
 }
 
+// --- Camera ----------------------------------------------------------------
+// The virtual camera (entity null) is the live view; imported Camera
+// instances only store their values.
+
+ScriptCamera& cameraLink(ECS& ecs) { return ecs.raw().ctx().emplace<ScriptCamera>(); }
+
+InstanceValue storedOr(ECS& ecs, EntityId e, const char* key, InstanceValue fallback) {
+    if (const auto* info = ecs.tryGetComponent<InstanceInfo>(e)) {
+        if (const auto it = info->properties.find(key); it != info->properties.end()) return it->second;
+    }
+    return fallback;
+}
+
+InstanceValue getCameraCFrame(ECS& ecs, EntityId e) {
+    if (valid(ecs, e)) return storedOr(ecs, e, "CFrame", InstanceValue::ofCFrame(glm::vec3(0.0f), glm::quat(1, 0, 0, 0)));
+    const Camera& camera = scriptCamera(ecs);
+    return InstanceValue::ofCFrame(camera.position, cameraRotation(camera));
+}
+void setCameraCFrame(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (valid(ecs, e)) {
+        ensureInfo(ecs, e).properties["CFrame"] = v;
+        return;
+    }
+    ScriptCamera& link = cameraLink(ecs);
+    Camera& camera = scriptCamera(ecs);
+    if (!link.posed) link.fieldOfView = camera.verticalFovDegrees;
+    link.posed = true;
+    link.position = v.vec;
+    link.rotation = glm::normalize(v.rot);
+    camera.position = link.position;
+    setCameraRotation(camera, link.rotation);
+}
+InstanceValue getFieldOfView(ECS& ecs, EntityId e) {
+    if (valid(ecs, e)) return storedOr(ecs, e, "FieldOfView", InstanceValue::ofNumber(70.0));
+    return InstanceValue::ofNumber(scriptCamera(ecs).verticalFovDegrees);
+}
+void setFieldOfView(ECS& ecs, EntityId e, const InstanceValue& v) {
+    const double fov = std::clamp(v.number, 1.0, 120.0);
+    if (valid(ecs, e)) {
+        ensureInfo(ecs, e).properties["FieldOfView"] = InstanceValue::ofNumber(fov);
+        return;
+    }
+    ScriptCamera& link = cameraLink(ecs);
+    Camera& camera = scriptCamera(ecs);
+    if (!link.posed) {
+        link.position = camera.position;
+        link.rotation = cameraRotation(camera);
+    }
+    link.posed = true;
+    link.fieldOfView = static_cast<float>(fov);
+    camera.verticalFovDegrees = link.fieldOfView;
+}
+InstanceValue getViewportSize(ECS& ecs, EntityId) {
+    const glm::vec2 size = cameraLink(ecs).viewportSize;
+    return InstanceValue::ofVector2(size.x, size.y);
+}
+// Switching to Scriptable freezes the camera where it is.
+void setCameraType(ECS& ecs, EntityId e, const InstanceValue& v) {
+    if (valid(ecs, e) || v.text != "Scriptable") return;
+    ScriptCamera& link = cameraLink(ecs);
+    if (link.posed) return;
+    const Camera& camera = scriptCamera(ecs);
+    link.posed = true;
+    link.position = camera.position;
+    link.rotation = cameraRotation(camera);
+    link.fieldOfView = camera.verticalFovDegrees;
+}
+InstanceValue getCurrentCamera(ECS&, EntityId) { return InstanceValue::ofInstance(kCameraInstance); }
+
 PropertyDef prop(std::string name, PropertyType type, InstanceValue (*get)(ECS&, EntityId),
                  void (*set)(ECS&, EntityId, const InstanceValue&)) {
     PropertyDef def;
@@ -842,10 +914,31 @@ std::vector<ClassDef> buildClasses() {
     auto& model = add("Model", "PVInstance", true);
     model.properties = {stored("PrimaryPart", PropertyType::Instance, InstanceValue{})};
     add("WorldRoot", "Model", false).methods = {"Raycast"};
+    PropertyDef currentCamera = readOnly("CurrentCamera", PropertyType::Instance);
+    currentCamera.get = &getCurrentCamera;
+    currentCamera.serialized = false;
+    currentCamera.replicated = false;
     add("Workspace", "WorldRoot", false, true).properties = {
         stored("Gravity", PropertyType::Number, InstanceValue::ofNumber(196.2)),
         stored("FallenPartsDestroyHeight", PropertyType::Number, InstanceValue::ofNumber(-500.0)),
+        currentCamera,
     };
+
+    PropertyDef viewportSize = readOnly("ViewportSize", PropertyType::Vector2);
+    viewportSize.get = &getViewportSize;
+    viewportSize.serialized = false;
+    viewportSize.replicated = false;
+    auto& cameraClass = add("Camera", "Instance", false);
+    cameraClass.properties = {
+        prop("CFrame", PropertyType::CFrame, &getCameraCFrame, &setCameraCFrame),
+        stored("Focus", PropertyType::CFrame, InstanceValue::ofCFrame(glm::vec3(0.0f), glm::quat(1, 0, 0, 0))),
+        prop("FieldOfView", PropertyType::Number, &getFieldOfView, &setFieldOfView),
+        storedEnum("CameraType", "CameraType", "Custom", 5, &setCameraType),
+        stored("CameraSubject", PropertyType::Instance, InstanceValue{}),
+        viewportSize,
+    };
+    for (PropertyDef& def : cameraClass.properties) def.replicated = false;
+    cameraClass.methods = {"ScreenPointToRay", "ViewportPointToRay", "WorldToScreenPoint", "WorldToViewportPoint"};
 
     add("Folder", "Instance", true);
     add("Configuration", "Instance", true);
@@ -1184,14 +1277,18 @@ InstanceRef refOf(ECS& ecs, EntityId entity) {
 }
 
 EntityId entityOf(ECS& ecs, InstanceRef ref) {
-    if (ref == kGameInstance || ref == kRunServiceInstance || ref == kNoInstance) return kNullEntity;
+    if (ref == kGameInstance || ref == kRunServiceInstance || ref == kCameraInstance || ref == kNoInstance) {
+        return kNullEntity;
+    }
     if (ref == kWorkspaceInstance) return workspaceEntity(ecs);
     const auto entity = static_cast<EntityId>(ref);
     return valid(ecs, entity) ? entity : kNullEntity;
 }
 
 bool isAlive(ECS& ecs, InstanceRef ref) {
-    if (ref == kGameInstance || ref == kWorkspaceInstance || ref == kRunServiceInstance) return true;
+    if (ref == kGameInstance || ref == kWorkspaceInstance || ref == kRunServiceInstance || ref == kCameraInstance) {
+        return true;
+    }
     if (ref == kNoInstance) return false;
     return valid(ecs, static_cast<EntityId>(ref));
 }
@@ -1200,6 +1297,7 @@ std::string className(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance) return "DataModel";
     if (ref == kWorkspaceInstance) return "Workspace";
     if (ref == kRunServiceInstance) return "RunService";
+    if (ref == kCameraInstance) return "Camera";
     const EntityId e = entityOf(ecs, ref);
     return valid(ecs, e) ? entityClass(ecs, e) : std::string();
 }
@@ -1207,6 +1305,7 @@ std::string className(ECS& ecs, InstanceRef ref) {
 std::string name(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance) return "Game";
     if (ref == kRunServiceInstance) return "Run Service";
+    if (ref == kCameraInstance) return "Camera";
     const EntityId e = entityOf(ecs, ref);
     if (!valid(ecs, e)) return ref == kWorkspaceInstance ? "Workspace" : std::string();
     if (const auto* n = ecs.tryGetComponent<Name>(e)) return n->value;
@@ -1238,6 +1337,7 @@ std::string fullName(ECS& ecs, InstanceRef ref) {
 InstanceRef parent(ECS& ecs, InstanceRef ref) {
     if (ref == kGameInstance || ref == kNoInstance) return kNoInstance;
     if (ref == kWorkspaceInstance || ref == kRunServiceInstance) return kGameInstance;
+    if (ref == kCameraInstance) return kWorkspaceInstance;
     const EntityId e = entityOf(ecs, ref);
     if (!valid(ecs, e)) return kNoInstance;
     const EntityId p = parentEntity(ecs, e);
@@ -1272,6 +1372,7 @@ std::vector<InstanceRef> children(ECS& ecs, InstanceRef ref) {
                 out.push_back(refOf(ecs, e));
             }
         }
+        out.push_back(kCameraInstance);
         return out;
     }
     const EntityId e = entityOf(ecs, ref);
@@ -1301,7 +1402,8 @@ bool isDescendantOf(ECS& ecs, InstanceRef ref, InstanceRef ancestor) {
 }
 
 bool setParent(ECS& ecs, InstanceRef child, InstanceRef newParent, std::string& error) {
-    if (child == kGameInstance || child == kWorkspaceInstance || child == kRunServiceInstance) {
+    if (child == kGameInstance || child == kWorkspaceInstance || child == kRunServiceInstance ||
+        child == kCameraInstance) {
         error = "The Parent property of " + name(ecs, child) + " is locked";
         return false;
     }
@@ -1322,8 +1424,8 @@ bool setParent(ECS& ecs, InstanceRef child, InstanceRef newParent, std::string& 
         error = "Kronos only keeps services directly under game";
         return false;
     }
-    if (newParent == kRunServiceInstance) {
-        error = "Kronos can't keep objects inside Run Service";
+    if (newParent == kRunServiceInstance || newParent == kCameraInstance) {
+        error = "Kronos can't keep objects inside " + name(ecs, newParent);
         return false;
     }
     const InstanceRef oldParent = parent(ecs, child);
@@ -1469,7 +1571,7 @@ InstanceRef clone(ECS& ecs, InstanceRef ref) {
 }
 
 void destroy(ECS& ecs, InstanceRef ref) {
-    if (ref == kGameInstance || ref == kWorkspaceInstance) return;
+    if (ref == kGameInstance || ref == kWorkspaceInstance || ref == kCameraInstance) return;
     const EntityId e = entityOf(ecs, ref);
     if (!valid(ecs, e)) return;
     signals::destroying(ecs, ref);
@@ -1511,6 +1613,56 @@ InstanceRef getService(ECS& ecs, const std::string& serviceName, std::string& er
     return kNoInstance;
 }
 
+void setScriptCamera(ECS& ecs, Camera* camera, glm::vec2 viewportSize) {
+    ScriptCamera& link = cameraLink(ecs);
+    link.host = camera;
+    if (viewportSize.x > 0.0f && viewportSize.y > 0.0f) link.viewportSize = viewportSize;
+}
+
+Camera& scriptCamera(ECS& ecs) {
+    ScriptCamera& link = cameraLink(ecs);
+    return link.host != nullptr ? *link.host : link.own;
+}
+
+bool cameraIsScriptable(ECS& ecs) {
+    const InstanceInfo* info = findInfo(ecs, kCameraInstance);
+    if (info == nullptr) return false;
+    const auto it = info->properties.find("CameraType");
+    return it != info->properties.end() && it->second.text == "Scriptable";
+}
+
+void applyScriptCamera(ECS& ecs) {
+    ScriptCamera* link = ecs.raw().ctx().find<ScriptCamera>();
+    if (link == nullptr || !link->posed || !cameraIsScriptable(ecs)) return;
+    Camera& camera = scriptCamera(ecs);
+    camera.position = link->position;
+    setCameraRotation(camera, link->rotation);
+    camera.verticalFovDegrees = link->fieldOfView;
+}
+
+void resetScriptCamera(ECS& ecs) {
+    ecs.raw().ctx().erase<ScriptCamera>();
+    if (auto* virtuals = ecs.raw().ctx().find<VirtualInstances>()) virtuals->camera = InstanceInfo{"Camera"};
+}
+
+glm::quat cameraRotation(const Camera& camera) {
+    const glm::vec3 forward = camera.forward();
+    const glm::vec3 up = std::abs(forward.y) > 0.999f ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+    const glm::quat look = glm::quatLookAt(forward, up);
+    return glm::normalize(glm::angleAxis(glm::radians(camera.rollDegrees), forward) * look);
+}
+
+void setCameraRotation(Camera& camera, const glm::quat& rotation) {
+    const glm::vec3 forward = glm::normalize(rotation * glm::vec3(0, 0, -1));
+    camera.pitchDegrees = glm::degrees(std::asin(std::clamp(forward.y, -1.0f, 1.0f)));
+    if (std::abs(forward.y) < 0.999f) camera.yawDegrees = glm::degrees(std::atan2(forward.z, forward.x));
+    const glm::vec3 up = glm::normalize(rotation * glm::vec3(0, 1, 0));
+    const glm::vec3 flatUp = glm::normalize(glm::quatLookAt(camera.forward(),
+        std::abs(forward.y) > 0.999f ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0)) * glm::vec3(0, 1, 0));
+    camera.rollDegrees = glm::degrees(std::atan2(glm::dot(glm::cross(flatUp, up), forward), glm::dot(flatUp, up)));
+    if (std::abs(camera.rollDegrees) < 1e-3f) camera.rollDegrees = 0.0f;
+}
+
 bool getProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, InstanceValue& out) {
     if (property.name == "Name") {
         out = InstanceValue::ofString(name(ecs, ref));
@@ -1526,7 +1678,7 @@ bool getProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, Instanc
     }
     const EntityId e = entityOf(ecs, ref);
     if (property.get != nullptr) {
-        if (!valid(ecs, e)) return false;
+        if (!valid(ecs, e) && ref != kCameraInstance && ref != kWorkspaceInstance) return false;
         out = property.get(ecs, e);
         return true;
     }
@@ -1566,7 +1718,7 @@ void setProperty(ECS& ecs, InstanceRef ref, const PropertyDef& property, const I
     }
     const EntityId e = entityOf(ecs, ref);
     if (property.get == nullptr) infoFor(ecs, ref).properties[property.name] = value;
-    if (property.set != nullptr && valid(ecs, e)) property.set(ecs, e, value);
+    if (property.set != nullptr && (valid(ecs, e) || ref == kCameraInstance)) property.set(ecs, e, value);
     for (const auto& [def, before] : watched) {
         InstanceValue after;
         if (getProperty(ecs, ref, *def, after) && !sameValue(before, after)) {
