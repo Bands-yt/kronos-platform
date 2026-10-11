@@ -287,8 +287,9 @@ void collectUnionPieces(const std::vector<ImportedInstance>& nodes, glm::vec3 of
             piece.position = position;
             piece.rotation = rotation;
             piece.size = decodeVector3(n.properties, "size", glm::vec3(4.0f, 1.2f, 2.0f));
-            piece.color = hasProperty(n.properties, "Color3uint8") ? decodeColor3(n.properties, "Color3uint8", glm::vec3(0.64f))
-                                                                   : decodeColor3(n.properties, "Color", glm::vec3(0.64f));
+            piece.color = core::instances::robloxColorToLinear(
+                hasProperty(n.properties, "Color3uint8") ? decodeColor3(n.properties, "Color3uint8", glm::vec3(0.64f))
+                                                         : decodeColor3(n.properties, "Color", glm::vec3(0.64f)));
             piece.shape = n.className == "Part" ? (hasProperty(n.properties, "shape") ? decodeInt(n.properties, "shape", 1)
                                                                                        : decodeInt(n.properties, "Shape", 1))
                                                 : 1;
@@ -438,6 +439,7 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
         // the opposite convention.
         const float transparency = std::clamp(decodeFloat(node.properties, "Transparency", 0.0f), 0.0f, 1.0f);
         renderable.baseColor = glm::vec4(color, 1.0f - transparency);
+        core::instances::setPartColor(ecs, entity, color);
 
         // Reflectance is Roblox's single "how mirror-like" scalar. It is
         // not metalness, but it is the only PBR-adjacent signal a legacy
@@ -458,7 +460,7 @@ core::EntityId InstanceHydrator::hydrateNode(const ImportedInstance& node, core:
     if (light) {
         ++result.lightCount;
         auto& lightComponent = ecs.addComponent<core::Light>(entity);
-        lightComponent.color = decodeColor3(node.properties, "Color", glm::vec3(1.0f));
+        lightComponent.color = core::instances::robloxColorToLinear(decodeColor3(node.properties, "Color", glm::vec3(1.0f)));
         lightComponent.intensity = std::max(decodeFloat(node.properties, "Brightness", 1.0f), 0.0f);
         lightComponent.radius = std::max(decodeFloat(node.properties, "Range", 8.0f) * options.studsToUnits, 0.01f);
         lightComponent.enabled = decodeBool(node.properties, "Enabled", true);

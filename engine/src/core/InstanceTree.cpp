@@ -538,18 +538,14 @@ void setSize(ECS& ecs, EntityId e, const InstanceValue& v) {
 }
 InstanceValue getColor(ECS& ecs, EntityId e) {
     const auto* r = renderable(ecs, e);
-    return InstanceValue::ofColor3(r != nullptr ? glm::vec3(r->baseColor) : kDefaultPartColor);
-}
-void setColor(ECS& ecs, EntityId e, const InstanceValue& v) {
-    if (auto* r = renderable(ecs, e)) {
-        r->baseColor = glm::vec4(glm::clamp(v.vec, glm::vec3(0.0f), glm::vec3(1.0f)), r->baseColor.a);
-        if (r->emissiveIntensity > 0.0f && ecs.tryGetComponent<InstanceInfo>(e) != nullptr) {
-            const auto& props = ecs.tryGetComponent<InstanceInfo>(e)->properties;
-            const auto material = props.find("Material");
-            if (material != props.end() && material->second.text == "Neon") r->emissiveColor = glm::vec3(r->baseColor);
-        }
+    if (r == nullptr) return InstanceValue::ofColor3(kDefaultPartColor);
+    const glm::vec3 linear(r->baseColor);
+    if (const auto* set = ecs.tryGetComponent<instances::RobloxColor>(e)) {
+        if (glm::all(glm::lessThan(glm::abs(set->linear - linear), glm::vec3(1e-6f)))) return InstanceValue::ofColor3(set->srgb);
     }
+    return InstanceValue::ofColor3(instances::linearToRobloxColor(linear));
 }
+void setColor(ECS& ecs, EntityId e, const InstanceValue& v) { instances::setPartColor(ecs, e, v.vec); }
 InstanceValue getBrickColor(ECS& ecs, EntityId e) {
     InstanceValue v = getColor(ecs, e);
     v.type = InstanceValue::Type::BrickColor;
@@ -1516,7 +1512,7 @@ InstanceRef createUnchecked(ECS& ecs, const std::string& cls) {
         const auto* meshes = ecs.raw().ctx().find<InstanceMeshes>();
         auto& r = ecs.addComponent<Renderable>(e);
         r.meshHandle = meshes != nullptr ? meshes->box : Renderable::kInvalidHandle;
-        r.baseColor = glm::vec4(kDefaultPartColor, 1.0f);
+        r.baseColor = glm::vec4(instances::robloxColorToLinear(kDefaultPartColor), 1.0f);
         r.roughness = 0.85f;
         r.metallic = 0.0f;
         auto& mesh = ecs.addComponent<MeshSource>(e);
@@ -2041,6 +2037,40 @@ void setWorldPose(ECS& ecs, EntityId entity, glm::vec3 position, glm::quat rotat
                                 glm::sign(parentPose.scale + glm::vec3(1e-9f));
     transform->rotation = inverseRotation * rotation;
     transform->position = (inverseRotation * (position - parentPose.position)) / safeScale;
+}
+
+glm::vec3 robloxColorToLinear(glm::vec3 srgb) {
+    const auto one = [](float c) {
+        c = std::clamp(c, 0.0f, 1.0f);
+        return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    };
+    return {one(srgb.x), one(srgb.y), one(srgb.z)};
+}
+
+glm::vec3 linearToRobloxColor(glm::vec3 linear) {
+    const auto one = [](float c) {
+        c = std::clamp(c, 0.0f, 1.0f);
+        return c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+    };
+    return {one(linear.x), one(linear.y), one(linear.z)};
+}
+
+void setPartColor(ECS& ecs, EntityId part, glm::vec3 srgb) {
+    auto* r = ecs.tryGetComponent<Renderable>(part);
+    if (r == nullptr) return;
+    srgb = glm::clamp(srgb, glm::vec3(0.0f), glm::vec3(1.0f));
+    const glm::vec3 linear = robloxColorToLinear(srgb);
+    r->baseColor = glm::vec4(linear, r->baseColor.a);
+    if (auto* set = ecs.tryGetComponent<RobloxColor>(part)) {
+        *set = RobloxColor{srgb, linear};
+    } else {
+        ecs.addComponent<RobloxColor>(part, RobloxColor{srgb, linear});
+    }
+    if (r->emissiveIntensity > 0.0f && ecs.tryGetComponent<InstanceInfo>(part) != nullptr) {
+        const auto& props = ecs.tryGetComponent<InstanceInfo>(part)->properties;
+        const auto material = props.find("Material");
+        if (material != props.end() && material->second.text == "Neon") r->emissiveColor = linear;
+    }
 }
 
 } // namespace instances

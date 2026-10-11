@@ -172,6 +172,14 @@ Scenes now save each object's Roblox class, stored properties and attributes
 - GUI classes (`ScreenGui`, `Frame`, `TextButton`, ...) aren't in the class
   table yet: step 9.
 
+### Colours
+
+Roblox colours (`Color`, `BrickColor`, light colours, `Lighting.Ambient`,
+`OutdoorAmbient`, `FogColor`) are sRGB, and Kronos draws in linear colour, so they
+are converted when drawn (`instances::robloxColorToLinear`). Scripts still read
+back exactly the `Color3` they set. Places imported before this fix keep their
+paler colours until they are imported again.
+
 ### Parts are solid
 
 Like in Roblox, every part has a physics body that matches what you see:

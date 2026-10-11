@@ -403,15 +403,16 @@ void applyLighting(ECS& ecs, SceneLighting& lighting) {
     const InstanceRef ref = instances::findService(ecs, "Lighting");
     if (ref == kNoInstance) return;
     lighting.intensity *= static_cast<float>(std::max(0.0, lightingValue(ecs, ref, "Brightness").number) / 2.0);
-    const glm::vec3 outdoor = lightingValue(ecs, ref, "OutdoorAmbient").vec / (128.0f / 255.0f);
-    const glm::vec3 ambient = lightingValue(ecs, ref, "Ambient").vec;
+    const glm::vec3 outdoor = instances::robloxColorToLinear(lightingValue(ecs, ref, "OutdoorAmbient").vec) /
+                              instances::robloxColorToLinear(glm::vec3(128.0f / 255.0f));
+    const glm::vec3 ambient = instances::robloxColorToLinear(lightingValue(ecs, ref, "Ambient").vec);
     lighting.ambient = lighting.ambient * outdoor + ambient * 0.5f;
     lighting.ambientGround = lighting.ambientGround * outdoor + ambient * 0.5f;
     const double fogEnd = lightingValue(ecs, ref, "FogEnd").number;
     if (fogEnd > 0.0 && fogEnd < 100000.0) {
         // Squared-exponential fog that is 98% thick at FogEnd.
         lighting.fogDensity = std::max(lighting.fogDensity, static_cast<float>(1.978 / fogEnd));
-        lighting.fogColor = lightingValue(ecs, ref, "FogColor").vec;
+        lighting.fogColor = instances::robloxColorToLinear(lightingValue(ecs, ref, "FogColor").vec);
     }
 }
 

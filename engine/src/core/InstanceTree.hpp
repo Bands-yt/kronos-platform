@@ -231,5 +231,15 @@ struct WeldOffsetsChanged {
     std::vector<EntityId> parts;
 };
 
+// Roblox colours are sRGB; Kronos renders linear colours.
+[[nodiscard]] glm::vec3 robloxColorToLinear(glm::vec3 srgb);
+[[nodiscard]] glm::vec3 linearToRobloxColor(glm::vec3 linear);
+// The Color a script set, so reading it back gives the same numbers.
+struct RobloxColor {
+    glm::vec3 srgb{0.0f};
+    glm::vec3 linear{0.0f};
+};
+void setPartColor(ECS& ecs, EntityId part, glm::vec3 srgb);
+
 } // namespace instances
 } // namespace engine::core

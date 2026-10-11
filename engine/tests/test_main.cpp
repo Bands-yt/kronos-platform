@@ -43466,7 +43466,7 @@ void testInstanceHydration() {
     const auto* light = ecs.tryGetComponent<engine::core::Light>(lamp);
     check(light != nullptr && nearlyEqual(light->intensity, 3.0f), "a PointLight's Brightness becomes Light intensity");
     check(light != nullptr && nearlyEqual(light->radius, 12.0f), "a PointLight's Range becomes Light radius");
-    check(light != nullptr && nearlyEqual(light->color.g, 0.5f, 1e-3f), "a PointLight's Color decodes");
+    check(light != nullptr && nearlyEqual(light->color.g, 0.21404f, 1e-3f), "a PointLight's Color decodes (as a linear colour)");
 
     // A Script in the workspace starts when the game runs (Play), like in
     // Roblox; nothing runs at import time.
@@ -44868,6 +44868,28 @@ void testRobloxEnumItems() {
     const auto shape = robloxEnumItems("PartType");
     check(shape.size() == 5 && shape[1] == std::make_pair(std::string("Block"), 1), "enum items: PartType has Block=1");
     check(robloxEnumItems("NotAnEnum").empty(), "enum items: an unknown enum gives an empty list");
+}
+
+void testRobloxColorsAreSrgb() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox colours drawn in linear space --\n");
+    check(nearlyEqual(instances::robloxColorToLinear(glm::vec3(0.5f)).x, 0.21404f, 1e-4f), "sRGB 0.5 is linear 0.214");
+    check(nearlyEqual(instances::linearToRobloxColor(glm::vec3(0.21404f)).x, 0.5f, 1e-4f), "and back again");
+    check(instances::robloxColorToLinear(glm::vec3(1.0f, 0.0f, 0.0f)) == glm::vec3(1.0f, 0.0f, 0.0f), "pure colours don't change");
+
+    ECS ecs;
+    std::string error;
+    const InstanceRef part = instances::create(ecs, "Part", error);
+    const PropertyDef& color = *instances::findProperty("BasePart", "Color");
+    const glm::vec3 green(75.0f / 255.0f, 151.0f / 255.0f, 75.0f / 255.0f);
+    instances::setProperty(ecs, part, color, InstanceValue::ofColor3(green));
+    const auto* r = ecs.tryGetComponent<Renderable>(instances::entityOf(ecs, part));
+    check(r != nullptr && nearlyEqual(r->baseColor.g, 0.30947f, 1e-3f), "a script's Color3 is drawn as its linear colour");
+    InstanceValue read;
+    check(instances::getProperty(ecs, part, color, read) && read.vec == green, "reading Color gives back exactly what was set");
+    ecs.tryGetComponent<Renderable>(instances::entityOf(ecs, part))->baseColor = glm::vec4(0.21404f, 0.21404f, 0.21404f, 1.0f);
+    check(instances::getProperty(ecs, part, color, read) && nearlyEqual(read.vec.x, 0.5f, 1e-4f),
+          "a colour changed outside scripts reads back in Roblox terms");
 }
 
 void testRobloxPivots() {
@@ -49615,6 +49637,7 @@ int main() {
     testRobloxRaycast();
     testRobloxWeldConstraint();
     testRobloxPivots();
+    testRobloxColorsAreSrgb();
     testRobloxWeldAndMotor6D();
     testRobloxEnumItems();
     testRobloxUnionPieces();
