@@ -169,6 +169,13 @@ add_library(engine_core STATIC
     core/Application.cpp
     core/Window.cpp
     core/Renderer.cpp
+    core/render/RendererShadows.cpp
+    core/render/RendererResources.cpp
+    core/render/RendererPipelines.cpp
+    core/render/RendererPostSetup.cpp
+    core/render/RendererPostTargets.cpp
+    core/render/RendererPasses.cpp
+    core/render/RendererFrame.cpp
     core/render/GpuHelpers.cpp
     core/render/ShadowCascades.cpp
     core/render/SpotShadows.cpp
