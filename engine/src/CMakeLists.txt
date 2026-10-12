@@ -409,6 +409,7 @@ add_library(engine_core STATIC
     core/RobloxPlayers.cpp
     core/RobloxTools.cpp
     core/RobloxInput.cpp
+    core/RobloxInteract.cpp
     core/RobloxGuiLayout.cpp
     core/RobloxGuiImages.cpp
     core/ChildProcess.cpp

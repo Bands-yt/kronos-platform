@@ -57,6 +57,11 @@ void receive(ECS& ecs, uint32_t sender, const uint8_t* data, size_t size);
 // Sends finished invoke results and refills rate budgets.
 void tick(ECS& ecs, double dt);
 
+// Client: tells the server the local player clicked a ClickDetector (event is
+// MouseClick, RightMouseClick, MouseHoverEnter or MouseHoverLeave). The server
+// checks the player is within reach before firing it. No-op elsewhere.
+void sendInteraction(ECS& ecs, InstanceRef target, const std::string& event);
+
 // Called by the script API. False with `error` set when the call can't go out.
 bool fireServer(ECS& ecs, InstanceRef remote, const std::vector<SignalArg>& args, std::string& error);
 bool fireClient(ECS& ecs, InstanceRef remote, InstanceRef player, const std::vector<SignalArg>& args,

@@ -10,7 +10,7 @@
 namespace engine::core::remotenet {
 namespace {
 
-enum class Kind : uint8_t { Fire = 1, Invoke = 2, Result = 3 };
+enum class Kind : uint8_t { Fire = 1, Invoke = 2, Result = 3, Interact = 4 };
 
 enum class Tag : uint8_t {
     Nil = 0,
@@ -433,6 +433,46 @@ void receiveResult(ECS& ecs, LinkState& state, uint32_t sender, Reader& r) {
     state.outgoing.erase(found);
 }
 
+// A client clicked a ClickDetector (or similar): fire the event here as that player,
+// if they could really reach it.
+void receiveInteraction(ECS& ecs, uint32_t sender, Reader& r) {
+    SignalArg targetArg;
+    if (!readArg(ecs, r, targetArg, 0)) return;
+    const std::string event = r.str();
+    if (!r.ok() || targetArg.value.type != InstanceValue::Type::Instance) return;
+    const InstanceRef target = targetArg.value.ref;
+    const InstanceRef player = playerFor(ecs, sender);
+    if (target == kNoInstance || player == kNoInstance || !instances::isAlive(ecs, target)) return;
+    const std::string cls = instances::className(ecs, target);
+    const bool known = cls == "ClickDetector" && (event == "MouseClick" || event == "RightMouseClick" ||
+                                                  event == "MouseHoverEnter" || event == "MouseHoverLeave");
+    if (!known) return;
+    // The character must be near the object the detector sits on.
+    auto read = [&](InstanceRef ref, const char* property, InstanceValue& out) {
+        const PropertyDef* def = instances::findProperty(instances::className(ecs, ref), property);
+        return def != nullptr && instances::getProperty(ecs, ref, *def, out);
+    };
+    InstanceValue character;
+    InstanceValue maxDistance;
+    if (!read(player, "Character", character) || character.ref == kNoInstance) return;
+    (void)read(target, "MaxActivationDistance", maxDistance);
+    InstanceRef holder = instances::parent(ecs, target);
+    while (holder != kNoInstance && !instances::classIsA(instances::className(ecs, holder), "BasePart")) {
+        holder = instances::parent(ecs, holder);
+    }
+    InstanceRef root = kNoInstance;
+    for (InstanceRef child : instances::children(ecs, character.ref)) {
+        if (instances::name(ecs, child) == "HumanoidRootPart") root = child;
+    }
+    InstanceValue from;
+    InstanceValue to;
+    if (root == kNoInstance || holder == kNoInstance || !read(root, "Position", from) || !read(holder, "Position", to)) return;
+    InstanceValue size;
+    const float reach = static_cast<float>(maxDistance.number) + (read(holder, "Size", size) ? glm::length(size.vec) : 0.0f) + 10.0f;
+    if (glm::distance(glm::vec3(from.vec), glm::vec3(to.vec)) > reach) return;
+    signals::hubFor(ecs)->fire(target, event, {SignalArg::of(InstanceValue::ofInstance(player))});
+}
+
 } // namespace
 
 void attach(ECS& ecs, Side side, SendFn send) {
@@ -532,6 +572,8 @@ void receive(ECS& ecs, uint32_t sender, const uint8_t* data, size_t size) {
         receiveCall(ecs, state, kind, sender, r);
     } else if (kind == Kind::Result) {
         receiveResult(ecs, state, sender, r);
+    } else if (kind == Kind::Interact && state.side == Side::Server) {
+        receiveInteraction(ecs, sender, r);
     }
     link(ecs).readingFrom = kNoInstance;
 }
@@ -559,6 +601,17 @@ void tick(ECS& ecs, double dt) {
         }
         it = state.incoming.erase(it);
     }
+}
+
+void sendInteraction(ECS& ecs, InstanceRef target, const std::string& event) {
+    LinkState& state = link(ecs);
+    if (!state.attached || state.side != Side::Client || !state.send) return;
+    std::vector<uint8_t> bytes;
+    Writer w(bytes);
+    w.u8(static_cast<uint8_t>(Kind::Interact));
+    writeInstance(ecs, w, target);
+    w.str(event);
+    deliver(state, kEveryone, std::move(bytes), true);
 }
 
 // Like Roblox, events fired with no connection are dropped, not errors.

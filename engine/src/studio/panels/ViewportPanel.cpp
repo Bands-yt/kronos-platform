@@ -20,6 +20,7 @@
 
 #include "core/RobloxGui.hpp"
 #include "core/RobloxInput.hpp"
+#include "core/RobloxInteract.hpp"
 #include "core/Components.hpp"
 #include "core/EditableMeshComponent.hpp"
 #include "core/Hierarchy.hpp"
@@ -1254,6 +1255,15 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         if (!hovered_) guiInput.mouse = glm::vec2(-1.0f);
         core::gui::update(*ecs, glm::vec2(imageSize.x, imageSize.y), guiInput);
         core::input::feedFromImGui(*ecs, glm::vec2(imageOrigin.x, imageOrigin.y), hovered_, core::gui::mouseOverButton(*ecs));
+        {
+            core::interact::Pointer pointer;
+            pointer.mouse = guiInput.mouse;
+            pointer.view = glm::vec2(imageSize.x, imageSize.y);
+            pointer.overGui = !hovered_ || core::gui::mouseOverButton(*ecs);
+            pointer.left = hovered_ && !pointer.overGui && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+            pointer.right = hovered_ && !pointer.overGui && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+            core::interact::update(*ecs, pointer);
+        }
         core::gui::draw(*ecs, drawList, glm::vec2(imageOrigin.x, imageOrigin.y));
         core::drawLeaderboard(*ecs, drawList, viewCubeOrigin(imageOrigin, imageSize).x - 10.0f, imageOrigin.y + 10.0f);
         core::tools::HotbarInput hotbarInput;

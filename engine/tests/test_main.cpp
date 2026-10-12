@@ -215,6 +215,7 @@
 #include "core/RobloxServices.hpp"
 #include "core/RobloxGui.hpp"
 #include "core/RobloxInput.hpp"
+#include "core/RobloxInteract.hpp"
 #include "core/RobloxScripts.hpp"
 #include "core/InstanceTree.hpp"
 #include "studio/panels/LuauSymbolIndex.hpp"
@@ -44402,6 +44403,144 @@ print(ok2 and "FAIL request" or "OK request off")
     check(has("OK http off") && has("OK request off"), "web requests fail like HttpEnabled = false");
 }
 
+void testClickDetectorServerChecks() {
+    using namespace engine::core;
+    std::printf("\n-- ClickDetector server checks --\n");
+    std::string error;
+    ECS server;
+    ECS client;
+    auto make = [&](ECS& ecs, const char* className, const char* name, InstanceRef parent) {
+        const InstanceRef ref = instances::create(ecs, className, error);
+        instances::setName(ecs, ref, name);
+        (void)instances::setParent(ecs, ref, parent, error);
+        return ref;
+    };
+    auto setProp = [](ECS& ecs, InstanceRef ref, const char* name, const InstanceValue& v) {
+        instances::setProperty(ecs, ref, *instances::findProperty(instances::className(ecs, ref), name), v);
+    };
+    for (ECS* ecs : {&server, &client}) {
+        const InstanceRef button = make(*ecs, "Part", "Button", kWorkspaceInstance);
+        setProp(*ecs, button, "Position", InstanceValue::ofVector3(glm::vec3(0.0f, 3.0f, -10.0f)));
+        make(*ecs, "ClickDetector", "ClickDetector", button);
+    }
+    const InstanceRef player = players::join(server, "Ana", 42, kNullEntity, false);
+    const InstanceRef character = make(server, "Model", "Ana", kWorkspaceInstance);
+    const InstanceRef root = make(server, "Part", "HumanoidRootPart", character);
+    setProp(server, root, "Position", InstanceValue::ofVector3(glm::vec3(0.0f, 3.0f, 0.0f)));
+    setProp(server, player, "Character", InstanceValue::ofInstance(character));
+    signals::flush(server);
+
+    remotenet::attach(server, remotenet::Side::Server, [](uint32_t, std::vector<uint8_t>, bool) {});
+    remotenet::addPlayer(server, 5, player);
+    remotenet::attach(client, remotenet::Side::Client, [&](uint32_t, std::vector<uint8_t> bytes, bool) {
+        remotenet::receive(server, 5, bytes.data(), bytes.size());
+    });
+    auto detectorOf = [](ECS& ecs) {
+        for (InstanceRef child : instances::children(ecs, kWorkspaceInstance)) {
+            if (instances::name(ecs, child) == "Button") return instances::children(ecs, child).front();
+        }
+        return kNoInstance;
+    };
+    std::vector<std::string> events;
+    Scripting scripting;
+    scripting.setBindingsHook([&server](lua_State* L) { registerInstanceApi(L, server); });
+    check(scripting.initialize(), "click server test: Scripting initializes");
+    scripting.setOutputCallback([&](const std::string& line) { events.push_back(line); });
+    scripting.loadAndRun("Listen", R"LUAU(
+local d = workspace.Button.ClickDetector
+d.MouseClick:Connect(function(p) print("SERVER CLICK " .. p.Name) end)
+print("DONE")
+)LUAU");
+
+    remotenet::sendInteraction(client, detectorOf(client), "MouseClick");
+    signals::flush(server);
+    check(std::count(events.begin(), events.end(), "SERVER CLICK Ana") == 1, "the server fires MouseClick for a nearby player");
+
+    remotenet::sendInteraction(client, detectorOf(client), "Destroy");
+    signals::flush(server);
+    check(std::count(events.begin(), events.end(), "SERVER CLICK Ana") == 1, "unknown events are ignored");
+
+    setProp(server, root, "Position", InstanceValue::ofVector3(glm::vec3(0.0f, 3.0f, 200.0f)));
+    remotenet::sendInteraction(client, detectorOf(client), "MouseClick");
+    signals::flush(server);
+    check(std::count(events.begin(), events.end(), "SERVER CLICK Ana") == 1, "a click from far away is refused");
+}
+
+void testRobloxClickDetector() {
+    using namespace engine::core;
+    std::printf("\n-- ClickDetector in play --\n");
+    ECS ecs;
+    Physics physics;
+    check(physics.initialize(), "click test: physics initializes");
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "click test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    std::string error;
+    const InstanceRef body = instances::create(ecs, "Part", error);
+    (void)instances::setParent(ecs, body, kWorkspaceInstance, error);
+    (void)players::join(ecs, "Tester", 1, instances::entityOf(ecs, body), true);
+    signals::flush(ecs);
+
+    scripting.loadAndRun("ClickSetup", R"LUAU(
+local button = Instance.new("Part")
+button.Name = "Button"
+button.Anchored = true
+button.Size = Vector3.new(4, 4, 1)
+button.Position = Vector3.new(0, 3, -10)
+button.Parent = workspace
+local detector = Instance.new("ClickDetector")
+detector.Parent = button
+detector.MouseClick:Connect(function(player) print("CLICKED " .. player.Name) end)
+detector.RightMouseClick:Connect(function(player) print("RIGHT " .. player.Name) end)
+detector.MouseHoverEnter:Connect(function(player) print("HOVER IN") end)
+detector.MouseHoverLeave:Connect(function(player) print("HOVER OUT") end)
+local cam = workspace.CurrentCamera
+cam.CameraType = Enum.CameraType.Scriptable
+cam.CFrame = CFrame.lookAt(Vector3.new(0, 3, 0), Vector3.new(0, 3, -10))
+print("DONE")
+)LUAU");
+    partbodies::sync(ecs, physics, false);
+
+    auto count = [&](const std::string& line) { return std::count(output.begin(), output.end(), line); };
+    interact::Pointer pointer;
+    pointer.mouse = glm::vec2(640.0f, 360.0f);
+    interact::update(ecs, pointer);
+    signals::flush(ecs);
+    check(count("HOVER IN") == 1 && count("CLICKED Tester") == 0, "hovering a ClickDetector part fires MouseHoverEnter");
+    pointer.left = true;
+    interact::update(ecs, pointer);
+    signals::flush(ecs);
+    check(count("CLICKED Tester") == 1 && count("HOVER IN") == 1, "a click fires MouseClick with the player");
+    pointer.left = false;
+    pointer.right = true;
+    interact::update(ecs, pointer);
+    signals::flush(ecs);
+    check(count("RIGHT Tester") == 1, "a right click fires RightMouseClick");
+    pointer.right = false;
+    pointer.overGui = true;
+    pointer.left = true;
+    interact::update(ecs, pointer);
+    signals::flush(ecs);
+    check(count("CLICKED Tester") == 1 && count("HOVER OUT") == 1, "a click on a GUI doesn't reach the part");
+    pointer.overGui = false;
+    pointer.mouse = glm::vec2(20.0f, 20.0f);
+    pointer.left = true;
+    interact::update(ecs, pointer);
+    signals::flush(ecs);
+    check(count("CLICKED Tester") == 1, "a click beside the part does nothing");
+
+    scripting.loadAndRun("ClickFar", R"LUAU(
+workspace.Button.ClickDetector.MaxActivationDistance = 4
+print("DONE")
+)LUAU");
+    pointer.mouse = glm::vec2(640.0f, 360.0f);
+    interact::update(ecs, pointer);
+    signals::flush(ecs);
+    check(count("CLICKED Tester") == 1, "MaxActivationDistance limits the click");
+}
+
 void testRobloxUserInputService() {
     using namespace engine::core;
     std::printf("\n-- UserInputService --\n");
@@ -50606,6 +50745,8 @@ int main() {
     testRobloxGuiWidgets();
     testRobloxUserInputService();
     testRobloxHttpService();
+    testRobloxClickDetector();
+    testClickDetectorServerChecks();
     testRobloxBinaryFormat();
 #if !defined(_WIN32)
     testInstanceRemoteOverSession();

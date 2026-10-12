@@ -20,6 +20,7 @@
 #include "core/GuiImageCache.hpp"
 #include "core/RobloxGui.hpp"
 #include "core/RobloxInput.hpp"
+#include "core/RobloxInteract.hpp"
 #include "core/AvatarSkinTone.hpp"
 #include "core/CredentialStore.hpp"
 #include "core/Components.hpp"
@@ -1129,6 +1130,15 @@ void RuntimeShell::tick(float dt) {
                         core::gui::update(app_.ecs(), glm::vec2(io.DisplaySize.x, io.DisplaySize.y), guiInput);
                         core::input::feedFromImGui(app_.ecs(), glm::vec2(0.0f), true,
                                                    io.WantCaptureMouse || core::gui::mouseOverButton(app_.ecs()));
+                        {
+                            core::interact::Pointer pointer;
+                            pointer.mouse = glm::vec2(io.MousePos.x, io.MousePos.y);
+                            pointer.view = glm::vec2(io.DisplaySize.x, io.DisplaySize.y);
+                            pointer.overGui = io.WantCaptureMouse || core::gui::mouseOverButton(app_.ecs());
+                            pointer.left = !pointer.overGui && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                            pointer.right = !pointer.overGui && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                            core::interact::update(app_.ecs(), pointer);
+                        }
                         if (!guiImages_) {
                             core::Renderer& r = app_.renderer();
                             guiImages_ = std::make_unique<core::GuiImageCache>(r.allocator(), r.device(), r.commandPool(),

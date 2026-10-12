@@ -970,12 +970,15 @@ Swords, flashlights and other things a player holds. Code in
   again puts the tool away) and a click in the 3D view activates the held tool
   (unless `ManualActivationOnly`). The hotbar is drawn at the bottom of the
   screen.
-- `ClickDetector` exists with its properties and events (`MouseClick`,
-  `RightMouseClick`, `MouseHoverEnter/Leave`), and the Compatibility Lab can
-  click one (`click(part)`).
+- `ClickDetector` works in the Player and Studio Play: point at a part (or a
+  part inside a Model that holds one) within `MaxActivationDistance` of your
+  character and click for `MouseClick`, right-click for `RightMouseClick`;
+  `MouseHoverEnter/Leave` follow the pointer. In a networked game the client
+  tells the server, which checks the character is within reach (distance plus
+  the part's size and 10 studs of slack) before firing the event for that
+  player. The Compatibility Lab can click one too (`click(part)`).
 
-Limits: no real mouse clicks on 3D parts yet (`ClickDetector` only fires from
-the Lab or scripts); no tool animations (the arm doesn't move); `CanBeDropped`
+Limits: no cursor icon change for `CursorIcon`; no tool animations (the arm doesn't move); `CanBeDropped`
 and the Backspace drop key aren't built; `TextureId` icons aren't drawn in the
 hotbar (the tool's name is).
 
