@@ -22,7 +22,7 @@ namespace engine::studio {
 class UndoStack {
 public:
     struct Command {
-        std::string label; // not surfaced in UI yet (no "Undo <label>" menu item), but real and populated from day one
+        std::string label; // shown in the Edit menu as "Undo <label>"
         std::function<void()> undo;
         std::function<void()> redo;
     };
@@ -55,6 +55,9 @@ public:
 
     [[nodiscard]] bool canUndo() const { return !undoStack_.empty(); }
     [[nodiscard]] bool canRedo() const { return !redoStack_.empty(); }
+    // What undo/redo would act on ("Move Entity"), empty when there is nothing.
+    [[nodiscard]] std::string undoLabel() const { return undoStack_.empty() ? std::string() : undoStack_.back().label; }
+    [[nodiscard]] std::string redoLabel() const { return redoStack_.empty() ? std::string() : redoStack_.back().label; }
 
     // push() increases this, undo() decreases it, redo() increases it
     // again -- so "did undoCount() change at all since last frame" is a

@@ -119,8 +119,9 @@ part:Destroy()
 | Globals | `game` (and `Game`), `workspace` (and `Workspace`), `script`, `Instance.new` |
 | Every Instance | `Name`, `ClassName`, `Parent`, `Archivable`; `GetChildren`, `GetDescendants`, `FindFirstChild` (with `recursive`), `FindFirstChildOfClass`, `FindFirstChildWhichIsA`, `FindFirstAncestor`, `FindFirstAncestorOfClass`, `FindFirstAncestorWhichIsA`, `WaitForChild` (with timeout), `IsA`, `IsDescendantOf`, `IsAncestorOf`, `Clone`, `Destroy`, `ClearAllChildren`, `GetFullName`, `GetAttribute`, `SetAttribute`, `GetAttributes`; `parent.ChildName` lookups |
 | `game` | `GetService`, `FindService`, `game.Players`-style lookups |
-| Parts (`Part`, `SpawnLocation`, `WedgePart`, `MeshPart`, `Seat`, ...) | `Position`, `CFrame`, `Orientation`, `Rotation`, `Size`, `Color`, `BrickColor`, `Transparency`, `CastShadow`, `Anchored`, `Material`, `Shape` (`Block`, `Ball`, `Cylinder`), `Reflectance`, `CanCollide`, `CanTouch`, `CanQuery`, `Locked` |
+| Parts (`Part`, `SpawnLocation`, `WedgePart`, `MeshPart`, `Seat`, ...) | `Position`, `CFrame`, `Orientation`, `Rotation`, `Size`, `Color`, `BrickColor`, `Transparency`, `CastShadow`, `Anchored`, `Material`, `Shape` (`Block`, `Ball`, `Cylinder`; a `WedgePart` is a wedge), `Reflectance`, `CanCollide`, `CanTouch`, `CanQuery`, `Locked` |
 | Containers | `Model` (`PrimaryPart`), `Folder`, `Configuration` |
+| Meshes | `SpecialMesh` (`MeshType`, `MeshId`, `TextureId`, `Scale`, `Offset`, `VertexColor`), `BlockMesh`, `CylinderMesh`: change the shape of the part they're in (see Mesh shapes) |
 | Lights | `PointLight`, `SpotLight`, `SurfaceLight`: `Brightness`, `Color`, `Enabled`, `Shadows`, `Range`, `Angle` |
 | Values | `IntValue`, `NumberValue`, `StringValue`, `BoolValue`, `ObjectValue`, `Vector3Value`, `Color3Value`, `CFrameValue`, `BrickColorValue` |
 | Scripts | `Script`, `LocalScript`, `ModuleScript` (`Disabled`) |
@@ -179,6 +180,21 @@ Roblox colours (`Color`, `BrickColor`, light colours, `Lighting.Ambient`,
 are converted when drawn (`instances::robloxColorToLinear`). Scripts still read
 back exactly the `Color3` they set. Places imported before this fix keep their
 paler colours until they are imported again.
+
+### Mesh shapes
+
+A part is drawn with the shape Roblox would draw:
+- `Shape = Cylinder` lies along the part's X axis, like in Roblox; `Ball` is a sphere.
+- `WedgePart` is a wedge whose slope faces the front (-Z). Union pieces that were wedges are wedges too.
+- The first `SpecialMesh`, `BlockMesh` or `CylinderMesh` inside a part changes its shape:
+  `MeshType` `Sphere` is a ball, `Head` and `CylinderMesh` an upright cylinder, `Cylinder`
+  a sideways one, `Wedge` a wedge, `Brick`/`Torso`/`BlockMesh` a box. Adding, removing,
+  destroying the mesh or changing `MeshType` updates the part straight away.
+
+Limits: `FileMesh` meshes and `MeshPart`s with Roblox-hosted mesh ids stay boxes (Kronos
+never downloads Roblox assets); `Scale`, `Offset` and `VertexColor` are kept and readable
+but not drawn yet; `Prism`, `Pyramid` and the ramp types are boxes; a wedge's collider is
+still a box.
 
 ### Parts are solid
 
@@ -347,8 +363,9 @@ made inside `PlayerAdded` catches the first character.
   below where the player died, so scripts reading its position after death
   see that. No death sound and no health regeneration script yet; other
   players' deaths aren't shown as ragdolls.
-- `Player:Kick`, `GetMouse`, `Teams`/`TeamColor`, `Humanoid:LoadAnimation`
-  and tools (`EquipTool`) are planned; using them gives a "planned" error.
+- `Player:Kick`, `GetMouse`, `Teams`/`TeamColor` and `Humanoid:LoadAnimation`
+  are planned; using them gives a "planned" error. Tools work since 4.6
+  ("Tools" below).
 - Broken Bones and the bring-up world don't create players (they have their
   own game code).
 
@@ -562,7 +579,10 @@ client: the client finds the part the server made when the remote arrives.
   physics, so it doesn't bump into parts yet.
 - On a dedicated server, other players are plain moving points without a
   physics body, so they don't touch parts (no `Touched` or kill bricks on
-  the server for them). On a client, other players have no `Character`.
+  the server for them). On a client, other players are drawn as animated
+  avatars (walk/idle follow their movement), but they have no `Character`
+  Model to script against, and an avatar stays where it was when its player
+  leaves. Players that spawn on the same spot overlap.
 - Two objects with the same name under the same parent are told apart by
   their order. Give remotes unique names to be safe.
 - A client that isn't connected drops `FireServer` without an error.
@@ -688,9 +708,10 @@ end
 
 Roblox's on-screen interface: buttons, labels and panels in a `ScreenGui`.
 Each player sees their own `PlayerGui`, which is filled from `StarterGui`
-when their character spawns (step 6). The code is in
-`engine/src/core/RobloxGui.cpp` (layout, clicks, drawing). It runs in the
-Player and during Studio Play.
+when their character spawns (step 6). Layout, clicks and focus are in
+`engine/src/core/RobloxGuiLayout.cpp` (no graphics, so the Compatibility Lab
+lays the GUI out too), image lookup in `RobloxGuiImages.cpp`, drawing in
+`RobloxGui.cpp`. It runs in the Player and during Studio Play.
 
 ```lua
 local gui = Instance.new("ScreenGui")
@@ -715,14 +736,22 @@ buy.MouseButton1Click:Connect(function() buy.Text = "Bought!" end)
 
 | Area | Supported |
 |---|---|
-| Value types | `UDim`, `UDim2` and `Vector2` properties (read, write, tween, save in scenes, replicate, send through remotes) |
+| Value types | `UDim`, `UDim2` and `Vector2` properties (read, write, tween, save in scenes, replicate, send through remotes); `ColorSequence` and `NumberSequence` properties (read, write, save, replicate, import from `.rbxlx` and binary files; not tweened) |
 | `ScreenGui` | `Enabled`, `DisplayOrder`, `ResetOnSpawn` |
 | Every GUI object | `Size`, `Position`, `AnchorPoint`, `BackgroundColor3`, `BackgroundTransparency`, `BorderColor3`, `BorderSizePixel`, `Visible`, `ZIndex`, `LayoutOrder`, `ClipsDescendants`, read-only `AbsolutePosition`/`AbsoluteSize`; `MouseEnter`, `MouseLeave` |
 | `Frame` | Yes |
 | `TextLabel`, `TextButton` | `Text`, `TextColor3`, `TextSize`, `TextScaled`, `TextWrapped`, `TextTransparency`, `TextXAlignment`, `TextYAlignment` |
+| `TextBox` (4.6) | The text properties plus `PlaceholderText`, `PlaceholderColor3`, `ClearTextOnFocus`, `TextEditable`, `MultiLine`; `CaptureFocus()`, `ReleaseFocus(submitted)`, `IsFocused()`; `Focused`, `FocusLost(enterPressed)`. Click it to type; Enter submits, clicking elsewhere drops the focus |
+| `ScrollingFrame` (4.6) | `CanvasSize`, `CanvasPosition`, `AutomaticCanvasSize`, `ScrollingEnabled`, `ScrollingDirection`, `ScrollBarThickness`, `ScrollBarImageColor3/Transparency`, read-only `AbsoluteCanvasSize`/`AbsoluteWindowSize`. The mouse wheel scrolls it; children are clipped |
+| `ImageLabel`, `ImageButton` (4.6) | `Image`, `ImageColor3`, `ImageTransparency`. Pictures come from the game's folder (below) |
 | Buttons | `MouseButton1Click`, `MouseButton1Down(x, y)`, `MouseButton1Up(x, y)`, `Activated`; `AutoButtonColor` darkens on hover and press. A click counts only if the mouse goes down and up on the same button |
-| `UIListLayout` | `FillDirection`, `Padding`, `SortOrder` (`LayoutOrder` or `Name`), `HorizontalAlignment`, `VerticalAlignment` |
+| `UIListLayout` | `FillDirection`, `Padding`, `SortOrder` (`LayoutOrder` or `Name`), `HorizontalAlignment`, `VerticalAlignment`, read-only `AbsoluteContentSize` |
+| `UIGridLayout` (4.6) | `CellSize`, `CellPadding`, `FillDirection`, `FillDirectionMaxCells`, `SortOrder`, alignments; read-only `AbsoluteCellSize`, `AbsoluteContentSize` |
 | `UICorner`, `UIPadding` | `CornerRadius`; `PaddingLeft/Right/Top/Bottom` |
+| `UIStroke` (4.6) | `Color`, `Thickness`, `Transparency`, `Enabled`, `ApplyStrokeMode` (text outline or border) |
+| `UIGradient` (4.6) | `Color` (`ColorSequence`), `Transparency` (`NumberSequence`), `Rotation`, `Offset`, `Enabled`. Tints the background exactly (each colour stop is honoured), text and images per vertex |
+| `UIScale` (4.6) | `Scale` grows the object, its children and their pixel offsets |
+| Constraints (4.6) | `UIAspectRatioConstraint` (`AspectRatio`, `AspectType`, `DominantAxis`), `UISizeConstraint` (`MinSize`, `MaxSize`), `UITextSizeConstraint` (`MinTextSize`, `MaxTextSize` for `TextScaled`) |
 | Imported places | GUI properties are read from `.rbxlx` files (sizes, colours, text, alignment, corners) |
 
 Drawing order is Roblox's default (`ZIndexBehavior.Sibling`): a parent first,
@@ -730,13 +759,34 @@ then its children, siblings by `ZIndex`. `ScreenGui`s draw in `DisplayOrder`
 order. In the Player the GUI sits above the 3D view and under Kronos's own
 panels (chat, menus).
 
+### Images
+
+Kronos never downloads from Roblox, so a game ships its pictures in its own
+folder. For `Image = "rbxassetid://123"` it looks, in order, for:
+
+1. `asset_map.json` or `assets/asset_map.json` mapping the id to a file:
+   `{"123": "images/coin.png"}`
+2. `assets/123.png`, `assets/images/123.png`, `images/123.png`, `123.png`
+   (`.jpg` and `.jpeg` too)
+
+Any other value is a path inside the game folder (`"ui/coin.png"`); paths that
+leave the folder are refused. PNG, JPG, TGA and BMP work. In Studio the folder
+is the open project's. The Compatibility Lab lists every image it can't find.
+
 ### Differences from Roblox (known limits)
 
-- `ImageLabel`/`ImageButton` draw their background but not the image yet,
-  and `rbxassetid://` images can't be downloaded.
-- One font for every `Font` value. No rich text, `TextBox`, `ScrollingFrame`,
-  `UIGridLayout`, `UIScale`, `UIStroke`, `UIGradient`, `BillboardGui`,
-  `SurfaceGui` or `Rotation` (stored, not drawn).
+- `rbxasset://` (Roblox's built-in textures) and web links are never fetched.
+  `ScaleType`, `ImageRectOffset/Size` and 9-slice aren't read: images stretch.
+- At most 48 different images per game are loaded.
+- A `UIGradient` on an image blends between the image's corners, so a middle
+  colour stop only shows on backgrounds and text.
+- One font for every `Font` value. No rich text,
+  `UIPageLayout`, `UITableLayout`, `ViewportFrame`, `VideoFrame`,
+  `BillboardGui`, `SurfaceGui` or `Rotation` (stored, not drawn).
+- `TextBox`: one font size for editing, no `SelectionStart`, `TextFits` or
+  `ContentText`; `CursorPosition` isn't updated.
+- `ScrollingFrame`: no dragging the scrollbar, no elastic overscroll; the wheel can also
+  zoom the camera while it scrolls a list.
 - No top-bar inset: `IgnoreGuiInset` changes nothing (Kronos has no top bar).
 - Studio shows the GUI only during Play, not `StarterGui` while editing.
 - Only the left mouse button and the pointer. Touch, gamepad selection and
@@ -778,8 +828,7 @@ builds three named, coloured, tilted parts, and Undo removes them.
 - Zstandard-compressed chunks (some newer files) are refused with a clear
   message. Saving the file again from Roblox Studio, or as `.rbxlx`, works
   around it.
-- Not read yet: `Font` values, `SharedString` data (e.g. some `MeshPart`
-  data), `NumberSequence`/`ColorSequence`/`NumberRange`, `Rect`,
+- Not read yet: `Font` values, `NumberRange`, `Rect`,
   `PhysicalProperties`, `Faces`/`Axes`, `Optional CFrame`, `UniqueId` and
   `AttributesSerialize`. Those properties keep their Kronos defaults.
 - Kronos can't save `.rbxl`/`.rbxm` files; it only imports them.
@@ -900,6 +949,35 @@ local point, onScreen = camera:WorldToViewportPoint(workspace.Coin.Position)
 - `PivotTo` moves and turns every part in the model around the pivot, and welded parts follow.
 - Limits: `PivotOffset` and `WorldPivot` aren't read from imported files or readable as properties; a model's remembered pivot doesn't follow parts that move on their own.
 
+## Tools (4.6)
+
+Swords, flashlights and other things a player holds. Code in
+`engine/src/core/RobloxTools.cpp`.
+
+- A `Tool` is **equipped while its Parent is a character** (a model with a
+  `Humanoid`), like in Roblox. Equipping welds its `Handle` to the character
+  with a `RightGrip` weld (using the tool's `Grip`) and fires `Equipped`;
+  moving it away fires `Unequipped`. Only one tool is held at a time; the
+  others go back to the `Backpack`.
+- `StarterPack` is copied into each player's `Backpack` when they spawn.
+- `Humanoid:EquipTool(tool)`, `Humanoid:UnequipTools()`, `Tool:Activate()`,
+  `Tool:Deactivate()`; `Activated`/`Deactivated` fire only while the tool is
+  `Enabled` and held.
+- A tool lying in the world is picked up by the first living character that
+  touches its `Handle`.
+- In the Player and Studio Play, keys **1–9** pick a hotbar slot (pressing it
+  again puts the tool away) and a click in the 3D view activates the held tool
+  (unless `ManualActivationOnly`). The hotbar is drawn at the bottom of the
+  screen.
+- `ClickDetector` exists with its properties and events (`MouseClick`,
+  `RightMouseClick`, `MouseHoverEnter/Leave`), and the Compatibility Lab can
+  click one (`click(part)`).
+
+Limits: no real mouse clicks on 3D parts yet (`ClickDetector` only fires from
+the Lab or scripts); no tool animations (the arm doesn't move); `CanBeDropped`
+and the Backspace drop key aren't built; `TextureId` icons aren't drawn in the
+hotbar (the tool's name is).
+
 ## Unions (4.4)
 
 A `UnionOperation` keeps the parts it was made from inside the file (`ChildData2`, or `ChildData` in older files). Kronos reads them on import and draws and collides each piece, so a staircase made into one union keeps its steps instead of becoming one solid box.
@@ -908,7 +986,7 @@ A `UnionOperation` keeps the parts it was made from inside the file (`ChildData2
 - The union's Transparency, visibility and shadow apply to its pieces; moving it moves them.
 - Saved scenes keep the union's piece list, and the pieces are rebuilt when the scene opens.
 - `SharedString` properties are now read from both `.rbxlx` (`<SharedStrings>`) and binary files (`SSTR` chunk).
-- Limits: subtracted parts (`NegateOperation`) aren't cut out (the import notes say how many); a union whose shape lives on Roblox's servers (`AssetId`) stays a box; wedges are drawn as boxes; changing a union's `Color` or `Size` at runtime doesn't recolor or reshape the pieces; unanchored unions collide as their bounding box; pieces aren't replicated to clients yet (a client rebuilds them only if it loaded the same scene).
+- Limits: subtracted parts (`NegateOperation`) aren't cut out (the import notes say how many); a union whose shape lives on Roblox's servers (`AssetId`) stays a box; changing a union's `Color` or `Size` at runtime doesn't recolor or reshape the pieces; unanchored unions collide as their bounding box; pieces aren't replicated to clients yet (a client rebuilds them only if it loaded the same scene).
 
 ## From entity ids to Instances
 

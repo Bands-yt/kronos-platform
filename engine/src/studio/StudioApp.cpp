@@ -1,4 +1,6 @@
 #include "studio/StudioApp.hpp"
+
+#include "core/RobloxGui.hpp"
 #include "core/UnionGeometry.hpp"
 
 #include "core/RobloxServices.hpp"
@@ -34,6 +36,7 @@
 #include "core/KronosVersion.hpp"
 #include "core/ProjectReadmeGenerator.hpp"
 #include "core/QualityScore.hpp"
+#include "core/ProcessLaunch.hpp"
 #include "core/ResourcePaths.hpp"
 #include "core/SceneHistory.hpp"
 #include "core/SwapchainSelection.hpp"
@@ -800,11 +803,24 @@ bool StudioApp::initialize(StudioMode mode) {
     // A capsule with no middle is a 1-unit ball (Part.Shape = Ball).
     hydrationMeshes_.capsule = meshLibrary_.registerMesh(core::Mesh::createCapsule(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.5f, 0.0f));
-    hydrationMeshes_.cylinder = meshLibrary_.registerMesh(core::Mesh::createCylinder(
+    const auto registerGeometry = [this](const std::vector<core::Vertex>& vertices, const std::vector<uint32_t>& indices) {
+        return meshLibrary_.registerMesh(core::Mesh::createFromGeometry(
+            renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), vertices, indices));
+    };
+    std::vector<core::Vertex> vertices;
+    std::vector<uint32_t> indices;
+    core::generateCylinderAlongXGeometry(0.5f, 0.5f, 16, vertices, indices);
+    hydrationMeshes_.cylinder = registerGeometry(vertices, indices);
+    vertices.clear();
+    indices.clear();
+    core::generateRobloxWedgeGeometry(glm::vec3(0.5f), vertices, indices);
+    hydrationMeshes_.wedge = registerGeometry(vertices, indices);
+    hydrationMeshes_.cylinderY = meshLibrary_.registerMesh(core::Mesh::createCylinder(
         renderer_.allocator(), renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), 0.5f, 0.5f));
     // Instance.new("Part") draws with the same meshes.
-    ecs_.raw().ctx().insert_or_assign(
-        core::InstanceMeshes{hydrationMeshes_.box, hydrationMeshes_.capsule, hydrationMeshes_.cylinder});
+    ecs_.raw().ctx().insert_or_assign(core::InstanceMeshes{hydrationMeshes_.box, hydrationMeshes_.capsule,
+                                                           hydrationMeshes_.cylinder, hydrationMeshes_.wedge,
+                                                           hydrationMeshes_.cylinderY});
     core::services::setResources(ecs_, &resources_);
 
     auto texturePreview = std::make_unique<plugins::TexturePreviewPlugin>(
@@ -1169,18 +1185,18 @@ bool StudioApp::initImGuiVulkanBackend() {
     // return that error turns every offscreen-preview panel (Viewport,
     // Texture Preview, Material/Avatar/Animation previewers -- anything
     // that calls ImGui_ImplVulkan_AddTexture()) into a real crash the very
-    // first time it registers a texture. 64 SAMPLED_IMAGE slots keeps the
+    // first time it registers a texture. 128 SAMPLED_IMAGE slots (Roblox GUI images too) keep the
     // same real per-texture headroom the old pool already had; 8 SAMPLER
     // slots is well above the backend's own stated minimum of 2 (one
     // shared sampler set is normally enough, but this leaves headroom for
     // more without another silent pool-capacity regression).
     std::array<VkDescriptorPoolSize, 2> poolSizes{{
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 128},
         {VK_DESCRIPTOR_TYPE_SAMPLER, 8},
     }};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 64 + 8;
+    poolInfo.maxSets = 128 + 8;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     if (vkCreateDescriptorPool(renderer_.device(), &poolInfo, nullptr, &imguiDescriptorPool_) != VK_SUCCESS) {
@@ -1263,12 +1279,29 @@ void StudioApp::drawDockspace() {
 
         drawFileMenu();
         if (ImGui::BeginMenu("Edit")) {
-            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, undoStack_.canUndo())) {
+            const std::string undoText = undoStack_.canUndo() && !undoStack_.undoLabel().empty()
+                                             ? "Undo " + undoStack_.undoLabel()
+                                             : std::string("Undo");
+            const std::string redoText = undoStack_.canRedo() && !undoStack_.redoLabel().empty()
+                                             ? "Redo " + undoStack_.redoLabel()
+                                             : std::string("Redo");
+            if (ImGui::MenuItem(undoText.c_str(), "Ctrl+Z", false, undoStack_.canUndo())) {
                 undoStack_.undo();
             }
-            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, undoStack_.canRedo())) {
+            if (ImGui::MenuItem(redoText.c_str(), "Ctrl+Y", false, undoStack_.canRedo())) {
                 undoStack_.redo();
             }
+            ImGui::Separator();
+            const bool hasSelection = !explorerPanel_.selectedEntities().empty() && !editingLocked();
+            if (ImGui::MenuItem("Cut", "Ctrl+X", false, hasSelection)) cutSelection();
+            if (ImGui::MenuItem("Copy", "Ctrl+C", false, hasSelection)) copySelection();
+            if (ImGui::MenuItem("Paste", "Ctrl+V", false, !clipboard_.empty() && !editingLocked())) pasteClipboard();
+            if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, hasSelection)) duplicateSelection();
+            if (ImGui::MenuItem("Delete", "Del", false, hasSelection)) deleteSelection();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Select All", "Ctrl+A", false, !editingLocked())) selectAll();
+            if (ImGui::MenuItem("Group", "Ctrl+G", false, hasSelection)) groupSelection();
+            if (ImGui::MenuItem("Ungroup", "Ctrl+U", false, hasSelection)) ungroupSelection();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
@@ -1279,12 +1312,16 @@ void StudioApp::drawDockspace() {
             // just removed would be a stale menu entry pointing at a
             // window that can never appear, so each is gated by the same
             // show*() predicate its own draw() call site in run() uses.
-            if (showSceneTree()) ImGui::MenuItem("Explorer", nullptr, true, false);
-            if (showInspector()) ImGui::MenuItem("Inspector", nullptr, true, false);
+            auto panelToggle = [](const char* label, bool& hidden) {
+                bool visible = !hidden;
+                if (ImGui::MenuItem(label, nullptr, &visible)) hidden = !visible;
+            };
+            if (showSceneTree()) panelToggle("Explorer", hideExplorer_);
+            if (showInspector()) panelToggle("Inspector", hideInspector_);
             if (show3DViewport()) ImGui::MenuItem("Viewport", nullptr, true, false);
-            if (showScriptEditor()) ImGui::MenuItem("Script Editor", nullptr, true, false);
-            if (showStats()) ImGui::MenuItem("Stats", nullptr, true, false);
-            if (showSceneTree()) ImGui::MenuItem("Scene Search", nullptr, true, false);
+            if (showScriptEditor()) panelToggle("Script Editor", hideScriptEditor_);
+            if (showStats()) panelToggle("Stats", hideStats_);
+            if (showSceneTree()) panelToggle("Scene Search", hideSceneSearch_);
             // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
             // Performance Profiler"): unlike the disabled placeholders
             // above (permanent dock panels with no real toggle yet),
@@ -1794,6 +1831,10 @@ void StudioApp::drawFileMenu() {
     if (ImGui::MenuItem("Validate Project...")) validateProjectPanel_.open();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
         ImGui::SetTooltip("Checks scripts, references and files in this scene,\nand errors from the last Play.");
+    }
+    if (ImGui::MenuItem("Rust Plugins...")) rustPluginPanel_.open();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Make, edit, build and install a Studio plugin written in Rust.");
     }
     if (ImGui::MenuItem("Import Roblox file...")) {
         importDialogOpen_ = true;
@@ -2605,11 +2646,11 @@ void StudioApp::run() {
         // selectedEntity() every frame), only its own dockable *window*
         // (the "Scene Tree" the brief names) stops appearing in modes that
         // don't list it.
-        if (showSceneTree()) explorerPanel_.draw(ecs_);
+        if (showSceneTree() && !hideExplorer_) explorerPanel_.draw(ecs_);
         if (const core::EntityId inserted = explorerPanel_.takeInserted(); inserted != core::kNullEntity) {
             pushCreationUndo("Insert Object", {inserted});
         }
-        if (showInspector()) {
+        if (showInspector() && !hideInspector_) {
             inspectorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities(), undoStack_);
         }
 
@@ -2693,12 +2734,20 @@ void StudioApp::run() {
         // race -- no offscreen target is ever sized, so there's no 0x0
         // Vulkan resource to create.
         if (show3DViewport()) {
+            if (!guiImages_) {
+                guiImages_ = std::make_unique<core::GuiImageCache>(renderer_.allocator(), renderer_.device(),
+                                                                   renderer_.commandPool(), renderer_.graphicsQueue());
+            }
+            std::vector<std::filesystem::path> imageRoots;
+            if (!currentProjectPath_.empty()) imageRoots.push_back(std::filesystem::path(currentProjectPath_).parent_path());
+            guiImages_->setRoots(std::move(imageRoots));
+            core::gui::setImageResolver(ecs_, [this](const std::string& image) { return guiImages_->get(image); });
             viewportPanel_.draw(deltaTime, viewportTarget_.imguiTextureId(), viewportTarget_.extent(), &ecs_,
                                  &meshLibrary_, explorerPanel_, physicsPreviewPlugin_, viewportDebugContext,
                                  movieModePlugin_, showEngineDebugOverlays(), modelingModePlugin_,
                                  terrainEditorPlugin_);
         }
-        if (showScriptEditor()) scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
+        if (showScriptEditor() && !hideScriptEditor_) scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
         scriptEditorPanel_.drawAuxiliaryWindows(ecs_, physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying());
         // debugConsolePanel_.tick() above still runs unconditionally in
         // every mode (see its own call site comment) -- only draw() (the
@@ -2721,6 +2770,22 @@ void StudioApp::run() {
             scriptEditorPanel_.openAndJumpToLine(ecs_, jump->entity, jump->oneBasedLine);
         }
         drawImportDialog();
+        serverTest_.update();
+        drawServerTestWindow();
+        if (rustPluginPanel_.isOpen()) {
+            panels::RustPluginPanel::Paths rustPaths;
+            const std::filesystem::path base =
+                currentProjectPath_.empty() ? std::filesystem::path(core::myGamesDirectory()).parent_path()
+                                            : std::filesystem::path(currentProjectPath_).parent_path();
+            rustPaths.projects = base / "rust_plugins";
+            rustPaths.templateDir =
+                core::resolveResourceDir(core::executableDirectory(), "templates", ENGINE_TEMPLATES_DIR) + "/rust-plugin";
+            rustPaths.sdkDir =
+                core::resolveResourceDir(core::executableDirectory(), "sdk/rust/kronos", ENGINE_RUST_SDK_DIR);
+            rustPaths.pluginDir =
+                core::resolveResourceDir(core::executableDirectory(), "native_plugins", ENGINE_NATIVE_PLUGIN_DIR);
+            rustPluginPanel_.draw(rustPaths);
+        }
         validateProjectPanel_.notePlayState(physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying());
         std::vector<std::string> assetRoots{""};
         if (!currentProjectPath_.empty()) {
@@ -2763,7 +2828,7 @@ void StudioApp::run() {
             profiler_.recordFrame(lastPerformanceMetrics_.frameTimeMs, nowSeconds);
             profiler_.recordSnapshot(lastPerformanceMetrics_, nowSeconds);
         }
-        if (showStats()) statsPanel_.draw(lastPerformanceMetrics_);
+        if (showStats() && !hideStats_) statsPanel_.draw(lastPerformanceMetrics_);
         performanceOverlay_.draw(lastPerformanceMetrics_, (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying())
                                                                 ? &physicsPreviewPlugin_->scripting()
                                                                 : nullptr);
@@ -2773,8 +2838,8 @@ void StudioApp::run() {
         // window itself -- this panel's entire purpose is jumping the
         // Explorer's own selection to a search result, so it's the same
         // "Scene Tree" surface the brief means, not a separate one.
-        if (showSceneTree()) {
-            if (core::EntityId searchClicked = sceneSearchPanel_.draw(ecs_, explorerPanel_.selectedEntity());
+        if (showSceneTree() && !hideSceneSearch_) {
+            if (core::EntityId searchClicked = sceneSearchPanel_.draw(ecs_, explorerPanel_.selectedEntities());
                 searchClicked != core::kNullEntity) {
                 explorerPanel_.setSelected(searchClicked);
             }
@@ -2918,6 +2983,7 @@ void StudioApp::shutdown() {
     // Same ordering contract as core::Application otherwise: VMA allocations
     // (mesh buffers, the offscreen target's images) must be freed before
     // renderer_.shutdown() destroys the allocator -- see Renderer::shutdown()'s NOTE.
+    guiImages_.reset();
     viewportTarget_.destroy(renderer_.allocator(), renderer_.device());
     // The persistent sampler outlives every resize, so it is torn down
     // here rather than in destroy() -- see OffscreenTarget::destroySampler().
@@ -3184,6 +3250,8 @@ void StudioApp::drawRibbon() {
     actions.toggleAnchor = [this] { toggleAnchorSelection(); };
     actions.insertPrimitive = [this](panels::ViewportPanel::Primitive kind) { insertPrimitive(kind); };
     actions.togglePlay = [this] { togglePlay(); };
+    actions.startServerTest = [this](int players) { startServerTest(players); };
+    actions.stopServerTest = [this] { serverTest_.stop(); };
     actions.togglePerformanceOverlay = [this] { performanceOverlay_.toggle(); };
     actions.resetLayout = [this] { layoutResetRequested_ = true; };
     actions.save = [this] {
@@ -3200,6 +3268,7 @@ void StudioApp::drawRibbon() {
     state.canSave = !sceneManager_.currentScenePath().empty();
     state.showEngineOverlays = showEngineDebugOverlays();
     state.terrainAvailable = terrainEditorPlugin_ != nullptr && terrainEditorPlugin_->hasTerrain();
+    state.serverTestRunning = serverTest_.active();
 
     ribbon_.draw(RibbonContext{ecs_, meshLibrary_, explorerPanel_, viewportPanel_, undoStack_, pluginManager_,
                                physicsPreviewPlugin_, modelImporterPlugin_, actions, state});
@@ -3218,6 +3287,8 @@ void StudioApp::handleEditShortcuts() {
     if (!io.KeyCtrl) return;
     if (ImGui::IsKeyPressed(ImGuiKey_C, false)) copySelection();
     if (ImGui::IsKeyPressed(ImGuiKey_V, false)) pasteClipboard();
+    if (ImGui::IsKeyPressed(ImGuiKey_X, false)) cutSelection();
+    if (ImGui::IsKeyPressed(ImGuiKey_A, false)) selectAll();
     if (ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicateSelection();
     if (ImGui::IsKeyPressed(ImGuiKey_G, false)) groupSelection();
     if (ImGui::IsKeyPressed(ImGuiKey_U, false)) ungroupSelection();
@@ -3287,6 +3358,22 @@ void StudioApp::duplicateSelection() {
     }
     explorerPanel_.setSelectedMultiple(clones);
     pushCreationUndo("Duplicate", clones);
+}
+
+void StudioApp::cutSelection() {
+    if (editingLocked() || explorerPanel_.selectedEntities().empty()) return;
+    copySelection();
+    deleteSelection();
+}
+
+void StudioApp::selectAll() {
+    if (editingLocked()) return;
+    std::vector<core::EntityId> all;
+    for (core::InstanceRef ref : core::instances::children(ecs_, core::kWorkspaceInstance)) {
+        const core::EntityId entity = core::instances::entityOf(ecs_, ref);
+        if (entity != core::kNullEntity && ecs_.raw().valid(entity)) all.push_back(entity);
+    }
+    if (!all.empty()) explorerPanel_.setSelectedMultiple(std::move(all));
 }
 
 void StudioApp::deleteSelection() {
@@ -3503,6 +3590,75 @@ void StudioApp::insertPrimitive(panels::ViewportPanel::Primitive kind) {
         if (sameName > 1) name->value = nextUniqueName(ecs_, name->value);
     }
     pushCreationUndo("Insert", {entity});
+}
+
+void StudioApp::startServerTest(int players) {
+    namespace fs = std::filesystem;
+    if (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying()) {
+        notifications_.push("Stop Play first.", NotificationSeverity::Warning);
+        return;
+    }
+    MultiplayerTest::Request request;
+    request.runtime = core::siblingExecutable("engine_runtime");
+    request.workRoot = fs::temp_directory_path() / ("kronos-studio-test-" + std::to_string(core::currentProcessId()));
+    request.gameName = currentProject_.name.empty() || currentProject_.name == core::ProjectFile{}.name ? "Studio Test"
+                                                                                                          : currentProject_.name;
+    request.saveScene = [this](const std::string& path) {
+        return sceneManager_.saveScene(path, ecs_, viewportPanel_.camera(), &movieModePlugin_->rail(),
+                                       &movieModePlugin_->sequence());
+    };
+    if (!currentProjectPath_.empty()) request.projectDir = fs::path(currentProjectPath_).parent_path();
+    request.players = players;
+    std::string error;
+    if (!serverTest_.start(request, error)) {
+        notifications_.push("Couldn't start the test server: " + error, NotificationSeverity::Error);
+    }
+    showServerTestWindow_ = true;
+}
+
+void StudioApp::drawServerTestWindow() {
+    if (!showServerTestWindow_) return;
+    ImGui::SetNextWindowSize(ImVec2(560, 360), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Multiplayer Test", &showServerTestWindow_)) {
+        ImGui::End();
+        return;
+    }
+    const bool failed = serverTest_.phase() == MultiplayerTest::Phase::Failed;
+    if (failed) {
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", serverTest_.message().c_str());
+    } else {
+        ImGui::TextUnformatted(serverTest_.message().empty() ? "Not running" : serverTest_.message().c_str());
+    }
+    if (serverTest_.active()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Stop")) serverTest_.stop();
+    }
+    static int shownLog = 0;
+    const std::vector<MultiplayerTest::Member> members = serverTest_.members();
+    for (size_t i = 0; i < members.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::RadioButton(members[i].name.c_str(), shownLog == static_cast<int>(i))) shownLog = static_cast<int>(i);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", members[i].status.c_str());
+        ImGui::PopID();
+    }
+    if (!members.empty()) {
+        shownLog = std::clamp(shownLog, 0, static_cast<int>(members.size()) - 1);
+        // Re-read the log twice a second.
+        static double lastRead = -1.0;
+        static std::string lastFile;
+        static std::vector<std::string> lines;
+        if (ImGui::GetTime() - lastRead > 0.5 || lastFile != members[shownLog].logFile) {
+            lines = MultiplayerTest::tail(members[shownLog].logFile, 200);
+            lastRead = ImGui::GetTime();
+            lastFile = members[shownLog].logFile;
+        }
+        ImGui::BeginChild("##serverlog", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+        for (const std::string& line : lines) ImGui::TextUnformatted(line.c_str());
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f) ImGui::SetScrollHereY(1.0f);
+        ImGui::EndChild();
+    }
+    ImGui::End();
 }
 
 void StudioApp::togglePlay() {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "core/ECS.hpp"
 
 namespace engine::studio::panels {
@@ -15,7 +17,7 @@ namespace engine::studio::panels {
 // this codebase, rather than this panel reaching into ExplorerPanel directly.
 class SceneSearchPanel {
 public:
-    [[nodiscard]] core::EntityId draw(core::ECS& ecs, core::EntityId currentSelection);
+    [[nodiscard]] core::EntityId draw(core::ECS& ecs, const std::vector<core::EntityId>& selection);
 
 private:
     char filterText_[128] = "";

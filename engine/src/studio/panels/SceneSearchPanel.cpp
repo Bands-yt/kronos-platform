@@ -24,7 +24,7 @@ std::string toLower(const std::string& s) {
 }
 } // namespace
 
-core::EntityId SceneSearchPanel::draw(core::ECS& ecs, core::EntityId currentSelection) {
+core::EntityId SceneSearchPanel::draw(core::ECS& ecs, const std::vector<core::EntityId>& selection) {
     ImGui::Begin("Scene Search");
 
     // Result count lives right under the box that produced it (not after
@@ -95,7 +95,7 @@ core::EntityId SceneSearchPanel::draw(core::ECS& ecs, core::EntityId currentSele
         }
     }
     for (const Match& match : matches) {
-        bool isSelected = match.entity == currentSelection;
+        const bool isSelected = std::find(selection.begin(), selection.end(), match.entity) != selection.end();
         char label[224];
         // A compact component badge (R/B/P for Renderable/RigidBody/
         // ParticleEmitter) so a result carries more information than its

@@ -17,6 +17,7 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_vulkan.h>
 
+#include "core/GuiImageCache.hpp"
 #include "core/RobloxGui.hpp"
 #include "core/AvatarSkinTone.hpp"
 #include "core/CredentialStore.hpp"
@@ -33,6 +34,7 @@
 #include "core/OAuthPkce.hpp"
 #include "core/OpenUrl.hpp"
 #include "core/RobloxLeaderboard.hpp"
+#include "core/RobloxTools.hpp"
 #include "core/SwapchainSelection.hpp"
 #include "core/UITheme.hpp"
 #include "core/UIWidgets.hpp"
@@ -228,12 +230,12 @@ bool RuntimeShell::initialize() {
     // session's NVIDIA driver, which only warns) would crash right at
     // the Home screen's own avatar preview, not some rare edge case.
     std::array<VkDescriptorPoolSize, 2> poolSizes{{
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 128},
         {VK_DESCRIPTOR_TYPE_SAMPLER, 8},
     }};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 64 + 8;
+    poolInfo.maxSets = 128 + 8;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     if (vkCreateDescriptorPool(renderer.device(), &poolInfo, nullptr, &imguiDescriptorPool_) != VK_SUCCESS) {
@@ -333,6 +335,10 @@ bool RuntimeShell::initialize() {
     // until the player happens to open Settings once.
     ensureLocalProfileLoaded();
     applyAllSettingsFromProfile();
+    if (directGame_) {
+        state_ = ShellState::InGame;
+        return true;
+    }
 
     // Kronos ("In-App Auto-Updater" -- "On startup ... query the GitHub
     // Releases API"): fired once here, on a real background thread, so
@@ -396,6 +402,8 @@ void RuntimeShell::shutdown() {
         homeAvatarPreview_->shutdown(app_.renderer());
         homeAvatarPreview_.reset();
     }
+
+    guiImages_.reset();
 
     if (imguiDescriptorPool_) {
         // A real, live ImGui context implies a real, live device -- this
@@ -622,6 +630,11 @@ void RuntimeShell::leaveSession() {
     }
 
     state_ = computeNextState(state_, ShellEvent::SessionEnded);
+    if (directGame_) {
+        SDL_Event quit{};
+        quit.type = SDL_QUIT;
+        SDL_PushEvent(&quit);
+    }
 }
 
 // KRONOS_SHELL_PAGE opens the launcher straight onto one page, skipping the
@@ -742,6 +755,7 @@ void RuntimeShell::finishPendingGameLoad() {
         state_ = computeNextState(state_, ShellEvent::GameLoadFailed);
         return;
     }
+    guiImageRoot_ = std::filesystem::path(game.manifestPath).parent_path();
 
     // Kronos ("Kronos Player & Chat System Initialization" -- "Spawn a
     // default avatar when entering any world"): real, necessary --
@@ -1110,8 +1124,25 @@ void RuntimeShell::tick(float dt) {
                         guiInput.pressed = !io.WantCaptureMouse && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
                         guiInput.released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
                         guiInput.down = io.MouseDown[0];
+                        guiInput.wheel = io.WantCaptureMouse ? 0.0f : io.MouseWheel;
                         core::gui::update(app_.ecs(), glm::vec2(io.DisplaySize.x, io.DisplaySize.y), guiInput);
+                        if (!guiImages_) {
+                            core::Renderer& r = app_.renderer();
+                            guiImages_ = std::make_unique<core::GuiImageCache>(r.allocator(), r.device(), r.commandPool(),
+                                                                               r.graphicsQueue());
+                        }
+                        guiImages_->setRoots({guiImageRoot_});
+                        core::gui::setImageResolver(app_.ecs(), [this](const std::string& image) { return guiImages_->get(image); });
                         core::gui::draw(app_.ecs(), ImGui::GetBackgroundDrawList(), glm::vec2(0.0f));
+                        core::tools::HotbarInput hotbarInput;
+                        for (int k = 0; k < 9 && !io.WantCaptureKeyboard; ++k) {
+                            if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + k), false)) hotbarInput.slotPressed = k + 1;
+                        }
+                        hotbarInput.clickPressed = guiInput.pressed && !core::gui::mouseOverButton(app_.ecs());
+                        hotbarInput.clickReleased = guiInput.released;
+                        core::tools::updateHotbar(app_.ecs(), hotbarInput);
+                        core::drawToolHotbar(app_.ecs(), ImGui::GetForegroundDrawList(), io.DisplaySize.x * 0.5f,
+                                             io.DisplaySize.y - 16.0f);
                     }
                     core::drawLeaderboard(app_.ecs(), ImGui::GetForegroundDrawList(),
                                           ImGui::GetIO().DisplaySize.x - 12.0f, 12.0f);
@@ -4209,6 +4240,9 @@ void RuntimeShell::pollBackendResults() {
 
                 if (allocationGame.has_value() && !loadGame(app_, *allocationGame)) {
                     core::logWarn("Kronos", "\"%s\" downloaded but failed to load", allocationGame->manifest.name.c_str());
+                }
+                if (allocationGame.has_value()) {
+                    guiImageRoot_ = std::filesystem::path(allocationGame->manifestPath).parent_path();
                 }
 
                 ensureLocalProfileLoaded();

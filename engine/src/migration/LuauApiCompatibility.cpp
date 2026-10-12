@@ -184,6 +184,12 @@ LuauApiCompatibility::LuauApiCompatibility() {
         registry_.push_back({method, true, ApiMappingStatus::Mapped,
                               "Works as in Roblox (docs/ROBLOX_BRIDGE.md, \"Common services\")."});
     }
+    for (const char* method : {"EquipTool", "UnequipTools", "Activate", "Deactivate"}) {
+        registry_.push_back({method, true, ApiMappingStatus::Mapped, "Works as in Roblox (docs/ROBLOX_BRIDGE.md, \"Tools\")."});
+    }
+    for (const char* method : {"CaptureFocus", "ReleaseFocus", "IsFocused"}) {
+        registry_.push_back({method, true, ApiMappingStatus::Mapped, "Works as in Roblox (docs/ROBLOX_BRIDGE.md, \"GUI\")."});
+    }
     registry_.push_back(
         {"Raycast", true, ApiMappingStatus::Mapped, "Works as in Roblox (docs/ROBLOX_BRIDGE.md, \"Raycasts\")."});
     for (const char* method : {"ScreenPointToRay", "ViewportPointToRay", "WorldToScreenPoint", "WorldToViewportPoint"}) {

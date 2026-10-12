@@ -28,6 +28,7 @@
 #include "core/Renderer.hpp"
 #include "core/ScenePicking.hpp"
 #include "core/RobloxLeaderboard.hpp"
+#include "core/RobloxTools.hpp"
 #include "core/Terrain.hpp"
 #include "core/UIWidgets.hpp"
 #include "core/WorldProp.hpp"
@@ -1247,10 +1248,20 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
         guiInput.pressed = hovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
         guiInput.released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
         guiInput.down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        guiInput.wheel = hovered_ ? ImGui::GetIO().MouseWheel : 0.0f;
         if (!hovered_) guiInput.mouse = glm::vec2(-1.0f);
         core::gui::update(*ecs, glm::vec2(imageSize.x, imageSize.y), guiInput);
         core::gui::draw(*ecs, drawList, glm::vec2(imageOrigin.x, imageOrigin.y));
         core::drawLeaderboard(*ecs, drawList, viewCubeOrigin(imageOrigin, imageSize).x - 10.0f, imageOrigin.y + 10.0f);
+        core::tools::HotbarInput hotbarInput;
+        const bool ctrlHeld = ImGui::GetIO().KeyCtrl;
+        for (int k = 0; k < 9 && hovered_ && !ctrlHeld && !ImGui::GetIO().WantTextInput; ++k) {
+            if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + k), false)) hotbarInput.slotPressed = k + 1;
+        }
+        hotbarInput.clickPressed = guiInput.pressed && !core::gui::mouseOverButton(*ecs);
+        hotbarInput.clickReleased = guiInput.released;
+        core::tools::updateHotbar(*ecs, hotbarInput);
+        core::drawToolHotbar(*ecs, drawList, imageOrigin.x + imageSize.x * 0.5f, imageOrigin.y + imageSize.y - 16.0f);
     }
 
     // Gizmo mode toolbar -- W/E/R matches the near-universal DCC/game-editor

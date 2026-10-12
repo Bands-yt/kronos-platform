@@ -52,8 +52,8 @@ struct CompatibilityScore {
 // contexts, a test player joining, Starter copies) and records which Scripts
 // and LocalScripts run without an error. ModuleScripts are compiled here and
 // run when something requires them.
-// checks: optional Luau run after the scripts start, with one player in the
-// game. It reports with check(name, ok, detail) and may call touch(part, hit).
+// checks: optional behaviour checks, run in the Compatibility Lab (physics,
+// two players, 30 game seconds; see migration/CompatLab.hpp).
 void runImportedScripts(const ImportReport& report, CompatibilityScore& score, const std::string& checks = {});
 
 } // namespace engine::migration

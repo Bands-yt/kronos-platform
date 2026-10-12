@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -17,6 +18,7 @@
 #include "analytics/TelemetrySender.hpp"
 #include "core/GameCatalogueAggregate.hpp"
 #include "core/GoogleAuth.hpp"
+#include "core/GuiImageCache.hpp"
 #include "core/KronosApi.hpp"
 #include "core/UpdateCheck.hpp"
 #include "core/LocalGameDirectory.hpp"
@@ -222,6 +224,12 @@ public:
     // startServerAllocation() the "Play" button on that game's card
     // already calls -- a deep-link launch and a normal click end up on
     // the identical join path, not a second one.
+    // `--client ... --game`: the game is already loaded and joined, so skip
+    // Home, sign-in and the catalogue; leaving the game quits. Before initialize().
+    void startInGame(std::filesystem::path gameFolder) {
+        directGame_ = true;
+        guiImageRoot_ = std::move(gameFolder);
+    }
     void setPendingDeepLinkLaunch(std::string slug, std::string handoffCode) {
         pendingDeepLinkGameSlug_ = std::move(slug);
         pendingDeepLinkHandoffCode_ = std::move(handoffCode);
@@ -537,6 +545,10 @@ private:
     // see ensureHomeAvatarPreviewLoaded()'s own comment. nullptr until
     // Home has actually been drawn once.
     std::unique_ptr<HomeAvatarPreview> homeAvatarPreview_;
+    // Pictures for Roblox GUI, from the running game's folder.
+    std::unique_ptr<core::GuiImageCache> guiImages_;
+    std::filesystem::path guiImageRoot_;
+    bool directGame_ = false;
 
     // Kronos ("Marketplace" -- "engine_runtime-side catalogue UI"): real
     // Avatar Shop UI state -- same shape studio::plugins::CataloguePanel's

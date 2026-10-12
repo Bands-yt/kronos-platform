@@ -8,13 +8,21 @@ Studio** for building your own games with parts, Luau scripts, physics
 and sound. Under the hood it's a C++ engine with a Vulkan renderer, Jolt
 Physics and Luau scripting. There's no third-party engine underneath.
 
-Kronos speaks Roblox. Import a Roblox place (`.rbxl`, `.rbxm`, `.rbxlx`
-or `.rbxmx`) into Studio and its scripts run, using the same `game`,
-`workspace`, `Instance.new`, events, Players, Humanoids, RemoteEvents,
-DataStores, TweenService, raycasts, welds and GUI you already know.
+Kronos can import Roblox places (`.rbxl`, `.rbxm`, `.rbxlx` or `.rbxmx`)
+and run their Luau scripts with the same `game`, `workspace`,
+`Instance.new`, events, Players, Humanoids, Tools, RemoteEvents,
+DataStores, TweenService, raycasts, welds and GUI. Simple places (obbies,
+tycoon buttons, shops, round systems) work today; big games use things
+Kronos doesn't have yet. See [what doesn't work yet](#what-doesnt-work-yet).
 
 Recently added:
 
+- **Compatibility Lab** that plays Roblox places headlessly and reports
+  what breaks, plus Roblox **Tools** (hotbar on keys 1–9), wedge and
+  cylinder mesh shapes, and much more GUI: text boxes, scrolling lists,
+  grids, outlines, gradients, scaling and images.
+- **Test multiplayer in Studio:** Test tab → **Server** starts a server and
+  up to four Player windows on your PC. See [docs/MULTIPLAYER_TEST.md](docs/MULTIPLAYER_TEST.md).
 - **Python game scripts (preview).** A game can include `Scripts/Main.py`
   next to its Luau scripts. Each Python script runs in its own sandbox
   with memory and time limits. See [docs/PYTHON_SCRIPTS.md](docs/PYTHON_SCRIPTS.md).
@@ -77,10 +85,44 @@ some Luau. The [Lua API](docs/LUA_API.md) lists everything scripts can do.
 3. Press **Spawn Into Scene**, then **Play**. Scripts start like they do
    in Roblox: Scripts on the server side, LocalScripts for the player.
 
-What works today, and what doesn't yet:
-[docs/ROBLOX_BRIDGE.md](docs/ROBLOX_BRIDGE.md). The command-line tool
-`kronos_compat` gives the same score for a whole folder of places. Only
-import places you made or have permission to use.
+The score counts how many of the place's objects and script calls Kronos
+understands. 100% doesn't promise the game plays the same, so Kronos also
+has a **Compatibility Lab**: `kronos_compat --lab my_place.rbxlx` plays the
+place headlessly for 30 seconds with physics and two test players, and
+lists script errors (with time and line), deaths, parts falling out of the
+world and missing images. See [docs/COMPAT_LAB.md](docs/COMPAT_LAB.md).
+Only import places you made or have permission to use.
+
+### How it's tested
+
+Ten small test places (an obby, a door, a tycoon button, a shop, a
+leaderboard, a simulator, a sword arena, an inventory, a round system and
+a GUI menu) are in `engine/tests/compat_corpus`, each with a checks file
+that plays it like a player would. The automated tests import all ten at
+100%, and all ten pass their checks in the Lab (12 October 2026). One real place made in
+Roblox Studio is also checked. That is a small sample: tell us about places
+that break.
+
+### What doesn't work yet
+
+The full list per feature is in [docs/ROBLOX_BRIDGE.md](docs/ROBLOX_BRIDGE.md).
+The big ones:
+
+- **Nothing is downloaded from Roblox.** Meshes, images and sounds hosted
+  by Roblox aren't fetched: `MeshPart`s with Roblox mesh ids are boxes, and
+  GUI images must be shipped in the game's folder.
+- **No animations.** `Humanoid:LoadAnimation` isn't built, and characters
+  have only a `HumanoidRootPart` (no `Head` or limbs for scripts to find).
+- **Multiplayer is early.** On a client, other players have no
+  `Character`; servers send whole-world updates each tick, so big places
+  are slow over the network.
+- **Some GUI and 3D UI is missing:** one font for every `Font`, no rich
+  text, `BillboardGui`, `SurfaceGui` or `ViewportFrame`. Clicking 3D parts
+  (`ClickDetector`) only works from scripts and the Lab.
+- **Data:** DataStores save to a file on the machine running the server,
+  not to a shared online store yet; in Studio Play they're kept in memory.
+- **Imports:** subtracted parts in unions aren't cut out; some newer
+  `.rbxl` files (Zstandard-compressed) must be saved again as `.rbxlx`.
 
 ## Controls
 

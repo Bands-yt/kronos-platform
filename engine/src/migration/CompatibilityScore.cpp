@@ -15,6 +15,7 @@
 #include "core/RobloxScripts.hpp"
 #include "core/ScriptInstanceApi.hpp"
 #include "core/Scripting.hpp"
+#include "migration/CompatLab.hpp"
 #include "migration/InstanceHydrator.hpp"
 
 namespace engine::migration {
@@ -36,20 +37,6 @@ void visit(const std::vector<ImportedInstance>& nodes, const std::string& parent
         visit(node.children, path, fn);
     }
 }
-
-// touch(part, hit): fires Touched as if hit had bumped into part.
-int doctorTouch(lua_State* L) {
-    auto* ecs = static_cast<core::ECS*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
-    const core::EntityId a = core::instances::entityOf(*ecs, core::toSignalArg(L, 1).value.ref);
-    const core::EntityId b = core::instances::entityOf(*ecs, core::toSignalArg(L, 2).value.ref);
-    if (a == core::kNullEntity || b == core::kNullEntity) luaL_error(L, "touch expects two parts");
-    core::signals::touch(*ecs, a, b, true);
-    core::signals::touch(*ecs, a, b, false);
-    return 0;
-}
-
-constexpr const char* kChecksChunk = "BehaviourChecks";
-constexpr const char* kCheckPrefix = "@@kronos-check@@";
 
 std::string sourceOf(const ImportedInstance& node) {
     const auto it = node.properties.find("Source");
@@ -104,22 +91,12 @@ void runImportedScripts(const ImportReport& report, CompatibilityScore& score, c
     (void)InstanceHydrator{}.hydrate(report.tree, ecs, HydrationMeshes{});
 
     core::Scripting scripting;
-    scripting.setBindingsHook([&ecs](lua_State* L) {
-        core::registerInstanceApi(L, ecs);
-        lua_pushlightuserdata(L, &ecs);
-        lua_pushcclosure(L, &doctorTouch, "__doctor_touch", 1);
-        lua_setglobal(L, "__doctor_touch");
-    });
+    scripting.setBindingsHook([&ecs](lua_State* L) { core::registerInstanceApi(L, ecs); });
     if (!scripting.initialize()) return;
 
     std::vector<std::string> errors;
-    std::vector<std::string> checkLines;
     scripting.setOutputCallback([&](const std::string& line) {
-        if (const size_t at = line.find(kCheckPrefix); at != std::string::npos) {
-            checkLines.push_back(line.substr(at + std::string(kCheckPrefix).size()));
-        } else if (line.rfind("runtime error", 0) == 0 || line.rfind("compile error", 0) == 0) {
-            errors.push_back(line);
-        }
+        if (line.rfind("runtime error", 0) == 0 || line.rfind("compile error", 0) == 0) errors.push_back(line);
     });
 
     std::vector<core::EntityId> scriptEntities;
@@ -159,33 +136,6 @@ void runImportedScripts(const ImportReport& report, CompatibilityScore& score, c
     const std::string playerName = "Player1";
     const core::InstanceRef player = core::players::join(ecs, playerName, 1, core::instances::entityOf(ecs, root), true);
     for (int i = 0; i < 30; ++i) frame();
-    if (!checks.empty()) {
-        score.behaviourRan = true;
-        const std::string prelude = std::string(R"LUAU(
-local touch = __doctor_touch
-local player = game:GetService("Players"):GetPlayers()[1]
-local character = player and player.Character
-local hit = character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChildWhichIsA("BasePart"))
-local function check(name, ok, detail)
-	print(")LUAU") + kCheckPrefix + R"LUAU(" .. (ok and "1" or "0") .. tostring(name) .. "\t" .. tostring(detail or ""))
-end
-)LUAU";
-        scripting.loadAndRun(kChecksChunk, prelude + checks);
-        for (int i = 0; i < 60; ++i) frame();
-        for (const std::string& line : checkLines) {
-            const size_t tab = line.find('\t');
-            CompatBehaviourCheck result;
-            result.passed = !line.empty() && line[0] == '1';
-            result.name = line.substr(1, tab == std::string::npos ? std::string::npos : tab - 1);
-            if (tab != std::string::npos) result.detail = line.substr(tab + 1);
-            score.behaviour.push_back(std::move(result));
-        }
-        for (const std::string& line : errors) {
-            if (line.find(kChecksChunk) != std::string::npos) {
-                score.behaviour.push_back({"checks file ran to the end", false, line});
-            }
-        }
-    }
     core::players::leave(ecs, player);
 
     // Copies made for the player count as the script they came from.
@@ -236,6 +186,12 @@ end
         if (run.ok) ++score.scriptsOk;
     }
     scripting.shutdown();
+
+    if (!checks.empty()) {
+        const LabResult lab = runLab(report, LabOptions{}, checks);
+        score.behaviourRan = true;
+        score.behaviour = lab.behaviour;
+    }
 }
 
 } // namespace engine::migration

@@ -45,6 +45,7 @@ release.
 | `--client <address> <port>` | Joins a game server |
 | `--server` / `--port <port>` | Hosts a game server |
 | `--game <slug>` | With `--server` or `--client`: the game to host or load |
+| `--name <name>` | With `--client`: the player's name on the server (up to 32 characters; default "Player") |
 | `--headless` | Runs without a window (servers, bots, tests) |
 | `kronos://launch?game=<slug>` | Opens a game, like the website's Play button. Pass it as the only argument |
 

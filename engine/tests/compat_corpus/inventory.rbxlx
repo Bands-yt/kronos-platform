@@ -1,0 +1,54 @@
+<roblox version="4"><Item class="Workspace" referent="RBX3"><Properties><string name="Name">Workspace</string></Properties><Item class="Part" referent="RBX1"><Properties><string name="Name">Baseplate</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>40</X><Y>1</Y><Z>40</Z></Vector3><Color3uint8 name="Color3uint8">4284193356</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="SpawnLocation" referent="RBX2"><Properties><string name="Name">SpawnLocation</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>1</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4279069100</Color3uint8><bool name="Anchored">true</bool></Properties></Item></Item><Item class="ReplicatedStorage" referent="RBX7"><Properties><string name="Name">ReplicatedStorage</string></Properties><Item class="ModuleScript" referent="RBX4"><Properties><string name="Name">Items</string><ProtectedString name="Source"><![CDATA[local Items = {}
+
+Items.List = {
+	Apple = { price = 5, heal = 10 },
+	Shield = { price = 40, heal = 0 },
+	Potion = { price = 15, heal = 50 },
+}
+
+function Items.price(name)
+	local item = Items.List[name]
+	return item and item.price
+end
+
+return Items
+]]></ProtectedString></Properties></Item><Item class="RemoteFunction" referent="RBX5"><Properties><string name="Name">Buy</string></Properties></Item><Item class="RemoteEvent" referent="RBX6"><Properties><string name="Name">InventoryChanged</string></Properties></Item></Item><Item class="ServerScriptService" referent="RBX9"><Properties><string name="Name">ServerScriptService</string></Properties><Item class="Script" referent="RBX8"><Properties><string name="Name">InventoryServer</string><ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Items = require(ReplicatedStorage.Items)
+local inventories = {}
+
+Players.PlayerAdded:Connect(function(player)
+	inventories[player] = {}
+	player:SetAttribute("Gold", 50)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	inventories[player] = nil
+end)
+
+ReplicatedStorage.Buy.OnServerInvoke = function(player, itemName)
+	local price = Items.price(itemName)
+	if type(itemName) ~= "string" or not price then
+		return false, "no such item"
+	end
+	local gold = player:GetAttribute("Gold")
+	if gold < price then
+		return false, "not enough gold"
+	end
+	player:SetAttribute("Gold", gold - price)
+	local inventory = inventories[player]
+	inventory[itemName] = (inventory[itemName] or 0) + 1
+	ReplicatedStorage.InventoryChanged:FireClient(player, inventory)
+	return true, inventory[itemName]
+end
+]]></ProtectedString></Properties></Item></Item><Item class="StarterPlayer" referent="RBX12"><Properties><string name="Name">StarterPlayer</string></Properties><Item class="StarterPlayerScripts" referent="RBX11"><Properties><string name="Name">StarterPlayerScripts</string></Properties><Item class="LocalScript" referent="RBX10"><Properties><string name="Name">InventoryClient</string><ProtectedString name="Source"><![CDATA[local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = game:GetService("Players").LocalPlayer
+
+ReplicatedStorage.InventoryChanged.OnClientEvent:Connect(function(inventory)
+	local count = 0
+	for _, amount in inventory do
+		count += amount
+	end
+	player:SetAttribute("ItemCount", count)
+end)
+]]></ProtectedString></Properties></Item></Item></Item></roblox>

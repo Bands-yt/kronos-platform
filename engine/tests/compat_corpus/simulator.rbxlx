@@ -1,0 +1,46 @@
+<roblox version="4"><Item class="Workspace" referent="RBX10"><Properties><string name="Name">Workspace</string></Properties><Item class="Part" referent="RBX1"><Properties><string name="Name">Baseplate</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>64</X><Y>1</Y><Z>64</Z></Vector3><Color3uint8 name="Color3uint8">4284193356</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="SpawnLocation" referent="RBX2"><Properties><string name="Name">SpawnLocation</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>1</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4279069100</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="Folder" referent="RBX6"><Properties><string name="Name">Coins</string></Properties><Item class="Part" referent="RBX3"><Properties><string name="Name">Coin</string><CoordinateFrame name="CFrame"><X>10</X><Y>1.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>2</X><Y>2</Y><Z>0.5</Z></Vector3><Color3uint8 name="Color3uint8">4294298928</Color3uint8><bool name="Anchored">true</bool><bool name="CanCollide">false</bool></Properties></Item><Item class="Part" referent="RBX4"><Properties><string name="Name">Coin</string><CoordinateFrame name="CFrame"><X>14</X><Y>1.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>2</X><Y>2</Y><Z>0.5</Z></Vector3><Color3uint8 name="Color3uint8">4294298928</Color3uint8><bool name="Anchored">true</bool><bool name="CanCollide">false</bool></Properties></Item><Item class="Part" referent="RBX5"><Properties><string name="Name">Coin</string><CoordinateFrame name="CFrame"><X>18</X><Y>1.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>2</X><Y>2</Y><Z>0.5</Z></Vector3><Color3uint8 name="Color3uint8">4294298928</Color3uint8><bool name="Anchored">true</bool><bool name="CanCollide">false</bool></Properties></Item></Item><Item class="Part" referent="RBX7"><Properties><string name="Name">SellPad</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.6</Y><Z>12</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>0.2</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4278255360</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="Part" referent="RBX9"><Properties><string name="Name">Dumbbell</string><CoordinateFrame name="CFrame"><X>-10</X><Y>1</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>3</X><Y>1</Y><Z>1</Z></Vector3><Color3uint8 name="Color3uint8">4279970357</Color3uint8><bool name="Anchored">true</bool></Properties><Item class="ClickDetector" referent="RBX8"><Properties><string name="Name">ClickDetector</string></Properties></Item></Item></Item><Item class="ServerScriptService" referent="RBX15"><Properties><string name="Name">ServerScriptService</string></Properties><Item class="Script" referent="RBX11"><Properties><string name="Name">Stats</string><ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+
+Players.PlayerAdded:Connect(function(player)
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	for _, name in { "Coins", "Cash", "Strength" } do
+		local value = Instance.new("IntValue")
+		value.Name = name
+		value.Parent = leaderstats
+	end
+end)
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX12"><Properties><string name="Name">CoinSpawner</string><ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+local RESPAWN = 2
+
+for _, coin in workspace.Coins:GetChildren() do
+	local taken = false
+	coin.Touched:Connect(function(hit)
+		local player = Players:GetPlayerFromCharacter(hit.Parent)
+		if not player or taken then return end
+		taken = true
+		player.leaderstats.Coins.Value += 1
+		coin.Transparency = 1
+		task.delay(RESPAWN, function()
+			coin.Transparency = 0
+			taken = false
+		end)
+	end)
+end
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX13"><Properties><string name="Name">Sell</string><ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+local pad = workspace.SellPad
+
+pad.Touched:Connect(function(hit)
+	local player = Players:GetPlayerFromCharacter(hit.Parent)
+	if not player then return end
+	local stats = player.leaderstats
+	stats.Cash.Value += stats.Coins.Value * 10
+	stats.Coins.Value = 0
+end)
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX14"><Properties><string name="Name">Training</string><ProtectedString name="Source"><![CDATA[local detector = workspace.Dumbbell.ClickDetector
+
+detector.MouseClick:Connect(function(player)
+	player.leaderstats.Strength.Value += 1
+end)
+]]></ProtectedString></Properties></Item></Item></roblox>

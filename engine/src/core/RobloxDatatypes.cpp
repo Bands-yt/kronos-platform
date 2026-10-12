@@ -511,6 +511,7 @@ R"LUAU(
 local ENUMS = {
 	Material = "Plastic=256 SmoothPlastic=272 Neon=288 Wood=512 WoodPlanks=528 Marble=784 Slate=800 Concrete=816 Granite=832 Brick=848 Pebble=864 Cobblestone=880 CorrodedMetal=1040 DiamondPlate=1056 Foil=1072 Metal=1088 Grass=1280 Sand=1296 Fabric=1312 Ice=1536 Glass=1568 ForceField=1584 Air=1792 Water=2048",
 	PartType = "Ball=0 Block=1 Cylinder=2 Wedge=3 CornerWedge=4",
+	MeshType = "Head=0 Torso=1 Wedge=2 Sphere=3 Cylinder=4 FileMesh=5 Brick=6 Prism=7 Pyramid=8 ParallelRamp=9 RightAngleRamp=10 CornerWedge=11",
 	EasingStyle = "Linear=0 Sine=1 Back=2 Quad=3 Quart=4 Quint=5 Bounce=6 Elastic=7 Exponential=8 Circular=9 Cubic=10",
 	EasingDirection = "In=0 Out=1 InOut=2",
 	NormalId = "Right=0 Top=1 Back=2 Left=3 Bottom=4 Front=5",
@@ -531,6 +532,14 @@ local ENUMS = {
 	ScaleType = "Stretch=0 Slice=1 Tile=2 Fit=3 Crop=4",
 	AutomaticSize = "None=0 X=1 Y=2 XY=3",
 	ZIndexBehavior = "Global=0 Sibling=1",
+	ScrollingDirection = "X=1 Y=2 XY=4",
+	ScrollBarInset = "None=0 ScrollBar=1 Always=2",
+	ElasticBehavior = "WhenScrollable=0 Always=1 Never=2",
+	ApplyStrokeMode = "Contextual=0 Border=1",
+	LineJoinMode = "Round=0 Bevel=1 Miter=2",
+	AspectType = "FitWithinMaxSize=0 ScaleWithParentSize=1",
+	DominantAxis = "Width=0 Height=1",
+	StartCorner = "TopLeft=0 TopRight=1 BottomLeft=2 BottomRight=3",
 	AnimationPriority = "Idle=0 Movement=1 Action=2 Action2=3 Action3=4 Action4=5 Core=1000",
 	CameraType = "Fixed=0 Attach=1 Watch=2 Track=3 Follow=4 Custom=5 Scriptable=6 Orbital=7",
 	RenderPriority = "First=0 Input=100 Camera=200 Character=300 Last=2000",
@@ -624,6 +633,13 @@ local function sequenceType(name, keypointName, valueCheck)
 	KPmt.__eq = function(a, b) return a.Time == b.Time and a.Value == b.Value and a.Envelope == b.Envelope end
 	freeze(KPmt)
 	local SQmt = newType(name, {}, {})
+	SQmt.__eq = function(a, b)
+		if #a.Keypoints ~= #b.Keypoints then return false end
+		for i, k in a.Keypoints do
+			if k ~= b.Keypoints[i] then return false end
+		end
+		return true
+	end
 	freeze(SQmt)
 	local function keypoint(t, v, e) return freeze(setmt({ Time = t, Value = v, Envelope = e }, KPmt)) end
 	Keypoint.new = function(t, v, e) return keypoint(num(t), valueCheck(v), num(e, 0)) end

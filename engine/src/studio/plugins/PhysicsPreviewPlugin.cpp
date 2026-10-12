@@ -106,6 +106,15 @@ void PhysicsPreviewPlugin::play(core::ECS& ecs) {
         });
     }
 
+    python_.setWorld(&ecs, &physics_);
+    python_.setOutputCallback([](const std::string& line) {
+        if (line.rfind("[python] ", 0) == 0) {
+            core::logError("Python", "%s", line.c_str());
+        } else {
+            core::logInfo("Python", "%s", line.c_str());
+        }
+    });
+
     if (audio_ != nullptr) {
         mixerBeforePlay_ = audio_->mixer().config();
         for (auto [entity, sound] : ecs.raw().view<core::AudioSource>().each()) sound.playing = sound.playOnStart;
@@ -148,6 +157,7 @@ void PhysicsPreviewPlugin::stop(core::ECS& ecs) {
         script.loadedSource.clear();
     }
     scripting_.shutdown();
+    python_.unloadAll();
     core::robloxScripts::reset(ecs);
     core::services::reset(ecs);
     scriptAudioApi_.reset();
@@ -196,8 +206,9 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
     // core::tickScriptHotReload()'s own comment. Physics/ECS/camera are
     // completely untouched by this.
     core::partbodies::setPhysics(ecs, &physics_);
-    core::tickScriptHotReload(ecs, scripting_);
+    core::tickScriptHotReload(ecs, scripting_, &python_);
     scripting_.tick(dt);
+    python_.tick(dt);
     core::players::tick(ecs, dt);
     core::signals::flush(ecs);
     core::partbodies::sync(ecs, physics_, false);
@@ -207,6 +218,7 @@ void PhysicsPreviewPlugin::update(float dt, core::ECS& ecs, core::EntityId /*sel
         recentContacts_ = physics_.drainCollisionEvents();
         for (const auto& contact : recentContacts_) {
             scripting_.fireCollision(static_cast<uint32_t>(contact.first), static_cast<uint32_t>(contact.second));
+            python_.fireCollision(static_cast<uint32_t>(contact.first), static_cast<uint32_t>(contact.second));
         }
         for (const auto& touch : physics_.drainTouchEvents()) core::signals::touch(ecs, touch.a, touch.b, touch.began);
         core::signals::heartbeat(ecs, dt);

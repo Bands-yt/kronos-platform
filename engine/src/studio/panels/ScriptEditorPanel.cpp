@@ -15,6 +15,7 @@
 #include <imgui_stdlib.h>
 
 #include "core/Components.hpp"
+#include "core/ScriptLanguage.hpp"
 #include "core/NativeFileDialog.hpp"
 #include "core/ScriptDebugger.hpp"
 #include "core/UITheme.hpp"
@@ -351,7 +352,7 @@ int ScriptEditorPanel::newScriptTab(core::ECS& ecs, const std::string& baseName,
 }
 
 void ScriptEditorPanel::openScriptFromFile(core::ECS& /*ecs*/, NotificationCenter& notifications) {
-    const bool started = core::openFileDialogAsync({"Open Script", {"*.luau", "*.lua"}, "Luau scripts"},
+    const bool started = core::openFileDialogAsync({"Open Script", {"*.luau", "*.lua", "*.py"}, "Scripts"},
                                                    [this](const std::string& path) { pendingScriptPath_ = path; });
     if (!started) notifications.push("Could not open a file dialog: " + core::fileDialogError(), NotificationSeverity::Error);
 }
@@ -386,6 +387,11 @@ void ScriptEditorPanel::importScriptFile(core::ECS& ecs, NotificationCenter& not
     core::EntityId entity = ecs.createEntity(candidate);
     core::Script& script = ecs.addComponent<core::Script>(entity);
     script.source = contents.str();
+    // A Python script is recognised by a leading # comment, so a plain .py file gets one.
+    if (std::filesystem::path(*path).extension() == ".py" &&
+        core::scriptLanguageOf(script.source) != core::ScriptLanguage::Python) {
+        script.source = "# python\n" + script.source;
+    }
 
     openOrFocusTab(ecs, entity);
     forceFocusActiveTab_ = true;
@@ -462,6 +468,12 @@ const ScriptTemplate kTemplates[] = {
      "local hits = 0\n\nevents.onCollision(function(entityA, entityB)\n\thits += 1\n"
      "\tworld.setColor(entityA, math.random(), math.random(), math.random())\n"
      "\tprint(\"Collision #\" .. hits .. \": \" .. entityA .. \" hit \" .. entityB)\nend)\n"},
+    {"Python script", "A Python script. The first line is a # comment.", "PythonScript",
+     "# python\nprint(\"Hello from Python!\")\n"},
+    {"Python spinner", "Moves a part up and down with Python.", "PythonSpinScript",
+     "# python\nimport math\n\npart = world.find(\"Part\")\n\n@events.on_update\ndef bob(dt):\n"
+     "    if part is None:\n        return\n    x, y, z = world.get_position(part)\n"
+     "    world.set_position(part, x, 2 + math.sin(world.time() * 2), z)\n"},
 };
 } // namespace
 
@@ -521,7 +533,7 @@ void ScriptEditorPanel::drawEmptyState(core::ECS& ecs, NotificationCenter& notif
     }
 
     ImGui::SetCursorPos(ImVec2(origin.x, gridTop + rows * card.y + (rows - 1) * kGap + 18.0f));
-    if (ui::button("Import .luau file...", ui::ButtonKind::Ghost)) openScriptFromFile(ecs, notifications);
+    if (ui::button("Import script file...", ui::ButtonKind::Ghost)) openScriptFromFile(ecs, notifications);
     ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Scripts hot-reload while you play.");

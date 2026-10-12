@@ -7,6 +7,7 @@
 
 #include "core/Components.hpp"
 #include "core/ECS.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/Physics.hpp"
 
 #include "kronos_pocketpy.h"
@@ -188,7 +189,10 @@ struct PythonScripting::Bindings {
         glm::vec3 position;
         if (!entityArg(py_arg(0), entity) || !vec3Args(py_arg(1), position)) return false;
         if (ECS* ecs = world(entity)) {
-            if (auto* transform = ecs->tryGetComponent<Transform>(entity)) transform->position = position;
+            if (auto* transform = ecs->tryGetComponent<Transform>(entity)) {
+                transform->position = position;
+                instances::markBodyMoved(*ecs, entity);
+            }
         }
         py_newnone(py_retval());
         return true;

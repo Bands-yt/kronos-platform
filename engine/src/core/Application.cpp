@@ -2552,6 +2552,7 @@ bool Application::initialize(const CreateInfo& info) {
             }
         }
         networkSession_.tick(dt, ecs_, networkedLocalPlayerEntity_, &physics_);
+        tickRemoteAvatars(dt);
     });
 
     // The other real event.onX trigger: Physics' actual Jolt
@@ -3013,6 +3014,81 @@ bool Application::spawnLocalPlayerAvatar(glm::vec3 spawnPosition, glm::vec4 skin
     return true;
 }
 
+bool Application::buildAvatarRig(std::vector<EntityId>& skinned, std::unique_ptr<AvatarController>& controller) {
+    Skeleton skeleton = buildHumanoidSkeleton();
+    glm::vec4 skinTone(0.85f, 0.75f, 0.65f, 1.0f);
+    std::string spawnError;
+    if (!spawnRiggedAvatar(ecs_, skeleton, AvatarLoadout{}, CatalogueIndex{}, riggedMeshLibrary_, renderer_.allocator(),
+                           renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), skinned, spawnError,
+                           skinTone)) {
+        std::fprintf(stderr, "Application: spawnRiggedAvatar() failed: %s\n", spawnError.c_str());
+        skinned.clear();
+        return false;
+    }
+    // A faceless or hairless avatar is still playable if either fails.
+    std::vector<EntityId> faceEntities;
+    std::string faceError;
+    if (spawnAvatarFace(ecs_, skeleton, skinTone, riggedMeshLibrary_, renderer_.allocator(), renderer_.device(),
+                        renderer_.commandPool(), renderer_.graphicsQueue(), faceEntities, faceError)) {
+        skinned.insert(skinned.end(), faceEntities.begin(), faceEntities.end());
+    } else {
+        std::fprintf(stderr, "Application: spawnAvatarFace() failed: %s\n", faceError.c_str());
+    }
+    std::vector<EntityId> hairEntities;
+    std::string hairError;
+    if (spawnAvatarDefaultHair(ecs_, skeleton, AvatarLoadout{}, kDefaultHairColor, riggedMeshLibrary_, renderer_.allocator(),
+                               renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), hairEntities,
+                               hairError)) {
+        skinned.insert(skinned.end(), hairEntities.begin(), hairEntities.end());
+    } else {
+        std::fprintf(stderr, "Application: spawnAvatarDefaultHair() failed: %s\n", hairError.c_str());
+    }
+
+    controller = std::make_unique<AvatarController>(skeleton);
+    const std::string animDir = resolveResourceDir(executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/animations";
+    auto loadShippedClip = [&](const char* fileBaseName, void (AvatarController::*setter)(AnimationClip)) {
+        AnimationClip clip;
+        if (clip.loadFromFile(animDir + "/" + fileBaseName + ".anim")) (controller.get()->*setter)(std::move(clip));
+    };
+    loadShippedClip("idle", &AvatarController::setIdleClip);
+    loadShippedClip("walk", &AvatarController::setWalkClip);
+    loadShippedClip("run", &AvatarController::setRunClip);
+    loadShippedClip("jump_start", &AvatarController::setJumpClip);
+    loadShippedClip("jump_air", &AvatarController::setJumpAirClip);
+    loadShippedClip("jump_land", &AvatarController::setJumpLandClip);
+    return true;
+}
+
+void Application::clearRemoteAvatars() {
+    for (RemoteAvatarRig& rig : remoteAvatars_) {
+        for (EntityId e : rig.skinned) {
+            if (ecs_.raw().valid(e)) ecs_.destroyEntity(e);
+        }
+    }
+    remoteAvatars_.clear();
+}
+
+void Application::spawnRemoteAvatar(EntityId root) {
+    if (headless_) return;
+    RemoteAvatarRig rig;
+    rig.root = root;
+    if (!buildAvatarRig(rig.skinned, rig.controller)) return;
+    if (const auto* transform = ecs_.tryGetComponent<Transform>(root)) rig.lastPosition = transform->position;
+    std::fprintf(stdout, "Application: gave a remote player an avatar (%zu remote avatars)\n", remoteAvatars_.size() + 1);
+    remoteAvatars_.push_back(std::move(rig));
+}
+
+void Application::tickRemoteAvatars(float dt) {
+    if (dt <= 0.0f) return;
+    for (RemoteAvatarRig& rig : remoteAvatars_) {
+        auto* transform = ecs_.tryGetComponent<Transform>(rig.root);
+        if (transform == nullptr || rig.controller == nullptr) continue;
+        const glm::vec3 delta = (transform->position - rig.lastPosition) / dt;
+        rig.lastPosition = transform->position;
+        rig.controller->tick(dt, ecs_, rig.root, rig.skinned, true, glm::vec3(delta.x, delta.y, delta.z));
+    }
+}
+
 void Application::setNetworkedLocalPlayerEntity(EntityId entity) {
     // Kronos (beta, "restore the 18-bone humanoid for online play"): real
     // teardown-then-spawn, mirroring spawnLocalPlayerAvatar()'s own
@@ -3023,7 +3099,10 @@ void Application::setNetworkedLocalPlayerEntity(EntityId entity) {
     networkedAvatarSkinnedEntities_.clear();
     networkedAvatarController_.reset();
     networkedLocalPlayerEntity_ = entity;
-    if (entity == kNullEntity) return; // real, honest no-op -- leaveSession()'s own teardown call
+    if (entity == kNullEntity) { // leaveSession()'s own teardown call
+        clearRemoteAvatars();
+        return;
+    }
 
     // The plain capsule spawnNetworkedPlayerEntity_() (main.cpp) already
     // built on `entity` was this session's only real visual before
@@ -3034,56 +3113,7 @@ void Application::setNetworkedLocalPlayerEntity(EntityId entity) {
     // already established for the offline avatar's own capsule/mesh.
     if (auto* renderable = ecs_.tryGetComponent<Renderable>(entity)) renderable->visible = false;
 
-    Skeleton skeleton = buildHumanoidSkeleton();
-    glm::vec4 skinTone(0.85f, 0.75f, 0.65f, 1.0f); // same default spawnLocalPlayerAvatar() itself uses
-    std::string spawnError;
-    if (!spawnRiggedAvatar(ecs_, skeleton, AvatarLoadout{}, CatalogueIndex{}, riggedMeshLibrary_, renderer_.allocator(),
-                            renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(),
-                            networkedAvatarSkinnedEntities_, spawnError, skinTone)) {
-        std::fprintf(stderr, "Application: setNetworkedLocalPlayerEntity() -- spawnRiggedAvatar() failed: %s\n",
-                     spawnError.c_str());
-        networkedAvatarSkinnedEntities_.clear();
-        return; // real, honest degrade -- the hidden plain capsule (still real, still positioned) stays the fallback
-    }
-
-    // Same "fold face/hair into the one real skinned-entity list" pattern
-    // spawnLocalPlayerAvatar() uses -- a faceless/hairless-but-otherwise-
-    // correct avatar is still real and playable if either fails.
-    std::vector<EntityId> faceEntities;
-    std::string faceError;
-    if (spawnAvatarFace(ecs_, skeleton, skinTone, riggedMeshLibrary_, renderer_.allocator(), renderer_.device(),
-                         renderer_.commandPool(), renderer_.graphicsQueue(), faceEntities, faceError)) {
-        networkedAvatarSkinnedEntities_.insert(networkedAvatarSkinnedEntities_.end(), faceEntities.begin(), faceEntities.end());
-    } else {
-        std::fprintf(stderr, "Application: setNetworkedLocalPlayerEntity() -- spawnAvatarFace() failed: %s\n",
-                     faceError.c_str());
-    }
-
-    std::vector<EntityId> hairEntities;
-    std::string hairError;
-    if (spawnAvatarDefaultHair(ecs_, skeleton, AvatarLoadout{}, kDefaultHairColor, riggedMeshLibrary_, renderer_.allocator(),
-                                renderer_.device(), renderer_.commandPool(), renderer_.graphicsQueue(), hairEntities,
-                                hairError)) {
-        networkedAvatarSkinnedEntities_.insert(networkedAvatarSkinnedEntities_.end(), hairEntities.begin(), hairEntities.end());
-    } else {
-        std::fprintf(stderr, "Application: setNetworkedLocalPlayerEntity() -- spawnAvatarDefaultHair() failed: %s\n",
-                     hairError.c_str());
-    }
-
-    networkedAvatarController_ = std::make_unique<AvatarController>(skeleton);
-    std::string animDir = resolveResourceDir(executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/animations";
-    auto loadShippedClip = [&](const char* fileBaseName, void (AvatarController::*setter)(AnimationClip)) {
-        AnimationClip clip;
-        if (clip.loadFromFile(animDir + "/" + fileBaseName + ".anim")) {
-            (networkedAvatarController_.get()->*setter)(std::move(clip));
-        }
-    };
-    loadShippedClip("idle", &AvatarController::setIdleClip);
-    loadShippedClip("walk", &AvatarController::setWalkClip);
-    loadShippedClip("run", &AvatarController::setRunClip);
-    loadShippedClip("jump_start", &AvatarController::setJumpClip);
-    loadShippedClip("jump_air", &AvatarController::setJumpAirClip);
-    loadShippedClip("jump_land", &AvatarController::setJumpLandClip);
+    if (!buildAvatarRig(networkedAvatarSkinnedEntities_, networkedAvatarController_)) return;
 
     if (auto* transform = ecs_.tryGetComponent<Transform>(entity)) networkedAvatarLastPosition_ = transform->position;
 }
@@ -3194,6 +3224,7 @@ bool Application::startNetworking(const net::NetworkSession::Config& config) {
                       [this](uint32_t target, std::vector<uint8_t> bytes, bool reliable) {
                           networkSession_.sendInstanceRemote(target, bytes, reliable);
                       });
+    networkSession_.setOnRemoteEntityCreated([this](ECS&, EntityId entity, uint32_t) { spawnRemoteAvatar(entity); });
     networkSession_.setOnInstanceRemote([this](net::PlayerId sender, const uint8_t* data, size_t size) {
         remotenet::receive(ecs_, sender, data, size);
     });
@@ -3245,7 +3276,7 @@ void Application::tickGameScripts(float dt) {
     partbodies::setPhysics(ecs_, &physics_);
     instances::setScriptCamera(ecs_, headless_ ? nullptr : &camera_,
                                glm::vec2(static_cast<float>(window_.width()), static_cast<float>(window_.height())));
-    core::tickScriptHotReload(ecs_, scripting_);
+    core::tickScriptHotReload(ecs_, scripting_, &python_);
     python_.tick(dt);
     players::tick(ecs_, dt);
     remotenet::tick(ecs_, dt);

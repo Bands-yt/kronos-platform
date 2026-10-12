@@ -65,8 +65,12 @@ public:
 
 private:
     // Roblox-style Properties: every property of the selected object's class.
-    void drawRobloxProperties(core::ECS& ecs, core::EntityId selected, UndoStack& undoStack);
+    // `targets` is every selected entity (the primary included); a property is shown when all of them
+    // have it, and an edit applies to all of them.
+    void drawRobloxProperties(core::ECS& ecs, core::EntityId selected, const std::vector<core::EntityId>& targets,
+                              UndoStack& undoStack);
     core::InstanceValue propertyBeforeEdit_;
+    std::vector<std::pair<core::InstanceRef, core::InstanceValue>> propertyBeforeEach_;
     char propertyFilter_[64] = "";
     char refPickFilter_[64] = "";
     void drawPhysicsSection(core::ECS& ecs, core::EntityId selected);

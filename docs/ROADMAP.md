@@ -12,6 +12,7 @@ feeling. Estimates are rough, and the big ones are weeks, not hours.
 | 4.3 | Roblox bridge: import a Roblox place and play it in Kronos | Released in 4.4.0-pre-beta: steps 1–10 and replication (score 100% on the test places); step 11 (flagship demo) waits for a Roblox-made place |
 | 4.4 | Polish from launch feedback, plus the small 4.2 leftovers | Mostly done and released in 4.4.0-pre-beta; the Windows plugin sandbox is left |
 | 4.5 | Foundations: Rust plugins, Python scripts, permanent object IDs, engine clean-up | In progress; steps 1, 2, 4, 8 and a first Python slice released in 4.4.0-pre-beta |
+| 4.6 | Prove it works: Compatibility Lab, complete GUI and images, honest docs (the advisor's Milestone A) | In progress |
 | 5.0 | Next-gen: graphics, web player, collaboration, media tools, 3D Model Maker | Parked until the bridge works |
 
 ## Already in the engine
@@ -187,6 +188,34 @@ this makes the engine easier to grow; some opens it to more languages.
 Later in this track, once the above is done: a real render graph (passes
 declare what they read and write), a command buffer between scripts and the
 simulation, and Studio service interfaces for plugins.
+
+---
+
+## 4.6 — Prove it works
+
+From the advisor's 80-idea review (12 October 2026), Milestone A: an imported
+game passes documented gameplay checks, failures say what to fix, and repeat
+runs catch regressions. Milestones B (Studio as a full creator tool), C
+(platform: accounts, hosting, persistence) and D (browser play, AI help,
+cloud Studio) come after.
+
+| # | Step | Done when | Size |
+|---|---|---|---|
+| 1 | **Mesh shapes** ✔ | `SpecialMesh`, `BlockMesh`, `CylinderMesh` and `WedgePart` are drawn with their real shapes, and `Shape = Cylinder` lies along X | 1–2 days |
+| 2 | **Compatibility Lab** ✔ | `kronos_compat --lab` plays each place with physics and two players for a set time, isolates crashes, reports errors with time and line, and compares against a saved baseline | 1 week |
+| 3 | **Bigger test corpus** ✔ | More test places of the common kinds (simulator, combat, inventory, GUI-heavy), each with behaviour checks | 3–5 days |
+| 4 | **GUI and images** ✔ | Images drawn in GUI; `TextBox`, `ScrollingFrame`, `UIGridLayout`, `UIStroke`, `UIGradient`, `UIScale` and friends work | 1–2 weeks |
+| 5 | **Honest README** ✔ | The README's Roblox claims match ROBLOX_BRIDGE, with the main limits in one place | 1 hour |
+| 6 | **Studio test with a server** ✔ | Studio starts a local server and 1–4 Player windows on the open scene, shows their logs and stops them (Roblox's Start Server + Players) | 2–3 days |
+| 7 | **Server program without graphics** | 4.5 step 6 (`kronos_server`), after 4.5 step 7 moves the old games out of `engine_core` | 2–4 weeks |
+
+### Done
+- **Step 1, mesh shapes** (12 Oct 2026): Roblox mesh objects change the shape of their part, `WedgePart`s are wedges (also inside unions), and cylinder parts lie along X like in Roblox (they stood upright before). The owner's obby went from 93% to 94% (215 of 259 objects understood). See ROBLOX_BRIDGE "Mesh shapes".
+- **Step 2, Compatibility Lab** (12 Oct 2026): `kronos_compat --lab` plays each place headlessly with physics and test players, each in its own process, and reports script errors (time, script, line), deaths, parts falling out of the world, touches, instance counts, behaviour checks and missing GUI images. `--baseline` lists what got better or worse. See [COMPAT_LAB.md](COMPAT_LAB.md).
+- **Step 3, bigger corpus** (12 Oct 2026): five new test places with checks files (simulator, combat arena, inventory, round system, GUI menu), 10 in total. The Lab found two gaps, now filled: Roblox **Tools** (equip, `Activate`, `Equipped`/`Unequipped`, pickup by touch, hotbar on keys 1–9, `RightGrip` weld) and `ClickDetector`. See ROBLOX_BRIDGE "Tools".
+- **Step 4, GUI and images** (12 Oct 2026): `TextBox` (typing, focus, `FocusLost`), `ScrollingFrame` (wheel, clipping, automatic canvas), `UIGridLayout`, `UIStroke`, `UIGradient` (new `ColorSequence`/`NumberSequence` value types), `UIScale`, aspect/size/text-size constraints, and images from the game's folder (`rbxassetid://` ids via `assets/` or `asset_map.json`). Layout no longer needs graphics, so the Lab checks GUI too. See ROBLOX_BRIDGE "GUI".
+- **Step 5, honest README** (12 Oct 2026): the README now says what works, how it's tested (the 10 test places and the Lab) and lists the big gaps in one place.
+- **Step 6, Studio test with a server** (12 Oct 2026): Test tab → **Server** → 1–4 players saves the scene as a temporary game, starts `engine_runtime --server --headless` and one `--client` window per player (`--name Player1`, ...), and the Multiplayer Test window shows each one's state and log. Client windows launched with `--game` now get the Player's in-game menu, chat and Roblox GUI. A test starts a real server and two windowless players and checks they join and talk to the server. See [MULTIPLAYER_TEST.md](MULTIPLAYER_TEST.md).
 
 ---
 

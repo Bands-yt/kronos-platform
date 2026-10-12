@@ -1,0 +1,36 @@
+-- Behaviour checks for combat_arena.rbxlx.
+local humanoid = character:FindFirstChildOfClass("Humanoid")
+local other = players[2]
+local otherCharacter = other.Character
+local otherHumanoid = otherCharacter:FindFirstChildOfClass("Humanoid")
+local otherHit = otherCharacter:FindFirstChild("HumanoidRootPart") or otherCharacter:FindFirstChildWhichIsA("BasePart")
+local sword = player.Backpack:WaitForChild("Sword", 2)
+check("the Sword from StarterPack is in the Backpack", sword ~= nil)
+humanoid:EquipTool(sword)
+task.wait(0.1)
+check("equipping moves the Sword into the character", sword.Parent == character)
+touch(sword.Handle, otherHit)
+task.wait(0.1)
+check("no damage without a swing", otherHumanoid.Health == 100, "Health " .. otherHumanoid.Health)
+sword:Activate()
+task.wait(0.05)
+touch(sword.Handle, otherHit)
+touch(sword.Handle, otherHit)
+task.wait(0.1)
+check("a swing hits another player once", otherHumanoid.Health == 75, "Health " .. otherHumanoid.Health)
+for _ = 1, 3 do
+	task.wait(0.6)
+	sword:Activate()
+	task.wait(0.05)
+	touch(sword.Handle, otherHit)
+end
+task.wait(0.2)
+check("four hits defeat a player and count a kill", otherHumanoid.Health == 0 and player.leaderstats.Kills.Value == 1, "Kills " .. player.leaderstats.Kills.Value)
+humanoid.Health = 40
+touch(workspace.HealPad, hit)
+task.wait(0.1)
+check("the heal pad heals", humanoid.Health == 90, "Health " .. humanoid.Health)
+humanoid:MoveTo(workspace.Lava.Position)
+humanoid.MoveToFinished:Wait()
+task.wait(0.3)
+check("walking onto lava kills", humanoid.Health == 0, "Health " .. humanoid.Health)

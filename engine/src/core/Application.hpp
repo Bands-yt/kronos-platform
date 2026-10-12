@@ -1196,6 +1196,19 @@ private:
     // spawn/teardown pair is what keeps that true.
     std::unique_ptr<AvatarController> networkedAvatarController_;
     std::vector<EntityId> networkedAvatarSkinnedEntities_;
+    // Other players on a client: an animated avatar on each remote placeholder entity.
+    struct RemoteAvatarRig {
+        EntityId root = kNullEntity;
+        std::vector<EntityId> skinned;
+        std::unique_ptr<AvatarController> controller;
+        glm::vec3 lastPosition{0.0f};
+    };
+    std::vector<RemoteAvatarRig> remoteAvatars_;
+    void clearRemoteAvatars();
+    void spawnRemoteAvatar(EntityId root);
+    void tickRemoteAvatars(float dt);
+    // Skinned body, face, hair and the shipped animation clips.
+    bool buildAvatarRig(std::vector<EntityId>& skinned, std::unique_ptr<AvatarController>& controller);
     // Real per-tick finite-difference velocity for the networked avatar's
     // walk/run/idle blend -- this entity has no RigidBody for
     // AvatarController::tick()'s usual physics.getLinearVelocity() to

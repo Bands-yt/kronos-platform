@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "core/PartCollider.hpp"
+#include "core/GuiImageCache.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueDatabase.hpp"
@@ -31,6 +32,7 @@
 #include "studio/CommandPalette.hpp"
 #include "studio/KronosPluginHost.hpp"
 #include "studio/Notification.hpp"
+#include "studio/MultiplayerTest.hpp"
 #include "studio/PlaySoloPlayer.hpp"
 #include "studio/SurfaceGraphMaterials.hpp"
 #include "studio/OffscreenTarget.hpp"
@@ -45,6 +47,7 @@
 #include "studio/panels/ExplorerPanel.hpp"
 #include "studio/panels/InspectorPanel.hpp"
 #include "studio/panels/SceneSearchPanel.hpp"
+#include "studio/panels/RustPluginPanel.hpp"
 #include "studio/panels/ValidateProjectPanel.hpp"
 #include "core/ScriptDebugger.hpp"
 #include "studio/panels/ScriptEditorPanel.hpp"
@@ -344,12 +347,16 @@ private:
     void pasteClipboard();
     void duplicateSelection();
     void deleteSelection();
+    void cutSelection();
+    void selectAll();
     void groupSelection();
     void ungroupSelection();
     void toggleAnchorSelection();
     [[nodiscard]] bool selectionAnchored();
     void insertPrimitive(panels::ViewportPanel::Primitive kind);
     void togglePlay();
+    void startServerTest(int players);
+    void drawServerTestWindow();
     void pushCreationUndo(const char* label, std::vector<core::EntityId> created);
     void giveClonesOwnMeshes(core::EntityId root);
     [[nodiscard]] bool editingLocked() const;
@@ -453,6 +460,7 @@ private:
     // deliberate, documented exception rather than a silent scope creep.
     core::ParticleSystem particleSystem_;
     OffscreenTarget viewportTarget_;
+    std::unique_ptr<core::GuiImageCache> guiImages_; // pictures for Roblox GUI during Play
 
     panels::ExplorerPanel explorerPanel_;
     panels::InspectorPanel inspectorPanel_;
@@ -468,6 +476,7 @@ private:
     panels::PerformanceOverlayPanel performanceOverlay_;
     panels::SceneSearchPanel sceneSearchPanel_;
     panels::ValidateProjectPanel validateProjectPanel_;
+    panels::RustPluginPanel rustPluginPanel_;
     panels::DebugConsolePanel debugConsolePanel_;
 
     // First-party plugins (Animator, Align & Distribute, Material Editor,
@@ -561,6 +570,14 @@ private:
     // rigged/skinned Avatar Phase system.
     core::AvatarLoadout localAvatarLoadout_;
     PlaySoloPlayer playSoloPlayer_;
+    MultiplayerTest serverTest_;
+    bool showServerTestWindow_ = false;
+    // View menu: panels the creator has hidden (the Viewport always stays).
+    bool hideExplorer_ = false;
+    bool hideInspector_ = false;
+    bool hideScriptEditor_ = false;
+    bool hideStats_ = false;
+    bool hideSceneSearch_ = false;
     [[nodiscard]] core::PlayerAvatarLook localPlayerLook() const;
     // Kronos ("Moderation Architecture v1", Phase 1): Studio's own real
     // TrustSafetyService instance, distinct from any net::NetworkSession's

@@ -296,6 +296,26 @@ void StudioRibbon::drawPlayGroup(const RibbonContext& context) {
         context.actions.togglePlay();
     }
     endGroup("Test");
+
+    beginGroup();
+    const bool running = context.state.serverTestRunning;
+    if (bigButton("servertest", running ? Icon::Stop : Icon::Play, running ? "Stop Server" : "Server", running, running || !playing,
+                  running ? "Close the test server and players" : "Start a test server and Player windows on this PC",
+                  running ? kRed : kBlue, !running)) {
+        if (running) {
+            context.actions.stopServerTest();
+        } else {
+            ImGui::OpenPopup("##ribbon_server_menu");
+        }
+    }
+    if (beginDropdown("##ribbon_server_menu")) {
+        for (int players = 1; players <= 4; ++players) {
+            const std::string label = "Server + " + std::to_string(players) + (players == 1 ? " player" : " players");
+            if (ImGui::Selectable(label.c_str())) context.actions.startServerTest(players);
+        }
+        endDropdown();
+    }
+    endGroup("Multiplayer");
 }
 
 void StudioRibbon::drawPartButton(const RibbonContext& context, const char* id) {

@@ -1,0 +1,20 @@
+-- Behaviour checks for simulator.rbxlx.
+local stats = player:WaitForChild("leaderstats")
+check("the player gets Coins, Cash and Strength", stats:FindFirstChild("Coins") ~= nil and stats:FindFirstChild("Cash") ~= nil and stats:FindFirstChild("Strength") ~= nil)
+local humanoid = character:FindFirstChildOfClass("Humanoid")
+local coin = workspace.Coins:GetChildren()[1]
+humanoid:MoveTo(coin.Position)
+humanoid.MoveToFinished:Wait()
+task.wait(0.2)
+check("walking into a coin collects it", stats.Coins.Value >= 1, "Coins " .. stats.Coins.Value)
+check("a collected coin hides", coin.Transparency == 1)
+task.wait(2.5)
+check("the coin comes back after 2 seconds", coin.Transparency == 0)
+local coins = stats.Coins.Value
+humanoid:MoveTo(workspace.SellPad.Position)
+humanoid.MoveToFinished:Wait()
+task.wait(0.2)
+check("the sell pad turns coins into cash", coins > 0 and stats.Coins.Value == 0 and stats.Cash.Value == coins * 10, "Cash " .. stats.Cash.Value)
+click(workspace.Dumbbell, player)
+task.wait(0.1)
+check("clicking the dumbbell trains strength", stats.Strength.Value == 1, "Strength " .. stats.Strength.Value)

@@ -18,7 +18,7 @@ struct Piece {
     glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec3 size{1.0f};
     glm::vec3 color{0.64f};
-    int shape = 1; // Roblox PartType: 0 Ball, 1 Block, 2 Cylinder
+    int shape = 1; // Roblox PartType: 0 Ball, 1 Block, 2 Cylinder, 3 Wedge
 };
 
 // On each helper entity. Helpers are never saved; sync() rebuilds them.

@@ -1,0 +1,30 @@
+<roblox version="4"><Item class="Workspace" referent="RBX5"><Properties><string name="Name">Workspace</string></Properties><Item class="Part" referent="RBX1"><Properties><string name="Name">Lobby</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>30</X><Y>1</Y><Z>30</Z></Vector3><Color3uint8 name="Color3uint8">4284193356</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="SpawnLocation" referent="RBX2"><Properties><string name="Name">SpawnLocation</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>1</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4279069100</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="Part" referent="RBX3"><Properties><string name="Name">Arena</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>100</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>40</X><Y>1</Y><Z>40</Z></Vector3><Color3uint8 name="Color3uint8">4288914085</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="Part" referent="RBX4"><Properties><string name="Name">ArenaSpawn</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.6</Y><Z>100</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>4</X><Y>0.2</Y><Z>4</Z></Vector3><Color3uint8 name="Color3uint8">4294901760</Color3uint8><bool name="Anchored">true</bool></Properties></Item></Item><Item class="ReplicatedStorage" referent="RBX8"><Properties><string name="Name">ReplicatedStorage</string></Properties><Item class="StringValue" referent="RBX6"><Properties><string name="Name">Status</string></Properties></Item><Item class="IntValue" referent="RBX7"><Properties><string name="Name">Round</string></Properties></Item></Item><Item class="ServerScriptService" referent="RBX10"><Properties><string name="Name">ServerScriptService</string></Properties><Item class="Script" referent="RBX9"><Properties><string name="Name">RoundManager</string><ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local status = ReplicatedStorage.Status
+local round = ReplicatedStorage.Round
+local INTERMISSION = 3
+local ROUND_LENGTH = 5
+
+local function teleportAll(target)
+	for i, player in Players:GetPlayers() do
+		local character = player.Character
+		if character and character.PrimaryPart then
+			character:PivotTo(CFrame.new(target.Position + Vector3.new(i * 3, 3, 0)))
+		end
+	end
+end
+
+while true do
+	for t = INTERMISSION, 1, -1 do
+		status.Value = "Intermission: " .. t
+		task.wait(1)
+	end
+	round.Value += 1
+	status.Value = "Round " .. round.Value
+	teleportAll(workspace.ArenaSpawn)
+	task.wait(ROUND_LENGTH)
+	status.Value = "Round over"
+	teleportAll(workspace.SpawnLocation)
+	task.wait(1)
+end
+]]></ProtectedString></Properties></Item></Item></roblox>

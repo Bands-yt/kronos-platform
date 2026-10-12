@@ -26,6 +26,8 @@
 #include "core/Physics.hpp"
 #include "core/RobloxDataStore.hpp"
 #include "core/RobloxPlayers.hpp"
+#include "core/RobloxTools.hpp"
+#include "core/RobloxGui.hpp"
 #include "core/RobloxRemoteNet.hpp"
 #include "core/Scripting.hpp"
 
@@ -198,6 +200,29 @@ void pushValue(lua_State* L, const InstanceValue& v) {
             lua_pushnumber(L, v.number);
             callConstructor(L, "UDim2", "new", 4);
             return;
+        case InstanceValue::Type::ColorSequence:
+        case InstanceValue::Type::NumberSequence: {
+            const bool color = v.type == InstanceValue::Type::ColorSequence;
+            const size_t stride = color ? 4 : 3;
+            lua_createtable(L, static_cast<int>(v.keys.size() / stride), 0);
+            for (size_t i = 0; i + stride <= v.keys.size(); i += stride) {
+                pushFloat(L, v.keys[i]);
+                if (color) {
+                    pushFloat(L, v.keys[i + 1]);
+                    pushFloat(L, v.keys[i + 2]);
+                    pushFloat(L, v.keys[i + 3]);
+                    callConstructor(L, "Color3", "new", 3);
+                    callConstructor(L, "ColorSequenceKeypoint", "new", 2);
+                } else {
+                    pushFloat(L, v.keys[i + 1]);
+                    pushFloat(L, v.keys[i + 2]);
+                    callConstructor(L, "NumberSequenceKeypoint", "new", 3);
+                }
+                lua_rawseti(L, -2, static_cast<int>(i / stride) + 1);
+            }
+            callConstructor(L, color ? "ColorSequence" : "NumberSequence", "new", 1);
+            return;
+        }
     }
     lua_pushnil(L);
 }
@@ -252,6 +277,27 @@ bool toAnyValue(lua_State* L, int index, InstanceValue& out) {
         out = InstanceValue::ofUDim2(static_cast<float>(rawNumber(L, -2, "Scale")), static_cast<float>(rawNumber(L, -2, "Offset")),
                                      static_cast<float>(rawNumber(L, -1, "Scale")), static_cast<float>(rawNumber(L, -1, "Offset")));
         lua_pop(L, 2);
+    } else if (type == "ColorSequence" || type == "NumberSequence") {
+        const bool color = type == "ColorSequence";
+        std::vector<float> keys;
+        lua_rawgetfield(L, index, "Keypoints");
+        const int count = lua_istable(L, -1) ? lua_objlen(L, -1) : 0;
+        for (int i = 1; i <= count; ++i) {
+            lua_rawgeti(L, -1, i);
+            keys.push_back(static_cast<float>(rawNumber(L, -1, "Time")));
+            if (color) {
+                lua_rawgetfield(L, -1, "Value");
+                const glm::vec3 rgb = rawVec(L, -1, "R", "G", "B");
+                lua_pop(L, 1);
+                keys.insert(keys.end(), {rgb.x, rgb.y, rgb.z});
+            } else {
+                keys.push_back(static_cast<float>(rawNumber(L, -1, "Value")));
+                keys.push_back(static_cast<float>(rawNumber(L, -1, "Envelope")));
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+        out = color ? InstanceValue::ofColorSequence(std::move(keys)) : InstanceValue::ofNumberSequence(std::move(keys));
     } else if (type == "EnumItem") {
         lua_rawgetfield(L, index, "EnumType");
         const std::string enumType = luaL_tolstring(L, -1, nullptr);
@@ -323,6 +369,8 @@ bool toPropertyValue(lua_State* L, int index, const PropertyDef& property, Insta
         case PropertyType::Vector2: return datatypeOf(L, index) == "Vector2" && toAnyValue(L, index, out);
         case PropertyType::UDim: return datatypeOf(L, index) == "UDim" && toAnyValue(L, index, out);
         case PropertyType::UDim2: return datatypeOf(L, index) == "UDim2" && toAnyValue(L, index, out);
+        case PropertyType::ColorSequence: return datatypeOf(L, index) == "ColorSequence" && toAnyValue(L, index, out);
+        case PropertyType::NumberSequence: return datatypeOf(L, index) == "NumberSequence" && toAnyValue(L, index, out);
     }
     return false;
 }
@@ -341,6 +389,8 @@ const char* propertyTypeName(const PropertyDef& property) {
         case PropertyType::Vector2: return "Vector2";
         case PropertyType::UDim: return "UDim";
         case PropertyType::UDim2: return "UDim2";
+        case PropertyType::ColorSequence: return "ColorSequence";
+        case PropertyType::NumberSequence: return "NumberSequence";
     }
     return "value";
 }
@@ -348,7 +398,7 @@ const char* propertyTypeName(const PropertyDef& property) {
 // Members that exist in Roblox and arrive in a later bridge step.
 bool isPlannedMember(const char* key) {
     static const char* const kPlanned[] = {
-        "Kick", "GetMouse", "Team", "TeamColor", "LoadAnimation", "EquipTool", "UnequipTools", "Animator",
+        "Kick", "GetMouse", "Team", "TeamColor", "LoadAnimation", "Animator",
         "Play", "Stop", "Pause", "Resume", "MoveTo", "GetMass", "ApplyImpulse",
         "AssemblyLinearVelocity", "Velocity", "BindToRenderStep", "UnbindFromRenderStep"};
     for (const char* planned : kPlanned) {
@@ -1695,6 +1745,52 @@ int mTakeDamage(lua_State* L) {
     return 0;
 }
 
+int mEquipTool(lua_State* L) {
+    const EntityId humanoid = checkHumanoid(L, "EquipTool");
+    Proxy* tool = toProxy(L, 2);
+    if (tool == nullptr || !instances::classIsA(instances::className(ecsOf(L), tool->ref), "Tool")) {
+        luaL_error(L, "EquipTool expects a Tool");
+    }
+    tools::equip(ecsOf(L), humanoid, tool->ref);
+    return 0;
+}
+
+int mUnequipTools(lua_State* L) {
+    tools::unequipAll(ecsOf(L), checkHumanoid(L, "UnequipTools"));
+    return 0;
+}
+
+int toolMethod(lua_State* L, const char* method, void (*fn)(ECS&, InstanceRef)) {
+    Proxy* tool = toProxy(L, 1);
+    if (tool == nullptr || !instances::classIsA(instances::className(ecsOf(L), tool->ref), "Tool")) {
+        luaL_error(L, "%s is a Tool method", method);
+    }
+    fn(ecsOf(L), tool->ref);
+    return 0;
+}
+int mActivate(lua_State* L) { return toolMethod(L, "Activate", &tools::activate); }
+int mDeactivate(lua_State* L) { return toolMethod(L, "Deactivate", &tools::deactivate); }
+
+InstanceRef checkTextBox(lua_State* L, const char* method) {
+    Proxy* box = toProxy(L, 1);
+    if (box == nullptr || instances::className(ecsOf(L), box->ref) != "TextBox") luaL_error(L, "%s is a TextBox method", method);
+    return box->ref;
+}
+int mCaptureFocus(lua_State* L) {
+    gui::captureFocus(ecsOf(L), checkTextBox(L, "CaptureFocus"));
+    return 0;
+}
+int mReleaseFocus(lua_State* L) {
+    const InstanceRef box = checkTextBox(L, "ReleaseFocus");
+    gui::releaseFocus(ecsOf(L), box, lua_toboolean(L, 2) != 0);
+    return 0;
+}
+int mIsFocused(lua_State* L) {
+    const InstanceRef box = checkTextBox(L, "IsFocused");
+    lua_pushboolean(L, gui::focusedTextBox(ecsOf(L)) == box);
+    return 1;
+}
+
 int mMoveTo(lua_State* L) {
     const EntityId humanoid = checkHumanoid(L, "MoveTo");
     const glm::vec3 target = checkVector3(L, 2, "MoveTo");
@@ -1996,6 +2092,13 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"LoadCharacter", &mLoadCharacter},
         {"TakeDamage", &mTakeDamage},
         {"MoveTo", &mMoveTo},
+        {"EquipTool", &mEquipTool},
+        {"UnequipTools", &mUnequipTools},
+        {"Activate", &mActivate},
+        {"Deactivate", &mDeactivate},
+        {"CaptureFocus", &mCaptureFocus},
+        {"ReleaseFocus", &mReleaseFocus},
+        {"IsFocused", &mIsFocused},
         {"Move", &mMove},
         {"GetState", &mGetState},
         {"ChangeState", &mChangeState},

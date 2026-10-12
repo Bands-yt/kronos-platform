@@ -395,11 +395,16 @@ add_library(engine_core STATIC
     migration/InstanceHydrator.cpp
     migration/CompatibilityScore.cpp
     migration/BridgeDoctor.cpp
+    migration/CompatLab.cpp
     migration/ProjectValidator.cpp
     core/RobloxDatatypes.cpp
     core/InstanceTree.cpp
     core/InstanceSignals.cpp
     core/RobloxPlayers.cpp
+    core/RobloxTools.cpp
+    core/RobloxGuiLayout.cpp
+    core/RobloxGuiImages.cpp
+    core/ChildProcess.cpp
     core/RobloxScripts.cpp
     core/RobloxRemoteNet.cpp
     core/RobloxReplication.cpp
@@ -594,6 +599,7 @@ target_compile_definitions(engine_core PUBLIC
     # alpha zip (scripts/package_alpha.sh copies templates/ and examples/
     # in as siblings of engine_tests itself).
     ENGINE_TEMPLATES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../templates"
+    ENGINE_RUST_SDK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/rust/kronos"
     ENGINE_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../examples"
     # Kronos ("Game Catalogue Overhaul", Phase 2): same real "packaged
     # sibling dir, else fall back to this compile-time source path"
@@ -754,6 +760,7 @@ if(ENGINE_BUILD_RUNTIME)
         core/UIWidgets.cpp
         core/RobloxLeaderboard.cpp
         core/RobloxGui.cpp
+        core/GuiImageCache.cpp
         # Kronos ("Home Screen Avatar Preview"): same real "one source
         # file, two targets" precedent as core/UITheme.cpp just above --
         # studio::PreviewScene/OffscreenTarget have zero real Studio-only
@@ -812,6 +819,8 @@ if(ENGINE_BUILD_STUDIO)
     set(KRONOS_STUDIO_SHARED_SOURCES
         studio/StudioApp.cpp
         studio/PlaySoloPlayer.cpp
+        studio/MultiplayerTest.cpp
+        studio/RustPluginProject.cpp
         studio/OffscreenTarget.cpp
         studio/PluginManager.cpp
         studio/NativePluginAdapter.cpp
@@ -835,6 +844,7 @@ if(ENGINE_BUILD_STUDIO)
         core/UIWidgets.cpp
         core/RobloxLeaderboard.cpp
         core/RobloxGui.cpp
+        core/GuiImageCache.cpp
         studio/Notification.cpp
         studio/EntityClassification.cpp
         studio/CreatorToolsSpawning.cpp
@@ -862,6 +872,7 @@ if(ENGINE_BUILD_STUDIO)
         studio/panels/PerformanceOverlayPanel.cpp
         studio/panels/SceneSearchPanel.cpp
         studio/panels/ValidateProjectPanel.cpp
+        studio/panels/RustPluginPanel.cpp
         studio/panels/DebugConsolePanel.cpp
         studio/plugins/AnimatorPlugin.cpp
         studio/plugins/AlignPlugin.cpp
@@ -1113,6 +1124,8 @@ if(ENGINE_BUILD_RUNTIME OR ENGINE_BUILD_STUDIO)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../assets/ DESTINATION assets)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../games/ DESTINATION games)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../templates/ DESTINATION templates)
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/rust/kronos/ DESTINATION sdk/rust/kronos
+            PATTERN "target" EXCLUDE)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../docs/ DESTINATION docs)
     install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../../README.md DESTINATION .)
 

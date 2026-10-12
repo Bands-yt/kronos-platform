@@ -18,7 +18,9 @@ namespace engine::migration {
 struct HydrationMeshes {
     uint32_t box = core::Renderable::kInvalidHandle;
     uint32_t capsule = core::Renderable::kInvalidHandle;
-    uint32_t cylinder = core::Renderable::kInvalidHandle;
+    uint32_t cylinder = core::Renderable::kInvalidHandle; // along X, like Roblox's Shape = Cylinder
+    uint32_t wedge = core::Renderable::kInvalidHandle;
+    uint32_t cylinderY = core::Renderable::kInvalidHandle;
 };
 
 struct HydrationOptions {

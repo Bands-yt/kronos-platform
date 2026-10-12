@@ -680,6 +680,11 @@ public:
     void setOnInstanceRemote(std::function<void(PlayerId sender, const uint8_t* data, size_t size)> callback) {
         onInstanceRemote_ = std::move(callback);
     }
+    // Client: a snapshot mentioned an entity (another player) this client had no copy of; `entity` is
+    // the bare Transform + Name placeholder just made for it.
+    void setOnRemoteEntityCreated(std::function<void(core::ECS&, core::EntityId, uint32_t networkId)> callback) {
+        onRemoteEntityCreated_ = std::move(callback);
+    }
     [[nodiscard]] uint64_t playerProfileId(PlayerId player) const {
         const auto it = serverPlayerProfileIds_.find(player);
         return it == serverPlayerProfileIds_.end() ? 0 : it->second;
@@ -892,6 +897,7 @@ private:
     std::unordered_map<std::string, RemoteEvent> remoteEvents_;
     std::function<void(const std::string&, const RemoteEvent::Payload&)> onClientEventReceived_;
     std::function<void(PlayerId, const uint8_t*, size_t)> onInstanceRemote_;
+    std::function<void(core::ECS&, core::EntityId, uint32_t)> onRemoteEntityCreated_;
 
     // Client-side: this client's own player id (assigned by the server
     // on connect via a real handshake payload), the last decoded

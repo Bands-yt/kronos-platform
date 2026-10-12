@@ -205,6 +205,7 @@ int main(int argc, char** argv) {
     // scene exactly as before, unregistered (matches every real
     // invocation prior to this feature).
     std::string requestedGameSlug;
+    std::string playerNameArg; // --name: the client's player name (Studio test players)
     std::string serverKeyArg;
     // --rollback-host <players> / --rollback-join <address>: a
     // peer-to-peer rollback match (Application::startRollbackMatch).
@@ -264,6 +265,8 @@ int main(int argc, char** argv) {
             if (i + 1 < argc) networkConfig.port = static_cast<uint16_t>(std::atoi(argv[++i]));
         } else if (arg == "--game" && i + 1 < argc) {
             requestedGameSlug = argv[++i];
+        } else if (arg == "--name" && i + 1 < argc) {
+            playerNameArg = std::string(argv[++i]).substr(0, 32);
         } else if ((arg == "--rollback-host" || arg == "--rollback-join") && i + 1 < argc) {
             if (!rollbackConfig) rollbackConfig.emplace();
             rollbackConfig->host = arg == "--rollback-host";
@@ -435,6 +438,14 @@ int main(int argc, char** argv) {
     // slug arriving alongside any other mode is real, honest, and
     // simply unused (those modes already load their own hardcoded
     // content and return before reaching any of this).
+    // Servers and clients often log to a file (Studio's test server, hosting); write each line at once.
+    if (networkConfig.mode != engine::net::NetworkMode::Offline) {
+#if defined(_WIN32)
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
+#else
+        std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+#endif
+    }
     std::optional<engine::core::DiscoveredGame> requestedGame;
     if (!requestedGameSlug.empty()) {
         // Kronos (JIT provisioning): the backend spawns this binary inside a
@@ -481,6 +492,9 @@ int main(int argc, char** argv) {
     // cursor-lock call.
     bool homeScreenMode = networkConfig.mode == engine::net::NetworkMode::Offline && !trailerMode && !miningSimMode && !brokenBonesMode &&
                            !renderShowcaseMode && !tntWarsMode && !houseDemoMode && !despairMode && !rollbackConfig;
+    // A windowed `--client --game`: the Player's in-game UI (Roblox GUI, chat, menu) without Home.
+    const bool directClientMode =
+        networkConfig.mode == engine::net::NetworkMode::Client && !headless && requestedGame.has_value();
 
     // One Player home screen at a time; games it starts (Broken Bones, ...), servers and kronos:// links
     // don't count. KRONOS_ALLOW_MULTIPLE=1 turns this off for testing two players on one PC.
@@ -1893,6 +1907,7 @@ int main(int argc, char** argv) {
     else networkConfig.gameName = "Default World";
 
     if (networkConfig.mode != engine::net::NetworkMode::Offline) {
+        if (!playerNameArg.empty()) app.networkSession().setLocalDisplayName(playerNameArg);
         if (!app.startNetworking(networkConfig)) {
             std::fprintf(stderr, "engine_runtime: startNetworking failed.\n");
             return 1;
@@ -2028,12 +2043,24 @@ int main(int argc, char** argv) {
     uint32_t boxMesh = app.meshLibrary().registerMesh(engine::core::Mesh::createBox(
         renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), {0.5f, 0.5f, 0.5f}));
     // Instance.new("Part") draws with these.
-    app.ecs().raw().ctx().insert_or_assign(engine::core::InstanceMeshes{
-        boxMesh,
-        app.meshLibrary().registerMesh(engine::core::Mesh::createCapsule(
-            renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.5f, 0.0f)),
-        app.meshLibrary().registerMesh(engine::core::Mesh::createCylinder(
-            renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.5f, 0.5f))});
+    {
+        const auto registerGeometry = [&](auto generate) {
+            std::vector<engine::core::Vertex> vertices;
+            std::vector<uint32_t> indices;
+            generate(vertices, indices);
+            return app.meshLibrary().registerMesh(engine::core::Mesh::createFromGeometry(
+                renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), vertices,
+                indices));
+        };
+        app.ecs().raw().ctx().insert_or_assign(engine::core::InstanceMeshes{
+            boxMesh,
+            app.meshLibrary().registerMesh(engine::core::Mesh::createCapsule(
+                renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.5f, 0.0f)),
+            registerGeometry([](auto& v, auto& i) { engine::core::generateCylinderAlongXGeometry(0.5f, 0.5f, 16, v, i); }),
+            registerGeometry([](auto& v, auto& i) { engine::core::generateRobloxWedgeGeometry(glm::vec3(0.5f), v, i); }),
+            app.meshLibrary().registerMesh(engine::core::Mesh::createCylinder(
+                renderer.allocator(), renderer.device(), renderer.commandPool(), renderer.graphicsQueue(), 0.5f, 0.5f))});
+    }
     engine::core::services::setResources(app.ecs(), &app.resources());
     // Kronos ("Alpha v1 Polish" -- "world.spawnDynamicBox"): real, same
     // 1x1x1 unit-cube handle every other hand-placed box prop in this
@@ -2600,7 +2627,7 @@ int main(int argc, char** argv) {
     // top of it and gates mouse capture until the player actually clicks
     // Play/joins a session.
     std::unique_ptr<engine::runtime::RuntimeShell> shell;
-    if (homeScreenMode) {
+    if (homeScreenMode || directClientMode) {
         shell = std::make_unique<engine::runtime::RuntimeShell>(app, [&app, capsuleMesh]() -> engine::core::EntityId {
             // The exact real "networked-player entity" shape the existing
             // --client CLI path already builds above (Transform + Name +
@@ -2681,6 +2708,9 @@ int main(int argc, char** argv) {
         // running by the time the hand-off code was even known about.
         if (!kronosLaunchGameSlug.empty()) {
             shell->setPendingDeepLinkLaunch(kronosLaunchGameSlug, kronosLaunchHandoffCode);
+        }
+        if (directClientMode) {
+            shell->startInGame(std::filesystem::path(requestedGame->manifestPath).parent_path());
         }
 
         if (!shell->initialize()) {

@@ -449,7 +449,11 @@ SceneFile SceneManager::captureScene(ECS& ecs, const Camera& camera, const cinem
         file.sequenceTracks = sequence->tracks();
     }
 
-    for (auto entity : ecs.view<Transform>()) {
+    // EnTT views run newest first; save oldest first so siblings reload in creation order.
+    std::vector<EntityId> saveOrder;
+    for (auto entity : ecs.view<Transform>()) saveOrder.push_back(entity);
+    for (auto it = saveOrder.rbegin(); it != saveOrder.rend(); ++it) {
+        const EntityId entity = *it;
         if (ecs.raw().all_of<StreamedCell>(entity) || unions::isPiece(ecs, entity)) continue;
         SceneEntityRecord record;
         if (captureSceneEntity(ecs, entity, record)) file.entities.push_back(std::move(record));

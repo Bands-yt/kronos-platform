@@ -1743,6 +1743,7 @@ void NetworkSession::tickClient(float dt, core::ECS& ecs, core::EntityId localPl
                     core::EntityId remoteEntity = ecs.createEntity(entityName);
                     ecs.addComponent<core::Transform>(remoteEntity, core::Transform{});
                     clientNetworkIdToEntity_[state.networkId] = remoteEntity;
+                    if (onRemoteEntityCreated_) onRemoteEntityCreated_(ecs, remoteEntity, state.networkId);
                 }
                 remoteInterpolators_[state.networkId].pushSnapshot(state, clockSeconds_);
             }

@@ -18,7 +18,7 @@ namespace engine::core {
 // A property or attribute value. BrickColor is kept as its colour.
 struct InstanceValue {
     enum class Type : uint8_t { Nil, Bool, Number, String, Vector3, CFrame, Color3, BrickColor, Enum, Instance,
-                                Vector2, UDim, UDim2 };
+                                Vector2, UDim, UDim2, ColorSequence, NumberSequence };
     Type type = Type::Nil;
     bool boolean = false;
     double number = 0.0; // Number; Enum value
@@ -29,6 +29,8 @@ struct InstanceValue {
     glm::vec3 vec{0.0f};
     glm::quat rot{1.0f, 0.0f, 0.0f, 0.0f};
     uint32_t ref = ~0u; // Instance
+    // ColorSequence: time r g b per keypoint; NumberSequence: time value envelope.
+    std::vector<float> keys;
     // Instance, in saved scenes only: the target's Guid text until the loader links it.
 
     static InstanceValue ofBool(bool v);
@@ -43,6 +45,8 @@ struct InstanceValue {
     static InstanceValue ofVector2(float x, float y);
     static InstanceValue ofUDim(float scale, float offset);
     static InstanceValue ofUDim2(float xScale, float xOffset, float yScale, float yOffset);
+    static InstanceValue ofColorSequence(std::vector<float> keys);
+    static InstanceValue ofNumberSequence(std::vector<float> keys);
 
     [[nodiscard]] static const char* typeName(Type type);
 };
@@ -73,11 +77,13 @@ struct InstanceInfo {
 struct InstanceMeshes {
     uint32_t box = ~0u;
     uint32_t ball = ~0u;
-    uint32_t cylinder = ~0u;
+    uint32_t cylinder = ~0u;  // along X, for Part.Shape = Cylinder
+    uint32_t wedge = ~0u;     // Roblox WedgePart (slope faces -Z)
+    uint32_t cylinderY = ~0u; // CylinderMesh / SpecialMesh Head
 };
 
 enum class PropertyType : uint8_t { Bool, Number, String, Vector3, CFrame, Color3, BrickColor, Enum, Instance,
-                                    Vector2, UDim, UDim2 };
+                                    Vector2, UDim, UDim2, ColorSequence, NumberSequence };
 
 // Which side of a game may see or change a property.
 enum class PropertyContext : uint8_t { Any, ServerOnly, ClientOnly };
@@ -240,6 +246,9 @@ struct RobloxColor {
     glm::vec3 linear{0.0f};
 };
 void setPartColor(ECS& ecs, EntityId part, glm::vec3 srgb);
+// Picks the part's mesh from its class, Shape and first SpecialMesh/BlockMesh/CylinderMesh child.
+void refreshPartMesh(ECS& ecs, EntityId part);
+void refreshPartMesh(ECS& ecs, EntityId part, const InstanceMeshes& meshes);
 
 } // namespace instances
 } // namespace engine::core

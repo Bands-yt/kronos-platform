@@ -28,6 +28,7 @@ const std::string* piecesText(ECS& ecs, EntityId e) {
 uint32_t meshFor(const InstanceMeshes& meshes, int shape) {
     if (shape == 0 && meshes.ball != ~0u) return meshes.ball;
     if (shape == 2 && meshes.cylinder != ~0u) return meshes.cylinder;
+    if (shape == 3 && meshes.wedge != ~0u) return meshes.wedge;
     return meshes.box;
 }
 

@@ -39,6 +39,8 @@ struct RibbonActions {
     std::function<void()> toggleAnchor;
     std::function<void(panels::ViewportPanel::Primitive)> insertPrimitive;
     std::function<void()> togglePlay;
+    std::function<void(int players)> startServerTest;
+    std::function<void()> stopServerTest;
     std::function<void()> togglePerformanceOverlay;
     std::function<void()> resetLayout;
     std::function<void()> save;
@@ -51,6 +53,7 @@ struct RibbonState {
     bool canSave = false;
     bool showEngineOverlays = true;
     bool terrainAvailable = false;
+    bool serverTestRunning = false;
 };
 
 struct RibbonContext {

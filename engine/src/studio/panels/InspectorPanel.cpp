@@ -4,6 +4,7 @@
 #include "studio/panels/InspectorPanel.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <string>
 #include <cstdio>
@@ -65,8 +66,12 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
         }
     }
     if (multiSelected) {
-        ImGui::TextColored(ImVec4(0.35f, 0.72f, 0.85f, 1.0f), "%zu entities selected -- Position edits apply to all of them (same relative offset each keeps); Rotation/Scale/other fields edit \"%s\" only.",
-                            selectedEntities.size(), ecs.tryGetComponent<core::Name>(selected) ? ecs.tryGetComponent<core::Name>(selected)->value.c_str() : "the primary selection");
+        ImGui::TextColored(ImVec4(0.35f, 0.72f, 0.85f, 1.0f),
+                           "%zu objects selected. Properties both have are edited for all of them; Position keeps each "
+                           "object's offset. Rotation and Scale edit \"%s\" only.",
+                           selectedEntities.size(),
+                           ecs.tryGetComponent<core::Name>(selected) ? ecs.tryGetComponent<core::Name>(selected)->value.c_str()
+                                                                     : "the primary selection");
     } else {
         ImGui::TextDisabled("Entity ID %u", static_cast<uint32_t>(selected));
     }
@@ -77,7 +82,7 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
     // pushing the drag widgets to a different X per row.
     ImGui::PushItemWidth(-1.0f);
 
-    if (!multiSelected) drawRobloxProperties(ecs, selected, undoStack);
+    drawRobloxProperties(ecs, selected, selectedEntities, undoStack);
 
     if (auto* transform = ecs.tryGetComponent<core::Transform>(selected);
         transform != nullptr &&
@@ -102,7 +107,12 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
         };
 
         ImGui::TextUnformatted("Position");
-        ImGui::DragFloat3("##position", &transform->position.x, 0.05f);
+        // Values within rounding of zero show as 0.000, not -0.000.
+        glm::vec3 shownPosition = transform->position;
+        for (int axis = 0; axis < 3; ++axis) {
+            if (std::fabs(shownPosition[axis]) < 5e-4f) shownPosition[axis] = 0.0f;
+        }
+        if (ImGui::DragFloat3("##position", &shownPosition.x, 0.05f)) transform->position = shownPosition;
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) positionFormulaPopup_.open();
         // Real validation: position can legitimately be any finite value
         // (unlike scale/collider dimensions below, there's no natural
@@ -166,6 +176,9 @@ void InspectorPanel::draw(core::ECS& ecs, core::EntityId selected, const std::ve
 
         ImGui::TextUnformatted("Rotation");
         glm::vec3 eulerDegrees = glm::degrees(glm::eulerAngles(transform->rotation));
+        for (int axis = 0; axis < 3; ++axis) {
+            if (std::fabs(eulerDegrees[axis]) < 5e-4f) eulerDegrees[axis] = 0.0f;
+        }
         bool rotationEdited = ImGui::DragFloat3("##rotation", &eulerDegrees.x, 1.0f);
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) rotationFormulaPopup_.open();
         if (ImGui::IsItemActivated()) rotationBeforeEdit_ = transform->rotation;
@@ -872,26 +885,59 @@ std::pair<const char*, int> robloxPropertyCategory(const std::string& name, cons
 
 } // namespace
 
-void InspectorPanel::drawRobloxProperties(core::ECS& ecs, core::EntityId selected, UndoStack& undoStack) {
+void InspectorPanel::drawRobloxProperties(core::ECS& ecs, core::EntityId selected,
+                                           const std::vector<core::EntityId>& targets, UndoStack& undoStack) {
     namespace inst = core::instances;
     using Type = core::PropertyType;
     const core::InstanceRef ref = inst::refOf(ecs, selected);
     const std::string cls = inst::className(ecs, ref);
     if (inst::findClass(cls) == nullptr) return;
-    if (!ImGui::CollapsingHeader(("Properties  (" + cls + ")###roblox_properties").c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Everything selected that is a Roblox-style object, the primary first.
+    std::vector<core::InstanceRef> refs{ref};
+    for (core::EntityId other : targets) {
+        if (other == selected || !ecs.raw().valid(other)) continue;
+        const core::InstanceRef otherRef = inst::refOf(ecs, other);
+        if (inst::findClass(inst::className(ecs, otherRef)) != nullptr) refs.push_back(otherRef);
+    }
+    const bool multi = refs.size() > 1;
+    const std::string headerText =
+        multi ? "Properties  (" + std::to_string(refs.size()) + " objects)" : "Properties  (" + cls + ")";
+    if (!ImGui::CollapsingHeader((headerText + "###roblox_properties").c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##property_filter", "Filter properties", propertyFilter_, sizeof(propertyFilter_));
     const std::string filter = lowerText(propertyFilter_);
 
-    auto pushUndo = [&](const core::PropertyDef& def, const core::InstanceValue& before, const core::InstanceValue& after) {
+    using Values = std::vector<std::pair<core::InstanceRef, core::InstanceValue>>;
+    auto currentValues = [&](const core::PropertyDef& def) {
+        Values out;
+        for (core::InstanceRef r : refs) {
+            const core::PropertyDef* d = inst::findProperty(inst::className(ecs, r), def.name);
+            core::InstanceValue v;
+            if (d != nullptr && inst::getProperty(ecs, r, *d, v)) out.emplace_back(r, std::move(v));
+        }
+        return out;
+    };
+    auto applyValue = [&ecs](core::InstanceRef r, const std::string& name, const core::InstanceValue& v) {
+        if (!inst::isAlive(ecs, r)) return;
+        if (const core::PropertyDef* d = inst::findProperty(inst::className(ecs, r), name)) inst::setProperty(ecs, r, *d, v);
+    };
+    auto pushUndo = [&](const core::PropertyDef& def, const Values& before, const Values& after) {
         const std::string name = def.name;
-        auto apply = [&ecs, ref, cls, name](const core::InstanceValue& v) {
-            if (!core::instances::isAlive(ecs, ref)) return;
-            if (const core::PropertyDef* d = core::instances::findProperty(cls, name)) core::instances::setProperty(ecs, ref, *d, v);
+        auto restore = [&ecs, name](const Values& values) {
+            for (const auto& [r, v] : values) {
+                if (!inst::isAlive(ecs, r)) continue;
+                if (const core::PropertyDef* d = inst::findProperty(inst::className(ecs, r), name)) {
+                    inst::setProperty(ecs, r, *d, v);
+                }
+            }
         };
-        undoStack.push({"Edit " + name, [apply, before]() { apply(before); }, [apply, after]() { apply(after); }});
+        undoStack.push({"Edit " + name, [restore, before]() { restore(before); }, [restore, after]() { restore(after); }});
+    };
+    auto sameValue = [](const core::InstanceValue& a, const core::InstanceValue& b) {
+        return a.type == b.type && a.boolean == b.boolean && a.number == b.number && a.text == b.text && a.vec == b.vec &&
+               a.ref == b.ref && a.keys == b.keys;
     };
 
     struct Shown {
@@ -906,12 +952,26 @@ void InspectorPanel::drawRobloxProperties(core::ECS& ecs, core::EntityId selecte
             if (!p.studioVisible || !p.serialized || p.type == Type::CFrame || p.name == "Name" || p.name == "Parent") continue;
             if (!filter.empty() && lowerText(p.name).find(filter) == std::string::npos) continue;
             if (std::any_of(shown.begin(), shown.end(), [&](const Shown& s) { return s.def->name == p.name; })) continue;
+            if (multi) {
+                if (p.type == Type::Instance || p.readOnly) continue;
+                bool everyoneHasIt = true;
+                for (size_t k = 1; k < refs.size(); ++k) {
+                    const core::PropertyDef* other = inst::findProperty(inst::className(ecs, refs[k]), p.name);
+                    if (other == nullptr || other->type != p.type || other->readOnly) everyoneHasIt = false;
+                }
+                if (!everyoneHasIt) continue;
+            }
             const auto [category, rank] = robloxPropertyCategory(p.name, cls);
             shown.push_back({&p, category != nullptr ? category : def->name, rank});
         }
     }
     std::stable_sort(shown.begin(), shown.end(), [](const Shown& a, const Shown& b) { return a.rank < b.rank; });
     std::string header;
+    // Wide enough for the longest property name, within reason, so labels don't run under the widgets.
+    float widestLabel = 0.0f;
+    for (const Shown& entry : shown) widestLabel = std::max(widestLabel, ImGui::CalcTextSize(entry.def->name.c_str()).x);
+    const float panelWidth = ImGui::GetContentRegionAvail().x;
+    const float labelColumn = std::clamp(widestLabel + 12.0f, panelWidth * 0.42f, panelWidth * 0.62f);
     {
         for (const Shown& entry : shown) {
             const core::PropertyDef& p = *entry.def;
@@ -923,8 +983,17 @@ void InspectorPanel::drawRobloxProperties(core::ECS& ecs, core::EntityId selecte
             }
             ImGui::PushID(p.name.c_str());
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(p.name.c_str());
-            ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.42f);
+            bool mixed = false;
+            if (multi) {
+                for (const auto& [r, v] : currentValues(p)) mixed = mixed || !sameValue(v, value);
+            }
+            if (mixed) {
+                ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f), "%s", p.name.c_str());
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("The selected objects have different values.\nShowing \"%s\".", inst::name(ecs, ref).c_str());
+            } else {
+                ImGui::TextUnformatted(p.name.c_str());
+            }
+            ImGui::SameLine(labelColumn);
             ImGui::SetNextItemWidth(-1.0f);
             ImGui::BeginDisabled(p.readOnly);
             const core::InstanceValue before = value;
@@ -1024,17 +1093,41 @@ void InspectorPanel::drawRobloxProperties(core::ECS& ecs, core::EntityId selecte
                     break;
                 }
                 case Type::CFrame: break;
+                case Type::ColorSequence: {
+                    // A preview bar; edit with scripts for now.
+                    const ImVec2 lo = ImGui::GetCursorScreenPos();
+                    const ImVec2 size(ImGui::GetContentRegionAvail().x, ImGui::GetFrameHeight());
+                    ImDrawList* draw = ImGui::GetWindowDrawList();
+                    for (size_t k = 0; k + 8 <= value.keys.size(); k += 4) {
+                        const auto col = [&](size_t i) {
+                            return ImGui::ColorConvertFloat4ToU32(ImVec4(value.keys[i + 1], value.keys[i + 2], value.keys[i + 3], 1.0f));
+                        };
+                        const float x0 = lo.x + size.x * value.keys[k];
+                        const float x1 = lo.x + size.x * value.keys[k + 4];
+                        draw->AddRectFilledMultiColor(ImVec2(x0, lo.y), ImVec2(x1, lo.y + size.y), col(k), col(k + 4), col(k + 4), col(k));
+                    }
+                    ImGui::Dummy(size);
+                    break;
+                }
+                case Type::NumberSequence: {
+                    std::string text;
+                    for (size_t k = 0; k + 3 <= value.keys.size(); k += 3) {
+                        char part[48];
+                        std::snprintf(part, sizeof(part), "%s%g@%g", text.empty() ? "" : "  ", value.keys[k + 1], value.keys[k]);
+                        text += part;
+                    }
+                    ImGui::TextDisabled("%s", text.c_str());
+                    break;
+                }
             }
             ImGui::EndDisabled();
-            if (ImGui::IsItemActivated() && !discrete) propertyBeforeEdit_ = before;
+            if (ImGui::IsItemActivated() && !discrete) propertyBeforeEach_ = currentValues(p);
             if (changed && !p.readOnly) {
-                inst::setProperty(ecs, ref, p, value);
-                if (discrete) pushUndo(p, before, value);
+                const Values beforeEach = discrete ? currentValues(p) : Values{};
+                for (core::InstanceRef r : refs) applyValue(r, p.name, value);
+                if (discrete) pushUndo(p, beforeEach, currentValues(p));
             }
-            if (!discrete && ImGui::IsItemDeactivatedAfterEdit()) {
-                core::InstanceValue after;
-                if (inst::getProperty(ecs, ref, p, after)) pushUndo(p, propertyBeforeEdit_, after);
-            }
+            if (!discrete && ImGui::IsItemDeactivatedAfterEdit()) pushUndo(p, propertyBeforeEach_, currentValues(p));
             ImGui::PopID();
         }
     }

@@ -1,8 +1,10 @@
 #include "core/InstanceTree.hpp"
+#include "core/RobloxTools.hpp"
 #include "core/Guid.hpp"
 #include "core/UnionGeometry.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -100,6 +102,20 @@ InstanceValue InstanceValue::ofUDim2(float xScale, float xOffset, float yScale, 
     return out;
 }
 
+InstanceValue InstanceValue::ofColorSequence(std::vector<float> keys) {
+    InstanceValue out;
+    out.type = Type::ColorSequence;
+    out.keys = std::move(keys);
+    return out;
+}
+
+InstanceValue InstanceValue::ofNumberSequence(std::vector<float> keys) {
+    InstanceValue out;
+    out.type = Type::NumberSequence;
+    out.keys = std::move(keys);
+    return out;
+}
+
 const char* InstanceValue::typeName(Type type) {
     switch (type) {
         case Type::Nil: return "nil";
@@ -115,6 +131,8 @@ const char* InstanceValue::typeName(Type type) {
         case Type::Vector2: return "Vector2";
         case Type::UDim: return "UDim";
         case Type::UDim2: return "UDim2";
+        case Type::ColorSequence: return "ColorSequence";
+        case Type::NumberSequence: return "NumberSequence";
     }
     return "nil";
 }
@@ -174,12 +192,17 @@ void writeValue(std::ostringstream& out, const InstanceValue& v) {
         case InstanceValue::Type::Vector2:
         case InstanceValue::Type::UDim: out << ' ' << v.vec.x << ' ' << v.vec.y; break;
         case InstanceValue::Type::UDim2: out << ' ' << v.vec.x << ' ' << v.vec.y << ' ' << v.vec.z << ' ' << v.number; break;
+        case InstanceValue::Type::ColorSequence:
+        case InstanceValue::Type::NumberSequence:
+            out << ' ' << v.keys.size();
+            for (float k : v.keys) out << ' ' << k;
+            break;
     }
 }
 
 bool readValue(std::istringstream& in, InstanceValue& v) {
     int type = 0;
-    if (!(in >> type) || type < 0 || type > static_cast<int>(InstanceValue::Type::UDim2)) return false;
+    if (!(in >> type) || type < 0 || type > static_cast<int>(InstanceValue::Type::NumberSequence)) return false;
     v = InstanceValue{};
     v.type = static_cast<InstanceValue::Type>(type);
     std::string a, b;
@@ -220,6 +243,14 @@ bool readValue(std::istringstream& in, InstanceValue& v) {
         case InstanceValue::Type::Vector2:
         case InstanceValue::Type::UDim: in >> v.vec.x >> v.vec.y; break;
         case InstanceValue::Type::UDim2: in >> v.vec.x >> v.vec.y >> v.vec.z >> v.number; break;
+        case InstanceValue::Type::ColorSequence:
+        case InstanceValue::Type::NumberSequence: {
+            size_t count = 0;
+            if (!(in >> count) || count > 4096) return false;
+            v.keys.resize(count);
+            for (float& k : v.keys) in >> k;
+            break;
+        }
     }
     return !in.fail();
 }
@@ -299,6 +330,8 @@ bool sameValue(const InstanceValue& a, const InstanceValue& b) {
         case InstanceValue::Type::Instance: return a.ref == b.ref;
         case InstanceValue::Type::CFrame: return a.vec == b.vec && a.rot == b.rot;
         case InstanceValue::Type::UDim2: return a.vec == b.vec && a.number == b.number;
+        case InstanceValue::Type::ColorSequence:
+        case InstanceValue::Type::NumberSequence: return a.keys == b.keys;
         default: return a.vec == b.vec;
     }
 }
@@ -603,15 +636,12 @@ void setMaterial(ECS& ecs, EntityId e, const InstanceValue& v) {
     }
 }
 void setShape(ECS& ecs, EntityId e, const InstanceValue& v) {
-    if (ecs.tryGetComponent<ColliderShape>(e) != nullptr) {
-        ensureInfo(ecs, e).properties["Shape"] = v;
-        fitPartCollider(ecs, e);
-    }
-    const auto* meshes = ecs.raw().ctx().find<InstanceMeshes>();
-    auto* r = renderable(ecs, e);
-    if (meshes == nullptr || r == nullptr) return;
-    const uint32_t handle = v.text == "Ball" ? meshes->ball : v.text == "Cylinder" ? meshes->cylinder : meshes->box;
-    if (handle != ~0u) r->meshHandle = handle;
+    ensureInfo(ecs, e).properties["Shape"] = v;
+    if (ecs.tryGetComponent<ColliderShape>(e) != nullptr) fitPartCollider(ecs, e);
+    instances::refreshPartMesh(ecs, e);
+}
+void setMeshType(ECS& ecs, EntityId e, const InstanceValue&) {
+    instances::refreshPartMesh(ecs, parentEntity(ecs, e));
 }
 
 Light* light(ECS& ecs, EntityId e) { return ecs.tryGetComponent<Light>(e); }
@@ -931,6 +961,20 @@ std::vector<ClassDef> buildClasses() {
     add("Seat", "Part", true).properties = {stored("Disabled", PropertyType::Bool, InstanceValue::ofBool(false))};
     add("VehicleSeat", "BasePart", true);
 
+    add("DataModelMesh", "Instance", false).properties = {
+        stored("Scale", PropertyType::Vector3, InstanceValue::ofVector3(glm::vec3(1.0f))),
+        stored("Offset", PropertyType::Vector3, InstanceValue::ofVector3(glm::vec3(0.0f))),
+        stored("VertexColor", PropertyType::Vector3, InstanceValue::ofVector3(glm::vec3(1.0f))),
+    };
+    add("FileMesh", "DataModelMesh", true).properties = {
+        stored("MeshId", PropertyType::String, InstanceValue::ofString("")),
+        stored("TextureId", PropertyType::String, InstanceValue::ofString("")),
+    };
+    add("SpecialMesh", "FileMesh", true).properties = {storedEnum("MeshType", "MeshType", "Head", 0, &setMeshType)};
+    add("BevelMesh", "DataModelMesh", false);
+    add("BlockMesh", "BevelMesh", true);
+    add("CylinderMesh", "BevelMesh", true);
+
     auto& model = add("Model", "PVInstance", true);
     model.properties = {stored("PrimaryPart", PropertyType::Instance, InstanceValue{})};
     model.methods = {"GetPrimaryPartCFrame", "SetPrimaryPartCFrame"};
@@ -1064,7 +1108,24 @@ std::vector<ClassDef> buildClasses() {
     soundClass.events = {"Played", "Ended", "Stopped", "Paused", "Resumed", "Loaded"};
     add("SoundGroup", "Instance", true).properties = {stored("Volume", PropertyType::Number, InstanceValue::ofNumber(0.5))};
     // Present as objects; what they do arrives in later bridge steps.
-    add("Tool", "Instance", true);
+    add("BackpackItem", "Model", false).properties = {stored("TextureId", PropertyType::String, InstanceValue::ofString(""))};
+    auto& tool = add("Tool", "BackpackItem", true);
+    tool.properties = {
+        stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("RequiresHandle", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("CanBeDropped", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("ManualActivationOnly", PropertyType::Bool, InstanceValue::ofBool(false)),
+        stored("ToolTip", PropertyType::String, InstanceValue::ofString("")),
+        stored("Grip", PropertyType::CFrame, InstanceValue::ofCFrame(glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f))),
+    };
+    tool.methods = {"Activate", "Deactivate"};
+    tool.events = {"Activated", "Deactivated", "Equipped", "Unequipped"};
+    auto& clickDetector = add("ClickDetector", "Instance", true);
+    clickDetector.properties = {
+        stored("MaxActivationDistance", PropertyType::Number, InstanceValue::ofNumber(32.0)),
+        stored("CursorIcon", PropertyType::String, InstanceValue::ofString("")),
+    };
+    clickDetector.events = {"MouseClick", "RightMouseClick", "MouseHoverEnter", "MouseHoverLeave"};
     add("Accessory", "Instance", true);
     add("StarterPlayerScripts", "Instance", false);
     add("StarterCharacterScripts", "Instance", false);
@@ -1120,6 +1181,32 @@ std::vector<ClassDef> buildClasses() {
         stored("ImageColor3", PropertyType::Color3, rgb(255, 255, 255)),
         stored("ImageTransparency", PropertyType::Number, InstanceValue::ofNumber(0.0)),
     };
+    auto& textBox = add("TextBox", "GuiObject", true);
+    textBox.properties = textProperties;
+    textBox.properties.insert(textBox.properties.end(), {
+        stored("PlaceholderText", PropertyType::String, InstanceValue::ofString("")),
+        stored("PlaceholderColor3", PropertyType::Color3, rgb(178, 178, 178)),
+        stored("ClearTextOnFocus", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("TextEditable", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("MultiLine", PropertyType::Bool, InstanceValue::ofBool(false)),
+        stored("CursorPosition", PropertyType::Number, InstanceValue::ofNumber(-1.0)),
+    });
+    textBox.methods = {"CaptureFocus", "ReleaseFocus", "IsFocused"};
+    textBox.events = {"FocusLost", "Focused"};
+    auto& scrollingFrame = add("ScrollingFrame", "GuiObject", true);
+    scrollingFrame.properties = {
+        stored("CanvasSize", PropertyType::UDim2, InstanceValue::ofUDim2(0, 0, 2, 0)),
+        stored("CanvasPosition", PropertyType::Vector2, InstanceValue::ofVector2(0.0f, 0.0f)),
+        stored("ScrollBarThickness", PropertyType::Number, InstanceValue::ofNumber(12.0)),
+        stored("ScrollBarImageColor3", PropertyType::Color3, rgb(0, 0, 0)),
+        stored("ScrollBarImageTransparency", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("ScrollingEnabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        storedEnum("ScrollingDirection", "ScrollingDirection", "XY", 4),
+        storedEnum("AutomaticCanvasSize", "AutomaticSize", "None", 0),
+        storedEnum("ElasticBehavior", "ElasticBehavior", "WhenScrollable", 0),
+        layoutOutput("AbsoluteCanvasSize"),
+        layoutOutput("AbsoluteWindowSize"),
+    };
     add("GuiLabel", "GuiObject", false);
     add("TextLabel", "GuiLabel", true).properties = textProperties;
     add("ImageLabel", "GuiLabel", true).properties = imageProperties;
@@ -1146,7 +1233,47 @@ std::vector<ClassDef> buildClasses() {
         storedEnum("VerticalAlignment", "VerticalAlignment", "Top", 1),
     };
     add("UIListLayout", "UIGridStyleLayout", true).properties = {
-        stored("Padding", PropertyType::UDim, InstanceValue::ofUDim(0, 0))};
+        stored("Padding", PropertyType::UDim, InstanceValue::ofUDim(0, 0)), layoutOutput("AbsoluteContentSize")};
+    add("UIGridLayout", "UIGridStyleLayout", true).properties = {
+        storedEnum("FillDirection", "FillDirection", "Horizontal", 0),
+        stored("CellSize", PropertyType::UDim2, InstanceValue::ofUDim2(0, 100, 0, 100)),
+        stored("CellPadding", PropertyType::UDim2, InstanceValue::ofUDim2(0, 5, 0, 5)),
+        stored("FillDirectionMaxCells", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        storedEnum("StartCorner", "StartCorner", "TopLeft", 0),
+        layoutOutput("AbsoluteCellSize"),
+        layoutOutput("AbsoluteContentSize"),
+    };
+    add("UIStroke", "UIComponent", true).properties = {
+        stored("Color", PropertyType::Color3, rgb(0, 0, 0)),
+        stored("Thickness", PropertyType::Number, InstanceValue::ofNumber(1.0)),
+        stored("Transparency", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        storedEnum("ApplyStrokeMode", "ApplyStrokeMode", "Contextual", 0),
+        storedEnum("LineJoinMode", "LineJoinMode", "Round", 0),
+    };
+    add("UIGradient", "UIComponent", true).properties = {
+        stored("Color", PropertyType::ColorSequence, InstanceValue::ofColorSequence({0, 1, 1, 1, 1, 1, 1, 1})),
+        stored("Transparency", PropertyType::NumberSequence, InstanceValue::ofNumberSequence({0, 0, 0, 1, 0, 0})),
+        stored("Rotation", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("Offset", PropertyType::Vector2, InstanceValue::ofVector2(0.0f, 0.0f)),
+        stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+    };
+    add("UIScale", "UIComponent", true).properties = {stored("Scale", PropertyType::Number, InstanceValue::ofNumber(1.0))};
+    add("UIConstraint", "UIComponent", false);
+    add("UIAspectRatioConstraint", "UIConstraint", true).properties = {
+        stored("AspectRatio", PropertyType::Number, InstanceValue::ofNumber(1.0)),
+        storedEnum("AspectType", "AspectType", "FitWithinMaxSize", 0),
+        storedEnum("DominantAxis", "DominantAxis", "Width", 0),
+    };
+    add("UISizeConstraint", "UIConstraint", true).properties = {
+        stored("MinSize", PropertyType::Vector2, InstanceValue::ofVector2(0.0f, 0.0f)),
+        stored("MaxSize", PropertyType::Vector2,
+               InstanceValue::ofVector2(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())),
+    };
+    add("UITextSizeConstraint", "UIConstraint", true).properties = {
+        stored("MinTextSize", PropertyType::Number, InstanceValue::ofNumber(1.0)),
+        stored("MaxTextSize", PropertyType::Number, InstanceValue::ofNumber(100.0)),
+    };
 
     add("DataModel", "Instance", false).methods = {"GetService", "FindService"};
     // Has no entity: game:GetService("RunService") is always the same object.
@@ -1198,7 +1325,7 @@ std::vector<ClassDef> buildClasses() {
         stored("BreakJointsOnDeath", PropertyType::Bool, InstanceValue::ofBool(true)),
         stored("RequiresNeck", PropertyType::Bool, InstanceValue::ofBool(true)),
     };
-    humanoid.methods = {"TakeDamage", "MoveTo", "Move", "GetState", "ChangeState"};
+    humanoid.methods = {"TakeDamage", "MoveTo", "Move", "GetState", "ChangeState", "EquipTool", "UnequipTools"};
     humanoid.events = {"Died", "HealthChanged", "MoveToFinished", "Running", "Jumping", "FreeFalling", "StateChanged"};
 
     add("DataStoreService", "Instance", false, true).methods = {"GetDataStore", "GetGlobalDataStore"};
@@ -1488,6 +1615,11 @@ bool setParent(ECS& ecs, InstanceRef child, InstanceRef newParent, std::string& 
         setWorldPose(ecs, e, pose.position, pose.rotation);
     }
     updateWorldPresence(ecs, e);
+    if (oldParent != newParent && classIsA(entityClass(ecs, e), "Tool")) tools::parentChanged(ecs, child, oldParent, newParent);
+    if (oldParent != newParent && classIsA(entityClass(ecs, e), "DataModelMesh")) {
+        if (oldParent != kNoInstance) refreshPartMesh(ecs, entityOf(ecs, oldParent));
+        refreshPartMesh(ecs, target);
+    }
     if (oldParent != newParent) signals::parentChanged(ecs, child, oldParent);
     return true;
 }
@@ -1523,6 +1655,7 @@ InstanceRef createUnchecked(ECS& ecs, const std::string& cls) {
         info.properties["Anchored"] = InstanceValue::ofBool(false);
         ecs.addComponent<InstanceInfo>(e, std::move(info));
         fitPartCollider(ecs, e);
+        refreshPartMesh(ecs, e);
     } else if (classIsA(cls, "Light")) {
         auto& l = ecs.addComponent<Light>(e);
         l.radius = 8.0f;
@@ -1614,7 +1747,9 @@ void destroy(ECS& ecs, InstanceRef ref) {
     const EntityId e = entityOf(ecs, ref);
     if (!valid(ecs, e)) return;
     signals::destroying(ecs, ref);
+    const EntityId meshOwner = classIsA(entityClass(ecs, e), "DataModelMesh") ? parentEntity(ecs, e) : kNullEntity;
     hierarchy::destroyEntityRecursive(ecs, e);
+    refreshPartMesh(ecs, meshOwner);
 }
 
 bool isDetached(ECS& ecs, EntityId entity) {
@@ -2071,6 +2206,48 @@ void setPartColor(ECS& ecs, EntityId part, glm::vec3 srgb) {
         const auto material = props.find("Material");
         if (material != props.end() && material->second.text == "Neon") r->emissiveColor = linear;
     }
+}
+
+void refreshPartMesh(ECS& ecs, EntityId part) {
+    if (const auto* meshes = ecs.raw().ctx().find<InstanceMeshes>()) refreshPartMesh(ecs, part, *meshes);
+}
+
+void refreshPartMesh(ECS& ecs, EntityId part, const InstanceMeshes& meshes) {
+    if (!valid(ecs, part)) return;
+    auto* r = ecs.tryGetComponent<Renderable>(part);
+    const auto* info = ecs.tryGetComponent<InstanceInfo>(part);
+    if (r == nullptr || info == nullptr || !classIsA(info->className, "BasePart") || unions::hasPieces(ecs, part)) return;
+    uint32_t handle = meshes.box;
+    if (info->className == "WedgePart") handle = meshes.wedge;
+    if (const auto shape = info->properties.find("Shape"); shape != info->properties.end()) {
+        if (shape->second.text == "Ball") handle = meshes.ball;
+        if (shape->second.text == "Cylinder") handle = meshes.cylinder;
+    }
+    if (const auto* h = ecs.tryGetComponent<Hierarchy>(part)) {
+        for (EntityId child : h->children) {
+            const std::string cls = entityClass(ecs, child);
+            if (!classIsA(cls, "DataModelMesh")) continue;
+            if (cls == "CylinderMesh") {
+                handle = meshes.cylinderY;
+            } else if (cls == "BlockMesh") {
+                handle = meshes.box;
+            } else if (cls == "SpecialMesh") {
+                std::string item = "Head";
+                if (const auto* meshInfo = ecs.tryGetComponent<InstanceInfo>(child)) {
+                    const auto type = meshInfo->properties.find("MeshType");
+                    if (type != meshInfo->properties.end()) item = type->second.text;
+                }
+                if (item == "Sphere") handle = meshes.ball;
+                else if (item == "Head") handle = meshes.cylinderY;
+                else if (item == "Cylinder") handle = meshes.cylinder;
+                else if (item == "Wedge") handle = meshes.wedge;
+                else if (item == "Brick" || item == "Torso") handle = meshes.box;
+            }
+            break;
+        }
+    }
+    if (handle == ~0u) handle = meshes.box;
+    if (handle != ~0u) r->meshHandle = handle;
 }
 
 } // namespace instances

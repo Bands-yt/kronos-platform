@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 
 #include "core/Components.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/InstanceTree.hpp"
 #include "core/OAuthPkce.hpp"
+#include "core/RobloxDatatypes.hpp"
 #include "core/UnionGeometry.hpp"
 #include "migration/PropertyDecoder.hpp"
 #include "migration/RbxBinaryReader.hpp"
@@ -77,10 +79,13 @@ std::string enumItemName(const std::string& enumType, int value) {
     for (const auto& [name, items] : kGuiEnums) {
         if (enumType == name && value >= 0 && value < static_cast<int>(items.size())) return items[value];
     }
+    for (const auto& [item, number] : core::robloxEnumItems(enumType)) {
+        if (number == value) return item;
+    }
     return {};
 }
 
-// GUI objects: every stored property the class table knows, by type.
+// GUI objects and meshes: every stored property the class table knows, by type.
 void storeGuiProperties(const ImportedInstance& node, core::ECS& ecs, core::InstanceRef ref) {
     using core::InstanceValue;
     using core::PropertyType;
@@ -109,6 +114,10 @@ void storeGuiProperties(const ImportedInstance& node, core::ECS& ecs, core::Inst
                     if (!hasProperty(props, n) && !has(".R")) continue;
                     value = InstanceValue::ofColor3(decodeColor3(props, n));
                     break;
+                case PropertyType::Vector3:
+                    if (!has(".X")) continue;
+                    value = InstanceValue::ofVector3(decodeVector3(props, n));
+                    break;
                 case PropertyType::Vector2:
                     if (!has(".X")) continue;
                     value = InstanceValue::ofVector2(decodeFloat(props, n + ".X"), decodeFloat(props, n + ".Y"));
@@ -128,6 +137,26 @@ void storeGuiProperties(const ImportedInstance& node, core::ECS& ecs, core::Inst
                     const std::string item = enumItemName(property.enumType, number);
                     if (item.empty()) continue;
                     value = InstanceValue::ofEnum(property.enumType, item, number);
+                    break;
+                }
+                case PropertyType::ColorSequence:
+                case PropertyType::NumberSequence: {
+                    // Roblox writes "time r g b envelope ..." or "time value envelope ...".
+                    if (!hasProperty(props, n)) continue;
+                    const bool color = property.type == PropertyType::ColorSequence;
+                    std::istringstream in(decodeString(props, n));
+                    std::vector<float> keys;
+                    float f[5];
+                    while (keys.size() < 4096 && in >> f[0] >> f[1] >> f[2]) {
+                        if (color && !(in >> f[3] >> f[4])) break;
+                        if (color) {
+                            keys.insert(keys.end(), {f[0], f[1], f[2], f[3]});
+                        } else {
+                            keys.insert(keys.end(), {f[0], f[1], f[2]});
+                        }
+                    }
+                    if (keys.size() < (color ? 8u : 6u)) continue;
+                    value = color ? InstanceValue::ofColorSequence(std::move(keys)) : InstanceValue::ofNumberSequence(std::move(keys));
                     break;
                 }
                 default: continue;
@@ -165,7 +194,8 @@ void storeProperties(const ImportedInstance& node, core::ECS& ecs, core::EntityI
         }
     }
     if (core::instances::classIsA(node.className, "GuiBase2d") ||
-        core::instances::classIsA(node.className, "UIComponent")) {
+        core::instances::classIsA(node.className, "UIComponent") ||
+        core::instances::classIsA(node.className, "DataModelMesh")) {
         storeGuiProperties(node, ecs, ref);
     }
     if (node.className == "Sound") {
@@ -251,6 +281,7 @@ uint32_t meshForPart(const ImportedInstance& node, const HydrationMeshes& meshes
         if (shape == 0 && meshes.capsule != core::Renderable::kInvalidHandle) return meshes.capsule;
         if (shape == 2 && meshes.cylinder != core::Renderable::kInvalidHandle) return meshes.cylinder;
     }
+    if (node.className == "WedgePart" && meshes.wedge != core::Renderable::kInvalidHandle) return meshes.wedge;
     return meshes.box;
 }
 
@@ -292,7 +323,7 @@ void collectUnionPieces(const std::vector<ImportedInstance>& nodes, glm::vec3 of
                                                          : decodeColor3(n.properties, "Color", glm::vec3(0.64f)));
             piece.shape = n.className == "Part" ? (hasProperty(n.properties, "shape") ? decodeInt(n.properties, "shape", 1)
                                                                                        : decodeInt(n.properties, "Shape", 1))
-                                                : 1;
+                                                : n.className == "WedgePart" ? 3 : 1;
             out.push_back(piece);
         }
     }
@@ -339,6 +370,10 @@ HydrationResult InstanceHydrator::hydrate(const std::vector<ImportedInstance>& t
         }
         core::instances::setProperty(ecs, core::instances::refOf(ecs, pending.entity), *def,
                                      core::InstanceValue::ofInstance(core::instances::refOf(ecs, target->second)));
+    }
+    if (meshes.box != core::Renderable::kInvalidHandle) {
+        const core::InstanceMeshes partMeshes{meshes.box, meshes.capsule, meshes.cylinder, meshes.wedge, meshes.cylinderY};
+        for (const core::EntityId entity : result.createdEntities) core::instances::refreshPartMesh(ecs, entity, partMeshes);
     }
     return result;
 }

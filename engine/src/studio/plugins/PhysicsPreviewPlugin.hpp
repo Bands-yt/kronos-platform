@@ -10,6 +10,7 @@
 #include "core/AudioMixer.hpp"
 #include "core/Components.hpp"
 #include "core/Physics.hpp"
+#include "core/PythonScripting.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
 #include "core/ScriptAudioApi.hpp"
 #include "core/ScriptWorldApi.hpp"
@@ -71,6 +72,7 @@ public:
     // class's own header comment) -- the F3 overlay reads
     // scripting().totalUsedMemoryBytes() through this while Playing.
     [[nodiscard]] const core::Scripting& scripting() const { return scripting_; }
+    [[nodiscard]] const core::PythonScripting& pythonScripting() const { return python_; }
 
     void play(core::ECS& ecs);
     void stop(core::ECS& ecs);
@@ -140,6 +142,7 @@ public:
 private:
     core::Physics physics_;
     core::Scripting scripting_;
+    core::PythonScripting python_;
     // Kronos ("Cinematic Camera Physics & Post-Processing Pipeline" --
     // "deterministic physics step triggers"): (re)constructed every real
     // play() call, matching scripting_'s own "fresh VM every Play" real

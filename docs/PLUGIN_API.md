@@ -134,6 +134,12 @@ is caught instead of crashing Studio (the call just fails). `templates/rust-plug
 version of `SampleCPlugin.c`; copy the folder and point its `kronos` dependency at your copy of
 `sdk/rust/kronos`.
 
+**From Studio:** File > Rust Plugins... makes a copy of the template in a `rust_plugins` folder (next to
+your project, or next to My Games), pointed at the Kronos crate. Edit `src/lib.rs` in the window, press
+**Build** (runs `cargo build --release --offline`, log shown below) or **Build & Install**, which also
+copies the library into `native_plugins/`. A plugin Studio already runs reloads by itself; a new one
+shows up after Studio restarts. It needs Rust (`cargo`) installed; Studio says so when it isn't.
+
 ```rust
 use kronos::{caps, Host, Info, Plugin};
 

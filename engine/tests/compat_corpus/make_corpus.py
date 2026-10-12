@@ -259,3 +259,346 @@ end)
     ]),
   ]))
 
+
+place('simulator.rbxlx',
+  item('Workspace', 'Workspace', '', [
+    part('Baseplate', (0,-0.5,0), (64,1,64), (91,154,76)),
+    part('SpawnLocation', (0,0.5,0), (6,1,6), (13,105,172), cls='SpawnLocation'),
+    item('Folder', 'Coins', '', [
+      part('Coin', (10,1.5,0), (2,2,0.5), (245,205,48), extra='<bool name="CanCollide">false</bool>'),
+      part('Coin', (14,1.5,0), (2,2,0.5), (245,205,48), extra='<bool name="CanCollide">false</bool>'),
+      part('Coin', (18,1.5,0), (2,2,0.5), (245,205,48), extra='<bool name="CanCollide">false</bool>'),
+    ]),
+    part('SellPad', (0,0.6,12), (6,0.2,6), (0,255,0)),
+    part('Dumbbell', (-10,1,0), (3,1,1), (27,42,53), children=[item('ClickDetector', 'ClickDetector')]),
+  ]),
+  item('ServerScriptService', 'ServerScriptService', '', [
+    script('Stats', '''
+local Players = game:GetService("Players")
+
+Players.PlayerAdded:Connect(function(player)
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	for _, name in { "Coins", "Cash", "Strength" } do
+		local value = Instance.new("IntValue")
+		value.Name = name
+		value.Parent = leaderstats
+	end
+end)
+'''),
+    script('CoinSpawner', '''
+local Players = game:GetService("Players")
+local RESPAWN = 2
+
+for _, coin in workspace.Coins:GetChildren() do
+	local taken = false
+	coin.Touched:Connect(function(hit)
+		local player = Players:GetPlayerFromCharacter(hit.Parent)
+		if not player or taken then return end
+		taken = true
+		player.leaderstats.Coins.Value += 1
+		coin.Transparency = 1
+		task.delay(RESPAWN, function()
+			coin.Transparency = 0
+			taken = false
+		end)
+	end)
+end
+'''),
+    script('Sell', '''
+local Players = game:GetService("Players")
+local pad = workspace.SellPad
+
+pad.Touched:Connect(function(hit)
+	local player = Players:GetPlayerFromCharacter(hit.Parent)
+	if not player then return end
+	local stats = player.leaderstats
+	stats.Cash.Value += stats.Coins.Value * 10
+	stats.Coins.Value = 0
+end)
+'''),
+    script('Training', '''
+local detector = workspace.Dumbbell.ClickDetector
+
+detector.MouseClick:Connect(function(player)
+	player.leaderstats.Strength.Value += 1
+end)
+'''),
+  ]))
+
+place('combat_arena.rbxlx',
+  item('Workspace', 'Workspace', '', [
+    part('Baseplate', (0,-0.5,0), (64,1,64), (91,154,76)),
+    part('SpawnLocation', (0,0.5,0), (6,1,6), (13,105,172), cls='SpawnLocation'),
+    part('Lava', (16,0.6,0), (6,0.2,6), (255,85,0), extra='<token name="Material">288</token>'),
+    part('HealPad', (-16,0.6,0), (6,0.2,6), (0,255,255)),
+  ]),
+  item('StarterPack', 'StarterPack', '', [
+    item('Tool', 'Sword', '', [
+      part('Handle', (0,0,0), (1,4,1), (163,162,165), anchored=False, extra='<bool name="CanCollide">false</bool>'),
+      script('SwordScript', '''
+local tool = script.Parent
+local handle = tool.Handle
+local DAMAGE = 25
+local swinging = false
+local hitThisSwing = {}
+
+tool.Activated:Connect(function()
+	if swinging then return end
+	swinging = true
+	hitThisSwing = {}
+	task.wait(0.5)
+	swinging = false
+end)
+
+handle.Touched:Connect(function(hit)
+	if not swinging then return end
+	local humanoid = hit.Parent:FindFirstChildOfClass("Humanoid")
+	local owner = tool.Parent
+	if humanoid and hit.Parent ~= owner and not hitThisSwing[humanoid] then
+		hitThisSwing[humanoid] = true
+		local tag = Instance.new("ObjectValue")
+		tag.Name = "creator"
+		tag.Value = game:GetService("Players"):GetPlayerFromCharacter(owner)
+		tag.Parent = humanoid
+		humanoid:TakeDamage(DAMAGE)
+	end
+end)
+'''),
+    ]),
+  ]),
+  item('ServerScriptService', 'ServerScriptService', '', [
+    script('KillTracker', '''
+local Players = game:GetService("Players")
+
+Players.PlayerAdded:Connect(function(player)
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+	local kills = Instance.new("IntValue")
+	kills.Name = "Kills"
+	kills.Parent = leaderstats
+
+	player.CharacterAdded:Connect(function(character)
+		local humanoid = character:WaitForChild("Humanoid")
+		humanoid.Died:Connect(function()
+			local tag = humanoid:FindFirstChild("creator")
+			if tag and tag.Value and tag.Value ~= player then
+				tag.Value.leaderstats.Kills.Value += 1
+			end
+		end)
+	end)
+end)
+'''),
+    script('Hazards', '''
+local lava = workspace.Lava
+local heal = workspace.HealPad
+local cooldown = {}
+
+lava.Touched:Connect(function(hit)
+	local humanoid = hit.Parent:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.Health = 0
+	end
+end)
+
+heal.Touched:Connect(function(hit)
+	local humanoid = hit.Parent:FindFirstChildOfClass("Humanoid")
+	if not humanoid or cooldown[humanoid] then return end
+	cooldown[humanoid] = true
+	humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + 50)
+	task.wait(1)
+	cooldown[humanoid] = nil
+end)
+'''),
+  ]))
+
+ITEMS_MODULE = '''
+local Items = {}
+
+Items.List = {
+	Apple = { price = 5, heal = 10 },
+	Shield = { price = 40, heal = 0 },
+	Potion = { price = 15, heal = 50 },
+}
+
+function Items.price(name)
+	local item = Items.List[name]
+	return item and item.price
+end
+
+return Items
+'''
+
+place('inventory.rbxlx',
+  item('Workspace', 'Workspace', '', [
+    part('Baseplate', (0,-0.5,0), (40,1,40), (91,154,76)),
+    part('SpawnLocation', (0,0.5,0), (6,1,6), (13,105,172), cls='SpawnLocation'),
+  ]),
+  item('ReplicatedStorage', 'ReplicatedStorage', '', [
+    script('Items', ITEMS_MODULE, cls='ModuleScript'),
+    item('RemoteFunction', 'Buy'),
+    item('RemoteEvent', 'InventoryChanged'),
+  ]),
+  item('ServerScriptService', 'ServerScriptService', '', [
+    script('InventoryServer', '''
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Items = require(ReplicatedStorage.Items)
+local inventories = {}
+
+Players.PlayerAdded:Connect(function(player)
+	inventories[player] = {}
+	player:SetAttribute("Gold", 50)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	inventories[player] = nil
+end)
+
+ReplicatedStorage.Buy.OnServerInvoke = function(player, itemName)
+	local price = Items.price(itemName)
+	if type(itemName) ~= "string" or not price then
+		return false, "no such item"
+	end
+	local gold = player:GetAttribute("Gold")
+	if gold < price then
+		return false, "not enough gold"
+	end
+	player:SetAttribute("Gold", gold - price)
+	local inventory = inventories[player]
+	inventory[itemName] = (inventory[itemName] or 0) + 1
+	ReplicatedStorage.InventoryChanged:FireClient(player, inventory)
+	return true, inventory[itemName]
+end
+'''),
+  ]),
+  item('StarterPlayer', 'StarterPlayer', '', [
+    item('StarterPlayerScripts', 'StarterPlayerScripts', '', [script('InventoryClient', '''
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = game:GetService("Players").LocalPlayer
+
+ReplicatedStorage.InventoryChanged.OnClientEvent:Connect(function(inventory)
+	local count = 0
+	for _, amount in inventory do
+		count += amount
+	end
+	player:SetAttribute("ItemCount", count)
+end)
+''', cls='LocalScript')]),
+  ]))
+
+place('round_system.rbxlx',
+  item('Workspace', 'Workspace', '', [
+    part('Lobby', (0,-0.5,0), (30,1,30), (91,154,76)),
+    part('SpawnLocation', (0,0.5,0), (6,1,6), (13,105,172), cls='SpawnLocation'),
+    part('Arena', (0,-0.5,100), (40,1,40), (163,162,165)),
+    part('ArenaSpawn', (0,0.6,100), (4,0.2,4), (255,0,0)),
+  ]),
+  item('ReplicatedStorage', 'ReplicatedStorage', '', [
+    item('StringValue', 'Status'),
+    item('IntValue', 'Round'),
+  ]),
+  item('ServerScriptService', 'ServerScriptService', '', [
+    script('RoundManager', '''
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local status = ReplicatedStorage.Status
+local round = ReplicatedStorage.Round
+local INTERMISSION = 3
+local ROUND_LENGTH = 5
+
+local function teleportAll(target)
+	for i, player in Players:GetPlayers() do
+		local character = player.Character
+		if character and character.PrimaryPart then
+			character:PivotTo(CFrame.new(target.Position + Vector3.new(i * 3, 3, 0)))
+		end
+	end
+end
+
+while true do
+	for t = INTERMISSION, 1, -1 do
+		status.Value = "Intermission: " .. t
+		task.wait(1)
+	end
+	round.Value += 1
+	status.Value = "Round " .. round.Value
+	teleportAll(workspace.ArenaSpawn)
+	task.wait(ROUND_LENGTH)
+	status.Value = "Round over"
+	teleportAll(workspace.SpawnLocation)
+	task.wait(1)
+end
+'''),
+  ]))
+
+place('gui_menu.rbxlx',
+  item('Workspace', 'Workspace', '', [
+    part('Baseplate', (0,-0.5,0), (40,1,40), (91,154,76)),
+    part('SpawnLocation', (0,0.5,0), (6,1,6), (13,105,172), cls='SpawnLocation'),
+  ]),
+  item('ReplicatedStorage', 'ReplicatedStorage', '', [item('RemoteEvent', 'RedeemCode')]),
+  item('ServerScriptService', 'ServerScriptService', '', [
+    script('Codes', '''
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CODES = { KRONOS = 100, LAUNCH = 50 }
+local used = {}
+
+ReplicatedStorage.RedeemCode.OnServerEvent:Connect(function(player, code)
+	if type(code) ~= "string" then return end
+	code = string.upper(code)
+	local reward = CODES[code]
+	used[player] = used[player] or {}
+	if reward and not used[player][code] then
+		used[player][code] = true
+		player:SetAttribute("Gems", (player:GetAttribute("Gems") or 0) + reward)
+	end
+end)
+'''),
+  ]),
+  item('StarterGui', 'StarterGui', '', [
+    item('ScreenGui', 'Menu', '', [
+      item('Frame', 'Codes', '', [
+        item('UICorner', 'UICorner'),
+        item('UIStroke', 'UIStroke'),
+        item('TextBox', 'CodeBox', '<string name="PlaceholderText">Enter a code</string><string name="Text"></string>'),
+        item('TextButton', 'Redeem', '<string name="Text">Redeem</string>'),
+      ]),
+      item('ScrollingFrame', 'Shop', '<UDim2 name="Size"><XS>0</XS><XO>330</XO><YS>0</YS><YO>220</YO></UDim2>', [
+        item('UIGridLayout', 'UIGridLayout'),
+        item('TextButton', 'Item1', '<string name="Text">Hat</string>'),
+        item('TextButton', 'Item2', '<string name="Text">Trail</string>'),
+        item('TextButton', 'Item3', '<string name="Text">Pet</string>'),
+      ]),
+      script('MenuClient', '''
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local gui = script.Parent
+local box = gui.Codes.CodeBox
+
+local function redeem()
+	if box.Text ~= "" then
+		ReplicatedStorage.RedeemCode:FireServer(box.Text)
+		box.Text = ""
+	end
+end
+
+gui.Codes.Redeem.MouseButton1Click:Connect(redeem)
+box.FocusLost:Connect(function(enterPressed)
+	if enterPressed then
+		redeem()
+	end
+end)
+
+local count = 0
+for _, child in gui.Shop:GetChildren() do
+	if child:IsA("TextButton") then
+		count += 1
+	end
+end
+gui.Shop.CanvasSize = UDim2.new(0, 0, 0, count * 110)
+''', cls='LocalScript'),
+    ]),
+  ]))

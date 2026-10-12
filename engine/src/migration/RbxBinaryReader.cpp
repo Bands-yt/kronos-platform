@@ -313,6 +313,21 @@ void readProperty(Reader& r, Document& doc) {
             each([&](Instance& inst, size_t i) { setProperty(inst, name, "int64", std::to_string(unzigzag(values[i]))); });
             break;
         }
+        case 0x15:   // NumberSequence: count, then time value envelope
+        case 0x16: { // ColorSequence: count, then time r g b envelope
+            const size_t floatsPer = type == 0x15 ? 3 : 5;
+            each([&](Instance& inst, size_t) {
+                const uint32_t count = r.u32();
+                if (count > 4096) {
+                    (void)r.take(r.left() + 1);
+                    return;
+                }
+                std::string text;
+                for (uint32_t k = 0; k < count * floatsPer && r.ok(); ++k) text += number(r.f32()) + " ";
+                setProperty(inst, name, type == 0x15 ? "NumberSequence" : "ColorSequence", text);
+            });
+            break;
+        }
         default: break; // a type the importer doesn't read; the chunk holds only this property
     }
 }

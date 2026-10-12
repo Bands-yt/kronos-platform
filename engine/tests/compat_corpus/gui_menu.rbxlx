@@ -1,0 +1,40 @@
+<roblox version="4"><Item class="Workspace" referent="RBX3"><Properties><string name="Name">Workspace</string></Properties><Item class="Part" referent="RBX1"><Properties><string name="Name">Baseplate</string><CoordinateFrame name="CFrame"><X>0</X><Y>-0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>40</X><Y>1</Y><Z>40</Z></Vector3><Color3uint8 name="Color3uint8">4284193356</Color3uint8><bool name="Anchored">true</bool></Properties></Item><Item class="SpawnLocation" referent="RBX2"><Properties><string name="Name">SpawnLocation</string><CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame><Vector3 name="size"><X>6</X><Y>1</Y><Z>6</Z></Vector3><Color3uint8 name="Color3uint8">4279069100</Color3uint8><bool name="Anchored">true</bool></Properties></Item></Item><Item class="ReplicatedStorage" referent="RBX5"><Properties><string name="Name">ReplicatedStorage</string></Properties><Item class="RemoteEvent" referent="RBX4"><Properties><string name="Name">RedeemCode</string></Properties></Item></Item><Item class="ServerScriptService" referent="RBX7"><Properties><string name="Name">ServerScriptService</string></Properties><Item class="Script" referent="RBX6"><Properties><string name="Name">Codes</string><ProtectedString name="Source"><![CDATA[local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CODES = { KRONOS = 100, LAUNCH = 50 }
+local used = {}
+
+ReplicatedStorage.RedeemCode.OnServerEvent:Connect(function(player, code)
+	if type(code) ~= "string" then return end
+	code = string.upper(code)
+	local reward = CODES[code]
+	used[player] = used[player] or {}
+	if reward and not used[player][code] then
+		used[player][code] = true
+		player:SetAttribute("Gems", (player:GetAttribute("Gems") or 0) + reward)
+	end
+end)
+]]></ProtectedString></Properties></Item></Item><Item class="StarterGui" referent="RBX20"><Properties><string name="Name">StarterGui</string></Properties><Item class="ScreenGui" referent="RBX19"><Properties><string name="Name">Menu</string></Properties><Item class="Frame" referent="RBX12"><Properties><string name="Name">Codes</string></Properties><Item class="UICorner" referent="RBX8"><Properties><string name="Name">UICorner</string></Properties></Item><Item class="UIStroke" referent="RBX9"><Properties><string name="Name">UIStroke</string></Properties></Item><Item class="TextBox" referent="RBX10"><Properties><string name="Name">CodeBox</string><string name="PlaceholderText">Enter a code</string><string name="Text"></string></Properties></Item><Item class="TextButton" referent="RBX11"><Properties><string name="Name">Redeem</string><string name="Text">Redeem</string></Properties></Item></Item><Item class="ScrollingFrame" referent="RBX17"><Properties><string name="Name">Shop</string><UDim2 name="Size"><XS>0</XS><XO>330</XO><YS>0</YS><YO>220</YO></UDim2></Properties><Item class="UIGridLayout" referent="RBX13"><Properties><string name="Name">UIGridLayout</string></Properties></Item><Item class="TextButton" referent="RBX14"><Properties><string name="Name">Item1</string><string name="Text">Hat</string></Properties></Item><Item class="TextButton" referent="RBX15"><Properties><string name="Name">Item2</string><string name="Text">Trail</string></Properties></Item><Item class="TextButton" referent="RBX16"><Properties><string name="Name">Item3</string><string name="Text">Pet</string></Properties></Item></Item><Item class="LocalScript" referent="RBX18"><Properties><string name="Name">MenuClient</string><ProtectedString name="Source"><![CDATA[local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local gui = script.Parent
+local box = gui.Codes.CodeBox
+
+local function redeem()
+	if box.Text ~= "" then
+		ReplicatedStorage.RedeemCode:FireServer(box.Text)
+		box.Text = ""
+	end
+end
+
+gui.Codes.Redeem.MouseButton1Click:Connect(redeem)
+box.FocusLost:Connect(function(enterPressed)
+	if enterPressed then
+		redeem()
+	end
+end)
+
+local count = 0
+for _, child in gui.Shop:GetChildren() do
+	if child:IsA("TextButton") then
+		count += 1
+	end
+end
+gui.Shop.CanvasSize = UDim2.new(0, 0, 0, count * 110)
+]]></ProtectedString></Properties></Item></Item></Item></roblox>

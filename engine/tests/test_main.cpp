@@ -188,6 +188,7 @@
 #include "cinematic/SequenceAudio.hpp"
 #include "core/RollbackScript.hpp"
 #include "core/PythonScripting.hpp"
+#include "core/ScriptLanguage.hpp"
 #include "core/SingleInstance.hpp"
 #include "core/Guid.hpp"
 #include <lua.h>
@@ -204,6 +205,7 @@
 #include "core/InstanceSignals.hpp"
 #include "core/ScriptInstanceApi.hpp"
 #include "core/RobloxPlayers.hpp"
+#include "core/RobloxTools.hpp"
 #include "core/RobloxRemoteNet.hpp"
 #include "core/RobloxReplication.hpp"
 #include "core/PartBodies.hpp"
@@ -290,6 +292,8 @@
 #include "moderation/SafetyReportGenerator.hpp"
 #include "moderation/TrainingDataLog.hpp"
 #include "studio/CreatorConsole.hpp"
+#include "studio/MultiplayerTest.hpp"
+#include "studio/RustPluginProject.hpp"
 #include "studio/CreatorToolsSpawning.hpp"
 #include "studio/EntityClassification.hpp"
 #include "studio/MaterialPresets.hpp"
@@ -325,6 +329,7 @@
 #include "net/StudioCollabState.hpp"
 #include "migration/AssetConverter.hpp"
 #include "migration/AssetModeration.hpp"
+#include "migration/CompatLab.hpp"
 #include "migration/InstanceHydrator.hpp"
 #include "migration/ProjectImporter.hpp"
 #include "core/RobloxDatatypes.hpp"
@@ -12664,6 +12669,7 @@ struct RbxBinaryWriterForTest {
         glm::vec3 position{0.0f};
         glm::vec3 size{1.0f};
         std::string sharedChildData; // as ChildData2, empty for none
+        std::vector<float> colorSequence; // as Color (time r g b envelope ...), empty for none
     };
     static void u32(std::string& out, uint32_t v) {
         for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>(v >> (8 * i) & 0xFF));
@@ -12769,6 +12775,21 @@ struct RbxBinaryWriterForTest {
             }
             chunk(out, "PROP", cframe);
 
+            if (!members.front()->colorSequence.empty()) {
+                std::string sequence;
+                u32(sequence, c);
+                str(sequence, "Color");
+                sequence.push_back(0x16);
+                for (const Part* p : members) {
+                    u32(sequence, static_cast<uint32_t>(p->colorSequence.size() / 5));
+                    for (float f : p->colorSequence) {
+                        uint32_t bits;
+                        std::memcpy(&bits, &f, 4);
+                        u32(sequence, bits);
+                    }
+                }
+                chunk(out, "PROP", sequence);
+            }
             if (!members.front()->sharedChildData.empty()) {
                 std::string childData;
                 u32(childData, c);
@@ -28747,6 +28768,29 @@ void testPermanentObjectIds() {
     }
 
     {
+        // Siblings come back in the order they were made.
+        ECS world;
+        const EntityId holder = world.createEntity("Holder");
+        std::vector<EntityId> made;
+        for (const char* n : {"Alpha", "Beta", "Gamma"}) {
+            made.push_back(world.createEntity(n));
+            hierarchy::setParent(world, made.back(), holder);
+        }
+        SceneFile file = sceneManager.captureScene(world, camera);
+        check(file.saveToFile(textPath), "scene with siblings saves");
+        SceneFile reread;
+        check(reread.loadFromFile(textPath), "scene with siblings loads");
+        ECS loaded;
+        instantiateSceneEntities(reread.entities, loaded, SceneBuildContext{});
+        std::string order;
+        for (auto [entity, hierarchyComponent] : loaded.raw().view<Hierarchy>().each()) {
+            if (loaded.raw().get<Name>(entity).value != "Holder") continue;
+            for (EntityId child : hierarchyComponent.children) order += loaded.raw().get<Name>(child).value + " ";
+        }
+        check(order == "Alpha Beta Gamma ", "siblings keep their creation order across save/load");
+    }
+
+    {
         // Links between objects survive save/load through ids.
         ECS world;
         const EntityId part0 = world.createEntity("Part");
@@ -28823,6 +28867,68 @@ void testSingleInstanceLock() {
     check(third.acquire(name), "the lock is free again once the first Player closes");
 }
 
+void testStudioMultiplayerTest() {
+    namespace fs = std::filesystem;
+    using engine::studio::MultiplayerTest;
+    std::printf("\n-- Studio test with a server --\n");
+    MultiplayerTest refused;
+    MultiplayerTest::Request bad;
+    bad.workRoot = fs::temp_directory_path() / "important-folder";
+    std::string error;
+    check(!refused.start(bad, error) && !fs::exists(bad.workRoot) && !error.empty(),
+          "the test refuses a work folder that isn't its own");
+
+    const fs::path runtime = fs::path(engine::core::executableDirectory()) / ".." / "src" /
+                             fs::path(engine::core::siblingExecutable("engine_runtime")).filename();
+    if (!fs::exists(runtime)) {
+        std::printf("  (skipped: %s not built)\n", runtime.string().c_str());
+        return;
+    }
+    const fs::path fixture = fs::absolute("tests/fixtures/games/remote_check");
+    MultiplayerTest test;
+    MultiplayerTest::Request request;
+    request.runtime = runtime.string();
+    request.workRoot = fs::temp_directory_path() / ("kronos-studio-test-unit-" + std::to_string(engine::core::currentProcessId()));
+    request.saveScene = [&](const std::string& path) {
+        std::error_code ec;
+        return fs::copy_file(fixture / "default.scene", path, fs::copy_options::overwrite_existing, ec);
+    };
+    request.projectDir = fixture;
+    request.players = 2;
+    request.headlessPlayers = true;
+    request.env = {{"KRONOS_SILENT_AUDIO", "1"}};
+    check(test.start(request, error), ("the test server starts: " + error).c_str());
+    check(fs::exists(request.workRoot / "games" / "studio-test" / "game.gamemanifest") &&
+              fs::exists(request.workRoot / "games" / "studio-test" / "Scripts" / "Main.py"),
+          "the scene is saved as a game with the project's scripts");
+    const std::string serverLog = (request.workRoot / "server.log").string();
+    auto logHas = [](const std::string& file, const std::string& text) {
+        for (const std::string& line : MultiplayerTest::tail(file, 400)) {
+            if (line.find(text) != std::string::npos) return true;
+        }
+        return false;
+    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(40);
+    bool joined = false;
+    while (std::chrono::steady_clock::now() < deadline && test.active()) {
+        test.update();
+        joined = logHas(serverLog, "SERVER got hello from Player1") && logHas(serverLog, "SERVER got hello from Player2");
+        if (joined) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    check(test.phase() == MultiplayerTest::Phase::Running && test.members().size() == 3, test.message().c_str());
+    check(joined, "both test players join the server under their own names");
+    check(logHas((request.workRoot / "player2.log").string(), "CLIENT asked, server said Teal"),
+          "a test player's scripts talk to the server");
+    if (!joined) {
+        for (const std::string& line : MultiplayerTest::tail(serverLog, 15)) std::printf("  server: %s\n", line.c_str());
+    }
+    test.stop();
+    check(test.members().empty() && !test.active(), "Stop ends the server and the players");
+    std::error_code ec;
+    fs::remove_all(request.workRoot, ec);
+}
+
 void testSiblingExecutable() {
     std::printf("\n-- sibling executables --\n");
     // The Player relaunches itself for Broken Bones; on Windows that path needs ".exe".
@@ -28833,6 +28939,113 @@ void testSiblingExecutable() {
 #else
     check(self.size() < 4 || self.compare(self.size() - 4, 4, ".exe") != 0, "outside Windows there's no .exe");
 #endif
+}
+
+void testStudioPythonScripts() {
+    std::printf("\n-- python scripts on entities --\n");
+    using engine::core::PythonScripting;
+    using engine::core::ScriptLanguage;
+    using engine::core::scriptLanguageOf;
+    check(scriptLanguageOf("# python\nprint(1)") == ScriptLanguage::Python &&
+              scriptLanguageOf("  \n\t#x") == ScriptLanguage::Python,
+          "a leading # comment marks a Python script");
+    check(scriptLanguageOf("print(1)") == ScriptLanguage::Luau && scriptLanguageOf("-- # x\nprint(1)") == ScriptLanguage::Luau &&
+              scriptLanguageOf("") == ScriptLanguage::Luau,
+          "everything else is Luau");
+
+    engine::core::ECS ecs;
+    const auto crate = ecs.createEntity("Crate");
+    const auto brain = ecs.createEntity("Brain");
+    ecs.addComponent<engine::core::RigidBody>(crate).joltBodyId = 7; // pretend it has a live body
+    engine::core::Scripting luau;
+    check(luau.initialize(), "Luau starts");
+    PythonScripting python;
+    python.setWorld(&ecs, nullptr);
+    std::string output;
+    python.setOutputCallback([&output](const std::string& line) { output += line + "\n"; });
+
+    ecs.addComponent<engine::core::Script>(brain).source =
+        "# python\n@events.on_update\ndef go(dt):\n    world.set_position(world.find('Crate'), 1, 2, 3)\n";
+    engine::core::tickScriptHotReload(ecs, luau, &python);
+    check(python.scriptCount() == 1, "an entity's Python script is loaded into the Python VM");
+    python.tick(0.1f);
+    const auto* transform = ecs.tryGetComponent<engine::core::Transform>(crate);
+    check(transform != nullptr && transform->position == glm::vec3(1.0f, 2.0f, 3.0f), "the entity's Python script runs");
+    check(ecs.tryGetComponent<engine::core::instances::PhysicsPoseWrite>(crate) != nullptr,
+          "set_position tells physics the body moved");
+
+    ecs.tryGetComponent<engine::core::Script>(brain)->source = "print('now luau')";
+    engine::core::tickScriptHotReload(ecs, luau, &python);
+    check(python.scriptCount() == 0, "changing the script to Luau unloads the Python script");
+
+    ecs.tryGetComponent<engine::core::Script>(brain)->source = "# python\nprint('back')\nx = (";
+    engine::core::tickScriptHotReload(ecs, luau, &python);
+    check(python.scriptCount() == 0 && output.find("[python] Brain.py") != std::string::npos,
+          "a Python syntax error is reported with the entity's name");
+
+    output.clear();
+    ecs.tryGetComponent<engine::core::Script>(brain)->source = "# python\nprint('again')\n";
+    engine::core::tickScriptHotReload(ecs, luau, nullptr);
+    check(python.scriptCount() == 0 && output.empty(), "without a Python host, Python scripts are skipped quietly");
+    luau.shutdown();
+}
+
+void testRustPluginProject() {
+    std::printf("\n-- rust plugin projects --\n");
+    using engine::studio::RustBuild;
+    using engine::studio::RustPluginProject;
+    namespace fs = std::filesystem;
+    check(RustPluginProject::crateName("My Cool Plugin!") == "my_cool_plugin" &&
+              RustPluginProject::crateName("9lives") == "lives" && RustPluginProject::crateName("???").empty(),
+          "plugin names become valid crate names");
+
+    const fs::path root = fs::temp_directory_path() / ("kronos-rust-test-" + std::to_string(engine::core::currentProcessId()));
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    fs::path dir;
+    std::string error;
+    check(RustPluginProject::create(root, "Grid Tool", RUST_TEMPLATE_DIR, RUST_SDK_DIR, dir, error), "a Rust plugin project is created");
+    std::ifstream manifestFile(dir / "Cargo.toml");
+    const std::string manifest((std::istreambuf_iterator<char>(manifestFile)), std::istreambuf_iterator<char>());
+    check(manifest.find("name = \"grid_tool\"") != std::string::npos &&
+              manifest.find(fs::absolute(fs::path(RUST_SDK_DIR)).generic_string()) != std::string::npos &&
+              fs::is_regular_file(dir / "src" / "lib.rs"),
+          "the new project has its own name and points at the Kronos crate");
+    check(!RustPluginProject::create(root, "grid tool", RUST_TEMPLATE_DIR, RUST_SDK_DIR, dir, error),
+          "a second plugin with the same name is refused");
+    const auto found = RustPluginProject::scan(root);
+    check(found.size() == 1 && found[0].name == "grid_tool", "the project list finds it");
+
+    // Starting a program by bare name has to search PATH (this once silently skipped the cargo checks).
+    check(RustPluginProject::cargoAvailable() || !fs::exists("/usr/bin/cargo"), "cargo is found on PATH when it is installed");
+    if (RustPluginProject::cargoAvailable()) {
+        RustBuild build;
+        check(build.start(dir, error), "cargo starts");
+        for (int i = 0; i < 1200 && build.state() == RustBuild::State::Running; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            build.update();
+        }
+        check(build.state() == RustBuild::State::Succeeded, "the Rust plugin builds");
+        const fs::path library = RustPluginProject::builtLibrary(dir, "grid_tool");
+        check(fs::is_regular_file(library), "the build leaves the library where Studio expects it");
+        const fs::path plugins = root / "native_plugins";
+        check(RustPluginProject::install(library, plugins, error) &&
+                  fs::is_regular_file(plugins / library.filename()) && !fs::exists(plugins / (library.filename().string() + ".new")),
+              "install copies the library into the plugin folder");
+        check(RustPluginProject::install(library, plugins, error), "installing again replaces it");
+
+        std::ofstream(dir / "src" / "lib.rs") << "this is not rust";
+        RustBuild broken;
+        check(broken.start(dir, error), "cargo starts for a broken project");
+        for (int i = 0; i < 600 && broken.state() == RustBuild::State::Running; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            broken.update();
+        }
+        check(broken.state() == RustBuild::State::Failed && !broken.logTail(20).empty(),
+              "a broken plugin fails and its error is in the log");
+    }
+    fs::remove_all(root, ec);
 }
 
 void testPythonScripts() {
@@ -44140,6 +44353,275 @@ print("DONE")
           "UDim2 and Vector2 properties are saved in scenes");
 }
 
+void testRobloxGuiWidgets() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox GUI widgets --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "GUI widgets test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    std::string error;
+    const InstanceRef body = instances::create(ecs, "Part", error);
+    (void)instances::setParent(ecs, body, kWorkspaceInstance, error);
+    (void)players::join(ecs, "Tester", 1, instances::entityOf(ecs, body), true);
+    signals::flush(ecs);
+
+    scripting.loadAndRun("WidgetSetup", R"LUAU(
+local gui = Instance.new("ScreenGui")
+gui.Parent = game:GetService("Players").LocalPlayer.PlayerGui
+local function make(class, name, parent, size, position)
+	local o = Instance.new(class)
+	o.Name = name
+	if size then o.Size = size end
+	if position then o.Position = position end
+	o.Parent = parent
+	return o
+end
+local list = make("ScrollingFrame", "List", gui, UDim2.fromOffset(200, 100))
+list.CanvasSize = UDim2.fromOffset(0, 300)
+Instance.new("UIListLayout").Parent = list
+for i = 1, 6 do make("Frame", "Row" .. i, list, UDim2.new(1, 0, 0, 50)).LayoutOrder = i end
+local auto = make("ScrollingFrame", "Auto", gui, UDim2.fromOffset(100, 100), UDim2.fromOffset(300, 0))
+auto.CanvasSize = UDim2.new()
+auto.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Instance.new("UIListLayout").Parent = auto
+for i = 1, 3 do make("Frame", "A" .. i, auto, UDim2.new(1, 0, 0, 80)) end
+local grid = make("Frame", "Grid", gui, UDim2.fromOffset(230, 300), UDim2.fromOffset(0, 200))
+local layout = Instance.new("UIGridLayout")
+layout.CellSize = UDim2.fromOffset(100, 50)
+layout.CellPadding = UDim2.fromOffset(10, 10)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = grid
+for i = 1, 5 do make("Frame", "C" .. i, grid).LayoutOrder = i end
+local ties = make("Frame", "Ties", gui, UDim2.fromOffset(340, 300), UDim2.fromOffset(300, 200))
+local tieLayout = Instance.new("UIGridLayout")
+tieLayout.CellSize = UDim2.fromOffset(100, 50)
+tieLayout.CellPadding = UDim2.fromOffset(10, 10)
+tieLayout.SortOrder = Enum.SortOrder.LayoutOrder
+tieLayout.Parent = ties
+for i = 1, 3 do make("Frame", "T" .. i, ties) end
+local scaled = make("Frame", "Scaled", gui, UDim2.fromOffset(100, 40), UDim2.fromOffset(500, 0))
+Instance.new("UIScale", scaled).Scale = 2
+make("Frame", "Inner", scaled, UDim2.fromOffset(10, 10), UDim2.fromOffset(5, 5))
+local square = make("Frame", "Square", gui, UDim2.fromOffset(300, 100), UDim2.fromOffset(0, 520))
+Instance.new("UIAspectRatioConstraint", square)
+local capped = make("Frame", "Capped", gui, UDim2.fromOffset(500, 10), UDim2.fromOffset(0, 560))
+local limits = Instance.new("UISizeConstraint")
+limits.MinSize = Vector2.new(0, 30)
+limits.MaxSize = Vector2.new(200, math.huge)
+limits.Parent = capped
+local box = make("TextBox", "NameBox", gui, UDim2.fromOffset(150, 30), UDim2.fromOffset(600, 300))
+box.Text = "hi"
+box.PlaceholderText = "Your name"
+box.Focused:Connect(function() print("FOCUSED") end)
+box.FocusLost:Connect(function(enter) print("LOST " .. tostring(enter)) end)
+Instance.new("UIStroke", box).Thickness = 2
+print("DONE")
+)LUAU");
+    signals::flush(ecs);
+    const glm::vec2 screen(800.0f, 600.0f);
+    gui::Input input;
+    gui::update(ecs, screen, input);
+    auto rectOf = [&](const std::string& name) {
+        for (const gui::Item& item : gui::items(ecs)) {
+            if (instances::name(ecs, item.ref) == name) return glm::vec4(item.position, item.size);
+        }
+        return glm::vec4(-1.0f);
+    };
+    auto prop = [&](const std::string& name, const char* property) {
+        for (const gui::Item& item : gui::items(ecs)) {
+            if (instances::name(ecs, item.ref) != name) continue;
+            InstanceValue value;
+            const PropertyDef* def = instances::findProperty(instances::className(ecs, item.ref), property);
+            if (def != nullptr) (void)instances::getProperty(ecs, item.ref, *def, value);
+            return glm::vec2(value.vec.x, value.vec.y);
+        }
+        return glm::vec2(-1.0f);
+    };
+    check(prop("List", "AbsoluteCanvasSize") == glm::vec2(200, 300) && prop("List", "AbsoluteWindowSize") == glm::vec2(200, 100),
+          "ScrollingFrame reports its canvas and window size");
+    check(rectOf("Row2") == glm::vec4(0, 50, 200, 50), "ScrollingFrame children are laid out on the canvas");
+    const auto clipped = [&](const std::string& name) {
+        for (const gui::Item& item : gui::items(ecs)) {
+            if (instances::name(ecs, item.ref) == name) return item.clipMax == glm::vec2(200, 100);
+        }
+        return false;
+    };
+    check(clipped("Row5"), "ScrollingFrame clips its children");
+
+    input.mouse = glm::vec2(50.0f, 50.0f);
+    input.wheel = -1.0f;
+    gui::update(ecs, screen, input);
+    gui::update(ecs, screen, gui::Input{});
+    check(prop("List", "CanvasPosition") == glm::vec2(0, 40) && rectOf("Row2").y == 10.0f,
+          "the mouse wheel scrolls a ScrollingFrame");
+    input.wheel = -10.0f;
+    gui::update(ecs, screen, input);
+    check(prop("List", "CanvasPosition") == glm::vec2(0, 200), "scrolling stops at the end of the canvas");
+    check(prop("Auto", "AbsoluteCanvasSize") == glm::vec2(100, 240), "AutomaticCanvasSize grows the canvas to fit");
+
+    check(rectOf("C3") == glm::vec4(0, 260, 100, 50) && rectOf("C2") == glm::vec4(110, 200, 100, 50),
+          "UIGridLayout fills rows of cells");
+    check(rectOf("T1").x < rectOf("T2").x && rectOf("T2").x < rectOf("T3").x,
+          "equal LayoutOrder keeps the order the children were made in");
+    check(rectOf("Scaled") == glm::vec4(500, 0, 200, 80) && rectOf("Inner") == glm::vec4(510, 10, 20, 20),
+          "UIScale scales an object and its children");
+    check(rectOf("Square") == glm::vec4(0, 520, 100, 100), "UIAspectRatioConstraint keeps the ratio");
+    check(rectOf("Capped") == glm::vec4(0, 560, 200, 30), "UISizeConstraint clamps the size");
+
+    input = gui::Input{};
+    input.mouse = glm::vec2(650.0f, 310.0f);
+    gui::update(ecs, screen, input);
+    check(gui::mouseOverButton(ecs), "a TextBox takes clicks");
+    input.pressed = true;
+    gui::update(ecs, screen, input);
+    signals::flush(ecs);
+    const InstanceRef box = gui::focusedTextBox(ecs);
+    check(box != kNoInstance && instances::name(ecs, box) == "NameBox", "clicking a TextBox focuses it");
+    scripting.loadAndRun("WidgetFocus", R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local box = game:GetService("Players").LocalPlayer.PlayerGui.ScreenGui.NameBox
+expect("ClearTextOnFocus empties the box", box.Text == "")
+expect("IsFocused", box:IsFocused())
+box:ReleaseFocus(true)
+expect("ReleaseFocus drops the focus", not box:IsFocused())
+box:CaptureFocus()
+expect("CaptureFocus takes it back", box:IsFocused())
+local grid = game:GetService("Players").LocalPlayer.PlayerGui.ScreenGui.Grid.UIGridLayout
+expect("UIGridLayout AbsoluteContentSize", grid.AbsoluteContentSize == Vector2.new(210, 170))
+expect("UIGridLayout AbsoluteCellSize", grid.AbsoluteCellSize == Vector2.new(100, 50))
+print("DONE")
+)LUAU");
+    signals::flush(ecs);
+    input = gui::Input{};
+    input.mouse = glm::vec2(790.0f, 590.0f);
+    input.pressed = true;
+    gui::update(ecs, screen, input);
+    signals::flush(ecs);
+    check(gui::focusedTextBox(ecs) == kNoInstance, "clicking elsewhere drops the focus");
+    auto count = [&](const std::string& text) { return std::count(output.begin(), output.end(), text); };
+    check(count("FOCUSED") == 2, "Focused fires for a click and for CaptureFocus");
+    check(count("LOST true") == 1 && count("LOST false") == 1, "FocusLost says whether Enter was pressed");
+    checkLuauExpectations("GUI widgets", output);
+
+    check(gui::resolveImage(ecs, "rbxassetid://5") == nullptr, "no images without a resolver");
+    int texture = 0;
+    gui::setImageResolver(ecs, [&](const std::string& image) -> void* { return image == "rbxassetid://5" ? &texture : nullptr; });
+    check(gui::resolveImage(ecs, "rbxassetid://5") == &texture && gui::resolveImage(ecs, "") == nullptr,
+          "images go through the host's resolver");
+
+    namespace fs = std::filesystem;
+    const fs::path root = fs::absolute("test_gui_images/game");
+    fs::remove_all(root.parent_path());
+    fs::create_directories(root / "assets" / "images");
+    fs::create_directories(root / "ui");
+    auto touchFile = [](const fs::path& path, const std::string& text = "x") { std::ofstream(path) << text; };
+    touchFile(root / "assets" / "5.png");
+    touchFile(root / "assets" / "images" / "6.jpg");
+    touchFile(root / "ui" / "coin.png");
+    touchFile(root / "ui" / "notes.txt");
+    touchFile(root.parent_path() / "outside.png");
+    touchFile(root / "asset_map.json", R"({"7": "ui/coin.png", "8": "../outside.png"})");
+    const std::vector<fs::path> roots = {root};
+    const auto same = [](const std::string& a, const fs::path& b) { return !a.empty() && fs::equivalent(a, b); };
+    check(gui::assetIdOf("rbxassetid://123") == "123" && gui::assetIdOf("rbxassetid:///9") == "9" &&
+              gui::assetIdOf("http://www.roblox.com/asset/?id=42") == "42" && gui::assetIdOf("ui/coin.png").empty(),
+          "asset ids are read from rbxassetid:// and roblox.com links");
+    check(same(gui::imageFile("rbxassetid://5", roots), root / "assets" / "5.png") &&
+              same(gui::imageFile("rbxassetid://6", roots), root / "assets" / "images" / "6.jpg"),
+          "an asset id finds assets/<id>.png and assets/images/<id>.jpg");
+    check(same(gui::imageFile("rbxassetid://7", roots), root / "ui" / "coin.png"), "asset_map.json maps an id to a file");
+    check(gui::imageFile("rbxassetid://8", roots).empty() && gui::imageFile("../outside.png", roots).empty(),
+          "images can't come from outside the game folder");
+    check(same(gui::imageFile("ui/coin.png", roots), root / "ui" / "coin.png") &&
+              gui::imageFile("ui/notes.txt", roots).empty() && gui::imageFile("rbxasset://textures/x.png", roots).empty(),
+          "relative image paths work; other files and Roblox's built-in textures don't");
+
+    scripting.loadAndRun("WidgetImages", R"LUAU(
+local gui = game:GetService("Players").LocalPlayer.PlayerGui.ScreenGui
+local found = Instance.new("ImageLabel")
+found.Image = "rbxassetid://5"
+found.Parent = gui
+local lost = Instance.new("ImageButton")
+lost.Image = "rbxassetid://999"
+lost.Parent = gui
+print("DONE")
+)LUAU");
+    const std::vector<std::string> missing = gui::missingImages(ecs, roots);
+    check(missing.size() == 1 && missing[0] == "rbxassetid://999", "missing GUI images are listed");
+
+    output.clear();
+    scripting.loadAndRun("WidgetGradient", R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function fails(f) return not pcall(f) end
+local g = Instance.new("UIGradient")
+expect("UIGradient defaults", g.Color == ColorSequence.new(Color3.new(1, 1, 1)) and g.Transparency == NumberSequence.new(0)
+	and g.Rotation == 0 and g.Enabled)
+local colors = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.new(1, 0, 0)),
+	ColorSequenceKeypoint.new(0.5, Color3.new(0, 1, 0)),
+	ColorSequenceKeypoint.new(1, Color3.new(0, 0, 1)),
+})
+g.Color = colors
+g.Transparency = NumberSequence.new(0, 1)
+g.Rotation = 90
+expect("ColorSequence properties round-trip", g.Color == colors and #g.Color.Keypoints == 3
+	and g.Color.Keypoints[2].Value == Color3.new(0, 1, 0))
+expect("NumberSequence properties round-trip", g.Transparency.Keypoints[2].Value == 1)
+expect("a Color3 is not a ColorSequence", fails(function() g.Color = Color3.new() end))
+g.Parent = game:GetService("Players").LocalPlayer.PlayerGui.ScreenGui.Square
+print("DONE")
+)LUAU");
+    checkLuauExpectations("GUI gradients", output);
+
+    const InstanceValue sequence = InstanceValue::ofColorSequence({0, 1, 0, 0, 0.5f, 0, 1, 0, 1, 0, 0, 1});
+    {
+        error.clear();
+        const InstanceRef holder = instances::create(ecs, "UIGradient", error);
+        const PropertyDef* colorDef = instances::findProperty("UIGradient", "Color");
+        instances::setProperty(ecs, holder, *colorDef, sequence);
+        const InstanceRef copy = instances::clone(ecs, holder);
+        InstanceValue copied;
+        check(copy != kNoInstance && instances::getProperty(ecs, copy, *colorDef, copied) && copied.keys == sequence.keys,
+              "gradients survive Clone");
+    }
+
+    const std::string xml = R"XML(<roblox version="4">
+  <Item class="Frame" referent="F"><Properties><string name="Name">Bar</string></Properties>
+    <Item class="UIGradient" referent="G"><Properties><string name="Name">UIGradient</string>
+      <ColorSequence name="Color">0 1 0 0 0 0.5 0 1 0 0 1 0 0 1 0 </ColorSequence>
+      <NumberSequence name="Transparency">0 0 0 1 0.75 0 </NumberSequence>
+      <float name="Rotation">45</float></Properties></Item>
+  </Item>
+</roblox>)XML";
+    engine::migration::ProjectImporter importer;
+    engine::safety::IPInfringementScanner scanner;
+    const auto report = importer.importDocument(xml, scanner);
+    ECS imported;
+    (void)engine::migration::InstanceHydrator{}.hydrate(report.tree, imported, engine::migration::HydrationMeshes{});
+    bool importedGradient = false;
+    for (InstanceRef ref : instances::descendants(imported, kGameInstance)) {
+        if (instances::className(imported, ref) != "UIGradient") continue;
+        InstanceValue c, t, r;
+        (void)instances::getProperty(imported, ref, *instances::findProperty("UIGradient", "Color"), c);
+        (void)instances::getProperty(imported, ref, *instances::findProperty("UIGradient", "Transparency"), t);
+        (void)instances::getProperty(imported, ref, *instances::findProperty("UIGradient", "Rotation"), r);
+        importedGradient = c.keys == std::vector<float>{0, 1, 0, 0, 0.5f, 0, 1, 0, 1, 0, 0, 1} &&
+                           t.keys == std::vector<float>{0, 0, 0, 1, 0.75f, 0} && r.number == 45.0;
+    }
+    check(importedGradient, "UIGradient Color, Transparency and Rotation import from .rbxlx");
+
+    RbxBinaryWriterForTest::Part gradientPart{"UIGradient", "Shine", {}, {}, ""};
+    gradientPart.colorSequence = {0, 1, 1, 0, 0, 1, 0, 0, 1, 0};
+    std::vector<engine::migration::ImportedInstance> decoded;
+    check(engine::migration::readRobloxBinary(RbxBinaryWriterForTest::write({gradientPart}), decoded, error) &&
+              decoded.size() == 1 && decoded[0].properties["@type.Color"] == "ColorSequence" &&
+              decoded[0].properties["Color"] == "0 1 1 0 0 1 0 0 1 0 ",
+          "ColorSequence is read from binary files");
+}
+
 void testRobloxServices() {
     using namespace engine::core;
     std::printf("\n-- Roblox common services --\n");
@@ -44894,6 +45376,332 @@ void testRobloxColorsAreSrgb() {
     ecs.tryGetComponent<Renderable>(instances::entityOf(ecs, part))->baseColor = glm::vec4(0.21404f, 0.21404f, 0.21404f, 1.0f);
     check(instances::getProperty(ecs, part, color, read) && nearlyEqual(read.vec.x, 0.5f, 1e-4f),
           "a colour changed outside scripts reads back in Roblox terms");
+}
+
+// +1 if every triangle winds the same way round its vertex normals, -1 if every one winds the other way, 0 if mixed.
+int windingAgainstNormals(const std::vector<engine::core::Vertex>& v, const std::vector<uint32_t>& idx) {
+    int sign = 0;
+    for (size_t t = 0; t + 2 < idx.size(); t += 3) {
+        const auto& a = v[idx[t]];
+        const auto& b = v[idx[t + 1]];
+        const auto& c = v[idx[t + 2]];
+        const glm::vec3 face = glm::cross(b.position - a.position, c.position - a.position);
+        if (glm::length(face) < 1e-8f) continue;
+        const int s = glm::dot(face, a.normal + b.normal + c.normal) > 0.0f ? 1 : -1;
+        if (sign == 0) sign = s;
+        if (s != sign) return 0;
+    }
+    return sign;
+}
+
+void testRobloxMeshShapes() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox mesh shapes --\n");
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    std::vector<Vertex> plainVertices;
+    std::vector<uint32_t> plainIndices;
+    generateCylinderGeometry(0.5f, 0.5f, 16, plainVertices, plainIndices);
+    generateRobloxWedgeGeometry(glm::vec3(0.5f), vertices, indices);
+    bool slopeFacesFront = false;
+    for (const Vertex& v : vertices) {
+        if (v.normal.y > 0.1f && std::abs(v.normal.z) > 0.1f) slopeFacesFront = v.normal.z < 0.0f;
+    }
+    check(slopeFacesFront, "the wedge's slope faces Roblox's front (-Z)");
+    float tallZ = 0.0f;
+    for (const Vertex& v : vertices) {
+        if (v.position.y > 0.49f) tallZ = v.position.z;
+    }
+    check(tallZ > 0.49f, "the wedge's tall face is at the back (+Z)");
+    check(windingAgainstNormals(vertices, indices) != 0, "every face of the mirrored wedge winds the same way");
+
+    vertices.clear();
+    indices.clear();
+    generateCylinderAlongXGeometry(0.25f, 1.0f, 16, vertices, indices);
+    glm::vec3 extent(0.0f);
+    for (const Vertex& v : vertices) extent = glm::max(extent, glm::abs(v.position));
+    check(nearlyEqual(extent.x, 1.0f, 1e-4f) && nearlyEqual(extent.y, 0.25f, 1e-3f) && nearlyEqual(extent.z, 0.25f, 1e-3f),
+          "a Shape = Cylinder part's mesh lies along X");
+    check(windingAgainstNormals(vertices, indices) == windingAgainstNormals(plainVertices, plainIndices),
+          "the turned cylinder still faces outwards");
+
+    ECS ecs;
+    ecs.raw().ctx().insert_or_assign(InstanceMeshes{1, 2, 3, 4, 5});
+    std::string error;
+    const auto meshOf = [&](InstanceRef ref) { return ecs.tryGetComponent<Renderable>(instances::entityOf(ecs, ref))->meshHandle; };
+    const InstanceRef part = instances::create(ecs, "Part", error);
+    check(meshOf(part) == 1u, "a new Part is a box");
+    const InstanceRef wedge = instances::create(ecs, "WedgePart", error);
+    check(meshOf(wedge) == 4u, "a WedgePart is drawn as a wedge");
+    instances::setProperty(ecs, part, *instances::findProperty("Part", "Shape"), InstanceValue::ofEnum("PartType", "Cylinder", 2));
+    check(meshOf(part) == 3u, "Shape = Cylinder uses the sideways cylinder");
+    instances::setProperty(ecs, part, *instances::findProperty("Part", "Shape"), InstanceValue::ofEnum("PartType", "Block", 1));
+
+    const InstanceRef special = instances::create(ecs, "SpecialMesh", error);
+    check(special != kNoInstance, "SpecialMesh can be created");
+    check(instances::setParent(ecs, special, part, error), "a SpecialMesh goes in a part");
+    check(meshOf(part) == 5u, "a SpecialMesh starts as Head (an upright cylinder)");
+    instances::setProperty(ecs, special, *instances::findProperty("SpecialMesh", "MeshType"),
+                           InstanceValue::ofEnum("MeshType", "Sphere", 3));
+    check(meshOf(part) == 2u, "MeshType = Sphere draws a ball");
+    instances::setProperty(ecs, special, *instances::findProperty("SpecialMesh", "MeshType"),
+                           InstanceValue::ofEnum("MeshType", "FileMesh", 5));
+    check(meshOf(part) == 1u, "a FileMesh keeps the part's own shape");
+    check(instances::setParent(ecs, special, kNoInstance, error) && meshOf(part) == 1u, "taking the mesh out restores the box");
+
+    const InstanceRef cylinderMesh = instances::create(ecs, "CylinderMesh", error);
+    check(instances::setParent(ecs, cylinderMesh, wedge, error) && meshOf(wedge) == 5u, "a CylinderMesh draws an upright cylinder");
+    instances::destroy(ecs, cylinderMesh);
+    check(meshOf(wedge) == 4u, "destroying it brings the wedge back");
+    std::string missing;
+    check(instances::create(ecs, "DataModelMesh", missing) == kNoInstance, "DataModelMesh can't be created");
+
+    const std::string document = R"XML(<roblox version="4">
+  <Item class="Workspace" referent="W">
+    <Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Part" referent="P">
+      <Properties>
+        <string name="Name">Lamp</string>
+        <Vector3 name="size"><X>2</X><Y>2</Y><Z>2</Z></Vector3>
+      </Properties>
+      <Item class="SpecialMesh" referent="M">
+        <Properties>
+          <string name="Name">Mesh</string>
+          <token name="MeshType">3</token>
+          <Vector3 name="Scale"><X>1.5</X><Y>1</Y><Z>1</Z></Vector3>
+        </Properties>
+      </Item>
+    </Item>
+    <Item class="WedgePart" referent="R">
+      <Properties><string name="Name">Ramp</string></Properties>
+    </Item>
+  </Item>
+</roblox>)XML";
+    auto parsed = engine::migration::RbxlxParser::parse(document);
+    check(parsed.has_value(), "mesh place parses");
+    const auto tree = engine::migration::InstanceTreeBuilder::build(*parsed);
+    ECS imported;
+    engine::migration::HydrationMeshes meshes;
+    meshes.box = 1;
+    meshes.capsule = 2;
+    meshes.cylinder = 3;
+    meshes.wedge = 4;
+    meshes.cylinderY = 5;
+    const auto result = engine::migration::InstanceHydrator{}.hydrate(tree, imported, meshes);
+    EntityId lamp = kNullEntity;
+    EntityId ramp = kNullEntity;
+    EntityId mesh = kNullEntity;
+    for (EntityId e : result.createdEntities) {
+        const std::string& n = imported.tryGetComponent<Name>(e)->value;
+        if (n == "Lamp") lamp = e;
+        if (n == "Ramp") ramp = e;
+        if (n == "Mesh") mesh = e;
+    }
+    check(lamp != kNullEntity && imported.tryGetComponent<Renderable>(lamp)->meshHandle == 2u,
+          "an imported part with a Sphere SpecialMesh is a ball");
+    check(ramp != kNullEntity && imported.tryGetComponent<Renderable>(ramp)->meshHandle == 4u, "an imported WedgePart is a wedge");
+    InstanceValue scale;
+    check(mesh != kNullEntity &&
+              instances::getProperty(imported, instances::refOf(imported, mesh), *instances::findProperty("SpecialMesh", "Scale"), scale) &&
+              nearlyEqual(scale.vec.x, 1.5f, 1e-5f),
+          "the SpecialMesh keeps its Scale");
+}
+
+void testCompatLab() {
+    using namespace engine::migration;
+    std::printf("\n-- Compatibility Lab --\n");
+    const std::string identity = "<R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22>";
+    auto part = [&](const char* ref, const char* name, bool anchored, glm::vec3 p, glm::vec3 size) {
+        char buffer[1024];
+        std::snprintf(buffer, sizeof(buffer),
+                      "<Item class=\"Part\" referent=\"%s\"><Properties><string name=\"Name\">%s</string>"
+                      "<bool name=\"Anchored\">%s</bool><CoordinateFrame name=\"CFrame\"><X>%g</X><Y>%g</Y><Z>%g</Z>%s"
+                      "</CoordinateFrame><Vector3 name=\"size\"><X>%g</X><Y>%g</Y><Z>%g</Z></Vector3></Properties></Item>",
+                      ref, name, anchored ? "true" : "false", p.x, p.y, p.z, identity.c_str(), size.x, size.y, size.z);
+        return std::string(buffer);
+    };
+    const std::string place =
+        "<roblox version=\"4\"><Item class=\"Workspace\" referent=\"W\"><Properties><string name=\"Name\">Workspace</string>"
+        "</Properties>" +
+        part("G", "Ground", true, {0.0f, -0.5f, 0.0f}, {64.0f, 1.0f, 64.0f}) +
+        part("L", "Loose", false, {100.0f, 5.0f, 0.0f}, {2.0f, 2.0f, 2.0f}) +
+        part("T", "Target", true, {10.0f, 0.1f, 0.0f}, {2.0f, 0.2f, 2.0f}) +
+        "</Item><Item class=\"ServerScriptService\" referent=\"S\"><Properties><string name=\"Name\">ServerScriptService"
+        "</string></Properties><Item class=\"Script\" referent=\"X\"><Properties><string name=\"Name\">Late</string>"
+        "<ProtectedString name=\"Source\"><![CDATA[workspace.FallenPartsDestroyHeight = -20\ntask.wait(3)\nlocal nothing = nil\n"
+        "print(nothing.Field)\n]]></ProtectedString></Properties></Item></Item></roblox>";
+    const std::string checks = R"LUAU(
+local humanoid = character:FindFirstChildOfClass("Humanoid")
+humanoid:MoveTo(workspace.Target.Position)
+local reached = humanoid.MoveToFinished:Wait()
+local gap = (hit.Position * Vector3.new(1, 0, 1) - workspace.Target.Position * Vector3.new(1, 0, 1)).Magnitude
+check("walks to the target", reached and gap < 4, tostring(gap))
+check("two players joined", #players == 2)
+check("this one fails", false)
+)LUAU";
+    LabOptions options;
+    options.seconds = 6.0;
+    const LabPlace result = labPlace("lab_test.rbxlx", place, options, checks);
+    const LabResult& r = result.result;
+    check(result.imported && r.ran && r.seconds > 5.9, "lab: the place imports and plays for the set time");
+    check(r.players.size() == 2 && r.players[0].character && r.players[1].character, "lab: two players join with characters");
+    check(r.players[0].deaths == 0 && r.players[0].fellOut == 0, "lab: standing on the ground is safe");
+    const LabError* late = r.errors.empty() ? nullptr : &r.errors.front();
+    check(r.errors.size() == 1 && late->script == "ServerScriptService.Late", "lab: a script's error is caught");
+    check(late != nullptr && late->time > 2.8 && late->time < 3.5, "lab: the error has the game time it happened");
+    check(late != nullptr && late->line == 4, "lab: and its line");
+    check(r.fallenParts.size() == 1 && r.fallenParts.front() == "Workspace.Loose", "lab: an unanchored part falling out of the world is reported");
+    std::map<std::string, bool> passed;
+    for (const auto& c : r.behaviour) passed[c.name] = c.passed;
+    check(r.behaviourRan && passed["walks to the target"], "lab: MoveTo really walks the character there (physics on)");
+    check(passed["two players joined"] && passed.count("this one fails") == 1 && !passed["this one fails"],
+          "lab: every check is recorded, failures too");
+
+    const std::string json = labReportJson({result}, options);
+    std::vector<LabPlace> read;
+    std::string error;
+    check(readLabReport(json, read, error) && read.size() == 1 && read[0].result.errors.size() == 1 &&
+              read[0].result.fallenParts == r.fallenParts && read[0].result.behaviour.size() == r.behaviour.size(),
+          "lab: the JSON report reads back");
+    check(labReportMarkdown({result}, options).find("fell out of the world") != std::string::npos,
+          "lab: the Markdown report explains fallen parts");
+
+    LabPlace older = read[0];
+    older.result.errors.clear();
+    older.result.fallenParts.clear();
+    for (auto& c : older.result.behaviour) c.passed = c.name == "this one fails" ? true : c.passed;
+    const std::vector<LabChange> changes = compareLab({older}, {result});
+    auto has = [&](bool worse, const char* text) {
+        return std::any_of(changes.begin(), changes.end(),
+                           [&](const LabChange& c) { return c.worse == worse && c.what.find(text) != std::string::npos; });
+    };
+    check(has(true, "new error") && has(true, "check now fails") && has(true, "fall out"), "lab: regressions against a baseline are found");
+    check(!changes.empty() && changes.front().worse, "lab: worse changes come first");
+    const std::vector<LabChange> back = compareLab({result}, {older});
+    check(has(true, "new error") && std::any_of(back.begin(), back.end(), [](const LabChange& c) { return !c.worse && c.what.find("error gone") != std::string::npos; }),
+          "lab: fixes are listed as better");
+    LabPlace crashed = older;
+    crashed.crashed = true;
+    crashed.crash = "signal 11";
+    const auto crashChanges = compareLab({older}, {crashed});
+    check(crashChanges.size() == 1 && crashChanges[0].worse && crashChanges[0].what.find("crashes") != std::string::npos,
+          "lab: a new crash is a regression");
+}
+
+void testRobloxTools() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox Tools --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "tools: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto settle = [&] {
+        for (int i = 0; i < 3; ++i) {
+            scripting.tick(0.05f);
+            signals::flush(ecs);
+        }
+    };
+    auto childNamed = [&](InstanceRef parent, const std::string& name) {
+        for (InstanceRef child : instances::children(ecs, parent)) {
+            if (instances::name(ecs, child) == name) return child;
+        }
+        return kNoInstance;
+    };
+    std::string error;
+    const InstanceRef root = instances::create(ecs, "Part", error);
+    (void)instances::setParent(ecs, root, kWorkspaceInstance, error);
+    const InstanceRef player = players::join(ecs, "P1", 1, instances::entityOf(ecs, root), true);
+    settle();
+    scripting.loadAndRun("ToolSetup", R"LUAU(
+local player = game:GetService("Players"):GetPlayers()[1]
+local tool = Instance.new("Tool")
+tool.Name = "Sword"
+local handle = Instance.new("Part")
+handle.Name = "Handle"
+handle.Parent = tool
+tool.Parent = player.Backpack
+local function count(name) tool:SetAttribute(name, (tool:GetAttribute(name) or 0) + 1) end
+tool.Equipped:Connect(function() count("Equipped") end)
+tool.Unequipped:Connect(function() count("Unequipped") end)
+tool.Activated:Connect(function() count("Activated") end)
+tool.Deactivated:Connect(function() count("Deactivated") end)
+tool:Activate()
+)LUAU");
+    settle();
+    const InstanceRef backpack = childNamed(player, "Backpack");
+    const InstanceRef tool = childNamed(backpack, "Sword");
+    check(tool != kNoInstance && instances::className(ecs, tool) == "Tool", "tools: a Tool can be made and put in the Backpack");
+    auto attribute = [&](const char* name) {
+        const auto* info = ecs.tryGetComponent<InstanceInfo>(instances::entityOf(ecs, tool));
+        const auto it = info != nullptr ? info->attributes.find(name) : info->attributes.end();
+        return info != nullptr && it != info->attributes.end() ? static_cast<int>(it->second.number) : 0;
+    };
+    check(attribute("Activated") == 0, "tools: Activate does nothing while the tool isn't held");
+
+    scripting.loadAndRun("ToolEquip", R"LUAU(
+local player = game:GetService("Players"):GetPlayers()[1]
+local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+humanoid:EquipTool(player.Backpack.Sword)
+)LUAU");
+    settle();
+    const InstanceRef character = instances::parent(ecs, root);
+    check(instances::parent(ecs, tool) == character, "tools: EquipTool moves the tool into the character");
+    check(attribute("Equipped") == 1, "tools: Equipped fires");
+    const InstanceRef grip = childNamed(root, "RightGrip");
+    const InstanceRef handle = childNamed(tool, "Handle");
+    InstanceValue part1;
+    check(grip != kNoInstance && instances::getProperty(ecs, grip, *instances::findProperty("Weld", "Part1"), part1) &&
+              part1.ref == handle,
+          "tools: a RightGrip weld holds the handle");
+    check(glm::length(instances::worldPose(ecs, instances::entityOf(ecs, handle)).position -
+                      instances::worldPose(ecs, instances::entityOf(ecs, root)).position) < 3.0f,
+          "tools: the handle sits at the character's hand");
+
+    scripting.loadAndRun("ToolUse", "game:GetService('Players'):GetPlayers()[1].Character.Sword:Activate()");
+    settle();
+    check(attribute("Activated") == 1, "tools: Activate fires Activated while held");
+    instances::setProperty(ecs, tool, *instances::findProperty("Tool", "Enabled"), InstanceValue::ofBool(false));
+    tools::activate(ecs, tool);
+    settle();
+    check(attribute("Activated") == 1, "tools: a disabled tool doesn't activate");
+    instances::setProperty(ecs, tool, *instances::findProperty("Tool", "Enabled"), InstanceValue::ofBool(true));
+
+    scripting.loadAndRun("ToolUnequip", "game:GetService('Players'):GetPlayers()[1].Character:FindFirstChildOfClass('Humanoid'):UnequipTools()");
+    settle();
+    check(instances::parent(ecs, tool) == backpack && attribute("Unequipped") == 1, "tools: UnequipTools puts it back in the Backpack");
+    check(childNamed(root, "RightGrip") == kNoInstance, "tools: and removes the grip");
+
+    // The hotbar: key 1 equips, a click activates, the release deactivates, key 1 again puts it away.
+    check(tools::hotbar(ecs).size() == 1 && tools::hotbar(ecs)[0] == tool, "tools: the hotbar lists the Backpack's tools");
+    tools::HotbarInput input;
+    input.slotPressed = 1;
+    tools::updateHotbar(ecs, input);
+    settle();
+    check(instances::parent(ecs, tool) == character, "tools: hotbar key 1 equips slot 1");
+    check(tools::hotbar(ecs).size() == 1, "tools: a held tool keeps its slot");
+    input = {};
+    input.clickPressed = true;
+    tools::updateHotbar(ecs, input);
+    input = {};
+    input.clickReleased = true;
+    tools::updateHotbar(ecs, input);
+    settle();
+    check(attribute("Activated") == 2 && attribute("Deactivated") == 1, "tools: clicking activates, releasing deactivates");
+    input = {};
+    input.slotPressed = 1;
+    tools::updateHotbar(ecs, input);
+    settle();
+    check(instances::parent(ecs, tool) == backpack, "tools: pressing the key again puts the tool away");
+
+    // A tool lying in the world is picked up by touching its handle.
+    (void)instances::setParent(ecs, tool, kWorkspaceInstance, error);
+    settle();
+    signals::touch(ecs, instances::entityOf(ecs, handle), instances::entityOf(ecs, root), true);
+    settle();
+    check(instances::parent(ecs, tool) == character, "tools: touching a dropped tool picks it up");
+    check(instances::classIsA("Tool", "Model"), "tools: Tool is a Model, as in Roblox");
 }
 
 void testRobloxPivots() {
@@ -47288,7 +48096,7 @@ void testRobloxCompatibilityScore() {
       <string name="Source">return function(</string></Properties></Item>
   </Item>
   <Item class="StarterGui" referent="G"><Properties><string name="Name">StarterGui</string></Properties>
-    <Item class="ScrollingFrame" referent="SG"><Properties><string name="Name">Hud</string></Properties></Item>
+    <Item class="ViewportFrame" referent="SG"><Properties><string name="Name">Hud</string></Properties></Item>
   </Item>
 </roblox>)XML";
     const ImportReport report = importer.importDocument(place, scanner);
@@ -47296,8 +48104,8 @@ void testRobloxCompatibilityScore() {
 
     CompatibilityScore score = scoreImport(report);
     check(score.instances == 7, "the score counts every instance");
-    check(score.instancesMapped == 6 && score.unmappedClasses.count("ScrollingFrame") == 1,
-          "classes Kronos can't build yet (ScrollingFrame) count as unmapped");
+    check(score.instancesMapped == 6 && score.unmappedClasses.count("ViewportFrame") == 1,
+          "classes Kronos can't build yet (ViewportFrame) count as unmapped");
     check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
           "print is supported; UserInputService is not yet");
     check(score.missingApis.count("UserInputService") == 1, "the score lists the missing Roblox APIs by name");
@@ -47328,7 +48136,7 @@ void testRobloxCompatibilityScore() {
               "a compatibility test place imports with scripts to score");
         ++places;
     }
-    check(places == 5, "all five compatibility test places are present");
+    check(places == 10, "all ten compatibility test places are present");
 }
 
 void testProjectImportPipeline() {
@@ -49651,6 +50459,9 @@ int main() {
     testRobloxWeldConstraint();
     testRobloxPivots();
     testRobloxColorsAreSrgb();
+    testRobloxMeshShapes();
+    testCompatLab();
+    testRobloxTools();
     testRobloxWeldAndMotor6D();
     testRobloxEnumItems();
     testRobloxUnionPieces();
@@ -49659,6 +50470,7 @@ int main() {
     testRobloxDataStore();
     testRobloxServices();
     testRobloxGui();
+    testRobloxGuiWidgets();
     testRobloxBinaryFormat();
 #if !defined(_WIN32)
     testInstanceRemoteOverSession();
@@ -50899,7 +51711,10 @@ int main() {
     testPhysicsRollbackPeers();
     testRollbackScript();
     testPythonScripts();
+    testStudioPythonScripts();
+    testRustPluginProject();
     testSiblingExecutable();
+    testStudioMultiplayerTest();
     testSingleInstanceLock();
     testPermanentObjectIds();
     testRollbackPacketCodec();

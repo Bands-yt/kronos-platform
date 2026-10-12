@@ -47,6 +47,8 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/MovieModePlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/plugins/ModelingModePlugin.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/FileBrowse.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/MultiplayerTest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/RustPluginProject.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/PluginChrome.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UITheme.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UIWidgets.cpp
@@ -205,6 +207,8 @@ if(TARGET kronos_plugin_sandbox)
 endif()
 
 target_compile_definitions(engine_tests PRIVATE
+    RUST_TEMPLATE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../templates/rust-plugin"
+    RUST_SDK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/rust/kronos"
     HOTRELOAD_MODULE_V1_PATH="$<TARGET_FILE:hotreload_counter_module_v1>"
     HOTRELOAD_MODULE_V2_PATH="$<TARGET_FILE:hotreload_counter_module_v2>"
     HOTRELOAD_STATEFUL_A_PATH="$<TARGET_FILE:hotreload_stateful_A>"

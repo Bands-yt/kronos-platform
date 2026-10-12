@@ -4,6 +4,7 @@ namespace engine::core {
 
 class ECS;
 class Scripting;
+class PythonScripting;
 
 // Kronos ("Studio QoL Sprint" -- "Instant Lua Script Hot-Reload"): the
 // real diff-and-reload step Application::tick() already ran inline
@@ -15,6 +16,7 @@ class Scripting;
 // `loadedSource` gets its stale scriptId real-unloaded and the new
 // source real-(re)loaded, exactly as before. Safe to call every tick --
 // a no-op scan when nothing changed.
-void tickScriptHotReload(ECS& ecs, Scripting& scripting);
+// Scripts whose first line is a `#` comment are Python: they go to `python` (skipped when it is null).
+void tickScriptHotReload(ECS& ecs, Scripting& scripting, PythonScripting* python = nullptr);
 
 } // namespace engine::core

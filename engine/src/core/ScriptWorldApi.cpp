@@ -10,6 +10,7 @@
 
 #include "core/Components.hpp"
 #include "core/ECS.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/Physics.hpp"
 #include "core/RuntimeAnimationPlayer.hpp"
@@ -91,7 +92,10 @@ int ScriptWorldApi::luaSetPosition(lua_State* L) {
     EntityId entity = idFromLua(L, 1);
     glm::vec3 position(luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4));
     ECS& ecs = selfFromUpvalue(L)->ecs_;
-    if (auto* transform = ecs.tryGetComponent<Transform>(entity)) transform->position = position;
+    if (auto* transform = ecs.tryGetComponent<Transform>(entity)) {
+        transform->position = position;
+        instances::markBodyMoved(ecs, entity);
+    }
     return 0;
 }
 

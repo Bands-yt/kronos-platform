@@ -79,6 +79,12 @@ void generateCapsuleGeometry(float radius, float halfHeight, uint32_t radialSegm
 void generateCylinderGeometry(float radius, float halfHeight, uint32_t radialSegments,
                                std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices);
 
+// Roblox shapes: a wedge whose slope faces -Z (Roblox's front), and a cylinder along X (Part.Shape = Cylinder).
+void generateRobloxWedgeGeometry(glm::vec3 halfExtents, std::vector<Vertex>& outVertices,
+                                 std::vector<uint32_t>& outIndices);
+void generateCylinderAlongXGeometry(float radius, float halfLength, uint32_t radialSegments,
+                                    std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices);
+
 // Same factoring as generateCapsuleGeometry() above, for Mesh::createTorus()
 // / core::EditableMesh::createTorus().
 void generateTorusGeometry(float majorRadius, float minorRadius, uint32_t majorSegments, uint32_t minorSegments,
@@ -176,6 +182,9 @@ public:
     // above -- no MeshSourceKind::Wedge exists, live-session only.
     [[nodiscard]] static Mesh createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool,
                                            VkQueue queue, glm::vec3 halfExtents);
+    [[nodiscard]] static Mesh createFromGeometry(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool,
+                                                 VkQueue queue, const std::vector<Vertex>& vertices,
+                                                 const std::vector<uint32_t>& indices);
 
     // A real torus -- a closed quad-grid tube (no poles/caps to fold, so
     // every ring is a full closed loop in the same "verticesPerRing =

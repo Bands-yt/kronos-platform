@@ -538,8 +538,7 @@ Mesh Mesh::createCylinder(VmaAllocator allocator, VkDevice device, VkCommandPool
     return mesh;
 }
 
-Mesh Mesh::createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
-                        glm::vec3 h) {
+static void generateWedgeGeometry(glm::vec3 h, std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices) {
     // A box whose +Z face collapses to a single bottom edge -- back face
     // (-Z) stays full height, front face has no vertical extent at all,
     // leaving one flat sloped face connecting the back-top edge to the
@@ -548,7 +547,7 @@ Mesh Mesh::createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cm
     // back), with the two side faces reduced from a quad to a triangle
     // (front-top vertex doesn't exist) and the slope face computed fresh
     // (cross-product-verified normal direction, see inline notes).
-    std::vector<Vertex> vertices = {
+    outVertices = {
         // Bottom (-Y), full rectangle -- same vertex order as createBox()'s
         // own -Y face.
         {{-h.x, -h.y, h.z}, {0, -1, 0}, {0, 0}},
@@ -579,17 +578,54 @@ Mesh Mesh::createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cm
         {{h.x, h.y, -h.z}, glm::normalize(glm::vec3(0.0f, h.z, h.y)), {1, 0}},
     };
 
-    std::vector<uint32_t> indices = {
+    outIndices = {
         0, 1, 2, 0, 2, 3,    // bottom
         4, 5, 6, 4, 6, 7,    // back
         8, 9, 10,            // left (single triangle)
-        11, 12, 13,          // right (single triangle)
-        14, 15, 16, 14, 16, 17, // slope
+        11, 13, 12,          // right (single triangle)
+        14, 16, 15, 14, 17, 16, // slope
     };
+}
 
+Mesh Mesh::createWedge(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                        glm::vec3 h) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    generateWedgeGeometry(h, vertices, indices);
+    return createFromGeometry(allocator, device, cmdPool, queue, vertices, indices);
+}
+
+Mesh Mesh::createFromGeometry(VmaAllocator allocator, VkDevice device, VkCommandPool cmdPool, VkQueue queue,
+                              const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
     Mesh mesh;
     (void)mesh.uploadFromHost(allocator, device, cmdPool, queue, vertices, indices);
     return mesh;
+}
+
+namespace {
+// Rotates or mirrors positions and normals; a mirror also flips the triangle winding.
+void mapGeometry(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, const glm::mat3& map) {
+    for (Vertex& v : vertices) {
+        v.position = map * v.position;
+        v.normal = glm::normalize(map * v.normal);
+    }
+    if (glm::determinant(map) < 0.0f) {
+        for (size_t i = 0; i + 2 < indices.size(); i += 3) std::swap(indices[i + 1], indices[i + 2]);
+    }
+}
+} // namespace
+
+void generateRobloxWedgeGeometry(glm::vec3 halfExtents, std::vector<Vertex>& outVertices,
+                                 std::vector<uint32_t>& outIndices) {
+    generateWedgeGeometry(halfExtents, outVertices, outIndices);
+    mapGeometry(outVertices, outIndices, glm::mat3(glm::vec3(1, 0, 0), glm::vec3(0, 1, 0), glm::vec3(0, 0, -1)));
+}
+
+void generateCylinderAlongXGeometry(float radius, float halfLength, uint32_t radialSegments,
+                                    std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices) {
+    generateCylinderGeometry(radius, halfLength, radialSegments, outVertices, outIndices);
+    // +Y becomes +X.
+    mapGeometry(outVertices, outIndices, glm::mat3(glm::vec3(0, -1, 0), glm::vec3(1, 0, 0), glm::vec3(0, 0, 1)));
 }
 
 void generateTorusGeometry(float majorRadius, float minorRadius, uint32_t majorSegments, uint32_t minorSegments,

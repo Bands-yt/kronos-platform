@@ -22,6 +22,7 @@
 #include "Luau/TypeArena.h"
 
 #include "core/ResourcePaths.hpp"
+#include "core/ScriptLanguage.hpp"
 #include "core/UITheme.hpp"
 #include "core/UIWidgets.hpp"
 #include "studio/StudioIcons.hpp"
@@ -161,6 +162,83 @@ TextEditor::LanguageDefinition luauLanguageDefinition() {
         langDef.mCaseSensitive = true;
         langDef.mAutoIndentation = true;
         langDef.mName = "Luau";
+        inited = true;
+    }
+    return langDef;
+}
+
+TextEditor::LanguageDefinition pythonLanguageDefinition() {
+    static bool inited = false;
+    static TextEditor::LanguageDefinition langDef;
+    if (!inited) {
+        static const char* const keywords[] = {
+            "False", "None", "True", "and", "as", "assert", "break", "class", "continue", "def", "del", "elif",
+            "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+            "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+        };
+        for (const char* keyword : keywords) langDef.mKeywords.insert(keyword);
+        static const std::pair<const char*, const char*> globals[] = {
+            {"world", "world -- find, move and push entities"},
+            {"events", "events -- on_update, on_collision, on_unload"},
+            {"print", "print(...) -- writes to the Engine Console"},
+            {"len", "len(x)"}, {"range", "range(n)"}, {"int", "int(x)"}, {"float", "float(x)"}, {"str", "str(x)"},
+            {"list", "list(x)"}, {"dict", "dict()"}, {"min", "min(...)"}, {"max", "max(...)"}, {"abs", "abs(x)"},
+        };
+        for (const auto& [name, doc] : globals) {
+            TextEditor::Identifier id;
+            id.mDeclaration = doc;
+            langDef.mIdentifiers.insert({name, id});
+        }
+        langDef.mTokenRegexStrings.emplace_back("\"(\\\\.|[^\"])*\"", TextEditor::PaletteIndex::String);
+        langDef.mTokenRegexStrings.emplace_back("'(\\\\.|[^'])*'", TextEditor::PaletteIndex::String);
+        langDef.mTokenRegexStrings.emplace_back("0[xX][0-9a-fA-F_]+", TextEditor::PaletteIndex::Number);
+        langDef.mTokenRegexStrings.emplace_back("[+-]?([0-9][0-9_]*([.][0-9_]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?",
+                                                  TextEditor::PaletteIndex::Number);
+        langDef.mTokenRegexStrings.emplace_back("[a-zA-Z_][a-zA-Z0-9_]*", TextEditor::PaletteIndex::Identifier);
+        langDef.mTokenRegexStrings.emplace_back("[\\[\\]\\{\\}\\!\\%\\^\\&\\*\\(\\)\\-\\+\\=\\~\\|\\<\\>\\?\\/\\;\\,\\.\\:\\@]",
+                                                  TextEditor::PaletteIndex::Punctuation);
+        // The editor treats an empty block-comment marker as matching everywhere, so use one that never occurs.
+        langDef.mCommentStart = "\x01\x02";
+        langDef.mCommentEnd = "\x02\x01";
+        langDef.mSingleLineComment = "#";
+        langDef.mCaseSensitive = true;
+        langDef.mAutoIndentation = true;
+        langDef.mName = "Python";
+        inited = true;
+    }
+    return langDef;
+}
+
+TextEditor::LanguageDefinition rustLanguageDefinition() {
+    static bool inited = false;
+    static TextEditor::LanguageDefinition langDef;
+    if (!inited) {
+        static const char* const keywords[] = {
+            "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for", "if", "impl",
+            "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
+            "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "async", "await", "dyn",
+        };
+        for (const char* keyword : keywords) langDef.mKeywords.insert(keyword);
+        static const char* const types[] = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize", "isize",
+                                            "f32", "f64", "bool", "char", "str", "String", "Vec", "Option", "Result"};
+        for (const char* name : types) {
+            TextEditor::Identifier id;
+            id.mDeclaration = std::string(name) + " -- Rust type";
+            langDef.mIdentifiers.insert(std::make_pair(std::string(name), id));
+        }
+        langDef.mTokenRegexStrings.emplace_back("\"(\\\\.|[^\"])*\"", TextEditor::PaletteIndex::String);
+        langDef.mTokenRegexStrings.emplace_back("0[xX][0-9a-fA-F_]+", TextEditor::PaletteIndex::Number);
+        langDef.mTokenRegexStrings.emplace_back("[0-9][0-9_]*([.][0-9_]+)?([eE][+-]?[0-9]+)?(f32|f64|u8|u16|u32|u64|usize|i8|i16|i32|i64|isize)?",
+                                                  TextEditor::PaletteIndex::Number);
+        langDef.mTokenRegexStrings.emplace_back("[a-zA-Z_][a-zA-Z0-9_]*", TextEditor::PaletteIndex::Identifier);
+        langDef.mTokenRegexStrings.emplace_back("[\\[\\]\\{\\}\\!\\%\\^\\&\\*\\(\\)\\-\\+\\=\\~\\|\\<\\>\\?\\/\\;\\,\\.\\:\\#\\@]",
+                                                  TextEditor::PaletteIndex::Punctuation);
+        langDef.mCommentStart = "/*";
+        langDef.mCommentEnd = "*/";
+        langDef.mSingleLineComment = "//";
+        langDef.mCaseSensitive = true;
+        langDef.mAutoIndentation = true;
+        langDef.mName = "Rust";
         inited = true;
     }
     return langDef;
@@ -375,6 +453,11 @@ void ColorTextEditBackend::shutdown() {
     editor_.reset();
 }
 
+void ColorTextEditBackend::setLanguage(Language language) {
+    forceRust_ = language == Language::Rust;
+    if (editor_ != nullptr) reanalyze();
+}
+
 void ColorTextEditBackend::setSource(const std::string& source) {
     editor_->SetText(source);
     reanalyze();
@@ -398,7 +481,14 @@ void ColorTextEditBackend::moveCaretToLine(int oneBasedLine) {
 void ColorTextEditBackend::reanalyze() {
     ++textVersion_;
     lines_ = editor_->GetTextLines();
-    diagnostics_ = analyzer_->analyze(source());
+    const bool python = !forceRust_ && core::scriptLanguageOf(source()) == core::ScriptLanguage::Python;
+    if (python != pythonText_ || (forceRust_ && !plain_)) {
+        pythonText_ = python;
+        editor_->SetLanguageDefinition(forceRust_ ? rustLanguageDefinition()
+                                                  : python ? pythonLanguageDefinition() : luauLanguageDefinition());
+    }
+    plain_ = python || forceRust_;
+    diagnostics_ = plain_ ? std::vector<Diagnostic>{} : analyzer_->analyze(source());
     symbols_ = findSymbols(lines_);
 }
 
@@ -1161,6 +1251,11 @@ std::string ColorTextEditBackend::memberContainerBefore(int line, int anchorByte
 }
 
 void ColorTextEditBackend::updateCompletions(bool explicitRequest) {
+    if (plain_) {
+        completionRawEntries_.clear();
+        showCompletions_ = false;
+        return;
+    }
     if (lines_.empty()) lines_ = editor_->GetTextLines();
     const TextEditor::Coordinates cursor = editor_->GetCursorPosition();
     const std::string& line = lines_[static_cast<size_t>(cursor.mLine)];
@@ -1354,6 +1449,11 @@ void ColorTextEditBackend::insertSnippet(const std::string& body) {
 }
 
 void ColorTextEditBackend::updateSignatureHelp() {
+    if (plain_) {
+        signatureKey_.clear();
+        signatureName_.clear();
+        return;
+    }
     const TextEditor::Coordinates cursor = editor_->GetCursorPosition();
     if (cursor.mLine >= static_cast<int>(lines_.size())) {
         callContext_ = {};
@@ -1634,7 +1734,8 @@ void ColorTextEditBackend::drawStatusBar() {
     }
 
     char right[96];
-    std::snprintf(right, sizeof(right), "Luau   UTF-8   Tab %d   %s", kTabSize, editor_->IsOverwrite() ? "OVR" : "INS");
+    std::snprintf(right, sizeof(right), "%s   UTF-8   Tab %d   %s", forceRust_ ? "Rust" : pythonText_ ? "Python" : "Luau",
+                  kTabSize, editor_->IsOverwrite() ? "OVR" : "INS");
     const float rightWidth = ImGui::CalcTextSize(right).x;
     ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 16.0f, ImGui::GetContentRegionMax().x - rightWidth - 10.0f));
     ImGui::TextDisabled("%s", right);

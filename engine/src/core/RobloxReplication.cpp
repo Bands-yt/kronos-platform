@@ -90,6 +90,8 @@ bool same(const InstanceValue& a, const InstanceValue& b) {
         case InstanceValue::Type::Instance: return a.ref == b.ref;
         case InstanceValue::Type::CFrame: return a.vec == b.vec && a.rot == b.rot;
         case InstanceValue::Type::UDim2: return a.vec == b.vec && a.number == b.number;
+        case InstanceValue::Type::ColorSequence:
+        case InstanceValue::Type::NumberSequence: return a.keys == b.keys;
         default: return a.vec == b.vec;
     }
 }
@@ -170,13 +172,18 @@ void writeValue(Writer& w, const InstanceValue& v, uint32_t refId) {
             w.vec3(v.vec);
             w.f64(v.number);
             break;
+        case InstanceValue::Type::ColorSequence:
+        case InstanceValue::Type::NumberSequence:
+            w.u32(static_cast<uint32_t>(v.keys.size()));
+            for (float k : v.keys) w.f32(k);
+            break;
         default: w.vec3(v.vec); break;
     }
 }
 
 bool readValue(Reader& r, InstanceValue& v, uint32_t& refId) {
     const uint8_t type = r.u8();
-    if (type > static_cast<uint8_t>(InstanceValue::Type::UDim2)) return false;
+    if (type > static_cast<uint8_t>(InstanceValue::Type::NumberSequence)) return false;
     v = InstanceValue{};
     v.type = static_cast<InstanceValue::Type>(type);
     switch (v.type) {
@@ -201,6 +208,14 @@ bool readValue(Reader& r, InstanceValue& v, uint32_t& refId) {
             v.vec = r.vec3();
             v.number = r.f64();
             break;
+        case InstanceValue::Type::ColorSequence:
+        case InstanceValue::Type::NumberSequence: {
+            const uint32_t count = r.u32();
+            if (count > 4096) return false;
+            v.keys.resize(count);
+            for (float& k : v.keys) k = r.f32();
+            break;
+        }
         default: v.vec = r.vec3(); break;
     }
     return r.ok();

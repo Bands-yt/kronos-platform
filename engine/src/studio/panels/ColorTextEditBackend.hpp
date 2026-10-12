@@ -27,6 +27,10 @@ public:
     ColorTextEditBackend();
     ~ColorTextEditBackend() override;
 
+    // Python scripts are recognised by their first line; Rust has no marker, so it is set directly.
+    enum class Language { Auto, Rust };
+    void setLanguage(Language language);
+
     [[nodiscard]] bool initialize() override;
     void shutdown() override;
 
@@ -174,6 +178,9 @@ private:
     mutable std::string sourceCache_;
     std::vector<std::string> lines_;
     uint64_t textVersion_ = 0;
+    bool plain_ = false; // Python or Rust text: no Luau analysis or completions
+    bool pythonText_ = false;
+    bool forceRust_ = false;
 
     std::vector<Diagnostic> diagnostics_;
     std::vector<Symbol> symbols_;

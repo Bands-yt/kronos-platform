@@ -1,6 +1,7 @@
 #include "core/InstanceSignals.hpp"
 #include "core/UnionGeometry.hpp"
 #include "core/RobloxServices.hpp"
+#include "core/RobloxTools.hpp"
 
 #include <algorithm>
 
@@ -428,6 +429,7 @@ void touch(ECS& ecs, EntityId a, EntityId b, bool began) {
     a = unions::owner(ecs, a);
     b = unions::owner(ecs, b);
     if (a == b) return;
+    if (began) tools::touched(ecs, a, b);
     SignalHub* hub = findHub(ecs);
     const char* event = began ? "Touched" : "TouchEnded";
     if (hub == nullptr || !hub->anyConnections(event)) return;

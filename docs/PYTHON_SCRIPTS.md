@@ -4,8 +4,8 @@ Games can have Python scripts next to their Luau ones. Kronos runs them on
 [PocketPy](https://github.com/pocketpy/pocketpy) 2.2.0 (MIT), a small Python 3
 interpreter built into the engine. No system Python is needed.
 
-Status: **preview** (4.5 step 3). It runs in the Player and on servers. Studio
-Play doesn't run Python yet.
+Status: **preview** (4.5 step 3). It runs in the Player, on servers and in Studio
+Play.
 
 ## Where scripts go
 
@@ -25,6 +25,19 @@ def bump(a, b):
 ```
 
 `world` and `events` are always there; no import needed.
+
+## Python scripts in Studio
+
+A script on an entity is Python when its **first line is a `#` comment** (Luau
+comments start with `--`, so a Luau script can never begin that way). In the
+Script Editor, pick the **Python script** or **Python spinner** card on the
+empty screen, or import a `.py` file (a `# python` line is added if it has no
+leading comment). The editor then uses Python colours and turns the Luau
+checker and autocomplete off for that script.
+
+Press Play and the script runs with the same `world` and `events` as above;
+errors and `print` go to the Engine Log. Edit the script during Play and it
+reloads, like Luau. Python scripts count towards the 15-script limit.
 
 ## API
 
@@ -93,7 +106,7 @@ fuzzing it is still to do.
 
 ## Not done yet
 
-- Studio Play, the script editor and Explorer don't know about Python scripts.
+- The script editor has no Python autocomplete or error markers yet (Python errors show in the log when the script loads).
 - No Roblox-style Instance API, `task` library, networking, UI or audio from
   Python.
 - No `import` of a game's other `.py` files.
