@@ -33,7 +33,7 @@
 #include "net/LanSessionAnnouncer.hpp"
 #include "publishing/PublishValidation.hpp"
 #include "publishing/WorldRegistry.hpp"
-#include "tntwars/TntWarsMatch.hpp"
+#include "net/GameRules.hpp"
 #include "net/ENetTransport.hpp"
 #include "net/NetworkStats.hpp"
 #include "net/RateLimiter.hpp"
@@ -593,28 +593,11 @@ public:
     [[nodiscard]] publishing::PublishValidationResult publishWorld(publishing::WorldListing listing);
     [[nodiscard]] publishing::WorldRegistry& worldRegistry() { return worldRegistry_; }
 
-    // Sprint 14 ("TNT-Wars Core Game Build") -- real, client-side
-    // request senders, mirroring requestTeleport()/sendChatMessage()'s
-    // exact real "build a small wire message, send reliably, let the
-    // server's real TntWarsMatch decide" shape. All three are real,
-    // honest no-ops outside Client mode.
-    void selectTntWarsClass(tntwars::PlayerClassType classType);
-    void fireTntWarsWeapon(glm::vec3 origin, glm::vec3 aimDirection);
-    void triggerTntWarsUltimate();
-
-    // Real, observer-side hooks for the two real server broadcasts (a
-    // fired shot, a triggered ultimate) -- studio::plugins::TntWarsPlugin
-    // and a future real in-game HUD both read live match state through
-    // these, the same injected-callback pattern
-    // setOnChatMessageReceived()/setOnPlayerJoin() already established.
-    void setOnProjectileSpawned(std::function<void(const tntwars::ProjectileState&)> callback) {
-        onProjectileSpawned_ = std::move(callback);
-    }
-    void setOnUltimateTriggered(std::function<void(PlayerId, tntwars::UltimateType)> callback) {
-        onUltimateTriggered_ = std::move(callback);
-    }
-
-    [[nodiscard]] tntwars::TntWarsMatch& tntWarsMatch() { return tntWarsMatch_; }
+    // The game's server rules and messages (see GameRules.hpp); null for none.
+    void setGameRules(std::unique_ptr<GameRules> rules) { gameRules_ = std::move(rules); }
+    [[nodiscard]] GameRules* gameRules() { return gameRules_.get(); }
+    // Client: sends a game message reliably to the server (no-op outside Client mode).
+    void sendGameMessage(const ByteWriter& message);
 
     // Real Network Stress Test mode (task 4) -- spawns `count` synthetic
     // *real* local ENet client connections against this process's own
@@ -722,9 +705,7 @@ private:
     void handleReportPlayerServer(PlayerId player, ByteReader& reader);
     void handleSubmitAppealServer(PlayerId player, ByteReader& reader);
     void handleDirectMessageSendServer(PlayerId sender, ByteReader& reader);
-    void handleSelectClassServer(PlayerId player, ByteReader& reader);
-    void handleFireWeaponServer(PlayerId player, ByteReader& reader);
-    void handleTriggerUltimateServer(PlayerId player, ByteReader& reader);
+    void handleGameMessageServer(uint8_t type, PlayerId player, ByteReader& reader);
     void handleRemoteEventFireServer(PlayerId player, ByteReader& reader);
     // Kronos ("Active Joining UI"): unlike the other handleXServer()
     // methods above, this one also needs the raw ENetTransport::PeerId
@@ -805,14 +786,7 @@ private:
     // own comment.
     publishing::WorldRegistry worldRegistry_;
 
-    // Sprint 14 ("TNT-Wars Core Game Build") -- see selectTntWarsClass()'s
-    // own comment. `tntWarsMatch_` is real, server-authoritative state
-    // (client-mode sessions still own one so tests/local tooling has a
-    // real, valid object to query, but only the server's copy is ever
-    // actually mutated by a real client request).
-    tntwars::TntWarsMatch tntWarsMatch_;
-    std::function<void(const tntwars::ProjectileState&)> onProjectileSpawned_;
-    std::function<void(PlayerId, tntwars::UltimateType)> onUltimateTriggered_;
+    std::unique_ptr<GameRules> gameRules_;
 
     // Set fresh at the top of every tick()/sampleLocalInput() call --
     // every callback below reads through this rather than capturing an

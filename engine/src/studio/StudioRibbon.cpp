@@ -329,7 +329,7 @@ void StudioRibbon::drawPartButton(const RibbonContext& context, const char* id) 
             P kind;
         };
         static constexpr Item kItems[] = {{"Block", P::Block}, {"Sphere", P::Sphere}, {"Cylinder", P::Cylinder},
-                                          {"Plane", P::Plane},  {"Torus", P::Torus}};
+                                          {"Wedge", P::Wedge}, {"Plane", P::Plane}, {"Torus", P::Torus}};
         for (const Item& item : kItems) {
             if (ImGui::Selectable(item.label)) context.actions.insertPrimitive(item.kind);
         }

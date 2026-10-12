@@ -1,4 +1,5 @@
 #include "studio/plugins/LauncherPlugin.hpp"
+#include "tntwars/MapMaterialApply.hpp"
 
 #include <fstream>
 #include <sstream>
@@ -45,7 +46,7 @@ void LauncherPlugin::loadBiome(core::ECS& ecs, int mapIndex) {
         auto& renderable = ecs.addComponent<core::Renderable>(entity);
         renderable.meshHandle = meshHandle;
         renderable.baseColor = glm::vec4(piece.color, 1.0f);
-        materials_.applyTo(renderable, tntwars::classifyMapPieceMaterial(piece.name));
+        tntwars::applyMapMaterial(materials_, renderable, tntwars::classifyMapPieceMaterial(piece.name));
 
         auto& meshSource = ecs.addComponent<core::MeshSource>(entity);
         meshSource.kind = piece.shape == tntwars::MapPieceShape::Box ? core::MeshSourceKind::Box : core::MeshSourceKind::Plane;

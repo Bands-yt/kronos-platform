@@ -1,4 +1,5 @@
 #include "studio/plugins/TrailerPanel.hpp"
+#include "tntwars/TntWarsNetRules.hpp"
 
 #include <cstdio>
 
@@ -12,7 +13,7 @@ TrailerPanel::TrailerPanel(VmaAllocator allocator, VkDevice device, VkCommandPoo
                             core::MeshLibrary& meshLibrary, core::TextureLibrary& textureLibrary,
                             core::ParticleSystem& particleSystem, net::NetworkSession& session)
     : meshLibrary_(&meshLibrary), textureLibrary_(&textureLibrary),
-      director_(trailerCamera_, ecs, meshLibrary, particleSystem, session.tntWarsMatch()) {
+      director_(trailerCamera_, ecs, meshLibrary, particleSystem, engine::tntwars::TntWarsNetRules::of(session).match()) {
     (void)allocator;
     (void)device;
     (void)cmdPool;

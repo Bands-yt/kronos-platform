@@ -23,6 +23,7 @@
 #include "core/EditableMeshComponent.hpp"
 #include "core/Hierarchy.hpp"
 #include "core/Mesh.hpp"
+#include "core/InstanceTree.hpp"
 #include "core/PartCollider.hpp"
 #include "core/PhysicsMaterial.hpp"
 #include "core/Renderer.hpp"
@@ -1438,6 +1439,7 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
                     if (ImGui::Selectable("Sphere")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Sphere);
                     if (ImGui::Selectable("Cube")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Block);
                     if (ImGui::Selectable("Cylinder")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Cylinder);
+                    if (ImGui::Selectable("Wedge")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Wedge);
                     if (ImGui::Selectable("Plane")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Plane);
                     if (ImGui::Selectable("Torus")) spawnPrimitive(*ecs, meshLibrary, explorer, Primitive::Torus);
                 }
@@ -1579,6 +1581,30 @@ glm::vec3 ViewportPanel::spawnPointInFront(core::ECS& ecs, core::MeshLibrary* me
 
 core::EntityId ViewportPanel::spawnPrimitive(core::ECS& ecs, core::MeshLibrary* meshLibrary, ExplorerPanel& explorer,
                                              Primitive kind) {
+    if (kind == Primitive::Wedge) {
+        namespace inst = core::instances;
+        std::string error;
+        const core::InstanceRef ref = inst::create(ecs, "WedgePart", error);
+        if (ref == core::kNoInstance) return core::kNullEntity;
+        inst::setName(ecs, ref, "Wedge");
+        if (!inst::setParent(ecs, ref, core::kWorkspaceInstance, error)) {
+            inst::destroy(ecs, ref);
+            return core::kNullEntity;
+        }
+        const core::EntityId wedge = inst::entityOf(ecs, ref);
+        glm::vec3 boundsMin(-0.5f), boundsMax(0.5f);
+        if (const auto* renderable = ecs.tryGetComponent<core::Renderable>(wedge)) {
+            if (const core::Mesh* mesh = meshLibrary != nullptr ? meshLibrary->get(renderable->meshHandle) : nullptr) {
+                boundsMin = mesh->localBoundsMin();
+                boundsMax = mesh->localBoundsMax();
+            }
+        }
+        const glm::vec3 at = spawnPointInFront(ecs, meshLibrary, boundsMin, boundsMax);
+        inst::setProperty(ecs, ref, *inst::findProperty("BasePart", "Position"), core::InstanceValue::ofVector3(at));
+        inst::setProperty(ecs, ref, *inst::findProperty("BasePart", "Anchored"), core::InstanceValue::ofBool(true));
+        explorer.setSelected(wedge);
+        return wedge;
+    }
     struct Spec {
         const char* name;
         uint32_t mesh;
@@ -1601,6 +1627,8 @@ core::EntityId ViewportPanel::spawnPrimitive(core::ECS& ecs, core::MeshLibrary* 
             break;
         case Primitive::Plane:
             spec = {"Plane", propSpawnMeshHandles_.planeMesh, core::MeshSourceKind::Plane, {2.0f, 0.0f, 2.0f}, true, 0.01f};
+            break;
+        case Primitive::Wedge:
             break;
         case Primitive::Torus:
             spec = {"Torus", propSpawnMeshHandles_.torusMesh, core::MeshSourceKind::Torus, {1.0f, 0.35f, 0.0f}, true, 0.35f};

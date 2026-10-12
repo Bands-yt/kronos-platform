@@ -76,7 +76,7 @@ add_executable(engine_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/ColorTextEditBackendText.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/studio/panels/LuauSymbolIndex.cpp
 )
-target_link_libraries(engine_tests PRIVATE engine_core kronos_brokenbones imgui::imgui)
+target_link_libraries(engine_tests PRIVATE engine_core kronos_brokenbones kronos_despair kronos_games imgui::imgui)
 if(TARGET kronos::shaderc)
     target_link_libraries(engine_tests PRIVATE kronos::shaderc)
 endif()

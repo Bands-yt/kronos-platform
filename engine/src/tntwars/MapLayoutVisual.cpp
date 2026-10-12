@@ -1,4 +1,5 @@
 #include "tntwars/MapLayoutVisual.hpp"
+#include "tntwars/MapMaterialApply.hpp"
 
 #include <cstdio>
 
@@ -28,7 +29,7 @@ std::vector<core::EntityId> spawnMapLayoutVisual(core::ECS& ecs, core::Physics& 
         auto& renderable = ecs.addComponent<core::Renderable>(entity);
         renderable.meshHandle = meshHandle;
         renderable.baseColor = glm::vec4(piece.color, 1.0f);
-        materials.applyTo(renderable, classifyMapPieceMaterial(piece.name));
+        tntwars::applyMapMaterial(materials, renderable, classifyMapPieceMaterial(piece.name));
 
         auto& meshSource = ecs.addComponent<core::MeshSource>(entity);
         meshSource.kind = piece.shape == MapPieceShape::Box ? core::MeshSourceKind::Box : core::MeshSourceKind::Plane;

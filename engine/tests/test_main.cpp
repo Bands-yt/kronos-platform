@@ -1,4 +1,5 @@
 #include "plugin/PluginHost.hpp"
+#include "tntwars/TntWarsNetRules.hpp"
 #include "plugin/PluginSandbox.hpp"
 #include <set>
 // Assertion-based checks over pure logic in engine_core -- no window, no
@@ -60,6 +61,7 @@
 #include "core/ObjLoader.hpp"
 #include "core/UvTools.hpp"
 #include "housedemo/HouseLayout.hpp"
+#include "tntwars/MapMaterialApply.hpp"
 #include "despair/FPSPlayerController.hpp"
 #include "despair/HorrorAIManager.hpp"
 #include "despair/FacilityLayout.hpp"
@@ -36387,6 +36389,7 @@ void testNetworkSessionRealSelectClassAppliesServerSide() {
     serverConfig.mode = engine::net::NetworkMode::Server;
     serverConfig.port = kTestPort;
     check(serverSession.initialize(serverConfig), "SelectClass test: real server real-starts");
+    engine::tntwars::TntWarsNetRules::of(serverSession);
     serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) -> engine::core::EntityId {
         engine::core::EntityId entity = ecs.createEntity("Player");
         ecs.addComponent<engine::core::Transform>(entity);
@@ -36412,7 +36415,7 @@ void testNetworkSessionRealSelectClassAppliesServerSide() {
     }
     check(handshakeComplete, "SelectClass test: real handshake really completes");
 
-    clientSession.selectTntWarsClass(engine::tntwars::PlayerClassType::Deflector);
+    engine::tntwars::TntWarsNetRules::of(clientSession).selectClass(clientSession, engine::tntwars::PlayerClassType::Deflector);
     for (int i = 0; i < 60; ++i) {
         serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
         clientSession.tick(0.05f, clientEcs, clientAvatar);
@@ -36420,9 +36423,9 @@ void testNetworkSessionRealSelectClassAppliesServerSide() {
     }
 
     engine::net::PlayerId serverSidePlayerId = clientSession.localPlayerId();
-    check(serverSession.tntWarsMatch().hasSelectedClass(serverSidePlayerId),
+    check(engine::tntwars::TntWarsNetRules::of(serverSession).match().hasSelectedClass(serverSidePlayerId),
           "A real client SelectClass request real-actually applies server-side, on the real server's own TntWarsMatch");
-    check(serverSession.tntWarsMatch().classOf(serverSidePlayerId) == engine::tntwars::PlayerClassType::Deflector,
+    check(engine::tntwars::TntWarsNetRules::of(serverSession).match().classOf(serverSidePlayerId) == engine::tntwars::PlayerClassType::Deflector,
           "The real server-side applied class real-matches exactly what the real client requested");
 
     serverSession.shutdown();
@@ -36438,6 +36441,7 @@ void testNetworkSessionRealFireWeaponBroadcastsProjectileSpawnedToClient() {
     serverConfig.mode = engine::net::NetworkMode::Server;
     serverConfig.port = kTestPort;
     check(serverSession.initialize(serverConfig), "FireWeapon test: real server real-starts");
+    engine::tntwars::TntWarsNetRules::of(serverSession);
     serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) -> engine::core::EntityId {
         engine::core::EntityId entity = ecs.createEntity("Player");
         ecs.addComponent<engine::core::Transform>(entity);
@@ -36455,7 +36459,7 @@ void testNetworkSessionRealFireWeaponBroadcastsProjectileSpawnedToClient() {
 
     bool projectileReceived = false;
     engine::tntwars::ProjectileType receivedType = engine::tntwars::ProjectileType::Rocket;
-    clientSession.setOnProjectileSpawned([&](const engine::tntwars::ProjectileState& state) {
+    engine::tntwars::TntWarsNetRules::of(clientSession).setOnProjectileSpawned([&](const engine::tntwars::ProjectileState& state) {
         projectileReceived = true;
         receivedType = state.type;
     });
@@ -36470,14 +36474,14 @@ void testNetworkSessionRealFireWeaponBroadcastsProjectileSpawnedToClient() {
     }
     check(handshakeComplete, "FireWeapon test: real handshake really completes");
 
-    clientSession.selectTntWarsClass(engine::tntwars::PlayerClassType::Striker);
+    engine::tntwars::TntWarsNetRules::of(clientSession).selectClass(clientSession, engine::tntwars::PlayerClassType::Striker);
     for (int i = 0; i < 30; ++i) {
         serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
         clientSession.tick(0.05f, clientEcs, clientAvatar);
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
-    clientSession.fireTntWarsWeapon(glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    engine::tntwars::TntWarsNetRules::of(clientSession).fireWeapon(clientSession, glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
     for (int i = 0; i < 60 && !projectileReceived; ++i) {
         serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
         clientSession.tick(0.05f, clientEcs, clientAvatar);
@@ -36500,6 +36504,7 @@ void testNetworkSessionRealTriggerUltimateBroadcastsUltimateTriggeredToClient() 
     serverConfig.mode = engine::net::NetworkMode::Server;
     serverConfig.port = kTestPort;
     check(serverSession.initialize(serverConfig), "TriggerUltimate test: real server real-starts");
+    engine::tntwars::TntWarsNetRules::of(serverSession);
     serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) -> engine::core::EntityId {
         engine::core::EntityId entity = ecs.createEntity("Player");
         ecs.addComponent<engine::core::Transform>(entity);
@@ -36517,7 +36522,7 @@ void testNetworkSessionRealTriggerUltimateBroadcastsUltimateTriggeredToClient() 
 
     bool ultimateReceived = false;
     engine::tntwars::UltimateType receivedType = engine::tntwars::UltimateType::FinalPush;
-    clientSession.setOnUltimateTriggered([&](engine::net::PlayerId, engine::tntwars::UltimateType type) {
+    engine::tntwars::TntWarsNetRules::of(clientSession).setOnUltimateTriggered([&](engine::net::PlayerId, engine::tntwars::UltimateType type) {
         ultimateReceived = true;
         receivedType = type;
     });
@@ -36532,7 +36537,7 @@ void testNetworkSessionRealTriggerUltimateBroadcastsUltimateTriggeredToClient() 
     }
     check(handshakeComplete, "TriggerUltimate test: real handshake really completes");
 
-    clientSession.selectTntWarsClass(engine::tntwars::PlayerClassType::Saboteur);
+    engine::tntwars::TntWarsNetRules::of(clientSession).selectClass(clientSession, engine::tntwars::PlayerClassType::Saboteur);
     for (int i = 0; i < 30; ++i) {
         serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
         clientSession.tick(0.05f, clientEcs, clientAvatar);
@@ -36544,9 +36549,9 @@ void testNetworkSessionRealTriggerUltimateBroadcastsUltimateTriggeredToClient() 
     // FireWeapon hits it'd take to naturally fill the meter.
     engine::net::PlayerId serverSidePlayerId = clientSession.localPlayerId();
     float required = engine::tntwars::classStatsFor(engine::tntwars::PlayerClassType::Saboteur).ultimateChargeRequired;
-    serverSession.tntWarsMatch().ultimateCharge().addCharge(serverSidePlayerId, required, required);
+    engine::tntwars::TntWarsNetRules::of(serverSession).match().ultimateCharge().addCharge(serverSidePlayerId, required, required);
 
-    clientSession.triggerTntWarsUltimate();
+    engine::tntwars::TntWarsNetRules::of(clientSession).triggerUltimate(clientSession);
     for (int i = 0; i < 60 && !ultimateReceived; ++i) {
         serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
         clientSession.tick(0.05f, clientEcs, clientAvatar);
@@ -36569,6 +36574,7 @@ void testNetworkSessionRealFireWeaponWithoutClassSelectedIsRejectedNoBroadcast()
     serverConfig.mode = engine::net::NetworkMode::Server;
     serverConfig.port = kTestPort;
     check(serverSession.initialize(serverConfig), "Unselected-class FireWeapon test: real server real-starts");
+    engine::tntwars::TntWarsNetRules::of(serverSession);
     serverSession.setOnPlayerJoin([](engine::core::ECS& ecs, engine::net::PlayerId) -> engine::core::EntityId {
         engine::core::EntityId entity = ecs.createEntity("Player");
         ecs.addComponent<engine::core::Transform>(entity);
@@ -36585,7 +36591,7 @@ void testNetworkSessionRealFireWeaponWithoutClassSelectedIsRejectedNoBroadcast()
     clientEcs.addComponent<engine::core::Transform>(clientAvatar);
 
     bool projectileReceived = false;
-    clientSession.setOnProjectileSpawned([&](const engine::tntwars::ProjectileState&) { projectileReceived = true; });
+    engine::tntwars::TntWarsNetRules::of(clientSession).setOnProjectileSpawned([&](const engine::tntwars::ProjectileState&) { projectileReceived = true; });
 
     bool handshakeComplete = false;
     for (int i = 0; i < 200 && !handshakeComplete; ++i) {
@@ -36599,7 +36605,7 @@ void testNetworkSessionRealFireWeaponWithoutClassSelectedIsRejectedNoBroadcast()
 
     // Deliberately no selectTntWarsClass() call -- the real server-side
     // TntWarsMatch::fireWeapon() real-rejects this real request.
-    clientSession.fireTntWarsWeapon(glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    engine::tntwars::TntWarsNetRules::of(clientSession).fireWeapon(clientSession, glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
     for (int i = 0; i < 40; ++i) {
         serverSession.tick(0.05f, serverEcs, engine::core::kNullEntity);
         clientSession.tick(0.05f, clientEcs, clientAvatar);
@@ -38506,7 +38512,7 @@ engine::core::ProceduralMaterialLibrary makeFakeMaterialLibraryForTests() {
 void testProceduralMaterialLibraryApplyToStoneSetsStoneTextures() {
     auto lib = makeFakeMaterialLibraryForTests();
     engine::core::Renderable renderable;
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Stone);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Stone);
     check(renderable.albedoTexture == 100, "applyTo(Stone) real-copies stone's real albedo handle");
     check(renderable.normalTexture == 101, "applyTo(Stone) real-copies stone's real normal handle");
     check(renderable.metallicTexture == 102, "applyTo(Stone) real-copies stone's real metallic handle");
@@ -38519,7 +38525,7 @@ void testProceduralMaterialLibraryApplyToStoneSetsStoneTextures() {
 void testProceduralMaterialLibraryApplyToMetalSetsMetalTextures() {
     auto lib = makeFakeMaterialLibraryForTests();
     engine::core::Renderable renderable;
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Metal);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Metal);
     check(renderable.albedoTexture == 200, "applyTo(Metal) real-copies metal's real albedo handle");
     check(renderable.normalTexture == 201, "applyTo(Metal) real-copies metal's real normal handle");
     check(renderable.metallicTexture == 202, "applyTo(Metal) real-copies metal's real metallic handle");
@@ -38532,7 +38538,7 @@ void testProceduralMaterialLibraryApplyToMetalSetsMetalTextures() {
 void testProceduralMaterialLibraryApplyToGroundSetsGroundTextures() {
     auto lib = makeFakeMaterialLibraryForTests();
     engine::core::Renderable renderable;
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Ground);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Ground);
     check(renderable.albedoTexture == 400, "applyTo(Ground) real-copies ground's real albedo handle");
     check(renderable.normalTexture == 401, "applyTo(Ground) real-copies ground's real normal handle (unused, but still real-copied)");
     check(renderable.metallicTexture == 402, "applyTo(Ground) real-copies ground's real metallic handle");
@@ -38545,7 +38551,7 @@ void testProceduralMaterialLibraryApplyToGroundSetsGroundTextures() {
 void testProceduralMaterialLibraryApplyToLavaSetsLavaTexturesAndEmissive() {
     auto lib = makeFakeMaterialLibraryForTests();
     engine::core::Renderable renderable;
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Lava);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Lava);
     check(renderable.albedoTexture == 300, "applyTo(Lava) real-copies lava's real albedo handle");
     check(renderable.normalTexture == 301, "applyTo(Lava) real-copies lava's real normal handle");
     check(renderable.metallicTexture == 302, "applyTo(Lava) real-copies lava's real metallic handle");
@@ -38559,7 +38565,7 @@ void testProceduralMaterialLibraryApplyToLavaSetsLavaTexturesAndEmissive() {
 void testProceduralMaterialLibraryApplyToLavaEmissiveColorIsWarm() {
     auto lib = makeFakeMaterialLibraryForTests();
     engine::core::Renderable renderable;
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Lava);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Lava);
     check(renderable.emissiveColor.r > renderable.emissiveColor.b,
           "Lava's real emissive tint real-is warm (red channel real-exceeds blue), matching a real molten-rock read");
 }
@@ -38571,7 +38577,7 @@ void testProceduralMaterialLibraryApplyToNoneLeavesRenderableUntouched() {
     renderable.metallic = 0.42f;
     renderable.roughness = 0.77f;
     uint32_t previousAlbedo = renderable.albedoTexture;
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::None);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::None);
     check(renderable.albedoTexture == previousAlbedo, "applyTo(None) real-leaves albedoTexture completely untouched");
     check(nearlyEqual(renderable.metallic, 0.42f), "applyTo(None) real-leaves metallic completely untouched");
     check(nearlyEqual(renderable.roughness, 0.77f), "applyTo(None) real-leaves roughness completely untouched");
@@ -38582,7 +38588,7 @@ void testProceduralMaterialLibraryApplyToNonNoneResetsBaseColorToWhite() {
     auto lib = makeFakeMaterialLibraryForTests();
     engine::core::Renderable renderable;
     renderable.baseColor = glm::vec4(0.9f, 0.3f, 0.05f, 1.0f); // a real, saturated flat placeholder color
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Stone);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Stone);
     check(nearlyEqual(renderable.baseColor.r, 1.0f) && nearlyEqual(renderable.baseColor.g, 1.0f) &&
               nearlyEqual(renderable.baseColor.b, 1.0f) && nearlyEqual(renderable.baseColor.a, 1.0f),
           "applyTo() with a real generated material real-neutralizes baseColor to white, letting the real texture's own "
@@ -38592,10 +38598,10 @@ void testProceduralMaterialLibraryApplyToNonNoneResetsBaseColorToWhite() {
 void testProceduralMaterialLibraryApplyToDistinctKindsProduceDistinctHandles() {
     auto lib = makeFakeMaterialLibraryForTests();
     engine::core::Renderable stoneRenderable, metalRenderable, lavaRenderable, groundRenderable;
-    lib.applyTo(stoneRenderable, engine::tntwars::MapPieceMaterialKind::Stone);
-    lib.applyTo(metalRenderable, engine::tntwars::MapPieceMaterialKind::Metal);
-    lib.applyTo(lavaRenderable, engine::tntwars::MapPieceMaterialKind::Lava);
-    lib.applyTo(groundRenderable, engine::tntwars::MapPieceMaterialKind::Ground);
+    engine::tntwars::applyMapMaterial(lib, stoneRenderable, engine::tntwars::MapPieceMaterialKind::Stone);
+    engine::tntwars::applyMapMaterial(lib, metalRenderable, engine::tntwars::MapPieceMaterialKind::Metal);
+    engine::tntwars::applyMapMaterial(lib, lavaRenderable, engine::tntwars::MapPieceMaterialKind::Lava);
+    engine::tntwars::applyMapMaterial(lib, groundRenderable, engine::tntwars::MapPieceMaterialKind::Ground);
     check(stoneRenderable.albedoTexture != metalRenderable.albedoTexture, "Stone and Metal real-get distinct real albedo handles");
     check(stoneRenderable.albedoTexture != lavaRenderable.albedoTexture, "Stone and Lava real-get distinct real albedo handles");
     check(stoneRenderable.albedoTexture != groundRenderable.albedoTexture, "Stone and Ground real-get distinct real albedo handles");
@@ -38607,16 +38613,16 @@ void testProceduralMaterialLibraryApplyToDistinctKindsProduceDistinctHandles() {
 void testProceduralMaterialLibraryApplyToReappliedOverwritesPreviousMaterial() {
     auto lib = makeFakeMaterialLibraryForTests();
     engine::core::Renderable renderable;
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Stone);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Stone);
     check(renderable.albedoTexture == 100, "First applyTo(Stone) real-sets the real stone handle");
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Metal);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Metal);
     check(renderable.albedoTexture == 200, "A second, real applyTo(Metal) call real-overwrites the previous real material completely");
 }
 
 void testProceduralMaterialLibraryApplyToWithUngeneratedLibraryStillSetsMetallicRoughness() {
     engine::core::ProceduralMaterialLibrary lib; // never generate()'d -- every handle stays the real invalid default
     engine::core::Renderable renderable;
-    lib.applyTo(renderable, engine::tntwars::MapPieceMaterialKind::Metal);
+    engine::tntwars::applyMapMaterial(lib, renderable, engine::tntwars::MapPieceMaterialKind::Metal);
     check(renderable.albedoTexture == ~0u, "applyTo() on a real, never-generate()'d library real-still copies the real "
                                              "(invalid) default handle -- it's a real, honest pass-through, not a validator");
     check(nearlyEqual(renderable.metallic, 0.9f), "applyTo() real-still sets the real material-appropriate metallic value "

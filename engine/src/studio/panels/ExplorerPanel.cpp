@@ -393,6 +393,8 @@ void ExplorerPanel::draw(core::ECS& ecs) {
         size_t categoryIndex = static_cast<size_t>(classifyEntity(ecs, entity));
         groupedRoots[categoryIndex].push_back(entity);
     }
+    // Views run newest first; the tree reads oldest first like Roblox's.
+    for (auto& group : groupedRoots) std::reverse(group.begin(), group.end());
 
     // Full pre-order DFS flattening, built once upfront exactly like the
     // pre-Hierarchy version's flat `rows` list -- see collectRowsRecursive()'s

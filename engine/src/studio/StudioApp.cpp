@@ -1159,6 +1159,7 @@ bool StudioApp::initImGuiVulkanBackend() {
     // first ImGui::NewFrame()/dockspace read (this runs once, here, at
     // context creation).
     io.IniFilename = iniFilename_.c_str();
+    loadHiddenPanels();
     ImGui::StyleColorsDark();
     applyStudioStyle(accentColor()); // Studio's own dark-charcoal palette + per-mode accent -- see StudioStyle.hpp
     // Kronos ("UI/UX Revamp" -- "bold, thick, modern text"): must load
@@ -1312,9 +1313,12 @@ void StudioApp::drawDockspace() {
             // just removed would be a stale menu entry pointing at a
             // window that can never appear, so each is gated by the same
             // show*() predicate its own draw() call site in run() uses.
-            auto panelToggle = [](const char* label, bool& hidden) {
+            auto panelToggle = [this](const char* label, bool& hidden) {
                 bool visible = !hidden;
-                if (ImGui::MenuItem(label, nullptr, &visible)) hidden = !visible;
+                if (ImGui::MenuItem(label, nullptr, &visible)) {
+                    hidden = !visible;
+                    saveHiddenPanels();
+                }
             };
             if (showSceneTree()) panelToggle("Explorer", hideExplorer_);
             if (showInspector()) panelToggle("Inspector", hideInspector_);
@@ -3581,9 +3585,32 @@ void StudioApp::toggleAnchorSelection() {
     undoStack_.push({anchor ? "Anchor" : "Unanchor", [write, before] { write(before); }, [write, after] { write(after); }});
 }
 
+// Which panels the View menu hid, kept next to the layout file.
+void StudioApp::loadHiddenPanels() {
+    std::ifstream in(iniFilename_ + ".panels");
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line == "Explorer") hideExplorer_ = true;
+        else if (line == "Inspector") hideInspector_ = true;
+        else if (line == "ScriptEditor") hideScriptEditor_ = true;
+        else if (line == "Stats") hideStats_ = true;
+        else if (line == "SceneSearch") hideSceneSearch_ = true;
+    }
+}
+
+void StudioApp::saveHiddenPanels() const {
+    std::ofstream out(iniFilename_ + ".panels", std::ios::trunc);
+    if (hideExplorer_) out << "Explorer\n";
+    if (hideInspector_) out << "Inspector\n";
+    if (hideScriptEditor_) out << "ScriptEditor\n";
+    if (hideStats_) out << "Stats\n";
+    if (hideSceneSearch_) out << "SceneSearch\n";
+}
+
 void StudioApp::insertPrimitive(panels::ViewportPanel::Primitive kind) {
     if (editingLocked()) return;
     core::EntityId entity = viewportPanel_.spawnPrimitive(ecs_, &meshLibrary_, explorerPanel_, kind);
+    if (entity == core::kNullEntity) return;
     if (auto* name = ecs_.tryGetComponent<core::Name>(entity)) {
         int sameName = 0;
         for (auto [other, otherName] : ecs_.raw().view<core::Name>().each()) sameName += otherName.value == name->value ? 1 : 0;

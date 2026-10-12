@@ -17,6 +17,7 @@
 #include <SDL2/SDL.h>
 
 #include "core/RobloxServices.hpp"
+#include "tntwars/TntWarsNetRules.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/Application.hpp"
 #include "core/AvatarLoadout.hpp"
@@ -54,6 +55,9 @@
 #include "runtime/GameLoader.hpp"
 #include "runtime/GameLoop.hpp"
 #include "runtime/RuntimeShell.hpp"
+#include "despair/DespairGameMode.hpp"
+#include "tntwars/TntWarsGameMode.hpp"
+#include "despair/FPSPlayerController.hpp"
 #include "despair/FacilityLayout.hpp"
 #include "despair/FacilityMapBuilder.hpp"
 #include "housedemo/HouseDemoScene.hpp"
@@ -76,7 +80,9 @@
 #include "tntwars/VolcanoMapVisual.hpp"
 #include "tntwars/UnderwaterMapVisual.hpp"
 #include "tntwars/TrenchesMapVisual.hpp"
+#include "trailer/RenderShowcaseGameMode.hpp"
 #include "trailer/TrailerDirector.hpp"
+#include "trailer/TrailerGameMode.hpp"
 #include "trailer/RenderShowcase.hpp"
 #include "core/TimeOfDay.hpp"
 
@@ -540,6 +546,8 @@ int main(int argc, char** argv) {
         }
         return 1;
     }
+    // The Player ships TNT Wars, so its sessions always carry that game's network rules.
+    engine::tntwars::TntWarsNetRules::of(app.networkSession());
 
     // Kronos (JIT dedicated servers): headless used to return here,
     // immediately after app.initialize() and before any of
@@ -578,7 +586,7 @@ int main(int argc, char** argv) {
         // (see TrailerDirector.hpp's own header comment).
         engine::net::NetworkSession trailerNetworkSession;
         engine::trailer::TrailerDirector director(app.camera(), app.ecs(), app.meshLibrary(), app.particleSystem(),
-                                                    trailerNetworkSession.tntWarsMatch());
+                                                    engine::tntwars::TntWarsNetRules::of(trailerNetworkSession).match());
 
         // Sprint 16 ("Cinematic Graphics" Phase 6): "Switch resolution to
         // 1920x1080 @ 60fps" -- up from Sprint 15's deliberately modest
@@ -593,7 +601,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         director.setDefaultOutputDirectory(trailerOutputDir);
-        app.setTrailerDirector(&director);
+        app.setGameMode(std::make_unique<engine::trailer::TrailerGameMode>(director));
 
         // Sprint 16 Phase 6: "Enable cinematic renderer... Enable full
         // post-FX stack" -- real hardware ray-traced shadows (a real,
@@ -820,12 +828,12 @@ int main(int argc, char** argv) {
         // (see FacilityLayout.cpp's own layout comment).
         app.characterController().setInitialCameraAngles(0.0f, 0.0f);
 
+        app.setGameMode(std::make_unique<engine::despair::DespairGameMode>());
         app.run();
-        bool restart = app.despairRestartRequested();
+        const bool restart = app.gameMode() != nullptr && app.gameMode()->restartRequested();
         app.shutdown();
         if (restart) {
-            // Escape-to-restart (see Application::despairRestartRequested()'s
-            // own comment): a fresh relaunch of this same binary with the
+            // Escape-to-restart (DespairGameMode::restartRequested()): a fresh relaunch of this same binary with the
             // same --despair flag, not a loop back into
             // buildFacilityScene() in place -- a full fresh process means
             // a genuinely clean Jolt/ECS/renderer state with zero new
@@ -932,7 +940,7 @@ int main(int argc, char** argv) {
         app.camera().verticalFovDegrees = firstSample.fovDegrees;
 
         std::fprintf(stdout, "engine_runtime: showcase camera path duration -- %.1fs.\n", cameraPath.durationSeconds());
-        app.setCameraShowcaseMode(true, std::move(cameraPath));
+        app.setGameMode(std::make_unique<engine::trailer::RenderShowcaseGameMode>(std::move(cameraPath)));
 
         app.run();
         app.shutdown();
@@ -940,6 +948,9 @@ int main(int argc, char** argv) {
     }
 
     if (tntWarsMode) {
+        auto tntGameMode = std::make_unique<engine::tntwars::TntWarsGameMode>();
+        engine::tntwars::TntWarsGameMode& tnt = *tntGameMode;
+        app.setGameMode(std::move(tntGameMode));
         std::fprintf(stdout, "engine_runtime: --tntwars mode -- Live TNT Wars Match (Kronos \"TNT Wars Foundational Playability\" Phase 2)\n");
 
         // Real generated PBR materials -- same real module every other
@@ -947,7 +958,7 @@ int main(int argc, char** argv) {
         engine::core::ProceduralMaterialLibrary materials = engine::core::ProceduralMaterialLibrary::generate(
             app.textureLibrary(), app.renderer().allocator(), app.renderer().device(), app.renderer().commandPool(),
             app.renderer().graphicsQueue());
-        app.setTntWarsMaterials(materials);
+        tnt.setTntWarsMaterials(materials);
 
         // Kronos ("Four RTX Maps" Phase 5): real map selection -- matches
         // TntWarsMatch's own real default map_ (Trenches) when no
@@ -1061,7 +1072,7 @@ int main(int argc, char** argv) {
                     app.ecs(), app.physics(), app.meshLibrary(), materials, app.renderer().allocator(),
                     app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue(),
                     *skyTeamABaseTerrain, skyTeamABaseCenter, engine::tntwars::SkyBaseSide::TeamA);
-                app.tntWarsJumpPads().push_back(teamABaseFeatures.lift);
+                tnt.tntWarsJumpPads().push_back(teamABaseFeatures.lift);
                 std::fprintf(stdout, "engine_runtime: Sky Base (Team A) spawned -- %zu real pieces.\n",
                              teamABaseFeatures.spawnedEntities.size());
             }
@@ -1070,7 +1081,7 @@ int main(int argc, char** argv) {
                     app.ecs(), app.physics(), app.meshLibrary(), materials, app.renderer().allocator(),
                     app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue(),
                     *skyTeamBBaseTerrain, teamBBaseCenter, engine::tntwars::SkyBaseSide::TeamB);
-                app.tntWarsJumpPads().push_back(teamBBaseFeatures.lift);
+                tnt.tntWarsJumpPads().push_back(teamBBaseFeatures.lift);
                 std::fprintf(stdout, "engine_runtime: Sky Base (Team B) spawned -- %zu real pieces.\n",
                              teamBBaseFeatures.spawnedEntities.size());
             }
@@ -1086,7 +1097,7 @@ int main(int argc, char** argv) {
             // the exact same real technique the player's own spawn-point
             // override below already uses.
             {
-                engine::tntwars::TntWarsMatch& skyMatch = app.networkSession().tntWarsMatch();
+                engine::tntwars::TntWarsMatch& skyMatch = engine::tntwars::TntWarsNetRules::of(app.networkSession()).match();
                 glm::vec3 realTeamACenter = skyTeamABaseCenter;
                 glm::vec3 realTeamBCenter = teamBBaseCenter;
                 if (skyTeamABaseTerrain != nullptr) {
@@ -1106,8 +1117,8 @@ int main(int argc, char** argv) {
                 app.ecs(), app.physics(), app.meshLibrary(), materials, app.renderer().allocator(),
                 app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue(), skyIslands,
                 kSkyIslandSeed);
-            app.tntWarsExtraDestructibles() = skyFeatures.bridgeSegments;
-            app.tntWarsExtraDestructibleVisuals() = skyFeatures.bridgeVisuals;
+            tnt.tntWarsExtraDestructibles() = skyFeatures.bridgeSegments;
+            tnt.tntWarsExtraDestructibleVisuals() = skyFeatures.bridgeVisuals;
             std::fprintf(stdout,
                          "engine_runtime: Sky Map bridges/overhangs/crystal clusters spawned -- %zu real, "
                          "destructible bridges, %zu other real pieces.\n",
@@ -1237,9 +1248,9 @@ int main(int argc, char** argv) {
             // Real append, not overwrite -- the two Sky Bases' own real
             // "lift" jump pads were already pushed onto this same real
             // vector above; this must add to that, not erase it.
-            app.tntWarsJumpPads().insert(app.tntWarsJumpPads().end(), skyMovement.jumpPads.begin(),
+            tnt.tntWarsJumpPads().insert(tnt.tntWarsJumpPads().end(), skyMovement.jumpPads.begin(),
                                           skyMovement.jumpPads.end());
-            app.tntWarsZipLines() = skyMovement.zipLines;
+            tnt.tntWarsZipLines() = skyMovement.zipLines;
             std::fprintf(stdout,
                          "engine_runtime: Sky Map movement features spawned -- %zu jump pads, %zu zip-lines, %zu "
                          "real pieces.\n",
@@ -1262,25 +1273,25 @@ int main(int argc, char** argv) {
                     zipLineWaypoints.push_back(zipLine.start);
                     zipLineWaypoints.push_back(zipLine.end);
                 }
-                app.tntWarsTraversalChallenges().push_back(
+                tnt.tntWarsTraversalChallenges().push_back(
                     engine::tntwars::buildZipLineRaceChallenge("Sky Map Zip-Line Race", zipLineWaypoints));
             }
-            if (app.tntWarsJumpPads().size() >= 2) {
+            if (tnt.tntWarsJumpPads().size() >= 2) {
                 std::vector<glm::vec3> jumpPadWaypoints;
-                for (const engine::tntwars::JumpPadState& pad : app.tntWarsJumpPads()) {
+                for (const engine::tntwars::JumpPadState& pad : tnt.tntWarsJumpPads()) {
                     jumpPadWaypoints.push_back(pad.position);
                 }
-                app.tntWarsTraversalChallenges().push_back(
+                tnt.tntWarsTraversalChallenges().push_back(
                     engine::tntwars::buildJumpPadRouteChallenge("Sky Map Jump-Pad Route", jumpPadWaypoints));
             }
             std::fprintf(stdout, "engine_runtime: Sky Map traversal challenges built -- %zu real courses.\n",
-                         app.tntWarsTraversalChallenges().size());
+                         tnt.tntWarsTraversalChallenges().size());
             // Kronos ("User Interface" world-building, "Leaderboard
             // UI"): real, JSON-backed best-time load -- a real, honest
             // no-op (courses just keep their own real, freshly-built
             // bestTimeSeconds=-1) the very first time this file doesn't
             // exist yet.
-            if (engine::tntwars::loadChallengeBestTimes(app.tntWarsTraversalChallenges(), kTntWarsLeaderboardPath)) {
+            if (engine::tntwars::loadChallengeBestTimes(tnt.tntWarsTraversalChallenges(), kTntWarsLeaderboardPath)) {
                 std::fprintf(stdout, "engine_runtime: leaderboard best times loaded from \"%s\".\n", kTntWarsLeaderboardPath);
             }
 
@@ -1307,7 +1318,7 @@ int main(int argc, char** argv) {
                 collapsibleIslandSegments.push_back(segment);
                 collapsibleIslandTerrains.push_back(&skyIslandTerrains[i]);
             }
-            app.setTntWarsCollapsibleIslands(collapsibleIslandSegments, collapsibleIslandTerrains);
+            tnt.setTntWarsCollapsibleIslands(collapsibleIslandSegments, collapsibleIslandTerrains);
             std::fprintf(stdout, "engine_runtime: Sky Map real collapsible minor islands -- %zu.\n",
                          collapsibleIslandSegments.size());
 
@@ -1375,10 +1386,10 @@ int main(int argc, char** argv) {
             // cool/hazy baseline these blend *from* is exactly the
             // skyAtmosphere override set above (unchanged) -- this only
             // adds real, localized warmth near each base.
-            app.tntWarsAtmosphereZones() =
+            tnt.tntWarsAtmosphereZones() =
                 engine::tntwars::buildSkyMapAtmosphereZones(skyTeamABaseCenter, teamBBaseCenter);
             std::fprintf(stdout, "engine_runtime: Sky Map atmosphere zones built -- %zu real zones.\n",
-                         app.tntWarsAtmosphereZones().size());
+                         tnt.tntWarsAtmosphereZones().size());
 
             // Kronos ("Explosives System" world-building): real,
             // damageable explosive barrels near each team's own forge
@@ -1391,11 +1402,11 @@ int main(int argc, char** argv) {
                         app.ecs(), app.physics(), app.meshLibrary(), materials, app.renderer().allocator(),
                         app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue(), barrel,
                         "SkyMap_ExplosiveBarrel");
-                    app.tntWarsExplosiveBarrels().push_back(barrel);
+                    tnt.tntWarsExplosiveBarrels().push_back(barrel);
                 }
             }
             std::fprintf(stdout, "engine_runtime: Sky Map explosive barrels spawned -- %zu real barrels.\n",
-                         app.tntWarsExplosiveBarrels().size());
+                         tnt.tntWarsExplosiveBarrels().size());
 
             // Kronos ("Sky Map Bible"/"Combat Layer" world-building, PvE
             // "Sky Sentinels"): real, live mobs guarding the central
@@ -1413,10 +1424,10 @@ int main(int argc, char** argv) {
                     app.ecs(), app.meshLibrary(), materials, app.renderer().allocator(), app.renderer().device(),
                     app.renderer().commandPool(), app.renderer().graphicsQueue(), sentinelState, mesaCenter + offset,
                     20.0f);
-                app.tntWarsCombatMobs().push_back(sentinel);
+                tnt.tntWarsCombatMobs().push_back(sentinel);
             }
             std::fprintf(stdout, "engine_runtime: Sky Map Sky Sentinels spawned -- %zu real, live PvE mobs.\n",
-                         app.tntWarsCombatMobs().size());
+                         tnt.tntWarsCombatMobs().size());
         }
 
         // Kronos ("Space Map Bible" v1.0, Section II "Core Structure"):
@@ -1510,9 +1521,9 @@ int main(int argc, char** argv) {
             // Kronos ("Lighting Polish" world-building): real, clearer,
             // warmer air inside every major derelict station, contrasted
             // against the real void-haze baseline set above.
-            app.tntWarsAtmosphereZones() = engine::tntwars::buildSpaceMapAtmosphereZones(spacePlatforms);
+            tnt.tntWarsAtmosphereZones() = engine::tntwars::buildSpaceMapAtmosphereZones(spacePlatforms);
             std::fprintf(stdout, "engine_runtime: Space Map atmosphere zones built -- %zu real zones.\n",
-                         app.tntWarsAtmosphereZones().size());
+                         tnt.tntWarsAtmosphereZones().size());
 
             // Kronos bugfix (live-reported: "no visual model for the
             // resource nodes"): real resource-node repositioning -- see
@@ -1527,7 +1538,7 @@ int main(int argc, char** argv) {
             // (tntwars::territoryAt()'s own real Z-sign split) that
             // scavengeNode() itself gates on.
             {
-                engine::tntwars::TntWarsMatch& spaceMatch = app.networkSession().tntWarsMatch();
+                engine::tntwars::TntWarsMatch& spaceMatch = engine::tntwars::TntWarsNetRules::of(app.networkSession()).match();
                 const engine::tntwars::SpacePlatform* teamAAnchor = nullptr;
                 const engine::tntwars::SpacePlatform* teamBAnchor = nullptr;
                 for (const engine::tntwars::SpacePlatform& platform : spacePlatforms) {
@@ -1552,7 +1563,7 @@ int main(int argc, char** argv) {
             engine::tntwars::SpaceMapOrbitalRails orbitalRails = engine::tntwars::spawnSpaceMapOrbitalRails(
                 app.ecs(), app.physics(), app.meshLibrary(), materials, app.renderer().allocator(),
                 app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue(), spacePlatforms);
-            app.tntWarsZipLines() = orbitalRails.rails;
+            tnt.tntWarsZipLines() = orbitalRails.rails;
             std::fprintf(stdout, "engine_runtime: Space Map orbital rails spawned -- %zu real rails.\n",
                          orbitalRails.rails.size());
 
@@ -1586,7 +1597,7 @@ int main(int argc, char** argv) {
                 boosterPads.push_back(pad);
                 ++boosterPadsPlaced;
             }
-            app.tntWarsBoosterPads() = boosterPads;
+            tnt.tntWarsBoosterPads() = boosterPads;
             std::fprintf(stdout, "engine_runtime: Space Map booster pads spawned -- %zu real pads.\n",
                          boosterPads.size());
 
@@ -1598,7 +1609,7 @@ int main(int argc, char** argv) {
             voidZeroG.position = glm::vec3(0.0f, 0.0f, 0.0f);
             voidZeroG.radius = 45.0f;
             voidZeroG.gravityCancelFraction = 0.8f;
-            app.tntWarsZeroGravityZones() = {voidZeroG};
+            tnt.tntWarsZeroGravityZones() = {voidZeroG};
 
             // Real Gravity Wells -- one per major Asteroid platform (a
             // real, thematic "asteroids have their own subtle pull"),
@@ -1612,10 +1623,10 @@ int main(int argc, char** argv) {
                 well.maxAccel = 3.5f;
                 gravityWells.push_back(well);
             }
-            app.tntWarsGravityWells() = gravityWells;
+            tnt.tntWarsGravityWells() = gravityWells;
             std::fprintf(stdout,
                          "engine_runtime: Space Map traversal systems -- %zu Zero-G zone(s), %zu gravity well(s).\n",
-                         app.tntWarsZeroGravityZones().size(), gravityWells.size());
+                         tnt.tntWarsZeroGravityZones().size(), gravityWells.size());
 
             // Kronos ("Explosives System" world-building): real,
             // damageable explosive barrels near a couple of major
@@ -1631,7 +1642,7 @@ int main(int argc, char** argv) {
                     app.ecs(), app.physics(), app.meshLibrary(), materials, app.renderer().allocator(),
                     app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue(), barrel,
                     "SpaceMap_ExplosiveBarrel");
-                app.tntWarsExplosiveBarrels().push_back(barrel);
+                tnt.tntWarsExplosiveBarrels().push_back(barrel);
                 ++spaceBarrelsPlaced;
             }
             std::fprintf(stdout, "engine_runtime: Space Map explosive barrels spawned -- %d real barrels.\n",
@@ -1652,7 +1663,7 @@ int main(int argc, char** argv) {
                     app.ecs(), app.meshLibrary(), materials, app.renderer().allocator(), app.renderer().device(),
                     app.renderer().commandPool(), app.renderer().graphicsQueue(), droneState,
                     platform.center + glm::vec3(0.0f, platform.radius * 0.6f, 0.0f), 22.0f);
-                app.tntWarsCombatMobs().push_back(drone);
+                tnt.tntWarsCombatMobs().push_back(drone);
                 ++voidDronesPlaced;
             }
             std::fprintf(stdout, "engine_runtime: Space Map Void Drones spawned -- %d real, live PvE mobs.\n",
@@ -1676,11 +1687,11 @@ int main(int argc, char** argv) {
                 pvpNodes.push_back(ringNode);
                 break;
             }
-            app.tntWarsPvPNodes() = pvpNodes;
-            app.tntWarsPvPNodeVisuals().clear();
+            tnt.tntWarsPvPNodes() = pvpNodes;
+            tnt.tntWarsPvPNodeVisuals().clear();
             for (size_t i = 0; i < pvpNodes.size(); ++i) {
                 std::string label = "SpaceMap_PvPNode_" + std::to_string(i);
-                app.tntWarsPvPNodeVisuals().push_back(engine::tntwars::spawnPvPNodeVisual(
+                tnt.tntWarsPvPNodeVisuals().push_back(engine::tntwars::spawnPvPNodeVisual(
                     app.ecs(), app.meshLibrary(), materials, app.renderer().allocator(), app.renderer().device(),
                     app.renderer().commandPool(), app.renderer().graphicsQueue(), pvpNodes[i], label.c_str()));
             }
@@ -1721,7 +1732,7 @@ int main(int argc, char** argv) {
             app.renderer().setUnderwaterCausticsEnabled(true);
         }
 
-        engine::tntwars::TntWarsMatch& match = app.networkSession().tntWarsMatch();
+        engine::tntwars::TntWarsMatch& match = engine::tntwars::TntWarsNetRules::of(app.networkSession()).match();
         // Real, offline single-player setup: one real registered player,
         // driven directly (no client-server round trip -- see
         // Application::setTntWarsLiveMode()'s own comment), advanced
@@ -1757,18 +1768,18 @@ int main(int argc, char** argv) {
         // mapMaterialDisplayName()'s own comment) -- see
         // Application::tntWarsScavengeNodeVisuals()'s own comment for the
         // live proximity+Interact wiring this feeds.
-        app.tntWarsScavengeNodeVisuals() = engine::tntwars::spawnScavengeNodeVisuals(
+        tnt.tntWarsScavengeNodeVisuals() = engine::tntwars::spawnScavengeNodeVisuals(
             app.ecs(), app.meshLibrary(), materials, app.renderer().allocator(), app.renderer().device(),
             app.renderer().commandPool(), app.renderer().graphicsQueue(), match.scavengeNodes(), map);
         std::fprintf(stdout, "engine_runtime: TNT Wars resource nodes spawned -- %zu real nodes.\n",
-                     app.tntWarsScavengeNodeVisuals().size());
+                     tnt.tntWarsScavengeNodeVisuals().size());
 
         // Real destructible wall -- only Trenches has one (see
         // TntWarsMatch.hpp's own comment on trenchesWall_'s real map
         // scoping); spawned with real colliders + tracked visual state so
         // Application's own pretick hook can keep it in sync every frame.
         if (map == engine::tntwars::MapId::Trenches) {
-            app.tntWarsWallVisuals() = engine::tntwars::spawnDestructibleWallVisual(
+            tnt.tntWarsWallVisuals() = engine::tntwars::spawnDestructibleWallVisual(
                 app.ecs(), app.meshLibrary(), app.physics(), materials.stone, app.renderer().allocator(),
                 app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue(),
                 match.trenchesWallMutable());
@@ -1778,7 +1789,7 @@ int main(int argc, char** argv) {
             // -- same real spawn/tick pattern as the wall just above,
             // wood-textured (real sandbag/timber cover, distinct from the
             // wall's own stone).
-            app.tntWarsCoverVisuals() = engine::tntwars::spawnDestructibleWallVisual(
+            tnt.tntWarsCoverVisuals() = engine::tntwars::spawnDestructibleWallVisual(
                 app.ecs(), app.meshLibrary(), app.physics(), materials.wood, app.renderer().allocator(),
                 app.renderer().device(), app.renderer().commandPool(), app.renderer().graphicsQueue(),
                 match.trenchesCoverMutable());
@@ -1796,7 +1807,7 @@ int main(int argc, char** argv) {
                          trenchesMapEntities.size());
         }
 
-        app.setTntWarsLiveMode(true, kLocalPlayerId);
+        tnt.setLiveMode(app.audio(), true, kLocalPlayerId);
 
         // Real starting spawn position -- just behind TeamA's own real
         // base, looking north across the play surface toward TeamB.
@@ -1860,7 +1871,7 @@ int main(int argc, char** argv) {
         // Kronos ("Quality-of-Life & Finalization", "Spawn logic"): the
         // exact same real spawn position feeds a mid-match respawn too
         // -- see Application::setTntWarsRespawnPosition()'s own comment.
-        app.setTntWarsRespawnPosition(spawnPosition);
+        tnt.setTntWarsRespawnPosition(spawnPosition);
 
         std::fprintf(stdout,
                       "engine_runtime: TNT Wars live -- WASD/mouse to move, Shift to sprint, Space to jump, 1-5 to "
@@ -1876,7 +1887,7 @@ int main(int argc, char** argv) {
         // closes (app.run() only returns then), so a best time set
         // during this real session is never lost even if the process
         // exits normally right after.
-        if (engine::tntwars::saveChallengeBestTimes(app.tntWarsTraversalChallenges(), kTntWarsLeaderboardPath)) {
+        if (engine::tntwars::saveChallengeBestTimes(tnt.tntWarsTraversalChallenges(), kTntWarsLeaderboardPath)) {
             std::fprintf(stdout, "engine_runtime: leaderboard best times saved to \"%s\".\n", kTntWarsLeaderboardPath);
         }
 

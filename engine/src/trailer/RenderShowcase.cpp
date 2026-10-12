@@ -1,4 +1,5 @@
 #include "trailer/RenderShowcase.hpp"
+#include "tntwars/MapMaterialApply.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -30,7 +31,7 @@ core::EntityId spawnShowcaseBox(core::ECS& ecs, core::MeshLibrary& meshLibrary, 
     auto& renderable = ecs.addComponent<core::Renderable>(entity);
     renderable.meshHandle = meshHandle;
     renderable.castsShadow = true;
-    materials.applyTo(renderable, kind);
+    tntwars::applyMapMaterial(materials, renderable, kind);
 
     auto& meshSource = ecs.addComponent<core::MeshSource>(entity);
     meshSource.kind = core::MeshSourceKind::Box;
@@ -96,7 +97,7 @@ core::EntityId spawnShowcaseCapsule(core::ECS& ecs, core::MeshLibrary& meshLibra
     if (crystal) {
         applyCrystalMaterial(renderable, materials);
     } else {
-        materials.applyTo(renderable, kind);
+        tntwars::applyMapMaterial(materials, renderable, kind);
     }
     return entity;
 }
@@ -133,7 +134,7 @@ core::EntityId spawnShowcasePlane(core::ECS& ecs, core::MeshLibrary& meshLibrary
     auto& renderable = ecs.addComponent<core::Renderable>(entity);
     renderable.meshHandle = meshHandle;
     renderable.castsShadow = false;
-    materials.applyTo(renderable, kind);
+    tntwars::applyMapMaterial(materials, renderable, kind);
     return entity;
 }
 

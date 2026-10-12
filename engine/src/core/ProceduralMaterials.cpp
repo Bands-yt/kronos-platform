@@ -216,7 +216,7 @@ float lavaHeight(float u, float v, uint32_t seed) { return fbm(u, v, seed, 5); }
             float turbulence = fbm(u, v, 2024u, 5);
             // Dark basalt crust with bright crack veins baked directly
             // into this albedo texture's own color/luminance contrast --
-            // ProceduralMaterialLibrary::applyTo() layers a real, modest
+            // tntwars::applyMapMaterial() layers a real, modest
             // flat emissive tint on top (scene.frag's emissive term is
             // unmasked/additive, not multiplied against this texture, see
             // that call site's own comment), but the crust-vs-vein
@@ -726,56 +726,6 @@ ProceduralMaterialLibrary ProceduralMaterialLibrary::generate(TextureLibrary& te
     lib.dirt.ao = upload(textureLibrary, solidChannelTexture(1.0f), false, allocator, device, cmdPool, queue);
 
     return lib;
-}
-
-void ProceduralMaterialLibrary::applyTo(Renderable& renderable, tntwars::MapPieceMaterialKind kind) const {
-    const PbrTextureSet* set = nullptr;
-    // scene.frag multiplies albedoTexture's sample against baseColor
-    // (`albedo = inBaseColor.rgb * texture(albedoTexture, inUV).rgb`) --
-    // MapLayoutPiece::color (what callers already wrote into
-    // renderable.baseColor before this runs) was tuned as a *flat*
-    // placeholder shading color, not as a tint for a real, already-
-    // colored generated texture; left as-is, a saturated piece color
-    // (e.g. LavaPool's bright orange) multiplies against the new
-    // texture's own real color variation and washes it back out to
-    // near-flat again -- exactly the problem a real texture replacement
-    // is supposed to fix. Neutralizing to white here lets the generated
-    // texture's own real per-pixel color fully drive what's visible.
-    if (kind != tntwars::MapPieceMaterialKind::None) renderable.baseColor = glm::vec4(1.0f);
-    switch (kind) {
-        case tntwars::MapPieceMaterialKind::Stone: set = &stone; renderable.metallic = 0.02f; renderable.roughness = 0.9f; break;
-        case tntwars::MapPieceMaterialKind::Metal: set = &metal; renderable.metallic = 0.9f; renderable.roughness = 0.35f; break;
-        case tntwars::MapPieceMaterialKind::Ground: set = &ground; renderable.metallic = 0.0f; renderable.roughness = 0.88f; break;
-        case tntwars::MapPieceMaterialKind::Lava:
-            set = &lava;
-            renderable.metallic = 0.0f;
-            renderable.roughness = 0.55f;
-            // Real emissive glow -- scene.frag's emissive term is a flat,
-            // *unmasked* additive tint (Renderable has no separate
-            // emissive texture slot, only a flat emissiveColor/Intensity
-            // -- see Components.hpp), not multiplied against
-            // lavaAlbedoPixels()'s own crack-vein pattern. Kept
-            // deliberately modest here so that flat tint enhances the
-            // vein/crust contrast already baked into the albedo texture
-            // rather than a bright uniform wash blowing that contrast
-            // out through Renderer::drawBloomAndComposite()'s ACES
-            // tonemap -- a real, honest scope boundary of this renderer
-            // (a true "emissive map" would need a new texture slot +
-            // shader binding, not built in this pass), not a bug.
-            renderable.emissiveColor = glm::vec3(1.0f, 0.45f, 0.12f);
-            renderable.emissiveIntensity = 0.15f;
-            break;
-        case tntwars::MapPieceMaterialKind::Mud: set = &mud; renderable.metallic = 0.0f; renderable.roughness = 0.75f; break;
-        case tntwars::MapPieceMaterialKind::Wood: set = &wood; renderable.metallic = 0.0f; renderable.roughness = 0.65f; break;
-        case tntwars::MapPieceMaterialKind::Coral: set = &coral; renderable.metallic = 0.0f; renderable.roughness = 0.75f; break;
-        case tntwars::MapPieceMaterialKind::Sand: set = &sand; renderable.metallic = 0.0f; renderable.roughness = 0.9f; break;
-        case tntwars::MapPieceMaterialKind::None: return;
-    }
-    renderable.albedoTexture = set->albedo;
-    renderable.normalTexture = set->normal;
-    renderable.metallicTexture = set->metallic;
-    renderable.roughnessTexture = set->roughness;
-    renderable.aoTexture = set->ao;
 }
 
 } // namespace engine::core

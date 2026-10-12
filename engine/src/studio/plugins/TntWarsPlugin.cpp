@@ -1,4 +1,6 @@
 #include "studio/plugins/TntWarsPlugin.hpp"
+#include "tntwars/TntWarsNetRules.hpp"
+#include "tntwars/MapMaterialApply.hpp"
 
 #include <cstdio>
 
@@ -57,7 +59,7 @@ void TntWarsPlugin::buildMapGeometry(core::ECS& ecs) {
         // textures + material params layered on top of piece.color --
         // applyTo() is a real no-op for MapPieceMaterialKind::None (team
         // bases, water), which keep the flat baseColor exactly as before.
-        materials_.applyTo(renderable, tntwars::classifyMapPieceMaterial(piece.name));
+        tntwars::applyMapMaterial(materials_, renderable, tntwars::classifyMapPieceMaterial(piece.name));
 
         // Real MeshSource so a scene save (SceneManager::saveScene(),
         // Sprint 13's WorldPackage capture) can rebuild this exact piece
@@ -102,7 +104,7 @@ void TntWarsPlugin::drawClassTuningSection() {
 
     ImGui::Combo("Class##tune", &classIndex_, kClassNames, IM_ARRAYSIZE(kClassNames));
     auto classType = static_cast<tntwars::PlayerClassType>(classIndex_);
-    tntwars::ClassTuningTable& tuning = session_->tntWarsMatch().classTuning();
+    tntwars::ClassTuningTable& tuning = engine::tntwars::TntWarsNetRules::of(*session_).match().classTuning();
     tntwars::ClassStats stats = tuning.statsFor(classType);
 
     bool changed = false;
@@ -129,7 +131,7 @@ void TntWarsPlugin::drawMapTuningSection() {
     if (!ImGui::CollapsingHeader("Map Modifiers")) return;
 
     auto map = static_cast<tntwars::MapId>(mapIndex_);
-    tntwars::MapTuningTable& tuning = session_->tntWarsMatch().mapTuning();
+    tntwars::MapTuningTable& tuning = engine::tntwars::TntWarsNetRules::of(*session_).match().mapTuning();
     tntwars::MapModifiers modifiers = tuning.modifiersFor(map);
 
     bool changed = false;
@@ -156,7 +158,7 @@ void TntWarsPlugin::drawMatchFlowSection() {
         return;
     }
 
-    tntwars::TntWarsMatch& match = session_->tntWarsMatch();
+    tntwars::TntWarsMatch& match = engine::tntwars::TntWarsNetRules::of(*session_).match();
     tntwars::MatchFlowController& flow = match.matchFlow();
     ImGui::Text("Phase: %s (%.1fs elapsed)", tntwars::matchPhaseName(flow.phase()), flow.phaseElapsedSeconds());
 

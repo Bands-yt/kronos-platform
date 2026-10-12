@@ -213,7 +213,6 @@ add_library(engine_core STATIC
     core/ScriptChatApi.cpp
     core/ScriptAvatarApi.cpp
     core/ScriptUiApi.cpp
-    core/TrailerScriptApi.cpp
     core/ScenePicking.cpp
     core/ObjLoader.cpp
     core/GltfLoader.cpp
@@ -457,91 +456,12 @@ add_library(engine_core STATIC
     publishing/WorldRegistry.cpp
     publishing/ThumbnailCapture.cpp
 
-    tntwars/ClassSystem.cpp
-    tntwars/Team.cpp
-    tntwars/UltimateCharge.cpp
-    tntwars/CinematicSequence.cpp
-    tntwars/Projectile.cpp
-    tntwars/ThrusterHp.cpp
-    tntwars/LavaEruption.cpp
-    tntwars/TorpedoStealth.cpp
-    tntwars/RadarIntercept.cpp
-    tntwars/MapDefinition.cpp
-    tntwars/MapLayout.cpp
-    tntwars/MapMaterial.cpp
-    tntwars/MatchFlow.cpp
-    tntwars/DestructibleGeometry.cpp
-    tntwars/DestructibleGeometryVisual.cpp
-    tntwars/MapLayoutVisual.cpp
-    tntwars/Oxygen.cpp
-    tntwars/SkyMapVisual.cpp
-    tntwars/SkyMapTerrain.cpp
-    tntwars/SpaceMapTerrain.cpp
-    tntwars/AtmosphereZones.cpp
-    tntwars/FlickerLight.cpp
-    tntwars/SpaceTraversal.cpp
-    tntwars/CombatMob.cpp
-    tntwars/PvPNode.cpp
-    tntwars/Explosives.cpp
-    tntwars/Decal.cpp
-    tntwars/Respawn.cpp
-    tntwars/TntChargeVisual.cpp
-    tntwars/ProjectileVisual.cpp
-    tntwars/VolcanoMapVisual.cpp
-    tntwars/UnderwaterMapVisual.cpp
-    tntwars/TrenchesMapVisual.cpp
-    tntwars/TntCharge.cpp
-    tntwars/CombatFx.cpp
-    tntwars/Scavenging.cpp
-    tntwars/ScavengeNodeVisual.cpp
-    tntwars/TraversalChallenge.cpp
-    tntwars/TntWarsUpgrades.cpp
-    tntwars/TntWarsUpgradeStation.cpp
-    tntwars/Crafting.cpp
-    tntwars/Missile.cpp
-    tntwars/Movement.cpp
-    tntwars/TrenchesWall.cpp
-    tntwars/TrenchesCover.cpp
-    tntwars/SkyPlatforms.cpp
-    tntwars/TntWarsAntiCheat.cpp
-    tntwars/TntWarsMatch.cpp
 
-    trailer/TrailerTimeline.cpp
-    trailer/TrailerCinematics.cpp
-    trailer/TrailerScenes.cpp
-    trailer/CaptureRig.cpp
     trailer/FrameEncoding.cpp
-    trailer/TrailerDirector.cpp
-    trailer/TimeglassModel.cpp
-    trailer/RenderShowcase.cpp
+    trailer/CaptureRig.cpp
 
-    miningsim/MiningSimRtx.cpp
-    miningsim/Rarity.cpp
-    miningsim/Zone.cpp
-    miningsim/Portal.cpp
-    miningsim/MiningTools.cpp
-    miningsim/Forging.cpp
-    miningsim/ZoneVisualTheme.cpp
-    miningsim/Dungeon.cpp
-    miningsim/Mob.cpp
-    miningsim/Boss.cpp
-    miningsim/PvpArena.cpp
-    miningsim/DungeonVisual.cpp
-    miningsim/MobVisual.cpp
-    miningsim/ForgeVisual.cpp
 
-    housedemo/HouseLayout.cpp
-    housedemo/HouseDemoScene.cpp
 
-    despair/SanitySystem.cpp
-    despair/HorrorAIManager.cpp
-    despair/InteractionSystem.cpp
-    despair/FPSPlayerController.cpp
-    despair/FacilityLayout.cpp
-    despair/FacilityMapBuilder.cpp
-    despair/LootSystem.cpp
-    despair/EscapeGameLoop.cpp
-    despair/VhsBodycamEffects.cpp
 
     platform_adapters/UnifiedInput.cpp
     platform_adapters/adapters/WindowsAdapter.cpp
@@ -734,6 +654,102 @@ add_library(kronos_brokenbones STATIC
 )
 target_link_libraries(kronos_brokenbones PUBLIC engine_core)
 
+# The built-in games and the trailer tooling: kept out of engine_core, which carries no game code.
+add_library(kronos_games STATIC
+    core/TrailerScriptApi.cpp
+    tntwars/ClassSystem.cpp
+    tntwars/Team.cpp
+    tntwars/UltimateCharge.cpp
+    tntwars/CinematicSequence.cpp
+    tntwars/Projectile.cpp
+    tntwars/ThrusterHp.cpp
+    tntwars/LavaEruption.cpp
+    tntwars/TorpedoStealth.cpp
+    tntwars/RadarIntercept.cpp
+    tntwars/MapDefinition.cpp
+    tntwars/MapLayout.cpp
+    tntwars/MapMaterial.cpp
+    tntwars/MapMaterialApply.cpp
+    tntwars/MatchFlow.cpp
+    tntwars/DestructibleGeometry.cpp
+    tntwars/DestructibleGeometryVisual.cpp
+    tntwars/MapLayoutVisual.cpp
+    tntwars/Oxygen.cpp
+    tntwars/SkyMapVisual.cpp
+    tntwars/SkyMapTerrain.cpp
+    tntwars/SpaceMapTerrain.cpp
+    tntwars/AtmosphereZones.cpp
+    tntwars/FlickerLight.cpp
+    tntwars/SpaceTraversal.cpp
+    tntwars/CombatMob.cpp
+    tntwars/PvPNode.cpp
+    tntwars/Explosives.cpp
+    tntwars/Decal.cpp
+    tntwars/Respawn.cpp
+    tntwars/TntChargeVisual.cpp
+    tntwars/ProjectileVisual.cpp
+    tntwars/VolcanoMapVisual.cpp
+    tntwars/UnderwaterMapVisual.cpp
+    tntwars/TrenchesMapVisual.cpp
+    tntwars/TntCharge.cpp
+    tntwars/CombatFx.cpp
+    tntwars/Scavenging.cpp
+    tntwars/ScavengeNodeVisual.cpp
+    tntwars/TraversalChallenge.cpp
+    tntwars/TntWarsUpgrades.cpp
+    tntwars/TntWarsUpgradeStation.cpp
+    tntwars/TntWarsGameMode.cpp
+    tntwars/TntWarsNetRules.cpp
+    tntwars/Crafting.cpp
+    tntwars/Missile.cpp
+    tntwars/Movement.cpp
+    tntwars/TrenchesWall.cpp
+    tntwars/TrenchesCover.cpp
+    tntwars/SkyPlatforms.cpp
+    tntwars/TntWarsAntiCheat.cpp
+    tntwars/TntWarsMatch.cpp
+    trailer/TrailerTimeline.cpp
+    trailer/TrailerCinematics.cpp
+    trailer/TrailerScenes.cpp
+    trailer/TrailerDirector.cpp
+    trailer/TimeglassModel.cpp
+    trailer/RenderShowcase.cpp
+    miningsim/MiningSimRtx.cpp
+    miningsim/Rarity.cpp
+    miningsim/Zone.cpp
+    miningsim/Portal.cpp
+    miningsim/MiningTools.cpp
+    miningsim/Forging.cpp
+    miningsim/ZoneVisualTheme.cpp
+    miningsim/Dungeon.cpp
+    miningsim/Mob.cpp
+    miningsim/Boss.cpp
+    miningsim/PvpArena.cpp
+    miningsim/DungeonVisual.cpp
+    miningsim/MobVisual.cpp
+    miningsim/ForgeVisual.cpp
+    housedemo/HouseLayout.cpp
+    housedemo/HouseDemoScene.cpp
+    trailer/RenderShowcaseGameMode.cpp
+    trailer/TrailerGameMode.cpp
+)
+target_link_libraries(kronos_games PUBLIC engine_core)
+
+# PROJECT: DESPAIR, the built-in horror game: its own library so engine_core stays game-free.
+add_library(kronos_despair STATIC
+    despair/SanitySystem.cpp
+    despair/HorrorAIManager.cpp
+    despair/InteractionSystem.cpp
+    despair/FPSPlayerController.cpp
+    despair/FacilityLayout.cpp
+    despair/FacilityMapBuilder.cpp
+    despair/LootSystem.cpp
+    despair/EscapeGameLoop.cpp
+    despair/VhsBodycamEffects.cpp
+    despair/DespairGameMode.cpp
+)
+target_link_libraries(kronos_despair PUBLIC engine_core)
+
 # Runs one third-party plugin in a locked-down process (plugin/SandboxMain.cpp).
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(kronos_plugin_sandbox plugin/SandboxMain.cpp)
@@ -774,7 +790,7 @@ if(ENGINE_BUILD_RUNTIME)
         studio/PreviewScene.cpp
         $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/kronos.rc>
     )
-    target_link_libraries(engine_runtime PRIVATE engine_core kronos_brokenbones imgui::imgui)
+    target_link_libraries(engine_runtime PRIVATE engine_core kronos_brokenbones kronos_despair kronos_games imgui::imgui)
     if(WIN32)
         # SDL2's own SDL_main.h (pulled in transitively via SDL.h)
         # #defines main to SDL_main on Windows -- the real WinMain that
@@ -959,7 +975,7 @@ if(ENGINE_BUILD_STUDIO)
     # Applied to every one of KRONOS_STUDIO_TARGETS -- see that variable's
     # own comment for why all 5 executables need the identical link set.
     foreach(_kronos_studio_target ${KRONOS_STUDIO_TARGETS})
-        target_link_libraries(${_kronos_studio_target} PRIVATE engine_core imgui::imgui imguizmo::imguizmo
+        target_link_libraries(${_kronos_studio_target} PRIVATE engine_core kronos_games imgui::imgui imguizmo::imguizmo
             imguicolortextedit::imguicolortextedit Luau.Analysis Luau.Config imnodes::imnodes)
         if(TARGET kronos::shaderc)
             target_link_libraries(${_kronos_studio_target} PRIVATE kronos::shaderc)

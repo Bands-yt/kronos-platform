@@ -354,6 +354,8 @@ private:
     void toggleAnchorSelection();
     [[nodiscard]] bool selectionAnchored();
     void insertPrimitive(panels::ViewportPanel::Primitive kind);
+    void loadHiddenPanels();
+    void saveHiddenPanels() const;
     void togglePlay();
     void startServerTest(int players);
     void drawServerTestWindow();

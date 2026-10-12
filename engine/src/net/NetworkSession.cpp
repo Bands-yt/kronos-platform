@@ -518,7 +518,7 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
         PlayerId player = nextPlayerId_++;
         serverPeerToPlayer_[peer] = player;
         serverReconciliation_.registerPlayer(player);
-        tntWarsMatch_.registerPlayer(player);
+        if (gameRules_) gameRules_->playerRegistered(player);
         core::logInfo("Network", "peer %u connected, assigned player id %u (awaiting JoinRequest)", peer, player);
     };
     callbacks.onPeerDisconnected = [this](ENetTransport::PeerId peer) {
@@ -554,7 +554,7 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
         // one connection, see setServerMuted()'s own header comment.
         muteBlockRegistry_.removePlayer(player);
         movementRejectionCounter_.removePlayer(player);
-        tntWarsMatch_.unregisterPlayer(player);
+        if (gameRules_) gameRules_->playerUnregistered(player);
         serverPeerToPlayer_.erase(it);
         core::logInfo("Network", "player %u disconnected", player);
 
@@ -596,12 +596,8 @@ void NetworkSession::tickServer(float dt, core::ECS& ecs) {
             handleSubmitAppealServer(player, reader);
         } else if (messageType == WireMessageType::DirectMessageSend) {
             handleDirectMessageSendServer(player, reader);
-        } else if (messageType == WireMessageType::SelectClass) {
-            handleSelectClassServer(player, reader);
-        } else if (messageType == WireMessageType::FireWeapon) {
-            handleFireWeaponServer(player, reader);
-        } else if (messageType == WireMessageType::TriggerUltimate) {
-            handleTriggerUltimateServer(player, reader);
+        } else if (isGameMessageId(static_cast<uint8_t>(messageType))) {
+            handleGameMessageServer(static_cast<uint8_t>(messageType), player, reader);
         } else if (messageType == WireMessageType::RemoteEventFire) {
             handleRemoteEventFireServer(player, reader);
         } else if (messageType == WireMessageType::InstanceRemote) {
@@ -1150,61 +1146,19 @@ void NetworkSession::handleSubmitAppealServer(PlayerId player, ByteReader& reade
                                           0.0});
 }
 
-void NetworkSession::handleSelectClassServer(PlayerId player, ByteReader& reader) {
-    auto classType = static_cast<tntwars::PlayerClassType>(reader.readU8());
-    if (reader.hasError()) {
+void NetworkSession::handleGameMessageServer(uint8_t type, PlayerId player, ByteReader& reader) {
+    if (!gameRules_) {
         networkStats_.recordPacketDropped();
         return;
     }
-    if (!tntWarsMatch_.selectClass(player, classType)) networkStats_.recordPacketDropped();
-}
-
-void NetworkSession::handleFireWeaponServer(PlayerId player, ByteReader& reader) {
-    glm::vec3 origin = reader.readVec3();
-    glm::vec3 aimDirection = reader.readVec3();
-    if (reader.hasError()) {
+    ByteWriter broadcast;
+    if (gameRules_->onClientMessage(type, reader, player, clockSeconds_, broadcast) != GameRules::Outcome::Handled) {
         networkStats_.recordPacketDropped();
         return;
     }
-
-    tntwars::TntWarsMatch::FireResult result = tntWarsMatch_.fireWeapon(player, origin, aimDirection, clockSeconds_);
-    if (!result.accepted) {
-        networkStats_.recordPacketDropped();
-        return;
-    }
-
-    // Real, reliable broadcast of the accepted shot -- every client
-    // (including the firing client, for a real, consistent view rather
-    // than a locally-predicted one that might disagree) deterministically
-    // replays the exact same real tntwars::stepProjectile() from here.
-    // See Projectile.hpp's own header comment for why this is a real,
-    // deliberately lighter-weight replication technique than per-tick
-    // snapshot sync.
-    ByteWriter writer;
-    writer.writeU8(static_cast<uint8_t>(WireMessageType::ProjectileSpawned));
-    writer.writeU8(static_cast<uint8_t>(result.projectile.type));
-    writer.writeU32(result.projectile.owner);
-    writer.writeVec3(result.projectile.position);
-    writer.writeVec3(result.projectile.velocity);
-    writer.writeFloat(result.projectile.damage);
-    networkStats_.recordPacketSent(writer.size());
-    transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
-}
-
-void NetworkSession::handleTriggerUltimateServer(PlayerId player, ByteReader& reader) {
-    (void)reader; // no payload -- the server derives everything from the real, already-known player+class
-    tntwars::TntWarsMatch::UltimateResult result = tntWarsMatch_.triggerUltimate(player, clockSeconds_);
-    if (!result.accepted) {
-        networkStats_.recordPacketDropped();
-        return;
-    }
-
-    ByteWriter writer;
-    writer.writeU8(static_cast<uint8_t>(WireMessageType::UltimateTriggered));
-    writer.writeU32(player);
-    writer.writeU8(static_cast<uint8_t>(result.type));
-    networkStats_.recordPacketSent(writer.size());
-    transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
+    if (broadcast.size() == 0) return;
+    networkStats_.recordPacketSent(broadcast.size());
+    transport_.send(ENetTransport::kBroadcast, broadcast.bytes().data(), broadcast.size(), kReliableChannel, true);
 }
 
 void NetworkSession::handleRemoteEventFireServer(PlayerId player, ByteReader& reader) {
@@ -1665,29 +1619,11 @@ void NetworkSession::tickClient(float dt, core::ECS& ecs, core::EntityId localPl
             return;
         }
 
-        if (messageType == WireMessageType::ProjectileSpawned) {
-            tntwars::ProjectileState projectile;
-            projectile.type = static_cast<tntwars::ProjectileType>(reader.readU8());
-            projectile.owner = reader.readU32();
-            projectile.position = reader.readVec3();
-            projectile.velocity = reader.readVec3();
-            projectile.damage = reader.readFloat();
-            if (reader.hasError()) {
+        if (messageType == WireMessageType::ProjectileSpawned || messageType == WireMessageType::UltimateTriggered) {
+            if (!gameRules_ || gameRules_->onServerMessage(static_cast<uint8_t>(messageType), reader) !=
+                                   GameRules::Outcome::Handled) {
                 networkStats_.recordPacketDropped();
-                return;
             }
-            if (onProjectileSpawned_) onProjectileSpawned_(projectile);
-            return;
-        }
-
-        if (messageType == WireMessageType::UltimateTriggered) {
-            PlayerId player = reader.readU32();
-            auto ultimateType = static_cast<tntwars::UltimateType>(reader.readU8());
-            if (reader.hasError()) {
-                networkStats_.recordPacketDropped();
-                return;
-            }
-            if (onUltimateTriggered_) onUltimateTriggered_(player, ultimateType);
             return;
         }
 
@@ -1855,35 +1791,10 @@ void NetworkSession::submitAppeal(const std::string& playerStatement, const std:
     transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
 }
 
-void NetworkSession::selectTntWarsClass(tntwars::PlayerClassType classType) {
+void NetworkSession::sendGameMessage(const ByteWriter& message) {
     if (config_.mode != NetworkMode::Client) return;
-    ByteWriter writer;
-    writer.writeU8(static_cast<uint8_t>(WireMessageType::SelectClass));
-    writer.writeU8(static_cast<uint8_t>(classType));
-    networkStats_.recordPacketSent(writer.size());
-    transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
-}
-
-void NetworkSession::fireTntWarsWeapon(glm::vec3 origin, glm::vec3 aimDirection) {
-    if (config_.mode != NetworkMode::Client) return;
-    ByteWriter writer;
-    writer.writeU8(static_cast<uint8_t>(WireMessageType::FireWeapon));
-    writer.writeVec3(origin);
-    writer.writeVec3(aimDirection);
-    networkStats_.recordPacketSent(writer.size());
-    // Reliable: an accepted shot triggers a real, one-time broadcast
-    // (ProjectileSpawned) every client deterministically replays from --
-    // losing the real request itself (not just one of many per-tick
-    // updates) would mean that shot simply never happened for anyone.
-    transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
-}
-
-void NetworkSession::triggerTntWarsUltimate() {
-    if (config_.mode != NetworkMode::Client) return;
-    ByteWriter writer;
-    writer.writeU8(static_cast<uint8_t>(WireMessageType::TriggerUltimate));
-    networkStats_.recordPacketSent(writer.size());
-    transport_.send(ENetTransport::kBroadcast, writer.bytes().data(), writer.size(), kReliableChannel, true);
+    networkStats_.recordPacketSent(message.size());
+    transport_.send(ENetTransport::kBroadcast, message.bytes().data(), message.size(), kReliableChannel, true);
 }
 
 void NetworkSession::startStressTest(size_t syntheticPlayerCount, float inputsPerSecond) {

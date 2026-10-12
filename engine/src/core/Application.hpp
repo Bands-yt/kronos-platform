@@ -13,6 +13,7 @@
 #include "core/AvatarHair.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/Camera.hpp"
+#include "core/GameMode.hpp"
 #include "core/CatalogueIndex.hpp"
 #include "core/CharacterController.hpp"
 #include "core/ECS.hpp"
@@ -43,30 +44,6 @@
 #include "core/ScriptAudioApi.hpp"
 #include "core/ScriptUiLayoutApi.hpp"
 #include "core/ScriptWorldApi.hpp"
-#include "core/TrailerScriptApi.hpp"
-#include "despair/EscapeGameLoop.hpp"
-#include "despair/FPSPlayerController.hpp"
-#include "despair/HorrorAIManager.hpp"
-#include "despair/InteractionSystem.hpp"
-#include "despair/LootSystem.hpp"
-#include "despair/SanitySystem.hpp"
-#include "despair/VhsBodycamEffects.hpp"
-#include "tntwars/DestructibleGeometryVisual.hpp"
-#include "tntwars/ScavengeNodeVisual.hpp"
-#include "tntwars/TraversalChallenge.hpp"
-#include "tntwars/TntWarsUpgradeStation.hpp"
-#include "tntwars/AtmosphereZones.hpp"
-#include "tntwars/FlickerLight.hpp"
-#include "tntwars/SpaceTraversal.hpp"
-#include "tntwars/CombatMob.hpp"
-#include "tntwars/PvPNode.hpp"
-#include "tntwars/CombatFx.hpp"
-#include "tntwars/Explosives.hpp"
-#include "tntwars/Decal.hpp"
-#include "tntwars/Respawn.hpp"
-#include "tntwars/TntChargeVisual.hpp"
-#include "tntwars/ProjectileVisual.hpp"
-#include "trailer/RenderShowcase.hpp"
 #include "core/ProceduralMaterials.hpp"
 #include "core/UIRenderer.hpp"
 #include "core/Texture.hpp"
@@ -81,7 +58,6 @@ namespace engine::runtime { class GameLoop; }
 
 namespace engine::core { class Terrain; }
 
-namespace engine::trailer { class TrailerDirector; }
 
 namespace engine::core {
 
@@ -151,12 +127,9 @@ public:
     [[nodiscard]] TextureLibrary& textureLibrary() { return textureLibrary_; }
     [[nodiscard]] Camera& camera() { return camera_; }
     [[nodiscard]] platform_adapters::UnifiedInput& input() { return input_; }
-    // PROJECT: DESPAIR -- see despairRestartRequested_'s own comment.
-    // True only after run() has already returned (the postPhysicsHook
-    // that sets it also requests the real window close driving that
-    // return) -- main.cpp's despairMode block checks this right after
-    // app.run() to decide whether to re-exec instead of exiting normally.
-    [[nodiscard]] bool despairRestartRequested() const { return despairRestartRequested_; }
+    // Installs the game that hooks into the tick (see core/GameMode.hpp); null for none.
+    void setGameMode(std::unique_ptr<GameMode> mode) { gameMode_ = std::move(mode); }
+    [[nodiscard]] GameMode* gameMode() { return gameMode_.get(); }
     [[nodiscard]] CharacterController& characterController() { return characterController_; }
     [[nodiscard]] RiggedMeshLibrary& riggedMeshLibrary() { return riggedMeshLibrary_; }
     [[nodiscard]] UIRenderer& uiRenderer() { return uiRenderer_; }
@@ -409,18 +382,6 @@ public:
         hasAtmosphereOverride_ = true;
     }
 
-    // Kronos ("Lighting Polish" world-building, "color-graded fog" /
-    // "dynamic exposure curve" / "void haze"): real, live, per-position
-    // atmosphere zones layered *on top of* the static AtmosphereOverride
-    // above -- see tntwars::sampleAtmosphereZones()'s own comment for the
-    // real blend rule. main.cpp's own map setup populates this once per
-    // map (real, honest no-op -- byte-for-byte the static override alone
-    // -- for every mode that never calls this); Application's own
-    // per-tick lighting update (right after the static override is
-    // applied) re-samples against the live local player's own position
-    // every frame and also drives Renderer::setExposure() from the same
-    // real sample, the one, real place exposure changes live now.
-    [[nodiscard]] std::vector<tntwars::AtmosphereZone>& tntWarsAtmosphereZones() { return tntWarsAtmosphereZones_; }
 
     // Sprint 8 ("Performance Stats & Debug Tools"): the real, live
     // profiler this process's own PostRenderHook feeds every frame (see
@@ -473,60 +434,8 @@ public:
     void setNetworkedLocalPlayerEntity(EntityId entity);
     [[nodiscard]] EntityId networkedLocalPlayerEntity() const { return networkedLocalPlayerEntity_; }
 
-    // Sprint 15 ("TNT-Wars Trailer Production"): real, optional --
-    // engine_runtime's own --trailer mode (see main.cpp) calls this once,
-    // after constructing its own real trailer::TrailerDirector, so the
-    // scripting bindings hook above can register the real `cinematic`
-    // Lua table for TrailerScript.lua. A real, honest no-op (nullptr,
-    // the default) in every normal, non-trailer launch.
-    void setTrailerDirector(trailer::TrailerDirector* director) { trailerDirector_ = director; }
 
-    // Kronos ("TNT Wars Foundational Playability" Phase 2): real, optional
-    // -- engine_runtime's own --tntwars mode (see main.cpp) calls this
-    // once its own real match setup (map spawned, local player registered,
-    // MatchFlow already advanced to InProgress) is done, so Application's
-    // own pretick hook wires real input (place TNT/fire weapon/trigger
-    // ultimate/select class) to networkSession_.tntWarsMatch() directly --
-    // the same real, offline "drive the match without a network round
-    // trip" pattern trailer::TrailerDirector already established for
-    // trailer capture. A real, honest no-op (false, the default) in every
-    // other launch mode, matching every other new-this-session toggle's
-    // own "opt-in, not a silent behavior change" convention.
-    void setTntWarsLiveMode(bool enabled, net::PlayerId localPlayer) {
-        tntWarsLiveModeEnabled_ = enabled;
-        tntWarsLocalPlayerId_ = localPlayer;
-        // Kronos ("Sound Design" world-building): real, one-time load of
-        // the real, procedurally-synthesized (no licensed asset)
-        // TNT/grenade explosion .wav files -- see
-        // ENGINE_ASSET_DIR's own CMakeLists.txt comment. Loaded exactly
-        // once, right as live mode turns on; a real, honest no-op
-        // (handles stay kInvalidSoundHandle, playOneShot() below already
-        // no-ops on an invalid handle) if the asset files are ever
-        // missing, logged by Audio::loadSound() itself.
-        if (enabled && tntWarsExplosionSound_ == kInvalidSoundHandle) {
-            std::string assetDir = resolveResourceDir(executableDirectory(), "assets", ENGINE_ASSET_DIR);
-            tntWarsExplosionSound_ = audio_.loadSound(assetDir + "/audio/tnt_explosion.wav");
-            tntWarsGrenadeSound_ = audio_.loadSound(assetDir + "/audio/grenade_explosion.wav");
-        }
-    }
 
-    // Kronos ("Real-Time Rendering Evolved" trailer): real, optional
-    // camera-showcase mode -- engine_runtime's own --render-showcase mode
-    // (see main.cpp) calls this once trailer::spawnRenderShowcaseWorld()
-    // has built the showcase world, so Application's own per-tick hook
-    // drives camera_ from the scripted path instead of from
-    // CharacterController (see the tick loop's own "if
-    // (!cameraShowcaseModeEnabled_)" guard on that call) -- there is no
-    // player capsule, no WASD/mouse-look, and no HUD in this mode, matching
-    // the trailer's own explicit "no gameplay, no characters" brief. A
-    // real, honest no-op (false, the default) in every other launch mode.
-    void setCameraShowcaseMode(bool enabled, trailer::ShowcaseCameraPath path) {
-        cameraShowcaseModeEnabled_ = enabled;
-        showcaseCameraPath_ = std::move(path);
-        showcaseElapsedSeconds_ = 0.0f;
-    }
-    [[nodiscard]] bool cameraShowcaseModeEnabled() const { return cameraShowcaseModeEnabled_; }
-    [[nodiscard]] float showcaseElapsedSeconds() const { return showcaseElapsedSeconds_; }
 
     // Kronos ("Avatar Gameplay Lighting Harmonisation Pass"): real,
     // optional indoor-lighting mode -- the same real "caller sets a
@@ -584,112 +493,15 @@ public:
     void setReducedMotionEnabled(bool enabled) { reducedMotionEnabled_ = enabled; }
     [[nodiscard]] bool isReducedMotionEnabled() const { return reducedMotionEnabled_; }
 
-    // Real, live-synced destructible-wall state for Trenches -- main.cpp's
-    // own --tntwars setup populates this once (tntwars::spawnDestructibleWallVisual())
-    // and Application's own pretick hook keeps it ticking every frame
-    // (tntwars::tickDestructibleWallVisual()) alongside the match's own
-    // real damage math. Empty (the default) on every map/mode without
-    // one -- a real, honest no-op for that tick function.
-    [[nodiscard]] std::vector<tntwars::DestructibleSegmentVisual>& tntWarsWallVisuals() { return tntWarsWallVisuals_; }
-    // Kronos ("Four RTX Maps" Phase 5d): the same real live-synced pattern
-    // as tntWarsWallVisuals() above, for the Trenches map's own four real
-    // destructible "Cover_*" pieces (see TrenchesCover.hpp).
-    [[nodiscard]] std::vector<tntwars::DestructibleSegmentVisual>& tntWarsCoverVisuals() { return tntWarsCoverVisuals_; }
 
-    // Kronos ("Sky Map Full Engine Specification"): real, live jump pads
-    // + zip-lines -- main.cpp's own map setup populates these once (real,
-    // map-specific placements; empty on every map/mode without any, a
-    // real, honest no-op for the tick logic below), and Application's own
-    // pretick hook (only while tntWarsLiveModeEnabled_) ticks/triggers
-    // them against the live local player's own real position every
-    // frame, same "caller owns the data, Application drives it live"
-    // split tntWarsWallVisuals() above already establishes.
-    [[nodiscard]] std::vector<tntwars::JumpPadState>& tntWarsJumpPads() { return tntWarsJumpPads_; }
-    [[nodiscard]] std::vector<tntwars::ZipLineState>& tntWarsZipLines() { return tntWarsZipLines_; }
 
-    // Kronos ("Space Map Bible" v1.0, Section III "Traversal Systems"):
-    // real, live Space Map-specific traversal -- same "caller owns the
-    // data, Application drives it live every frame while
-    // tntWarsLiveModeEnabled_" split as tntWarsJumpPads()/tntWarsZipLines()
-    // above. Booster pads mirror jump pads (trigger + cooldown); Zero-G
-    // Zones/Gravity Wells are real, continuous local-impulse volumes (no
-    // trigger/cooldown -- see SpaceTraversal.hpp's own comment on why
-    // these can't be a real, global core::Physics gravity change).
-    [[nodiscard]] std::vector<tntwars::BoosterPadState>& tntWarsBoosterPads() { return tntWarsBoosterPads_; }
-    [[nodiscard]] std::vector<tntwars::ZeroGravityZone>& tntWarsZeroGravityZones() { return tntWarsZeroGravityZones_; }
-    [[nodiscard]] std::vector<tntwars::GravityWellState>& tntWarsGravityWells() { return tntWarsGravityWells_; }
 
-    // Kronos ("Combat Layer" world-building): real, live PvE mobs (Sky
-    // Sentinels/Void Drones) -- see tntwars::tickCombatMob()'s own
-    // comment. Damaged only by real TNT charge explosions today (see
-    // this class's own detonation-handling pretick code) -- weapon-fire-
-    // vs-mob hit registration is a real, explicit, deferred follow-up,
-    // not silently missing.
-    [[nodiscard]] std::vector<tntwars::CombatMobInstance>& tntWarsCombatMobs() { return tntWarsCombatMobs_; }
 
-    // Kronos ("Combat Layer" world-building, "PvP Orbital Conflict"):
-    // real, live capture-point nodes -- see tntwars::tickPvPNodeCapture()'s
-    // own comment. `tntWarsPvPNodeVisuals_` is parallel-indexed with
-    // `tntWarsPvPNodes_` (nodes[i] <-> visuals[i]), same convention every
-    // other parallel-array visual-state pair in this class already uses.
-    [[nodiscard]] std::vector<tntwars::PvPNodeState>& tntWarsPvPNodes() { return tntWarsPvPNodes_; }
-    [[nodiscard]] std::vector<core::EntityId>& tntWarsPvPNodeVisuals() { return tntWarsPvPNodeVisuals_; }
 
-    // Kronos ("Explosives System" world-building): real, live grenades +
-    // explosive barrels -- both real-detonate through the exact same
-    // TntCharge.hpp damage/impulse math + CombatFx particle/shake/flash
-    // every TNT charge detonation already uses, see Application.cpp's
-    // own pretick hook for the real, shared "detonate" handling both
-    // this and TNT charges funnel through.
-    [[nodiscard]] std::vector<tntwars::GrenadeState>& tntWarsGrenades() { return tntWarsGrenades_; }
-    [[nodiscard]] std::vector<tntwars::ExplosiveBarrelState>& tntWarsExplosiveBarrels() {
-        return tntWarsExplosiveBarrels_;
-    }
 
-    // Kronos ("Visual Polish" world-building, "damage decals"): a real
-    // copy of the map's own already-generated ProceduralMaterialLibrary
-    // -- PbrTextureSet members are cheap, value-type texture-handle
-    // structs (no owned GPU resource is duplicated by this copy), so
-    // Application can spawn real scorch decals on detonation without
-    // regenerating a second, redundant material set. main.cpp's own map
-    // setup calls this once, right after generating `materials`.
-    void setTntWarsMaterials(const core::ProceduralMaterialLibrary& materials) { tntWarsMaterials_ = materials; }
 
-    // Kronos ("Quality-of-Life & Finalization", "Respawn system" /
-    // "Spawn logic"): the real, live local player's own real team-base
-    // spawn point -- main.cpp's own map setup calls this once with the
-    // exact same real position it used for the player's own initial
-    // spawn, so a mid-match respawn always lands somewhere real and
-    // playable (never a hardcoded fallback that could drift from a
-    // given map's own real base position).
-    void setTntWarsRespawnPosition(glm::vec3 position) { tntWarsRespawnPosition_ = position; }
 
-    // Kronos ("Gameplay Loop" world-building): real, live resource nodes
-    // -- main.cpp's own map setup spawns these once (real, real per-map
-    // ScavengeNodeState positions/materials already owned by
-    // TntWarsMatch::scavengeNodes(), see spawnScavengeNodeVisuals()'s own
-    // header comment), Application's own pretick hook (only while
-    // tntWarsLiveModeEnabled_) proximity-scans + gates scavenging on a
-    // real "Interact" rising edge, same convention the zip-line E-to-
-    // mount fix already established, and keeps each node's own real
-    // visible/interactable state in sync with its live depletion.
-    [[nodiscard]] std::vector<tntwars::ScavengeNodeVisual>& tntWarsScavengeNodeVisuals() {
-        return tntWarsScavengeNodeVisuals_;
-    }
 
-    // Kronos ("Gameplay Loop" world-building, "give players a reason to
-    // move"): real, live timed traversal courses -- main.cpp's own map
-    // setup populates these once (real courses built from that map's own
-    // already-placed zip-line/jump-pad geometry, see
-    // tntwars::buildZipLineRaceChallenge()/buildJumpPadRouteChallenge()'s
-    // own comment), Application's own pretick hook (only while
-    // tntWarsLiveModeEnabled_) real-ticks every course's own clock and
-    // checkpoint progress against the live local player's own position
-    // every frame, printing real stdout status (same UI-hint-stub
-    // convention every other TNT Wars live system already uses).
-    [[nodiscard]] std::vector<tntwars::TraversalChallengeState>& tntWarsTraversalChallenges() {
-        return tntWarsTraversalChallenges_;
-    }
 
     // Kronos ("Environmental Detail" world-building): real, general
     // ambient wind -- a real map-agnostic system (not TNT-Wars-specific,
@@ -702,50 +514,12 @@ public:
     // empty ECS view iteration.
     [[nodiscard]] core::WindState& windState() { return windState_; }
 
-    // Kronos ("Sky Map Full Engine Specification" Section 6, "TNT can
-    // break bridges"): a real, generic extra-destructibles set --
-    // TntWarsMatch itself only knows about Trenches' own wall/cover (see
-    // TntWarsMatch::DetonationEvent's own header comment for why a map's
-    // *other* destructible extras live with the map's own real caller
-    // instead). Populated once by main.cpp's own map setup (real
-    // DestructibleSegment per bridge span); Application's own pretick
-    // hook applies real falloff explosion damage from every real
-    // DetonationEvent tickTntCharges() reports, then keeps the real
-    // visual/collider sync ticking via tntwars::tickDestructibleWallVisual().
-    [[nodiscard]] std::vector<tntwars::DestructibleSegment>& tntWarsExtraDestructibles() {
-        return tntWarsExtraDestructibles_;
-    }
-    [[nodiscard]] std::vector<tntwars::DestructibleSegmentVisual>& tntWarsExtraDestructibleVisuals() {
-        return tntWarsExtraDestructibleVisuals_;
-    }
 
-    // Kronos ("Sky Map Full Engine Specification" Section 6, "TNT can
-    // collapse small islands (only minor islands)"): one real
-    // DestructibleSegment health pool per collapsible minor island,
-    // parallel-indexed with `terrains` -- real raw core::Terrain*
-    // pointers into main.cpp's own `skyIslandTerrains` vector (real,
-    // safe: that vector's own lifetime already spans the whole real
-    // app.run() call below, the same "caller owns real GPU-resource-
-    // holding objects, Application only references them live" pattern
-    // tntWarsWallVisuals_ already establishes for entities). Real,
-    // one-shot collapse (sinks the entire real heightfield to a real
-    // void level and regenerates every chunk/collider) fires the exact
-    // tick a given island's own segment health first reaches 0 -- never
-    // retriggers after.
-    void setTntWarsCollapsibleIslands(std::vector<tntwars::DestructibleSegment> segments,
-                                       std::vector<Terrain*> terrains) {
-        tntWarsCollapsibleIslandSegments_ = std::move(segments);
-        tntWarsCollapsibleIslandTerrains_ = std::move(terrains);
-        tntWarsCollapsibleIslandAlreadyCollapsed_.assign(tntWarsCollapsibleIslandSegments_.size(), false);
-    }
 
 private:
-    // Sets despairFloatingText_/despairFloatingTextTimer_ (drawn on-screen
-    // alongside the stamina bar/hotbar, see that block's own comment) and
-    // still prints the same "[floating text]" stdout line every call site
-    // already did, so nothing that previously relied on the terminal
-    // output regresses.
-    void showDespairFloatingText(const std::string& text);
+    GameModeContext modeContext();
+    [[nodiscard]] bool cameraShowcaseModeEnabled() const { return gameMode_ && gameMode_->controlsCamera(); }
+    std::unique_ptr<GameMode> gameMode_;
 
     Window window_;
     Renderer renderer_;
@@ -787,18 +561,6 @@ private:
     std::vector<EntityId> skinnedAvatarEntities_;
     ParticleSystem particleSystem_;
     RuntimeAnimationPlayer animationPlayer_;
-    // PROJECT: DESPAIR -- real, live-ticked here (not just constructed in
-    // tests) so any SanityState-bearing entity actually drains, same
-    // per-tick wiring particleSystem_/animationPlayer_ get right above.
-    despair::SanitySystem despairSanitySystem_;
-    // In-class initializer (not a ctor-initializer-list entry -- Application's
-    // own ctor is `= default`) so this binds despairSanitySystem_ right
-    // above, which NSDMIs run in declaration order just like a real
-    // constructor-initializer-list would. HorrorAIManager only needs the
-    // reference during its own constructor (to register the hallucination
-    // hook) and keeps no reference afterward, so member declaration order
-    // here is the only real requirement.
-    despair::HorrorAIManager despairAiManager_{despairSanitySystem_};
     // unique_ptr, not a plain member: ScriptWorldApi holds references to
     // ecs_/physics_/animationPlayer_ bound at construction, and those must
     // already be fully constructed first -- constructed in initialize()
@@ -891,19 +653,10 @@ private:
     // sway/drift rather than a dead-calm 0.
     core::WindState windState_;
     // Tracks the last entity the interaction UI-hint reported, so it
-    // only updates despairInteractionPrompt_ on a real change
+    // only updates the game mode's prompt on a real change
     // (entering/leaving range or look-at), not every single tick while
     // unchanged.
     EntityId lastInteractionHintEntity_ = kNullEntity;
-    // Real on-screen text for the interaction prompt/floating-text
-    // system below (drawn via uiRenderer_ alongside the stamina
-    // bar/hotbar/death screen, same FPSPlayerSettings gate) -- mirrors
-    // the same strings every "[UI hint]"/"[floating text]" stdout call
-    // site already prints, so the player actually sees them in the game
-    // window instead of only a terminal nobody's watching.
-    std::string despairInteractionPrompt_;
-    std::string despairFloatingText_;
-    float despairFloatingTextTimer_ = 0.0f;
 
     // Sprint 5 ("Core Economy") state -- real per-run randomness (ore
     // drop-table rolls, bonus-gem chance), deliberately NOT the fixed
@@ -929,7 +682,6 @@ private:
     // Kronos ("Sky Map Full Engine Specification") -- see setAtmosphereOverride()'s own comment.
     AtmosphereOverride atmosphereOverride_;
     bool hasAtmosphereOverride_ = false;
-    std::vector<tntwars::AtmosphereZone> tntWarsAtmosphereZones_;
 
     // Kronos ("Rendering Fidelity Foundation" Phase 1.1): a real, lazily-
     // created ParticleEmitter entity driven every tick from
@@ -938,222 +690,14 @@ private:
     // this bridge has to live here rather than inside Renderer itself.
     EntityId weatherParticleEntity_ = kNullEntity;
 
-    // Kronos ("TNT Wars Foundational Playability" Phase 2) -- see
-    // setTntWarsLiveMode()/tntWarsWallVisuals()'s own comments.
-    bool tntWarsLiveModeEnabled_ = false;
-    net::PlayerId tntWarsLocalPlayerId_ = 0;
 
-    // Kronos ("Real-Time Rendering Evolved" trailer) -- see
-    // setCameraShowcaseMode()'s own comment.
-    bool cameraShowcaseModeEnabled_ = false;
     bool movementInputSuspended_ = false;
     bool reducedMotionEnabled_ = false;
-    trailer::ShowcaseCameraPath showcaseCameraPath_;
-    float showcaseElapsedSeconds_ = 0.0f;
 
     // Kronos ("Avatar Gameplay Lighting Harmonisation Pass") -- see
     // setIndoorLightingMode()'s own comment.
     bool indoorLightingModeEnabled_ = false;
 
-    std::vector<tntwars::DestructibleSegmentVisual> tntWarsWallVisuals_;
-    // Kronos ("Four RTX Maps" Phase 5d) -- see tntWarsCoverVisuals()'s own comment.
-    std::vector<tntwars::DestructibleSegmentVisual> tntWarsCoverVisuals_;
-    // Kronos ("Sky Map Full Engine Specification") -- see tntWarsJumpPads()/tntWarsZipLines()'s own comments.
-    std::vector<tntwars::JumpPadState> tntWarsJumpPads_;
-    std::vector<tntwars::ZipLineState> tntWarsZipLines_;
-    std::vector<tntwars::BoosterPadState> tntWarsBoosterPads_;
-    std::vector<tntwars::ZeroGravityZone> tntWarsZeroGravityZones_;
-    std::vector<tntwars::GravityWellState> tntWarsGravityWells_;
-    std::vector<tntwars::CombatMobInstance> tntWarsCombatMobs_;
-    std::vector<tntwars::PvPNodeState> tntWarsPvPNodes_;
-    std::vector<core::EntityId> tntWarsPvPNodeVisuals_;
-    // Kronos ("Explosion Feedback" world-building): real, live gameplay
-    // camera shake -- see CombatFx.hpp's own GameplayShakeState comment.
-    tntwars::GameplayShakeState tntWarsShakeState_;
-    // Kronos ("Sound Design" world-building) -- see setTntWarsLiveMode()'s
-    // own comment.
-    SoundHandle tntWarsExplosionSound_ = kInvalidSoundHandle;
-    SoundHandle tntWarsGrenadeSound_ = kInvalidSoundHandle;
-    std::vector<tntwars::GrenadeState> tntWarsGrenades_;
-    bool tntWarsGrenadeThrowKeyWasDown_ = false;
-    std::vector<tntwars::ExplosiveBarrelState> tntWarsExplosiveBarrels_;
-    // Kronos ("Visual Polish" world-building, "damage decals") -- see
-    // Decal.hpp's own comment. Purely internal FX state, spawned/ticked
-    // entirely inside Application.cpp's own detonation handling; no
-    // caller outside this class ever needs to populate or read it.
-    std::vector<tntwars::DecalState> tntWarsDecals_;
-    core::ProceduralMaterialLibrary tntWarsMaterials_;
-    // Kronos bugfix (live-reported: "work on crafting table") -- see the
-    // C/H key handling's own tick-block comment.
-    bool tntWarsCraftKeyWasDown_ = false;
-    bool tntWarsPlaceCraftedKeyWasDown_ = false;
-    // Kronos bugfix (live-reported: "no physical TNT explosion") --
-    // real, parallel-indexed visual entities for TntWarsMatch's own real
-    // tntCharges() vector (nodes[i] <-> this[i], same convention every
-    // other parallel visual-state array in this class already uses).
-    // Safe as long as nothing ever erases from the middle of
-    // tntCharges() -- true today (removeDetonatedCharges() is real but
-    // not yet called anywhere live, see the tick block's own comment).
-    // Kronos (Phase 1 stability audit fix): a detonated slot's own real
-    // ECS entity is destroyed (not just hidden) the tick it detonates,
-    // then this element is set to core::kNullEntity so the same slot is
-    // never touched twice -- see the tick block's own comment. Without
-    // this, every TNT charge placed in a live match leaked its entity +
-    // GPU mesh forever (confirmed live: unbounded growth, unlike the
-    // capped decal system).
-    std::vector<core::EntityId> tntWarsChargeVisuals_;
-    // Kronos bugfix (live-reported: "no visual models for the class
-    // attack") -- real, live-ticked projectile visuals: unlike
-    // tntWarsChargeVisuals_ (stationary, parallel-indexed to backend
-    // state), a fired shot has no backend vector to parallel-index
-    // against (fireWeapon() returns one real ProjectileState by value,
-    // see TntWarsMatch::FireResult) -- this vector owns both the real
-    // simulated state and its visual entity together, appended on fire,
-    // erased the instant it expires or lands a hit. Kronos (Phase 1
-    // stability audit fix): the tick block now destroys the real ECS
-    // entity (not just hides it) in the same pass that erases this
-    // element -- every shot fired used to leak its entity forever.
-    std::vector<tntwars::ProjectileVisualState> tntWarsProjectileVisuals_;
-    // Kronos (Phase 1 stability audit fix): real, small, decal-style
-    // expiry tracking for the one-shot particle-burst entities
-    // (tntwars::spawnExplosionParticleBurst()/spawnProjectileImpactBurst())
-    // every TNT/grenade/barrel detonation and every projectile hit
-    // spawns -- both call sites used to discard the returned EntityId
-    // outright ((void)-cast), so every explosion and every landed shot
-    // leaked one entity forever (the particle *emitter* stops emitting
-    // after its one-shot burst, per ParticleEmitter's own doc comment,
-    // but the entity carrying it never went away). Second field is real
-    // seconds remaining before the burst's own particles have all
-    // finished their lifetime and the entity is safe to destroy.
-    std::vector<std::pair<core::EntityId, float>> tntWarsBurstEntities_;
-    // Kronos ("User Interface" world-building) -- see the Settings/
-    // Leaderboard overlay's own tick-block comment in Application.cpp.
-    bool tntWarsSettingsOverlayVisible_ = false;
-    bool tntWarsSettingsKeyWasDown_ = false;
-    bool tntWarsLeaderboardOverlayVisible_ = false;
-    bool tntWarsLeaderboardKeyWasDown_ = false;
-    // In-game text chat -- '/' or Enter focuses the input box (raw SDL
-    // text input, not an action binding: free text needs SDL_TEXTINPUT,
-    // not a discrete action), Enter again submits, Escape cancels.
-    bool tntWarsChatFocused_ = false;
-    std::string tntWarsChatInputBuffer_;
-    bool tntWarsChatCallbackRegistered_ = false;
-    struct TntWarsChatEntry {
-        std::string senderName;
-        std::string body;
-    };
-    std::deque<TntWarsChatEntry> tntWarsChatHistory_;
-    static constexpr size_t kTntWarsChatHistoryLimit = 50;
-    static constexpr size_t kTntWarsChatVisibleLines = 8;
-    // Kronos ("Quality-of-Life & Finalization", "Respawn system") -- see
-    // setTntWarsRespawnPosition()'s own comment.
-    glm::vec3 tntWarsRespawnPosition_{0.0f};
-    tntwars::RespawnState tntWarsRespawnState_;
-    // Kronos ("Quality-of-Life & Finalization", "Tutorial prompts"):
-    // real, live match clock driving a real, timed sequence of on-
-    // screen hints for new players (see the HUD tick block's own
-    // comment) -- separate from totalSimTime_ (that clock predates TNT
-    // Wars mode and never resets), so tutorial hints always start fresh
-    // from this exact real match's own beginning.
-    float tntWarsMatchElapsedSeconds_ = 0.0f;
-    // Kronos (zip-line arc-length traversal fix): real, lazily-(re)built
-    // parallel-indexed arc-length table per zip-line -- see
-    // tntwars::ZipLineArcLengthTable's own header comment for why this
-    // replaces velocity/tangent-following as the real live-riding
-    // mechanism. Rebuilt (in the pretick hook) whenever its own size no
-    // longer matches tntWarsZipLines_'s -- real, cheap detection of
-    // "main.cpp just populated/replaced the zip-line set," not a dirty
-    // flag that could go stale.
-    std::vector<tntwars::ZipLineArcLengthTable> tntWarsZipLineArcTables_;
-    // Real, single active-ride state -- this engine's own real live TNT
-    // Wars mode only ever drives one local player (see this file's own
-    // established "Application drives the live local player" scope), so
-    // one real slot is enough: -1 means "not currently riding," otherwise
-    // a real index into both tntWarsZipLines_/tntWarsZipLineArcTables_.
-    int tntWarsActiveZipLineIndex_ = -1;
-    tntwars::ZipLineRiderState tntWarsZipLineRider_;
-    // Kronos (zip-line E-to-mount fix): real, live-reported bug this pair
-    // fixes -- a player who was merely *near* a zip-line's own curve
-    // (spawning near an anchor, or simply standing right at the far end
-    // right after a ride) got auto-grabbed by simple proximity, with
-    // nothing stopping an immediate re-grab the instant a completed ride
-    // let go -- a real, endless back-and-forth loop. Mounting now
-    // requires a real, explicit "Interact" key press while in range (see
-    // the pretick hook's own real nearest-in-range scan), same "look/be
-    // near, then press a key" shape core::Interactable's own generic
-    // proximity system already establishes -- proximity alone only ever
-    // shows a real UI-hint stdout stand-in now (see
-    // core::Interactable.hpp's own comment on why stdout, not a real
-    // on-screen widget), never auto-mounts. -1 (tntWarsZipLineHintIndex_)
-    // means "no zip-line currently in range" -- same sentinel convention
-    // tntWarsActiveZipLineIndex_ above already uses.
-    int tntWarsZipLineHintIndex_ = -1;
-    bool tntWarsZipLineMountKeyWasDown_ = false;
-    // Real, player-initiated early dismount -- pressing Jump while riding
-    // detaches immediately (the brief's own "press jump to get off at
-    // any time"), not just an automatic release at the curve's far end.
-    bool tntWarsZipLineDismountKeyWasDown_ = false;
-    // Kronos ("Gameplay Loop" world-building): real resource-node visual
-    // state, main.cpp-populated (see tntWarsScavengeNodeVisuals()'s own
-    // comment); -1 (tntWarsScavengeHintIndex_) means "no node currently
-    // in range", same sentinel convention as tntWarsZipLineHintIndex_.
-    std::vector<tntwars::ScavengeNodeVisual> tntWarsScavengeNodeVisuals_;
-    int tntWarsScavengeHintIndex_ = -1;
-    bool tntWarsScavengeKeyWasDown_ = false;
-    // Kronos ("Gameplay Loop" world-building) -- see tntWarsTraversalChallenges()'s own comment.
-    std::vector<tntwars::TraversalChallengeState> tntWarsTraversalChallenges_;
-    // Kronos ("Gameplay Loop" world-building, "Progression"): real, live
-    // upgrade-station proximity/purchase state -- TntWarsMatch itself
-    // owns the real PlayerUpgrades ledger (see
-    // TntWarsMatch::purchaseUpgrade()'s own comment for why it lives
-    // there, not here); this is only the live UI-hint-change tracking +
-    // input-edge state, same shape every other TNT Wars live interaction
-    // above already uses. tntWarsSuitBaseWalkSpeed_/RunSpeed_ capture
-    // CharacterController's own real, originally-tuned speed exactly
-    // once (tntWarsSuitBaseSpeedCaptured_ guards this) so a Suit upgrade
-    // always scales from that real original baseline, never compounds
-    // on top of an already-multiplied value.
-    core::EntityId tntWarsUpgradeHintEntity_ = kNullEntity;
-    bool tntWarsUpgradeKeyWasDown_ = false;
-    bool tntWarsSuitBaseSpeedCaptured_ = false;
-    float tntWarsSuitBaseWalkSpeed_ = 0.0f;
-    float tntWarsSuitBaseRunSpeed_ = 0.0f;
-    // PROJECT: DESPAIR -- stamina-gated sprint's captured-once base runSpeed;
-    // see the pre-tick hook's own comment in Application.cpp.
-    float despairBaseRunSpeed_ = 0.0f;
-    // PROJECT: DESPAIR -- real, honest elapsed-time-since-load clock,
-    // accumulated only while the character carries FPSPlayerSettings (same
-    // "component is the seam" convention as despairBaseRunSpeed_ above);
-    // gates the VHS static-noise burst's own grace period -- see the
-    // postPhysicsHook's own comment in Application.cpp.
-    float despairElapsedSeconds_ = 0.0f;
-    // PROJECT: DESPAIR -- Escape-to-restart. Edge-triggered in the same
-    // postPhysicsHook (see its own comment): on the rising edge of
-    // "ToggleMenu" this pushes a real SDL_QUIT so GameLoop::run()'s own
-    // pumpEvents() loop exits exactly as it would for a real window
-    // close, then sets this flag so main.cpp's despairMode block knows to
-    // re-exec the process instead of returning 0 -- a full fresh process
-    // (new Jolt/ECS/renderer state) rather than a partial in-place scene
-    // wipe, since neither ECS nor Physics expose a real "destroy every
-    // despair entity/body" primitive to rebuild onto safely.
-    bool despairRestartRequested_ = false;
-    bool despairToggleMenuWasDown_ = false;
-    // PROJECT: DESPAIR -- hotbar item-use edge detection, same
-    // "was-down" pattern as tntWarsClassKeyWasDown_ below.
-    bool despairHotbarUseKeyWasDown_[despair::kHotbarSlotCount] = {};
-    // Kronos ("Sky Map Full Engine Specification") -- see tntWarsExtraDestructibles()'s own comment.
-    std::vector<tntwars::DestructibleSegment> tntWarsExtraDestructibles_;
-    std::vector<tntwars::DestructibleSegmentVisual> tntWarsExtraDestructibleVisuals_;
-    // Kronos ("Sky Map Full Engine Specification") -- see setTntWarsCollapsibleIslands()'s own comment.
-    std::vector<tntwars::DestructibleSegment> tntWarsCollapsibleIslandSegments_;
-    std::vector<Terrain*> tntWarsCollapsibleIslandTerrains_;
-    std::vector<bool> tntWarsCollapsibleIslandAlreadyCollapsed_;
-    // Real edge-detection for the place-TNT/fire/ultimate/class-select
-    // keys, same pattern as every other keybind in this class.
-    bool tntWarsPlaceTntKeyWasDown_ = false;
-    bool tntWarsFireKeyWasDown_ = false;
-    bool tntWarsUltimateKeyWasDown_ = false;
-    bool tntWarsClassKeyWasDown_[5] = {false, false, false, false, false};
 
     // Sprint 8 ("Performance Stats & Debug Tools") state -- fed every
     // frame from GameLoop::PostRenderHook (see initialize()).
@@ -1261,13 +805,6 @@ private:
     bool headless_ = false;
     bool sdlInitialized_ = false;
 
-    // Sprint 15 ("TNT-Wars Trailer Production") -- see setTrailerDirector()'s
-    // own comment. trailerDirector_ is a real, non-owning pointer (main.cpp
-    // owns the real TrailerDirector instance); trailerScriptApi_ is
-    // constructed lazily, once, the first time the bindings hook actually
-    // needs it (see initialize()'s own comment).
-    trailer::TrailerDirector* trailerDirector_ = nullptr;
-    std::unique_ptr<TrailerScriptApi> trailerScriptApi_;
 };
 
 } // namespace engine::core

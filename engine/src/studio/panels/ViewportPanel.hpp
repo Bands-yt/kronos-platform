@@ -214,7 +214,7 @@ public:
     // The top ribbon owns the tools; the in-viewport floating toolbar hides.
     void setRibbonMode(bool on) { ribbonMode_ = on; }
 
-    enum class Primitive { Block, Sphere, Cylinder, Plane, Torus };
+    enum class Primitive { Block, Sphere, Cylinder, Plane, Torus, Wedge };
     // Spawns in front of the camera (or on the ground under its gaze) and
     // selects the result.
     // Where an object with the given local bounds should go: under the

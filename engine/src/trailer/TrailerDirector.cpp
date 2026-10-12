@@ -1,4 +1,5 @@
 #include "trailer/TrailerDirector.hpp"
+#include "tntwars/MapMaterialApply.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -152,7 +153,7 @@ void TrailerDirector::spawnMapGeometry(tntwars::MapId map, core::TextureLibrary&
         renderable.baseColor = glm::vec4(piece.color, 1.0f);
         // Sprint 16: same real dispatch studio::plugins::TntWarsPlugin
         // uses -- see ProceduralMaterialLibrary::applyTo()'s own comment.
-        materials_.applyTo(renderable, tntwars::classifyMapPieceMaterial(piece.name));
+        tntwars::applyMapMaterial(materials_, renderable, tntwars::classifyMapPieceMaterial(piece.name));
 
         auto& meshSource = ecs_->addComponent<core::MeshSource>(entity);
         meshSource.kind = piece.shape == tntwars::MapPieceShape::Box ? core::MeshSourceKind::Box : core::MeshSourceKind::Plane;
@@ -196,7 +197,7 @@ void TrailerDirector::addFinalClashLavaBackdrop(core::TextureLibrary& textureLib
     // Sprint 16: the same real generated lava material (turbulent normal
     // map + crack-vein albedo + emissive glow) MapLayout's own LavaPool
     // piece gets on the Mantle map -- see ProceduralMaterialLibrary::applyTo().
-    materials_.applyTo(renderable, tntwars::MapPieceMaterialKind::Lava);
+    tntwars::applyMapMaterial(materials_, renderable, tntwars::MapPieceMaterialKind::Lava);
 
     auto& meshSource = ecs_->addComponent<core::MeshSource>(entity);
     meshSource.kind = core::MeshSourceKind::Plane;

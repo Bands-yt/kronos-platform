@@ -5,7 +5,6 @@
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
-#include "tntwars/MapMaterial.hpp"
 
 namespace engine::core {
 
@@ -44,7 +43,7 @@ struct PbrTextureSet {
 
 // One generated set per real material kind this engine currently needs,
 // created once (generate()) and reused across every entity that wants
-// that material -- textures are content, not per-entity state. `applyTo()`
+// that material -- textures are content, not per-entity state. `tntwars::applyMapMaterial()`
 // is the shared real dispatch both studio::plugins::TntWarsPlugin and
 // trailer::TrailerDirector use when spawning tntwars::MapLayoutPiece
 // entities, keyed off the same pure tntwars::classifyMapPieceMaterial()
@@ -82,14 +81,6 @@ struct ProceduralMaterialLibrary {
 
     [[nodiscard]] static ProceduralMaterialLibrary generate(TextureLibrary& textureLibrary, VmaAllocator allocator,
                                                               VkDevice device, VkCommandPool cmdPool, VkQueue queue);
-
-    // Sets `renderable`'s texture handles plus real, material-appropriate
-    // metallic/roughness/emissive values (never touched by the two real
-    // ECS-spawn loops today -- see MapMaterial.hpp's own header comment)
-    // -- a real no-op (every field left at its Components.hpp default)
-    // for tntwars::MapPieceMaterialKind::None (team bases, water --
-    // neither maps to a real material generated here).
-    void applyTo(Renderable& renderable, tntwars::MapPieceMaterialKind kind) const;
 };
 
 } // namespace engine::core
