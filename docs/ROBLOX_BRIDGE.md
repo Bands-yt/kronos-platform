@@ -787,7 +787,7 @@ is the open project's. The Compatibility Lab lists every image it can't find.
   `ContentText`; `CursorPosition` isn't updated.
 - `ScrollingFrame`: no dragging the scrollbar, no elastic overscroll; the wheel can also
   zoom the camera while it scrolls a list.
-- No top-bar inset: `IgnoreGuiInset` changes nothing (Kronos has no top bar).
+- Top-bar inset: ScreenGuis start 36 px below the top of the window (Roblox's `GetGuiInset`) unless `IgnoreGuiInset` is true; `ScreenPointToRay` and `WorldToScreenPoint` use that origin, the `Viewport` versions use the window corner. Kronos has no real top bar, so the strip is empty.
 - Studio shows the GUI only during Play, not `StarterGui` while editing.
 - Only the left mouse button and the pointer. Touch, gamepad selection and
   `GuiService` are not built.
@@ -932,7 +932,7 @@ local point, onScreen = camera:WorldToViewportPoint(workspace.Coin.Position)
 ### What works
 - `CFrame` (position, direction and roll), `FieldOfView`, `ViewportSize`, `CameraType` (`Custom`, `Scriptable`), `Focus` and `CameraSubject` (stored).
 - With `Custom`, the normal follow camera keeps control; a `CFrame` set in `RenderStepped` shows for that frame. With `Scriptable`, the camera stays exactly where scripts put it.
-- `ViewportPointToRay`, `ScreenPointToRay` (Kronos has no GUI inset, so both are the same), `WorldToViewportPoint`, `WorldToScreenPoint`.
+- `ViewportPointToRay`, `ScreenPointToRay` (`ScreenPointToRay` is offset by the 36 px inset, `ViewportPointToRay` isn't), `WorldToViewportPoint`, `WorldToScreenPoint`.
 - Studio's Stop resets the camera type and pose.
 
 ### Limits

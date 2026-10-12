@@ -275,6 +275,8 @@ void scroll(ECS& ecs, const State& s, glm::vec2 mouse, float wheel) {
     }
 }
 
+constexpr float kTopBarInset = 36.0f;
+
 } // namespace
 
 void update(ECS& ecs, glm::vec2 screen, const Input& input) {
@@ -291,9 +293,13 @@ void update(ECS& ecs, glm::vec2 screen, const Input& input) {
         }
         std::stable_sort(screens.begin(), screens.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
         for (const auto& [order, gui] : screens) {
-            setOutput(ecs, gui, "ScreenGui", "AbsolutePosition", glm::vec2(0.0f));
-            setOutput(ecs, gui, "ScreenGui", "AbsoluteSize", screen);
-            layoutChildren(ecs, s, gui, glm::vec2(0.0f), screen, glm::vec2(0.0f), screen, 1.0f);
+            // Roblox keeps ScreenGuis below the 36 px top bar unless IgnoreGuiInset is set.
+            const float inset = get(ecs, gui, "ScreenGui", "IgnoreGuiInset").boolean ? 0.0f : kTopBarInset;
+            const glm::vec2 origin(0.0f, std::min(inset, screen.y));
+            const glm::vec2 size(screen.x, screen.y - origin.y);
+            setOutput(ecs, gui, "ScreenGui", "AbsolutePosition", origin);
+            setOutput(ecs, gui, "ScreenGui", "AbsoluteSize", size);
+            layoutChildren(ecs, s, gui, origin, size, glm::vec2(0.0f), screen, 1.0f);
         }
     }
 

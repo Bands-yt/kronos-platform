@@ -1,0 +1,45 @@
+{
+  "tool": "Kronos Bridge Doctor",
+  "schema": 1,
+  "kronosVersion": "test",
+  "checksPerformed": ["Import: the file parses and passes the import safety scan.", "Classes: every instance's class is checked against the classes Kronos imports.", "Properties: saved properties Kronos doesn't read are listed (they keep Kronos defaults).", "APIs: script source is scanned for Roblox APIs and checked against Kronos's API table.", "Assets: Roblox asset references (rbxassetid://, Roblox CDN) are listed; nothing is downloaded.", "Scripts: every Script, LocalScript and ModuleScript is compiled and started in a headless session with one player for 3 simulated seconds (6 more when behaviour checks run); compile and runtime errors are recorded.", "Behaviour: only when a .checks.luau file is given, its checks run in that session and each result is reported as passed or failed."],
+  "knownLimits": ["A place that imports and runs without errors is not proven to work: only behaviour checks test gameplay.", "Scripts run without physics, rendering or input; Touched only fires when a behaviour check calls touch().", "Server and client scripts share one session with one player; multiplayer behaviour is not tested.", "The API scan reads source text, so APIs reached indirectly (obj[name](), passed-in functions) are missed.", "Code that only runs later (after 3 seconds, on events nobody fires) is not executed, so its errors are not seen.", "Unread properties are listed by name; whether a game depends on them is not known."],
+  "places": [
+    {
+      "file": "door.rbxlx",
+      "format": "rbxlx (XML)",
+      "imported": true,
+      "metrics": {
+        "classes": {"supported": 7, "total": 7},
+        "apiUses": {"supported": 11, "total": 11},
+        "scripts": {"ran": true, "withoutErrors": 1, "started": 1, "notStarted": 0},
+        "behaviour": {"ran": true, "passed": 3, "total": 3, "checks": [{"name": "the door starts closed", "passed": true, "detail": ""}, {"name": "touching the door opens it", "passed": true, "detail": ""}, {"name": "the door closes again after 3 seconds", "passed": true, "detail": "Transparency 0"}]}
+      },
+      "counts": {"blocker": 0, "gameplay-risk": 0, "visual-audio": 0, "info": 0},
+      "findings": []
+    },
+    {
+      "file": "mixed.rbxlx",
+      "format": "rbxlx (XML)",
+      "imported": true,
+      "metrics": {
+        "classes": {"supported": 6, "total": 8},
+        "apiUses": {"supported": 1, "total": 2},
+        "scripts": {"ran": true, "withoutErrors": 0, "started": 3, "notStarted": 0},
+        "behaviour": {"ran": false, "passed": 0, "total": 0, "checks": []}
+      },
+      "counts": {"blocker": 3, "gameplay-risk": 3, "visual-audio": 2, "info": 1},
+      "findings": [
+        {"category": "blocker", "code": "compile-error", "subject": "Workspace.Bad\"Name", "script": "Workspace.Bad\"Name", "line": null, "count": 1, "message": "compile error: :1: Expected identifier when parsing expression, got <eof>", "why": "The script can't load, so none of it runs.", "help": "Fix the syntax; Kronos uses Luau like Roblox."},
+        {"category": "blocker", "code": "runtime-error", "subject": "Workspace.Broken", "script": "Workspace.Broken", "line": 2, "count": 1, "message": "runtime error in \"Workspace.Broken\": [string \"Workspace.Broken\"]:2: attempt to perform arithmetic (add) on nil and number", "why": "The script stopped with this error while starting, so the code after it didn't run.", "help": "docs/ROBLOX_BRIDGE.md"},
+        {"category": "blocker", "code": "runtime-error", "subject": "Workspace.Uses", "script": "Workspace.Uses", "line": 3, "count": 1, "message": "runtime error in \"Workspace.Uses\": [string \"Workspace.Uses\"]:3: attempt to index nil with 'MouseEnabled'", "why": "The script stopped with this error while starting, so the code after it didn't run.", "help": "docs/ROBLOX_BRIDGE.md"},
+        {"category": "gameplay-risk", "code": "attributes-not-imported", "subject": "Attributes", "script": null, "line": null, "count": 1, "message": "1 instance(s), e.g. Workspace.Floor, have attributes saved in the file, which Kronos doesn't import yet.", "why": "GetAttribute returns nil for them until a script sets them.", "help": "Set the attributes from a script at startup."},
+        {"category": "gameplay-risk", "code": "missing-api", "subject": "UserInputService", "script": "Workspace.Uses", "line": 3, "count": 1, "message": "UserInputService is not in Kronos yet (1 use(s) in this script).", "why": "When this line runs it raises an error, which stops that script thread.", "help": "No UserInputService. Input is delivered through `events.onInteract`."},
+        {"category": "gameplay-risk", "code": "unsupported-class", "subject": "ProximityPrompt", "script": null, "line": null, "count": 1, "message": "1 ProximityPrompt instance(s), e.g. Workspace.Prompt, use a class Kronos doesn't import.", "why": "They are imported as plain placeholders without their behaviour, and scripts that use their properties or methods will fail.", "help": "Supported classes are listed in docs/ROBLOX_BRIDGE.md (\"What works\")."},
+        {"category": "visual-audio", "code": "asset-unavailable", "subject": "Workspace.Music.SoundId.url", "script": null, "line": null, "count": 1, "message": "References rbxassetid://1234567, a Roblox-hosted asset.", "why": "Kronos doesn't download Roblox assets, so this shows a placeholder or stays silent.", "help": "Replace it with a file you own or may use (docs/ROBLOX_BRIDGE.md)."},
+        {"category": "visual-audio", "code": "unsupported-class", "subject": "Decal", "script": null, "line": null, "count": 1, "message": "1 Decal instance(s), e.g. Workspace.Floor.Logo, use a class Kronos doesn't import.", "why": "They are imported as plain placeholders, so the place looks different.", "help": "Supported classes are listed in docs/ROBLOX_BRIDGE.md (\"What works\")."},
+        {"category": "info", "code": "unread-properties", "subject": "Part", "script": null, "line": null, "count": 1, "message": "Part (1 instance(s), e.g. Workspace.Floor) has saved properties Kronos doesn't read: BackSurface.", "why": "They keep Kronos defaults; this matters only if the game relies on other values.", "help": "docs/ROBLOX_BRIDGE.md"}
+      ]
+    }
+  ]
+}

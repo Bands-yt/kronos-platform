@@ -1699,12 +1699,15 @@ int mRaycast(lua_State* L) {
     return 1;
 }
 
-// Kronos has no GUI inset, so screen and viewport points are the same.
+// Screen points start below the 36 px top bar; viewport points start at the window corner.
+constexpr double kScreenInset = 36.0;
+
 int pointToRay(lua_State* L, const char* method) {
     ECS& ecs = ecsOf(L);
     checkSelf(L, method);
     const double x = luaL_checknumber(L, 2);
-    const double y = luaL_checknumber(L, 3);
+    double y = luaL_checknumber(L, 3);
+    if (std::strcmp(method, "ScreenPointToRay") == 0) y += kScreenInset;
     const double depth = luaL_optnumber(L, 4, 0.0);
     const glm::vec2 size = ecs.raw().ctx().emplace<instances::ScriptCamera>().viewportSize;
     const Camera& camera = instances::scriptCamera(ecs);
@@ -1732,6 +1735,7 @@ int worldToPoint(lua_State* L, const char* method) {
     glm::vec2 point{0.0f};
     if (std::abs(clip.w) > 1e-6f) point = {(clip.x / clip.w + 1.0f) * 0.5f * size.x, (clip.y / clip.w + 1.0f) * 0.5f * size.y};
     const bool onScreen = depth > 0.0f && point.x >= 0.0f && point.y >= 0.0f && point.x <= size.x && point.y <= size.y;
+    if (std::strcmp(method, "WorldToScreenPoint") == 0) point.y -= static_cast<float>(kScreenInset);
     pushValue(L, InstanceValue::ofVector3(glm::vec3(point, depth)));
     lua_pushboolean(L, onScreen ? 1 : 0);
     return 2;

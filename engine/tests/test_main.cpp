@@ -44229,6 +44229,7 @@ local function fails(f, text)
 	return not ok and (text == nil or string.find(tostring(err), text, 1, true) ~= nil)
 end
 local gui = Instance.new("ScreenGui")
+gui.IgnoreGuiInset = true
 gui.Parent = game:GetService("Players").LocalPlayer.PlayerGui
 local frame = Instance.new("Frame")
 frame.Name = "Panel"
@@ -44310,6 +44311,12 @@ local panel = game:GetService("Players").LocalPlayer.PlayerGui.ScreenGui.Panel
 print((panel.AbsolutePosition == Vector2.new(200, 250) and panel.AbsoluteSize == Vector2.new(400, 100)) and "OK AbsolutePosition and AbsoluteSize" or "FAIL AbsolutePosition and AbsoluteSize")
 print("DONE")
 )LUAU");
+    scripting.loadAndRun("GuiInset", R"LUAU(
+game:GetService("Players").LocalPlayer.PlayerGui.ScreenGui.IgnoreGuiInset = false
+print("DONE")
+)LUAU");
+    gui::update(ecs, glm::vec2(800.0f, 600.0f), gui::Input{});
+    check(rectOf("Panel") == glm::vec4(200, 268, 400, 100), "a ScreenGui sits below the 36 px top bar unless IgnoreGuiInset");
     checkLuauExpectations("GUI", output);
 
     const std::string place = R"XML(<roblox version="4">
@@ -44376,6 +44383,7 @@ void testRobloxGuiWidgets() {
 
     scripting.loadAndRun("WidgetSetup", R"LUAU(
 local gui = Instance.new("ScreenGui")
+gui.IgnoreGuiInset = true
 gui.Parent = game:GetService("Players").LocalPlayer.PlayerGui
 local function make(class, name, parent, size, position)
 	local o = Instance.new(class)
