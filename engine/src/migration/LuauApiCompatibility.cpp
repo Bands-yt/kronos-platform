@@ -135,6 +135,9 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"UserInputService", false, ApiMappingStatus::Mapped,
                           "InputBegan/InputEnded/InputChanged, IsKeyDown, IsMouseButtonPressed and GetMouseLocation work "
                           "(docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"HttpService", false, ApiMappingStatus::Mapped,
+                          "JSONEncode, JSONDecode, GenerateGUID and UrlEncode work; web requests fail "
+                          "(docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"ContextActionService", false, ApiMappingStatus::Unmapped,
                           "No ContextActionService. Use UserInputService.InputBegan and InputEnded."});
     registry_.push_back({"TweenService", false, ApiMappingStatus::Mapped,

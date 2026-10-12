@@ -29,6 +29,7 @@
 #include "core/RobloxTools.hpp"
 #include "core/RobloxGui.hpp"
 #include "core/RobloxInput.hpp"
+#include "core/Guid.hpp"
 #include "core/RobloxRemoteNet.hpp"
 #include "core/Scripting.hpp"
 
@@ -1170,6 +1171,10 @@ nlohmann::json checkValue(lua_State* L, int index) {
 }
 
 int mGetAsync(lua_State* L) {
+    // HttpService:GetAsync shares the name.
+    if (instances::className(ecsOf(L), checkSelf(L, "GetAsync")) == "HttpService") {
+        luaL_error(L, "Http requests are not enabled. Enable via game settings");
+    }
     std::string key;
     const DataStoreHandle& store = checkStoreCall(L, "GetAsync", key);
     datastore::charge(ecsOf(L), datastore::Request::Get, {});
@@ -1406,6 +1411,76 @@ int tagSignal(lua_State* L) {
     const InstanceRef self = checkSelf(L, Added ? "GetInstanceAddedSignal" : "GetInstanceRemovedSignal");
     pushSignal(L, self, signals::tagEventName(luaL_checkstring(L, 2), Added));
     return 1;
+}
+
+// --- HttpService ----------------------------------------------------------------
+
+int mJSONEncode(lua_State* L) {
+    (void)checkSelf(L, "JSONEncode");
+    nlohmann::json value;
+    std::string error;
+    if (!datastore::toJson(L, 2, value, error)) luaL_error(L, "Can't convert to JSON: %s", error.c_str());
+    // Lua numbers are doubles; whole ones print without ".0" like Roblox.
+    const std::function<void(nlohmann::json&)> wholeNumbers = [&](nlohmann::json& node) {
+        if (node.is_number_float()) {
+            const double d = node.get<double>();
+            if (std::isfinite(d) && d == std::floor(d) && std::abs(d) < 9007199254740992.0) {
+                node = static_cast<int64_t>(d);
+            }
+        } else if (node.is_array() || node.is_object()) {
+            for (auto& child : node) wholeNumbers(child);
+        }
+    };
+    wholeNumbers(value);
+    const std::string text = value.dump();
+    lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
+int mJSONDecode(lua_State* L) {
+    (void)checkSelf(L, "JSONDecode");
+    size_t length = 0;
+    const char* text = luaL_checklstring(L, 2, &length);
+    nlohmann::json value = nlohmann::json::parse(std::string(text, length), nullptr, false);
+    if (value.is_discarded()) luaL_error(L, "Can't parse JSON");
+    datastore::pushJson(L, value);
+    return 1;
+}
+
+int mGenerateGUID(lua_State* L) {
+    (void)checkSelf(L, "GenerateGUID");
+    const bool wrap = lua_isnoneornil(L, 2) || lua_toboolean(L, 2) != 0;
+    std::string text = Guid::generate().toString();
+    for (char& c : text) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if (wrap) text = "{" + text + "}";
+    lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
+int mUrlEncode(lua_State* L) {
+    (void)checkSelf(L, "UrlEncode");
+    size_t length = 0;
+    const char* text = luaL_checklstring(L, 2, &length);
+    static const char* const kHex = "0123456789ABCDEF";
+    std::string out;
+    for (size_t i = 0; i < length; ++i) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        if (std::isalnum(c) != 0 || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += static_cast<char>(c);
+        } else {
+            out += '%';
+            out += kHex[c >> 4];
+            out += kHex[c & 15];
+        }
+    }
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+// Kronos games can't reach the web: requests fail the way they do with HttpEnabled off.
+int mHttpRequest(lua_State* L) {
+    luaL_error(L, "Http requests are not enabled. Enable via game settings");
+    return 0;
 }
 
 // --- UserInputService ----------------------------------------------------------
@@ -2189,6 +2264,12 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"GetInstanceAddedSignal", &tagSignal<true>},
         {"GetInstanceRemovedSignal", &tagSignal<false>},
         {"GetMinutesAfterMidnight", &mGetMinutesAfterMidnight},
+        {"JSONEncode", &mJSONEncode},
+        {"JSONDecode", &mJSONDecode},
+        {"GenerateGUID", &mGenerateGUID},
+        {"UrlEncode", &mUrlEncode},
+        {"PostAsync", &mHttpRequest},
+        {"RequestAsync", &mHttpRequest},
         {"IsKeyDown", &mIsKeyDown},
         {"IsMouseButtonPressed", &mIsMouseButtonPressed},
         {"GetMouseLocation", &mGetMouseLocation},

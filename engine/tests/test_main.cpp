@@ -44367,6 +44367,41 @@ print("DONE")
           "UDim2 and Vector2 properties are saved in scenes");
 }
 
+void testRobloxHttpService() {
+    using namespace engine::core;
+    std::printf("\n-- HttpService --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "HttpService test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    scripting.loadAndRun("Http", R"LUAU(
+local http = game:GetService("HttpService")
+local text = http:JSONEncode({name = "Kronos", level = 7, tags = {"a", "b"}, on = true})
+local back = http:JSONDecode(text)
+print((back.name == "Kronos" and back.level == 7 and back.tags[2] == "b" and back.on == true) and "OK roundtrip" or "FAIL roundtrip")
+print(http:JSONEncode({1, 2, 3}))
+print(http:JSONDecode("[10,20]")[2])
+print((pcall(http.JSONDecode, http, "{bad")) and "FAIL parse" or "OK parse error")
+local guid = http:GenerateGUID(true)
+print((#guid == 38 and guid:sub(1, 1) == "{" and guid == guid:upper()) and "OK guid" or "FAIL guid " .. guid)
+print(#http:GenerateGUID(false) == 36 and "OK bare guid" or "FAIL bare guid")
+print(http:UrlEncode("a b&c=d/é"))
+local ok, err = pcall(function() return http:GetAsync("https://example.com") end)
+print((not ok and tostring(err):find("not enabled", 1, true)) and "OK http off" or "FAIL http off")
+local ok2 = pcall(function() return http:RequestAsync({Url = "https://example.com"}) end)
+print(ok2 and "FAIL request" or "OK request off")
+)LUAU");
+    auto has = [&](const std::string& line) { return std::count(output.begin(), output.end(), line) == 1; };
+    check(has("OK roundtrip"), "JSONEncode and JSONDecode round-trip a table");
+    check(has("[1,2,3]") && has("20"), "arrays encode and decode as arrays");
+    check(has("OK parse error"), "JSONDecode errors on bad JSON");
+    check(has("OK guid") && has("OK bare guid"), "GenerateGUID makes braced upper-case GUIDs");
+    check(has("a%20b%26c%3Dd%2F%C3%A9"), "UrlEncode percent-encodes");
+    check(has("OK http off") && has("OK request off"), "web requests fail like HttpEnabled = false");
+}
+
 void testRobloxUserInputService() {
     using namespace engine::core;
     std::printf("\n-- UserInputService --\n");
@@ -50570,6 +50605,7 @@ int main() {
     testRobloxGui();
     testRobloxGuiWidgets();
     testRobloxUserInputService();
+    testRobloxHttpService();
     testRobloxBinaryFormat();
 #if !defined(_WIN32)
     testInstanceRemoteOverSession();

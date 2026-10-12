@@ -1341,6 +1341,9 @@ std::vector<ClassDef> buildClasses() {
     add("Tween", "TweenBase", false).properties = {readOnlyStored("Instance", PropertyType::Instance, InstanceValue{})};
     add("TweenService", "Instance", false, true).methods = {"Create", "GetValue"};
 
+    auto& http = add("HttpService", "Instance", false, true);
+    http.properties = {stored("HttpEnabled", PropertyType::Bool, InstanceValue::ofBool(false))};
+    http.methods = {"JSONEncode", "JSONDecode", "GenerateGUID", "UrlEncode", "GetAsync", "PostAsync", "RequestAsync"};
     auto& inputObject = add("InputObject", "Instance", false);
     inputObject.properties = {
         readOnlyStored("KeyCode", PropertyType::Enum, InstanceValue::ofEnum("KeyCode", "Unknown", 0)),
@@ -1450,7 +1453,7 @@ bool classHasEvent(const std::string& className, const std::string& event) {
 
 bool isPlannedService(const std::string& name) {
     static const char* const kPlanned[] = {
-        "ContextActionService", "HttpService", "MarketplaceService", "PhysicsService", "TextService",
+        "ContextActionService", "MarketplaceService", "PhysicsService", "TextService",
         "GuiService", "PathfindingService", "BadgeService", "MessagingService", "TeleportService",
         "ProximityPromptService", "TextChatService", "LocalizationService", "GroupService", "SocialService",
         "VRService", "HapticService", "AnalyticsService", "MemoryStoreService", "AssetService", "InsertService",
