@@ -2,11 +2,13 @@
 # Runs a windowless server and client on the Remote Check test place and checks
 # that RemoteEvents, RemoteFunctions, ModuleScripts, replication and DataStores
 # work over a real connection.
-# Usage: engine/tests/remote_network_smoke.sh [path/to/engine_runtime] [port]
+# Usage: engine/tests/remote_network_smoke.sh [path/to/engine_runtime] [port] [path/to/kronos_server]
+# With a third argument the server side runs as kronos_server (no window code, no SDL).
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 runtime="$(realpath "${1:-$here/../build/src/engine_runtime}")"
 port="${2:-17895}"
+serverBin="${3:-}"
 work="$(mktemp -d)"
 trap 'kill $server 2>/dev/null; wait $server 2>/dev/null; rm -rf "$work"' EXIT
 mkdir -p "$work/server/datastores" "$work/client"
@@ -15,11 +17,16 @@ echo '{"Visits":{"global":{"count":41}}}' > "$work/server/datastores/remote-chec
 # A dead API address keeps the check offline (the backend is asked first).
 export KRONOS_SILENT_AUDIO=1 KRONOS_GAMES_DIR="$here/fixtures/games" KRONOS_API_URL=http://127.0.0.1:9
 
-(cd "$work/server" && exec timeout 30 stdbuf -oL "$runtime" --server "$port" --game remote-check --headless) \
+if [ -n "$serverBin" ]; then
+    serverCmd=("$(realpath "$serverBin")" --port "$port" --game remote-check)
+else
+    serverCmd=("$runtime" --server "$port" --game remote-check --headless)
+fi
+(cd "$work/server" && exec timeout 30 stdbuf -oL "${serverCmd[@]}") \
     > "$work/server.log" 2>&1 &
 server=$!
 for _ in $(seq 50); do
-    grep -q "headless mode started" "$work/server.log" && break
+    grep -qE "headless mode started|kronos_server: dedicated server now hosting" "$work/server.log" && break
     sleep 0.2
 done
 (cd "$work/client" && timeout 8 stdbuf -oL "$runtime" --client 127.0.0.1 "$port" --game remote-check --headless) \

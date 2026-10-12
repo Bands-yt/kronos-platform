@@ -808,6 +808,15 @@ if(ENGINE_BUILD_RUNTIME)
         target_link_libraries(engine_runtime PRIVATE SDL2::SDL2main)
     endif()
 
+    # Headless game server: same engine code, no window, no ImGui, and no SDL library
+    # (server/SdlNull.cpp stands in for the few SDL calls shared code still makes).
+    # Linux only for now; the Windows build of it hasn't been tried.
+    if(UNIX AND NOT APPLE)
+        add_executable(kronos_server server/ServerMain.cpp server/SdlNull.cpp runtime/GameLoader.cpp)
+        target_link_libraries(kronos_server PRIVATE engine_core kronos_brokenbones kronos_despair kronos_games)
+        target_link_options(kronos_server PRIVATE -Wl,--as-needed)
+    endif()
+
     # Offscreen look-development captures (material grid, CSM, many-lights
     # scenes) for before/after comparison of renderer changes.
     add_executable(kronos_lookdev lookdev/LookdevMain.cpp)
@@ -1099,6 +1108,9 @@ if(ENGINE_BUILD_RUNTIME OR ENGINE_BUILD_STUDIO)
     set(_kronos_install_targets)
     if(ENGINE_BUILD_RUNTIME)
         list(APPEND _kronos_install_targets engine_runtime)
+        if(TARGET kronos_server)
+            list(APPEND _kronos_install_targets kronos_server)
+        endif()
     endif()
     if(ENGINE_BUILD_STUDIO)
         list(APPEND _kronos_install_targets ${KRONOS_STUDIO_TARGETS})
