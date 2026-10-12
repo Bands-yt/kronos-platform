@@ -28,6 +28,7 @@
 #include "core/RobloxPlayers.hpp"
 #include "core/RobloxTools.hpp"
 #include "core/RobloxGui.hpp"
+#include "core/RobloxInput.hpp"
 #include "core/RobloxRemoteNet.hpp"
 #include "core/Scripting.hpp"
 
@@ -1407,6 +1408,52 @@ int tagSignal(lua_State* L) {
     return 1;
 }
 
+// --- UserInputService ----------------------------------------------------------
+
+int mIsKeyDown(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    (void)checkSelf(L, "IsKeyDown");
+    lua_pushboolean(L, input::isKeyDown(ecs, enumItemName(L, 2, "KeyCode", "Unknown")) ? 1 : 0);
+    return 1;
+}
+
+int mIsMouseButtonPressed(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    (void)checkSelf(L, "IsMouseButtonPressed");
+    const std::string type = enumItemName(L, 2, "UserInputType", "None");
+    const int button = type == "MouseButton1" ? 1 : type == "MouseButton2" ? 2 : type == "MouseButton3" ? 3 : 0;
+    lua_pushboolean(L, button != 0 && input::isMouseButtonDown(ecs, button) ? 1 : 0);
+    return 1;
+}
+
+int mGetMouseLocation(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    (void)checkSelf(L, "GetMouseLocation");
+    const glm::vec2 at = input::mouseLocation(ecs);
+    pushValue(L, InstanceValue::ofVector2(at.x, at.y));
+    return 1;
+}
+
+int mGetMouseDelta(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    (void)checkSelf(L, "GetMouseDelta");
+    const glm::vec2 delta = input::mouseDelta(ecs);
+    pushValue(L, InstanceValue::ofVector2(delta.x, delta.y));
+    return 1;
+}
+
+int mGetFocusedTextBox(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    (void)checkSelf(L, "GetFocusedTextBox");
+    const InstanceRef box = gui::focusedTextBox(ecs);
+    if (box == kNoInstance) {
+        lua_pushnil(L);
+    } else {
+        pushInstance(L, box);
+    }
+    return 1;
+}
+
 int mGetMinutesAfterMidnight(lua_State* L) {
     ECS& ecs = ecsOf(L);
     InstanceValue clock;
@@ -2142,6 +2189,11 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"GetInstanceAddedSignal", &tagSignal<true>},
         {"GetInstanceRemovedSignal", &tagSignal<false>},
         {"GetMinutesAfterMidnight", &mGetMinutesAfterMidnight},
+        {"IsKeyDown", &mIsKeyDown},
+        {"IsMouseButtonPressed", &mIsMouseButtonPressed},
+        {"GetMouseLocation", &mGetMouseLocation},
+        {"GetMouseDelta", &mGetMouseDelta},
+        {"GetFocusedTextBox", &mGetFocusedTextBox},
         {"SetMinutesAfterMidnight", &mSetMinutesAfterMidnight},
     };
     lua_newtable(L);

@@ -19,6 +19,7 @@
 
 #include "core/GuiImageCache.hpp"
 #include "core/RobloxGui.hpp"
+#include "core/RobloxInput.hpp"
 #include "core/AvatarSkinTone.hpp"
 #include "core/CredentialStore.hpp"
 #include "core/Components.hpp"
@@ -1126,6 +1127,8 @@ void RuntimeShell::tick(float dt) {
                         guiInput.down = io.MouseDown[0];
                         guiInput.wheel = io.WantCaptureMouse ? 0.0f : io.MouseWheel;
                         core::gui::update(app_.ecs(), glm::vec2(io.DisplaySize.x, io.DisplaySize.y), guiInput);
+                        core::input::feedFromImGui(app_.ecs(), glm::vec2(0.0f), true,
+                                                   io.WantCaptureMouse || core::gui::mouseOverButton(app_.ecs()));
                         if (!guiImages_) {
                             core::Renderer& r = app_.renderer();
                             guiImages_ = std::make_unique<core::GuiImageCache>(r.allocator(), r.device(), r.commandPool(),

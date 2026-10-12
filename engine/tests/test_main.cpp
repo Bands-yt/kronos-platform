@@ -214,6 +214,7 @@
 #include "core/RobloxDataStore.hpp"
 #include "core/RobloxServices.hpp"
 #include "core/RobloxGui.hpp"
+#include "core/RobloxInput.hpp"
 #include "core/RobloxScripts.hpp"
 #include "core/InstanceTree.hpp"
 #include "studio/panels/LuauSymbolIndex.hpp"
@@ -43903,7 +43904,7 @@ void testLuauApiCompatibilityScan() {
     check(compat.registrySize() > 0, "LuauApiCompatibility really registers APIs");
 
     const std::string script = R"LUA(
-local mouse = UserInputService.MouseEnabled
+local mouse = ContextActionService.MouseEnabled
 local Players = game:GetService("Players")
 local part = Instance.new("Part")
 part.Parent = workspace
@@ -43917,13 +43918,13 @@ world.setPosition(part, 1, 2, 3)
         }
         return false;
     };
-    check(found("UserInputService"), "the API scan finds an unmapped `UserInputService` reference");
+    check(found("ContextActionService"), "the API scan finds an unmapped `ContextActionService` reference");
     check(found("game") && found("Instance") && found("workspace"), "the API scan finds `game`, `Instance` and `workspace`");
     check(found("world"), "the API scan also records the mapped Kronos APIs a script already uses");
 
     for (const auto& f : findings) {
-        if (f.identifier == "UserInputService") {
-            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`UserInputService` is classified as unmapped");
+        if (f.identifier == "ContextActionService") {
+            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`ContextActionService` is classified as unmapped");
             check(f.line == 2, "the API scan reports the real 1-based line of a finding");
             check(!f.guidance.empty(), "an unmapped API finding carries real migration guidance");
         }
@@ -44364,6 +44365,89 @@ print("DONE")
               loaded.properties["Size"].vec == glm::vec3(0.5f, 10.0f, 0.25f) &&
               loaded.properties["AnchorPoint"].vec.y == 1.0f,
           "UDim2 and Vector2 properties are saved in scenes");
+}
+
+void testRobloxUserInputService() {
+    using namespace engine::core;
+    std::printf("\n-- UserInputService --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "UserInputService test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    scripting.loadAndRun("InputSetup", R"LUAU(
+local uis = game:GetService("UserInputService")
+uis.InputBegan:Connect(function(input, processed)
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		print("BEGAN " .. input.KeyCode.Name .. " " .. tostring(processed) .. " " .. input.UserInputState.Name)
+	elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+		print("CLICK " .. tostring(processed))
+	end
+end)
+uis.InputEnded:Connect(function(input)
+	print("ENDED " .. input.KeyCode.Name)
+end)
+uis.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement then
+		print("MOVED " .. input.Delta.X .. " " .. input.Delta.Y)
+	elseif input.UserInputType == Enum.UserInputType.MouseWheel then
+		print("WHEEL " .. input.Position.Z)
+	end
+end)
+print("DONE")
+)LUAU");
+    input::Frame frame;
+    frame.mouse = glm::vec2(100.0f, 50.0f);
+    frame.keys.push_back({"W", true});
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "BEGAN W false Begin") == 1, "InputBegan fires for a key press");
+    check(input::isKeyDown(ecs, "W") && !input::isKeyDown(ecs, "A"), "a held key is down");
+
+    scripting.loadAndRun("InputQuery", R"LUAU(
+local uis = game:GetService("UserInputService")
+print("DOWN " .. tostring(uis:IsKeyDown(Enum.KeyCode.W)) .. " " .. tostring(uis:IsKeyDown(Enum.KeyCode.S)))
+local at = uis:GetMouseLocation()
+print("AT " .. at.X .. " " .. at.Y)
+print("BTN " .. tostring(uis:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
+print("DONE")
+)LUAU");
+    check(std::count(output.begin(), output.end(), "DOWN true false") == 1, "IsKeyDown reads the held keys");
+    check(std::count(output.begin(), output.end(), "AT 100 50") == 1, "GetMouseLocation reads the mouse");
+    check(std::count(output.begin(), output.end(), "BTN false") == 1, "no mouse button is held yet");
+
+    frame = input::Frame{};
+    frame.keys.push_back({"W", true}); // already down: no second event
+    frame.keys.push_back({"Space", true});
+    frame.typing = true; // a TextBox has the keyboard
+    frame.buttons.push_back({1, true});
+    frame.overGui = true;
+    frame.delta = glm::vec2(3.0f, -2.0f);
+    frame.wheel = 1.0f;
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "BEGAN W false Begin") == 1, "a key already held doesn't fire again");
+    check(std::count(output.begin(), output.end(), "BEGAN Space true Begin") == 1, "typing in a TextBox sets gameProcessed");
+    check(std::count(output.begin(), output.end(), "CLICK true") == 1 && input::isMouseButtonDown(ecs, 1),
+          "a click over the GUI is gameProcessed");
+    check(std::count(output.begin(), output.end(), "MOVED 3 -2") == 1, "InputChanged reports mouse movement");
+    check(std::count(output.begin(), output.end(), "WHEEL 1") == 1, "InputChanged reports the wheel");
+
+    frame = input::Frame{};
+    frame.keys.push_back({"W", false});
+    frame.buttons.push_back({1, false});
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "ENDED W") == 1 && !input::isKeyDown(ecs, "W") &&
+              !input::isMouseButtonDown(ecs, 1),
+          "InputEnded fires and clears the held state");
+    for (int i = 0; i < 4; ++i) input::feed(ecs, input::Frame{});
+    size_t inputObjects = 0;
+    for (InstanceRef r : instances::descendants(ecs, kGameInstance)) {
+        if (instances::className(ecs, r) == "InputObject") ++inputObjects;
+    }
+    check(inputObjects == 0, "InputObjects are cleaned up");
 }
 
 void testRobloxGuiWidgets() {
@@ -45107,7 +45191,7 @@ expect("GetService makes a service once", storage.ClassName == "ReplicatedStorag
 expect("services sit under game", storage.Parent == game and game:FindFirstChild("ReplicatedStorage") == storage)
 expect("FindService doesn't create", game:FindService("ServerStorage") == nil)
 expect("bad service names error", fails(function() game:GetService("Bananas") end, "is not a valid Service name"))
-expect("planned services say so", fails(function() game:GetService("UserInputService") end, "planned"))
+expect("planned services say so", fails(function() game:GetService("ContextActionService") end, "planned"))
 local stored = Instance.new("Part")
 stored.Name = "Stored"
 stored.Parent = storage
@@ -47818,7 +47902,7 @@ void testValidateProject() {
     const InstanceRef bad = make("Script", "Broken", door);
     setSource(bad, "local a = 1\nlocal b = 2\nif a then\n");
     const InstanceRef input = make("LocalScript", "Input");
-    setSource(input, "local x = 1\nlocal mouse = UserInputService.MouseEnabled\n");
+    setSource(input, "local x = 1\nlocal mouse = ContextActionService.MouseEnabled\n");
     const InstanceRef keep = make("Part", "Keep");
     const InstanceRef gone = make("Part", "Gone");
     const InstanceRef weld = make("WeldConstraint", "Weld", keep);
@@ -47844,7 +47928,7 @@ void testValidateProject() {
               compile->entity == static_cast<uint32_t>(entt::to_integral(instances::entityOf(ecs, bad))),
           "validate: the syntax error points at the script, its line and its object");
     const ProjectFinding* api = findingFor(broken, "missing-api");
-    check(api && api->finding.subject == "UserInputService" && api->finding.line == 2 &&
+    check(api && api->finding.subject == "ContextActionService" && api->finding.line == 2 &&
               broken.check("roblox-api")->status == CheckStatus::Warning,
           "validate: a missing Roblox API is a warning with its line");
     const ProjectFinding* ref = findingFor(broken, "broken-reference");
@@ -47956,7 +48040,7 @@ print(y)]]></ProtectedString></Properties></Item>
     <Item class="Script" referent="B"><Properties><string name="Name">Uses</string>
       <ProtectedString name="Source"><![CDATA[local ok = true
 
-local mouse = UserInputService.MouseEnabled]]></ProtectedString></Properties></Item>
+local mouse = ContextActionService.MouseEnabled]]></ProtectedString></Properties></Item>
     <Item class="ModuleScript" referent="C"><Properties><string name="Name">Bad"Name</string>
       <ProtectedString name="Source"><![CDATA[return {]]></ProtectedString></Properties></Item>
   </Item>
@@ -47975,7 +48059,7 @@ local mouse = UserInputService.MouseEnabled]]></ProtectedString></Properties></I
     const DoctorFinding* compile = find("compile-error");
     check(compile != nullptr && compile->category == DoctorCategory::Blocker, "doctor: a syntax error is a blocker");
     const DoctorFinding* api = find("missing-api");
-    check(api != nullptr && api->category == DoctorCategory::GameplayRisk && api->subject == "UserInputService" &&
+    check(api != nullptr && api->category == DoctorCategory::GameplayRisk && api->subject == "ContextActionService" &&
               api->script == "Workspace.Uses" && api->line == 3,
           "doctor: a missing API is a gameplay risk at its script and line");
     bool decalVisual = false;
@@ -48105,7 +48189,7 @@ void testRobloxCompatibilityScore() {
     <Item class="Script" referent="S1"><Properties><string name="Name">Hello</string>
       <string name="Source">print("hi")</string></Properties></Item>
     <Item class="Script" referent="S2"><Properties><string name="Name">Roblox</string>
-      <string name="Source">local mouse = UserInputService.MouseEnabled</string></Properties></Item>
+      <string name="Source">local mouse = ContextActionService.MouseEnabled</string></Properties></Item>
     <Item class="ModuleScript" referent="M"><Properties><string name="Name">Broken</string>
       <string name="Source">return function(</string></Properties></Item>
   </Item>
@@ -48121,8 +48205,8 @@ void testRobloxCompatibilityScore() {
     check(score.instancesMapped == 6 && score.unmappedClasses.count("ViewportFrame") == 1,
           "classes Kronos can't build yet (ViewportFrame) count as unmapped");
     check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
-          "print is supported; UserInputService is not yet");
-    check(score.missingApis.count("UserInputService") == 1, "the score lists the missing Roblox APIs by name");
+          "print is supported; ContextActionService is not yet");
+    check(score.missingApis.count("ContextActionService") == 1, "the score lists the missing Roblox APIs by name");
 
     runImportedScripts(report, score);
     check(score.scriptsRun == 3 && score.scriptsOk == 1, "one of three scripts runs cleanly today");
@@ -48168,7 +48252,7 @@ void testProjectImportPipeline() {
       <Item class="Script" referent="RBX3">
         <Properties>
           <string name="Name">Main</string>
-          <string name="Source">local mouse = UserInputService.MouseEnabled
+          <string name="Source">local mouse = ContextActionService.MouseEnabled
 local part = Instance.new("Part")</string>
         </Properties>
       </Item>
@@ -48204,7 +48288,7 @@ local part = Instance.new("Part")</string>
     bool warnedAboutEmptySource = false;
     for (const auto& diagnostic : report.diagnostics) {
         if (diagnostic.subject.rfind("Workspace.Lobby.Main:", 0) == 0 &&
-            diagnostic.message.find("UserInputService") != std::string::npos) {
+            diagnostic.message.find("ContextActionService") != std::string::npos) {
             warnedAboutWait = true;
             check(diagnostic.severity == engine::migration::ImportSeverity::Warning,
                   "an unmapped API is reported at Warning severity");
@@ -48244,7 +48328,7 @@ local part = Instance.new("Part")</string>
         big += "<Properties><string name=\"Name\">Part" + std::to_string(i) + "</string></Properties></Item>";
         big += "<Item class=\"Script\" referent=\"S" + std::to_string(i) + "\">";
         big += "<Properties><string name=\"Name\">S" + std::to_string(i) + "</string>";
-        big += "<string name=\"Source\">local m = UserInputService.MouseEnabled\nlocal x = game.Workspace\nworld.createEntity()\n</string>";
+        big += "<string name=\"Source\">local m = ContextActionService.MouseEnabled\nlocal x = game.Workspace\nworld.createEntity()\n</string>";
         big += "</Properties></Item></Item>";
     }
     big += "</roblox>";
@@ -50485,6 +50569,7 @@ int main() {
     testRobloxServices();
     testRobloxGui();
     testRobloxGuiWidgets();
+    testRobloxUserInputService();
     testRobloxBinaryFormat();
 #if !defined(_WIN32)
     testInstanceRemoteOverSession();

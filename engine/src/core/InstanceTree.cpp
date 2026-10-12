@@ -1340,6 +1340,31 @@ std::vector<ClassDef> buildClasses() {
     tweenBase.events = {"Completed"};
     add("Tween", "TweenBase", false).properties = {readOnlyStored("Instance", PropertyType::Instance, InstanceValue{})};
     add("TweenService", "Instance", false, true).methods = {"Create", "GetValue"};
+
+    auto& inputObject = add("InputObject", "Instance", false);
+    inputObject.properties = {
+        readOnlyStored("KeyCode", PropertyType::Enum, InstanceValue::ofEnum("KeyCode", "Unknown", 0)),
+        readOnlyStored("UserInputType", PropertyType::Enum, InstanceValue::ofEnum("UserInputType", "None", 22)),
+        readOnlyStored("UserInputState", PropertyType::Enum, InstanceValue::ofEnum("UserInputState", "None", 4)),
+        readOnlyStored("Position", PropertyType::Vector3, InstanceValue::ofVector3(glm::vec3(0.0f))),
+        readOnlyStored("Delta", PropertyType::Vector3, InstanceValue::ofVector3(glm::vec3(0.0f))),
+    };
+    inputObject.properties[0].enumType = "KeyCode";
+    inputObject.properties[1].enumType = "UserInputType";
+    inputObject.properties[2].enumType = "UserInputState";
+    auto& userInput = add("UserInputService", "Instance", false, true);
+    userInput.properties = {
+        stored("MouseBehavior", PropertyType::Enum, InstanceValue::ofEnum("MouseBehavior", "Default", 0)),
+        stored("MouseIconEnabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        readOnlyStored("MouseEnabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        readOnlyStored("KeyboardEnabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        readOnlyStored("TouchEnabled", PropertyType::Bool, InstanceValue::ofBool(false)),
+        readOnlyStored("GamepadEnabled", PropertyType::Bool, InstanceValue::ofBool(false)),
+    };
+    userInput.properties[0].enumType = "MouseBehavior";
+    userInput.methods = {"IsKeyDown", "IsMouseButtonPressed", "GetMouseLocation", "GetMouseDelta", "GetFocusedTextBox"};
+    userInput.events = {"InputBegan", "InputEnded", "InputChanged", "TextBoxFocused", "TextBoxFocusReleased",
+                        "JumpRequest"};
     auto& debris = add("Debris", "Instance", false, true);
     debris.properties = {stored("MaxItems", PropertyType::Number, InstanceValue::ofNumber(1000.0))};
     debris.methods = {"AddItem"};
@@ -1425,7 +1450,7 @@ bool classHasEvent(const std::string& className, const std::string& event) {
 
 bool isPlannedService(const std::string& name) {
     static const char* const kPlanned[] = {
-        "UserInputService", "ContextActionService", "HttpService", "MarketplaceService", "PhysicsService", "TextService",
+        "ContextActionService", "HttpService", "MarketplaceService", "PhysicsService", "TextService",
         "GuiService", "PathfindingService", "BadgeService", "MessagingService", "TeleportService",
         "ProximityPromptService", "TextChatService", "LocalizationService", "GroupService", "SocialService",
         "VRService", "HapticService", "AnalyticsService", "MemoryStoreService", "AssetService", "InsertService",

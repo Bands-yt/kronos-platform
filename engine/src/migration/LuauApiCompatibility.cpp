@@ -132,8 +132,11 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"Instance", false, ApiMappingStatus::Mapped,
                           "`Instance.new` works for the classes in docs/ROBLOX_BRIDGE.md."});
     registry_.push_back({"script", false, ApiMappingStatus::Mapped, "`script` is the script's own Instance."});
-    registry_.push_back({"UserInputService", false, ApiMappingStatus::Unmapped,
-                          "No UserInputService. Input is delivered through `events.onInteract`."});
+    registry_.push_back({"UserInputService", false, ApiMappingStatus::Mapped,
+                          "InputBegan/InputEnded/InputChanged, IsKeyDown, IsMouseButtonPressed and GetMouseLocation work "
+                          "(docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"ContextActionService", false, ApiMappingStatus::Unmapped,
+                          "No ContextActionService. Use UserInputService.InputBegan and InputEnded."});
     registry_.push_back({"TweenService", false, ApiMappingStatus::Mapped,
                           "TweenService:Create and Tween Play/Pause/Cancel work as in Roblox (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"RunService", false, ApiMappingStatus::Mapped,

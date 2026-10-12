@@ -978,6 +978,25 @@ the Lab or scripts); no tool animations (the arm doesn't move); `CanBeDropped`
 and the Backspace drop key aren't built; `TextureId` icons aren't drawn in the
 hotbar (the tool's name is).
 
+## UserInputService (4.6)
+
+`game:GetService("UserInputService")` gives LocalScripts the keyboard and mouse.
+
+| Member | Notes |
+|---|---|
+| `InputBegan(input, gameProcessed)`, `InputEnded(input, gameProcessed)` | Keys and mouse buttons 1-3. `input` is an `InputObject` with `KeyCode`, `UserInputType` (`Keyboard`, `MouseButton1`...), `UserInputState`, `Position`, `Delta`. `gameProcessed` is true when a TextBox had the keyboard or the click landed on a GUI button |
+| `InputChanged(input, gameProcessed)` | `MouseMovement` (with `Delta`) and `MouseWheel` (`Position.Z` is the steps, up is positive) |
+| `IsKeyDown(keyCode)`, `IsMouseButtonPressed(type)` | Held state as of this frame |
+| `GetMouseLocation()`, `GetMouseDelta()` | Pixels in the game view, `Vector2` |
+| `GetFocusedTextBox()` | The TextBox that has the keyboard, or nil |
+| `MouseEnabled`, `KeyboardEnabled` (true), `TouchEnabled`, `GamepadEnabled` (false), `MouseIconEnabled`, `MouseBehavior` | Properties |
+
+Works in the Player and in Studio Play (keys count while the pointer is over the
+game view). Known limits: `MouseBehavior` and `MouseIconEnabled` are stored but
+don't change the cursor yet; no `GetKeysPressed`, `GetGamepadState`,
+`TouchTap`-style events, `TextBoxFocused`/`JumpRequest` never fire;
+`ContextActionService` is still planned. A server never receives input.
+
 ## Unions (4.4)
 
 A `UnionOperation` keeps the parts it was made from inside the file (`ChildData2`, or `ChildData` in older files). Kronos reads them on import and draws and collides each piece, so a staircase made into one union keeps its steps instead of becoming one solid box.

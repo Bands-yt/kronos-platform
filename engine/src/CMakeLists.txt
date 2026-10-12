@@ -408,6 +408,7 @@ add_library(engine_core STATIC
     core/InstanceSignals.cpp
     core/RobloxPlayers.cpp
     core/RobloxTools.cpp
+    core/RobloxInput.cpp
     core/RobloxGuiLayout.cpp
     core/RobloxGuiImages.cpp
     core/ChildProcess.cpp
@@ -782,6 +783,7 @@ if(ENGINE_BUILD_RUNTIME)
         core/UITheme.cpp
         core/UIWidgets.cpp
         core/RobloxLeaderboard.cpp
+        core/RobloxInputImGui.cpp
         core/RobloxGui.cpp
         core/GuiImageCache.cpp
         # Kronos ("Home Screen Avatar Preview"): same real "one source
@@ -875,6 +877,7 @@ if(ENGINE_BUILD_STUDIO)
         core/UITheme.cpp
         core/UIWidgets.cpp
         core/RobloxLeaderboard.cpp
+        core/RobloxInputImGui.cpp
         core/RobloxGui.cpp
         core/GuiImageCache.cpp
         studio/Notification.cpp
