@@ -28929,6 +28929,11 @@ void testStudioMultiplayerTest() {
         std::printf("  server log: %s (%d bytes), runtime: %s\n", serverLog.c_str(),
                     static_cast<int>(fs::exists(serverLog) ? fs::file_size(serverLog) : 0), runtime.string().c_str());
         for (const std::string& line : MultiplayerTest::tail(serverLog, 15)) std::printf("  server: %s\n", line.c_str());
+#ifdef __linux__
+        std::fflush(stdout);
+        (void)std::system(("ps -eo pid,stat,wchan:22,etime,args | grep -a engine_runtime | grep -v grep; ldd " + runtime.string() +
+                           " | grep -a 'not found'; ulimit -a | head -3").c_str());
+#endif
         for (const std::string& line : MultiplayerTest::tail((request.workRoot / "player1.log").string(), 8))
             std::printf("  player1: %s\n", line.c_str());
     }
