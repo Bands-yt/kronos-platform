@@ -2309,6 +2309,11 @@ void StudioApp::drawWelcomePanel() {
         }
 
         ImGui::Spacing();
+        {
+            const core::GpuSummary gpu = core::queryGpuSummary(renderer_.physicalDevice());
+            ImGui::TextDisabled("Your computer: %s (Vulkan %s)", gpu.name.c_str(), gpu.vulkanVersion.c_str());
+            ImGui::TextWrapped("%s", gpu.advice.c_str());
+        }
         ImGui::Spacing();
         if (ui::button("Open default project", ui::ButtonKind::Primary, ImVec2(200.0f, 34.0f))) {
             openTemplateScene(core::resolveResourceDir(core::executableDirectory(), "templates",

@@ -31,6 +31,16 @@ GpuFeatureTier selectGpuFeatures(const std::vector<std::string>& extensions, boo
 GpuFeatureTier queryGpuFeatures(VkPhysicalDevice physicalDevice);
 
 // Feature structs chained into VkDeviceCreateInfo for whatever `tier` found.
+struct GpuSummary {
+    std::string name;
+    std::string vulkanVersion;
+    std::string kind; // "discrete", "integrated", "software" or "other"
+    std::string advice; // one plain sentence
+};
+
+GpuSummary describeGpu(const std::string& name, uint32_t apiVersion, VkPhysicalDeviceType type);
+GpuSummary queryGpuSummary(VkPhysicalDevice physicalDevice);
+
 class GpuFeatureEnables {
 public:
     explicit GpuFeatureEnables(const GpuFeatureTier& tier);

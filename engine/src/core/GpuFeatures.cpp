@@ -146,3 +146,38 @@ void GpuFeatureEnables::apply(void* chainHead, std::vector<const char*>& extensi
 }
 
 } // namespace engine::core
+
+namespace engine::core {
+
+GpuSummary describeGpu(const std::string& name, uint32_t apiVersion, VkPhysicalDeviceType type) {
+    GpuSummary summary;
+    summary.name = name;
+    summary.vulkanVersion = std::to_string(VK_API_VERSION_MAJOR(apiVersion)) + "." + std::to_string(VK_API_VERSION_MINOR(apiVersion));
+    switch (type) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+            summary.kind = "discrete";
+            summary.advice = "Your graphics card is good to go.";
+            break;
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+            summary.kind = "integrated";
+            summary.advice = "Built-in graphics work fine; use Low or Medium quality for big worlds.";
+            break;
+        case VK_PHYSICAL_DEVICE_TYPE_CPU:
+            summary.kind = "software";
+            summary.advice = "No graphics card driver found, so the CPU is drawing everything. It will be slow; install your GPU's Vulkan driver.";
+            break;
+        default:
+            summary.kind = "other";
+            summary.advice = "Unusual graphics device; if anything looks wrong, update its driver.";
+            break;
+    }
+    return summary;
+}
+
+GpuSummary queryGpuSummary(VkPhysicalDevice physicalDevice) {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &props);
+    return describeGpu(props.deviceName, props.apiVersion, props.deviceType);
+}
+
+} // namespace engine::core

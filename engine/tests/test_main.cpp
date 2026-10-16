@@ -29094,6 +29094,15 @@ void testFreshProjectTemplate() {
     physics.shutdown();
 }
 
+void testGpuSummary() {
+    using engine::core::describeGpu;
+    const auto discrete = describeGpu("RTX", VK_MAKE_API_VERSION(0, 1, 3, 250), VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
+    check(discrete.vulkanVersion == "1.3" && discrete.kind == "discrete", "a discrete GPU is described with its Vulkan version");
+    const auto software = describeGpu("llvmpipe", VK_MAKE_API_VERSION(0, 1, 3, 0), VK_PHYSICAL_DEVICE_TYPE_CPU);
+    check(software.kind == "software" && software.advice.find("slow") != std::string::npos,
+          "a software renderer gets an honest warning");
+}
+
 void testSystemTimers() {
     using engine::core::SystemTimers;
     auto& timers = SystemTimers::instance();
@@ -52379,6 +52388,7 @@ int main() {
     testCrashReportRedaction();
     testLogFilter();
     testSystemTimers();
+    testGpuSummary();
     testFreshProjectTemplate();
     testSingleInstanceLock();
     testPermanentObjectIds();

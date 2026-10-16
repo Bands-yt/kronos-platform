@@ -15,9 +15,9 @@ reading audit: nothing here was run on a clean machine.
 
 | ID | Item | Status | Evidence / gap |
 |---|---|---|---|
-| 0001 | Welcome wizard with mode selection | missing | Player shows a one-time "Welcome to Kronos" notification (`RuntimeShell.cpp`); Studio has no first-run flow |
+| 0001 | Welcome wizard with mode selection | partial | Studio shows a welcome panel on the first launch (steps per mode, Open default project); no mode picker in the panel itself |
 | 0002 | One-click sample project | partial | Studio opens a template scene and has script template cards; `games/` holds BrokenBones, SkyGarden, DefaultWorld; no "new sample game" picker |
-| 0003 | First-launch hardware and driver check | partial | `core/GpuFeatures.*` detects capabilities; `classifySdlFailure` gives honest Vulkan messages; no visible first-run report |
+| 0003 | First-launch hardware and driver check | partial | the welcome panel shows the GPU, Vulkan version and a plain tip (`describeGpu`, `testGpuSummary`); not screen-checked, no audio or disk check |
 | 0026 | Resizable docks with saved layouts | exists | ImGui docking, `imgui.ini`, hidden panels saved (`StudioApp::saveHiddenPanels`) |
 | 0027 | Reset workspace to default | exists | Ribbon "Reset Layout" and menu item (`StudioRibbon.cpp`, `StudioApp.cpp`) |
 | 0028 | Per-task workspace presets | missing | Movie Maker and Audio Maker are separate programs; Studio has one layout |
