@@ -28926,7 +28926,11 @@ void testStudioMultiplayerTest() {
     check(logHas((request.workRoot / "player2.log").string(), "CLIENT asked, server said Teal"),
           "a test player's scripts talk to the server");
     if (!joined) {
+        std::printf("  server log: %s (%d bytes), runtime: %s\n", serverLog.c_str(),
+                    static_cast<int>(fs::exists(serverLog) ? fs::file_size(serverLog) : 0), runtime.string().c_str());
         for (const std::string& line : MultiplayerTest::tail(serverLog, 15)) std::printf("  server: %s\n", line.c_str());
+        for (const std::string& line : MultiplayerTest::tail((request.workRoot / "player1.log").string(), 8))
+            std::printf("  player1: %s\n", line.c_str());
     }
     test.stop();
     check(test.members().empty() && !test.active(), "Stop ends the server and the players");
