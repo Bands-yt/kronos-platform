@@ -1,6 +1,7 @@
 #include "core/PartBodies.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <unordered_map>
 #include <vector>
 
@@ -10,6 +11,7 @@
 #include "core/InstanceTree.hpp"
 #include "core/Physics.hpp"
 #include "core/PhysicsMaterial.hpp"
+#include "core/RobloxCollisionGroups.hpp"
 #include "core/RobloxPlayers.hpp"
 #include "core/UnionGeometry.hpp"
 
@@ -20,6 +22,7 @@ struct PartBodyState {
     ColliderShape shape;
     RigidBodyMotionType motion = RigidBodyMotionType::Static;
     bool sensor = false;
+    uint8_t group = 0; // collision group applied to the body
 };
 
 // Bodies sync() looks after, so a destroyed part's body can be removed too.
@@ -41,6 +44,8 @@ struct TrackedBodies {
     std::unordered_map<EntityId, uint32_t> bodies;
     std::unordered_map<EntityId, WeldJoint> welds;
     Physics* physics = nullptr;
+    Physics* groupsFor = nullptr;
+    uint32_t groupVersion = 0;
 };
 
 TrackedBodies& tracked(ECS& ecs) { return ecs.raw().ctx().emplace<TrackedBodies>(); }
@@ -122,6 +127,27 @@ void syncWelds(ECS& ecs, Physics& physics) {
         }
         physics.removeFixedJoint(it->second.joint);
         it = welds.erase(it);
+    }
+}
+
+void syncGroups(ECS& ecs, Physics& physics) {
+    auto& t = tracked(ecs);
+    const uint32_t version = collisiongroups::version(ecs);
+    if (t.groupsFor != &physics || t.groupVersion != version) {
+        physics.setCollisionGroupRows(collisiongroups::rows(ecs), collisiongroups::kMaxGroups);
+        t.groupsFor = &physics;
+        t.groupVersion = version;
+    }
+    for (const auto& [e, bodyId] : t.bodies) {
+        auto* state = ecs.tryGetComponent<PartBodyState>(e);
+        const auto* info = ecs.tryGetComponent<InstanceInfo>(e);
+        if (state == nullptr || info == nullptr) continue;
+        int wanted = 0;
+        const auto it = info->properties.find("CollisionGroup");
+        if (it != info->properties.end()) wanted = std::max(0, collisiongroups::indexOf(ecs, it->second.text));
+        if (state->group == wanted) continue;
+        physics.setBodyCollisionGroup(bodyId, static_cast<uint8_t>(wanted));
+        state->group = static_cast<uint8_t>(wanted);
     }
 }
 
@@ -224,6 +250,7 @@ void sync(ECS& ecs, Physics& physics, bool serverMoved) {
         }
     }
     syncPieces(ecs, physics);
+    syncGroups(ecs, physics);
     syncWelds(ecs, physics);
 }
 
@@ -233,6 +260,7 @@ void detachAll(ECS& ecs, Physics& physics) {
     for (auto& [weld, joint] : tracked(ecs).welds) physics.removeFixedJoint(joint.joint);
     tracked(ecs).welds.clear();
     tracked(ecs).physics = nullptr;
+    tracked(ecs).groupsFor = nullptr;
     std::vector<EntityId> list;
     for (EntityId e : ecs.raw().view<PartBodyState>()) list.push_back(e);
     for (EntityId e : ecs.raw().view<PieceBodyState>()) list.push_back(e);

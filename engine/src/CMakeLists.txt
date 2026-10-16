@@ -418,6 +418,7 @@ add_library(engine_core STATIC
     core/RobloxReplication.cpp
     core/RobloxDataStore.cpp
     core/RobloxServices.cpp
+    core/RobloxCollisionGroups.cpp
     core/PartBodies.cpp
     core/ScriptInstanceApi.cpp
     migration/AssetModeration.cpp

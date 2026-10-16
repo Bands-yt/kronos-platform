@@ -429,6 +429,10 @@ public:
     void removeFixedJoint(uint32_t joint);
     [[nodiscard]] size_t fixedJointCount() const;
 
+    // Roblox collision groups: which group a body is in (0 = Default) and which pairs collide.
+    void setBodyCollisionGroup(uint32_t bodyId, uint8_t group);
+    void setCollisionGroupRows(const uint32_t* rows, int count);
+
 private:
     void syncTransforms(ECS& ecs);
 

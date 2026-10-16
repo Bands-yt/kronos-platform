@@ -853,6 +853,20 @@ void Physics::destroyBodyById(uint32_t joltBodyId) {
     bodyInterface.DestroyBody(id);
 }
 
+void Physics::setBodyCollisionGroup(uint32_t bodyId, uint8_t group) {
+    if (!initialized_ || !joints_ || bodyId == RigidBody::kInvalidBodyId) return;
+    JPH::BodyInterface& bodyInterface = physicsSystem_->GetBodyInterface();
+    const JPH::BodyID id(bodyId);
+    if (!bodyInterface.IsAdded(id)) return;
+    const JPH::GroupFilter* current = bodyInterface.GetCollisionGroup(id).GetGroupFilter();
+    if (current != nullptr && current != joints_->filter.GetPtr()) return;
+    bodyInterface.SetCollisionGroup(id, JPH::CollisionGroup(joints_->filter, bodyId, group));
+}
+
+void Physics::setCollisionGroupRows(const uint32_t* rows, int count) {
+    if (joints_) weldfilter::setGroupRows(joints_->filter.GetPtr(), rows, count);
+}
+
 uint32_t Physics::addFixedJoint(uint32_t bodyA, uint32_t bodyB) {
     if (!initialized_ || !joints_ || bodyA == bodyB || bodyA == RigidBody::kInvalidBodyId ||
         bodyB == RigidBody::kInvalidBodyId) {
@@ -873,7 +887,9 @@ uint32_t Physics::addFixedJoint(uint32_t bodyA, uint32_t bodyB) {
     for (uint32_t body : {bodyA, bodyB}) {
         const JPH::GroupFilter* current = bodyInterface.GetCollisionGroup(JPH::BodyID(body)).GetGroupFilter();
         if (current == nullptr || current == joints_->filter.GetPtr()) {
-            bodyInterface.SetCollisionGroup(JPH::BodyID(body), JPH::CollisionGroup(joints_->filter, body, 0));
+            const auto sub = bodyInterface.GetCollisionGroup(JPH::BodyID(body)).GetSubGroupID();
+            bodyInterface.SetCollisionGroup(JPH::BodyID(body),
+                                            JPH::CollisionGroup(joints_->filter, body, current == nullptr ? 0 : sub));
         }
     }
     weldfilter::addPair(joints_->filter.GetPtr(), bodyA, bodyB);

@@ -214,6 +214,7 @@ cloud Studio) come after.
 | 8 | **Studio as a creator tool (Milestone B), first round** ✔ | Edit menu, View panel toggles, undo labels, Python and Rust in Studio, multi-object Inspector, Wedge in the Part menu, oldest-first Explorer, hidden panels remembered | 1 week |
 
 ### Done
+- **PhysicsService** (13 Oct 2026): up to 32 collision groups, `Part.CollisionGroup`, `CollisionGroupSetCollidable` and friends, applied by Jolt's group filter. Characters don't use groups yet. See ROBLOX_BRIDGE "PhysicsService and collision groups".
 - **ContextActionService** (13 Oct 2026): `BindAction`, `BindActionAtPriority`, `UnbindAction`, `UnbindAllActions` and `GetAllBoundActionInfo` for keys and mouse buttons, with priorities and Sink/Pass. See ROBLOX_BRIDGE "ContextActionService".
 - **ProximityPrompt** (13 Oct 2026): prompts show for the nearest enabled one in range, key press or hold fires `Triggered`, the server re-checks reach. See ROBLOX_BRIDGE "Tools".
 - **UserInputService** (12 Oct 2026): `InputBegan`/`InputEnded`/`InputChanged` with `InputObject`s, `IsKeyDown`, `IsMouseButtonPressed`, `GetMouseLocation`, `GetMouseDelta`, `GetFocusedTextBox` in the Player and Studio Play, fed through `core/RobloxInput`. See ROBLOX_BRIDGE "UserInputService". `ContextActionService` is next.

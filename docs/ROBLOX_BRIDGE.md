@@ -1023,6 +1023,24 @@ Limits: each script has its own bindings (another script can't unbind yours);
 or gamepad buttons, no `SetTitle`/`SetPosition`, no Cancel state when an action
 is unbound while held.
 
+## PhysicsService and collision groups (4.6)
+
+`PhysicsService` keeps up to 32 collision groups; `Default` is group 0. A part's
+`CollisionGroup` property (a string) picks its group, and every pair of groups
+collides until `CollisionGroupSetCollidable(a, b, false)` says otherwise.
+Methods: `RegisterCollisionGroup`, `UnregisterCollisionGroup`,
+`RenameCollisionGroup`, `CollisionGroupSetCollidable`,
+`CollisionGroupsAreCollidable`, `IsCollisionGroupRegistered`,
+`GetCollisionGroupName`, `GetCollisionGroupId`, `GetRegisteredCollisionGroups`.
+A part whose group isn't registered (or was removed) counts as Default. Groups
+are checked by the physics engine, so they apply to falling, stacking and
+pushing; a welded pair never collides regardless of groups.
+
+Limits: players' characters ignore groups (the avatar's capsule isn't a part),
+`RaycastParams.CollisionGroup` isn't used, the groups saved inside a Roblox
+place aren't imported (scripts register them at start), and the legacy
+`CreateCollisionGroup`/`SetPartCollisionGroup` calls are missing.
+
 ## Unions (4.4)
 
 A `UnionOperation` keeps the parts it was made from inside the file (`ChildData2`, or `ChildData` in older files). Kronos reads them on import and draws and collides each piece, so a staircase made into one union keeps its steps instead of becoming one solid box.

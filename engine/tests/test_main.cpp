@@ -46195,6 +46195,82 @@ print("DONE")
     checkLuauExpectations("pivot", output);
 }
 
+void testRobloxCollisionGroups() {
+    using namespace engine::core;
+    std::printf("\n-- Roblox collision groups --\n");
+    ECS ecs;
+    Physics physics;
+    check(physics.initialize(), "collision groups test: physics initializes");
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "collision groups test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    auto run = [&](const char* name, const char* source) {
+        scripting.loadAndRun(name, std::string(R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local function near(a, b, e) return math.abs(a - b) < (e or 1e-3) end
+)LUAU") + source + "\nprint(\"DONE\")\n");
+    };
+    auto simulate = [&](float seconds) {
+        for (float t = 0.0f; t < seconds; t += 1.0f / 60.0f) {
+            partbodies::sync(ecs, physics, false);
+            physics.step(1.0f / 60.0f, ecs);
+        }
+    };
+
+    run("GroupSetup", R"LUAU(
+local ps = game:GetService("PhysicsService")
+expect("Default is registered", ps:IsCollisionGroupRegistered("Default") and ps:GetCollisionGroupId("Default") == 0)
+ps:RegisterCollisionGroup("Ghosts")
+ps:RegisterCollisionGroup("Props")
+expect("a new group has an id and name", ps:GetCollisionGroupName(ps:GetCollisionGroupId("Ghosts")) == "Ghosts")
+expect("groups collide by default", ps:CollisionGroupsAreCollidable("Ghosts", "Default"))
+expect("registering twice errors", not pcall(function() ps:RegisterCollisionGroup("Ghosts") end))
+ps:CollisionGroupSetCollidable("Ghosts", "Default", false)
+expect("a pair can be switched off", not ps:CollisionGroupsAreCollidable("Default", "Ghosts"))
+expect("others stay on", ps:CollisionGroupsAreCollidable("Ghosts", "Props") and ps:CollisionGroupsAreCollidable("Ghosts", "Ghosts"))
+expect("an unknown group errors", not pcall(function() ps:CollisionGroupSetCollidable("Nope", "Default", false) end))
+expect("the list has all groups", #ps:GetRegisteredCollisionGroups() == 3)
+local function part(name, pos, anchored, group)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = Vector3.new(2, 2, 2)
+	p.Anchored = anchored
+	p.Position = pos
+	p.CollisionGroup = group or "Default"
+	p.Parent = workspace
+	return p
+end
+local floor = part("Floor", Vector3.new(0, 0, 0), true)
+floor.Size = Vector3.new(60, 1, 60)
+part("Solid", Vector3.new(0, 6, 0), false)
+part("Ghost", Vector3.new(10, 6, 0), false, "Ghosts")
+part("Prop", Vector3.new(20, 6, 0), false, "Props")
+part("GhostA", Vector3.new(30, 6, 0), false, "Ghosts")
+part("GhostB", Vector3.new(30, 9, 0), false, "Ghosts")
+)LUAU");
+    simulate(2.5f);
+    run("GroupFall", R"LUAU(
+expect("a Default part lands on the floor", near(workspace.Solid.Position.Y, 1.5, 0.1))
+expect("a Ghost falls through the Default floor", workspace.Ghost.Position.Y < -3)
+expect("a part in an unrelated group still lands", near(workspace.Prop.Position.Y, 1.5, 0.1))
+expect("two Ghosts don't pass through each other", workspace.GhostB.Position.Y - workspace.GhostA.Position.Y > 1.5)
+workspace.Ghost.CollisionGroup = "Default"
+workspace.Ghost.Position = Vector3.new(10, 8, 0)
+game:GetService("PhysicsService"):UnregisterCollisionGroup("Ghosts")
+expect("a part in a removed group counts as Default", true)
+)LUAU");
+    simulate(1.5f);
+    run("GroupBack", R"LUAU(
+expect("setting the group back makes it solid again", near(workspace.Ghost.Position.Y, 1.5, 0.1))
+expect("parts in a removed group fall back to Default", workspace.GhostA.Position.Y < -3 or near(workspace.GhostA.Position.Y, 1.5, 0.2))
+)LUAU");
+    checkLuauExpectations("collision groups", output);
+    partbodies::detachAll(ecs, physics);
+    scripting.shutdown();
+}
+
 void testRobloxWeldConstraint() {
     using namespace engine::core;
     std::printf("\n-- Roblox WeldConstraint --\n");
@@ -50910,6 +50986,7 @@ int main() {
     testRobloxClickDetector();
     testRobloxProximityPrompt();
     testRobloxContextActionService();
+    testRobloxCollisionGroups();
     testClickDetectorServerChecks();
     testRobloxBinaryFormat();
 #if !defined(_WIN32)

@@ -24,6 +24,7 @@
 #include "core/InstanceTree.hpp"
 #include "core/PartBodies.hpp"
 #include "core/Physics.hpp"
+#include "core/RobloxCollisionGroups.hpp"
 #include "core/RobloxDataStore.hpp"
 #include "core/RobloxPlayers.hpp"
 #include "core/RobloxTools.hpp"
@@ -1593,6 +1594,104 @@ int mGetFocusedTextBox(lua_State* L) {
     return 1;
 }
 
+// --- PhysicsService -------------------------------------------------------------
+
+int mRegisterCollisionGroup(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "RegisterCollisionGroup");
+    std::string error;
+    if (!collisiongroups::registerGroup(ecs, luaL_checkstring(L, 2), error)) luaL_error(L, "%s", error.c_str());
+    return 0;
+}
+
+int mUnregisterCollisionGroup(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "UnregisterCollisionGroup");
+    std::string error;
+    if (!collisiongroups::unregisterGroup(ecs, luaL_checkstring(L, 2), error)) luaL_error(L, "%s", error.c_str());
+    return 0;
+}
+
+int mRenameCollisionGroup(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "RenameCollisionGroup");
+    std::string error;
+    if (!collisiongroups::renameGroup(ecs, luaL_checkstring(L, 2), luaL_checkstring(L, 3), error)) {
+        luaL_error(L, "%s", error.c_str());
+    }
+    return 0;
+}
+
+int mCollisionGroupSetCollidable(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "CollisionGroupSetCollidable");
+    luaL_checktype(L, 4, LUA_TBOOLEAN);
+    std::string error;
+    if (!collisiongroups::setCollidable(ecs, luaL_checkstring(L, 2), luaL_checkstring(L, 3), lua_toboolean(L, 4) != 0,
+                                        error)) {
+        luaL_error(L, "%s", error.c_str());
+    }
+    return 0;
+}
+
+int mCollisionGroupsAreCollidable(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "CollisionGroupsAreCollidable");
+    const std::string a = luaL_checkstring(L, 2);
+    const std::string b = luaL_checkstring(L, 3);
+    const int i = collisiongroups::indexOf(ecs, a);
+    const int j = collisiongroups::indexOf(ecs, b);
+    if (i < 0 || j < 0) luaL_error(L, "Collision group '%s' is not registered", (i < 0 ? a : b).c_str());
+    lua_pushboolean(L, collisiongroups::collidable(ecs, i, j) ? 1 : 0);
+    return 1;
+}
+
+int mIsCollisionGroupRegistered(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "IsCollisionGroupRegistered");
+    lua_pushboolean(L, collisiongroups::indexOf(ecs, luaL_checkstring(L, 2)) >= 0 ? 1 : 0);
+    return 1;
+}
+
+int mGetCollisionGroupName(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "GetCollisionGroupName");
+    const std::string name = collisiongroups::nameOf(ecs, static_cast<int>(luaL_checknumber(L, 2)));
+    if (name.empty()) luaL_error(L, "Collision group id is not registered");
+    lua_pushstring(L, name.c_str());
+    return 1;
+}
+
+int mGetCollisionGroupId(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "GetCollisionGroupId");
+    const std::string name = luaL_checkstring(L, 2);
+    const int index = collisiongroups::indexOf(ecs, name);
+    if (index < 0) luaL_error(L, "Collision group '%s' is not registered", name.c_str());
+    lua_pushinteger(L, index);
+    return 1;
+}
+
+int mGetRegisteredCollisionGroups(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    checkSelf(L, "GetRegisteredCollisionGroups");
+    lua_newtable(L);
+    int slot = 1;
+    for (int i = 0; i < collisiongroups::kMaxGroups; ++i) {
+        const std::string name = collisiongroups::nameOf(ecs, i);
+        if (name.empty()) continue;
+        lua_newtable(L);
+        lua_pushstring(L, name.c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushinteger(L, i);
+        lua_setfield(L, -2, "id");
+        lua_pushinteger(L, static_cast<lua_Integer>(collisiongroups::rows(ecs)[i]));
+        lua_setfield(L, -2, "mask");
+        lua_rawseti(L, -2, slot++);
+    }
+    return 1;
+}
+
 int mGetMinutesAfterMidnight(lua_State* L) {
     ECS& ecs = ecsOf(L);
     InstanceValue clock;
@@ -2340,6 +2439,15 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"GetMouseDelta", &mGetMouseDelta},
         {"GetFocusedTextBox", &mGetFocusedTextBox},
         {"SetMinutesAfterMidnight", &mSetMinutesAfterMidnight},
+        {"RegisterCollisionGroup", &mRegisterCollisionGroup},
+        {"UnregisterCollisionGroup", &mUnregisterCollisionGroup},
+        {"RenameCollisionGroup", &mRenameCollisionGroup},
+        {"CollisionGroupSetCollidable", &mCollisionGroupSetCollidable},
+        {"CollisionGroupsAreCollidable", &mCollisionGroupsAreCollidable},
+        {"IsCollisionGroupRegistered", &mIsCollisionGroupRegistered},
+        {"GetCollisionGroupName", &mGetCollisionGroupName},
+        {"GetCollisionGroupId", &mGetCollisionGroupId},
+        {"GetRegisteredCollisionGroups", &mGetRegisteredCollisionGroups},
     };
     lua_newtable(L);
     for (const Method& method : kMethods) {

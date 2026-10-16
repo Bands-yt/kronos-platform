@@ -942,6 +942,7 @@ std::vector<ClassDef> buildClasses() {
         prop("CastShadow", PropertyType::Bool, &getCastShadow, &setCastShadow),
         prop("Anchored", PropertyType::Bool, &getAnchored, &setAnchored),
         stored("CanCollide", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("CollisionGroup", PropertyType::String, InstanceValue::ofString("Default")),
         stored("CanTouch", PropertyType::Bool, InstanceValue::ofBool(true)),
         stored("CanQuery", PropertyType::Bool, InstanceValue::ofBool(true)),
         stored("Locked", PropertyType::Bool, InstanceValue::ofBool(false)),
@@ -1384,6 +1385,10 @@ std::vector<ClassDef> buildClasses() {
                         "JumpRequest"};
     add("ContextActionService", "Instance", false, true).methods = {"BindAction", "BindActionAtPriority", "UnbindAction",
                                                                     "UnbindAllActions", "GetAllBoundActionInfo"};
+    add("PhysicsService", "Instance", false, true).methods = {
+        "RegisterCollisionGroup", "UnregisterCollisionGroup", "RenameCollisionGroup", "CollisionGroupSetCollidable",
+        "CollisionGroupsAreCollidable", "IsCollisionGroupRegistered", "GetCollisionGroupName", "GetCollisionGroupId",
+        "GetRegisteredCollisionGroups"};
     auto& debris = add("Debris", "Instance", false, true);
     debris.properties = {stored("MaxItems", PropertyType::Number, InstanceValue::ofNumber(1000.0))};
     debris.methods = {"AddItem"};
@@ -1469,7 +1474,7 @@ bool classHasEvent(const std::string& className, const std::string& event) {
 
 bool isPlannedService(const std::string& name) {
     static const char* const kPlanned[] = {
-        "MarketplaceService", "PhysicsService", "TextService",
+        "MarketplaceService", "TextService",
         "GuiService", "PathfindingService", "BadgeService", "MessagingService", "TeleportService",
         "ProximityPromptService", "TextChatService", "LocalizationService", "GroupService", "SocialService",
         "VRService", "HapticService", "AnalyticsService", "MemoryStoreService", "AssetService", "InsertService",
