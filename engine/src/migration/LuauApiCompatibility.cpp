@@ -138,8 +138,11 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"HttpService", false, ApiMappingStatus::Mapped,
                           "JSONEncode, JSONDecode, GenerateGUID and UrlEncode work; web requests fail "
                           "(docs/ROBLOX_BRIDGE.md)."});
-    registry_.push_back({"ContextActionService", false, ApiMappingStatus::Unmapped,
-                          "No ContextActionService. Use UserInputService.InputBegan and InputEnded."});
+    registry_.push_back({"ContextActionService", false, ApiMappingStatus::Mapped,
+                          "BindAction, BindActionAtPriority, UnbindAction and UnbindAllActions work; Sink does not stop "
+                          "the built-in movement (docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"PathfindingService", false, ApiMappingStatus::Unmapped,
+                          "No PathfindingService yet. Move with Humanoid:MoveTo along your own waypoints."});
     registry_.push_back({"TweenService", false, ApiMappingStatus::Mapped,
                           "TweenService:Create and Tween Play/Pause/Cancel work as in Roblox (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"RunService", false, ApiMappingStatus::Mapped,

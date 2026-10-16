@@ -1069,6 +1069,70 @@ return function(self, ...) return result(start(self, "InvokeServer", ...)) end,
 	function(self, ...) return result(start(self, "Invoke", ...)) end
 )LUAU";
 
+// ContextActionService is plain Luau over UserInputService: actions are tried
+// from the highest priority (newest first among equals) until one sinks.
+const char* const kActionsSource = R"LUAU(
+local actions, connected = {}, false
+local counter = 0
+local function matches(action, input)
+	for _, wanted in ipairs(action.inputs) do
+		if wanted == input.KeyCode or wanted == input.UserInputType then return true end
+	end
+	return false
+end
+local function dispatch(input, processed)
+	if processed then return end
+	local list = {}
+	for _, action in pairs(actions) do table.insert(list, action) end
+	table.sort(list, function(a, b)
+		if a.priority ~= b.priority then return a.priority > b.priority end
+		return a.order > b.order
+	end)
+	for _, action in ipairs(list) do
+		if actions[action.name] == action and matches(action, input) then
+			local ok, result = pcall(action.fn, action.name, input.UserInputState, input)
+			if not ok then
+				warn(result)
+			elseif result ~= Enum.ContextActionResult.Pass then
+				return
+			end
+		end
+	end
+end
+local function connect()
+	if connected then return end
+	connected = true
+	local uis = game:GetService("UserInputService")
+	uis.InputBegan:Connect(dispatch)
+	uis.InputEnded:Connect(dispatch)
+	uis.InputChanged:Connect(dispatch)
+end
+local function bind(name, fn, priority, ...)
+	if type(name) ~= "string" then error("BindAction: actionName must be a string", 3) end
+	if type(fn) ~= "function" then error("BindAction: functionToBind must be a function", 3) end
+	counter += 1
+	local list = {...}
+	actions[name] = {name = name, fn = fn, priority = priority, order = counter, inputs = list}
+	connect()
+end
+return function(self, name, fn, touch, ...) bind(name, fn, 2000, ...) end,
+	function(self, name, fn, touch, priority, ...) bind(name, fn, priority, ...) end,
+	function(self, name) actions[name] = nil end,
+	function(self) table.clear(actions) end,
+	function(self)
+		local out = {}
+		for name, action in pairs(actions) do
+			out[name] = {stackOrder = action.priority, inputTypes = table.clone(action.inputs)}
+		end
+		return out
+	end
+)LUAU";
+
+const std::string& actionsBytecode() {
+    static const std::string compiled = Luau::compile(kActionsSource);
+    return compiled;
+}
+
 const char* const kTrampolineSource = R"LUAU(
 local finish = ...
 return function(callback, id, ...)
@@ -2310,6 +2374,18 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
             lua_setfield(L, -4, "Invoke");
             lua_setfield(L, -3, "InvokeClient");
             lua_setfield(L, -2, "InvokeServer");
+        } else {
+            std::fprintf(stderr, "ScriptInstanceApi: %s\n", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
+    if (loadHelper(L, "=ContextActions", actionsBytecode())) {
+        if (lua_pcall(L, 0, 5, 0) == 0) {
+            lua_setfield(L, -6, "GetAllBoundActionInfo");
+            lua_setfield(L, -5, "UnbindAllActions");
+            lua_setfield(L, -4, "UnbindAction");
+            lua_setfield(L, -3, "BindActionAtPriority");
+            lua_setfield(L, -2, "BindAction");
         } else {
             std::fprintf(stderr, "ScriptInstanceApi: %s\n", lua_tostring(L, -1));
             lua_pop(L, 1);

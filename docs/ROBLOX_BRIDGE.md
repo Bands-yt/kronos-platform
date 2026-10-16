@@ -1009,6 +1009,20 @@ don't change the cursor yet; no `GetKeysPressed`, `GetGamepadState`,
 `TouchTap`-style events, `TextBoxFocused`/`JumpRequest` never fire;
 `ContextActionService` is still planned. A server never receives input.
 
+## ContextActionService (4.6)
+
+`BindAction(name, handler, createTouchButton, ...inputs)`, `BindActionAtPriority`,
+`UnbindAction`, `UnbindAllActions` and `GetAllBoundActionInfo` work for keys and
+mouse buttons. The handler gets `(actionName, inputState, inputObject)` for
+Begin, Change and End. Actions run from the highest priority down (newest first
+among equals) until one returns anything but `Enum.ContextActionResult.Pass`.
+Nothing fires while a TextBox has the keyboard or the mouse is over a GUI.
+
+Limits: each script has its own bindings (another script can't unbind yours);
+`Sink` stops lower actions but not the built-in movement and camera; no touch
+or gamepad buttons, no `SetTitle`/`SetPosition`, no Cancel state when an action
+is unbound while held.
+
 ## Unions (4.4)
 
 A `UnionOperation` keeps the parts it was made from inside the file (`ChildData2`, or `ChildData` in older files). Kronos reads them on import and draws and collides each piece, so a staircase made into one union keeps its steps instead of becoming one solid box.

@@ -1382,6 +1382,8 @@ std::vector<ClassDef> buildClasses() {
     userInput.methods = {"IsKeyDown", "IsMouseButtonPressed", "GetMouseLocation", "GetMouseDelta", "GetFocusedTextBox"};
     userInput.events = {"InputBegan", "InputEnded", "InputChanged", "TextBoxFocused", "TextBoxFocusReleased",
                         "JumpRequest"};
+    add("ContextActionService", "Instance", false, true).methods = {"BindAction", "BindActionAtPriority", "UnbindAction",
+                                                                    "UnbindAllActions", "GetAllBoundActionInfo"};
     auto& debris = add("Debris", "Instance", false, true);
     debris.properties = {stored("MaxItems", PropertyType::Number, InstanceValue::ofNumber(1000.0))};
     debris.methods = {"AddItem"};
@@ -1467,7 +1469,7 @@ bool classHasEvent(const std::string& className, const std::string& event) {
 
 bool isPlannedService(const std::string& name) {
     static const char* const kPlanned[] = {
-        "ContextActionService", "MarketplaceService", "PhysicsService", "TextService",
+        "MarketplaceService", "PhysicsService", "TextService",
         "GuiService", "PathfindingService", "BadgeService", "MessagingService", "TeleportService",
         "ProximityPromptService", "TextChatService", "LocalizationService", "GroupService", "SocialService",
         "VRService", "HapticService", "AnalyticsService", "MemoryStoreService", "AssetService", "InsertService",

@@ -519,6 +519,8 @@ local ENUMS = {
 	KeyCode = "Unknown=0 Backspace=8 Tab=9 Return=13 Escape=27 Space=32 Zero=48 One=49 Two=50 Three=51 Four=52 Five=53 Six=54 Seven=55 Eight=56 Nine=57 A=97 B=98 C=99 D=100 E=101 F=102 G=103 H=104 I=105 J=106 K=107 L=108 M=109 N=110 O=111 P=112 Q=113 R=114 S=115 T=116 U=117 V=118 W=119 X=120 Y=121 Z=122 Up=273 Down=274 Right=275 Left=276 F1=282 F2=283 F3=284 F4=285 F5=286 F6=287 F7=288 F8=289 F9=290 F10=291 F11=292 F12=293 RightShift=303 LeftShift=304 RightControl=305 LeftControl=306 RightAlt=307 LeftAlt=308 Delete=127 Insert=277 Home=278 End=279 PageUp=280 PageDown=281 Minus=45 Equals=61 Comma=44 Period=46 Slash=47 Semicolon=59 Quote=39 LeftBracket=91 RightBracket=93 BackSlash=92 Backquote=96",
 	UserInputType = "MouseButton1=0 MouseButton2=1 MouseButton3=2 MouseWheel=3 MouseMovement=4 Touch=7 Keyboard=8 Focus=9 Accelerometer=10 Gyro=11 Gamepad1=12 Gamepad2=13 Gamepad3=14 Gamepad4=15 TextInput=20 None=22",
 	UserInputState = "Begin=0 Change=1 End=2 Cancel=3 None=4",
+	ContextActionResult = "Sink=0 Pass=1",
+	ContextActionPriority = "Low=1000 Medium=2000 Default=2000 High=3000",
 	MouseBehavior = "Default=0 LockCenter=1 LockCurrentPosition=2",
 	HumanoidStateType = "FallingDown=0 Ragdoll=1 GettingUp=2 Jumping=3 Swimming=4 Freefall=5 Flying=6 Landed=7 Running=8 RunningNoPhysics=10 StrafingNoPhysics=11 Climbing=12 Seated=13 PlatformStanding=14 Dead=15 Physics=16 None=18",
 	HumanoidRigType = "R6=0 R15=1",

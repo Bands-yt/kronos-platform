@@ -43905,7 +43905,7 @@ void testLuauApiCompatibilityScan() {
     check(compat.registrySize() > 0, "LuauApiCompatibility really registers APIs");
 
     const std::string script = R"LUA(
-local mouse = ContextActionService.MouseEnabled
+local mouse = PathfindingService.MouseEnabled
 local Players = game:GetService("Players")
 local part = Instance.new("Part")
 part.Parent = workspace
@@ -43919,13 +43919,13 @@ world.setPosition(part, 1, 2, 3)
         }
         return false;
     };
-    check(found("ContextActionService"), "the API scan finds an unmapped `ContextActionService` reference");
+    check(found("PathfindingService"), "the API scan finds an unmapped `PathfindingService` reference");
     check(found("game") && found("Instance") && found("workspace"), "the API scan finds `game`, `Instance` and `workspace`");
     check(found("world"), "the API scan also records the mapped Kronos APIs a script already uses");
 
     for (const auto& f : findings) {
-        if (f.identifier == "ContextActionService") {
-            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`ContextActionService` is classified as unmapped");
+        if (f.identifier == "PathfindingService") {
+            check(f.status == engine::migration::ApiMappingStatus::Unmapped, "`PathfindingService` is classified as unmapped");
             check(f.line == 2, "the API scan reports the real 1-based line of a finding");
             check(!f.guidance.empty(), "an unmapped API finding carries real migration guidance");
         }
@@ -44464,6 +44464,88 @@ print("DONE")
     remotenet::sendInteraction(client, detectorOf(client), "MouseClick");
     signals::flush(server);
     check(std::count(events.begin(), events.end(), "SERVER CLICK Ana") == 1, "a click from far away is refused");
+}
+
+void testRobloxContextActionService() {
+    using namespace engine::core;
+    std::printf("\n-- ContextActionService --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "ContextActionService test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    scripting.loadAndRun("Actions", R"LUAU(
+local cas = game:GetService("ContextActionService")
+cas:BindAction("Low", function(name, state, input)
+	print("LOW " .. state.Name)
+	return Enum.ContextActionResult.Pass
+end, false, Enum.KeyCode.E)
+cas:BindActionAtPriority("High", function(name, state, input)
+	print("HIGH " .. state.Name .. " " .. input.KeyCode.Name)
+	return Enum.ContextActionResult.Sink
+end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.E, Enum.KeyCode.Q)
+cas:BindAction("Fire", function(name, state)
+	print("FIRE " .. name .. " " .. state.Name)
+end, false, Enum.UserInputType.MouseButton1)
+game:GetService("UserInputService").InputBegan:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.X then
+		local info = cas:GetAllBoundActionInfo()
+		print("INFO " .. tostring(info.High ~= nil) .. " " .. tostring(info.High.stackOrder))
+		cas:UnbindAction("High")
+	elseif input.KeyCode == Enum.KeyCode.Z then
+		cas:UnbindAllActions()
+	end
+end)
+print("DONE")
+)LUAU");
+    input::Frame frame;
+    frame.keys.push_back({"E", true});
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "HIGH Begin E") == 1, "a bound key runs its handler with the state and input");
+    check(std::count(output.begin(), output.end(), "LOW Begin") == 0, "a Sink from a higher priority stops lower actions");
+
+    frame = input::Frame{};
+    frame.keys.push_back({"E", false});
+    frame.buttons.push_back({1, true});
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "HIGH End E") == 1, "releasing the key runs the handler with End");
+    check(std::count(output.begin(), output.end(), "FIRE Fire Begin") == 1, "a mouse button can be bound");
+
+    frame = input::Frame{};
+    frame.keys.push_back({"X", true});
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "INFO true 3000") == 1, "GetAllBoundActionInfo lists actions with their priority");
+    frame = input::Frame{};
+    frame.keys.push_back({"E", true});
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "LOW Begin") == 1, "after UnbindAction the lower action runs");
+
+    frame = input::Frame{};
+    frame.keys.push_back({"Z", true});
+    frame.keys.push_back({"E", false});
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    frame = input::Frame{};
+    frame.keys.push_back({"E", true});
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "LOW Begin") == 1, "UnbindAllActions removes every action");
+
+    scripting.loadAndRun("Typing", R"LUAU(
+game:GetService("ContextActionService"):BindAction("T", function() print("TYPED") end, false, Enum.KeyCode.T)
+print("BOUND")
+)LUAU");
+    frame = input::Frame{};
+    frame.keys.push_back({"T", true});
+    frame.typing = true;
+    input::feed(ecs, frame);
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "TYPED") == 0, "typing in a TextBox keeps actions from firing");
 }
 
 void testRobloxProximityPrompt() {
@@ -45445,7 +45527,7 @@ expect("GetService makes a service once", storage.ClassName == "ReplicatedStorag
 expect("services sit under game", storage.Parent == game and game:FindFirstChild("ReplicatedStorage") == storage)
 expect("FindService doesn't create", game:FindService("ServerStorage") == nil)
 expect("bad service names error", fails(function() game:GetService("Bananas") end, "is not a valid Service name"))
-expect("planned services say so", fails(function() game:GetService("ContextActionService") end, "planned"))
+expect("planned services say so", fails(function() game:GetService("PathfindingService") end, "planned"))
 local stored = Instance.new("Part")
 stored.Name = "Stored"
 stored.Parent = storage
@@ -48156,7 +48238,7 @@ void testValidateProject() {
     const InstanceRef bad = make("Script", "Broken", door);
     setSource(bad, "local a = 1\nlocal b = 2\nif a then\n");
     const InstanceRef input = make("LocalScript", "Input");
-    setSource(input, "local x = 1\nlocal mouse = ContextActionService.MouseEnabled\n");
+    setSource(input, "local x = 1\nlocal mouse = PathfindingService.MouseEnabled\n");
     const InstanceRef keep = make("Part", "Keep");
     const InstanceRef gone = make("Part", "Gone");
     const InstanceRef weld = make("WeldConstraint", "Weld", keep);
@@ -48182,7 +48264,7 @@ void testValidateProject() {
               compile->entity == static_cast<uint32_t>(entt::to_integral(instances::entityOf(ecs, bad))),
           "validate: the syntax error points at the script, its line and its object");
     const ProjectFinding* api = findingFor(broken, "missing-api");
-    check(api && api->finding.subject == "ContextActionService" && api->finding.line == 2 &&
+    check(api && api->finding.subject == "PathfindingService" && api->finding.line == 2 &&
               broken.check("roblox-api")->status == CheckStatus::Warning,
           "validate: a missing Roblox API is a warning with its line");
     const ProjectFinding* ref = findingFor(broken, "broken-reference");
@@ -48294,7 +48376,7 @@ print(y)]]></ProtectedString></Properties></Item>
     <Item class="Script" referent="B"><Properties><string name="Name">Uses</string>
       <ProtectedString name="Source"><![CDATA[local ok = true
 
-local mouse = ContextActionService.MouseEnabled]]></ProtectedString></Properties></Item>
+local mouse = PathfindingService.MouseEnabled]]></ProtectedString></Properties></Item>
     <Item class="ModuleScript" referent="C"><Properties><string name="Name">Bad"Name</string>
       <ProtectedString name="Source"><![CDATA[return {]]></ProtectedString></Properties></Item>
   </Item>
@@ -48313,7 +48395,7 @@ local mouse = ContextActionService.MouseEnabled]]></ProtectedString></Properties
     const DoctorFinding* compile = find("compile-error");
     check(compile != nullptr && compile->category == DoctorCategory::Blocker, "doctor: a syntax error is a blocker");
     const DoctorFinding* api = find("missing-api");
-    check(api != nullptr && api->category == DoctorCategory::GameplayRisk && api->subject == "ContextActionService" &&
+    check(api != nullptr && api->category == DoctorCategory::GameplayRisk && api->subject == "PathfindingService" &&
               api->script == "Workspace.Uses" && api->line == 3,
           "doctor: a missing API is a gameplay risk at its script and line");
     bool decalVisual = false;
@@ -48443,7 +48525,7 @@ void testRobloxCompatibilityScore() {
     <Item class="Script" referent="S1"><Properties><string name="Name">Hello</string>
       <string name="Source">print("hi")</string></Properties></Item>
     <Item class="Script" referent="S2"><Properties><string name="Name">Roblox</string>
-      <string name="Source">local mouse = ContextActionService.MouseEnabled</string></Properties></Item>
+      <string name="Source">local mouse = PathfindingService.MouseEnabled</string></Properties></Item>
     <Item class="ModuleScript" referent="M"><Properties><string name="Name">Broken</string>
       <string name="Source">return function(</string></Properties></Item>
   </Item>
@@ -48459,8 +48541,8 @@ void testRobloxCompatibilityScore() {
     check(score.instancesMapped == 6 && score.unmappedClasses.count("ViewportFrame") == 1,
           "classes Kronos can't build yet (ViewportFrame) count as unmapped");
     check(score.apiSupported == score.apiUses - 1 && score.missingApis.count("game") == 0,
-          "print is supported; ContextActionService is not yet");
-    check(score.missingApis.count("ContextActionService") == 1, "the score lists the missing Roblox APIs by name");
+          "print is supported; PathfindingService is not yet");
+    check(score.missingApis.count("PathfindingService") == 1, "the score lists the missing Roblox APIs by name");
 
     runImportedScripts(report, score);
     check(score.scriptsRun == 3 && score.scriptsOk == 1, "one of three scripts runs cleanly today");
@@ -48506,7 +48588,7 @@ void testProjectImportPipeline() {
       <Item class="Script" referent="RBX3">
         <Properties>
           <string name="Name">Main</string>
-          <string name="Source">local mouse = ContextActionService.MouseEnabled
+          <string name="Source">local mouse = PathfindingService.MouseEnabled
 local part = Instance.new("Part")</string>
         </Properties>
       </Item>
@@ -48542,7 +48624,7 @@ local part = Instance.new("Part")</string>
     bool warnedAboutEmptySource = false;
     for (const auto& diagnostic : report.diagnostics) {
         if (diagnostic.subject.rfind("Workspace.Lobby.Main:", 0) == 0 &&
-            diagnostic.message.find("ContextActionService") != std::string::npos) {
+            diagnostic.message.find("PathfindingService") != std::string::npos) {
             warnedAboutWait = true;
             check(diagnostic.severity == engine::migration::ImportSeverity::Warning,
                   "an unmapped API is reported at Warning severity");
@@ -48582,7 +48664,7 @@ local part = Instance.new("Part")</string>
         big += "<Properties><string name=\"Name\">Part" + std::to_string(i) + "</string></Properties></Item>";
         big += "<Item class=\"Script\" referent=\"S" + std::to_string(i) + "\">";
         big += "<Properties><string name=\"Name\">S" + std::to_string(i) + "</string>";
-        big += "<string name=\"Source\">local m = ContextActionService.MouseEnabled\nlocal x = game.Workspace\nworld.createEntity()\n</string>";
+        big += "<string name=\"Source\">local m = PathfindingService.MouseEnabled\nlocal x = game.Workspace\nworld.createEntity()\n</string>";
         big += "</Properties></Item></Item>";
     }
     big += "</roblox>";
@@ -50827,6 +50909,7 @@ int main() {
     testRobloxHttpService();
     testRobloxClickDetector();
     testRobloxProximityPrompt();
+    testRobloxContextActionService();
     testClickDetectorServerChecks();
     testRobloxBinaryFormat();
 #if !defined(_WIN32)
