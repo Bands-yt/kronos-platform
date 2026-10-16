@@ -141,6 +141,9 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"ContextActionService", false, ApiMappingStatus::Mapped,
                           "BindAction, BindActionAtPriority, UnbindAction and UnbindAllActions work; Sink does not stop "
                           "the built-in movement (docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"MarketplaceService", false, ApiMappingStatus::Mapped,
+                          "Nothing is for sale in Kronos: ownership checks say false and purchase prompts end as "
+                          "not purchased (docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"PathfindingService", false, ApiMappingStatus::Unmapped,
                           "No PathfindingService yet. Move with Humanoid:MoveTo along your own waypoints."});
     registry_.push_back({"TweenService", false, ApiMappingStatus::Mapped,

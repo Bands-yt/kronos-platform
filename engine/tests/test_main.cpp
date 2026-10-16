@@ -46195,6 +46195,42 @@ print("DONE")
     checkLuauExpectations("pivot", output);
 }
 
+void testRobloxMarketplaceService() {
+    using namespace engine::core;
+    std::printf("\n-- MarketplaceService --\n");
+    ECS ecs;
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "MarketplaceService test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    players::join(ecs, "Ana", 42, kNullEntity, false);
+    scripting.loadAndRun("Market", R"LUAU(
+local function expect(name, ok) print((ok and "OK " or "FAIL ") .. name) end
+local market = game:GetService("MarketplaceService")
+local players = game:GetService("Players")
+expect("passes are never owned", market:UserOwnsGamePassAsync(1, 123) == false)
+local info = market:GetProductInfo(55)
+expect("product info says unavailable", info.Name == "Unavailable" and info.IsForSale == false and info.AssetId == 55)
+market.ProcessReceipt = function(receipt) return Enum.ProductPurchaseDecision and nil end
+expect("ProcessReceipt can be set", true)
+local player = players:GetPlayers()[1]
+market.PromptProductPurchaseFinished:Connect(function(userId, id, bought)
+	print("PRODUCT " .. tostring(userId) .. " " .. id .. " " .. tostring(bought))
+end)
+market.PromptGamePassPurchaseFinished:Connect(function(who, id, bought)
+	print("PASS " .. tostring(who == player) .. " " .. id .. " " .. tostring(bought))
+end)
+market:PromptProductPurchase(player, 7)
+market:PromptGamePassPurchase(player, 8)
+print("DONE")
+)LUAU");
+    signals::flush(ecs);
+    checkLuauExpectations("marketplace", output);
+    check(std::count(output.begin(), output.end(), "PRODUCT 42 7 false") == 1, "a product prompt finishes as not purchased");
+    check(std::count(output.begin(), output.end(), "PASS true 8 false") == 1, "a game pass prompt finishes as not purchased");
+}
+
 void testRobloxCollisionGroups() {
     using namespace engine::core;
     std::printf("\n-- Roblox collision groups --\n");
@@ -50987,6 +51023,7 @@ int main() {
     testRobloxProximityPrompt();
     testRobloxContextActionService();
     testRobloxCollisionGroups();
+    testRobloxMarketplaceService();
     testClickDetectorServerChecks();
     testRobloxBinaryFormat();
 #if !defined(_WIN32)

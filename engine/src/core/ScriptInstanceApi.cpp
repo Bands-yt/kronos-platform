@@ -513,6 +513,7 @@ bool isCallback(const std::string& cls, const char* key) {
     if (instances::classIsA(cls, "RemoteFunction")) {
         return std::strcmp(key, "OnServerInvoke") == 0 || std::strcmp(key, "OnClientInvoke") == 0;
     }
+    if (cls == "MarketplaceService") return std::strcmp(key, "ProcessReceipt") == 0;
     return instances::classIsA(cls, "BindableFunction") && std::strcmp(key, "OnInvoke") == 0;
 }
 
@@ -1692,6 +1693,65 @@ int mGetRegisteredCollisionGroups(lua_State* L) {
     return 1;
 }
 
+// --- MarketplaceService ---------------------------------------------------------
+// Kronos has no store: nothing is owned, purchase prompts end as "not purchased".
+
+int mUserOwnsGamePassAsync(lua_State* L) {
+    checkSelf(L, "UserOwnsGamePassAsync");
+    luaL_checknumber(L, 2);
+    luaL_checknumber(L, 3);
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+int mPlayerOwnsAsset(lua_State* L) {
+    checkSelf(L, "PlayerOwnsAsset");
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+int mGetProductInfo(lua_State* L) {
+    checkSelf(L, "GetProductInfo");
+    const double id = luaL_checknumber(L, 2);
+    lua_newtable(L);
+    lua_pushnumber(L, id);
+    lua_setfield(L, -2, "AssetId");
+    lua_pushnumber(L, id);
+    lua_setfield(L, -2, "ProductId");
+    lua_pushstring(L, "Unavailable");
+    lua_setfield(L, -2, "Name");
+    lua_pushstring(L, "");
+    lua_setfield(L, -2, "Description");
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "IsForSale");
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "IsPublicDomain");
+    return 1;
+}
+
+// PromptProductPurchase(player, id) fires the Finished event with not purchased, like a cancelled prompt.
+template <int Kind>
+int mPromptPurchase(lua_State* L) {
+    ECS& ecs = ecsOf(L);
+    const InstanceRef self = checkSelf(L, "Prompt purchase");
+    Proxy* player = toProxy(L, 2);
+    if (player == nullptr) luaL_error(L, "invalid argument #2 (Player expected)");
+    const double id = luaL_checknumber(L, 3);
+    const char* event = Kind == 0 ? "PromptProductPurchaseFinished"
+                      : Kind == 1 ? "PromptGamePassPurchaseFinished"
+                                  : "PromptPurchaseFinished";
+    SignalArg who = SignalArg::of(InstanceValue::ofInstance(player->ref));
+    if (Kind == 0) {
+        InstanceValue userId;
+        if (const PropertyDef* def = instances::findProperty("Player", "UserId")) {
+            (void)instances::getProperty(ecs, player->ref, *def, userId);
+        }
+        who = SignalArg::of(userId);
+    }
+    hubOf(L).fire(self, event, {who, SignalArg::of(InstanceValue::ofNumber(id)), SignalArg::of(InstanceValue::ofBool(false))});
+    return 0;
+}
+
 int mGetMinutesAfterMidnight(lua_State* L) {
     ECS& ecs = ecsOf(L);
     InstanceValue clock;
@@ -2439,6 +2499,12 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"GetMouseDelta", &mGetMouseDelta},
         {"GetFocusedTextBox", &mGetFocusedTextBox},
         {"SetMinutesAfterMidnight", &mSetMinutesAfterMidnight},
+        {"UserOwnsGamePassAsync", &mUserOwnsGamePassAsync},
+        {"PlayerOwnsAsset", &mPlayerOwnsAsset},
+        {"GetProductInfo", &mGetProductInfo},
+        {"PromptProductPurchase", &mPromptPurchase<0>},
+        {"PromptGamePassPurchase", &mPromptPurchase<1>},
+        {"PromptPurchase", &mPromptPurchase<2>},
         {"RegisterCollisionGroup", &mRegisterCollisionGroup},
         {"UnregisterCollisionGroup", &mUnregisterCollisionGroup},
         {"RenameCollisionGroup", &mRenameCollisionGroup},

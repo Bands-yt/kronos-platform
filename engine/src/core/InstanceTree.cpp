@@ -1389,6 +1389,10 @@ std::vector<ClassDef> buildClasses() {
         "RegisterCollisionGroup", "UnregisterCollisionGroup", "RenameCollisionGroup", "CollisionGroupSetCollidable",
         "CollisionGroupsAreCollidable", "IsCollisionGroupRegistered", "GetCollisionGroupName", "GetCollisionGroupId",
         "GetRegisteredCollisionGroups"};
+    auto& market = add("MarketplaceService", "Instance", false, true);
+    market.methods = {"UserOwnsGamePassAsync", "PlayerOwnsAsset", "GetProductInfo", "PromptProductPurchase",
+                      "PromptGamePassPurchase", "PromptPurchase"};
+    market.events = {"PromptProductPurchaseFinished", "PromptGamePassPurchaseFinished", "PromptPurchaseFinished"};
     auto& debris = add("Debris", "Instance", false, true);
     debris.properties = {stored("MaxItems", PropertyType::Number, InstanceValue::ofNumber(1000.0))};
     debris.methods = {"AddItem"};
@@ -1474,7 +1478,7 @@ bool classHasEvent(const std::string& className, const std::string& event) {
 
 bool isPlannedService(const std::string& name) {
     static const char* const kPlanned[] = {
-        "MarketplaceService", "TextService",
+        "TextService",
         "GuiService", "PathfindingService", "BadgeService", "MessagingService", "TeleportService",
         "ProximityPromptService", "TextChatService", "LocalizationService", "GroupService", "SocialService",
         "VRService", "HapticService", "AnalyticsService", "MemoryStoreService", "AssetService", "InsertService",

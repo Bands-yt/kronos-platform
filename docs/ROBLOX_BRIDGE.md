@@ -1041,6 +1041,15 @@ Limits: players' characters ignore groups (the avatar's capsule isn't a part),
 place aren't imported (scripts register them at start), and the legacy
 `CreateCollisionGroup`/`SetPartCollisionGroup` calls are missing.
 
+## MarketplaceService (4.6)
+
+Kronos has no store yet, so `MarketplaceService` only keeps scripts from
+crashing: `UserOwnsGamePassAsync` and `PlayerOwnsAsset` return false,
+`GetProductInfo` returns a table named "Unavailable" that is not for sale, and
+`PromptProductPurchase`, `PromptGamePassPurchase` and `PromptPurchase` fire the
+matching `Prompt...Finished` event with "not purchased". `ProcessReceipt` can be
+assigned but is never called.
+
 ## Unions (4.4)
 
 A `UnionOperation` keeps the parts it was made from inside the file (`ChildData2`, or `ChildData` in older files). Kronos reads them on import and draws and collides each piece, so a staircase made into one union keeps its steps instead of becoming one solid box.

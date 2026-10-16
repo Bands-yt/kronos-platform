@@ -214,6 +214,7 @@ cloud Studio) come after.
 | 8 | **Studio as a creator tool (Milestone B), first round** ✔ | Edit menu, View panel toggles, undo labels, Python and Rust in Studio, multi-object Inspector, Wedge in the Part menu, oldest-first Explorer, hidden panels remembered | 1 week |
 
 ### Done
+- **MarketplaceService stubs** (13 Oct 2026): nothing is owned, prompts end as not purchased, `ProcessReceipt` can be set. Real purchases need a store (not planned yet).
 - **PhysicsService** (13 Oct 2026): up to 32 collision groups, `Part.CollisionGroup`, `CollisionGroupSetCollidable` and friends, applied by Jolt's group filter. Characters don't use groups yet. See ROBLOX_BRIDGE "PhysicsService and collision groups".
 - **ContextActionService** (13 Oct 2026): `BindAction`, `BindActionAtPriority`, `UnbindAction`, `UnbindAllActions` and `GetAllBoundActionInfo` for keys and mouse buttons, with priorities and Sink/Pass. See ROBLOX_BRIDGE "ContextActionService".
 - **ProximityPrompt** (13 Oct 2026): prompts show for the nearest enabled one in range, key press or hold fires `Triggered`, the server re-checks reach. See ROBLOX_BRIDGE "Tools".
