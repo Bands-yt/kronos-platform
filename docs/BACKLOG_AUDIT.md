@@ -84,7 +84,7 @@ reading audit: nothing here was run on a clean machine.
 | 0826 | Threat model for Player and Studio | missing | no document |
 | 0827 | Sandbox escape regression suite | partial | Luau and Python sandbox tests exist (memory, time, stack, blocked imports); not framed as an escape suite |
 | 0828 | Least-privilege plugin profiles | partial | capability bits exist; no named profiles |
-| 0851 | CPU frame-time breakdown | partial | Stats panel and frame pacing telemetry; no per-system split |
+| 0851 | CPU frame-time breakdown | exists | `core::SystemTimers` (scripting, physics, pre-tick, post-physics, render) shown in Stats "Where the time goes"; not screen-checked |
 | 0852 | GPU frame-time breakdown | missing | no timestamp queries found |
 | 0853 | Per-system ECS timing | missing | |
 

@@ -97,6 +97,7 @@
 #include "core/CascadeSplitMath.hpp"
 #include "core/CrashReporter.hpp"
 #include "core/LogFilter.hpp"
+#include "core/SystemTimers.hpp"
 #include "core/ResourcePaths.hpp"
 #include "core/CatalogueDatabase.hpp"
 #include "core/CharacterController.hpp"
@@ -29093,6 +29094,26 @@ void testFreshProjectTemplate() {
     physics.shutdown();
 }
 
+void testSystemTimers() {
+    using engine::core::SystemTimers;
+    auto& timers = SystemTimers::instance();
+    timers.reset();
+    timers.add("A", 2.0);
+    timers.add("A", 3.0);
+    timers.add("B", 1.0);
+    timers.endFrame();
+    check(timers.entries().size() == 2 && timers.entries()[0].lastFrameMs == 5.0 && timers.entries()[1].lastFrameMs == 1.0,
+          "timers add up inside one frame");
+    timers.endFrame();
+    check(timers.entries()[0].lastFrameMs == 0.0 && timers.entries()[0].smoothedMs > 0.0, "an idle frame reads 0 and the smoothed value decays");
+    {
+        engine::core::ScopedSystemTimer scoped("C");
+    }
+    timers.endFrame();
+    check(timers.entries().size() == 3 && timers.entries()[2].name == "C", "a scoped timer reports itself");
+    timers.reset();
+}
+
 void testLogFilter() {
     using engine::core::logLineMatches;
     check(logLineMatches("", "anything"), "an empty filter shows every line");
@@ -52357,6 +52378,7 @@ int main() {
     testStudioMultiplayerTest();
     testCrashReportRedaction();
     testLogFilter();
+    testSystemTimers();
     testFreshProjectTemplate();
     testSingleInstanceLock();
     testPermanentObjectIds();

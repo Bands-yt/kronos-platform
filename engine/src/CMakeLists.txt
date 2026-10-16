@@ -360,6 +360,7 @@ add_library(engine_core STATIC
     core/KronosLaunchUri.cpp
 
     runtime/GameLoop.cpp
+    core/SystemTimers.cpp
 
     platform/LinuxWindow.cpp
     platform/WindowsWindow.cpp

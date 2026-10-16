@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "core/Logger.hpp"
+#include "core/SystemTimers.hpp"
 
 #include <SDL2/SDL.h>
 
@@ -17,16 +18,24 @@ GameLoop::GameLoop(Subsystems subsystems) : subsystems_(subsystems) {}
 
 void GameLoop::simTick(float dt) {
     if (preTickHook_) {
+        ScopedSystemTimer timer("Game logic (pre-tick)");
         preTickHook_(dt);
     }
 
     // scripting.tick(dt);
-    subsystems_.scripting->tick(dt);
+    {
+        ScopedSystemTimer timer("Scripting");
+        subsystems_.scripting->tick(dt);
+    }
 
     // physics.step(dt);
-    subsystems_.physics->step(dt * timeScale_, *subsystems_.ecs);
+    {
+        ScopedSystemTimer timer("Physics");
+        subsystems_.physics->step(dt * timeScale_, *subsystems_.ecs);
+    }
 
     if (postPhysicsHook_) {
+        ScopedSystemTimer timer("Post-physics");
         postPhysicsHook_(dt);
     }
 
@@ -54,6 +63,7 @@ void GameLoop::networkTick(float dt) {
 }
 
 void GameLoop::renderTick(float dt) {
+    SystemTimers::instance().endFrame();
     if (frameStartHook_) frameStartHook_(dt);
     if (preRenderHook_) {
         preRenderHook_(dt);
@@ -67,6 +77,7 @@ void GameLoop::renderTick(float dt) {
     // wired through preRenderHook_ above, and a heartbeat that only ever
     // fires alongside a real GPU frame never fires at all on a server
     // that never has one.
+    ScopedSystemTimer renderTimer("Render");
     if (subsystems_.renderer != nullptr && !subsystems_.renderer->renderFrame()) {
         std::fprintf(stderr, "GameLoop: renderFrame() reported an unrecoverable error.\n");
     }

@@ -1,5 +1,7 @@
 #include "studio/panels/StatsPanel.hpp"
 
+#include "core/SystemTimers.hpp"
+
 #include <algorithm>
 
 #include <imgui.h>
@@ -32,6 +34,13 @@ void StatsPanel::draw(const core::PerformanceMetrics& metrics) {
     ImGui::PlotLines("##frametime_graph", frameTimeHistory_.samples().data(),
                       static_cast<int>(frameTimeHistory_.samples().size()), 0, nullptr, 0.0f,
                       std::max(33.4f, frameTimeHistory_.max()), ImVec2(0.0f, 40.0f));
+
+    if (ImGui::TreeNodeEx("Where the time goes", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto& timers = core::SystemTimers::instance().entries();
+        if (timers.empty()) ImGui::TextDisabled("(no samples yet)");
+        for (const auto& timer : timers) ImGui::Text("%-22s %6.2f ms", timer.name.c_str(), timer.smoothedMs);
+        ImGui::TreePop();
+    }
 
     ImGui::Separator();
     ImGui::Text("Draw calls: %u", metrics.drawCalls);
