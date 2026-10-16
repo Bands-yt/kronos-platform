@@ -48,8 +48,8 @@ reading audit: nothing here was run on a clean machine.
 | 0426 | Python in Studio Play | exists | 12 Oct 2026; `#`-first-line scripts run in Play (`testStudioPythonScripts`). The backlog preamble is out of date on this |
 | 0427 | Python editor with diagnostics | partial | colours and templates; no autocomplete or error markers |
 | 0428 | PocketPy version and capability report | exists | `engine_runtime --python-info` (probes run for real), `testPythonScripts` |
-| 0451 | Document game scripts vs plugins | partial | README and `PYTHON_SCRIPTS.md` explain it; no single page |
-| 0452 | Language capability matrix | missing | |
+| 0451 | Document game scripts vs plugins | exists | `docs/LANGUAGES.md` |
+| 0452 | Language capability matrix | exists | `docs/LANGUAGES.md` (16 Oct 2026) |
 | 0453 | Stable plugin ABI versioning | exists | `KRONOS_PLUGIN_API_MAJOR/MINOR`, `struct_size` on every struct, capability bits (`kronos_plugin.h`); a conformance test binary is missing (0458) |
 
 ## Diagnostics
@@ -81,7 +81,7 @@ reading audit: nothing here was run on a clean machine.
 | 0801 | Test coverage map by subsystem | missing | 21,400+ checks in one file, no map |
 | 0802 | Core smoke suite | exists | `remote_network_smoke.sh`, package smoke tests in CI |
 | 0803 | Fresh project creation smoke test | partial | `testFreshProjectTemplate` loads the template scene and runs physics headless; no Studio-driven "File > New" test |
-| 0826 | Threat model for Player and Studio | missing | no document |
+| 0826 | Threat model for Player and Studio | exists | `docs/THREAT_MODEL.md`; rows say what is tested and what is not |
 | 0827 | Sandbox escape regression suite | partial | Luau and Python sandbox tests exist (memory, time, stack, blocked imports); not framed as an escape suite |
 | 0828 | Least-privilege plugin profiles | partial | capability bits exist; no named profiles |
 | 0851 | CPU frame-time breakdown | exists | `core::SystemTimers` (scripting, physics, pre-tick, post-physics, render) shown in Stats "Where the time goes"; not screen-checked |
