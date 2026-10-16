@@ -66,7 +66,7 @@ reading audit: nothing here was run on a clean machine.
 |---|---|---|---|
 | 0501 | Compatibility score by class and API | exists | `kronos_compat`, import report |
 | 0502 | Test corpus for common genres | exists | 10 places + Lab (`COMPAT_LAB.md`) |
-| 0503 | Binary RBXL/RBXM hardening | partial | binary reader works (LZ4); Zstd chunks and fuzzing missing |
+| 0503 | Binary RBXL/RBXM hardening | partial | binary reader works (LZ4); a fixed-seed damage test passes (`testRobloxParsersSurviveMutations`); Zstd chunks and a real fuzzer missing |
 
 ## Player, builds, QA, security, performance
 

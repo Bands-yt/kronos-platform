@@ -31170,6 +31170,62 @@ void testCatalogPublishRoundTripLive() {
     fs::remove_all(root);
 }
 
+void testRobloxParsersSurviveMutations() {
+    namespace fs = std::filesystem;
+    std::printf("\n-- Roblox file parsers vs. damaged files --\n");
+    auto slurpFile = [](const fs::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    uint64_t state = 0x9E3779B97F4A7C15ull;
+    auto next = [&]() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    };
+    auto damage = [&](std::string data) {
+        if (data.empty()) return data;
+        switch (next() % 3) {
+            case 0: data.resize(next() % data.size()); break;
+            case 1:
+                for (int i = 0, n = 1 + static_cast<int>(next() % 4); i < n; ++i) data[next() % data.size()] = static_cast<char>(next());
+                break;
+            default: {
+                const size_t at = next() % data.size();
+                data.erase(at, 1 + next() % 16);
+                break;
+            }
+        }
+        return data;
+    };
+
+    int binaryFiles = 0, xmlFiles = 0, runs = 0;
+    for (const auto& dir : fs::directory_iterator("tests/fixtures/rbx-test-files")) {
+        const fs::path binary = dir.path() / "binary.rbxm";
+        if (!fs::exists(binary) || binaryFiles >= 14) continue;
+        ++binaryFiles;
+        const std::string original = slurpFile(binary);
+        for (int i = 0; i < 150; ++i) {
+            std::vector<engine::migration::ImportedInstance> out;
+            std::string error;
+            (void)engine::migration::readRobloxBinary(damage(original), out, error);
+            ++runs;
+        }
+    }
+    for (const auto& file : fs::directory_iterator("tests/compat_corpus")) {
+        if (file.path().extension() != ".rbxlx" || xmlFiles >= 4) continue;
+        ++xmlFiles;
+        const std::string original = slurpFile(file.path());
+        for (int i = 0; i < 60; ++i) {
+            (void)engine::migration::RbxlxParser::parse(damage(original));
+            ++runs;
+        }
+    }
+    check(binaryFiles >= 5 && xmlFiles >= 2 && runs > 1000,
+          "damaged binary and XML Roblox files (cut, flipped, chopped) never crash the readers");
+}
+
 void testPackageArchiveHostileInputs() {
     namespace fs = std::filesystem;
     using engine::publishing::ArchiveFileEntry;
@@ -52463,6 +52519,7 @@ int main() {
     testPackageArchiveWriteReadRoundTrip();
     testPackageArchiveReadRejectsGarbageFile();
     testPackageArchiveHostileInputs();
+    testRobloxParsersSurviveMutations();
     testCatalogGamePackages();
     testCatalogPublishRoundTripLive();
     testHeadlessSceneLoadKeepsPhysicsWithoutGpu();
