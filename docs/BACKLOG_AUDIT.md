@@ -47,7 +47,7 @@ reading audit: nothing here was run on a clean machine.
 | 0403 | API hover cards | missing | |
 | 0426 | Python in Studio Play | exists | 12 Oct 2026; `#`-first-line scripts run in Play (`testStudioPythonScripts`). The backlog preamble is out of date on this |
 | 0427 | Python editor with diagnostics | partial | colours and templates; no autocomplete or error markers |
-| 0428 | PocketPy version and capability report | missing | |
+| 0428 | PocketPy version and capability report | exists | `engine_runtime --python-info` (probes run for real), `testPythonScripts` |
 | 0451 | Document game scripts vs plugins | partial | README and `PYTHON_SCRIPTS.md` explain it; no single page |
 | 0452 | Language capability matrix | missing | |
 | 0453 | Stable plugin ABI versioning | exists | `KRONOS_PLUGIN_API_MAJOR/MINOR`, `struct_size` on every struct, capability bits (`kronos_plugin.h`); a conformance test binary is missing (0458) |

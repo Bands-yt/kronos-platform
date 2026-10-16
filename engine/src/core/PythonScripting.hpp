@@ -46,6 +46,9 @@ public:
     [[nodiscard]] const std::string& lastError() const { return lastError_; }
     [[nodiscard]] double time() const { return clock_; }
 
+    // Plain-text report: version, limits, and which risky things a probe script really can't do.
+    static std::string capabilityReport();
+
     struct Bindings;
 
 private:

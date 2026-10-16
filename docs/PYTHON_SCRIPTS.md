@@ -110,3 +110,7 @@ fuzzing it is still to do.
 - No Roblox-style Instance API, `task` library, networking, UI or audio from
   Python.
 - No `import` of a game's other `.py` files.
+
+## Version and capability report
+
+`engine_runtime --python-info` prints the PocketPy version, the limits, and the result of probe scripts (`import os`, opening a file, `time.sleep`, `input`, `exit`); each should say `blocked`.

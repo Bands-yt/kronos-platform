@@ -285,6 +285,32 @@ struct PythonScripting::Bindings {
 
 PythonScripting::~PythonScripting() { unloadAll(); }
 
+std::string PythonScripting::capabilityReport() {
+    PythonScripting python;
+    std::string probeOutput;
+    python.setOutputCallback([&](const std::string& line) { probeOutput += line + "\n"; });
+    const char* probes[][2] = {
+        {"import os", "import os"},
+        {"open a file", "open('/etc/hostname')"},
+        {"time.sleep", "import time\ntime.sleep(0)"},
+        {"input", "input()"},
+        {"exit", "exit()"},
+    };
+    std::string report = "Kronos Python scripting\n";
+    report += std::string("  engine:      PocketPy ") + PK_VERSION + " (a small Python 3, not CPython)\n";
+    report += "  scripts:     up to " + std::to_string(kMaxScripts) + ", one VM each\n";
+    report += "  memory:      " + std::to_string(python.maxMemoryBytes_ / (1024 * 1024)) + " MB per script\n";
+    report += "  time:        " + std::to_string(static_cast<int>(python.maxMillisPerTick_)) + " ms per tick, " +
+              std::to_string(static_cast<int>(python.maxMillisForLoad_)) + " ms to load\n";
+    report += "  builtins:    world, events\n  probes (what a script can do):\n";
+    for (const auto& probe : probes) {
+        const ScriptId id = python.load("probe", probe[1]);
+        report += std::string("    ") + probe[0] + ": " + (id == kInvalidScript ? "blocked" : "ALLOWED") + "\n";
+        python.unloadAll();
+    }
+    return report;
+}
+
 PythonScripting::Script* PythonScripting::find(ScriptId id) {
     for (auto& script : scripts_) {
         if (script.id == id) return &script;

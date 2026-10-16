@@ -29063,6 +29063,12 @@ void testRustPluginProject() {
 }
 
 void testPythonScripts() {
+    {
+        const std::string report = engine::core::PythonScripting::capabilityReport();
+        check(report.find("PocketPy 2.") != std::string::npos && report.find("blocked") != std::string::npos &&
+                  report.find("ALLOWED") == std::string::npos,
+              "the Python capability report names the version and shows every risky probe blocked");
+    }
     std::printf("\n-- python game scripts --\n");
     using engine::core::PythonScripting;
     engine::core::ECS ecs;

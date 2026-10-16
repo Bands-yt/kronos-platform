@@ -20,6 +20,7 @@
 #include "tntwars/TntWarsNetRules.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/Application.hpp"
+#include "core/PythonScripting.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueDatabase.hpp"
 #include "core/CatalogueIndex.hpp"
@@ -378,6 +379,9 @@ int main(int argc, char** argv) {
             testerSafetyMode = true;
         } else if (arg == "--headless") {
             headless = true;
+        } else if (arg == "--python-info") {
+            std::printf("%s", engine::core::PythonScripting::capabilityReport().c_str());
+            return 0;
         } else if (arg == "--self-test") {
             selfTestMode = true;
         } else if (arg.rfind("--kronos-uri=", 0) == 0) {
