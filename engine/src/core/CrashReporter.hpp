@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace engine::core {
 
 // Kronos (Alpha Completion Checklist, "Crash & Error Telemetry" -- "Crash
@@ -24,5 +26,8 @@ namespace engine::core {
 // actually contains useful recent context in the overwhelming majority
 // of real crashes, which are not heap-corruption-induced.
 void installCrashReporter();
+
+// Replaces the home folder with ~, the user name with <user>, and e-mail addresses with <email>.
+std::string redactPersonalInfo(const std::string& text, const std::string& homeDir, const std::string& userName);
 
 } // namespace engine::core

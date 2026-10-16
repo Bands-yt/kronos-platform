@@ -3,6 +3,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <ctime>
 
@@ -17,6 +18,31 @@
 
 namespace engine::core {
 
+namespace {
+void replaceAll(std::string& text, const std::string& from, const std::string& to) {
+    if (from.empty()) return;
+    for (size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size())) text.replace(at, from.size(), to);
+}
+
+bool isMailChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '_' || c == '-' || c == '+'; }
+} // namespace
+
+std::string redactPersonalInfo(const std::string& text, const std::string& homeDir, const std::string& userName) {
+    std::string out = text;
+    if (homeDir.size() > 1) replaceAll(out, homeDir, "~");
+    if (userName.size() >= 3) replaceAll(out, userName, "<user>");
+    for (size_t at = out.find('@'); at != std::string::npos; at = out.find('@', at + 1)) {
+        size_t begin = at;
+        while (begin > 0 && isMailChar(out[begin - 1])) --begin;
+        size_t end = at + 1;
+        while (end < out.size() && isMailChar(out[end])) ++end;
+        if (begin == at || end == at + 1 || out.find('.', at) >= end) continue;
+        out.replace(begin, end - begin, "<email>");
+        at = begin;
+    }
+    return out;
+}
+
 #if defined(__linux__)
 
 namespace {
@@ -24,6 +50,8 @@ namespace {
 bool g_installed = false;
 int g_crashFileFd = -1;
 char g_crashFilePath[128] = {};
+std::string g_homeDir;
+std::string g_userName;
 struct sigaction g_previousHandlers[6]; // one per signal below, for real chaining after our own handler runs
 
 constexpr int kSignals[] = {SIGSEGV, SIGABRT, SIGFPE, SIGILL, SIGBUS, SIGTRAP};
@@ -65,7 +93,7 @@ void crashHandler(int sig) {
     std::fflush(nullptr);
 
     if (g_crashFileFd >= 0) {
-        writeRaw(g_crashFileFd, "=== Kronos crash report ===\n");
+        writeRaw(g_crashFileFd, "=== Kronos crash report ===\n(Stays on this PC. Your home folder, user name and e-mail addresses are removed.)\n");
         writeRaw(g_crashFileFd, "Signal: ");
         writeRaw(g_crashFileFd, signalName(sig));
         writeRaw(g_crashFileFd, "\n\n--- Backtrace ---\n");
@@ -73,9 +101,17 @@ void crashHandler(int sig) {
         // backtrace_symbols_fd() (not backtrace_symbols()) is the one
         // glibc explicitly documents as safe to call from inside a
         // signal handler -- it writes directly via write(), no malloc.
+        // Uses backtrace_symbols() (it allocates, same accepted risk as the log tail) so paths can be redacted.
         void* frames[64];
         int frameCount = backtrace(frames, 64);
-        backtrace_symbols_fd(frames, frameCount, g_crashFileFd);
+        if (char** symbols = backtrace_symbols(frames, frameCount)) {
+            for (int i = 0; i < frameCount; ++i) {
+                writeRaw(g_crashFileFd, redactPersonalInfo(symbols[i], g_homeDir, g_userName).c_str());
+                writeRaw(g_crashFileFd, "\n");
+            }
+        } else {
+            backtrace_symbols_fd(frames, frameCount, g_crashFileFd);
+        }
 
         // Best-effort recent Logger context -- see this file's own
         // header comment on the real, accepted async-signal-safety
@@ -86,7 +122,7 @@ void crashHandler(int sig) {
             char line[512];
             std::snprintf(line, sizeof(line), "[%8.3fs][%s][%s] %s\n", static_cast<double>(entry.timestampSeconds),
                           logLevelName(entry.level), entry.category.c_str(), entry.message.c_str());
-            writeRaw(g_crashFileFd, line);
+            writeRaw(g_crashFileFd, redactPersonalInfo(line, g_homeDir, g_userName).c_str());
         }
         writeRaw(g_crashFileFd, "\n=== end of report ===\n");
 
@@ -127,6 +163,8 @@ void installCrashReporter() {
     if (g_installed) return;
     g_installed = true;
 
+    if (const char* home = std::getenv("HOME")) g_homeDir = home;
+    if (const char* user = std::getenv("USER")) g_userName = user;
     char* path = g_crashFilePath;
     std::time_t now = std::time(nullptr);
     std::tm tmValue{};

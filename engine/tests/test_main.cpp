@@ -29062,6 +29062,18 @@ void testRustPluginProject() {
     fs::remove_all(root, ec);
 }
 
+void testCrashReportRedaction() {
+    std::printf("\n-- Crash report redaction --\n");
+    using engine::core::redactPersonalInfo;
+    check(redactPersonalInfo("/home/sam/games/kronos/engine_runtime(+0x12)", "/home/sam", "sam") == "~/games/kronos/engine_runtime(+0x12)",
+          "the home folder becomes ~");
+    check(redactPersonalInfo("user sam logged in as sam", "", "sam") == "user <user> logged in as <user>",
+          "the user name is removed everywhere");
+    check(redactPersonalInfo("mail me at kid.one@example.com now", "", "") == "mail me at <email> now", "e-mail addresses are removed");
+    check(redactPersonalInfo("a @ b and x@y", "", "") == "a @ b and x@y", "an at sign that isn't an e-mail stays");
+    check(redactPersonalInfo("ab is short", "/", "ab") == "ab is short", "a very short name or a bare / is left alone");
+}
+
 void testPythonScripts() {
     {
         const std::string report = engine::core::PythonScripting::capabilityReport();
@@ -52305,6 +52317,7 @@ int main() {
     testRustPluginProject();
     testSiblingExecutable();
     testStudioMultiplayerTest();
+    testCrashReportRedaction();
     testSingleInstanceLock();
     testPermanentObjectIds();
     testRollbackPacketCodec();

@@ -58,7 +58,7 @@ reading audit: nothing here was run on a clean machine.
 |---|---|---|---|
 | 0476 | Debug console with filtering | partial | Debug Console + Engine Log; no filter box |
 | 0477 | Structured logs with categories | exists | `Logger` categories (`Script`, `Network`, `Plugin:<name>` ...), see `CRASH_TELEMETRY.md` |
-| 0478 | Crash report with consent and redaction | partial | `CrashReporter` writes `crash_report_*.txt`; consent prompt and redaction not found |
+| 0478 | Crash report with consent and redaction | partial | reports stay on the PC (nothing uploads them) and now have home folder, user name and e-mail removed (`redactPersonalInfo`, `testCrashReportRedaction`); no consent prompt because nothing is sent |
 
 ## Roblox bridge
 
