@@ -1050,6 +1050,14 @@ crashing: `UserOwnsGamePassAsync` and `PlayerOwnsAsset` return false,
 matching `Prompt...Finished` event with "not purchased". `ProcessReceipt` can be
 assigned but is never called.
 
+## BadgeService and TeleportService (4.6)
+
+Stubs, so scripts that use them keep running. `BadgeService:AwardBadge` and
+`UserHasBadgeAsync` return false and `GetBadgeInfoAsync` gives a disabled badge
+called "Unavailable". `TeleportService:Teleport` and `TeleportAsync` fire
+`TeleportInitFailed` (result `Failure`) for each player, because a Kronos game
+has no other place to send people to; `GetLocalPlayerTeleportData` is nil.
+
 ## Unions (4.4)
 
 A `UnionOperation` keeps the parts it was made from inside the file (`ChildData2`, or `ChildData` in older files). Kronos reads them on import and draws and collides each piece, so a staircase made into one union keeps its steps instead of becoming one solid box.

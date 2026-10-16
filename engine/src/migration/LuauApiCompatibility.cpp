@@ -144,6 +144,11 @@ LuauApiCompatibility::LuauApiCompatibility() {
     registry_.push_back({"MarketplaceService", false, ApiMappingStatus::Mapped,
                           "Nothing is for sale in Kronos: ownership checks say false and purchase prompts end as "
                           "not purchased (docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"BadgeService", false, ApiMappingStatus::Mapped,
+                          "No badges in Kronos: AwardBadge and UserHasBadgeAsync return false (docs/ROBLOX_BRIDGE.md)."});
+    registry_.push_back({"TeleportService", false, ApiMappingStatus::Mapped,
+                          "Teleport and TeleportAsync fail through TeleportInitFailed; there is no other place to go "
+                          "(docs/ROBLOX_BRIDGE.md)."});
     registry_.push_back({"PathfindingService", false, ApiMappingStatus::Unmapped,
                           "No PathfindingService yet. Move with Humanoid:MoveTo along your own waypoints."});
     registry_.push_back({"TweenService", false, ApiMappingStatus::Mapped,

@@ -1393,6 +1393,10 @@ std::vector<ClassDef> buildClasses() {
     market.methods = {"UserOwnsGamePassAsync", "PlayerOwnsAsset", "GetProductInfo", "PromptProductPurchase",
                       "PromptGamePassPurchase", "PromptPurchase"};
     market.events = {"PromptProductPurchaseFinished", "PromptGamePassPurchaseFinished", "PromptPurchaseFinished"};
+    add("BadgeService", "Instance", false, true).methods = {"AwardBadge", "UserHasBadgeAsync", "GetBadgeInfoAsync"};
+    auto& teleport = add("TeleportService", "Instance", false, true);
+    teleport.methods = {"Teleport", "TeleportAsync", "GetLocalPlayerTeleportData"};
+    teleport.events = {"TeleportInitFailed"};
     auto& debris = add("Debris", "Instance", false, true);
     debris.properties = {stored("MaxItems", PropertyType::Number, InstanceValue::ofNumber(1000.0))};
     debris.methods = {"AddItem"};
@@ -1479,7 +1483,7 @@ bool classHasEvent(const std::string& className, const std::string& event) {
 bool isPlannedService(const std::string& name) {
     static const char* const kPlanned[] = {
         "TextService",
-        "GuiService", "PathfindingService", "BadgeService", "MessagingService", "TeleportService",
+        "GuiService", "PathfindingService", "MessagingService",
         "ProximityPromptService", "TextChatService", "LocalizationService", "GroupService", "SocialService",
         "VRService", "HapticService", "AnalyticsService", "MemoryStoreService", "AssetService", "InsertService",
         "ContentProvider", "StarterPlayerScripts"};

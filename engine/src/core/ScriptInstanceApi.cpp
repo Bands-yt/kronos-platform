@@ -1752,6 +1752,62 @@ int mPromptPurchase(lua_State* L) {
     return 0;
 }
 
+// --- BadgeService and TeleportService ---------------------------------------------
+// No badges or other places exist in Kronos yet: nothing is awarded, teleports fail.
+
+int mBadgeFalse(lua_State* L) {
+    checkSelf(L, "BadgeService method");
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+int mGetBadgeInfoAsync(lua_State* L) {
+    checkSelf(L, "GetBadgeInfoAsync");
+    const double id = luaL_checknumber(L, 2);
+    lua_newtable(L);
+    lua_pushnumber(L, id);
+    lua_setfield(L, -2, "BadgeId");
+    lua_pushstring(L, "Unavailable");
+    lua_setfield(L, -2, "Name");
+    lua_pushstring(L, "");
+    lua_setfield(L, -2, "Description");
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "IsEnabled");
+    return 1;
+}
+
+void failTeleport(lua_State* L, InstanceRef service, InstanceRef player, double placeId) {
+    hubOf(L).fire(service, "TeleportInitFailed",
+                  {SignalArg::of(InstanceValue::ofInstance(player)),
+                   SignalArg::of(InstanceValue::ofEnum("TeleportResult", "Failure", 1)),
+                   SignalArg::of(InstanceValue::ofString("Teleporting is not available in Kronos")),
+                   SignalArg::of(InstanceValue::ofNumber(placeId))});
+}
+
+// Teleport(placeId, player) and TeleportAsync(placeId, {players}) both end in TeleportInitFailed.
+int mTeleport(lua_State* L) {
+    const InstanceRef self = checkSelf(L, "Teleport");
+    const double placeId = luaL_checknumber(L, 2);
+    if (Proxy* one = toProxy(L, 3)) {
+        failTeleport(L, self, one->ref, placeId);
+    } else if (lua_istable(L, 3)) {
+        for (int i = 1;; ++i) {
+            lua_rawgeti(L, 3, i);
+            Proxy* each = toProxy(L, -1);
+            lua_pop(L, 1);
+            if (each == nullptr) break;
+            failTeleport(L, self, each->ref, placeId);
+        }
+    }
+    return 0;
+}
+
+int mGetLocalPlayerTeleportData(lua_State* L) {
+    checkSelf(L, "GetLocalPlayerTeleportData");
+    lua_pushnil(L);
+    return 1;
+}
+
 int mGetMinutesAfterMidnight(lua_State* L) {
     ECS& ecs = ecsOf(L);
     InstanceValue clock;
@@ -2499,6 +2555,12 @@ void registerInstanceApi(lua_State* L, ECS& ecs) {
         {"GetMouseDelta", &mGetMouseDelta},
         {"GetFocusedTextBox", &mGetFocusedTextBox},
         {"SetMinutesAfterMidnight", &mSetMinutesAfterMidnight},
+        {"AwardBadge", &mBadgeFalse},
+        {"UserHasBadgeAsync", &mBadgeFalse},
+        {"GetBadgeInfoAsync", &mGetBadgeInfoAsync},
+        {"Teleport", &mTeleport},
+        {"TeleportAsync", &mTeleport},
+        {"GetLocalPlayerTeleportData", &mGetLocalPlayerTeleportData},
         {"UserOwnsGamePassAsync", &mUserOwnsGamePassAsync},
         {"PlayerOwnsAsset", &mPlayerOwnsAsset},
         {"GetProductInfo", &mGetProductInfo},

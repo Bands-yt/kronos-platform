@@ -46229,6 +46229,21 @@ print("DONE")
     checkLuauExpectations("marketplace", output);
     check(std::count(output.begin(), output.end(), "PRODUCT 42 7 false") == 1, "a product prompt finishes as not purchased");
     check(std::count(output.begin(), output.end(), "PASS true 8 false") == 1, "a game pass prompt finishes as not purchased");
+
+    scripting.loadAndRun("Badges", R"LUAU(
+local badges = game:GetService("BadgeService")
+local tp = game:GetService("TeleportService")
+print("BADGE " .. tostring(badges:UserHasBadgeAsync(1, 5)) .. " " .. tostring(badges:AwardBadge(1, 5)) .. " " .. badges:GetBadgeInfoAsync(5).Name)
+tp.TeleportInitFailed:Connect(function(player, result, message, placeId)
+	print("TELEPORT " .. player.Name .. " " .. result.Name .. " " .. placeId)
+end)
+tp:Teleport(99, game:GetService("Players"):GetPlayers()[1])
+print("DATA " .. tostring(tp:GetLocalPlayerTeleportData()))
+)LUAU");
+    signals::flush(ecs);
+    check(std::count(output.begin(), output.end(), "BADGE false false Unavailable") == 1, "badges are never owned or awarded");
+    check(std::count(output.begin(), output.end(), "TELEPORT Ana Failure 99") == 1, "a teleport fails through TeleportInitFailed");
+    check(std::count(output.begin(), output.end(), "DATA nil") == 1, "there is no teleport data");
 }
 
 void testRobloxCollisionGroups() {
