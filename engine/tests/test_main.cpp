@@ -96,6 +96,7 @@
 #include "core/Biome.hpp"
 #include "core/CascadeSplitMath.hpp"
 #include "core/CrashReporter.hpp"
+#include "core/LogFilter.hpp"
 #include "core/ResourcePaths.hpp"
 #include "core/CatalogueDatabase.hpp"
 #include "core/CharacterController.hpp"
@@ -29062,6 +29063,43 @@ void testRustPluginProject() {
     fs::remove_all(root, ec);
 }
 
+void testFreshProjectTemplate() {
+    std::printf("\n-- Fresh project template --\n");
+    namespace fs = std::filesystem;
+    const fs::path dir = PROJECT_TEMPLATE_DIR;
+    check(fs::exists(dir / "default.project") && fs::exists(dir / "default.scene"), "the project template ships a project and a scene");
+    engine::core::ECS ecs;
+    engine::core::MeshLibrary meshLibrary;
+    engine::core::Camera camera;
+    engine::core::Physics physics;
+    check(physics.initialize(), "fresh project: physics starts");
+    engine::core::SceneManager sceneManager;
+    check(sceneManager.loadScene((dir / "default.scene").string(), ecs, meshLibrary, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                 VK_NULL_HANDLE, camera, &physics),
+          "fresh project: the template scene loads");
+    int named = 0;
+    for (auto entity : ecs.view<engine::core::Name>()) {
+        (void)entity;
+        ++named;
+    }
+    check(named >= 2, "fresh project: the scene has objects");
+    for (int i = 0; i < 120; ++i) physics.step(1.0f / 60.0f, ecs);
+    bool sane = true;
+    for (auto entity : ecs.view<engine::core::Transform>()) {
+        const auto& position = ecs.tryGetComponent<engine::core::Transform>(entity)->position;
+        if (!std::isfinite(position.x + position.y + position.z) || position.y < -20.0f) sane = false;
+    }
+    check(sane, "fresh project: after two seconds of physics nothing fell out of the world or went NaN");
+    physics.shutdown();
+}
+
+void testLogFilter() {
+    using engine::core::logLineMatches;
+    check(logLineMatches("", "anything"), "an empty filter shows every line");
+    check(logLineMatches("script ERROR", "[1.0s] [Error] [Script] oops"), "words match in any case and any order");
+    check(!logLineMatches("network", "[1.0s] [Info] [Script] hi"), "a missing word hides the line");
+}
+
 void testCrashReportRedaction() {
     std::printf("\n-- Crash report redaction --\n");
     using engine::core::redactPersonalInfo;
@@ -52318,6 +52356,8 @@ int main() {
     testSiblingExecutable();
     testStudioMultiplayerTest();
     testCrashReportRedaction();
+    testLogFilter();
+    testFreshProjectTemplate();
     testSingleInstanceLock();
     testPermanentObjectIds();
     testRollbackPacketCodec();

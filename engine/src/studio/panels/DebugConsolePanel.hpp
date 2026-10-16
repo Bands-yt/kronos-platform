@@ -125,6 +125,7 @@ private:
     bool showInfoLogs_ = true;
     bool showWarnLogs_ = true;
     bool showErrorLogs_ = true;
+    std::string logFilter_;
 
     std::optional<PendingScriptJump> pendingScriptJump_;
 };

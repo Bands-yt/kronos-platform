@@ -56,7 +56,7 @@ reading audit: nothing here was run on a clean machine.
 
 | ID | Item | Status | Evidence / gap |
 |---|---|---|---|
-| 0476 | Debug console with filtering | partial | Debug Console + Engine Log; no filter box |
+| 0476 | Debug console with filtering | exists | level checkboxes plus a text filter (`core::logLineMatches`, `testLogFilter`); filter box not screen-checked |
 | 0477 | Structured logs with categories | exists | `Logger` categories (`Script`, `Network`, `Plugin:<name>` ...), see `CRASH_TELEMETRY.md` |
 | 0478 | Crash report with consent and redaction | partial | reports stay on the PC (nothing uploads them) and now have home folder, user name and e-mail removed (`redactPersonalInfo`, `testCrashReportRedaction`); no consent prompt because nothing is sent |
 
@@ -80,7 +80,7 @@ reading audit: nothing here was run on a clean machine.
 | 0553 | Reproducible Linux build | partial | same; a container build now exists for the server only |
 | 0801 | Test coverage map by subsystem | missing | 21,400+ checks in one file, no map |
 | 0802 | Core smoke suite | exists | `remote_network_smoke.sh`, package smoke tests in CI |
-| 0803 | Fresh project creation smoke test | missing | |
+| 0803 | Fresh project creation smoke test | partial | `testFreshProjectTemplate` loads the template scene and runs physics headless; no Studio-driven "File > New" test |
 | 0826 | Threat model for Player and Studio | missing | no document |
 | 0827 | Sandbox escape regression suite | partial | Luau and Python sandbox tests exist (memory, time, stack, blocked imports); not framed as an escape suite |
 | 0828 | Least-privilege plugin profiles | partial | capability bits exist; no named profiles |

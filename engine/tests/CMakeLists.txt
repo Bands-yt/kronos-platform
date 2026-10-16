@@ -209,6 +209,7 @@ endif()
 
 target_compile_definitions(engine_tests PRIVATE
     RUST_TEMPLATE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../templates/rust-plugin"
+    PROJECT_TEMPLATE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../templates/project"
     RUST_SDK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/rust/kronos"
     HOTRELOAD_MODULE_V1_PATH="$<TARGET_FILE:hotreload_counter_module_v1>"
     HOTRELOAD_MODULE_V2_PATH="$<TARGET_FILE:hotreload_counter_module_v2>"

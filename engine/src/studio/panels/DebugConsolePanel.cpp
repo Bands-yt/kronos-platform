@@ -10,6 +10,7 @@
 
 #include "core/Components.hpp"
 #include "core/InstanceSignals.hpp"
+#include "core/LogFilter.hpp"
 #include "core/Logger.hpp"
 #include "studio/StudioEcsScriptApi.hpp"
 #include "studio/plugins/MovieModePlugin.hpp"
@@ -167,6 +168,8 @@ void DebugConsolePanel::drawEngineLogTab() {
     ImGui::Checkbox("Error", &showErrorLogs_);
     ImGui::SameLine();
     if (ImGui::Button("Clear")) logger.clearRingBuffer();
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##engine_log_filter", "Filter (words, category like Script or Network)", &logFilter_);
 
     ImGui::BeginChild("engine_log_entries", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
     // Real, live snapshot -- re-read every frame this tab is visible, not
@@ -184,6 +187,7 @@ void DebugConsolePanel::drawEngineLogTab() {
         char text[1024];
         std::snprintf(text, sizeof(text), "[%.2fs] [%s] [%s] %s", entry.timestampSeconds,
                       core::logLevelName(entry.level), entry.category.c_str(), entry.message.c_str());
+        if (!logFilter_.empty() && !core::logLineMatches(logFilter_, text)) continue;
 
         // Kronos ("Script Editor QoL" -- Engine Console click-to-jump):
         // a script compile/runtime error line whose chunk name resolves
