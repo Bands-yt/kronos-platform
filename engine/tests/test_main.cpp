@@ -31170,6 +31170,57 @@ void testCatalogPublishRoundTripLive() {
     fs::remove_all(root);
 }
 
+void testPackageArchiveHostileInputs() {
+    namespace fs = std::filesystem;
+    using engine::publishing::ArchiveFileEntry;
+    std::printf("\n-- Hostile package archives --\n");
+    const fs::path root = fs::absolute("test_hostile_archive");
+    fs::remove_all(root);
+    fs::create_directories(root / "inner");
+    const std::string archive = (root / "bad.kronos").string();
+    const std::string out = (root / "inner" / "out").string();
+    auto bytes = [](const std::string& text) { return std::vector<uint8_t>(text.begin(), text.end()); };
+
+    for (const char* name : {"../evil.txt", "/tmp/kronos_abs_evil.txt", "a/../../evil.txt", "C:/evil.txt", "a\\..\\evil.txt"}) {
+        std::vector<ArchiveFileEntry> files{{name, bytes("x")}};
+        check(engine::publishing::writeArchive(archive, files), "hostile archive: written");
+        check(!engine::publishing::extractWorldPackageArchive(archive, out), (std::string("an entry named ") + name + " is refused").c_str());
+    }
+    check(!fs::exists(root / "evil.txt") && !fs::exists("/tmp/kronos_abs_evil.txt"), "nothing was written outside the output folder");
+
+    {
+        const std::string manifest = "../escape.txt\tasset_1\n";
+        std::vector<ArchiveFileEntry> files{{engine::publishing::assetManifestFileName(), bytes(manifest)}, {"asset_1", bytes("data")}};
+        check(engine::publishing::writeArchive(archive, files), "manifest attack: written");
+        check(!engine::publishing::extractWorldPackageArchive(archive, out) && !fs::exists(root / "inner" / "escape.txt"),
+              "a manifest that points outside the folder is refused");
+    }
+
+    auto rawArchive = [&](uint32_t count, uint32_t nameLength, uint64_t uncompressed, uint64_t compressed) {
+        std::ofstream file(archive, std::ios::binary | std::ios::trunc);
+        const uint32_t version = 1;
+        file.write("KRAR", 4);
+        file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        file.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        if (count > 0) {
+            file.write(reinterpret_cast<const char*>(&nameLength), sizeof(nameLength));
+            file.write("name", 4);
+            file.write(reinterpret_cast<const char*>(&uncompressed), sizeof(uncompressed));
+            file.write(reinterpret_cast<const char*>(&compressed), sizeof(compressed));
+        }
+    };
+    std::vector<ArchiveFileEntry> files;
+    rawArchive(4000000000u, 0, 0, 0);
+    check(!engine::publishing::readArchive(archive, files), "an absurd file count is refused");
+    rawArchive(1, 4, 1ull << 40, 8);
+    check(!engine::publishing::readArchive(archive, files), "an entry claiming a terabyte is refused before any allocation");
+    rawArchive(1, 4, 100, 100);
+    check(!engine::publishing::readArchive(archive, files), "an entry whose data is missing (truncated file) is refused");
+    rawArchive(1, 100000, 1, 1);
+    check(!engine::publishing::readArchive(archive, files), "an absurd name length is refused");
+    fs::remove_all(root);
+}
+
 void testPackageArchiveReadRejectsGarbageFile() {
     const char* path = "test_package_archive_garbage.kronos";
     { std::ofstream out(path, std::ios::binary); out << "not a real archive"; }
@@ -52411,6 +52462,7 @@ int main() {
     testWorldPackageSaveLoadRoundTrip();
     testPackageArchiveWriteReadRoundTrip();
     testPackageArchiveReadRejectsGarbageFile();
+    testPackageArchiveHostileInputs();
     testCatalogGamePackages();
     testCatalogPublishRoundTripLive();
     testHeadlessSceneLoadKeepsPhysicsWithoutGpu();

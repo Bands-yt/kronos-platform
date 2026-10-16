@@ -25,7 +25,7 @@ that every row is solved.
 | Plugin reads files or crashes Studio | capability bits; separate process on Linux | **no sandbox on Windows**; trusted-folder plugins run in-process with full rights |
 | Client lies about the game | server is authoritative for Roblox remotes: arguments are validated, instances a client can't see become nil, NaN/inf rejected, ClickDetector and ProximityPrompt reach re-checked on the server, per-client remote rate budget | each game's own scripts must still validate what clients send; there is no anti-cheat beyond that |
 | Crafted place or model file | parsers return errors instead of crashing in tests | **no fuzzing**; no resource limits proven for every parser |
-| Zip package escaping its folder | not audited | needs a check and a test for `..` paths |
+| Package (.kronos) escaping its folder or exhausting memory | tested | `isSafeRelativePath` refuses `..`, absolute, `C:` and backslash names, for entries and for manifest paths; the reader caps entries (100k), one entry (1 GB), total (4 GB) and name length before allocating (`testPackageArchiveHostileInputs`). Not covered: a `.rbxl` or glTF fuzz run |
 | Chat abuse | profanity and threat filter, rate limits, moderation queue | the cloud classifier is not active |
 | Stolen tokens in logs or crash reports | | **no redaction pass**; crash reports have no consent step |
 | Backend attack | accounts and publishing sit behind login; migrations are written by hand and re-runnable | not audited in this pass; no rate-limit dashboard, no proven staging/production split |
