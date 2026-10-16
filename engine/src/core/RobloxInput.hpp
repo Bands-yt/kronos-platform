@@ -42,6 +42,8 @@ void feed(ECS& ecs, const Frame& frame);
 // Mouse movement since the previous frame.
 [[nodiscard]] glm::vec2 mouseDelta(ECS& ecs);
 [[nodiscard]] std::vector<std::string> keysDown(ECS& ecs);
+// A text field had the keyboard in the last frame.
+[[nodiscard]] bool typing(ECS& ecs);
 
 // Reads this frame's keys and mouse from ImGui (RobloxInputImGui.cpp, only in
 // the binaries that have ImGui) and calls feed. `origin` is the game view's

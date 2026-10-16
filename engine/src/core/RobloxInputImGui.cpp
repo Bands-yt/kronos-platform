@@ -1,6 +1,12 @@
 #include "core/RobloxInput.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 #include <imgui.h>
+
+#include "core/Camera.hpp"
+#include "core/RobloxInteract.hpp"
 
 namespace engine::core::input {
 
@@ -62,3 +68,47 @@ void feedFromImGui(ECS& ecs, glm::vec2 origin, bool viewHovered, bool guiHasMous
 }
 
 } // namespace engine::core::input
+
+namespace engine::core::interact {
+
+void drawPrompt(ECS& ecs, ImDrawList* drawList, glm::vec2 origin, glm::vec2 view) {
+    const ShownPrompt* prompt = shownPrompt(ecs);
+    if (prompt == nullptr || drawList == nullptr || view.x <= 0.0f || view.y <= 0.0f) return;
+    const Camera& camera = instances::scriptCamera(ecs);
+    const glm::vec4 clip = camera.projectionMatrix(view.x / view.y) * camera.viewMatrix() * glm::vec4(prompt->position, 1.0f);
+    if (clip.w <= 0.01f) return;
+    const glm::vec2 ndc(clip.x / clip.w, clip.y / clip.w);
+    if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f) return;
+    const ImVec2 center(origin.x + (ndc.x * 0.5f + 0.5f) * view.x, origin.y + (ndc.y * 0.5f + 0.5f) * view.y);
+
+    const char* action = prompt->action.c_str();
+    const char* object = prompt->object.c_str();
+    const ImVec2 actionSize = ImGui::CalcTextSize(action);
+    const ImVec2 objectSize = ImGui::CalcTextSize(object);
+    const float keySize = 34.0f;
+    const float textWidth = std::max(actionSize.x, objectSize.x);
+    const float width = keySize + 14.0f + textWidth + 18.0f;
+    const float height = 46.0f;
+    const ImVec2 min(center.x - width * 0.5f, center.y - height * 0.5f);
+    const ImVec2 max(center.x + width * 0.5f, center.y + height * 0.5f);
+    drawList->AddRectFilled(min, max, IM_COL32(25, 27, 32, 215), 8.0f);
+    const ImVec2 keyMin(min.x + 8.0f, center.y - keySize * 0.5f);
+    const ImVec2 keyMax(keyMin.x + keySize, keyMin.y + keySize);
+    drawList->AddRectFilled(keyMin, keyMax, IM_COL32(245, 245, 245, 255), 6.0f);
+    const ImVec2 keyTextSize = ImGui::CalcTextSize(prompt->key.c_str());
+    drawList->AddText(ImVec2(keyMin.x + (keySize - keyTextSize.x) * 0.5f, keyMin.y + (keySize - keyTextSize.y) * 0.5f),
+                      IM_COL32(25, 27, 32, 255), prompt->key.c_str());
+    const float textX = keyMax.x + 12.0f;
+    if (prompt->object.empty()) {
+        drawList->AddText(ImVec2(textX, center.y - actionSize.y * 0.5f), IM_COL32(255, 255, 255, 255), action);
+    } else {
+        drawList->AddText(ImVec2(textX, center.y - actionSize.y - 1.0f), IM_COL32(255, 255, 255, 255), action);
+        drawList->AddText(ImVec2(textX, center.y + 1.0f), IM_COL32(190, 192, 200, 255), object);
+    }
+    if (prompt->hold > 0.0f) {
+        drawList->AddRectFilled(ImVec2(min.x, max.y - 4.0f), ImVec2(min.x + (max.x - min.x) * prompt->hold, max.y),
+                                IM_COL32(88, 166, 255, 255), 2.0f);
+    }
+}
+
+} // namespace engine::core::interact

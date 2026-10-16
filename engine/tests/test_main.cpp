@@ -44466,6 +44466,86 @@ print("DONE")
     check(std::count(events.begin(), events.end(), "SERVER CLICK Ana") == 1, "a click from far away is refused");
 }
 
+void testRobloxProximityPrompt() {
+    using namespace engine::core;
+    std::printf("\n-- ProximityPrompt --\n");
+    ECS ecs;
+    Physics physics;
+    check(physics.initialize(), "prompt test: physics initializes");
+    Scripting scripting;
+    scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
+    check(scripting.initialize(), "prompt test: Scripting initializes");
+    std::vector<std::string> output;
+    scripting.setOutputCallback([&](const std::string& line) { output.push_back(line); });
+    std::string error;
+    const InstanceRef body = instances::create(ecs, "Part", error);
+    (void)instances::setParent(ecs, body, kWorkspaceInstance, error);
+    (void)players::join(ecs, "Tester", 1, instances::entityOf(ecs, body), true);
+    signals::flush(ecs);
+    scripting.loadAndRun("PromptSetup", R"LUAU(
+local lever = Instance.new("Part")
+lever.Name = "Lever"
+lever.Anchored = true
+lever.Position = Vector3.new(0, 3, -5)
+lever.Parent = workspace
+local prompt = Instance.new("ProximityPrompt")
+prompt.ActionText = "Pull"
+prompt.ObjectText = "Lever"
+prompt.Parent = lever
+prompt.PromptShown:Connect(function() print("SHOWN") end)
+prompt.PromptHidden:Connect(function() print("HIDDEN") end)
+prompt.Triggered:Connect(function(player) print("TRIGGERED " .. player.Name) end)
+prompt.TriggerEnded:Connect(function(player) print("ENDED " .. player.Name) end)
+local cam = workspace.CurrentCamera
+cam.CameraType = Enum.CameraType.Scriptable
+cam.CFrame = CFrame.lookAt(Vector3.new(0, 3, 0), Vector3.new(0, 3, -10))
+print("DONE")
+)LUAU");
+    partbodies::sync(ecs, physics, false);
+    auto count = [&](const std::string& line) { return std::count(output.begin(), output.end(), line); };
+    auto step = [&](float dt, bool eDown) {
+        input::Frame frame;
+        frame.keys.push_back({"E", eDown});
+        input::feed(ecs, frame);
+        interact::Pointer pointer;
+        pointer.dt = dt;
+        interact::update(ecs, pointer);
+        signals::flush(ecs);
+    };
+    step(0.3f, false);
+    check(count("SHOWN") == 1 && interact::shownPrompt(ecs) != nullptr &&
+              interact::shownPrompt(ecs)->action == "Pull" && interact::shownPrompt(ecs)->key == "E",
+          "a prompt in range is shown with its text and key");
+    step(0.016f, true);
+    check(count("TRIGGERED Tester") == 1, "pressing the key triggers it");
+    step(0.016f, true);
+    check(count("TRIGGERED Tester") == 1, "holding the key doesn't trigger again");
+    step(0.016f, false);
+    check(count("ENDED Tester") == 1, "releasing fires TriggerEnded");
+
+    scripting.loadAndRun("PromptHold", R"LUAU(
+workspace.Lever.ProximityPrompt.HoldDuration = 1
+print("DONE")
+)LUAU");
+    step(0.016f, true);
+    step(0.5f, true);
+    check(count("TRIGGERED Tester") == 1, "a hold prompt waits for the duration");
+    step(0.6f, true);
+    check(count("TRIGGERED Tester") == 2, "and triggers when it is reached");
+    step(0.016f, false);
+    step(0.016f, true);
+    step(0.3f, false);
+    check(count("TRIGGERED Tester") == 2 && count("ENDED Tester") == 2, "letting go early cancels");
+
+    scripting.loadAndRun("PromptFar", R"LUAU(
+workspace.Lever.Position = Vector3.new(0, 3, -60)
+print("DONE")
+)LUAU");
+    partbodies::sync(ecs, physics, false);
+    step(0.3f, false);
+    check(count("HIDDEN") == 1 && interact::shownPrompt(ecs) == nullptr, "a prompt out of range is hidden");
+}
+
 void testRobloxClickDetector() {
     using namespace engine::core;
     std::printf("\n-- ClickDetector in play --\n");
@@ -48204,7 +48284,7 @@ void testBridgeDoctor() {
       <token name="BackSurface">0</token></Properties>
       <Item class="Decal" referent="D"><Properties><string name="Name">Logo</string></Properties></Item>
     </Item>
-    <Item class="ProximityPrompt" referent="X"><Properties><string name="Name">Prompt</string></Properties></Item>
+    <Item class="BodyVelocity" referent="X"><Properties><string name="Name">Prompt</string></Properties></Item>
     <Item class="Sound" referent="S"><Properties><string name="Name">Music</string>
       <Content name="SoundId"><url>rbxassetid://1234567</url></Content></Properties></Item>
     <Item class="Script" referent="A"><Properties><string name="Name">Broken</string>
@@ -48240,7 +48320,7 @@ local mouse = ContextActionService.MouseEnabled]]></ProtectedString></Properties
     bool promptRisk = false;
     for (const DoctorFinding& f : place.findings) {
         if (f.code == "unsupported-class" && f.subject == "Decal") decalVisual = f.category == DoctorCategory::VisualAudio;
-        if (f.code == "unsupported-class" && f.subject == "ProximityPrompt") {
+        if (f.code == "unsupported-class" && f.subject == "BodyVelocity") {
             promptRisk = f.category == DoctorCategory::GameplayRisk;
         }
     }
@@ -50746,6 +50826,7 @@ int main() {
     testRobloxUserInputService();
     testRobloxHttpService();
     testRobloxClickDetector();
+    testRobloxProximityPrompt();
     testClickDetectorServerChecks();
     testRobloxBinaryFormat();
 #if !defined(_WIN32)

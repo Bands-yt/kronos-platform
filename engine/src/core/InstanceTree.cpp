@@ -1126,6 +1126,20 @@ std::vector<ClassDef> buildClasses() {
         stored("CursorIcon", PropertyType::String, InstanceValue::ofString("")),
     };
     clickDetector.events = {"MouseClick", "RightMouseClick", "MouseHoverEnter", "MouseHoverLeave"};
+    auto& prompt = add("ProximityPrompt", "Instance", true);
+    prompt.properties = {
+        stored("ActionText", PropertyType::String, InstanceValue::ofString("Interact")),
+        stored("ObjectText", PropertyType::String, InstanceValue::ofString("")),
+        stored("HoldDuration", PropertyType::Number, InstanceValue::ofNumber(0.0)),
+        stored("MaxActivationDistance", PropertyType::Number, InstanceValue::ofNumber(10.0)),
+        stored("KeyboardKeyCode", PropertyType::Enum, InstanceValue::ofEnum("KeyCode", "E", 101)),
+        stored("Enabled", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("RequiresLineOfSight", PropertyType::Bool, InstanceValue::ofBool(true)),
+        stored("ClickablePrompt", PropertyType::Bool, InstanceValue::ofBool(true)),
+    };
+    prompt.properties[4].enumType = "KeyCode";
+    prompt.events = {"Triggered", "TriggerEnded", "PromptShown", "PromptHidden", "PromptButtonHoldBegan",
+                     "PromptButtonHoldEnded"};
     add("Accessory", "Instance", true);
     add("StarterPlayerScripts", "Instance", false);
     add("StarterCharacterScripts", "Instance", false);

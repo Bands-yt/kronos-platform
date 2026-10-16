@@ -17,6 +17,7 @@ struct State {
     std::set<int> buttons;
     glm::vec2 mouse{0.0f};
     glm::vec2 delta{0.0f};
+    bool typing = false;
     // InputObjects outlive the frame that fired them: handlers run deferred.
     std::vector<InstanceRef> fresh;
     std::vector<InstanceRef> stale;
@@ -82,6 +83,7 @@ void feed(ECS& ecs, const Frame& frame) {
     const bool moved = frame.delta.x != 0.0f || frame.delta.y != 0.0f;
     s.mouse = frame.mouse;
     s.delta = frame.delta;
+    s.typing = frame.typing;
 
     for (const KeyEvent& key : frame.keys) {
         const bool had = s.keys.count(key.key) != 0;
@@ -114,6 +116,7 @@ bool isKeyDown(ECS& ecs, const std::string& key) { return stateOf(ecs).keys.coun
 bool isMouseButtonDown(ECS& ecs, int button) { return stateOf(ecs).buttons.count(button) != 0; }
 glm::vec2 mouseLocation(ECS& ecs) { return stateOf(ecs).mouse; }
 glm::vec2 mouseDelta(ECS& ecs) { return stateOf(ecs).delta; }
+bool typing(ECS& ecs) { return stateOf(ecs).typing; }
 std::vector<std::string> keysDown(ECS& ecs) {
     const State& s = stateOf(ecs);
     return {s.keys.begin(), s.keys.end()};

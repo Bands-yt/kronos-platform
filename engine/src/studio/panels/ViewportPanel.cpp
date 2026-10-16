@@ -1262,9 +1262,11 @@ void ViewportPanel::draw(float deltaTime, VkDescriptorSet sceneTexture, VkExtent
             pointer.overGui = !hovered_ || core::gui::mouseOverButton(*ecs);
             pointer.left = hovered_ && !pointer.overGui && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
             pointer.right = hovered_ && !pointer.overGui && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+            pointer.dt = ImGui::GetIO().DeltaTime;
             core::interact::update(*ecs, pointer);
         }
         core::gui::draw(*ecs, drawList, glm::vec2(imageOrigin.x, imageOrigin.y));
+        core::interact::drawPrompt(*ecs, drawList, glm::vec2(imageOrigin.x, imageOrigin.y), glm::vec2(imageSize.x, imageSize.y));
         core::drawLeaderboard(*ecs, drawList, viewCubeOrigin(imageOrigin, imageSize).x - 10.0f, imageOrigin.y + 10.0f);
         core::tools::HotbarInput hotbarInput;
         const bool ctrlHeld = ImGui::GetIO().KeyCtrl;

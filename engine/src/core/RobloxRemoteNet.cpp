@@ -444,8 +444,11 @@ void receiveInteraction(ECS& ecs, uint32_t sender, Reader& r) {
     const InstanceRef player = playerFor(ecs, sender);
     if (target == kNoInstance || player == kNoInstance || !instances::isAlive(ecs, target)) return;
     const std::string cls = instances::className(ecs, target);
-    const bool known = cls == "ClickDetector" && (event == "MouseClick" || event == "RightMouseClick" ||
-                                                  event == "MouseHoverEnter" || event == "MouseHoverLeave");
+    const bool known =
+        (cls == "ClickDetector" && (event == "MouseClick" || event == "RightMouseClick" || event == "MouseHoverEnter" ||
+                                    event == "MouseHoverLeave")) ||
+        (cls == "ProximityPrompt" && (event == "Triggered" || event == "TriggerEnded" || event == "PromptButtonHoldBegan" ||
+                                      event == "PromptButtonHoldEnded"));
     if (!known) return;
     // The character must be near the object the detector sits on.
     auto read = [&](InstanceRef ref, const char* property, InstanceValue& out) {
@@ -456,6 +459,10 @@ void receiveInteraction(ECS& ecs, uint32_t sender, Reader& r) {
     InstanceValue maxDistance;
     if (!read(player, "Character", character) || character.ref == kNoInstance) return;
     (void)read(target, "MaxActivationDistance", maxDistance);
+    if (cls == "ProximityPrompt") {
+        InstanceValue enabled;
+        if (!read(target, "Enabled", enabled) || !enabled.boolean) return;
+    }
     InstanceRef holder = instances::parent(ecs, target);
     while (holder != kNoInstance && !instances::classIsA(instances::className(ecs, holder), "BasePart")) {
         holder = instances::parent(ecs, holder);

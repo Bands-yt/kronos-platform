@@ -977,6 +977,14 @@ Swords, flashlights and other things a player holds. Code in
   tells the server, which checks the character is within reach (distance plus
   the part's size and 10 studs of slack) before firing the event for that
   player. The Compatibility Lab can click one too (`click(part)`).
+- `ProximityPrompt` works in the Player and Studio Play: the nearest enabled
+  prompt within `MaxActivationDistance` (and in line of sight from the camera
+  unless `RequiresLineOfSight` is off) shows its `ActionText`/`ObjectText` and
+  key. Pressing the key (or holding it for `HoldDuration`) fires `Triggered`;
+  `TriggerEnded`, `PromptButtonHoldBegan/Ended`, `PromptShown`/`PromptHidden`
+  follow. In a networked game the server re-checks the distance and `Enabled`.
+  Limits: no `ProximityPromptService`, no custom prompt styles, one prompt on
+  screen at a time, no gamepad or touch.
 
 Limits: no cursor icon change for `CursorIcon`; no tool animations (the arm doesn't move); `CanBeDropped`
 and the Backspace drop key aren't built; `TextureId` icons aren't drawn in the

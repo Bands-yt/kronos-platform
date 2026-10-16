@@ -1137,6 +1137,7 @@ void RuntimeShell::tick(float dt) {
                             pointer.overGui = io.WantCaptureMouse || core::gui::mouseOverButton(app_.ecs());
                             pointer.left = !pointer.overGui && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
                             pointer.right = !pointer.overGui && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                            pointer.dt = io.DeltaTime;
                             core::interact::update(app_.ecs(), pointer);
                         }
                         if (!guiImages_) {
@@ -1147,6 +1148,8 @@ void RuntimeShell::tick(float dt) {
                         guiImages_->setRoots({guiImageRoot_});
                         core::gui::setImageResolver(app_.ecs(), [this](const std::string& image) { return guiImages_->get(image); });
                         core::gui::draw(app_.ecs(), ImGui::GetBackgroundDrawList(), glm::vec2(0.0f));
+                        core::interact::drawPrompt(app_.ecs(), ImGui::GetBackgroundDrawList(), glm::vec2(0.0f),
+                                                   glm::vec2(io.DisplaySize.x, io.DisplaySize.y));
                         core::tools::HotbarInput hotbarInput;
                         for (int k = 0; k < 9 && !io.WantCaptureKeyboard; ++k) {
                             if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + k), false)) hotbarInput.slotPressed = k + 1;
