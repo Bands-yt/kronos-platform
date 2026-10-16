@@ -213,6 +213,7 @@
 #include "core/PartBodies.hpp"
 #include "core/RobloxDataStore.hpp"
 #include "core/RobloxServices.hpp"
+#include "core/RobloxCollisionGroups.hpp"
 #include "core/RobloxGui.hpp"
 #include "core/RobloxInput.hpp"
 #include "core/RobloxInteract.hpp"
@@ -46299,25 +46300,30 @@ part("Solid", Vector3.new(0, 6, 0), false)
 part("Ghost", Vector3.new(10, 6, 0), false, "Ghosts")
 part("Prop", Vector3.new(20, 6, 0), false, "Props")
 part("GhostA", Vector3.new(30, 6, 0), false, "Ghosts")
-part("GhostB", Vector3.new(30, 9, 0), false, "Ghosts")
+part("GhostB", Vector3.new(40, 9, 0), false, "Ghosts")
+local shelf = part("Shelf", Vector3.new(40, 4, 0), true, "Ghosts")
+shelf.Size = Vector3.new(6, 1, 6)
 )LUAU");
     simulate(2.5f);
     run("GroupFall", R"LUAU(
 expect("a Default part lands on the floor", near(workspace.Solid.Position.Y, 1.5, 0.1))
 expect("a Ghost falls through the Default floor", workspace.Ghost.Position.Y < -3)
 expect("a part in an unrelated group still lands", near(workspace.Prop.Position.Y, 1.5, 0.1))
-expect("two Ghosts don't pass through each other", workspace.GhostB.Position.Y - workspace.GhostA.Position.Y > 1.5)
+expect("a Ghost lands on another Ghosts-group part", near(workspace.GhostB.Position.Y, 5.5, 0.15))
 workspace.Ghost.CollisionGroup = "Default"
 workspace.Ghost.Position = Vector3.new(10, 8, 0)
+workspace.GhostB.Position = Vector3.new(30, 8, 0)
 game:GetService("PhysicsService"):UnregisterCollisionGroup("Ghosts")
-expect("a part in a removed group counts as Default", true)
 )LUAU");
     simulate(1.5f);
     run("GroupBack", R"LUAU(
 expect("setting the group back makes it solid again", near(workspace.Ghost.Position.Y, 1.5, 0.1))
-expect("parts in a removed group fall back to Default", workspace.GhostA.Position.Y < -3 or near(workspace.GhostA.Position.Y, 1.5, 0.2))
+expect("a part in a removed group counts as Default and lands", near(workspace.GhostB.Position.Y, 1.5, 0.15))
 )LUAU");
     checkLuauExpectations("collision groups", output);
+    services::reset(ecs);
+    std::string resetError;
+    check(collisiongroups::registerGroup(ecs, "Ghosts", resetError), "Play start and stop forget the groups, so a script can register again");
     partbodies::detachAll(ecs, physics);
     scripting.shutdown();
 }

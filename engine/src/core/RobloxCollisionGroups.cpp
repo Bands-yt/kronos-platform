@@ -116,6 +116,8 @@ bool collidable(ECS& ecs, int a, int b) {
     return ((of(ecs).rows[a] >> b) & 1u) != 0;
 }
 
+void reset(ECS& ecs) { ecs.raw().ctx().erase<Registry>(); }
+
 const uint32_t* rows(ECS& ecs) { return of(ecs).rows.data(); }
 uint32_t version(ECS& ecs) { return of(ecs).version; }
 

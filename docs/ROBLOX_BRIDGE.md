@@ -1036,10 +1036,12 @@ A part whose group isn't registered (or was removed) counts as Default. Groups
 are checked by the physics engine, so they apply to falling, stacking and
 pushing; a welded pair never collides regardless of groups.
 
-Limits: players' characters ignore groups (the avatar's capsule isn't a part),
+Limits: players' characters always count as Default and their group can't be
+changed, so a group that lets players walk through each other doesn't work;
 `RaycastParams.CollisionGroup` isn't used, the groups saved inside a Roblox
-place aren't imported (scripts register them at start), and the legacy
-`CreateCollisionGroup`/`SetPartCollisionGroup` calls are missing.
+place aren't imported (scripts register them at start; Play start and stop
+forget them), and the legacy `CreateCollisionGroup`/`SetPartCollisionGroup`
+calls are missing.
 
 ## MarketplaceService (4.6)
 

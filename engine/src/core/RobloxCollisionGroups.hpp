@@ -24,6 +24,8 @@ bool setCollidable(ECS& ecs, const std::string& a, const std::string& b, bool co
 // Row i has bit j set when groups i and j collide. `version` changes on every edit.
 [[nodiscard]] const uint32_t* rows(ECS& ecs);
 [[nodiscard]] uint32_t version(ECS& ecs);
+// Forgets every group (Play start and stop).
+void reset(ECS& ecs);
 // Registered groups in index order, for GetRegisteredCollisionGroups.
 [[nodiscard]] int groupCount(ECS& ecs);
 

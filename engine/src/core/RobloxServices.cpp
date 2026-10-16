@@ -1,4 +1,5 @@
 #include "core/RobloxServices.hpp"
+#include "core/RobloxCollisionGroups.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -385,6 +386,7 @@ void tick(ECS& ecs, double dt) {
 }
 
 void reset(ECS& ecs) {
+    collisiongroups::reset(ecs);
     auto* s = ecs.raw().ctx().find<ServicesState>();
     if (s == nullptr) return;
     ResourceManager* resources = s->resources;

@@ -20,9 +20,9 @@ class WeldGroupFilter final : public JPH::GroupFilter {
 public:
     bool CanCollide(const JPH::CollisionGroup& a, const JPH::CollisionGroup& b) const override {
         if (pairs.find(key(a.GetGroupID(), b.GetGroupID())) != pairs.end()) return false;
-        // A body with no group set has an invalid sub-group: that is the Default group.
-        const uint32_t i = a.GetSubGroupID() < 32 ? a.GetSubGroupID() : 0;
-        const uint32_t j = b.GetSubGroupID() < 32 ? b.GetSubGroupID() : 0;
+        // Only bodies carrying this filter have a Roblox group in their sub-group; others are Default.
+        const uint32_t i = a.GetGroupFilter() == this && a.GetSubGroupID() < 32 ? a.GetSubGroupID() : 0;
+        const uint32_t j = b.GetGroupFilter() == this && b.GetSubGroupID() < 32 ? b.GetSubGroupID() : 0;
         return ((rows[i] >> j) & 1u) != 0;
     }
     uint32_t rows[32];
