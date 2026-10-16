@@ -136,6 +136,48 @@ int serviceRank(const std::string& cls) {
 }
 } // namespace
 
+namespace {
+void makeLabel(core::ECS& ecs, core::EntityId entity, char* label, size_t size) {
+    const core::Name* nameComponent = ecs.tryGetComponent<core::Name>(entity);
+    if (nameComponent && !nameComponent->value.empty()) {
+        std::snprintf(label, size, "%s##%u", nameComponent->value.c_str(), static_cast<uint32_t>(entity));
+    } else {
+        std::snprintf(label, size, "Entity %u", static_cast<uint32_t>(entity));
+    }
+}
+} // namespace
+
+int ExplorerPanel::countSubtree(core::ECS& ecs, core::EntityId entity, int depth) {
+    int count = 1;
+    if (depth < kMaxTreeDrawDepth) {
+        if (auto* hierarchy = ecs.tryGetComponent<core::Hierarchy>(entity)) {
+            for (core::EntityId child : hierarchy->children) count += countSubtree(ecs, child, depth + 1);
+        }
+    }
+    subtreeSize_[entity] = count;
+    return count;
+}
+
+// Rows `entity` takes on screen: itself plus the children of every node that is open.
+int ExplorerPanel::visibleRows(core::ECS& ecs, core::EntityId entity) {
+    auto* hierarchy = ecs.tryGetComponent<core::Hierarchy>(entity);
+    if (hierarchy == nullptr || hierarchy->children.empty()) return 1;
+    char label[64];
+    makeLabel(ecs, entity, label, sizeof(label));
+    if (ImGui::GetStateStorage()->GetInt(ImGui::GetID(label), 1) == 0) return 1;
+    int rows = 1;
+    ImGui::PushID(label);
+    for (core::EntityId child : hierarchy->children) rows += visibleRows(ecs, child);
+    ImGui::PopID();
+    return rows;
+}
+
+void ExplorerPanel::flushSkippedRows() {
+    if (skippedHeight_ <= 0.0f) return;
+    ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, skippedHeight_ - ImGui::GetStyle().ItemSpacing.y)));
+    skippedHeight_ = 0.0f;
+}
+
 float ExplorerPanel::animateOpenAmount(float current, float target, float dt, float rate) {
     float next = current + (target - current) * std::clamp(dt * rate, 0.0f, 1.0f);
     if (std::fabs(next - target) < 0.01f) next = target;
@@ -149,6 +191,19 @@ void ExplorerPanel::drawEntityNode(core::ECS& ecs, core::EntityId entity, int& r
     auto* hierarchy = ecs.tryGetComponent<core::Hierarchy>(entity);
     bool hasChildren = hierarchy && !hierarchy->children.empty();
 
+    if (virtualize_) {
+        const float y = ImGui::GetCursorPosY() + skippedHeight_;
+        const float margin = rowHeight_ * 4.0f;
+        const float height = static_cast<float>(visibleRows(ecs, entity)) * rowHeight_;
+        if (y + height < viewTop_ - margin || y > viewBottom_ + margin) {
+            skippedHeight_ += height;
+            const auto size = subtreeSize_.find(entity);
+            if (size != subtreeSize_.end()) rowCursor += size->second - 1;
+            return;
+        }
+        flushSkippedRows();
+    }
+
     EntityCategory category = classifyEntity(ecs, entity);
     if (const std::optional<Icon> icon = classIcon(ecs, entity)) {
         drawInlineIcon(*icon, iconCategoryColor(*icon));
@@ -156,13 +211,8 @@ void ExplorerPanel::drawEntityNode(core::ECS& ecs, core::EntityId entity, int& r
         drawInlineIcon(iconForCategory(category), iconCategoryColor(iconForCategory(category)));
     }
 
-    const core::Name* nameComponent = ecs.tryGetComponent<core::Name>(entity);
     char label[64];
-    if (nameComponent && !nameComponent->value.empty()) {
-        std::snprintf(label, sizeof(label), "%s##%u", nameComponent->value.c_str(), static_cast<uint32_t>(entity));
-    } else {
-        std::snprintf(label, sizeof(label), "Entity %u", static_cast<uint32_t>(entity));
-    }
+    makeLabel(ecs, entity, label, sizeof(label));
 
     // Leaf rows (no real children -- still the overwhelming majority,
     // since parenting is opt-in) use Leaf|NoTreePushOnOpen|Bullet so they
@@ -177,6 +227,7 @@ void ExplorerPanel::drawEntityNode(core::ECS& ecs, core::EntityId entity, int& r
     if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
 
     bool open = ImGui::TreeNodeEx(label, flags);
+    if (virtualize_) rowHeight_ = ImGui::GetItemRectSize().y + ImGui::GetStyle().ItemSpacing.y;
 
     // A click that toggled open/closed (the arrow, or double-click) isn't
     // a selection action -- matches how every real tree-view editor keeps
@@ -328,6 +379,15 @@ void ExplorerPanel::drawRobloxTree(core::ECS& ecs) {
     for (core::EntityId e : services) collectRowsRecursive(ecs, e, 0, rows);
     int rowCursor = 0;
 
+    subtreeSize_.clear();
+    for (core::EntityId e : workspaceChildren) countSubtree(ecs, e, 0);
+    for (core::EntityId e : services) countSubtree(ecs, e, 0);
+    virtualize_ = true;
+    if (rowHeight_ <= 0.0f) rowHeight_ = ImGui::GetFrameHeightWithSpacing();
+    viewTop_ = ImGui::GetScrollY();
+    viewBottom_ = viewTop_ + ImGui::GetWindowHeight();
+    skippedHeight_ = 0.0f;
+
     drawInlineIcon(Icon::Folder, iconCategoryColor(Icon::Folder));
     const bool workspaceOpen =
         ImGui::TreeNodeEx("Workspace##roblox_workspace", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
@@ -349,6 +409,8 @@ void ExplorerPanel::drawRobloxTree(core::ECS& ecs) {
         }
     }
     for (core::EntityId e : services) drawEntityNode(ecs, e, rowCursor, rows);
+    flushSkippedRows();
+    virtualize_ = false;
 }
 
 void ExplorerPanel::draw(core::ECS& ecs) {

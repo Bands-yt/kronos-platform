@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <unordered_map>
 #include <vector>
 
 #include "core/ECS.hpp"
@@ -114,6 +115,16 @@ private:
 
     core::EntityId selected_ = core::kNullEntity; // primary selection -- last entity clicked, any modifier
     std::vector<core::EntityId> selection_;        // full multi-select set, always contains selected_ when non-null
+    // Roblox tree only: rows far outside the visible area aren't drawn, one blank item stands in for them.
+    bool virtualize_ = false;
+    float rowHeight_ = 0.0f;
+    float viewTop_ = 0.0f;
+    float viewBottom_ = 0.0f;
+    float skippedHeight_ = 0.0f;
+    std::unordered_map<core::EntityId, int> subtreeSize_;
+    int countSubtree(core::ECS& ecs, core::EntityId entity, int depth);
+    int visibleRows(core::ECS& ecs, core::EntityId entity);
+    void flushSkippedRows();
     int lastClickedRow_ = -1;                       // row index for shift-click range anchoring
 
     // Sprint 7 ("Studio UI Revamp") task category 3: real, per-category

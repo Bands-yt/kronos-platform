@@ -26,7 +26,7 @@ reading audit: nothing here was run on a clean machine.
 
 | ID | Item | Status | Evidence / gap |
 |---|---|---|---|
-| 0051 | Virtualized hierarchy for big scenes | missing | `ExplorerPanel` does not use `ImGuiListClipper`; no 100k-entity test (0075) |
+| 0051 | Virtualized hierarchy for big scenes | exists | `ExplorerPanel` skips rows outside the view (5,000-part folder scrolled on screen); no 100k-entity timing test yet (0075) |
 | 0052 | Multi-select with a summary | exists | Select All, "N entities selected", multi-object Inspector |
 | 0053 | Drag-and-drop parenting, no cycles | partial | Explorer has a drag source (`EXPLORER_ENTITY`); verify the drop target reparents with undo and refuses cycles |
 
