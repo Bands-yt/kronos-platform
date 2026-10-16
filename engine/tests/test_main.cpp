@@ -45518,6 +45518,7 @@ void testRobloxDataStore() {
         ECS ecs;
         datastore::setFile(ecs, path);
         Scripting scripting;
+        scripting.setMaxExecutionMillisPerTick(2000.0); // real file I/O; shared CI runners are slow
         scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
         check(scripting.initialize(), "DataStore test: Scripting initializes");
         std::vector<std::string> output;
@@ -45573,6 +45574,7 @@ print("DONE")
         ECS ecs;
         signals::runService(ecs).server = false;
         Scripting scripting;
+        scripting.setMaxExecutionMillisPerTick(2000.0); // real file I/O; shared CI runners are slow
         scripting.setBindingsHook([&ecs](lua_State* L) { registerInstanceApi(L, ecs); });
         check(scripting.initialize(), "DataStore client test: Scripting initializes");
         std::vector<std::string> output;
