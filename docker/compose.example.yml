@@ -1,0 +1,12 @@
+# Hosts one game: put the game folder in ./games/<slug>, then run `docker compose -f docker/compose.example.yml up`.
+services:
+  kronos-server:
+    build:
+      context: ..
+      dockerfile: docker/kronos-server.Dockerfile
+    command: ["--port", "7777", "--game", "my-game"]
+    ports:
+      - "7777:7777/udp"
+    volumes:
+      - ../games:/games:ro
+    restart: unless-stopped

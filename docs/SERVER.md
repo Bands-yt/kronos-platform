@@ -28,4 +28,17 @@ simulation out of `Application` properly is a later step (`Renderer.hpp` is stil
 `engine/tests/remote_network_smoke.sh <runtime> <port> <kronos_server>` runs the
 Remote Check place with this binary as the server.
 
+## Run it in a container
+
+```
+docker build -f docker/kronos-server.Dockerfile -t kronos-server .
+docker run --rm -p 7777:7777/udp -v "$PWD/games:/games:ro" kronos-server --port 7777 --game my-game
+```
+
+The image builds only `kronos_server` (no Studio) on Ubuntu 24.04 and runs as a normal user.
+Game folders go in the `/games` volume (`KRONOS_GAMES_DIR`). `docker/compose.example.yml`
+does the same with `docker compose up`. Podman works with the same commands. Players join
+with `engine_runtime --client <host>:7777`. Matchmaking and "deploy to the cloud" are not built;
+for now you run the container on any machine that can open the UDP port.
+
 Linux only for now; the Windows build hasn't been tried.

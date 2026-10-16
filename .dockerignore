@@ -1,0 +1,7 @@
+.git
+engine/build
+backend/node_modules
+dist
+marketing
+test_*
+*.log
