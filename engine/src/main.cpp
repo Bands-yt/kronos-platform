@@ -129,6 +129,18 @@ bool readWholeFile(const std::string& path, std::string& outContents) {
 
 int main(int argc, char** argv) {
     engine::core::disableConsoleQuickEditMode();
+    // Servers and clients often log to a file: write each line at once, from the first one.
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view flag = argv[i];
+        if (flag == "--server" || flag == "--client" || flag == "--headless") {
+#if defined(_WIN32)
+            std::setvbuf(stdout, nullptr, _IONBF, 0);
+#else
+            std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+#endif
+            break;
+        }
+    }
 
     // Kronos ("Fatal Init Diagnostics" -- Jay's Windows startup-crash
     // report): enabled first, before anything else (including
