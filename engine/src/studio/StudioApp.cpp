@@ -1,5 +1,6 @@
 #include "studio/StudioApp.hpp"
 
+#include "core/SystemTimers.hpp"
 #include "core/RobloxGui.hpp"
 #include "core/UnionGeometry.hpp"
 
@@ -2632,6 +2633,7 @@ void StudioApp::run() {
         float deltaTime = std::chrono::duration<float>(now - previous).count();
         previous = now;
 
+        core::SystemTimers::instance().endFrame();
         beginFrame();
 
         // See particleSystem_'s declaration comment for why this one
@@ -2869,7 +2871,10 @@ void StudioApp::run() {
                                  io.WantTextInput, overGame ? io.MouseWheel : 0.0f);
         }
         core::unions::sync(ecs_);
-        pluginManager_.update(deltaTime, ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
+        {
+            core::ScopedSystemTimer timer("Plugins and Play");
+            pluginManager_.update(deltaTime, ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities());
+        }
         if (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying()) {
             core::instances::applyScriptCamera(ecs_);
             const core::Camera& camera = viewportPanel_.camera();
@@ -2912,7 +2917,12 @@ void StudioApp::run() {
         endFrame();
 
         surfaceGraphMaterials_.update(ecs_, renderer_);
-        if (!renderer_.renderFrame()) {
+        bool rendered = false;
+        {
+            core::ScopedSystemTimer timer("Render");
+            rendered = renderer_.renderFrame();
+        }
+        if (!rendered) {
             std::fprintf(stderr, "StudioApp: renderFrame() reported an unrecoverable error.\n");
             break;
         }
