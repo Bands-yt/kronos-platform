@@ -210,6 +210,37 @@ struct PluginHost::ChannelEntry {
     }
 };
 
+namespace {
+struct ProfileDef {
+    const char* name;
+    uint64_t capabilities;
+};
+const ProfileDef kProfiles[] = {
+    {"read-only", KRONOS_CAP_SCENE_READ},
+    {"editor-tool", KRONOS_CAP_SCENE_READ | KRONOS_CAP_SCENE_WRITE | KRONOS_CAP_EDITOR_PANELS},
+    {"importer", KRONOS_CAP_ASSET_IMPORTERS},
+    {"data-link", KRONOS_CAP_SCENE_READ | KRONOS_CAP_CHANNELS},
+    {"full", KRONOS_CAP_SCENE_READ | KRONOS_CAP_SCENE_WRITE | KRONOS_CAP_ASSET_IMPORTERS | KRONOS_CAP_EDITOR_PANELS | KRONOS_CAP_CHANNELS},
+};
+} // namespace
+
+uint64_t capabilityProfile(const std::string& name, bool* found) {
+    for (const ProfileDef& profile : kProfiles) {
+        if (name == profile.name) {
+            if (found != nullptr) *found = true;
+            return profile.capabilities;
+        }
+    }
+    if (found != nullptr) *found = false;
+    return 0;
+}
+
+std::vector<std::string> capabilityProfileNames() {
+    std::vector<std::string> names;
+    for (const ProfileDef& profile : kProfiles) names.emplace_back(profile.name);
+    return names;
+}
+
 std::string capabilityNames(uint64_t capabilities) {
     static const std::pair<uint64_t, const char*> names[] = {
         {KRONOS_CAP_SCENE_READ, "read the scene"},

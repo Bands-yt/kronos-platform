@@ -87,6 +87,10 @@ what was granted returns `KRONOS_DENIED`, and the first one is logged.
 | `KRONOS_CAP_EDITOR_PANELS` | `register_panel` |
 | `KRONOS_CAP_CHANNELS` | `open_channel` |
 
+Engine code can use a named set instead of listing bits: `capabilityProfile("read-only")` (scene read),
+`"editor-tool"` (read, write, panels), `"importer"`, `"data-link"` (read, channels) and `"full"`. An unknown
+name grants nothing. Pass the result as `LoadOptions::allowedCapabilities`.
+
 `log` is always allowed. Call the API only from inside the functions the engine calls
 (load, tick, panel draw, import), on the thread that called them.
 

@@ -29094,6 +29094,22 @@ void testFreshProjectTemplate() {
     physics.shutdown();
 }
 
+void testPluginCapabilityProfiles() {
+    using namespace engine::plugin;
+    bool found = false;
+    check(capabilityProfile("read-only", &found) == KRONOS_CAP_SCENE_READ && found, "the read-only profile can only read the scene");
+    const uint64_t editor = capabilityProfile("editor-tool");
+    check((editor & KRONOS_CAP_SCENE_WRITE) != 0 && (editor & KRONOS_CAP_CHANNELS) == 0 && (editor & KRONOS_CAP_ASSET_IMPORTERS) == 0,
+          "the editor-tool profile can edit and show panels but not open channels or import");
+    check(capabilityProfile("typo-profile", &found) == 0 && !found, "an unknown profile name grants nothing");
+    uint64_t all = 0;
+    for (const std::string& name : capabilityProfileNames()) {
+        if (name != "full") check((capabilityProfile(name) & ~capabilityProfile("full")) == 0, ("profile " + name + " is inside full").c_str());
+        all |= capabilityProfile(name);
+    }
+    check(all == capabilityProfile("full"), "every capability appears in at least one profile");
+}
+
 void testGpuSummary() {
     using engine::core::describeGpu;
     const auto discrete = describeGpu("RTX", VK_MAKE_API_VERSION(0, 1, 3, 250), VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
@@ -52498,6 +52514,7 @@ int main() {
     testLogFilter();
     testSystemTimers();
     testGpuSummary();
+    testPluginCapabilityProfiles();
     testFreshProjectTemplate();
     testSingleInstanceLock();
     testPermanentObjectIds();

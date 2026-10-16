@@ -22,6 +22,11 @@ enum class Isolation : uint8_t {
 
 [[nodiscard]] std::string capabilityNames(uint64_t capabilities);
 
+// Named permission sets for `LoadOptions::allowedCapabilities`. Unknown names give no
+// capabilities (the safe answer); `found` says whether the name was known.
+[[nodiscard]] uint64_t capabilityProfile(const std::string& name, bool* found = nullptr);
+[[nodiscard]] std::vector<std::string> capabilityProfileNames();
+
 // Loads plugins built against kronos_plugin.h and keeps the registries
 // they add to: asset importers, editor panels and shared memory channels.
 // Registrations are versioned by name, so a newer importer or panel
