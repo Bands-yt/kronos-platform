@@ -2309,6 +2309,32 @@ void StudioApp::drawWelcomePanel() {
         }
 
         ImGui::Spacing();
+        ImGui::TextDisabled("Pick a tool");
+        {
+            struct Tool {
+                const char* label;
+                const char* program;
+                StudioMode mode;
+            };
+            const Tool tools[] = {{"Studio", "kronos_studio", StudioMode::Full},
+                                  {"3D Tools", "kronos_3d_maker", StudioMode::ThreeDMaker},
+                                  {"Movie Maker", "kronos_movie_maker", StudioMode::MovieMaker},
+                                  {"Audio", "kronos_audio", StudioMode::Audio}};
+            for (const Tool& tool : tools) {
+                if (&tool != tools) ImGui::SameLine();
+                const bool current = tool.mode == mode_;
+                ImGui::BeginDisabled(current);
+                if (ui::button(tool.label, current ? ui::ButtonKind::Primary : ui::ButtonKind::Secondary, ImVec2(104.0f, 30.0f))) {
+                    if (core::launchProcess(core::siblingExecutable(tool.program), {})) {
+                        notifications_.push(std::string("Opening ") + tool.label + " in a new window.", NotificationSeverity::Info);
+                    } else {
+                        notifications_.push(std::string("Couldn't start ") + tool.label + ".", NotificationSeverity::Warning);
+                    }
+                }
+                ImGui::EndDisabled();
+            }
+        }
+        ImGui::Spacing();
         {
             const core::GpuSummary gpu = core::queryGpuSummary(renderer_.physicalDevice());
             ImGui::TextDisabled("Your computer: %s (Vulkan %s)", gpu.name.c_str(), gpu.vulkanVersion.c_str());

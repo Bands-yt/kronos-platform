@@ -15,7 +15,7 @@ reading audit: nothing here was run on a clean machine.
 
 | ID | Item | Status | Evidence / gap |
 |---|---|---|---|
-| 0001 | Welcome wizard with mode selection | partial | Studio shows a welcome panel on the first launch (steps per mode, Open default project); no mode picker in the panel itself |
+| 0001 | Welcome wizard with mode selection | done | The welcome panel has a "Pick a tool" row (Studio, 3D Tools, Movie Maker, Audio) that opens the matching program; screen-checked 17 Oct 2026 |
 | 0002 | One-click sample project | partial | Studio opens a template scene and has script template cards; `games/` holds BrokenBones, SkyGarden, DefaultWorld; no "new sample game" picker |
 | 0003 | First-launch hardware and driver check | partial | the welcome panel shows the GPU, Vulkan version and a plain tip (`describeGpu`, `testGpuSummary`); not screen-checked, no audio or disk check |
 | 0026 | Resizable docks with saved layouts | exists | ImGui docking, `imgui.ini`, hidden panels saved (`StudioApp::saveHiddenPanels`) |
