@@ -22,8 +22,6 @@
 
 namespace engine::plugin {
 
-SandboxProcess::~SandboxProcess() { terminate(); }
-
 #if defined(__linux__)
 
 bool SandboxProcess::supported() { return true; }
@@ -166,5 +164,8 @@ SandboxProcess::Result SandboxProcess::request(ipc::Msg type, const std::vector<
     }
 }
 
+
+SandboxProcess::SandboxProcess() = default;
+SandboxProcess::~SandboxProcess() { terminate(); }
 
 } // namespace engine::plugin

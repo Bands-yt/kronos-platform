@@ -19,7 +19,7 @@ public:
     // (it stays owned by the caller). Log messages get no reply.
     using HostCallFn = std::function<void(ipc::Msg type, ipc::Reader& request, ipc::Writer& reply, ipc::Passed& passed)>;
 
-    SandboxProcess() = default;
+    SandboxProcess();
     ~SandboxProcess();
     SandboxProcess(const SandboxProcess&) = delete;
     SandboxProcess& operator=(const SandboxProcess&) = delete;
