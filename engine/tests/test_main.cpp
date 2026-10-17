@@ -21,6 +21,7 @@
 #include "core/MiscTools.hpp"
 #include "core/BackendLogicTools.hpp"
 #include "core/CommunityAiTools.hpp"
+#include <Luau/Compiler.h>
 #include "core/ScriptTools.hpp"
 #include "net/NetTools.hpp"
 #include "core/AssetPipelineTools.hpp"
@@ -16504,6 +16505,28 @@ void testV5Batch6() {
     meter.push(1.5f, 3.1);
     check(meter.peak() == 1.5f && meter.clipped(), "peak meter flags clipping");
     check(au::periodFramesForLatency(48000, 10) == 256 && au::secondsToFrames(0.5, 48000) == 24000, "buffer size and frame scheduling");
+}
+
+void testSampleScriptsCompile() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::path(ENGINE_SAMPLES_DIR);
+    int luau = 0, python = 0;
+    for (const auto& e : fs::recursive_directory_iterator(root)) {
+        if (!e.is_regular_file()) continue;
+        std::ifstream in(e.path(), std::ios::binary);
+        std::stringstream buf;
+        buf << in.rdbuf();
+        const std::string ext = e.path().extension().string();
+        if (ext == ".lua" || ext == ".luau") {
+            const std::string bytecode = Luau::compile(buf.str());
+            check(!bytecode.empty() && bytecode[0] != 0, ("sample compiles: " + e.path().filename().string()).c_str());
+            ++luau;
+        } else if (ext == ".py") {
+            check(buf.str().rfind("#", 0) == 0, ("python sample starts with a comment: " + e.path().filename().string()).c_str());
+            ++python;
+        }
+    }
+    check(luau >= 5 && python >= 2, "all sample projects are present");
 }
 
 void testV5Batch11() {
@@ -54018,6 +54041,7 @@ int main() {
     testV5Batch9();
     testV5Batch10();
     testV5Batch11();
+    testSampleScriptsCompile();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();

@@ -211,6 +211,7 @@ if(TARGET kronos_plugin_sandbox)
 endif()
 
 target_compile_definitions(engine_tests PRIVATE
+    ENGINE_SAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../samples"
     RUST_TEMPLATE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../templates/rust-plugin"
     PROJECT_TEMPLATE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../templates/project"
     RUST_SDK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/rust/kronos"

@@ -173,3 +173,10 @@ scripts/package_alpha.sh
 Assembles a real, relocatable copy of both binaries plus their shaders,
 assets, and templates into `dist/kronos-alpha/` — see
 [ALPHA_PACKAGING.md](ALPHA_PACKAGING.md).
+
+## Sanitizer builds
+
+`cmake -DKRONOS_SANITIZE=address,undefined -DCMAKE_BUILD_TYPE=Debug ..` builds with AddressSanitizer and
+UBSan (vptr checks are off because the bundled libraries have no RTTI). First run (Oct 2026): no memory errors
+or undefined behaviour were reported, but the run stops early because the scripting time budget trips on the
+slow sanitizer build ("script exceeded its per-tick execution budget"). A test-only budget override is still to do.

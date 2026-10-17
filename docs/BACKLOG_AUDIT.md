@@ -1018,3 +1018,59 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0973 | Creator analytics privacy controls | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
 | 0974 | Project attribution and credits page | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
 | 0975 | Independent project health metrics dashboard | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+
+## v5 batch 12
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0583 | Rollback netcode integration tests | exists | testRollbackSessionConvergesUnderLatency, testRollbackNetSessionLoopback and others |
+| 0603 | Container image for dedicated server | exists | docker/kronos-server.Dockerfile |
+| 0604 | Docker compose dev deployment | exists | docker/compose.example.yml |
+| 0763 | Rust Studio plugin sample | exists | templates/rust-plugin, built and run by testRustPluginProject |
+| 0764 | C ABI C plugin sample | exists | native_plugins/SampleCPlugin.c, run by the plugin tests |
+| 0866 | Memory high-water-mark view | done | Stats panel 'Highest so far' (HighWaterMark in core/RuntimeTuning.hpp) |
+| 0812 | Plugin crash isolation tests | exists | plugin sandbox crash tests: 'plugin sandbox: crash contained' |
+| 0857 | Asset load and decode timing | partial | SystemTimers in Stats; decode timing not split out yet |
+| 0818 | Sanitizer CI builds | partial | KRONOS_SANITIZE option works (ASan+UBSan build runs, no findings before the time-budget abort, see QUICKSTART); no CI job yet |
+| 0163 | FBX skeletal animation import | partial | docs/evaluations/FBX_AND_USD.md; evaluation only, no importer |
+| 0164 | USD and USDZ evaluation prototype | partial | docs/evaluations/FBX_AND_USD.md; evaluation only, no importer |
+| 0221 | Subsurface-scattering research prototype | partial | docs/evaluations/RENDERING_RESEARCH.md; research notes only, nothing built |
+| 0254 | Contact-shadow option | partial | docs/evaluations/RENDERING_RESEARCH.md; research notes only, nothing built |
+| 0255 | Baked lightmap pipeline | partial | docs/evaluations/RENDERING_RESEARCH.md; research notes only, nothing built |
+| 0259 | Screen-space reflections quality path | partial | docs/evaluations/RENDERING_RESEARCH.md; research notes only, nothing built |
+| 0345 | Offline high-quality renderer evaluation | partial | docs/evaluations/RENDERING_RESEARCH.md; research notes only, nothing built |
+| 0347 | Path-tracing research branch with fallback | partial | docs/evaluations/RENDERING_RESEARCH.md; research notes only, nothing built |
+| 0351 | Dedicated audio workspace with multitrack timeline | partial | docs/evaluations/AUDIO_RESEARCH.md; notes only; the editing maths is in core/AudioNetTools.hpp |
+| 0370 | Plugin host for supported audio effects | partial | docs/evaluations/AUDIO_RESEARCH.md; notes only; the editing maths is in core/AudioNetTools.hpp |
+| 0384 | Voice chat architecture evaluation | partial | docs/evaluations/AUDIO_RESEARCH.md; notes only; the editing maths is in core/AudioNetTools.hpp |
+| 0554 | macOS build feasibility spike | partial | docs/evaluations/PORTING.md; feasibility notes, no port started |
+| 0560 | Delta updates evaluation | partial | docs/evaluations/PORTING.md; feasibility notes, no port started |
+| 0916 | Android build feasibility prototype | partial | docs/evaluations/PORTING.md; feasibility notes, no port started |
+| 0917 | iOS engine portability assessment | partial | docs/evaluations/PORTING.md; feasibility notes, no port started |
+| 0926 | WebAssembly engine feasibility prototype | partial | docs/evaluations/PORTING.md; feasibility notes, no port started |
+| 0454 | Rust SDK examples for editor panels | partial | docs/evaluations/RUST_AND_PYTHON_NOTES.md; design notes only |
+| 0457 | Cargo feature selection guide | partial | docs/evaluations/RUST_AND_PYTHON_NOTES.md; design notes only |
+| 0463 | Rust plugin hot reload support design | partial | docs/evaluations/RUST_AND_PYTHON_NOTES.md; design notes only |
+| 0437 | Debugger hooks for Python handlers | partial | docs/evaluations/RUST_AND_PYTHON_NOTES.md; design notes only |
+| 0447 | Python script hot reload | partial | docs/evaluations/RUST_AND_PYTHON_NOTES.md; design notes only |
+| 0676 | Shared edit session with explicit invite | partial | docs/evaluations/COLLAB_RESEARCH.md; design only. Merge, lease and register logic is in core/CollabPluginTools.hpp |
+| 0677 | Authoritative collaboration session service | partial | docs/evaluations/COLLAB_RESEARCH.md; design only. Merge, lease and register logic is in core/CollabPluginTools.hpp |
+| 0679 | Selection outlines for collaborators | partial | docs/evaluations/COLLAB_RESEARCH.md; design only. Merge, lease and register logic is in core/CollabPluginTools.hpp |
+| 0680 | Live scene transform synchronization | partial | docs/evaluations/COLLAB_RESEARCH.md; design only. Merge, lease and register logic is in core/CollabPluginTools.hpp |
+| 0681 | Conflict handling for simultaneous property edits | partial | docs/evaluations/COLLAB_RESEARCH.md; design only. Merge, lease and register logic is in core/CollabPluginTools.hpp |
+| 0682 | CRDT feasibility prototype for selected data types | partial | docs/evaluations/COLLAB_RESEARCH.md; design only. Merge, lease and register logic is in core/CollabPluginTools.hpp |
+| 0752 | Guided obby template | partial | samples/*/Scripts/Main.lua compile in testSampleScriptsCompile; no scene or art |
+| 0753 | Tycoon mechanics sample | partial | samples/*/Scripts/Main.lua compile in testSampleScriptsCompile; no scene or art |
+| 0755 | Platformer starter project | partial | samples/*/Scripts/Main.lua compile in testSampleScriptsCompile; no scene or art |
+| 0759 | Audio-driven rhythm sample | partial | samples/*/Scripts/Main.lua compile in testSampleScriptsCompile; no scene or art |
+| 0765 | Cross-language Luau Python sample | partial | samples/cross_language (Luau + Python); not run together by a test yet |
+| 0450 | Dual-language starter project | partial | samples/cross_language (Luau + Python); not run together by a test yet |
+| 0416 | Variable watch window | partial | WatchList in core/DevTools.hpp, not shown in Studio yet |
+| 0672 | User purchase history controls | partial | Ledger::forUser in core/BackendLogicTools.hpp; no UI; needs the backend |
+| 0561 | Download integrity hashes and signatures | partial | sha256Hex and downloadComplete tested; no signing; see docs/RELEASE_SIGNING_PLAN.md; needs the owner |
+| 0830 | Secure update manifest verification | partial | sha256Hex and downloadComplete tested; no signing; see docs/RELEASE_SIGNING_PLAN.md; needs the owner |
+| 0558 | Signed release artifact plan | partial | docs/RELEASE_SIGNING_PLAN.md written; certificate and CI step need the owner |
+| 0829 | Signed release artifacts plan | partial | docs/RELEASE_SIGNING_PLAN.md written; certificate and CI step need the owner |
+| 0737 | Vulnerability disclosure channel | partial | docs/SECURITY_PROCESS.md; the contact address needs the owner |
+| 0790 | Local model endpoint option | partial | AiProvider interface in core/CommunityAiTools.hpp; no model connected; needs the owner |
+| 0647 | Developer portal accessibility audit | partial | missingAccessibleNames in core/QaPlatformTools.hpp; the portal needs the owner |

@@ -58,6 +58,13 @@ option(ENGINE_BUILD_POLYGLOT_CORE "Build the polyglot_core static lib (linked in
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(cmake/CompilerCache.cmake)
+
+# Sanitizer builds, e.g. -DKRONOS_SANITIZE=address,undefined (Clang or GCC). Leave empty for normal builds.
+set(KRONOS_SANITIZE "" CACHE STRING "Comma-separated sanitizers to build with")
+if(KRONOS_SANITIZE)
+    add_compile_options(-fsanitize=${KRONOS_SANITIZE} -fno-sanitize=vptr -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=${KRONOS_SANITIZE})
+endif()
 include(cmake/Dependencies.cmake)
 include(cmake/ShaderCompiler.cmake)
 

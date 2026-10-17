@@ -1388,10 +1388,10 @@ int playbackMethod(lua_State* L) {
     ECS& ecs = ecsOf(L);
     const InstanceRef self = checkSelf(L, "Play");
     const std::string cls = instances::className(ecs, self);
-    if constexpr (TweenAction != nullptr) {
+    if (TweenAction != nullptr) {
         if (instances::classIsA(cls, "TweenBase")) TweenAction(ecs, self);
     }
-    if constexpr (SoundAction != nullptr) {
+    if (SoundAction != nullptr) {
         if (cls == "Sound") SoundAction(ecs, self);
     }
     return 0;
