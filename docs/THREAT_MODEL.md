@@ -34,3 +34,22 @@ that every row is solved.
 - Never trust the client for anything that counts: score, items, currency, damage.
 - A feature that touches multiplayer, plugins, imports, chat, files or accounts needs a note here and a test.
 - New parsers get limits (size, depth) and a fuzz or malformed-input test before release.
+
+## Sandbox escape tests
+
+Each row is an attempt to get out of a sandbox and the test that tries it. If a row has no test, it says so.
+
+| Sandbox | Attempt | Test |
+|---|---|---|
+| Luau | `os`, `io`, `debug`, `package`, `require` of files, `loadstring` style loaders | `testScriptSandboxDeniesDangerousStandardLibraries` |
+| Luau | change `_G`, the built-in libraries or the string metatable | `testScriptSandboxFreezesGlobalsAndBuiltinMetatables` |
+| Luau | endless loop | `testScriptSandboxWatchdogTerminatesRealInfiniteLoop` |
+| Luau | allocate until memory runs out | `testScriptSandboxMemoryCapRaisesCatchableErrorInsteadOfCrashing` |
+| Luau | reach raw GPU handles through the render API | `testScriptRenderApiSandboxSurfaceHasNoRawGpuHandleBindings` |
+| Python | files, OS, sockets, raw memory, pickle, `exit`, `input`, `sleep`, imports from disk | `testPythonScripts` (sandbox probe) |
+| Python | endless loop, even one that catches the timeout; deep recursion in repr/json/hash/dict/parse; huge string multiply | `testPythonScripts` |
+| Python | allocate until the memory limit; invent names to fill the shared name table | `testPythonScripts` |
+| Native plugin (Linux, Windows) | network, starting programs, writing files, reading files outside its folder, signalling or opening the editor process | `testPluginApiSandbox` (the same probe succeeds in-process, so the denial comes from the sandbox) |
+| Native plugin | crash and hang | `testPluginApiSandbox` |
+| Native plugin on macOS | everything | no sandbox, so no test |
+| Rollback match script | writes to globals, random, time | `testRollbackScript` |

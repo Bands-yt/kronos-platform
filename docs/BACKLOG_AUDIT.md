@@ -82,7 +82,7 @@ reading audit: nothing here was run on a clean machine.
 | 0802 | Core smoke suite | exists | `remote_network_smoke.sh`, package smoke tests in CI |
 | 0803 | Fresh project creation smoke test | partial | `testFreshProjectTemplate` loads the template scene and runs physics headless; no Studio-driven "File > New" test |
 | 0826 | Threat model for Player and Studio | exists | `docs/THREAT_MODEL.md`; rows say what is tested and what is not |
-| 0827 | Sandbox escape regression suite | partial | Luau and Python sandbox tests exist (memory, time, stack, blocked imports); not framed as an escape suite |
+| 0827 | Sandbox escape regression suite | done | `docs/THREAT_MODEL.md` "Sandbox escape tests" lists each escape attempt and the test that runs it; macOS plugins have no sandbox |
 | 0828 | Least-privilege plugin profiles | partial | named profiles (`capabilityProfile`, `testPluginCapabilityProfiles`); Studio doesn't yet ask the user which profile to grant |
 | 0851 | CPU frame-time breakdown | exists | `core::SystemTimers` (scripting, physics, pre-tick, post-physics, render) shown in Stats "Where the time goes"; not screen-checked |
 | 0852 | GPU frame-time breakdown | missing | no timestamp queries found |
