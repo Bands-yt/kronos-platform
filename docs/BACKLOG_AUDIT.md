@@ -125,3 +125,5 @@ All of these are covered by [PROJECT_POLICY.md](PROJECT_POLICY.md) or [MATURITY.
 | ID | Item | Status | Evidence / gap |
 |---|---|---|---|
 | 0882 | Text contrast validation | partial | `testPaletteTextContrast`: bright, muted, blue, green and amber text reach 4.5:1 on all panel colours; red on app background and panels; faint text 3:1. Known gaps: faint text and red text on raised controls (under 4.5:1) |
+| 0005 | Clear pre-beta warning and crash-safe reset | done | Studio welcome panel shows an amber pre-beta note; View > Reset Layout to Default exists |
+| 0881 | Color-blind friendly status palette | partial | Checked with deuteranopia/protanopia simulation: green, amber and blue status colours are nearly the same brightness (contrast 1.0-1.3:1), so status must never rely on colour alone. A post-process colour-blind mode exists. Gap: audit status UI for text/icon backup |

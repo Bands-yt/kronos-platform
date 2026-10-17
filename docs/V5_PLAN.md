@@ -25,7 +25,7 @@ Other marks: ✅ already exists or was finished (checked against the code), ◐ 
 | 🟢 Easy | 245 | 6 days |
 | **All 1,000** | **1000** | **87.3 work weeks** |
 
-- ✅ **39** items already exist or are finished, ◐ **14** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
+- ✅ **40** items already exist or are finished, ◐ **15** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
 - Without the ⛔ items, the work I can do alone is **75.4 work weeks**.
 - P0 (42 items): 9.8 days
 - P1 (278 items): 49.4 work weeks
@@ -110,7 +110,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0002 | P0 | One-click sample project creation | 45 min | ◐ |
 | 🟢 | 0003 | P0 | First-launch hardware and driver check | 8 min | ◐ |
 | 🟠 | 0004 | P1 | Missing dependency installer with repair mode | 8 h |  |
-| 🟢 | 0005 | P1 | Clear pre-beta warning and crash-safe reset | 15 min |  |
+| 🟢 | 0005 | P1 | Clear pre-beta warning and crash-safe reset | done | ✅ |
 | 🟡 | 0006 | P1 | UI scale and text size preferences | 1.5 h |  |
 | 🟡 | 0007 | P1 | Light dark and high-contrast themes | 1.5 h |  |
 | 🟡 | 0008 | P1 | Consistent spacing and typography tokens | 1.5 h |  |
@@ -1161,7 +1161,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0878 | P1 | Mouse sensitivity presets | 8 h |  |
 | 🟠 | 0879 | P1 | Invert axis controls | 8 h |  |
 | 🟡 | 0880 | P1 | Hold versus toggle accessibility options | 1.5 h |  |
-| 🟢 | 0881 | P1 | Color-blind friendly status palette | 15 min |  |
+| 🟢 | 0881 | P1 | Color-blind friendly status palette | 8 min | ◐ |
 | 🟢 | 0882 | P1 | Text contrast validation | 8 min | ◐ |
 | 🟡 | 0883 | P1 | Keyboard-only Studio navigation | 1.5 h |  |
 | 🟡 | 0884 | P2 | Screen-reader labels for controls | 1.5 h |  |

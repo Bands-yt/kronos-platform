@@ -2309,6 +2309,10 @@ void StudioApp::drawWelcomePanel() {
         }
 
         ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.910f, 0.663f, 0.231f, 1.0f));
+        ImGui::TextWrapped("Pre-beta: save often (Ctrl+S). Things can break. View > Reset Layout fixes a messy window.");
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
         ImGui::TextDisabled("Pick a tool");
         {
             struct Tool {
