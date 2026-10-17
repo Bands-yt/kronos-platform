@@ -735,3 +735,160 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0979 | State licensing terms consistently across repository and website | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
 | 0981 | Publish data flow and privacy diagram | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
 | 0988 | Keep roadmap priorities measurable | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+
+## v5 batch 10
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0076 | Orbit pan and zoom controls with presets | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0077 | Frame selected object shortcut | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0078 | Focus selected bounding box smoothly | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0079 | Fly camera with adjustable speed | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0082 | Perspective lens and field-of-view controls | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0054 | Search hierarchy by name type and tag | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0057 | Rename in place with validation | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0101 | Primitive mesh creation with editable parameters | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0102 | Extrude faces with inset and offset | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0103 | Inset and bevel mesh operations | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0104 | Loop cut and edge slide | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0106 | Knife and plane cut tools | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0107 | Boolean union subtract and intersect | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0108 | Non-destructive modifier stack | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0113 | Decimate and retopology assist | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0126 | Heightmap terrain import and export | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0127 | Editable heightmap terrain brush | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0128 | Smooth raise lower flatten and erosion brushes | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0148 | Erosion simulation with bake step | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0129 | Terrain layer painting with blend masks | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0130 | Runtime terrain chunk streaming | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0133 | Terrain chunk LOD and crack prevention | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0131 | Voxel terrain block editing | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0143 | Cave and overhang workflow | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0145 | World origin rebasing for large maps | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0154 | Import presets per target platform | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0157 | Asset dependency tracking | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0182 | Find references before delete | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0176 | Thumbnail generation cache | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0177 | Search by name tag type and usage | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0178 | Smart collections based on rules | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0179 | User-created asset folders and favorites | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0202 | Material graph validation and error paths | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0201 | Node-based material editor | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0203 | PBR base color metallic roughness pipeline | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0204 | Normal height and occlusion map support | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0207 | Texture sampler and tiling controls | partial | WorldTools.hpp, testV5Batch10; library only. 0107 handles boxes only; 0113 is vertex clustering, not retopology |
+| 0226 | Frame graph with explicit resource lifetimes | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0227 | GPU resource leak tracking | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0228 | Bindless texture capability detection | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0229 | Multi-draw indirect path for compatible GPUs | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0231 | GPU occlusion culling prototype | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0232 | Draw-call and pipeline-state reduction report | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0247 | Mesh shader capability-gated experiment | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0248 | Clustered geometry culling prototype | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0251 | Directional point spot and area light improvements | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0252 | Shadow quality presets | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0253 | Cascaded shadow-map stability | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0256 | Light probe volume workflow | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0257 | Reflection probe capture and blending | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0258 | Screen-space ambient occlusion | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0260 | Volumetric fog prototype | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0276 | GPU particle emitter with CPU fallback | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0277 | Burst and continuous emission modes | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0278 | Particle collision with world and terrain | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0279 | Particle trails and ribbons | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0282 | Curve editors for size speed and color | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0301 | Animation clip browser and preview | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0302 | Skeleton hierarchy visualization | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0303 | Import humanoid rigs with retargeting | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0304 | Avatar retarget profile | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0305 | Animation state machine graph | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0306 | Blend trees for locomotion | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0307 | Animation layers and masks | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0309 | Inverse-kinematics target controls | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0327 | Track-based timeline with zoom and snapping | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0328 | Camera cuts and multi-camera tracks | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0329 | Transform keyframes with curve handles | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0332 | Motion blur quality controls | partial | GfxAnimTools.hpp, testV5Batch10; library only, not wired into the renderer or Studio yet |
+| 0352 | Non-destructive waveform editing | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0353 | Region split trim fade and slip editing | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0354 | Envelope and automation lanes | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0357 | Tempo and time-signature grid | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0360 | Pitch and time-stretch evaluation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0362 | Noise gate and denoise offline tools | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0365 | Sidechain routing prototype | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0371 | MIDI note editor prototype | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0376 | Audio mixer bus graph | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0377 | Per-category volume sliders | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0378 | 3D positional sound attenuation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0379 | Directional cone emitters | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0380 | Occlusion and obstruction filtering | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0382 | Doppler shift option | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0387 | Spatial audio headphone mode | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0388 | HRTF capability evaluation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0404 | Signature help for function calls | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0407 | Rename symbols across scripts | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0415 | Breakpoints and pause execution | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0417 | Call stack and coroutine inspector | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0429 | Typed world API stubs for editor autocomplete | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0432 | Python event subscriptions with cancellation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0482 | Breakpoint support across script types | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0497 | Reproducible bug report recorder | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0504 | Round-trip preservation of unknown properties | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0507 | UDim and anchor-point edge-case tests | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0513 | Constraints and attachments translation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0518 | Script rewrite suggestions for unsupported APIs | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0529 | Download resume and integrity verification | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0557 | Dependency manifest per release | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0562 | Rollback after failed update | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0530 | Controller-friendly navigation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0531 | Gamepad-first UI navigation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0532 | In-game graphics settings | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0576 | Authoritative server simulation mode | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0577 | State replication priority classes | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0578 | Delta-compressed component replication | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0579 | Interest management by spatial cell | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0581 | Client prediction for character movement | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0582 | Server reconciliation diagnostics | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0586 | Lag compensation for hitscan prototype | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0601 | Local dedicated-server launcher wizard | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0602 | Server process supervisor with graceful restart | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0678 | Presence avatars and cursor positions | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0687 | Session reconnect and snapshot recovery | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0701 | Formal plugin lifecycle documentation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0702 | Manifest schema with permissions | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0703 | Plugin API capability negotiation | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0705 | Sandboxed plugin process health watchdog | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0707 | Crash isolation and automatic disable | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0832 | Secret scanning in source and logs | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0854 | Allocation hot-spot view | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0876 | Fully remappable keyboard controls | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0877 | Gamepad control remapping | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0878 | Mouse sensitivity presets | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0879 | Invert axis controls | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0901 | Device capability tier detection | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0902 | Dynamic resolution on sustained GPU load | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0903 | Texture memory budget profiles | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0904 | Reduced shadow and post-process modes | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0907 | Virtual thumbstick component | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0929 | Asset bundle size budget for web | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0804 | Player launch and clean exit test | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0807 | Screenshot comparison for editor UI | partial | AudioNetTools.hpp, testV5Batch10; library only, not wired in yet. 0388 is a head-delay model, not HRTF |
+| 0004 | Missing dependency installer with repair mode | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0020 | First-five-minutes guided tutorial | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0022 | Localization-ready UI string catalog | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0029 | Multi-monitor window placement restore | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0044 | Layout migration between versions | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0046 | Multi-window viewport support | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0049 | UI screenshot regression suite | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0751 | Five-minute first game tutorial | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0919 | Mobile profiler counters | partial | MiscTools.hpp, testV5Batch10; library only |
+| 0165 | Blender export workflow documentation | partial | docs/BLENDER_WORKFLOW.md, written guide |
+| 0683 | Script editing collaboration design | partial | docs/COLLAB_DESIGN_EXTRAS.md, design notes, nothing built |
+| 0691 | Voice or text session chat design | partial | docs/COLLAB_DESIGN_EXTRAS.md, design notes, nothing built |
+| 0700 | Local-hosted collaboration option | partial | docs/COLLAB_DESIGN_EXTRAS.md, design notes, nothing built |
+| 0270 | Emissive material indirect-light contribution research | partial | docs/LIGHTING_RESEARCH.md, research notes, nothing built |
+| 0290 | Volumetric fog interaction prototype | partial | docs/LIGHTING_RESEARCH.md, research notes, nothing built |
+| 0927 | Browser WebGPU capability probe | partial | docs/WEB_DECISIONS.md, decision records, no web build exists |
+| 0928 | Browser fallback renderer decision record | partial | docs/WEB_DECISIONS.md, decision records, no web build exists |
+| 0932 | Web networking transport evaluation | partial | docs/WEB_DECISIONS.md, decision records, no web build exists |
+| 0762 | Python game scripting sample | partial | samples/python_game, sample script and README; not run by a test yet |

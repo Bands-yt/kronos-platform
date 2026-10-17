@@ -19,28 +19,28 @@ Other marks: ✅ already exists or was finished (checked against the code), ◐ 
 
 | | Items | Time (at our pace) |
 |---|---|---|
-| 🔴 Extremely hard | 31 | 38.0 work weeks |
-| 🟠 Hard | 236 | 33.6 work weeks |
-| 🟡 Medium | 488 | 8.5 work weeks |
+| 🔴 Extremely hard | 31 | 34.0 work weeks |
+| 🟠 Hard | 236 | 22.6 work weeks |
+| 🟡 Medium | 488 | 8.4 work weeks |
 | 🟢 Easy | 245 | 4 days |
-| **All 1,000** | **1000** | **80.9 work weeks** |
+| **All 1,000** | **1000** | **65.9 work weeks** |
 
-- ✅ **100** items already exist or are finished, ◐ **524** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
-- Without the ⛔ items, the work I can do alone is **69.0 work weeks**.
+- ✅ **100** items already exist or are finished, ◐ **676** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
+- Without the ⛔ items, the work I can do alone is **54.0 work weeks**.
 - P0 (42 items): 9.8 days
-- P1 (278 items): 48.3 work weeks
-- P2 (680 items): 30.7 work weeks
+- P1 (278 items): 37.0 work weeks
+- P2 (680 items): 26.9 work weeks
 
 **Honest note:** this total is a planning number, not a promise. Real work always finds surprises, like the three Windows build failures this week. The red items are the least certain: treat their times as 'about this, maybe double'. The ⛔ items can also slip because they wait for you.
 
 ## What I suggest v5 should contain
 
-Doing all 1,000 items is about **80.9 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
+Doing all 1,000 items is about **65.9 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
 
 | Slice | Items | Time |
 |---|---|---|
 | **v5 core:** every P0 item, plus every 🟢 and 🟡 P1 item (nothing that needs you) | 130 | 3.0 work weeks |
-| **v5 extras if time allows:** the 🟠 P1 items (terrain, materials, animation, netcode, Player settings) | 127 | 20.3 work weeks |
+| **v5 extras if time allows:** the 🟠 P1 items (terrain, materials, animation, netcode, Player settings) | 127 | 11.3 work weeks |
 | **After v5:** all P2 items, all 🔴 items, and everything marked ⛔ | rest | rest |
 
 The v5 core is 3.0 work weeks. At the pace of a busy week that is several weeks of building, with the Windows VM test and the owner-only steps done in between.
@@ -49,44 +49,44 @@ The v5 core is 3.0 work weeks. At the pace of a busy week that is several weeks 
 
 | Area | 🔴 | 🟠 | 🟡 | 🟢 | Time |
 |---|---|---|---|---|---|
-| First-run UX and UI foundation | 0 | 3 | 10 | 12 | 3.3 days |
-| Workspace layout and visual design | 0 | 6 | 10 | 9 | 4.9 days |
-| Scene graph and inspector | 0 | 5 | 15 | 5 | 2.9 days |
-| Viewport and editor navigation | 0 | 5 | 15 | 5 | 5.2 days |
-| Native modeling and mesh editing | 2 | 6 | 12 | 5 | 2.8 work weeks |
-| Terrain and procedural worldbuilding | 1 | 10 | 9 | 5 | 2.6 work weeks |
-| Asset import pipeline | 1 | 6 | 14 | 4 | 9.6 days |
-| Asset browser and content management | 0 | 5 | 15 | 5 | 5.2 days |
-| Materials and shader authoring | 1 | 5 | 15 | 4 | 3.0 work weeks |
-| Core renderer architecture | 2 | 6 | 12 | 5 | 2.8 work weeks |
-| Lighting and environment | 1 | 9 | 10 | 5 | 2.4 work weeks |
-| Visual effects and particles | 1 | 5 | 14 | 5 | 3.1 work weeks |
-| Animation and rigging | 0 | 8 | 12 | 5 | 7.5 days |
-| Movie Maker and cinematic sequencer | 2 | 5 | 13 | 5 | 3.8 work weeks |
-| Audio Maker and sound design tools | 2 | 8 | 11 | 4 | 4.3 work weeks |
-| Runtime audio engine | 3 | 6 | 11 | 5 | 4.7 work weeks |
-| Luau scripting experience | 0 | 8 | 13 | 4 | 5.1 days |
-| Python scripting environment | 0 | 6 | 15 | 4 | 3.8 days |
+| First-run UX and UI foundation | 0 | 3 | 10 | 12 | 2.1 days |
+| Workspace layout and visual design | 0 | 6 | 10 | 9 | 3.3 days |
+| Scene graph and inspector | 0 | 5 | 15 | 5 | 2.1 days |
+| Viewport and editor navigation | 0 | 5 | 15 | 5 | 3.2 days |
+| Native modeling and mesh editing | 2 | 6 | 12 | 5 | 7.4 days |
+| Terrain and procedural worldbuilding | 1 | 10 | 9 | 5 | 8.8 days |
+| Asset import pipeline | 1 | 6 | 14 | 4 | 8.7 days |
+| Asset browser and content management | 0 | 5 | 15 | 5 | 3.2 days |
+| Materials and shader authoring | 1 | 5 | 15 | 4 | 8.7 days |
+| Core renderer architecture | 2 | 6 | 12 | 5 | 7.4 days |
+| Lighting and environment | 1 | 9 | 10 | 5 | 9.3 days |
+| Visual effects and particles | 1 | 5 | 14 | 5 | 2.6 work weeks |
+| Animation and rigging | 0 | 8 | 12 | 5 | 4.2 days |
+| Movie Maker and cinematic sequencer | 2 | 5 | 13 | 5 | 3.5 work weeks |
+| Audio Maker and sound design tools | 2 | 8 | 11 | 4 | 3.6 work weeks |
+| Runtime audio engine | 3 | 6 | 11 | 5 | 2.9 work weeks |
+| Luau scripting experience | 0 | 8 | 13 | 4 | 3.5 days |
+| Python scripting environment | 0 | 6 | 15 | 4 | 3 days |
 | Rust SDK and polyglot architecture | 0 | 6 | 14 | 5 | 3.4 days |
-| Debugging and developer tools | 0 | 8 | 12 | 5 | 5.4 days |
-| Roblox migration and compatibility bridge | 1 | 9 | 10 | 5 | 2.0 work weeks |
-| Kronos Player and end-user experience | 0 | 7 | 13 | 5 | 6.6 days |
-| Build packaging and release engineering | 2 | 6 | 12 | 5 | 2.4 work weeks |
-| Multiplayer runtime and netcode | 0 | 8 | 13 | 4 | 7.4 days |
-| Cloud servers and matchmaking | 1 | 8 | 10 | 6 | 2.3 work weeks |
+| Debugging and developer tools | 0 | 8 | 12 | 5 | 4.6 days |
+| Roblox migration and compatibility bridge | 1 | 9 | 10 | 5 | 8.4 days |
+| Kronos Player and end-user experience | 0 | 7 | 13 | 5 | 5 days |
+| Build packaging and release engineering | 2 | 6 | 12 | 5 | 2.3 work weeks |
+| Multiplayer runtime and netcode | 0 | 8 | 13 | 4 | 4.6 days |
+| Cloud servers and matchmaking | 1 | 8 | 10 | 6 | 2.2 work weeks |
 | Backend and developer portal | 0 | 6 | 14 | 5 | 7 days |
 | Persistence, economy and commerce | 0 | 7 | 13 | 5 | 7.7 days |
-| Realtime collaboration and Team Create | 5 | 3 | 12 | 5 | 8.3 work weeks |
-| Plugin architecture and developer API | 0 | 6 | 14 | 5 | 5.9 days |
+| Realtime collaboration and Team Create | 5 | 3 | 12 | 5 | 8.1 work weeks |
+| Plugin architecture and developer API | 0 | 6 | 14 | 5 | 3.9 days |
 | Plugin marketplace and ecosystem | 0 | 6 | 9 | 10 | 6.4 days |
-| Templates, samples and documentation | 0 | 5 | 8 | 12 | 5.2 days |
+| Templates, samples and documentation | 0 | 5 | 8 | 12 | 4.8 days |
 | AI-assisted creator workflows | 2 | 5 | 13 | 5 | 2.8 work weeks |
-| Quality assurance and automation | 0 | 5 | 15 | 5 | 4.2 days |
-| Security, permissions and safety | 0 | 6 | 8 | 11 | 3.6 days |
-| Performance profiling and optimization | 0 | 5 | 13 | 7 | 3.2 days |
-| Input, accessibility and controls | 0 | 4 | 12 | 9 | 4.3 days |
-| Mobile and low-end platform readiness | 2 | 5 | 14 | 4 | 5.0 work weeks |
-| Web and console portability | 1 | 4 | 12 | 8 | 2.8 work weeks |
+| Quality assurance and automation | 0 | 5 | 15 | 5 | 3.4 days |
+| Security, permissions and safety | 0 | 6 | 8 | 11 | 3.2 days |
+| Performance profiling and optimization | 0 | 5 | 13 | 7 | 2.8 days |
+| Input, accessibility and controls | 0 | 4 | 12 | 9 | 2.7 days |
+| Mobile and low-end platform readiness | 2 | 5 | 14 | 4 | 4.6 work weeks |
+| Web and console portability | 1 | 4 | 12 | 8 | 2.5 work weeks |
 | Creator discovery and community tooling | 0 | 5 | 15 | 5 | 6.4 days |
 | Product identity and strategic differentiation | 1 | 0 | 6 | 18 | 4.6 days |
 
@@ -102,14 +102,14 @@ The v5 core is 3.0 work weeks. At the pace of a busy week that is several weeks 
 
 Columns: dot, ID, priority, item, ours (time), marks.
 
-### 1. First-run UX and UI foundation (3.3 days)
+### 1. First-run UX and UI foundation (2.1 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟡 | 0001 | P0 | Welcome wizard with engine mode selection | done | ✅ |
 | 🟡 | 0002 | P0 | One-click sample project creation | 45 min | ◐ |
 | 🟢 | 0003 | P0 | First-launch hardware and driver check | 8 min | ◐ |
-| 🟠 | 0004 | P1 | Missing dependency installer with repair mode | 8 h |  |
+| 🟠 | 0004 | P1 | Missing dependency installer with repair mode | 4 h | ◐ |
 | 🟢 | 0005 | P1 | Clear pre-beta warning and crash-safe reset | done | ✅ |
 | 🟡 | 0006 | P1 | UI scale and text size preferences | 45 min | ◐ |
 | 🟡 | 0007 | P1 | Light dark and high-contrast themes | 45 min | ◐ |
@@ -125,21 +125,21 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0017 | P2 | Recent projects with thumbnails | 45 min | ◐ |
 | 🟡 | 0018 | P2 | Project health dashboard on startup | 45 min | ◐ |
 | 🟡 | 0019 | P2 | Recover unsaved work after crash | 45 min | ◐ |
-| 🟠 | 0020 | P2 | First-five-minutes guided tutorial | 8 h |  |
+| 🟠 | 0020 | P2 | First-five-minutes guided tutorial | 4 h | ◐ |
 | 🟢 | 0021 | P2 | UI performance budget and frame-time overlay | done | ✅ |
-| 🟠 | 0022 | P2 | Localization-ready UI string catalog | 8 h |  |
+| 🟠 | 0022 | P2 | Localization-ready UI string catalog | 4 h | ◐ |
 | 🟢 | 0023 | P2 | Customizable accent colors | done | ✅ |
 | 🟢 | 0024 | P2 | Reduced-motion UI option | 8 min | ◐ |
 | 🟢 | 0025 | P2 | Accessibility audit checklist | done | ✅ |
 
-### 2. Workspace layout and visual design (4.9 days)
+### 2. Workspace layout and visual design (3.3 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0026 | P0 | Resizable dock panels with saved layouts | done | ✅ |
 | 🟢 | 0027 | P0 | Reset workspace to known-good default | done | ✅ |
 | 🟠 | 0028 | P0 | Per-task workspace presets for scripting modeling and cinematic work | 8 h |  |
-| 🟠 | 0029 | P1 | Multi-monitor window placement restore | 8 h |  |
+| 🟠 | 0029 | P1 | Multi-monitor window placement restore | 4 h | ◐ |
 | 🟢 | 0030 | P1 | Draggable tabs with clear drop targets | 8 min | ◐ |
 | 🟡 | 0031 | P1 | Dock preview before releasing panel | 45 min | ◐ |
 | 🟡 | 0032 | P1 | Panel search and panel visibility manager | 45 min | ◐ |
@@ -154,25 +154,25 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0041 | P2 | Shared style guide for all windows | 45 min | ◐ |
 | 🟢 | 0042 | P2 | Empty panel onboarding | 8 min | ◐ |
 | 🟢 | 0043 | P2 | Panel-level keyboard shortcuts | 8 min | ◐ |
-| 🟠 | 0044 | P2 | Layout migration between versions | 8 h |  |
+| 🟠 | 0044 | P2 | Layout migration between versions | 4 h | ◐ |
 | 🟡 | 0045 | P2 | Pop-out script editor window | 45 min | ◐ |
-| 🟠 | 0046 | P2 | Multi-window viewport support | 8 h |  |
+| 🟠 | 0046 | P2 | Multi-window viewport support | 4 h | ◐ |
 | 🟢 | 0047 | P2 | Focus mode hides nonessential chrome | done | ✅ |
 | 🟢 | 0048 | P2 | Presentation mode for screen recording | 8 min | ◐ |
-| 🟠 | 0049 | P2 | UI screenshot regression suite | 8 h |  |
+| 🟠 | 0049 | P2 | UI screenshot regression suite | 4 h | ◐ |
 | 🟡 | 0050 | P2 | UI consistency lint rules | 45 min | ◐ |
 
-### 3. Scene graph and inspector (2.9 days)
+### 3. Scene graph and inspector (2.1 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0051 | P0 | Virtualized hierarchy for large scenes | done | ✅ |
 | 🟠 | 0052 | P0 | Multi-select entities with clear selection summary | done | ✅ |
 | 🟠 | 0053 | P0 | Drag-and-drop parenting with cycle prevention | done | ✅ |
-| 🟠 | 0054 | P1 | Search hierarchy by name type and tag | 8 h |  |
+| 🟠 | 0054 | P1 | Search hierarchy by name type and tag | 4 h | ◐ |
 | 🟡 | 0055 | P1 | Filter hierarchy by component | 45 min | ◐ |
 | 🟡 | 0056 | P1 | Favorites and pinned entities | 45 min | ◐ |
-| 🟠 | 0057 | P1 | Rename in place with validation | 8 h |  |
+| 🟠 | 0057 | P1 | Rename in place with validation | 4 h | ◐ |
 | 🟡 | 0058 | P1 | Bulk rename with patterns | 45 min | ◐ |
 | 🟡 | 0059 | P2 | Bulk component add remove and reset | 45 min | ◐ |
 | 🟡 | 0060 | P2 | Inspector sections grouped by component | 45 min | ◐ |
@@ -192,17 +192,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0074 | P2 | Saveable custom inspector layouts | 8 min | ◐ |
 | 🟡 | 0075 | P2 | Hierarchy performance stress test with 100k entities | 45 min | ◐ |
 
-### 4. Viewport and editor navigation (5.2 days)
+### 4. Viewport and editor navigation (3.2 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0076 | P1 | Orbit pan and zoom controls with presets | 8 h |  |
-| 🟠 | 0077 | P1 | Frame selected object shortcut | 8 h |  |
-| 🟠 | 0078 | P1 | Focus selected bounding box smoothly | 8 h |  |
-| 🟠 | 0079 | P1 | Fly camera with adjustable speed | 8 h |  |
+| 🟠 | 0076 | P1 | Orbit pan and zoom controls with presets | 4 h | ◐ |
+| 🟠 | 0077 | P1 | Frame selected object shortcut | 4 h | ◐ |
+| 🟠 | 0078 | P1 | Focus selected bounding box smoothly | 4 h | ◐ |
+| 🟠 | 0079 | P1 | Fly camera with adjustable speed | 4 h | ◐ |
 | 🟡 | 0080 | P1 | Walkthrough camera with collision | 45 min | ◐ |
 | 🟡 | 0081 | P1 | Orthographic top front side and isometric views | 45 min | ◐ |
-| 🟠 | 0082 | P1 | Perspective lens and field-of-view controls | 8 h |  |
+| 🟠 | 0082 | P1 | Perspective lens and field-of-view controls | 4 h | ◐ |
 | 🟡 | 0083 | P1 | Viewport bookmarks and named cameras | 45 min | ◐ |
 | 🟡 | 0084 | P2 | Toggle grid axes and safe guides | 45 min | ◐ |
 | 🟡 | 0085 | P2 | Snap to grid and angular increments | 45 min | ◐ |
@@ -222,23 +222,23 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0099 | P2 | Multi-viewport split layouts | 8 min | ◐ |
 | 🟡 | 0100 | P2 | Viewport interaction recording tests | 45 min | ◐ |
 
-### 5. Native modeling and mesh editing (2.8 work weeks)
+### 5. Native modeling and mesh editing (7.4 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0101 | P1 | Primitive mesh creation with editable parameters | 8 h |  |
-| 🟠 | 0102 | P1 | Extrude faces with inset and offset | 8 h |  |
-| 🟠 | 0103 | P1 | Inset and bevel mesh operations | 8 h |  |
-| 🟠 | 0104 | P1 | Loop cut and edge slide | 8 h |  |
+| 🟠 | 0101 | P1 | Primitive mesh creation with editable parameters | 4 h | ◐ |
+| 🟠 | 0102 | P1 | Extrude faces with inset and offset | 4 h | ◐ |
+| 🟠 | 0103 | P1 | Inset and bevel mesh operations | 4 h | ◐ |
+| 🟠 | 0104 | P1 | Loop cut and edge slide | 4 h | ◐ |
 | 🟡 | 0105 | P1 | Vertex merge and weld cleanup | 45 min | ◐ |
-| 🟠 | 0106 | P1 | Knife and plane cut tools | 8 h |  |
-| 🔴 | 0107 | P1 | Boolean union subtract and intersect | 4 days |  |
-| 🟠 | 0108 | P1 | Non-destructive modifier stack | 8 h |  |
+| 🟠 | 0106 | P1 | Knife and plane cut tools | 4 h | ◐ |
+| 🔴 | 0107 | P1 | Boolean union subtract and intersect | 2 days | ◐ |
+| 🟠 | 0108 | P1 | Non-destructive modifier stack | 4 h | ◐ |
 | 🟡 | 0109 | P2 | Mirror modifier with clipping | 45 min | ◐ |
 | 🟡 | 0110 | P2 | Array and radial duplication modifiers | 45 min | ◐ |
 | 🟢 | 0111 | P2 | Solidify and shell modifier | 8 min | ◐ |
 | 🟡 | 0112 | P2 | Subdivision surface modifier | 45 min | ◐ |
-| 🔴 | 0113 | P2 | Decimate and retopology assist | 4 days |  |
+| 🔴 | 0113 | P2 | Decimate and retopology assist | 2 days | ◐ |
 | 🟢 | 0114 | P2 | Normals display and recalculation | 8 min | ◐ |
 | 🟡 | 0115 | P2 | UV seam marking | 45 min | ◐ |
 | 🟡 | 0116 | P2 | Mesh validation for non-manifold geometry | 45 min | ◐ |
@@ -252,18 +252,18 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0124 | P2 | Mesh compare and diff view | 8 min | ◐ |
 | 🟡 | 0125 | P2 | Export selected mesh with clean transforms | 45 min | ◐ |
 
-### 6. Terrain and procedural worldbuilding (2.6 work weeks)
+### 6. Terrain and procedural worldbuilding (8.8 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0126 | P1 | Heightmap terrain import and export | 8 h |  |
-| 🟠 | 0127 | P1 | Editable heightmap terrain brush | 8 h |  |
-| 🟠 | 0128 | P1 | Smooth raise lower flatten and erosion brushes | 8 h |  |
-| 🟠 | 0129 | P1 | Terrain layer painting with blend masks | 8 h |  |
-| 🟠 | 0130 | P1 | Runtime terrain chunk streaming | 8 h |  |
-| 🟠 | 0131 | P1 | Voxel terrain block editing | 8 h |  |
+| 🟠 | 0126 | P1 | Heightmap terrain import and export | 4 h | ◐ |
+| 🟠 | 0127 | P1 | Editable heightmap terrain brush | 4 h | ◐ |
+| 🟠 | 0128 | P1 | Smooth raise lower flatten and erosion brushes | 4 h | ◐ |
+| 🟠 | 0129 | P1 | Terrain layer painting with blend masks | 4 h | ◐ |
+| 🟠 | 0130 | P1 | Runtime terrain chunk streaming | 4 h | ◐ |
+| 🟠 | 0131 | P1 | Voxel terrain block editing | 4 h | ◐ |
 | 🔴 | 0132 | P1 | Smooth voxel terrain via marching cubes prototype | 4 days |  |
-| 🟠 | 0133 | P1 | Terrain chunk LOD and crack prevention | 8 h |  |
+| 🟠 | 0133 | P1 | Terrain chunk LOD and crack prevention | 4 h | ◐ |
 | 🟡 | 0134 | P2 | Spline-based road and river tools | 45 min | ◐ |
 | 🟡 | 0135 | P2 | Landscape stamps and reusable brushes | 45 min | ◐ |
 | 🟢 | 0136 | P2 | Procedural biome rules | 8 min | ◐ |
@@ -273,26 +273,26 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0140 | P2 | Terrain collision mesh generation | 45 min | ◐ |
 | 🟡 | 0141 | P2 | Terrain sculpt undo history | 45 min | ◐ |
 | 🟢 | 0142 | P2 | Terrain material layers with distance blending | 8 min | ◐ |
-| 🟠 | 0143 | P2 | Cave and overhang workflow | 8 h |  |
+| 🟠 | 0143 | P2 | Cave and overhang workflow | 4 h | ◐ |
 | 🟡 | 0144 | P2 | Terrain streaming diagnostics | 45 min | ◐ |
-| 🟠 | 0145 | P2 | World origin rebasing for large maps | 8 h |  |
+| 🟠 | 0145 | P2 | World origin rebasing for large maps | 4 h | ◐ |
 | 🟢 | 0146 | P2 | Splatmap import support | 8 min | ◐ |
 | 🟡 | 0147 | P2 | Terrain export to heightmap and meshes | 45 min | ◐ |
-| 🟠 | 0148 | P2 | Erosion simulation with bake step | 8 h |  |
+| 🟠 | 0148 | P2 | Erosion simulation with bake step | 4 h | ◐ |
 | 🟢 | 0149 | P2 | Terrain boundary stitching | 8 min | ◐ |
 | 🟡 | 0150 | P2 | Sample open-world terrain project | 1.5 h |  |
 
-### 7. Asset import pipeline (9.6 days)
+### 7. Asset import pipeline (8.7 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0151 | P0 | Import queue with progress and cancellation | 4 h | ◐ |
 | 🟠 | 0152 | P0 | Drag-and-drop multi-file import | 8 h |  |
 | 🟠 | 0153 | P0 | Import profile per asset type | 8 h |  |
-| 🟠 | 0154 | P1 | Import presets per target platform | 8 h |  |
+| 🟠 | 0154 | P1 | Import presets per target platform | 4 h | ◐ |
 | 🟡 | 0155 | P1 | Import report with warnings and skipped fields | 45 min | ◐ |
 | 🟡 | 0156 | P1 | Reimport when source files change | 45 min | ◐ |
-| 🟠 | 0157 | P1 | Asset dependency tracking | 8 h |  |
+| 🟠 | 0157 | P1 | Asset dependency tracking | 4 h | ◐ |
 | 🟡 | 0158 | P1 | Stable GUID assignment for imported assets | 45 min | ◐ |
 | 🟡 | 0159 | P2 | Duplicate asset detection by hash | 45 min | ◐ |
 | 🟡 | 0160 | P2 | Import conflict resolution UI | 45 min | ◐ |
@@ -300,7 +300,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0162 | P2 | OBJ and MTL import reliability | 45 min | ◐ |
 | 🔴 | 0163 | P2 | FBX skeletal animation import | 4 days |  |
 | 🟠 | 0164 | P2 | USD and USDZ evaluation prototype | 8 h |  |
-| 🟡 | 0165 | P2 | Blender export workflow documentation | 1.5 h |  |
+| 🟡 | 0165 | P2 | Blender export workflow documentation | 45 min | ◐ |
 | 🟡 | 0166 | P2 | SVG and raster image import | 45 min | ◐ |
 | 🟢 | 0167 | P2 | HDR EXR and environment map import | 8 min | ◐ |
 | 🟡 | 0168 | P2 | Font import with shaping validation | 45 min | ◐ |
@@ -312,17 +312,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0174 | P2 | Import sandbox for untrusted parsers | 8 min | ◐ |
 | 🟡 | 0175 | P2 | Batch import regression corpus | 45 min | ◐ |
 
-### 8. Asset browser and content management (5.2 days)
+### 8. Asset browser and content management (3.2 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0176 | P1 | Thumbnail generation cache | 8 h |  |
-| 🟠 | 0177 | P1 | Search by name tag type and usage | 8 h |  |
-| 🟠 | 0178 | P1 | Smart collections based on rules | 8 h |  |
-| 🟠 | 0179 | P1 | User-created asset folders and favorites | 8 h |  |
+| 🟠 | 0176 | P1 | Thumbnail generation cache | 4 h | ◐ |
+| 🟠 | 0177 | P1 | Search by name tag type and usage | 4 h | ◐ |
+| 🟠 | 0178 | P1 | Smart collections based on rules | 4 h | ◐ |
+| 🟠 | 0179 | P1 | User-created asset folders and favorites | 4 h | ◐ |
 | 🟡 | 0180 | P1 | Duplicate and orphan asset scanner | 45 min | ◐ |
 | 🟡 | 0181 | P1 | Dependency graph for assets | 45 min | ◐ |
-| 🟠 | 0182 | P1 | Find references before delete | 8 h |  |
+| 🟠 | 0182 | P1 | Find references before delete | 4 h | ◐ |
 | 🟡 | 0183 | P1 | Replace asset across project | 45 min | ◐ |
 | 🟡 | 0184 | P2 | Asset usage counts by scene | 45 min | ◐ |
 | 🟡 | 0185 | P2 | Version history for source assets | 45 min | ◐ |
@@ -342,17 +342,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0199 | P2 | Asset database consistency repair | 8 min | ◐ |
 | 🟡 | 0200 | P2 | Asset browser keyboard navigation | 45 min | ◐ |
 
-### 9. Materials and shader authoring (3.0 work weeks)
+### 9. Materials and shader authoring (8.7 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🔴 | 0201 | P1 | Node-based material editor | 2.0 work weeks |  |
-| 🟠 | 0202 | P1 | Material graph validation and error paths | 8 h |  |
-| 🟠 | 0203 | P1 | PBR base color metallic roughness pipeline | 8 h |  |
-| 🟠 | 0204 | P1 | Normal height and occlusion map support | 8 h |  |
+| 🔴 | 0201 | P1 | Node-based material editor | 5 days | ◐ |
+| 🟠 | 0202 | P1 | Material graph validation and error paths | 4 h | ◐ |
+| 🟠 | 0203 | P1 | PBR base color metallic roughness pipeline | 4 h | ◐ |
+| 🟠 | 0204 | P1 | Normal height and occlusion map support | 4 h | ◐ |
 | 🟡 | 0205 | P1 | Material instance parameters | 45 min | ◐ |
 | 🟡 | 0206 | P1 | Material preview sphere and custom mesh | 1.5 h |  |
-| 🟠 | 0207 | P1 | Texture sampler and tiling controls | 8 h |  |
+| 🟠 | 0207 | P1 | Texture sampler and tiling controls | 4 h | ◐ |
 | 🟡 | 0208 | P1 | UV channel preview | 45 min | ◐ |
 | 🟡 | 0209 | P2 | Triplanar mapping node | 45 min | ◐ |
 | 🟡 | 0210 | P2 | Vertex-color material blending | 45 min | ◐ |
@@ -372,17 +372,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0224 | P2 | Shader documentation generated from nodes | 8 min | ◐ |
 | 🟡 | 0225 | P2 | Material graph unit tests | 45 min | ◐ |
 
-### 10. Core renderer architecture (2.8 work weeks)
+### 10. Core renderer architecture (7.4 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🔴 | 0226 | P1 | Frame graph with explicit resource lifetimes | 4 days |  |
-| 🟠 | 0227 | P1 | GPU resource leak tracking | 8 h |  |
-| 🟠 | 0228 | P1 | Bindless texture capability detection | 8 h |  |
-| 🔴 | 0229 | P1 | Multi-draw indirect path for compatible GPUs | 4 days |  |
+| 🔴 | 0226 | P1 | Frame graph with explicit resource lifetimes | 2 days | ◐ |
+| 🟠 | 0227 | P1 | GPU resource leak tracking | 4 h | ◐ |
+| 🟠 | 0228 | P1 | Bindless texture capability detection | 4 h | ◐ |
+| 🔴 | 0229 | P1 | Multi-draw indirect path for compatible GPUs | 2 days | ◐ |
 | 🟡 | 0230 | P1 | GPU frustum culling pass | 45 min | ◐ |
-| 🟠 | 0231 | P1 | GPU occlusion culling prototype | 8 h |  |
-| 🟠 | 0232 | P1 | Draw-call and pipeline-state reduction report | 8 h |  |
+| 🟠 | 0231 | P1 | GPU occlusion culling prototype | 4 h | ◐ |
+| 🟠 | 0232 | P1 | Draw-call and pipeline-state reduction report | 4 h | ◐ |
 | 🟡 | 0233 | P1 | Persistent mapped upload buffer manager | 45 min | ◐ |
 | 🟡 | 0234 | P2 | Async texture upload | 45 min | ◐ |
 | 🟡 | 0235 | P2 | Async mesh upload | 45 min | ◐ |
@@ -397,25 +397,25 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0244 | P2 | Dynamic resolution scaling option | 45 min | ◐ |
 | 🟡 | 0245 | P2 | Render scale presets | 45 min | ◐ |
 | 🟢 | 0246 | P2 | GPU timing queries with graceful fallback | 8 min | ◐ |
-| 🟠 | 0247 | P2 | Mesh shader capability-gated experiment | 8 h |  |
-| 🟠 | 0248 | P2 | Clustered geometry culling prototype | 8 h |  |
+| 🟠 | 0247 | P2 | Mesh shader capability-gated experiment | 4 h | ◐ |
+| 🟠 | 0248 | P2 | Clustered geometry culling prototype | 4 h | ◐ |
 | 🟢 | 0249 | P2 | Renderer feature flags per driver | 8 min | ◐ |
 | 🟡 | 0250 | P2 | Render correctness test scenes | 45 min | ◐ |
 
-### 11. Lighting and environment (2.4 work weeks)
+### 11. Lighting and environment (9.3 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0251 | P1 | Directional point spot and area light improvements | 8 h |  |
-| 🟠 | 0252 | P1 | Shadow quality presets | 8 h |  |
-| 🟠 | 0253 | P1 | Cascaded shadow-map stability | 8 h |  |
+| 🟠 | 0251 | P1 | Directional point spot and area light improvements | 4 h | ◐ |
+| 🟠 | 0252 | P1 | Shadow quality presets | 4 h | ◐ |
+| 🟠 | 0253 | P1 | Cascaded shadow-map stability | 4 h | ◐ |
 | 🟠 | 0254 | P1 | Contact-shadow option | 8 h |  |
 | 🔴 | 0255 | P1 | Baked lightmap pipeline | 4 days |  |
-| 🟠 | 0256 | P1 | Light probe volume workflow | 8 h |  |
-| 🟠 | 0257 | P1 | Reflection probe capture and blending | 8 h |  |
-| 🟠 | 0258 | P1 | Screen-space ambient occlusion | 8 h |  |
+| 🟠 | 0256 | P1 | Light probe volume workflow | 4 h | ◐ |
+| 🟠 | 0257 | P1 | Reflection probe capture and blending | 4 h | ◐ |
+| 🟠 | 0258 | P1 | Screen-space ambient occlusion | 4 h | ◐ |
 | 🟠 | 0259 | P2 | Screen-space reflections quality path | 8 h |  |
-| 🟠 | 0260 | P2 | Volumetric fog prototype | 8 h |  |
+| 🟠 | 0260 | P2 | Volumetric fog prototype | 4 h | ◐ |
 | 🟢 | 0261 | P2 | Height fog and distance fog controls | 8 min | ◐ |
 | 🟡 | 0262 | P2 | Sky atmosphere presets | 45 min | ◐ |
 | 🟡 | 0263 | P2 | Procedural sky and cloud layers | 45 min | ◐ |
@@ -425,24 +425,24 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0267 | P2 | Color grading LUT support | 8 min | ◐ |
 | 🟡 | 0268 | P2 | Light linking and exclusion groups | 45 min | ◐ |
 | 🟡 | 0269 | P2 | Light bake preview and invalidation | 45 min | ◐ |
-| 🟡 | 0270 | P2 | Emissive material indirect-light contribution research | 1.5 h |  |
+| 🟡 | 0270 | P2 | Emissive material indirect-light contribution research | 45 min | ◐ |
 | 🟢 | 0271 | P2 | Shadow caster diagnostics | 8 min | ◐ |
 | 🟡 | 0272 | P2 | Per-light performance budget | 45 min | ◐ |
 | 🟡 | 0273 | P2 | Indoor lighting sample scene | 1.5 h |  |
 | 🟢 | 0274 | P2 | Environment profile assets | 8 min | ◐ |
 | 🟡 | 0275 | P2 | Lighting regression comparison captures | 45 min | ◐ |
 
-### 12. Visual effects and particles (3.1 work weeks)
+### 12. Visual effects and particles (2.6 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0276 | P1 | GPU particle emitter with CPU fallback | 8 h |  |
-| 🟠 | 0277 | P1 | Burst and continuous emission modes | 8 h |  |
-| 🟠 | 0278 | P1 | Particle collision with world and terrain | 8 h |  |
-| 🟠 | 0279 | P1 | Particle trails and ribbons | 8 h |  |
+| 🟠 | 0276 | P1 | GPU particle emitter with CPU fallback | 4 h | ◐ |
+| 🟠 | 0277 | P1 | Burst and continuous emission modes | 4 h | ◐ |
+| 🟠 | 0278 | P1 | Particle collision with world and terrain | 4 h | ◐ |
+| 🟠 | 0279 | P1 | Particle trails and ribbons | 4 h | ◐ |
 | 🟡 | 0280 | P1 | Mesh particles | 45 min | ◐ |
 | 🟡 | 0281 | P1 | Flipbook sprite particles | 45 min | ◐ |
-| 🟠 | 0282 | P1 | Curve editors for size speed and color | 8 h |  |
+| 🟠 | 0282 | P1 | Curve editors for size speed and color | 4 h | ◐ |
 | 🟡 | 0283 | P1 | Deterministic seeded particle playback | 45 min | ◐ |
 | 🟡 | 0284 | P2 | Particle LOD and distance culling | 45 min | ◐ |
 | 🔴 | 0285 | P2 | VFX graph with reusable blocks | 2.0 work weeks |  |
@@ -450,7 +450,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0287 | P2 | Beam and laser effects | 45 min | ◐ |
 | 🟡 | 0288 | P2 | Decal burst emitters | 45 min | ◐ |
 | 🟢 | 0289 | P2 | Wind and turbulence forces | 8 min | ◐ |
-| 🟡 | 0290 | P2 | Volumetric fog interaction prototype | 1.5 h |  |
+| 🟡 | 0290 | P2 | Volumetric fog interaction prototype | 45 min | ◐ |
 | 🟡 | 0291 | P2 | Particle event hooks for scripts | 45 min | ◐ |
 | 🟢 | 0292 | P2 | VFX preview window | 8 min | ◐ |
 | 🟡 | 0293 | P2 | VFX timeline authoring | 45 min | ◐ |
@@ -462,19 +462,19 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0299 | P2 | VFX capture and thumbnail | 8 min | ◐ |
 | 🟡 | 0300 | P2 | VFX sample library | 1.5 h |  |
 
-### 13. Animation and rigging (7.5 days)
+### 13. Animation and rigging (4.2 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0301 | P1 | Animation clip browser and preview | 8 h |  |
-| 🟠 | 0302 | P1 | Skeleton hierarchy visualization | 8 h |  |
-| 🟠 | 0303 | P1 | Import humanoid rigs with retargeting | 8 h |  |
-| 🟠 | 0304 | P1 | Avatar retarget profile | 8 h |  |
-| 🟠 | 0305 | P1 | Animation state machine graph | 8 h |  |
-| 🟠 | 0306 | P1 | Blend trees for locomotion | 8 h |  |
-| 🟠 | 0307 | P1 | Animation layers and masks | 8 h |  |
+| 🟠 | 0301 | P1 | Animation clip browser and preview | 4 h | ◐ |
+| 🟠 | 0302 | P1 | Skeleton hierarchy visualization | 4 h | ◐ |
+| 🟠 | 0303 | P1 | Import humanoid rigs with retargeting | 4 h | ◐ |
+| 🟠 | 0304 | P1 | Avatar retarget profile | 4 h | ◐ |
+| 🟠 | 0305 | P1 | Animation state machine graph | 4 h | ◐ |
+| 🟠 | 0306 | P1 | Blend trees for locomotion | 4 h | ◐ |
+| 🟠 | 0307 | P1 | Animation layers and masks | 4 h | ◐ |
 | 🟡 | 0308 | P1 | Root-motion extraction and preview | 45 min | ◐ |
-| 🟠 | 0309 | P2 | Inverse-kinematics target controls | 8 h |  |
+| 🟠 | 0309 | P2 | Inverse-kinematics target controls | 4 h | ◐ |
 | 🟡 | 0310 | P2 | Foot planting and slope correction | 45 min | ◐ |
 | 🟢 | 0311 | P2 | Constraint stack for props and limbs | 8 min | ◐ |
 | 🟡 | 0312 | P2 | Timeline markers and events | 45 min | ◐ |
@@ -492,17 +492,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0324 | P2 | Animation preview against live physics | 15 min |  |
 | 🟡 | 0325 | P2 | Animation regression corpus | 45 min | ◐ |
 
-### 14. Movie Maker and cinematic sequencer (3.8 work weeks)
+### 14. Movie Maker and cinematic sequencer (3.5 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0326 | P1 | Dedicated Movie Maker workspace | 8 h |  |
-| 🟠 | 0327 | P1 | Track-based timeline with zoom and snapping | 8 h |  |
-| 🟠 | 0328 | P1 | Camera cuts and multi-camera tracks | 8 h |  |
-| 🟠 | 0329 | P1 | Transform keyframes with curve handles | 8 h |  |
+| 🟠 | 0327 | P1 | Track-based timeline with zoom and snapping | 4 h | ◐ |
+| 🟠 | 0328 | P1 | Camera cuts and multi-camera tracks | 4 h | ◐ |
+| 🟠 | 0329 | P1 | Transform keyframes with curve handles | 4 h | ◐ |
 | 🟡 | 0330 | P1 | Lens focal length and aperture animation | 45 min | ◐ |
 | 🟡 | 0331 | P1 | Depth-of-field preview | 45 min | ◐ |
-| 🟠 | 0332 | P1 | Motion blur quality controls | 8 h |  |
+| 🟠 | 0332 | P1 | Motion blur quality controls | 4 h | ◐ |
 | 🟡 | 0333 | P1 | Lighting and time-of-day tracks | 45 min | ◐ |
 | 🟡 | 0334 | P2 | Material and post-effect keyframes | 45 min | ◐ |
 | 🟡 | 0335 | P2 | Audio waveform and sync tracks | 45 min | ◐ |
@@ -522,53 +522,53 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0349 | P2 | MP4 export through bundled or documented encoder | 8 min | ◐ |
 | 🟡 | 0350 | P2 | Frame-accurate render tests | 45 min | ◐ |
 
-### 15. Audio Maker and sound design tools (4.3 work weeks)
+### 15. Audio Maker and sound design tools (3.6 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🔴 | 0351 | P1 | Dedicated audio workspace with multitrack timeline | 2.0 work weeks |  |
-| 🟠 | 0352 | P1 | Non-destructive waveform editing | 8 h |  |
-| 🟠 | 0353 | P1 | Region split trim fade and slip editing | 8 h |  |
-| 🟠 | 0354 | P1 | Envelope and automation lanes | 8 h |  |
+| 🟠 | 0352 | P1 | Non-destructive waveform editing | 4 h | ◐ |
+| 🟠 | 0353 | P1 | Region split trim fade and slip editing | 4 h | ◐ |
+| 🟠 | 0354 | P1 | Envelope and automation lanes | 4 h | ◐ |
 | 🟡 | 0355 | P1 | Clip gain and track gain controls | 45 min | ◐ |
 | 🟡 | 0356 | P1 | Loop and region playback | 45 min | ◐ |
-| 🟠 | 0357 | P1 | Tempo and time-signature grid | 8 h |  |
+| 🟠 | 0357 | P1 | Tempo and time-signature grid | 4 h | ◐ |
 | 🟡 | 0358 | P1 | Marker and cue regions | 45 min | ◐ |
 | 🟡 | 0359 | P2 | Sample slicing and transient detection | 45 min | ◐ |
-| 🟠 | 0360 | P2 | Pitch and time-stretch evaluation | 8 h |  |
+| 🟠 | 0360 | P2 | Pitch and time-stretch evaluation | 4 h | ◐ |
 | 🟢 | 0361 | P2 | Normalize and loudness analysis | 8 min | ◐ |
-| 🟠 | 0362 | P2 | Noise gate and denoise offline tools | 8 h |  |
+| 🟠 | 0362 | P2 | Noise gate and denoise offline tools | 4 h | ◐ |
 | 🟡 | 0363 | P2 | EQ and compressor effect rack | 45 min | ◐ |
 | 🟢 | 0364 | P2 | Reverb delay chorus and saturation presets | 8 min | ◐ |
-| 🟠 | 0365 | P2 | Sidechain routing prototype | 8 h |  |
+| 🟠 | 0365 | P2 | Sidechain routing prototype | 4 h | ◐ |
 | 🟡 | 0366 | P2 | Bus and send routing | 45 min | ◐ |
 | 🟢 | 0367 | P2 | Stereo and surround channel routing | 8 min | ◐ |
 | 🟡 | 0368 | P2 | Audio clip crossfade editing | 45 min | ◐ |
 | 🟡 | 0369 | P2 | Sample-rate conversion quality report | 45 min | ◐ |
 | 🔴 | 0370 | P2 | Plugin host for supported audio effects | 4 days |  |
-| 🟠 | 0371 | P2 | MIDI note editor prototype | 8 h |  |
+| 🟠 | 0371 | P2 | MIDI note editor prototype | 4 h | ◐ |
 | 🟡 | 0372 | P2 | Sound library browser | 45 min | ◐ |
 | 🟡 | 0373 | P2 | Batch audio conversion | 45 min | ◐ |
 | 🟢 | 0374 | P2 | Waveform cache and peaks generation | 8 min | ◐ |
 | 🟡 | 0375 | P2 | Audio export stems and mixdown | 45 min | ◐ |
 
-### 16. Runtime audio engine (4.7 work weeks)
+### 16. Runtime audio engine (2.9 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0376 | P1 | Audio mixer bus graph | 8 h |  |
-| 🟠 | 0377 | P1 | Per-category volume sliders | 8 h |  |
-| 🟠 | 0378 | P1 | 3D positional sound attenuation | 8 h |  |
-| 🟠 | 0379 | P1 | Directional cone emitters | 8 h |  |
-| 🟠 | 0380 | P1 | Occlusion and obstruction filtering | 8 h |  |
+| 🟠 | 0376 | P1 | Audio mixer bus graph | 4 h | ◐ |
+| 🟠 | 0377 | P1 | Per-category volume sliders | 4 h | ◐ |
+| 🟠 | 0378 | P1 | 3D positional sound attenuation | 4 h | ◐ |
+| 🟠 | 0379 | P1 | Directional cone emitters | 4 h | ◐ |
+| 🟠 | 0380 | P1 | Occlusion and obstruction filtering | 4 h | ◐ |
 | 🟡 | 0381 | P1 | Audio zones and reverb regions | 45 min | ◐ |
-| 🟠 | 0382 | P1 | Doppler shift option | 8 h |  |
+| 🟠 | 0382 | P1 | Doppler shift option | 4 h | ◐ |
 | 🟡 | 0383 | P1 | Streaming long music tracks | 45 min | ◐ |
 | 🔴 | 0384 | P2 | Voice chat architecture evaluation | 4 days |  |
 | 🟡 | 0385 | P2 | Audio ducking and sidechain control | 45 min | ◐ |
 | 🟢 | 0386 | P2 | Low-latency voice buffer tuning | 8 min | ◐ |
-| 🔴 | 0387 | P2 | Spatial audio headphone mode | 2.0 work weeks |  |
-| 🔴 | 0388 | P2 | HRTF capability evaluation | 4 days |  |
+| 🔴 | 0387 | P2 | Spatial audio headphone mode | 5 days | ◐ |
+| 🔴 | 0388 | P2 | HRTF capability evaluation | 2 days | ◐ |
 | 🟢 | 0389 | P2 | Sample-accurate scheduled playback | 8 min | ◐ |
 | 🟡 | 0390 | P2 | Audio pooling and voice stealing | 45 min | ◐ |
 | 🟡 | 0391 | P2 | Priority-based voice limits | 45 min | ◐ |
@@ -582,17 +582,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0399 | P2 | Audio profiler with active voice graph | 8 min | ◐ |
 | 🟡 | 0400 | P2 | Audio loopback test harness | 45 min | ◐ |
 
-### 17. Luau scripting experience (5.1 days)
+### 17. Luau scripting experience (3.5 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0401 | P0 | Full syntax-highlighted Luau editor | done | ✅ |
 | 🟠 | 0402 | P0 | Luau autocomplete using reflected APIs | done | ✅ |
 | 🟠 | 0403 | P0 | API documentation hover cards | done | ✅ |
-| 🟠 | 0404 | P1 | Signature help for function calls | 8 h |  |
+| 🟠 | 0404 | P1 | Signature help for function calls | 4 h | ◐ |
 | 🟡 | 0405 | P1 | Go to definition and references | 45 min | ◐ |
 | 🟡 | 0406 | P1 | Find all script usages | 45 min | ◐ |
-| 🟠 | 0407 | P1 | Rename symbols across scripts | 8 h |  |
+| 🟠 | 0407 | P1 | Rename symbols across scripts | 4 h | ◐ |
 | 🟡 | 0408 | P1 | Multi-file tabs and split panes | 45 min | ◐ |
 | 🟡 | 0409 | P2 | Script project tree and filter | 45 min | ◐ |
 | 🟡 | 0410 | P2 | Script formatting on save | 45 min | ◐ |
@@ -600,9 +600,9 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0412 | P2 | Static type checking integration | 45 min | ◐ |
 | 🟡 | 0413 | P2 | Type-aware autocomplete for Instances | 45 min | ◐ |
 | 🟢 | 0414 | P2 | Module dependency graph | 8 min | ◐ |
-| 🟠 | 0415 | P2 | Breakpoints and pause execution | 8 h |  |
+| 🟠 | 0415 | P2 | Breakpoints and pause execution | 4 h | ◐ |
 | 🟠 | 0416 | P2 | Variable watch window | 8 h |  |
-| 🟠 | 0417 | P2 | Call stack and coroutine inspector | 8 h |  |
+| 🟠 | 0417 | P2 | Call stack and coroutine inspector | 4 h | ◐ |
 | 🟡 | 0418 | P2 | Evaluate expression in debug console | 45 min | ◐ |
 | 🟡 | 0419 | P2 | Per-script CPU and memory budgets | 45 min | ◐ |
 | 🟡 | 0420 | P2 | Hot-reload diff before applying | 45 min | ◐ |
@@ -612,17 +612,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0424 | P2 | API compatibility annotations for Roblox imports | 8 min | ◐ |
 | 🟡 | 0425 | P2 | Safe script refactoring tools | 45 min | ◐ |
 
-### 18. Python scripting environment (3.8 days)
+### 18. Python scripting environment (3 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0426 | P0 | Enable Python execution in Studio Play consistently | done | ✅ |
 | 🟠 | 0427 | P0 | Python script editor with syntax and diagnostics | 4 h | ◐ |
 | 🟠 | 0428 | P0 | PocketPy version and capability reporting | done | ✅ |
-| 🟠 | 0429 | P1 | Typed world API stubs for editor autocomplete | 8 h |  |
+| 🟠 | 0429 | P1 | Typed world API stubs for editor autocomplete | 4 h | ◐ |
 | 🟡 | 0430 | P1 | Python-to-Luau API parity matrix | done | ✅ |
 | 🟡 | 0431 | P1 | Cross-language entity handle type | done | ✅ |
-| 🟠 | 0432 | P1 | Python event subscriptions with cancellation | 8 h |  |
+| 🟠 | 0432 | P1 | Python event subscriptions with cancellation | 4 h | ◐ |
 | 🟡 | 0433 | P1 | Python coroutine and async design review | done | ✅ |
 | 🟡 | 0434 | P2 | Deterministic Python execution constraints | done | ✅ |
 | 🟡 | 0435 | P2 | Per-script memory and time budget UI | 45 min | ◐ |
@@ -672,7 +672,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0474 | P2 | Plugin API deprecation policy | done | ✅ |
 | 🟡 | 0475 | P2 | Example plugin proving end-to-end workflow | done | ✅ |
 
-### 20. Debugging and developer tools (5.4 days)
+### 20. Debugging and developer tools (4.6 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -682,7 +682,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0479 | P1 | Crash dump symbol upload workflow | 8 h | ⛔ |
 | 🟠 | 0480 | P1 | Live entity/component inspector | 8 h |  |
 | 🟡 | 0481 | P1 | Runtime variable watch window | 45 min | ◐ |
-| 🟠 | 0482 | P1 | Breakpoint support across script types | 8 h |  |
+| 🟠 | 0482 | P1 | Breakpoint support across script types | 4 h | ◐ |
 | 🟡 | 0483 | P1 | Frame-by-frame simulation stepping | 45 min | ◐ |
 | 🟡 | 0484 | P2 | Physics contact visualization | 45 min | ◐ |
 | 🟡 | 0485 | P2 | Network replication visualization | 45 min | ◐ |
@@ -697,33 +697,33 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0494 | P2 | Built-in command console with permission checks | 45 min | ◐ |
 | 🟠 | 0495 | P2 | Remote server log tail | 8 h | ⛔ |
 | 🟢 | 0496 | P2 | Server/client correlated logs | 8 min | ◐ |
-| 🟠 | 0497 | P2 | Reproducible bug report recorder | 8 h |  |
+| 🟠 | 0497 | P2 | Reproducible bug report recorder | 4 h | ◐ |
 | 🟡 | 0498 | P2 | Debug-only simulation overlays | 45 min | ◐ |
 | 🟢 | 0499 | P2 | Diagnostic mode toggles | 8 min | ◐ |
 | 🟡 | 0500 | P2 | One-click environment report export | 45 min | ◐ |
 
-### 21. Roblox migration and compatibility bridge (2.0 work weeks)
+### 21. Roblox migration and compatibility bridge (8.4 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0501 | P0 | Compatibility score by class and API | done | ✅ |
 | 🟠 | 0502 | P0 | Test corpus for common game genres | done | ✅ |
 | 🟠 | 0503 | P0 | Binary RBXL and RBXM parsing hardening | 4 h | ◐ |
-| 🟠 | 0504 | P1 | Round-trip preservation of unknown properties | 8 h |  |
+| 🟠 | 0504 | P1 | Round-trip preservation of unknown properties | 4 h | ◐ |
 | 🟡 | 0505 | P1 | API shims for common services | 45 min | ◐ |
 | 🟡 | 0506 | P1 | GUI constraints and layout compatibility | 45 min | ◐ |
-| 🟠 | 0507 | P1 | UDim and anchor-point edge-case tests | 8 h |  |
+| 🟠 | 0507 | P1 | UDim and anchor-point edge-case tests | 4 h | ◐ |
 | 🟡 | 0508 | P1 | MeshPart and texture preservation | 45 min | ◐ |
 | 🟠 | 0509 | P2 | Terrain and voxel import support | 8 h |  |
 | 🔴 | 0510 | P2 | Animation and humanoid behavior parity | 4 days |  |
 | 🟢 | 0511 | P2 | Sound and music mapping report | 8 min | ◐ |
 | 🟡 | 0512 | P2 | Lighting and atmosphere mapping | 45 min | ◐ |
-| 🟠 | 0513 | P2 | Constraints and attachments translation | 8 h |  |
+| 🟠 | 0513 | P2 | Constraints and attachments translation | 4 h | ◐ |
 | 🟢 | 0514 | P2 | CollectionService tag preservation | 8 min | ◐ |
 | 🟡 | 0515 | P2 | RemoteEvent network semantic parity tests | 45 min | ◐ |
 | 🟡 | 0516 | P2 | DataStore emulator with clear migration notes | 45 min | ◐ |
 | 🟢 | 0517 | P2 | Unsupported API call source report | 8 min | ◐ |
-| 🟠 | 0518 | P2 | Script rewrite suggestions for unsupported APIs | 8 h |  |
+| 🟠 | 0518 | P2 | Script rewrite suggestions for unsupported APIs | 4 h | ◐ |
 | 🟠 | 0519 | P2 | Import preview with before-after screenshots | 8 h |  |
 | 🟡 | 0520 | P2 | Batch place conversion CLI | 45 min | ◐ |
 | 🟢 | 0521 | P2 | Asset-license provenance report | 8 min | ◐ |
@@ -732,17 +732,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0524 | P2 | Import regression bundle from licensed test places | 15 min |  |
 | 🟡 | 0525 | P2 | Compatibility report export for marketing claims | 45 min | ◐ |
 
-### 22. Kronos Player and end-user experience (6.6 days)
+### 22. Kronos Player and end-user experience (5 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0526 | P0 | Instant project/game launch page | 8 h |  |
 | 🟠 | 0527 | P0 | Recent and favorite games | 8 h |  |
 | 🟠 | 0528 | P0 | Per-game update notes | 8 h | ⛔ |
-| 🟠 | 0529 | P1 | Download resume and integrity verification | 8 h |  |
-| 🟠 | 0530 | P1 | Controller-friendly navigation | 8 h |  |
-| 🟠 | 0531 | P1 | Gamepad-first UI navigation | 8 h |  |
-| 🟠 | 0532 | P1 | In-game graphics settings | 8 h |  |
+| 🟠 | 0529 | P1 | Download resume and integrity verification | 4 h | ◐ |
+| 🟠 | 0530 | P1 | Controller-friendly navigation | 4 h | ◐ |
+| 🟠 | 0531 | P1 | Gamepad-first UI navigation | 4 h | ◐ |
+| 🟠 | 0532 | P1 | In-game graphics settings | 4 h | ◐ |
 | 🟡 | 0533 | P1 | Keybind remapping menu | 45 min | ◐ |
 | 🟡 | 0534 | P2 | Per-game audio settings | 45 min | ◐ |
 | 🟡 | 0535 | P2 | Accessible subtitles and captions | 45 min | ◐ |
@@ -762,7 +762,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0549 | P2 | First-launch performance telemetry opt-in | 8 min | ◐ |
 | 🟡 | 0550 | P2 | User-facing privacy and safety center | 45 min | ◐ |
 
-### 23. Build packaging and release engineering (2.4 work weeks)
+### 23. Build packaging and release engineering (2.3 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -772,12 +772,12 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🔴 | 0554 | P1 | macOS build feasibility spike | 4 days |  |
 | 🟡 | 0555 | P1 | Clean-machine installer smoke tests | 45 min | ◐ |
 | 🟡 | 0556 | P1 | Portable archive validation | 45 min | ◐ |
-| 🟠 | 0557 | P1 | Dependency manifest per release | 8 h |  |
+| 🟠 | 0557 | P1 | Dependency manifest per release | 4 h | ◐ |
 | 🟠 | 0558 | P1 | Signed release artifact plan | 8 h | ⛔ |
 | 🟡 | 0559 | P2 | Update channel for stable preview and nightly | 45 min | ◐ |
 | 🔴 | 0560 | P2 | Delta updates evaluation | 4 days |  |
 | 🟢 | 0561 | P2 | Download integrity hashes and signatures | 15 min | ⛔ |
-| 🟠 | 0562 | P2 | Rollback after failed update | 8 h |  |
+| 🟠 | 0562 | P2 | Rollback after failed update | 4 h | ◐ |
 | 🟡 | 0563 | P2 | Player Studio version compatibility checks | 45 min | ◐ |
 | 🟢 | 0564 | P2 | Project packaging manifest | done | ✅ |
 | 🟡 | 0565 | P2 | Exclude source files and editor-only assets on publish | 45 min | ◐ |
@@ -792,21 +792,21 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0574 | P2 | Safe prerelease migration backups | 8 min | ◐ |
 | 🟡 | 0575 | P2 | Installer uninstall cleanup and preserve-user-data choice | 45 min | ◐ |
 
-### 24. Multiplayer runtime and netcode (7.4 days)
+### 24. Multiplayer runtime and netcode (4.6 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0576 | P1 | Authoritative server simulation mode | 8 h |  |
-| 🟠 | 0577 | P1 | State replication priority classes | 8 h |  |
-| 🟠 | 0578 | P1 | Delta-compressed component replication | 8 h |  |
-| 🟠 | 0579 | P1 | Interest management by spatial cell | 8 h |  |
+| 🟠 | 0576 | P1 | Authoritative server simulation mode | 4 h | ◐ |
+| 🟠 | 0577 | P1 | State replication priority classes | 4 h | ◐ |
+| 🟠 | 0578 | P1 | Delta-compressed component replication | 4 h | ◐ |
+| 🟠 | 0579 | P1 | Interest management by spatial cell | 4 h | ◐ |
 | 🟡 | 0580 | P1 | Entity ownership and authority rules | done | ✅ |
-| 🟠 | 0581 | P1 | Client prediction for character movement | 8 h |  |
-| 🟠 | 0582 | P1 | Server reconciliation diagnostics | 8 h |  |
+| 🟠 | 0581 | P1 | Client prediction for character movement | 4 h | ◐ |
+| 🟠 | 0582 | P1 | Server reconciliation diagnostics | 4 h | ◐ |
 | 🟠 | 0583 | P1 | Rollback netcode integration tests | 8 h |  |
 | 🟡 | 0584 | P2 | Deterministic tick scheduler validation | 45 min | ◐ |
 | 🟡 | 0585 | P2 | Network interpolation buffers | 45 min | ◐ |
-| 🟠 | 0586 | P2 | Lag compensation for hitscan prototype | 8 h |  |
+| 🟠 | 0586 | P2 | Lag compensation for hitscan prototype | 4 h | ◐ |
 | 🟡 | 0587 | P2 | Reliable ordered and unreliable message channels | 45 min | ◐ |
 | 🟡 | 0588 | P2 | Bandwidth budget per connection | 45 min | ◐ |
 | 🟢 | 0589 | P2 | Packet loss and latency simulator | done | ✅ |
@@ -822,12 +822,12 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0599 | P2 | 2 to 16-player reference sample | 15 min |  |
 | 🟡 | 0600 | P2 | Server-client desync detector | 45 min | ◐ |
 
-### 25. Cloud servers and matchmaking (2.3 work weeks)
+### 25. Cloud servers and matchmaking (2.2 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0601 | P1 | Local dedicated-server launcher wizard | 8 h |  |
-| 🟠 | 0602 | P1 | Server process supervisor with graceful restart | 8 h |  |
+| 🟠 | 0601 | P1 | Local dedicated-server launcher wizard | 4 h | ◐ |
+| 🟠 | 0602 | P1 | Server process supervisor with graceful restart | 4 h | ◐ |
 | 🟠 | 0603 | P1 | Container image for dedicated server | 8 h |  |
 | 🟠 | 0604 | P1 | Docker compose dev deployment | 8 h |  |
 | 🟡 | 0605 | P1 | Server health and readiness endpoints | 45 min | ◐ |
@@ -912,26 +912,26 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0674 | P2 | Spending limits and parental controls evaluation | 15 min | ⛔ |
 | 🟡 | 0675 | P2 | Marketplace item ownership validation | 1.5 h | ⛔ |
 
-### 28. Realtime collaboration and Team Create (8.3 work weeks)
+### 28. Realtime collaboration and Team Create (8.1 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🔴 | 0676 | P1 | Shared edit session with explicit invite | 2.0 work weeks |  |
 | 🔴 | 0677 | P1 | Authoritative collaboration session service | 2.0 work weeks |  |
-| 🟠 | 0678 | P1 | Presence avatars and cursor positions | 8 h |  |
+| 🟠 | 0678 | P1 | Presence avatars and cursor positions | 4 h | ◐ |
 | 🟠 | 0679 | P1 | Selection outlines for collaborators | 8 h |  |
 | 🔴 | 0680 | P1 | Live scene transform synchronization | 4 days |  |
 | 🔴 | 0681 | P1 | Conflict handling for simultaneous property edits | 4 days |  |
 | 🔴 | 0682 | P1 | CRDT feasibility prototype for selected data types | 2.0 work weeks |  |
-| 🟡 | 0683 | P1 | Script editing collaboration design | 1.5 h |  |
+| 🟡 | 0683 | P1 | Script editing collaboration design | 45 min | ◐ |
 | 🟡 | 0684 | P2 | Conflict-aware script merge UI | 45 min | ◐ |
 | 🟡 | 0685 | P2 | Lock and lease policy for high-risk edits | 45 min | ◐ |
 | 🟢 | 0686 | P2 | Shared undo history semantics | 8 min | ◐ |
-| 🟠 | 0687 | P2 | Session reconnect and snapshot recovery | 8 h |  |
+| 🟠 | 0687 | P2 | Session reconnect and snapshot recovery | 4 h | ◐ |
 | 🟡 | 0688 | P2 | Permission roles for owner editor viewer | 45 min | ◐ |
 | 🟢 | 0689 | P2 | Invite revocation and access expiry | 8 min | ◐ |
 | 🟡 | 0690 | P2 | Collaborative asset import status | 45 min | ◐ |
-| 🟡 | 0691 | P2 | Voice or text session chat design | 1.5 h |  |
+| 🟡 | 0691 | P2 | Voice or text session chat design | 45 min | ◐ |
 | 🟢 | 0692 | P2 | Follow collaborator camera mode | 8 min | ◐ |
 | 🟡 | 0693 | P2 | Change attribution timeline | 45 min | ◐ |
 | 🟡 | 0694 | P2 | Session audit log | 45 min | ◐ |
@@ -940,19 +940,19 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0697 | P2 | Large-scene sync benchmarks | 45 min | ◐ |
 | 🟡 | 0698 | P2 | Multi-user test harness | 45 min | ◐ |
 | 🟢 | 0699 | P2 | Collaboration disabled fallback | done | ✅ |
-| 🟡 | 0700 | P2 | Local-hosted collaboration option | 1.5 h |  |
+| 🟡 | 0700 | P2 | Local-hosted collaboration option | 45 min | ◐ |
 
-### 29. Plugin architecture and developer API (5.9 days)
+### 29. Plugin architecture and developer API (3.9 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0701 | P1 | Formal plugin lifecycle documentation | 8 h |  |
-| 🟠 | 0702 | P1 | Manifest schema with permissions | 8 h |  |
-| 🟠 | 0703 | P1 | Plugin API capability negotiation | 8 h |  |
+| 🟠 | 0701 | P1 | Formal plugin lifecycle documentation | 4 h | ◐ |
+| 🟠 | 0702 | P1 | Manifest schema with permissions | 4 h | ◐ |
+| 🟠 | 0703 | P1 | Plugin API capability negotiation | 4 h | ◐ |
 | 🟠 | 0704 | P1 | Signed plugin package metadata | 8 h | ⛔ |
-| 🟠 | 0705 | P1 | Sandboxed plugin process health watchdog | 8 h |  |
+| 🟠 | 0705 | P1 | Sandboxed plugin process health watchdog | 4 h | ◐ |
 | 🟡 | 0706 | P1 | Per-plugin CPU and memory telemetry | 45 min | ◐ |
-| 🟠 | 0707 | P1 | Crash isolation and automatic disable | 8 h |  |
+| 🟠 | 0707 | P1 | Crash isolation and automatic disable | 4 h | ◐ |
 | 🟡 | 0708 | P1 | Plugin compatibility testing across versions | 45 min | ◐ |
 | 🟡 | 0709 | P2 | Plugin dependency resolution | 45 min | ◐ |
 | 🟡 | 0710 | P2 | Plugin configuration persistence | 45 min | ◐ |
@@ -1002,11 +1002,11 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0749 | P2 | Plugin licensing metadata display | 15 min | ⛔ |
 | 🟡 | 0750 | P2 | Export and import plugin sets | 1.5 h | ⛔ |
 
-### 31. Templates, samples and documentation (5.2 days)
+### 31. Templates, samples and documentation (4.8 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0751 | P1 | Five-minute first game tutorial | 8 h |  |
+| 🟠 | 0751 | P1 | Five-minute first game tutorial | 4 h | ◐ |
 | 🟠 | 0752 | P1 | Guided obby template | 8 h |  |
 | 🟠 | 0753 | P1 | Tycoon mechanics sample | 8 h |  |
 | 🟠 | 0754 | P1 | Multiplayer arena sample | 8 h |  |
@@ -1017,7 +1017,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0759 | P2 | Audio-driven rhythm sample | 15 min |  |
 | 🟢 | 0760 | P2 | Cinematic storyboard sample | 15 min |  |
 | 🟢 | 0761 | P2 | Terrain sculpting sample | 15 min |  |
-| 🟢 | 0762 | P2 | Python game scripting sample | 15 min |  |
+| 🟢 | 0762 | P2 | Python game scripting sample | 8 min | ◐ |
 | 🟢 | 0763 | P2 | Rust Studio plugin sample | 15 min |  |
 | 🟡 | 0764 | P2 | C ABI C plugin sample | 1.5 h |  |
 | 🟢 | 0765 | P2 | Cross-language Luau Python sample | 15 min |  |
@@ -1062,17 +1062,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0799 | P2 | Benchmark task success on fixtures | 15 min | ⛔ |
 | 🟡 | 0800 | P2 | AI feature telemetry opt-in only | 1.5 h | ⛔ |
 
-### 33. Quality assurance and automation (4.2 days)
+### 33. Quality assurance and automation (3.4 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0801 | P0 | Unit test coverage map by subsystem | 8 h |  |
 | 🟠 | 0802 | P0 | Core engine smoke test suite | done | ✅ |
 | 🟠 | 0803 | P0 | Fresh project creation smoke test | 4 h | ◐ |
-| 🟠 | 0804 | P1 | Player launch and clean exit test | 8 h |  |
+| 🟠 | 0804 | P1 | Player launch and clean exit test | 4 h | ◐ |
 | 🟡 | 0805 | P1 | Studio launch and clean exit test | 45 min | ◐ |
 | 🟡 | 0806 | P1 | Import corpus regression runner | 45 min | ◐ |
-| 🟠 | 0807 | P1 | Screenshot comparison for editor UI | 8 h |  |
+| 🟠 | 0807 | P1 | Screenshot comparison for editor UI | 4 h | ◐ |
 | 🟡 | 0808 | P1 | GPU renderer golden-image tests | 45 min | ◐ |
 | 🟡 | 0809 | P2 | Physics behavior scenario suite | 45 min | ◐ |
 | 🟡 | 0810 | P2 | Network simulation integration suite | 45 min | ◐ |
@@ -1092,7 +1092,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0824 | P2 | Release-blocking severity policy | done | ✅ |
 | 🟡 | 0825 | P2 | Test flake tracking dashboard | 45 min | ◐ |
 
-### 34. Security, permissions and safety (3.6 days)
+### 34. Security, permissions and safety (3.2 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -1102,7 +1102,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0829 | P1 | Signed release artifacts plan | 8 h | ⛔ |
 | 🟠 | 0830 | P1 | Secure update manifest verification | 8 h | ⛔ |
 | 🟡 | 0831 | P1 | TLS and certificate failure handling | 45 min | ◐ |
-| 🟠 | 0832 | P1 | Secret scanning in source and logs | 8 h |  |
+| 🟠 | 0832 | P1 | Secret scanning in source and logs | 4 h | ◐ |
 | 🟡 | 0833 | P1 | Redaction of tokens from diagnostics | 45 min | ◐ |
 | 🟡 | 0834 | P2 | Untrusted project safe-open mode | 45 min | ◐ |
 | 🟡 | 0835 | P2 | Zip path traversal protection | done | ✅ |
@@ -1122,14 +1122,14 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0849 | P2 | Permission prompt for external integrations | 8 min | ◐ |
 | 🟢 | 0850 | P2 | Security checklist for each release | done | ✅ |
 
-### 35. Performance profiling and optimization (3.2 days)
+### 35. Performance profiling and optimization (2.8 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0851 | P0 | CPU frame-time breakdown | done | ✅ |
 | 🟠 | 0852 | P0 | GPU frame-time breakdown | 4 h | ◐ |
 | 🟠 | 0853 | P0 | Per-system ECS timing | done | ✅ |
-| 🟠 | 0854 | P1 | Allocation hot-spot view | 8 h |  |
+| 🟠 | 0854 | P1 | Allocation hot-spot view | 4 h | ◐ |
 | 🟡 | 0855 | P1 | Physics broadphase and contact metrics | 45 min | ◐ |
 | 🟢 | 0856 | P1 | Script execution flame graph | 8 min | ◐ |
 | 🟠 | 0857 | P1 | Asset load and decode timing | 8 h |  |
@@ -1152,14 +1152,14 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0874 | P2 | Optimization before-after benchmark snapshots | 8 min | ◐ |
 | 🟡 | 0875 | P2 | Performance regression budgets in CI | 45 min | ◐ |
 
-### 36. Input, accessibility and controls (4.3 days)
+### 36. Input, accessibility and controls (2.7 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0876 | P1 | Fully remappable keyboard controls | 8 h |  |
-| 🟠 | 0877 | P1 | Gamepad control remapping | 8 h |  |
-| 🟠 | 0878 | P1 | Mouse sensitivity presets | 8 h |  |
-| 🟠 | 0879 | P1 | Invert axis controls | 8 h |  |
+| 🟠 | 0876 | P1 | Fully remappable keyboard controls | 4 h | ◐ |
+| 🟠 | 0877 | P1 | Gamepad control remapping | 4 h | ◐ |
+| 🟠 | 0878 | P1 | Mouse sensitivity presets | 4 h | ◐ |
+| 🟠 | 0879 | P1 | Invert axis controls | 4 h | ◐ |
 | 🟡 | 0880 | P1 | Hold versus toggle accessibility options | 45 min | ◐ |
 | 🟢 | 0881 | P1 | Color-blind friendly status palette | 8 min | ◐ |
 | 🟢 | 0882 | P1 | Text contrast validation | 8 min | ◐ |
@@ -1182,17 +1182,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0899 | P2 | Focus order regression tests | 8 min | ◐ |
 | 🟡 | 0900 | P2 | Accessible template project | 1.5 h |  |
 
-### 37. Mobile and low-end platform readiness (5.0 work weeks)
+### 37. Mobile and low-end platform readiness (4.6 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0901 | P1 | Device capability tier detection | 8 h |  |
-| 🟠 | 0902 | P1 | Dynamic resolution on sustained GPU load | 8 h |  |
-| 🟠 | 0903 | P1 | Texture memory budget profiles | 8 h |  |
-| 🟠 | 0904 | P1 | Reduced shadow and post-process modes | 8 h |  |
+| 🟠 | 0901 | P1 | Device capability tier detection | 4 h | ◐ |
+| 🟠 | 0902 | P1 | Dynamic resolution on sustained GPU load | 4 h | ◐ |
+| 🟠 | 0903 | P1 | Texture memory budget profiles | 4 h | ◐ |
+| 🟠 | 0904 | P1 | Reduced shadow and post-process modes | 4 h | ◐ |
 | 🟡 | 0905 | P1 | Low-overhead UI render path | 1.5 h |  |
 | 🟡 | 0906 | P1 | Touch-first runtime controls | 45 min | ◐ |
-| 🟠 | 0907 | P1 | Virtual thumbstick component | 8 h |  |
+| 🟠 | 0907 | P1 | Virtual thumbstick component | 4 h | ◐ |
 | 🟡 | 0908 | P1 | Gesture input API | 45 min | ◐ |
 | 🟡 | 0909 | P2 | Safe-area layout support | 45 min | ◐ |
 | 🟡 | 0910 | P2 | Battery and thermal-aware quality hints | 45 min | ◐ |
@@ -1204,7 +1204,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🔴 | 0916 | P2 | Android build feasibility prototype | 2.0 work weeks |  |
 | 🔴 | 0917 | P2 | iOS engine portability assessment | 2.0 work weeks |  |
 | 🟡 | 0918 | P2 | Mobile network handover resilience | 45 min | ◐ |
-| 🟡 | 0919 | P2 | Mobile profiler counters | 1.5 h |  |
+| 🟡 | 0919 | P2 | Mobile profiler counters | 45 min | ◐ |
 | 🟡 | 0920 | P2 | Device compatibility report | 45 min | ◐ |
 | 🟢 | 0921 | P2 | Scaled physics budget for low-end CPUs | 8 min | ◐ |
 | 🟡 | 0922 | P2 | Shader fallback for older GPUs | 45 min | ◐ |
@@ -1212,17 +1212,17 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0924 | P2 | Mobile player onboarding | 8 min | ◐ |
 | 🟡 | 0925 | P2 | Battery-safe frame-rate caps | 45 min | ◐ |
 
-### 38. Web and console portability (2.8 work weeks)
+### 38. Web and console portability (2.5 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🔴 | 0926 | P1 | WebAssembly engine feasibility prototype | 2.0 work weeks |  |
-| 🟠 | 0927 | P1 | Browser WebGPU capability probe | 8 h |  |
-| 🟠 | 0928 | P1 | Browser fallback renderer decision record | 8 h |  |
-| 🟠 | 0929 | P1 | Asset bundle size budget for web | 8 h |  |
+| 🟠 | 0927 | P1 | Browser WebGPU capability probe | 4 h | ◐ |
+| 🟠 | 0928 | P1 | Browser fallback renderer decision record | 4 h | ◐ |
+| 🟠 | 0929 | P1 | Asset bundle size budget for web | 4 h | ◐ |
 | 🟡 | 0930 | P1 | Web runtime sandbox boundaries | 45 min | ◐ |
 | 🟡 | 0931 | P1 | Browser save-data adapter design | 45 min | ◐ |
-| 🟠 | 0932 | P1 | Web networking transport evaluation | 8 h |  |
+| 🟠 | 0932 | P1 | Web networking transport evaluation | 4 h | ◐ |
 | 🟡 | 0933 | P1 | Browser audio autoplay compliance handling | 45 min | ◐ |
 | 🟡 | 0934 | P2 | Pointer-lock and fullscreen UX | 45 min | ◐ |
 | 🟡 | 0935 | P2 | Web crash and context-loss recovery | 45 min | ◐ |

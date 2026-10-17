@@ -15,6 +15,10 @@
 #include "core/ProductTools.hpp"
 #include "core/CollabPluginTools.hpp"
 #include "core/QaPlatformTools.hpp"
+#include "core/WorldTools.hpp"
+#include "core/GfxAnimTools.hpp"
+#include "core/AudioNetTools.hpp"
+#include "core/MiscTools.hpp"
 #include "core/ScriptTools.hpp"
 #include "net/NetTools.hpp"
 #include "core/AssetPipelineTools.hpp"
@@ -16498,6 +16502,222 @@ void testV5Batch6() {
     meter.push(1.5f, 3.1);
     check(meter.peak() == 1.5f && meter.clipped(), "peak meter flags clipping");
     check(au::periodFramesForLatency(48000, 10) == 256 && au::secondsToFrames(0.5, 48000) == 24000, "buffer size and frame scheduling");
+}
+
+void testV5Batch10() {
+    namespace wd = engine::core::world;
+    namespace ga = engine::core::gfxanim;
+    namespace an = engine::core::audionet;
+    namespace ms = engine::core::misc;
+
+    // ---- WorldTools
+    const wd::V3 eye = wd::orbitPosition({0, 0, 0}, 0, 0, 10);
+    check(std::abs(eye.z - 10) < 1e-4f && wd::orbitPreset("right").first == 90 && wd::orbitPreset("top").second > 80, "orbit camera and presets");
+    check(std::abs(wd::frameDistance(1, 90) - 1.4142f) < 1e-3f && std::abs(wd::approach(0, 10, 1000, 1) - 10) < 1e-3f && wd::adjustFlySpeed(10, 1) == 12.5f && wd::adjustFlySpeed(400, 10) == 500.0f, "frame distance, smooth approach, fly speed");
+    check(std::abs(wd::verticalFovFromHorizontal(wd::horizontalFov(60, 16.0f / 9.0f), 16.0f / 9.0f) - 60) < 0.01f, "fov conversion round trip");
+    const std::vector<wd::Node> nodes{{"Door", "Part", {"solid"}}, {"Light1", "PointLight", {}}, {"door2", "Part", {}}};
+    check(wd::searchNodes(nodes, "door", "Part", "").size() == 2 && wd::searchNodes(nodes, "", "", "solid").size() == 1, "hierarchy search by name, type and tag");
+    check(!wd::validateName("", {}).empty() && !wd::validateName("a/b", {}).empty() && !wd::validateName("Door", {"Door"}).empty() && wd::validateName("Gate", {"Door"}).empty(), "rename validation");
+    check(wd::uvSphereVertexCount(8, 4) == 45 && wd::uvSphereTriangleCount(8, 4) == 48 && wd::cylinderRing(1, 2, 6).size() == 6, "primitive counts");
+    const std::vector<wd::V3> quad{{0, 0, 0}, {2, 0, 0}, {2, 0, 2}, {0, 0, 2}};
+    const auto top = wd::extrudeFace(quad, 0.5f, 3.0f);
+    check(top.size() == 4 && std::abs(std::fabs(top[0].y) - 3.0f) < 1e-4f && std::abs(wd::insetPolygon(quad, 1.0f)[0].x - 1.0f) < 1e-4f, "extrude and inset");
+    const auto bev = wd::bevelCorner({0, 0, 10}, {0, 0, 0}, {10, 0, 0}, 1);
+    check(std::abs(bev.first.z - 1) < 1e-4f && std::abs(bev.second.x - 1) < 1e-4f && wd::loopCutPoints(quad, top, 0.5f).size() == 4, "bevel corner and loop cut");
+    wd::V3 hitp;
+    check(wd::segmentPlane({0, -1, 0}, {0, 1, 0}, {0, 1, 0}, 0, hitp) && std::fabs(hitp.y) < 1e-5f && !wd::segmentPlane({0, 1, 0}, {0, 2, 0}, {0, 1, 0}, 0, hitp) && wd::classifyPolygon(quad, {0, 1, 0}, 1) == -1 && wd::classifyPolygon(quad, {1, 0, 0}, 1) == 0, "plane cut");
+    const wd::Box3 a{{0, 0, 0}, {2, 2, 2}}, b{{1, 1, 1}, {3, 3, 3}};
+    float volumeAfterSubtract = 0;
+    for (const auto& piece : wd::boxSubtract(a, b)) volumeAfterSubtract += wd::boxVolume(piece);
+    check(wd::boxesOverlap(a, b) && wd::boxVolume(wd::boxIntersect(a, b)) == 1.0f && wd::unionVolume(a, b) == 15.0f && std::abs(volumeAfterSubtract - 7.0f) < 1e-4f, "box boolean union, intersect, subtract");
+    check(wd::applyModifiers({{1, 0, 0}}, {{"scale", 2, true}, {"offset", 1, false}, {"mirrorX", 0, true}}).size() == 2 && wd::clusterDecimate({{0, 0, 0}, {0.1f, 0, 0}, {5, 0, 0}}, 1.0f).size() == 2, "modifier stack and decimate");
+    wd::Heightmap hm(8, 8);
+    wd::paintTerrain(hm, 4, 4, 3, 1.0f, wd::BrushMode::Raise);
+    check(hm.at(4, 4) > 0.9f && hm.at(0, 0) == 0, "terrain raise brush");
+    wd::Heightmap round;
+    check(wd::importPgm16(wd::exportPgm16(hm, 10.0f), 10.0f, round) && round.w == 8 && std::abs(round.at(4, 4) - hm.at(4, 4)) < 0.01f && !wd::importPgm16("junk", 10, round), "heightmap PGM round trip");
+    wd::paintTerrain(hm, 4, 4, 3, 1.0f, wd::BrushMode::Flatten, 0.0f);
+    check(hm.at(4, 4) < 0.1f, "flatten brush");
+    wd::Heightmap spike(5, 5);
+    spike.at(2, 2) = 10;
+    wd::thermalErosion(spike, 0.5f, 0.5f, 10);
+    float sum = 0;
+    for (float f : spike.v) sum += f;
+    check(spike.at(2, 2) < 10 && std::abs(sum - 10) < 0.01f, "erosion lowers peaks and keeps the material");
+    std::vector<float> weights{1, 0, 0};
+    wd::paintLayer(weights, 1, 0.5f);
+    check(std::abs(weights[0] + weights[1] + weights[2] - 1.0f) < 1e-5f && weights[1] > 0.3f, "layer weights stay normalised");
+    std::set<wd::ChunkId> loaded{{0, 0}, {20, 20}};
+    const auto plan = wd::planChunkStreaming(5, 5, 10, 1, loaded);
+    check(plan.load.size() == 8 && plan.unload.size() == 1 && wd::chunkLod(5, 10) == 0 && wd::chunkLod(100, 10) == 3 && wd::needsStitch(0, 1) && wd::gridResolutionAtLod(65, 1) == 33, "chunk streaming, lod and stitching");
+    wd::VoxelGrid vox(8, 8, 8);
+    for (int z = 0; z < 8; ++z)
+        for (int y = 0; y < 4; ++y)
+            for (int x = 0; x < 8; ++x) vox.set(x, y, z, 1);
+    check(vox.count() == 256 && vox.carveSphere(4, 2, 4, 2) > 10 && vox.get(4, 2, 4) == 0 && vox.get(99, 0, 0) == 0 && !vox.set(99, 0, 0, 1), "voxel edit and cave carving");
+    check(wd::shouldRebase({5000, 0, 0}, 2000) && !wd::shouldRebase({10, 0, 10}, 2000) && wd::rebaseOffset({5100, 0, 0}, 1000).x == 5000.0f && wd::importPresetFor("mobile").maxTexture == 1024, "origin rebasing and import presets");
+    wd::DependencyGraph deps;
+    deps.add("scene", "hero.glb");
+    deps.add("hero.glb", "hero.png");
+    check(deps.usedBy("hero.png") == std::vector<std::string>({"hero.glb"}) && !deps.hasCycle() && deps.deleteWarning("hero.png").find("1 other") != std::string::npos && deps.deleteWarning("scene").empty(), "dependency graph and delete warning");
+    deps.add("hero.png", "scene");
+    check(deps.hasCycle(), "dependency cycle found");
+    wd::ThumbnailCache thumbs(2);
+    thumbs.put("a");
+    thumbs.put("b");
+    thumbs.put("a");
+    thumbs.put("c");
+    check(thumbs.has("a") && !thumbs.has("b") && thumbs.has("c"), "thumbnail cache evicts least recently used");
+    check(wd::ruleMatches({"Texture", "", true}, {"x", "Texture", {}, 0}) && !wd::ruleMatches({"Texture", "", true}, {"x", "Texture", {}, 2}) && wd::movePath("a/b/c.png", "a/b", "z") == "z/c.png", "smart rules and folder move");
+    check(wd::graphProblems({{"out", "output", {"missing"}}}).size() == 1 && wd::evaluationOrder({{"out", "output", {"mul"}}, {"mul", "mul", {"c1"}}, {"c1", "const", {}}}) == std::vector<std::string>({"c1", "mul", "out"}) && wd::evaluationOrder({{"a", "x", {"b"}}, {"b", "x", {"a"}}}).empty(), "material graph validation and order");
+    check(wd::packOrm(1, 2, 3) == 0x010203u && wd::normalFromHeights(1, 1, 1, 1, 1).y > 0.99f && wd::wrapCoord(1.25f, "repeat") == 0.25f && wd::wrapCoord(1.25f, "mirror") == 0.75f && wd::wrapCoord(3, "clamp") == 1.0f, "channel packing, normal from height, uv wrap");
+
+    // ---- GfxAnimTools
+    const auto life = ga::resourceLifetimes({{"gbuffer", {}, {"albedo"}}, {"light", {"albedo"}, {"hdr"}}, {"post", {"hdr"}, {"ldr"}}});
+    check(life.at("albedo").first == 0 && life.at("albedo").last == 1 && ga::canAlias(life.at("albedo"), life.at("ldr")) && !ga::canAlias(life.at("albedo"), life.at("hdr")), "frame graph lifetimes and aliasing");
+    check(ga::graphWarnings({{"a", {"x"}, {"y"}}}).size() == 2, "frame graph warnings");
+    ga::ResourceTracker tracker;
+    tracker.created("image", "shadow");
+    tracker.created("image", "gbuffer");
+    tracker.destroyed("image", "shadow");
+    check(tracker.leaks() == std::vector<std::string>({"image:gbuffer"}) && ga::bindlessSupported({true, true, true, true}) && !ga::bindlessSupported({true, false, true, true}), "gpu leak tracker and bindless check");
+    const auto cmds = ga::buildIndirect({{1, 1, 0, 10}, {2, 1, 10, 10}, {1, 2, 20, 10}});
+    check(cmds.size() == 2 && cmds[0].ranges.size() == 2 && ga::stateChanges({{1, 1, 0, 1}, {1, 1, 0, 1}, {1, 2, 0, 1}}) == 3, "indirect batching and state changes");
+    ga::DepthBuffer depth(8, 8, 100.0f);
+    depth.drawRect(0, 0, 8, 8, 5.0f);
+    check(depth.occluded(2, 2, 4, 4, 10.0f) && !depth.occluded(2, 2, 4, 4, 1.0f), "software occlusion test");
+    const auto meshlets = ga::buildMeshlets({0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 5, 2);
+    check(meshlets.size() == 3 && meshlets[0].triangles.size() == 2, "meshlets respect the limits");
+    check(ga::pointLightAttenuation(100, 10) == 0 && ga::pointLightAttenuation(1, 10) > ga::pointLightAttenuation(5, 10) && ga::spotFactor(1, 0.9f, 0.8f) == 1 && ga::spotFactor(0.5f, 0.9f, 0.8f) == 0 && std::abs(ga::spotFactor(0.85f, 0.9f, 0.8f) - 0.5f) < 1e-4f, "light attenuation and spot cone");
+    const auto splits = ga::cascadeSplits(0.1f, 100, 4, 0.5f);
+    check(ga::shadowPreset("high").cascades == 4 && splits.size() == 4 && std::abs(splits.back() - 100) < 0.01f && splits[0] < splits[1] && ga::snapToTexel(1.37f, 0.25f) == 1.25f, "shadow presets, cascade splits, texel snapping");
+    const auto w = ga::probeBlendWeights({1, 3}, {4, 4});
+    check(ga::probeGrid(0, 0, 0, 2, 2, 2, 2).size() == 8 && std::abs(w[0] + w[1] - 1.0f) < 1e-5f && w[0] > w[1] && ga::ssaoKernel(16).size() == 16 && ga::fogTransmittance(0.1f, 0) == 1.0f && ga::fogTransmittance(0.1f, 20) < 0.14f, "probes, kernel and fog");
+    ga::Emitter em;
+    em.ratePerSecond = 20;
+    em.burstCount = 5;
+    em.trailLength = 3;
+    std::vector<ga::Particle> ps;
+    ga::burst(em, ps);
+    ga::emitParticles(em, 0.5f, ps, em);
+    check(ps.size() == 15, "emitter burst plus 20 per second for half a second");
+    for (int i = 0; i < 60; ++i) ga::stepParticles(em, 0.016f, ps);
+    check(!ps.empty() && ps[0].y >= 0 && ps[0].trail.size() == 3, "particles bounce on the ground and keep a trail");
+    for (int i = 0; i < 200; ++i) ga::stepParticles(em, 0.016f, ps);
+    check(ps.empty(), "particles expire");
+    check(std::abs(ga::evalCurve({{0, 0, 0, 0}, {1, 1, 0, 0}}, 0.5f) - 0.5f) < 1e-4f && ga::evalCurve({{0, 0, 0, 0}, {1, 1, 0, 0}}, 2) == 1.0f, "hermite curve");
+    check(ga::findClips({{"walk", 1, {"loco"}}, {"idle", 2, {}}}, "w", "loco") == std::vector<std::string>({"walk"}) && ga::skeletonLines({{"hips", -1}, {"spine", 0}, {"head", 1}})[2] == "    head", "clip search and skeleton lines");
+    check(ga::humanoidBone("mixamorig:LeftUpperArm") == "LeftUpperArm" && ga::retargetProfile({"Pelvis", "Thigh_L", "Weird"}).size() == 2, "retarget bone names");
+    ga::AnimStateMachine fsm("idle");
+    fsm.addTransition({"idle", "run", "speed", 0.5f, true});
+    fsm.addTransition({"run", "idle", "speed", 0.5f, false});
+    check(fsm.update({{"speed", 0.1f}}) == "idle" && fsm.update({{"speed", 1.0f}}) == "run" && fsm.update({{"speed", 0.1f}}) == "idle", "animation state machine");
+    const auto bt = ga::blendTree({{0, "idle"}, {1, "walk"}, {3, "run"}}, 2.0f);
+    check(bt.size() == 2 && bt[0].first == "walk" && std::abs(bt[0].second - 0.5f) < 1e-5f && ga::blendTree({{0, "idle"}}, 5).size() == 1, "blend tree weights");
+    check(ga::blendLayer({0, 0}, {10, 10}, {1, 0}, 0.5f) == std::vector<float>({5, 0}), "layer mask blend");
+    float sh = 0, el = 0;
+    check(ga::twoBoneIk(1, 1, 2, sh, el) && std::abs(el - 3.14159f) < 0.05f && !ga::twoBoneIk(1, 1, 3, sh, el) && ga::twoBoneIk(1, 1, 1.4142f, sh, el) && std::abs(el - 1.5708f) < 0.01f, "two bone ik");
+    check(ga::snapTime(1.02f, 30, true) > 1.0f && std::abs(ga::snapTime(1.02f, 30, true) - 1.0333f) < 1e-3f && ga::snapTime(1.02f, 30, false) == 1.02f && ga::activeCamera({{5, "B"}, {0, "A"}}, 6) == "B" && ga::activeCamera({{5, "B"}}, 1).empty() && ga::shutterExposureFraction(180) == 0.5f && ga::timelineZoomPixelsPerSecond(2) == 200.0f, "timeline snapping, cuts, shutter");
+
+    // ---- AudioNetTools
+    std::vector<float> samples(100, 1.0f);
+    an::fadeIn(samples, 10);
+    an::fadeOut(samples, 10);
+    check(samples[0] == 0 && samples[50] == 1 && samples[99] == 0 && an::trimSamples(samples, 10, 20).size() == 10 && an::trimSamples(samples, 20, 10).empty(), "trim and fades");
+    const auto halves = an::splitRegion({100, 50}, 120);
+    check(halves.first.length == 20 && halves.second.start == 120 && halves.second.length == 30 && an::envelopeAt({{0, 0}, {10, 1}}, 5) == 0.5f, "split region and envelope");
+    check(an::beatsToSeconds(4, 120) == 2.0 && std::abs(an::snapToBeat(0.6, 120, 1) - 0.5) < 1e-9 && an::barLengthSeconds(60, 3) == 3.0 && std::abs(an::semitoneRatio(12) - 2.0) < 1e-9 && an::resampleLinear({0, 1, 2, 3}, 2.0).size() == 2, "tempo grid and resampling");
+    check(an::noiseGate({0.01f, 0.5f, 0.01f, 0.01f}, 0.1f, 1) == std::vector<float>({0, 0.5f, 0.01f, 0}) && an::duckGain(0.9f, 0.5f, 0.6f) < 0.5f && std::abs(an::midiToHz(69) - 440.0) < 1e-9, "noise gate, ducking, midi pitch");
+    std::vector<an::MidiNote> notes{{0.12, 1, 60}, {0.37, 1, 62}};
+    an::quantizeNotes(notes, 0.25);
+    check(notes[0].start == 0.0 && notes[1].start == 0.25, "midi quantise");
+    an::BusGraph bus;
+    bus.add("sfx", "master", -6);
+    bus.add("master", "out", -3);
+    check(!bus.hasCycle() && bus.totalGainDb("sfx") == -9.0f && std::abs(an::dbToGain(-6) - 0.501f) < 0.01f && an::categoryGain({{"master", 0.5f}, {"music", 0.5f}}, "music") == 0.25f, "bus graph and category volume");
+    bus.add("out", "sfx", 0);
+    check(bus.hasCycle(), "bus cycle found");
+    check(an::attenuation("linear", 15, 10, 20) == 0.5f && an::attenuation("inverse", 20, 10, 100) == 0.5f && an::attenuation("linear", 25, 10, 20) == 0 && an::coneGain(0, 60, 120, 0.2f) == 1.0f && an::coneGain(90, 60, 120, 0.2f) == 0.2f, "distance attenuation and cone");
+    check(an::occlusionCutoffHz(0.9f) < an::occlusionCutoffHz(0.1f) && an::dopplerPitch(30, 0) > 1.0f && an::dopplerPitch(-30, 0) < 1.0f && an::interauralTimeDifference(90) > 0.0006f && an::interauralTimeDifference(-90) < 0 && an::interauralTimeDifference(0) == 0, "occlusion filter, doppler, interaural delay");
+    check(an::activeParameter("f(a, b, ", 8) == 2 && an::activeParameter("f(a)", 4) == -1 && an::activeParameter("x", 1) == -1, "signature help parameter");
+    int renamed = 0;
+    check(an::renameSymbol("local hp = 1 hp = hp + hpx", "hp", "health", &renamed) == "local health = 1 health = health + hpx" && renamed == 3, "rename whole words only");
+    an::Breakpoints bps;
+    bps.toggle({"a.lua", "luau", 3});
+    bps.toggle({"a.py", "python", 3});
+    check(bps.hit("a.lua", "luau", 3) && !bps.hit("a.lua", "python", 3) && bps.size() == 2, "breakpoints across languages");
+    bps.toggle({"a.lua", "luau", 3});
+    check(!bps.hit("a.lua", "luau", 3) && an::formatCallStack({{"main", 4}, {"f", 9}})[1] == "#1 f:9" && an::typeStubs("Part", {{"Size", "Vector3"}}).find("Size: Vector3") != std::string::npos, "toggle off, call stack text, type stubs");
+    an::Subscriptions subs;
+    int total = 0;
+    const int s1 = subs.subscribe([&](int v) { total += v; });
+    subs.subscribe([&](int v) { total += v * 10; });
+    subs.fire(1);
+    check(total == 11 && subs.cancel(s1) && !subs.cancel(s1), "subscriptions can be cancelled");
+    subs.fire(1);
+    check(total == 21, "cancelled handler no longer runs");
+    an::EventRecorder rec(2);
+    rec.record("a");
+    rec.record("b");
+    rec.record("c");
+    check(rec.dump() == "b\nc\n", "recorder keeps the newest events");
+    const auto bag = an::splitProperties({{"Size", "1"}, {"Future", "x"}}, {"Size"});
+    check(an::mergeProperties(bag).size() == 2 && bag.unknown.count("Future") && an::mapConstraint("HingeConstraint") == "hinge joint" && an::mapConstraint("X").empty() && !an::rewriteSuggestion("PathfindingService").empty(), "unknown properties survive, constraint mapping, suggestions");
+    check(an::rangeHeader(100) == "bytes=100-" && an::downloadComplete({1, 2}, engine::core::assets::hex64(engine::core::assets::contentHash({1, 2}))) && !an::downloadComplete({1}, "00") && an::dependencyManifest({{"jolt", "5"}}) == "jolt 5\n", "download resume header and integrity");
+    const std::vector<an::UiItem> items{{1, 0, 0}, {2, 10, 0}, {3, 0, 10}};
+    check(an::navigateDirection(items, 1, "right") == 2 && an::navigateDirection(items, 1, "down") == 3 && an::navigateDirection(items, 1, "left") == 1 && an::graphicsPreset("low").viewDistance < an::graphicsPreset("high").viewDistance, "controller navigation and graphics presets");
+    const auto moved = an::applyMoveAuthoritative({0, 0}, {1, 30, 40}, 5);
+    check(std::abs(moved.first - 3) < 1e-4f && std::abs(moved.second - 4) < 1e-4f, "server clamps speed");
+    const auto bw = an::allocateBandwidth(1000, {{"player", 3}, {"props", 1}}, {{"player", 100}, {"props", 2000}});
+    check(bw.at("player") == 100 && bw.at("props") == 900, "bandwidth priority classes");
+    const std::vector<int32_t> base{1, 2, 3};
+    const auto delta = an::deltaEncode(base, {1, 5, 3, 7});
+    check(delta.size() == 2 && an::deltaApply(base, delta) == std::vector<int32_t>({1, 5, 3, 7}), "delta encoding round trip");
+    check(an::relevantEntities({{1, {5, 5}}, {2, {500, 500}}}, 0, 0, 100) == std::vector<int>({1}), "interest management");
+    const auto rec2 = an::reconcile({10, 0}, 5, {{4, 1, 0}, {6, 1, 0}, {7, 1, 0}}, 5);
+    an::ReconcileStats stats;
+    an::recordReconcile(stats, {11, 0}, rec2);
+    check(rec2.first == 12.0f && stats.corrections == 1 && std::abs(stats.worstError - 1.0f) < 1e-5f, "prediction replays only unacknowledged inputs");
+    an::PositionHistory hist;
+    hist.record(0.0, 0, 0);
+    hist.record(1.0, 10, 0);
+    float hx = 0, hz = 0;
+    check(hist.at(0.5, hx, hz) && hx == 5.0f && !hist.at(-1, hx, hz), "lag compensation looks up the past");
+    check(an::serverCommand("kr", "g", 7777, 8)[0] == "kr" && an::presenceColour(9) == an::presenceColour(1), "server command and presence colours");
+    an::Supervisor sup(2, 60);
+    check(!sup.onExit(0, true) && sup.onExit(1, false) && sup.onExit(2, false) && !sup.onExit(3, false) && sup.onExit(100, false), "supervisor stops restarting after repeated crashes");
+    check(an::manifestIssues({"", "1", {"net", "root"}}, {"net"}).size() == 2, "plugin manifest issues");
+    std::vector<std::string> notGranted;
+    check(an::negotiate({"a", "b"}, {"b", "c"}, &notGranted) == std::set<std::string>({"b"}) && notGranted == std::vector<std::string>({"c"}), "capability negotiation");
+    an::Watchdog dog(2);
+    dog.heartbeat(10);
+    check(dog.healthy(11) && !dog.healthy(13) && an::shouldDisablePlugin({1, 2, 3}, 4, 3, 10) && !an::shouldDisablePlugin({1, 2, 3}, 100, 3, 10), "watchdog and auto disable");
+    check(an::findSecrets("ok\nkey=ghp_abc\n").size() == 1 && an::findSecrets("ok").empty(), "secret scanning");
+    an::AllocationTags tags;
+    tags.add("mesh", 100);
+    tags.add("tex", 500);
+    tags.add("mesh", 50);
+    check(tags.top(1)[0].first == "tex", "allocation hot spots");
+    an::KeyMap keys;
+    keys.bind("jump", "space");
+    keys.bind("dash", "space");
+    check(keys.duplicates() == std::vector<std::string>({"space"}) && an::KeyMap::parse(keys.serialize()).keyFor("jump") == "space" && an::sensitivityPreset("high") == 2.0f && an::applyLook(1, 1, 2, true, false) == std::make_pair(-2.0f, 2.0f), "key remapping, sensitivity, inverted axis");
+    an::DynamicResolution dyn;
+    check(dyn.update(20, 16) < 1.0f && an::deviceTier(12000, 12, true) == "high" && an::deviceTier(1024, 2, false) == "low" && an::mipsToDrop(1000, 100) == 2 && !an::reducedEffects(true, true).shadows && an::overBundleBudget({{"a", 50}, {"b", 10}}, 40).size() == 2, "device tier, dynamic resolution, texture budget, bundle budget");
+    check(an::overBundleBudget({{"a", 5}}, 40).empty(), "bundle under budget lists nothing");
+
+    // ---- MiscTools
+    check(ms::repairPlan({"a", "b", "c"}, {"a", "b"}, {"a"}).size() == 2, "repair plan installs missing and repairs damaged");
+    ms::Tutorial tut(ms::firstGameSteps());
+    check(!tut.complete("Press Play") && tut.complete("Insert a part") && tut.current() == "Move it" && tut.percent() == 20, "tutorial goes in order");
+    ms::StringCatalog cat;
+    cat.add("en", "play", "Play");
+    cat.add("en", "stop", "Stop");
+    cat.add("de", "play", "Spielen");
+    check(cat.get("de", "play") == "Spielen" && cat.get("de", "stop") == "Stop" && cat.get("de", "zzz") == "zzz" && cat.missingKeys("de") == std::vector<std::string>({"stop"}), "string catalogue falls back to English");
+    const auto win = ms::restoreWindow({3000, 100, 800, 600}, {{0, 0, 1920, 1080}});
+    check(win.x >= 0 && win.x + win.w <= 1920 && ms::restoreWindow({10, 10, 100, 100}, {{0, 0, 1920, 1080}}).x == 10, "window comes back onto an existing monitor");
+    check(ms::migrateLayout({{"panel.props", "dock"}}, 1, 2).count("panel.inspector") == 1 && ms::batteryDrainPerHour({16, 100, 100, 90, 30}) == 20.0f, "layout migration and battery drain");
 }
 
 void testV5Batch9() {
@@ -53657,6 +53877,7 @@ int main() {
     testV5Batch7();
     testV5Batch8();
     testV5Batch9();
+    testV5Batch10();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();
