@@ -44,7 +44,7 @@ reading audit: nothing here was run on a clean machine.
 |---|---|---|---|
 | 0401 | Syntax-highlighted Luau editor | exists | Script Editor, Luau checker, error line markers |
 | 0402 | Autocomplete from reflected APIs | exists | `core/RobloxApiDefinitions` turns the class table into Luau `declare class` text; `workspace.` and `game:` complete members (screen-checked, 0 false errors on the Player greeting template); return values are still `any` |
-| 0403 | API hover cards | missing | |
+| 0403 | API hover cards | done | resting the pointer on an API name in the script editor shows its doc line (`world.findByName` etc.) from `kronos_globals.d.lua`; screen-checked 17 Oct 2026; Roblox class members have no doc text yet |
 | 0426 | Python in Studio Play | exists | 12 Oct 2026; `#`-first-line scripts run in Play (`testStudioPythonScripts`). The backlog preamble is out of date on this |
 | 0427 | Python editor with diagnostics | partial | colours and templates; no autocomplete or error markers |
 | 0428 | PocketPy version and capability report | exists | `engine_runtime --python-info` (probes run for real), `testPythonScripts` |

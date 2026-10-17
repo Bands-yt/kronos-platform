@@ -186,6 +186,9 @@ private:
     std::vector<Symbol> symbols_;
     int appliedTheme_ = -1;
 
+    int hoverLine_ = -1;
+    int hoverStart_ = -1;
+    double hoverSince_ = 0.0;
     bool showCompletions_ = false;
     bool completionExplicit_ = false;
     std::vector<CompletionItem> completionRawEntries_;

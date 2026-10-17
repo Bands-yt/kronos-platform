@@ -1245,6 +1245,43 @@ void ColorTextEditBackend::drawOverlays(ImDrawList* drawList, ImVec2 origin, ImV
             ImGui::PopFont();
         }
     }
+
+    // Hover card: the doc line for the API name under a resting pointer.
+    bool cardShown = false;
+    if (hovered && !ImGui::GetIO().KeyCtrl && !showCompletions_ && mouse.x >= origin.x + textStart && !lines_.empty()) {
+        const auto [line, byte] = mouseTextPosition();
+        if (line >= firstVisible && line <= lastVisible && line < static_cast<int>(lines_.size()) &&
+            mouse.y < lineY(static_cast<int>(lines_.size()))) {
+            const std::string& text = lines_[static_cast<size_t>(line)];
+            int start = std::min(byte, static_cast<int>(text.size()));
+            int finish = start;
+            while (start > 0 && isIdentifierChar(text[static_cast<size_t>(start - 1)])) --start;
+            while (finish < static_cast<int>(text.size()) && isIdentifierChar(text[static_cast<size_t>(finish)])) ++finish;
+            if (finish > start && !std::isdigit(static_cast<unsigned char>(text[static_cast<size_t>(start)]))) {
+                if (line != hoverLine_ || start != hoverStart_) {
+                    hoverLine_ = line;
+                    hoverStart_ = start;
+                    hoverSince_ = ImGui::GetTime();
+                }
+                const std::string name = text.substr(static_cast<size_t>(start), static_cast<size_t>(finish - start));
+                const std::string container = memberContainerBefore(line, start);
+                const auto doc = apiDocs().find(container.empty() ? name : container + "." + name);
+                if (doc != apiDocs().end() && ImGui::GetTime() - hoverSince_ > 0.45) {
+                    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase);
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted((container.empty() ? name : container + "." + name).c_str());
+                    ImGui::Separator();
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                    ImGui::TextUnformatted(doc->second.c_str());
+                    ImGui::PopTextWrapPos();
+                    ImGui::EndTooltip();
+                    ImGui::PopFont();
+                }
+                cardShown = true;
+            }
+        }
+    }
+    if (!cardShown) hoverLine_ = -1;
 }
 
 std::string ColorTextEditBackend::memberContainerBefore(int line, int anchorByte) const {
