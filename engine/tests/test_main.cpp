@@ -5,6 +5,9 @@
 #include "core/ComponentRules.hpp"
 #include "core/AnimationTools.hpp"
 #include "core/InputAccess.hpp"
+#include "core/EditorTools.hpp"
+#include "core/PerfTools.hpp"
+#include "core/ContentTools.hpp"
 #include "core/ScriptTools.hpp"
 #include "net/NetTools.hpp"
 #include "core/AssetPipelineTools.hpp"
@@ -16488,6 +16491,127 @@ void testV5Batch6() {
     meter.push(1.5f, 3.1);
     check(meter.peak() == 1.5f && meter.clipped(), "peak meter flags clipping");
     check(au::periodFramesForLatency(48000, 10) == 256 && au::secondsToFrames(0.5, 48000) == 24000, "buffer size and frame scheduling");
+}
+
+void testV5Batch8() {
+    namespace ed = engine::core::editor;
+    namespace pf = engine::core::perf;
+    namespace ct = engine::core::content;
+
+    ed::RecentList recent(2);
+    recent.add("/a");
+    recent.add("/b");
+    recent.add("/a");
+    recent.add("/c");
+    check(recent.items().size() == 2 && recent.items()[0] == "/c" && recent.items()[1] == "/a", "recent list: newest first, no duplicates, capped");
+    check(recent.pruneMissing() == 2 && recent.items().empty(), "recent list drops folders that are gone");
+
+    check(ed::healthOf({0, 0, 0, 0}) == ed::Health::Good && ed::healthSummary({0, 0, 0, 0}) == "Everything looks fine.", "health: clean project is good");
+    check(ed::healthOf({1, 0, 0, 0}) == ed::Health::Problem && ed::healthSummary({1, 2, 0, 0}) == "1 errors, 2 warnings.", "health: errors are a problem and are named");
+    check(ed::healthOf({0, 1, 0, 0}) == ed::Health::Attention, "health: warnings need attention");
+
+    check(ed::autosaveName("s", 3) == "s.autosave-3", "autosave file name");
+    const auto del = ed::autosavesToDelete({{"a", 1}, {"b", 3}, {"c", 2}}, 2);
+    check(del.size() == 1 && del[0] == "a", "autosave keeps the newest two");
+    check(ed::offerRecovery(5, {{"a", 9}}) && !ed::offerRecovery(5, {{"a", 4}}), "recovery offered only for newer autosave");
+    check(ed::layoutFileFor("/p") == "/p/.kronos/layout.ini", "per-project layout path");
+
+    std::map<int, std::set<std::string>> comps{{1, {"Light"}}, {2, {"Mesh"}}, {3, {"Light", "Mesh"}}};
+    check(ed::filterByComponent(comps, "Light") == std::vector<int>({1, 3}), "filter by component");
+    ed::Favorites fav;
+    fav.toggle("x");
+    fav.toggle("y");
+    fav.toggle("x");
+    const auto fav2 = ed::Favorites::parse(fav.serialize());
+    check(!fav2.has("x") && fav2.has("y"), "favourites toggle and round-trip");
+    check(ed::scrubValue(10, 5, 0.5, false, false) == 12.5 && ed::scrubValue(10, 5, 0.5, true, false) == 10.25 && ed::scrubValue(10, 5, 0.5, false, true) == 35, "scrub fine and coarse");
+
+    const auto copied = ed::copyValues("Light", {{"Range", "5"}, {"Color", "red"}});
+    const auto pasted = ed::pasteValues(copied + "Mesh.Size=1\nbad line\n", "Light");
+    check(pasted.size() == 2 && pasted.at("Range") == "5", "paste only matching component values");
+
+    const auto vis = ed::visibleObjects({{true, false}, {false, false}});
+    check(!vis[0] && vis[1], "hidden objects are not drawn");
+    const auto solo = ed::visibleObjects({{false, true}, {false, false}});
+    check(solo[0] && !solo[1], "solo hides everything else");
+    const auto diff = ed::diffTrees({"a", "b"}, {"b", "c"});
+    check(diff.added == std::vector<std::string>({"c"}) && diff.removed == std::vector<std::string>({"a"}), "tree diff");
+    const auto title = ed::safeGuide(1000, 1000, true);
+    check(std::abs(title.x - 50) < 0.01f && std::abs(title.w - 900) < 0.01f, "title-safe guide is 90%");
+    check(ed::viewportStatsLine(60, 16.66, 120000, 40) == "60 fps  16.7 ms  120k tris  40 draws", "stats overlay text");
+    const auto rec = ed::parseRecording(ed::serializeRecording({{0.5, "click", 10, 20, ""}, {1.0, "key", 0, 0, "W"}}));
+    check(rec.size() == 2 && rec[0].kind == "click" && rec[0].key.empty() && rec[1].key == "W", "recording round-trip");
+
+    pf::HitchDetector hd;
+    bool early = false;
+    for (int i = 0; i < 30; ++i) early |= hd.onFrame(16.0);
+    check(!early && hd.onFrame(60.0, "shader compile") && !hd.onFrame(17.0), "hitch detector flags only the slow frame");
+    check(hd.causes().at("shader compile") == 1, "hitch cause is counted");
+    const auto pace = pf::pacing({16, 16, 40, 16}, 16.6);
+    check(pace.frames == 4 && pace.missed == 1 && pace.jitterMs > 5, "pacing counts missed frames");
+    const auto wf = pf::waterfall({{"shadow", 2}, {"main", 6}, {"post", 2}});
+    check(wf[0].name == "main" && std::abs(wf[0].percent - 60) < 0.01, "waterfall sorted with percentages");
+    pf::BandwidthMeter bw(2.0);
+    bw.add(0, 1000);
+    bw.add(1, 1000);
+    bw.add(5, 2000);
+    check(std::abs(bw.bytesPerSecond() - 1000) < 0.01, "bandwidth forgets old samples");
+    check(pf::physicsMetricsLine(10, 3, 4, 5) == "10 bodies (3 awake), 4 contacts, 5 broadphase pairs", "physics metrics line");
+    check(pf::batchEfficiency(100, 10).verdict == "good" && pf::batchEfficiency(10, 10).verdict == "almost one draw call per object", "batch verdicts");
+    const auto fails = pf::checkBudgets({{"frame", 16}, {"load", 5}, {"gone", 1}}, {{"frame", 20}, {"load", 4}});
+    check(fails.size() == 2, "budget failures: over budget and not measured");
+    const auto grid = pf::gridScene(10);
+    check(grid.size() == 10 && grid[5].x == 3.0f && grid[5].z == 3.0f, "grid scene layout");
+
+    check(!ct::needsReimport(engine::core::assets::hex64(engine::core::assets::contentHash({1, 2, 3})), {1, 2, 3}) && ct::needsReimport("0", {1, 2, 3}), "reimport when hash differs");
+    check(ct::resolveConflict("a.png", {"a.png"}, ct::ConflictChoice::KeepBoth) == "a (2).png", "keep both renames");
+    check(ct::resolveConflict("a.png", {"a.png"}, ct::ConflictChoice::Skip).empty() && ct::resolveConflict("a.png", {"a.png"}, ct::ConflictChoice::Replace) == "a.png", "skip and replace");
+    check(ct::packManifest("p", "1", {{"f", {1}}}).find("\"size\":1") != std::string::npos, "pack manifest has sizes");
+    check(ct::resolveAlias({{"@hero", "@h"}, {"@h", "hero.glb"}}, "@hero") == "hero.glb" && ct::resolveAlias({}, "x") == "x", "aliases resolve through hops");
+    const auto mat = ct::resolveMaterial({{"rough", 0.5f}}, {{"rough", 1.0f}, {"bogus", 2.0f}});
+    check(mat.size() == 1 && mat.at("rough") == 1.0f, "material overrides ignore unknown parameters");
+    std::string mname;
+    ct::Params mp;
+    check(ct::parseMaterial(ct::serializeMaterial("steel", mat), mname, mp) && mname == "steel" && mp.at("rough") == 1.0f, "material round-trip");
+    std::string expanded, err;
+    check(ct::expandIncludes("#include \"a\"\n#include \"a\"\nmain", {{"a", "A"}}, expanded, err) && expanded == "A\nmain\n", "include expands once");
+    expanded.clear();
+    check(!ct::expandIncludes("#include \"zzz\"", {}, expanded, err) && err.find("zzz") != std::string::npos, "unknown include is named");
+    expanded.clear();
+    check(ct::expandIncludes("#include \"a\"", {{"a", "#include \"a\""}}, expanded, err) && expanded.empty(), "self include does not loop");
+    check(ct::permutationCount({{"a", 2}, {"b", 3}}) == 6 && !ct::withinPermutationBudget({{"a", 2}, {"b", 3}}, 5), "permutation budget");
+    check(ct::variantDefines("mobile").size() == 3 && ct::variantDefines("desktop").empty(), "platform variants");
+    check(ct::shaderNodeDocs({{"Add", "Adds", {{"A", "float"}}, "float"}}).find("## Add") != std::string::npos, "node docs");
+    std::array<ct::Plane, 6> planes{{{1, 0, 0, 10}, {-1, 0, 0, 10}, {0, 1, 0, 10}, {0, -1, 0, 10}, {0, 0, 1, 10}, {0, 0, -1, 10}}};
+    check(ct::sphereInFrustum(planes, 0, 0, 0, 1) && !ct::sphereInFrustum(planes, 50, 0, 0, 1), "sphere in frustum");
+    const auto ev = ct::evictForQuota({{"old", 100, 1}, {"new", 100, 9}, {"mid", 100, 5}}, 150);
+    check(ev == std::vector<std::string>({"old", "mid"}), "evicts oldest first until under quota");
+    std::vector<std::string> order;
+    check(ct::pluginLoadOrder({{"a", {"b"}}, {"b", {}}}, order, err) && order == std::vector<std::string>({"b", "a"}), "plugin load order");
+    check(!ct::pluginLoadOrder({{"a", {"b"}}, {"b", {"a"}}}, order, err) && err.find("circle") != std::string::npos, "plugin cycle is reported");
+    check(!ct::pluginLoadOrder({{"a", {"zz"}}}, order, err) && err.find("zz") != std::string::npos, "missing plugin dependency named");
+    check(ct::describeCapabilities(3).size() == 2, "capabilities in words");
+    check(ct::pluginConfigPath("c", "my plugin/x") == "c/my_plugin_x.cfg", "plugin config path is safe");
+
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "kronos_batch8";
+    fs::create_directories(dir);
+    { std::ofstream(dir / "old.txt") << "old"; std::ofstream(dir / "new.txt") << "new"; }
+    check(ct::installWithRollback(dir / "new.txt", dir / "old.txt"), "install over existing file");
+    check(ct::rollbackInstall(dir / "old.txt"), "rollback restores the previous file");
+    std::string restored;
+    std::ifstream(dir / "old.txt") >> restored;
+    check(restored == "old", "rollback content is the old file");
+    fs::remove_all(dir);
+
+    std::map<std::string, std::string> keys{{"jump", "space"}, {"run", "shift"}};
+    check(!ct::rebind(keys, "run", "space").ok && ct::rebind(keys, "run", "space").conflictsWith == "jump" && ct::rebind(keys, "run", "r").ok, "rebind detects conflicts");
+    const auto audio = ct::parseGameAudio(ct::serializeGameAudio({{"g", {{"music", 0.5f}}}}) + "h sfx 7\n");
+    check(audio.at("g").at("music") == 0.5f && audio.at("h").at("sfx") == 1.0f, "per-game audio round-trip and clamp");
+    check(ct::gamesWithTags({{"A", {"x", "y"}}, {"B", {"x"}}}, {"x", "y"}) == std::vector<std::string>({"A"}), "tag filter");
+    check(!ct::youngPlayerDefaults().chatEnabled && ct::youngPlayerDefaults().joinFriendsOnly, "young player defaults are strict");
+    check(ct::pingQuality(30) == "great" && ct::pingQuality(300) == "bad" && ct::pingQuality(-1) == "unknown", "ping quality");
+    check(!ct::canJoinFriend(ct::youngPlayerDefaults(), false, true) && ct::canJoinFriend(ct::youngPlayerDefaults(), true, true) && !ct::canJoinFriend({}, true, false), "friend join rules");
 }
 
 void testV5Batch7() {
@@ -53244,6 +53368,7 @@ int main() {
     testV5Batch5();
     testV5Batch6();
     testV5Batch7();
+    testV5Batch8();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();

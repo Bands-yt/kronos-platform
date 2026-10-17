@@ -445,3 +445,53 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0448 | Python sandbox escape regression tests | done | capability report probes asserted blocked in testPythonScripts |
 | 0462 | Versioned API structs with size fields | done | struct_size in every plugin API struct |
 | 0475 | Example plugin proving end-to-end workflow | done | SampleCPlugin.c and engine tests run it sandboxed and trusted |
+
+## v5 batch 8
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0017 | Recent projects with thumbnails | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0018 | Project health dashboard on startup | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0019 | Recover unsaved work after crash | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0033 | Persistent workspace per project | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0055 | Filter hierarchy by component | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0056 | Favorites and pinned entities | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0063 | Numeric property scrub controls | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0065 | Copy and paste component values | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0068 | Lock hide and solo entities | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0069 | Scene tree diff after import | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0084 | Toggle grid axes and safe guides | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0095 | Viewport statistics overlay | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0100 | Viewport interaction recording tests | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
+| 0868 | Asset streaming hitch detector | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0869 | Shader compile hitch detector | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0873 | Frame pacing and missed-deadline report | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0860 | Render pass cost waterfall | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0858 | Network bandwidth profiler | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0855 | Physics broadphase and contact metrics | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0872 | Batch and instancing efficiency report | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0875 | Performance regression budgets in CI | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0862 | Large-scene benchmark suite | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0156 | Reimport when source files change | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0160 | Import conflict resolution UI | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0196 | Asset pack creation wizard | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0197 | Reusable project-level asset aliases | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0205 | Material instance parameters | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0223 | Exportable material presets | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0212 | Shader include and reusable function library | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0215 | Per-platform shader variant selection | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0240 | Shader permutation budget enforcement | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0224 | Shader documentation generated from nodes | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0230 | GPU frustum culling pass | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0547 | Downloaded content cache manager | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0923 | Offline cache quota controls | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0709 | Plugin dependency resolution | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0723 | Plugin permission review UI | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0710 | Plugin configuration persistence | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0722 | Safe plugin update and rollback | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0533 | Keybind remapping menu | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0534 | Per-game audio settings | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0538 | Game discovery categories and tags | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0540 | Local parental and privacy settings | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0543 | Server region and ping display | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+| 0544 | Join friend flow with permission controls | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
