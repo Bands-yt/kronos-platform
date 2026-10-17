@@ -95,3 +95,27 @@ matrices (0452, 0428), a threat-model document (0826), a fresh-project smoke tes
 hierarchy clipper plus a 100k-entity test (0051, 0075), the crash-report consent and redaction
 (0478), hover cards and reflection-driven autocomplete (0402, 0403), and timing counters for the
 profiler overlay (0851 to 0853).
+
+## v5 batch 1 (17 Oct 2026): the easy documents
+
+All of these are covered by [PROJECT_POLICY.md](PROJECT_POLICY.md) or [MATURITY.md](MATURITY.md).
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0976 | One-sentence product positioning | done | PROJECT_POLICY.md "In one sentence" |
+| 0977 | Accurate feature maturity matrix | done | MATURITY.md |
+| 0978 | Comparison page with qualified claims | done | PROJECT_POLICY.md comparison table |
+| 0980 | Local-only versus cloud-hosted | done | PROJECT_POLICY.md table |
+| 0982 | How Kronos differs from Unity | done | comparison table |
+| 0983 | How Kronos differs from Roblox Studio | done | comparison table |
+| 0984 | Target audience and non-goals | done | PROJECT_POLICY.md |
+| 0985 | Compatibility guarantee levels | done | PROJECT_POLICY.md "old projects" |
+| 0986 | Version compatibility policy for old projects | done | same |
+| 0992 | Minimum supported hardware | partial | Vulkan 1.3 and OS stated; no RAM or disk figures measured |
+| 0993 | Bug severity and response policy | done | PROJECT_POLICY.md |
+| 0994 | Contributor decision-making process | done | PROJECT_POLICY.md |
+| 0995 | Security disclosure expectations | partial | says what to do; a real contact address is the owner's choice |
+| 0997 | Stable-versus-preview release criteria | done | PROJECT_POLICY.md |
+| 0998 | Transparent cloud-cost policy | done | PROJECT_POLICY.md "Money" |
+| 1000 | Success metrics around active creators | done | PROJECT_POLICY.md |
+| 0824 | Release-blocking severity policy | done | bug severity table |

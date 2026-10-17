@@ -21,29 +21,29 @@ Other marks: ✅ already exists or was finished (checked against the code), ◐ 
 |---|---|---|
 | 🔴 Extremely hard | 31 | 38.0 work weeks |
 | 🟠 Hard | 236 | 33.6 work weeks |
-| 🟡 Medium | 488 | 14.6 work weeks |
-| 🟢 Easy | 245 | 6.1 days |
-| **All 1,000** | **1000** | **87.4 work weeks** |
+| 🟡 Medium | 488 | 14.5 work weeks |
+| 🟢 Easy | 245 | 6 days |
+| **All 1,000** | **1000** | **87.3 work weeks** |
 
-- ✅ **24** items already exist or are finished, ◐ **11** are partly done, ⛔ **152** need you (11.9 work weeks of the total).
-- Without the ⛔ items, the work I can do alone is **75.5 work weeks**.
+- ✅ **39** items already exist or are finished, ◐ **13** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
+- Without the ⛔ items, the work I can do alone is **75.4 work weeks**.
 - P0 (42 items): 9.8 days
-- P1 (278 items): 49.5 work weeks
-- P2 (680 items): 36.0 work weeks
+- P1 (278 items): 49.4 work weeks
+- P2 (680 items): 35.9 work weeks
 
 **Honest note:** this total is a planning number, not a promise. Real work always finds surprises, like the three Windows build failures this week. The red items are the least certain: treat their times as 'about this, maybe double'. The ⛔ items can also slip because they wait for you.
 
 ## What I suggest v5 should contain
 
-Doing all 1,000 items is about **87.4 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
+Doing all 1,000 items is about **87.3 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
 
 | Slice | Items | Time |
 |---|---|---|
-| **v5 core:** every P0 item, plus every 🟢 and 🟡 P1 item (nothing that needs you) | 130 | 4.3 work weeks |
+| **v5 core:** every P0 item, plus every 🟢 and 🟡 P1 item (nothing that needs you) | 130 | 4.2 work weeks |
 | **v5 extras if time allows:** the 🟠 P1 items (terrain, materials, animation, netcode, Player settings) | 127 | 20.3 work weeks |
 | **After v5:** all P2 items, all 🔴 items, and everything marked ⛔ | rest | rest |
 
-The v5 core is 4.3 work weeks. At the pace of a busy week that is several weeks of building, with the Windows VM test and the owner-only steps done in between.
+The v5 core is 4.2 work weeks. At the pace of a busy week that is several weeks of building, with the Windows VM test and the owner-only steps done in between.
 
 ## By area
 
@@ -88,7 +88,7 @@ The v5 core is 4.3 work weeks. At the pace of a busy week that is several weeks 
 | Mobile and low-end platform readiness | 2 | 5 | 14 | 4 | 5.2 work weeks |
 | Web and console portability | 1 | 4 | 12 | 8 | 3.0 work weeks |
 | Creator discovery and community tooling | 0 | 5 | 15 | 5 | 6.4 days |
-| Product identity and strategic differentiation | 1 | 0 | 6 | 18 | 5.3 days |
+| Product identity and strategic differentiation | 1 | 0 | 6 | 18 | 4.8 days |
 
 ## Suggested order for v5
 
@@ -1089,7 +1089,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0821 | P2 | Long-running soak test | 15 min |  |
 | 🟡 | 0822 | P2 | Automated packaged game launch test | 1.5 h |  |
 | 🟡 | 0823 | P2 | Crash reproduction capture format | 1.5 h |  |
-| 🟢 | 0824 | P2 | Release-blocking severity policy | 15 min |  |
+| 🟢 | 0824 | P2 | Release-blocking severity policy | done | ✅ |
 | 🟡 | 0825 | P2 | Test flake tracking dashboard | 1.5 h |  |
 
 ### 34. Security, permissions and safety (4.3 days)
@@ -1272,32 +1272,32 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0974 | P2 | Project attribution and credits page | 15 min | ⛔ |
 | 🟡 | 0975 | P2 | Independent project health metrics dashboard | 1.5 h | ⛔ |
 
-### 40. Product identity and strategic differentiation (5.3 days)
+### 40. Product identity and strategic differentiation (4.8 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟢 | 0976 | P1 | Define one-sentence product positioning | 15 min |  |
-| 🟢 | 0977 | P1 | Publish accurate feature maturity matrix | 15 min |  |
-| 🟡 | 0978 | P1 | Create comparison page with qualified claims | 1.5 h |  |
+| 🟢 | 0976 | P1 | Define one-sentence product positioning | done | ✅ |
+| 🟢 | 0977 | P1 | Publish accurate feature maturity matrix | done | ✅ |
+| 🟡 | 0978 | P1 | Create comparison page with qualified claims | done | ✅ |
 | 🟡 | 0979 | P1 | State licensing terms consistently across repository and website | 1.5 h |  |
-| 🟡 | 0980 | P1 | Clarify what is local-only versus cloud-hosted | 1.5 h |  |
+| 🟡 | 0980 | P1 | Clarify what is local-only versus cloud-hosted | done | ✅ |
 | 🟡 | 0981 | P1 | Publish data flow and privacy diagram | 1.5 h |  |
-| 🟡 | 0982 | P1 | Document how Kronos differs from Unity | 1.5 h |  |
-| 🟡 | 0983 | P1 | Document how Kronos differs from Roblox Studio | 1.5 h |  |
-| 🟢 | 0984 | P2 | Document target audience and non-goals | 15 min |  |
-| 🟢 | 0985 | P2 | Define compatibility guarantee levels | 15 min |  |
-| 🟢 | 0986 | P2 | Version compatibility policy for old projects | 15 min |  |
+| 🟡 | 0982 | P1 | Document how Kronos differs from Unity | done | ✅ |
+| 🟡 | 0983 | P1 | Document how Kronos differs from Roblox Studio | done | ✅ |
+| 🟢 | 0984 | P2 | Document target audience and non-goals | done | ✅ |
+| 🟢 | 0985 | P2 | Define compatibility guarantee levels | done | ✅ |
+| 🟢 | 0986 | P2 | Version compatibility policy for old projects | done | ✅ |
 | 🟢 | 0987 | P2 | Publish engine architecture overview | 15 min |  |
 | 🟢 | 0988 | P2 | Keep roadmap priorities measurable | 15 min |  |
 | 🟢 | 0989 | P2 | Separate shipped features from prototypes | 15 min |  |
 | 🟢 | 0990 | P2 | Add reproducible showcase benchmark methodology | 15 min |  |
 | 🟢 | 0991 | P2 | Maintain public known limitations page | 15 min |  |
-| 🟢 | 0992 | P2 | Set minimum supported hardware clearly | 15 min |  |
-| 🟢 | 0993 | P2 | Establish bug severity and response policy | 15 min |  |
-| 🟢 | 0994 | P2 | Create contributor decision-making process | 15 min |  |
-| 🟢 | 0995 | P2 | Establish security disclosure expectations | 15 min |  |
+| 🟢 | 0992 | P2 | Set minimum supported hardware clearly | 8 min | ◐ |
+| 🟢 | 0993 | P2 | Establish bug severity and response policy | done | ✅ |
+| 🟢 | 0994 | P2 | Create contributor decision-making process | done | ✅ |
+| 🟢 | 0995 | P2 | Establish security disclosure expectations | 8 min | ◐ |
 | 🔴 | 0996 | P2 | Build a flagship game with public permission to showcase | 4 days | ⛔ |
-| 🟢 | 0997 | P2 | Choose stable-versus-preview release criteria | 15 min | ⛔ |
-| 🟢 | 0998 | P2 | Publish transparent cloud-cost policy | 15 min | ⛔ |
+| 🟢 | 0997 | P2 | Choose stable-versus-preview release criteria | done | ✅⛔ |
+| 🟢 | 0998 | P2 | Publish transparent cloud-cost policy | done | ✅⛔ |
 | 🟢 | 0999 | P2 | Decide open-source and plugin licensing boundaries | 15 min | ⛔ |
-| 🟢 | 1000 | P2 | Define success metrics around active creators not hype | 15 min |  |
+| 🟢 | 1000 | P2 | Define success metrics around active creators not hype | done | ✅ |
