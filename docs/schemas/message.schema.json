@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Kronos cross-language message",
+  "description": "The shape of a message passed between Luau, Python, native plugins and the host. Values must be JSON-compatible so every language can read them.",
+  "type": "object",
+  "required": ["event"],
+  "properties": {
+    "event": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.]{0,63}$", "description": "Name of the event, e.g. player.joined" },
+    "payload": {
+      "description": "Anything JSON can express. Numbers are 64-bit floats. No NaN or infinity. Entities are sent as their numeric id.",
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    },
+    "trace": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Correlation id, copied to every message caused by this one, so a chain of calls across languages can be followed in the log."
+    },
+    "from": { "type": "string", "enum": ["luau", "python", "plugin", "host"] }
+  },
+  "additionalProperties": false
+}

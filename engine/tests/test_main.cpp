@@ -4,6 +4,9 @@
 #include "core/AssetTools.hpp"
 #include "core/ComponentRules.hpp"
 #include "core/AnimationTools.hpp"
+#include "core/InputAccess.hpp"
+#include "core/ScriptTools.hpp"
+#include "net/NetTools.hpp"
 #include "core/AssetPipelineTools.hpp"
 #include "core/AudioTools.hpp"
 #include "core/VfxTools.hpp"
@@ -16485,6 +16488,125 @@ void testV5Batch6() {
     meter.push(1.5f, 3.1);
     check(meter.peak() == 1.5f && meter.clipped(), "peak meter flags clipping");
     check(au::periodFramesForLatency(48000, 10) == 256 && au::secondsToFrames(0.5, 48000) == 24000, "buffer size and frame scheduling");
+}
+
+void testV5Batch7() {
+    namespace nt = engine::net::tools;
+    namespace st = engine::core::scripttools;
+    namespace ia = engine::core::inputaccess;
+
+    nt::InterpolationBuffer buf(0.1);
+    buf.push({1.0, 0, 0, 0});
+    buf.push({1.2, 10, 0, 0});
+    buf.push({1.1, 99, 0, 0}); // old: ignored
+    nt::Snapshot s;
+    check(buf.sample(1.2, s) && std::fabs(s.x - 5.0f) < 1e-4f, "interpolation draws between snapshots, 100 ms in the past");
+    check(buf.sample(9.0, s) && s.x == 10.0f && buf.sample(0.0, s) && s.x == 0.0f, "interpolation holds the newest or oldest snapshot");
+    nt::SequenceFilter seq;
+    check(seq.accept(10) && !seq.accept(9) && !seq.accept(10) && seq.accept(11), "sequenced packets: old ones are dropped, wrap-around works");
+    nt::SequenceFilter wrap;
+    check(wrap.accept(65534) && wrap.accept(65535) && wrap.accept(2) && !wrap.accept(65535), "sequence numbers wrap around");
+    nt::TokenBucket bucket(2.0, 4.0);
+    int ok = 0;
+    for (int i = 0; i < 10; ++i) ok += bucket.take(1, 0.0) ? 1 : 0;
+    check(ok == 4 && bucket.take(1, 1.0) && bucket.take(1, 1.0) && !bucket.take(1, 1.0), "token bucket allows a burst, then the rate");
+    nt::CongestionController cc;
+    const double before = cc.rate();
+    cc.onAckRound();
+    check(cc.rate() > before, "send rate grows while acks arrive");
+    cc.onLoss();
+    cc.onLoss();
+    check(cc.rate() < before, "send rate halves on loss");
+    double rtt = 0;
+    const double offset = nt::estimateClockOffset({{0, 105, 0.4}, {1, 101.05, 1.1}}, &rtt);
+    check(std::fabs(rtt - 0.1) < 1e-9 && std::fabs(offset - 100.0) < 1e-6, "clock offset uses the sample with the lowest round trip");
+    nt::ReconnectTable rec(30);
+    rec.onDisconnect("a", 0);
+    rec.onDisconnect("b", 0);
+    check(rec.tryReconnect("a", 10) && !rec.tryReconnect("a", 11) && rec.expire(100) == 1 && !rec.tryReconnect("b", 101), "reconnect only inside the window");
+    const auto sc = nt::checkSchemas({{"pos", "vec3"}, {"hp", "int"}}, {{"pos", "vec3"}, {"hp", "float"}});
+    check(!sc.compatible && sc.problems.size() == 1 && nt::checkSchemas({{"pos", "vec3"}}, {{"pos", "vec3"}, {"extra", "int"}}).compatible, "schema check reports a type mismatch; extra client fields are fine");
+    check(nt::redactCapture("GET /x?token=abc123&a=1").find("abc123") == std::string::npos && nt::redactCapture("GET /x?token=abc123&a=1").find("a=1") != std::string::npos &&
+              nt::redactCapture("Authorization: Bearer SECRET").find("SECRET") == std::string::npos, "captures are redacted");
+    check(nt::firstDesync({1, 2, 3}, {1, 2, 9}) == 2 && nt::firstDesync({1}, {1, 2}) == -1, "desync detector finds the first differing tick");
+    nt::Version sv, cv;
+    check(nt::parseVersion("4.5.1", sv) && nt::parseVersion("4.6.0", cv) && nt::versionsCompatible(sv, cv) && !nt::parseVersion("x", cv), "version parse");
+    nt::Version old{4, 4, 0}, other{5, 0, 0};
+    check(!nt::versionsCompatible(sv, old) && !nt::versionsCompatible(sv, other), "older client or other major is refused");
+    nt::BodyOwner body;
+    check(nt::grantOwnership(body, 7, 2.0, 5.0, 10.0) && body.ownerPlayer == 7 && !nt::grantOwnership(body, 8, 1.0, 9.0, 10.5) && nt::grantOwnership(body, 8, 1.0, 9.0, 12.0), "ownership is granted to the closest player after the minimum hold");
+    nt::TickScheduler a(1.0 / 60.0), b(1.0 / 60.0);
+    for (int i = 0; i < 60; ++i) a.advance(1.0 / 60.0);
+    for (int i = 0; i < 20; ++i) b.advance(1.0 / 20.0);
+    check(a.total() == 60 && b.total() == 60, "tick count does not depend on how frames are split");
+    check(nt::healthJson({true, true, 2, 8}).find("\"ready\":true") != std::string::npos && nt::healthJson({true, true, 8, 8}).find("\"ready\":false") != std::string::npos &&
+              nt::healthJson({}).find("\"live\":false") != std::string::npos, "health JSON");
+
+    const std::string code = "local speed = 5 -- speed here\nprint('speed', speed)\nplayer.speed = speed + 1\n";
+    const auto uses = st::findIdentifierUses(code, "speed");
+    check(uses.size() == 3 && uses[0].line == 1 && uses[1].line == 2 && uses[1].column == 16, "find usages skips strings, comments and members");
+    std::string renamed = code;
+    check(st::renameIdentifier(renamed, "speed", "pace") && renamed.find("local pace = 5") == 0 && renamed.find("player.speed") != std::string::npos && renamed.find("'speed'") != std::string::npos, "rename changes only real uses");
+    check(!st::renameIdentifier(renamed, "pace", "player") && !st::renameIdentifier(renamed, "pace", "1x") && !st::renameIdentifier(renamed, "nothing", "x"), "rename refuses bad or clashing names");
+    check(st::formatOnSave("a  \n\tb\t\n\n\n") == "a\n    b\n" && st::formatOnSave("") == "" && st::formatOnSave("x") == "x\n", "format on save");
+    st::LintConfig cfg;
+    cfg.maxLineLength = 10;
+    cfg.todoComments = true;
+    const auto issues = st::lint("short\n\tindented  \nthis line is long -- TODO\n", cfg);
+    check(issues.size() == 5, "lint finds tabs, trailing spaces, long lines and TODOs");
+    cfg.trailingWhitespace = cfg.tabsInIndent = cfg.todoComments = false;
+    cfg.maxLineLength = 0;
+    check(st::lint("a  \n\tb", cfg).empty(), "lint rules can be switched off");
+    check(st::filterNames({"Main", "PlayerHud", "Util"}, "hud") == std::vector<std::string>{"PlayerHud"}, "script tree filter");
+    check(st::includeInPublish("Scripts/Main.luau") && !st::includeInPublish("art/hero.blend") && !st::includeInPublish("imgui.ini") && !st::includeInPublish(".git/config"), "publish leaves out editor-only files");
+
+    ia::HoldOrToggle sprint(false);
+    check(sprint.update(true) && !sprint.update(false), "hold mode follows the button");
+    ia::HoldOrToggle toggle(true);
+    toggle.update(true);
+    check(toggle.update(false) && toggle.update(true) == false, "toggle mode flips on each press");
+    check(ia::clampCaptionStyle({9, 5, true}).textScale == 2.5f && ia::clampUiScale(0.1f) == 0.75f && ia::suggestedUiScale(1.0f, 2160) == 1.5f && ia::suggestedUiScale(2.0f, 720) == 1.0f && ia::clampFocusStyle({0, 9}).outlineThickness == 1.0f, "accessibility settings stay in range");
+    check(ia::glyphFor(ia::Device::PlayStation, "confirm") == "Cross" && ia::glyphFor(ia::Device::Keyboard, "jump") == "Space" && ia::glyphFor(ia::Device::Xbox, "unknown") == "unknown", "button glyphs by device");
+    ia::ActionMap map;
+    map.push({"game", {{"E", "interact"}, {"Esc", "pause"}}, false});
+    map.push({"menu", {{"Esc", "close"}}, true});
+    check(map.resolve("Esc") == "close" && map.resolve("E").empty(), "a blocking context hides the ones below it");
+    map.pop();
+    check(map.resolve("E") == "interact", "popping a context restores the one below");
+    ia::DeviceTracker dev;
+    dev.onInput(ia::Device::Xbox, 1.0);
+    dev.onInput(ia::Device::Keyboard, 1.1);
+    check(dev.current() == ia::Device::Xbox, "a quick stray tap does not switch the device");
+    dev.onInput(ia::Device::Keyboard, 2.0);
+    check(dev.current() == ia::Device::Keyboard, "the device follows the last real input");
+    const auto stick = ia::virtualStick(100, 100, 150, 100, 50);
+    check(stick.x == 1.0f && ia::virtualStick(100, 100, 102, 100, 50).x == 0.0f && ia::virtualStick(100, 100, 400, 100, 50).x == 1.0f, "virtual joystick dead zone and clamp");
+    check(ia::classifyGesture(2, 2, 0.1) == ia::Gesture::Tap && ia::classifyGesture(2, 2, 0.8) == ia::Gesture::LongPress && ia::classifyGesture(-80, 5, 0.2) == ia::Gesture::SwipeLeft && ia::classifyGesture(3, 90, 0.2) == ia::Gesture::SwipeDown, "gestures");
+    ia::AccessSettings saved;
+    saved.reducedMotion = true;
+    saved.uiScale = 1.5f;
+    const auto loaded = ia::parseSettings(ia::serializeSettings(saved));
+    check(loaded.reducedMotion && !loaded.captions && loaded.uiScale == 1.5f && ia::parseSettings("uiScale=99").uiScale == 2.0f && ia::parseSettings("junk").uiScale == 1.0f, "accessibility settings are saved per user and clamped on load");
+    const auto lat = ia::latencyStats({10, 12, 11, 40, 10, 11, 12, 10, 11, 13, 10, 12, 11, 10, 11, 12, 10, 11, 12, 100});
+    check(lat.maxMs == 100 && lat.p95Ms == 40 && lat.averageMs > 10.0, "latency statistics");
+    check(ia::frameRateCap({false, 100, false, false}) == 60 && ia::frameRateCap({true, 50, false, false}) == 45 && ia::frameRateCap({true, 10, false, false}) == 30 && ia::frameRateCap({false, 100, false, true}) == 5, "frame-rate cap follows power state");
+    check(ia::shouldPauseAudio({false, 100, false, true}, false) && !ia::shouldPauseAudio({false, 100, false, true}, true) && !ia::qualityHint({false, 100, true, false}).empty() && ia::qualityHint({}).empty(), "background audio and quality hints");
+
+    // Malformed XML must be refused, never crash (parser fuzz, 815).
+    std::ifstream in("tests/compat_corpus/door.rbxlx", std::ios::binary);
+    std::string xml((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    check(!xml.empty(), "the corpus place for the fuzz test is readable");
+    uint32_t rng = 12345;
+    auto next = [&] { return rng = rng * 1664525u + 1013904223u; };
+    int survived = 0;
+    for (int round = 0; round < 150 && !xml.empty(); ++round) {
+        std::string m = xml;
+        for (int k = 0; k < 8; ++k) m[next() % m.size()] = static_cast<char>(next() & 0xFF);
+        if (round % 3 == 0) m.resize(next() % m.size());
+        (void)engine::migration::RbxlxParser::parse(m);
+        ++survived;
+    }
+    check(survived == 150, "150 damaged copies of a place were parsed without crashing");
 }
 
 void testPaletteTextContrast() {
@@ -53121,6 +53243,7 @@ int main() {
     testV5RuntimeTuning();
     testV5Batch5();
     testV5Batch6();
+    testV5Batch7();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();

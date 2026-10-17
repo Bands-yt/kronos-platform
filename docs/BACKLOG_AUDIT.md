@@ -367,3 +367,81 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0395 | Loudness meter and peak warning | partial | PeakMeter tested |
 | 0386 | Low-latency voice buffer tuning | partial | periodFramesForLatency tested |
 | 0389 | Sample-accurate scheduled playback | partial | secondsToFrames; engine cues already schedule by frame |
+
+## v5 batch 7 (17 Oct 2026): network, script, input helpers; design notes; scripts
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0585 | Network interpolation buffers | partial | net/NetTools.hpp InterpolationBuffer tested; client doesn't use it |
+| 0587 | Reliable ordered and unreliable message channels | partial | SequenceFilter tested (wrap-around); ENet already has channels |
+| 0588 | Bandwidth budget per connection | partial | TokenBucket tested; not applied to connections |
+| 0590 | Network congestion and backoff policy | partial | CongestionController (AIMD) tested |
+| 0591 | Clock synchronization and drift measurement | partial | estimateClockOffset tested; drift not measured |
+| 0594 | Disconnect and reconnect state recovery | partial | ReconnectTable tested; state not restored |
+| 0595 | Replication schema compatibility checks | partial | checkSchemas tested |
+| 0598 | Packet capture redaction and replay | partial | redactCapture tested; no capture tool |
+| 0600 | Server-client desync detector | partial | firstDesync tested; peers don't exchange hashes |
+| 0620 | Server version compatibility gate | partial | versionsCompatible tested; join doesn't check it |
+| 0563 | Player Studio version compatibility checks | partial | same version functions |
+| 0605 | Server health and readiness endpoints | partial | healthJson tested; server has no HTTP endpoint |
+| 0593 | Networked physics ownership transfer | partial | grantOwnership tested; not wired |
+| 0584 | Deterministic tick scheduler validation | partial | TickScheduler tested (60 ticks however frames split) |
+| 0839 | Rate limits for chat and RPC | partial | TokenBucket tested; RemoteEvent rate limit already exists, chat not wired |
+| 0580 | Entity ownership and authority rules | done | SECURITY_PROCESS.md and DESIGN_NOTES.md |
+| 0618 | Secrets injection without committing credentials | done | DESIGN_NOTES.md; scripts/release-check.sh scans for key shapes |
+| 0625 | Local-first deploy preview without cloud charges | done | DESIGN_NOTES.md docker steps |
+| 0405 | Go to definition and references | partial | scripttools::findIdentifierUses tested; no editor UI |
+| 0406 | Find all script usages | partial | same, per script |
+| 0425 | Safe script refactoring tools | partial | renameIdentifier tested (refuses clashes); no UI |
+| 0410 | Script formatting on save | partial | formatOnSave tested; editor doesn't call it |
+| 0411 | Configurable lint rules | partial | scripttools::lint with switchable rules tested; no UI |
+| 0409 | Script project tree and filter | partial | filterNames tested |
+| 0565 | Exclude source files and editor-only assets on publish | partial | includeInPublish tested; publisher doesn't call it |
+| 0430 | Python-to-Luau API parity matrix | done | DESIGN_NOTES.md |
+| 0431 | Cross-language entity handle type | done | DESIGN_NOTES.md (entity ids are integers) |
+| 0433 | Python coroutine and async design review | done | DESIGN_NOTES.md |
+| 0434 | Deterministic Python execution constraints | done | DESIGN_NOTES.md |
+| 0438 | Python package allowlist policy | done | DESIGN_NOTES.md (none allowed) |
+| 0439 | Project-local pure-Python module packaging | partial | design only |
+| 0440 | Dependency lock manifest for allowed packages | done | not needed while no packages are allowed |
+| 0444 | Luau-to-Python data conversion rules | partial | rules written; no bridge |
+| 0445 | Shared event bus between script languages | partial | design + JSON schema; not built |
+| 0467 | Language-agnostic event bus | partial | same |
+| 0446 | Cross-language call tracing | partial | trace id in the schema; not built |
+| 0472 | Polyglot debugging correlation IDs | partial | same |
+| 0455 | Rust SDK safe wrapper audit | partial | checklist written; audit not done |
+| 0456 | Rust plugin build templates for Windows Linux and macOS | partial | commands documented; Windows and macOS builds not tried |
+| 0466 | Shared JSON schema for cross-language messages | done | docs/schemas/message.schema.json |
+| 0469 | Generated Rust bindings from API schema | partial | plan only |
+| 0470 | Generated Python API stubs from API schema | partial | plan only |
+| 0473 | C++ Rust Python Luau API conformance suite | partial | plan only |
+| 0834 | Untrusted project safe-open mode | partial | design only |
+| 0823 | Crash reproduction capture format | partial | format written; reports don't include all sections yet |
+| 0825 | Test flake tracking dashboard | partial | table in DESIGN_NOTES.md; no dashboard |
+| 0863 | Low-end reference hardware profile | partial | target written; not measured |
+| 0880 | Hold versus toggle accessibility options | partial | HoldOrToggle tested; no setting |
+| 0885 | Captions and subtitle style controls | partial | CaptionStyle clamp tested |
+| 0535 | Accessible subtitles and captions | partial | style settings only; no caption system |
+| 0886 | Scalable UI fonts | partial | clampUiScale/suggestedUiScale tested; fonts unchanged |
+| 0006 | UI scale and text size preferences | partial | same helpers |
+| 0887 | Large cursor and focus indicators | partial | FocusStyle clamp tested |
+| 0890 | Controller glyph system by device | partial | glyphFor table tested |
+| 0891 | Input action map per context | partial | ActionMap tested |
+| 0892 | Multi-device simultaneous input handling | partial | DeviceTracker tested |
+| 0893 | Virtual joystick template | partial | virtualStick maths tested; no touch UI |
+| 0894 | Touch gesture customization | partial | classifyGesture tested |
+| 0908 | Gesture input API | partial | same |
+| 0895 | Accessibility options saved per user | partial | serialize/parseSettings tested; not stored in the profile |
+| 0898 | Input latency measurement tool | partial | latencyStats tested; no capture tool |
+| 0910 | Battery and thermal-aware quality hints | partial | qualityHint tested |
+| 0912 | Background pause and audio policy | partial | shouldPauseAudio tested |
+| 0925 | Battery-safe frame-rate caps | partial | frameRateCap tested |
+| 0572 | Release checklist automation | done | scripts/release-check.sh (run; it found nothing wrong apart from uncommitted files) |
+| 0573 | Changelog generation from labels | partial | scripts/changelog.sh groups by first word of the commit message |
+| 0815 | Fuzz test asset parsers | partial | 150 damaged copies of a place parsed in tests; binary parser already had damage tests |
+| 0523 | Safe handling of malformed place files | done | damage tests for XML and binary places |
+| 0835 | Zip path traversal protection | done | hostile package archive tests (16 Oct) |
+| 0838 | Server-side validation for remote calls | done | rate limit, NaN/inf refused, hidden Instance args become nil |
+| 0448 | Python sandbox escape regression tests | done | capability report probes asserted blocked in testPythonScripts |
+| 0462 | Versioned API structs with size fields | done | struct_size in every plugin API struct |
+| 0475 | Example plugin proving end-to-end workflow | done | SampleCPlugin.c and engine tests run it sandboxed and trusted |
