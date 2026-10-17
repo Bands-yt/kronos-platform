@@ -1,5 +1,6 @@
 /* Test plugin for the Kronos plugin API, built as C in several variants. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(__linux__)
@@ -8,6 +9,11 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <windows.h>
 #endif
 
 #include "plugin/kronos_plugin.h"
@@ -66,6 +72,67 @@ static void probe(const uint8_t* data, uint64_t size, char* report, size_t capac
     snprintf(report, capacity, "socket:%s fork:%s write:%s read:%s signal:%s", socketResult, forkResult, writeResult,
              readResult, signalResult);
 }
+#elif defined(_WIN32)
+/* data: write path, read path and the editor's process id, one per line. */
+static void probe(const uint8_t* data, uint64_t size, char* report, size_t capacity) {
+    char writePath[512] = {0};
+    char readPath[512] = {0};
+    char pidText[32] = {0};
+    char* text = (char*)malloc((size_t)size + 1);
+    if (text) {
+        memcpy(text, data, (size_t)size);
+        text[size] = 0;
+        char* first = strchr(text, '\n');
+        char* second = first ? strchr(first + 1, '\n') : NULL;
+        if (first && second) {
+            *first = 0;
+            *second = 0;
+            snprintf(writePath, sizeof(writePath), "%s", text);
+            snprintf(readPath, sizeof(readPath), "%s", first + 1);
+            snprintf(pidText, sizeof(pidText), "%s", second + 1);
+        }
+        free(text);
+    }
+    WSADATA wsa;
+    const char* socketResult = "denied";
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
+        SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s != INVALID_SOCKET) {
+            struct sockaddr_in address;
+            memset(&address, 0, sizeof(address));
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            if (bind(s, (struct sockaddr*)&address, sizeof(address)) == 0 && listen(s, 1) == 0) socketResult = "ok";
+            closesocket(s);
+        }
+        WSACleanup();
+    }
+    STARTUPINFOA startup;
+    PROCESS_INFORMATION info;
+    char command[] = "cmd.exe /c exit 0";
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    memset(&info, 0, sizeof(info));
+    const char* forkResult = "denied";
+    if (CreateProcessA(NULL, command, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &startup, &info)) {
+        WaitForSingleObject(info.hProcess, 5000);
+        CloseHandle(info.hProcess);
+        CloseHandle(info.hThread);
+        forkResult = "ok";
+    }
+    HANDLE w = CreateFileA(writePath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    const char* writeResult = w != INVALID_HANDLE_VALUE ? "ok" : "denied";
+    if (w != INVALID_HANDLE_VALUE) CloseHandle(w);
+    HANDLE r = CreateFileA(readPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    const char* readResult = r != INVALID_HANDLE_VALUE ? "ok" : "denied";
+    if (r != INVALID_HANDLE_VALUE) CloseHandle(r);
+    HANDLE editor = OpenProcess(PROCESS_TERMINATE | PROCESS_VM_READ, FALSE, (DWORD)strtoul(pidText, NULL, 10));
+    const char* signalResult = editor ? "ok" : "denied";
+    if (editor) CloseHandle(editor);
+    snprintf(report, capacity, "socket:%s fork:%s write:%s read:%s signal:%s", socketResult, forkResult, writeResult,
+             readResult, signalResult);
+}
 #endif
 
 static int32_t importUpper(void* user, const char* sourceName, const uint8_t* data, uint64_t size,
@@ -80,7 +147,7 @@ static int32_t importUpper(void* user, const char* sourceName, const uint8_t* da
         }
     }
     if (strcmp(sourceName, "fail.lower") == 0) return KRONOS_ERROR;
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
     if (strcmp(sourceName, "probe.lower") == 0) {
         char report[256];
         probe(data, size, report, sizeof(report));

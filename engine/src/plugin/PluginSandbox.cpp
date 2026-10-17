@@ -1,7 +1,19 @@
 #include "plugin/PluginSandbox.hpp"
 
-#if defined(__linux__)
 #include <chrono>
+
+#if defined(_WIN32)
+#include <atomic>
+#include <cstdio>
+#include <filesystem>
+#include <vector>
+
+#include <aclapi.h>
+#include <sddl.h>
+#include <userenv.h>
+#endif
+
+#if defined(__linux__)
 #include <csignal>
 #include <cstring>
 #include <spawn.h>
@@ -15,6 +27,8 @@ SandboxProcess::~SandboxProcess() { terminate(); }
 #if defined(__linux__)
 
 bool SandboxProcess::supported() { return true; }
+
+bool SandboxProcess::running() const { return pid_ > 0; }
 
 bool SandboxProcess::spawn(const std::string& executable, const std::string& pluginPath, std::string& error) {
     terminate();
@@ -67,11 +81,42 @@ void SandboxProcess::reap(bool kill) {
 
 void SandboxProcess::terminate() { reap(true); }
 
+bool SandboxProcess::connected() const { return fd_ >= 0; }
+
+bool SandboxProcess::sendTo(ipc::Msg type, const std::vector<uint8_t>& payload, ipc::Passed passed) {
+    return ipc::sendFrame(fd_, type, payload, passed);
+}
+
+ipc::Recv SandboxProcess::recvFrom(ipc::Msg& type, std::vector<uint8_t>& payload, int timeoutMs) {
+    return ipc::recvFrame(fd_, type, payload, timeoutMs);
+}
+
+#elif defined(_WIN32)
+
+#include "PluginSandboxWindows.inc"
+
+#else
+
+bool SandboxProcess::supported() { return false; }
+bool SandboxProcess::running() const { return false; }
+bool SandboxProcess::connected() const { return false; }
+bool SandboxProcess::sendTo(ipc::Msg, const std::vector<uint8_t>&, ipc::Passed) { return false; }
+ipc::Recv SandboxProcess::recvFrom(ipc::Msg&, std::vector<uint8_t>&, int) { return ipc::Recv::Closed; }
+
+bool SandboxProcess::spawn(const std::string&, const std::string&, std::string& error) {
+    error = "sandboxed plugins are not supported on this platform";
+    return false;
+}
+void SandboxProcess::reap(bool) {}
+void SandboxProcess::terminate() {}
+
+#endif
+
 SandboxProcess::Result SandboxProcess::request(ipc::Msg type, const std::vector<uint8_t>& payload,
                                                std::vector<uint8_t>& reply, int timeoutMs,
                                                const HostCallFn& onHostCall) {
-    if (fd_ < 0) return Result::Crashed;
-    if (!ipc::sendFrame(fd_, type, payload)) {
+    if (!connected()) return Result::Crashed;
+    if (!sendTo(type, payload, ipc::kNoPassed)) {
         reap(false);
         return Result::Crashed;
     }
@@ -85,7 +130,7 @@ SandboxProcess::Result SandboxProcess::request(ipc::Msg type, const std::vector<
         }
         ipc::Msg incoming{};
         std::vector<uint8_t> bytes;
-        switch (ipc::recvFrame(fd_, incoming, bytes, static_cast<int>(left.count()))) {
+        switch (recvFrom(incoming, bytes, static_cast<int>(left.count()))) {
         case ipc::Recv::Ok:
             break;
         case ipc::Recv::Timeout:
@@ -111,33 +156,15 @@ SandboxProcess::Result SandboxProcess::request(ipc::Msg type, const std::vector<
         }
         ipc::Reader reader(bytes);
         ipc::Writer answer;
-        int passFd = -1;
-        onHostCall(incoming, reader, answer, passFd);
+        ipc::Passed passed = ipc::kNoPassed;
+        onHostCall(incoming, reader, answer, passed);
         if (incoming == ipc::Msg::Log) continue;
-        if (!ipc::sendFrame(fd_, ipc::Msg::HostReply, answer.bytes, passFd)) {
+        if (!sendTo(ipc::Msg::HostReply, answer.bytes, passed)) {
             reap(false);
             return Result::Crashed;
         }
     }
 }
 
-#else
-
-bool SandboxProcess::supported() { return false; }
-
-bool SandboxProcess::spawn(const std::string&, const std::string&, std::string& error) {
-    error = "sandboxed plugins are only supported on Linux for now";
-    return false;
-}
-
-SandboxProcess::Result SandboxProcess::request(ipc::Msg, const std::vector<uint8_t>&, std::vector<uint8_t>&, int,
-                                               const HostCallFn&) {
-    return Result::Crashed;
-}
-
-void SandboxProcess::reap(bool) {}
-void SandboxProcess::terminate() {}
-
-#endif
 
 } // namespace engine::plugin

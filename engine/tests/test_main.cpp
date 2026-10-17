@@ -36,7 +36,9 @@
 // already establishes for UDP, just plain TCP here. Honest, explicit
 // platform scope (matches core::launchProcess()'s/ProcessLaunch.hpp's
 // own stated POSIX-only real scope), not silently assumed portable.
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <process.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -29952,7 +29954,8 @@ void testPluginApiSandbox() {
     sandboxed.sandboxExecutable = KRONOS_PLUGIN_SANDBOX_PATH;
     std::string error;
     if (!host.load(TEST_PLUGIN_PATH, sandboxed, error)) {
-        check(error.find("Landlock") != std::string::npos, "plugin sandbox: loads");
+        check(error.find("Landlock") != std::string::npos || error.find("AppContainer") != std::string::npos,
+              "plugin sandbox: loads");
         std::printf("  plugin sandbox skipped: %s\n", error.c_str());
         return;
     }
@@ -29983,14 +29986,23 @@ void testPluginApiSandbox() {
     check(ui.texts.size() == 2 && ui.texts[1] == "bumps=1 enabled=0 speed=7.5 name=crate",
           "plugin sandbox: panel input reaches the plugin");
 
-    const auto dir = std::filesystem::temp_directory_path() / ("kronos_plugin_sandbox_" + std::to_string(::getpid()));
+#if defined(_WIN32)
+    const unsigned long editorPid = static_cast<unsigned long>(_getpid());
+#else
+    const unsigned long editorPid = static_cast<unsigned long>(::getpid());
+#endif
+    const auto dir = std::filesystem::temp_directory_path() / ("kronos_plugin_sandbox_" + std::to_string(editorPid));
     std::filesystem::create_directories(dir);
     const auto secret = dir / "secret.txt";
     const auto written = dir / "written.txt";
     {
         std::ofstream(secret) << "secret";
     }
+#if defined(_WIN32)
+    const std::string probe = written.string() + "\n" + secret.string() + "\n" + std::to_string(editorPid);
+#else
     const std::string probe = written.string() + "\n" + secret.string();
+#endif
     check(host.importAsset("probe.lower", bytes(probe), out, ext, error) &&
               text(out) == "socket:denied fork:denied write:denied read:denied signal:denied" &&
               !std::filesystem::exists(written),

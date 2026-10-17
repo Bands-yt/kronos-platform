@@ -196,13 +196,19 @@ struct PluginHost::ChannelEntry {
     uint32_t version = 0;
     uint64_t size = 0;
     void* data = nullptr;
-    int fd = -1;
+    ipc::Passed shared = ipc::kNoPassed;
 
     ~ChannelEntry() {
 #if defined(__linux__)
-        if (fd >= 0) {
+        if (shared >= 0) {
             munmap(data, size);
-            ::close(fd);
+            ::close(shared);
+            return;
+        }
+#elif defined(_WIN32)
+        if (shared != ipc::kNoPassed) {
+            UnmapViewOfFile(data);
+            CloseHandle(reinterpret_cast<HANDLE>(shared));
             return;
         }
 #endif
@@ -327,14 +333,14 @@ struct HostCalls {
     }
 
     int32_t openChannel(const std::string& name, uint32_t version, uint64_t size, PluginHost::ChannelView& out,
-                        int* fd) {
+                        ipc::Passed* shared) {
         if (!allowed(KRONOS_CAP_CHANNELS)) return KRONOS_DENIED;
         const int32_t result = host.openChannel(name, version, size, out);
-        if (result == KRONOS_OK && fd) {
+        if (result == KRONOS_OK && shared) {
             for (const auto& channel : host.channels_) {
-                if (channel->name == name) *fd = channel->fd;
+                if (channel->name == name) *shared = channel->shared;
             }
-            if (*fd < 0) return KRONOS_ERROR;
+            if (*shared == ipc::kNoPassed) return KRONOS_ERROR;
         }
         return result;
     }
@@ -391,7 +397,7 @@ struct HostCalls {
     }
 
     // Answers one message from a sandboxed plugin.
-    void dispatch(ipc::Msg type, ipc::Reader& in, ipc::Writer& out, int& passFd) {
+    void dispatch(ipc::Msg type, ipc::Reader& in, ipc::Writer& out, ipc::Passed& passed) {
         switch (type) {
         case ipc::Msg::Log: {
             const auto level = in.get<int32_t>();
@@ -421,10 +427,10 @@ struct HostCalls {
             const auto version = in.get<uint32_t>();
             const auto size = in.get<uint64_t>();
             PluginHost::ChannelView view;
-            int fd = -1;
-            const int32_t result = in.ok ? openChannel(name, version, size, view, &fd) : KRONOS_INVALID;
+            ipc::Passed shared = ipc::kNoPassed;
+            const int32_t result = in.ok ? openChannel(name, version, size, view, &shared) : KRONOS_INVALID;
             out.put(result);
-            if (result == KRONOS_OK) passFd = fd;
+            if (result == KRONOS_OK) passed = shared;
             break;
         }
         case ipc::Msg::EntityCount:
@@ -555,7 +561,7 @@ void PluginHost::stop(Loaded& plugin, const std::string& reason) {
     if (plugin.sandbox) {
         if (plugin.sandbox->running() && plugin.pub.running) {
             std::vector<uint8_t> reply;
-            (void)plugin.sandbox->request(ipc::Msg::Unload, {}, reply, 500, [](auto, auto&, auto&, int&) {});
+            (void)plugin.sandbox->request(ipc::Msg::Unload, {}, reply, 500, [](auto, auto&, auto&, ipc::Passed&) {});
         }
         plugin.sandbox->terminate();
         plugin.sandbox.reset();
@@ -640,7 +646,7 @@ bool PluginHost::load(const std::string& path, const LoadOptions& options, std::
         if (!fresh->sandbox->spawn(executable, absolute, spawnError)) return discard(spawnError);
         std::vector<uint8_t> reply;
         const auto result = fresh->sandbox->request(ipc::Msg::Load, {}, reply, std::max(options.callTimeoutMs, 5000),
-                                                    [](auto, auto&, auto&, int&) {});
+                                                    [](auto, auto&, auto&, ipc::Passed&) {});
         if (result != SandboxProcess::Result::Ok) {
             return discard("the plugin process " + fresh->sandbox->exitDescription() + " while loading");
         }
@@ -717,7 +723,7 @@ bool PluginHost::load(const std::string& path, const LoadOptions& options, std::
         HostCalls handler{*this, plugin};
         const auto result = plugin.sandbox->request(
             ipc::Msg::Start, start.bytes, reply, std::max(plugin.options.callTimeoutMs, 5000),
-            [&](ipc::Msg type, ipc::Reader& in, ipc::Writer& out, int& fd) { handler.dispatch(type, in, out, fd); });
+            [&](ipc::Msg type, ipc::Reader& in, ipc::Writer& out, ipc::Passed& passed) { handler.dispatch(type, in, out, passed); });
         ipc::Reader in(reply);
         const int32_t status = result == SandboxProcess::Result::Ok ? in.get<int32_t>() : KRONOS_ERROR;
         if (result != SandboxProcess::Result::Ok || !in.ok || status != KRONOS_OK) {
@@ -779,7 +785,7 @@ void PluginHost::tick(float dt) {
         HostCalls handler{*this, plugin};
         const auto result = plugin.sandbox->request(
             ipc::Msg::Tick, request.bytes, reply, plugin.options.callTimeoutMs,
-            [&](ipc::Msg type, ipc::Reader& in, ipc::Writer& out, int& fd) { handler.dispatch(type, in, out, fd); });
+            [&](ipc::Msg type, ipc::Reader& in, ipc::Writer& out, ipc::Passed& passed) { handler.dispatch(type, in, out, passed); });
         if (result != SandboxProcess::Result::Ok) stop(plugin, "the plugin " + plugin.sandbox->exitDescription());
     }
 }
@@ -886,7 +892,7 @@ bool PluginHost::importAsset(const std::string& sourceName, const std::vector<ui
         HostCalls handler{*this, *plugin};
         const auto result = plugin->sandbox->request(
             ipc::Msg::Import, request.bytes, reply, plugin->options.importTimeoutMs,
-            [&](ipc::Msg type, ipc::Reader& in, ipc::Writer& out, int& fd) { handler.dispatch(type, in, out, fd); });
+            [&](ipc::Msg type, ipc::Reader& in, ipc::Writer& out, ipc::Passed& passed) { handler.dispatch(type, in, out, passed); });
         if (result != SandboxProcess::Result::Ok) {
             error = plugin->pub.name + ": the plugin " + plugin->sandbox->exitDescription() + " while importing " + name;
             stop(*plugin, error);
@@ -989,7 +995,7 @@ bool PluginHost::drawPanel(const std::string& panelId, const KronosUi& ui) {
     HostCalls handler{*this, *plugin};
     const auto result = plugin->sandbox->request(
         ipc::Msg::Draw, request.bytes, reply, plugin->options.callTimeoutMs,
-        [&](ipc::Msg type, ipc::Reader& in, ipc::Writer& out, int& fd) { handler.dispatch(type, in, out, fd); });
+        [&](ipc::Msg type, ipc::Reader& in, ipc::Writer& out, ipc::Passed& passed) { handler.dispatch(type, in, out, passed); });
     if (result != SandboxProcess::Result::Ok) {
         stop(*plugin, "the plugin " + plugin->sandbox->exitDescription());
         return false;
@@ -1093,7 +1099,19 @@ int32_t PluginHost::openChannel(const std::string& name, uint32_t version, uint6
             ::close(fd);
             return KRONOS_ERROR;
         }
-        channel->fd = fd;
+        channel->shared = fd;
+        channel->data = data;
+    }
+#elif defined(_WIN32)
+    HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                        static_cast<DWORD>(size >> 32), static_cast<DWORD>(size & 0xFFFFFFFFu), nullptr);
+    if (mapping) {
+        void* data = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, static_cast<SIZE_T>(size));
+        if (!data) {
+            CloseHandle(mapping);
+            return KRONOS_ERROR;
+        }
+        channel->shared = reinterpret_cast<ipc::Passed>(mapping);
         channel->data = data;
     }
 #endif

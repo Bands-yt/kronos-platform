@@ -1,11 +1,22 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
 
-#if defined(__linux__)
+#if defined(_WIN32)
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0A00
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#if !defined(WINVER) || WINVER < 0x0A00
+#undef WINVER
+#define WINVER 0x0A00
+#endif
+#include <windows.h>
+#elif defined(__linux__)
 #include <cerrno>
 #include <poll.h>
 #include <sys/socket.h>
@@ -17,6 +28,14 @@
 // sends a request and services the plugin's host calls until the reply
 // arrives, so only one side runs at a time.
 namespace engine::plugin::ipc {
+
+// A descriptor (Linux) or kernel handle (Windows, as an integer) that travels with a frame.
+#if defined(_WIN32)
+using Passed = std::intptr_t;
+#else
+using Passed = int;
+#endif
+constexpr Passed kNoPassed = -1;
 
 enum class Msg : uint8_t {
     Load = 1, // engine -> sandbox
@@ -40,6 +59,8 @@ enum class Msg : uint8_t {
 
     HostReply = 64, // engine -> sandbox, answering a host call
 };
+
+enum class Recv { Ok, Closed, Timeout, Error };
 
 constexpr uint32_t kMaxFrameBytes = 256u * 1024u * 1024u;
 constexpr uint32_t kMaxUiCommands = 4096;
@@ -110,8 +131,6 @@ inline uint32_t labelHash(const char* label) {
 }
 
 #if defined(__linux__)
-
-enum class Recv { Ok, Closed, Timeout, Error };
 
 inline bool writeAll(int fd, const uint8_t* data, size_t size, int passFd) {
     bool fdSent = passFd < 0;
@@ -208,6 +227,134 @@ inline Recv recvFrame(int fd, Msg& type, std::vector<uint8_t>& payload, int time
     payload.resize(length - 1);
     if (payload.empty()) return Recv::Ok;
     return readAll(fd, payload.data(), payload.size(), timeoutMs, nullptr);
+}
+
+#endif
+
+#if defined(_WIN32)
+
+// One end of the duplex pipe between the editor and a plugin process. The editor's end is
+// overlapped (so reads can time out and notice the plugin dying); the plugin's end is plain
+// blocking I/O. A frame is [length u32][type u8][passed handle i64][payload].
+struct Pipe {
+    HANDLE handle = nullptr;
+    HANDLE event = nullptr;       // set on the editor's end
+    HANDLE peerProcess = nullptr; // editor's end only: the plugin process (handles are copied into it)
+};
+
+constexpr size_t kHeaderBytes = 13;
+
+inline bool writeAll(Pipe& pipe, const uint8_t* data, size_t size) {
+    while (size > 0) {
+        const DWORD chunk = static_cast<DWORD>(size > (1u << 20) ? (1u << 20) : size);
+        DWORD written = 0;
+        if (pipe.event) {
+            OVERLAPPED ov{};
+            ov.hEvent = pipe.event;
+            ResetEvent(pipe.event);
+            if (!WriteFile(pipe.handle, data, chunk, nullptr, &ov)) {
+                if (GetLastError() != ERROR_IO_PENDING) return false;
+                HANDLE waits[2] = {pipe.event, pipe.peerProcess};
+                const DWORD w = WaitForMultipleObjects(pipe.peerProcess ? 2 : 1, waits, FALSE, INFINITE);
+                if (w != WAIT_OBJECT_0) {
+                    CancelIoEx(pipe.handle, &ov);
+                    GetOverlappedResult(pipe.handle, &ov, &written, TRUE);
+                    return false;
+                }
+            }
+            if (!GetOverlappedResult(pipe.handle, &ov, &written, FALSE)) return false;
+        } else if (!WriteFile(pipe.handle, data, chunk, &written, nullptr)) {
+            return false;
+        }
+        if (written == 0) return false;
+        data += written;
+        size -= written;
+    }
+    return true;
+}
+
+inline bool sendFrame(Pipe& pipe, Msg type, const std::vector<uint8_t>& payload, Passed pass = kNoPassed) {
+    int64_t carried = -1;
+    if (pass != kNoPassed) {
+        // The plugin process can only use a handle that was copied into it.
+        HANDLE copy = nullptr;
+        if (!pipe.peerProcess ||
+            !DuplicateHandle(GetCurrentProcess(), reinterpret_cast<HANDLE>(pass), pipe.peerProcess, &copy, 0, FALSE,
+                             DUPLICATE_SAME_ACCESS)) {
+            return false;
+        }
+        carried = static_cast<int64_t>(reinterpret_cast<intptr_t>(copy));
+    }
+    std::vector<uint8_t> frame(kHeaderBytes + payload.size());
+    const auto length = static_cast<uint32_t>(payload.size() + 1 + sizeof(int64_t));
+    std::memcpy(frame.data(), &length, 4);
+    frame[4] = static_cast<uint8_t>(type);
+    std::memcpy(frame.data() + 5, &carried, sizeof(carried));
+    if (!payload.empty()) std::memcpy(frame.data() + kHeaderBytes, payload.data(), payload.size());
+    return writeAll(pipe, frame.data(), frame.size());
+}
+
+// timeoutMs < 0 waits forever.
+inline Recv readAll(Pipe& pipe, uint8_t* data, size_t size, int timeoutMs) {
+    const ULONGLONG deadline = timeoutMs >= 0 ? GetTickCount64() + static_cast<ULONGLONG>(timeoutMs) : 0;
+    while (size > 0) {
+        const DWORD chunk = static_cast<DWORD>(size > (1u << 20) ? (1u << 20) : size);
+        DWORD got = 0;
+        if (pipe.event) {
+            OVERLAPPED ov{};
+            ov.hEvent = pipe.event;
+            ResetEvent(pipe.event);
+            if (!ReadFile(pipe.handle, data, chunk, nullptr, &ov)) {
+                const DWORD error = GetLastError();
+                if (error == ERROR_BROKEN_PIPE) return Recv::Closed;
+                if (error != ERROR_IO_PENDING) return Recv::Error;
+                DWORD wait = INFINITE;
+                if (timeoutMs >= 0) {
+                    const ULONGLONG now = GetTickCount64();
+                    wait = now >= deadline ? 0 : static_cast<DWORD>(deadline - now);
+                }
+                HANDLE waits[2] = {pipe.event, pipe.peerProcess};
+                const DWORD w = WaitForMultipleObjects(pipe.peerProcess ? 2 : 1, waits, FALSE, wait);
+                if (w != WAIT_OBJECT_0) {
+                    CancelIoEx(pipe.handle, &ov);
+                    GetOverlappedResult(pipe.handle, &ov, &got, TRUE);
+                    if (got > 0) {
+                        data += got;
+                        size -= got;
+                    }
+                    if (w == WAIT_TIMEOUT) return Recv::Timeout;
+                    if (got > 0 && size == 0) return Recv::Ok;
+                    return Recv::Closed;
+                }
+            }
+            if (!GetOverlappedResult(pipe.handle, &ov, &got, FALSE)) {
+                return GetLastError() == ERROR_BROKEN_PIPE ? Recv::Closed : Recv::Error;
+            }
+        } else if (!ReadFile(pipe.handle, data, chunk, &got, nullptr)) {
+            return GetLastError() == ERROR_BROKEN_PIPE ? Recv::Closed : Recv::Error;
+        }
+        if (got == 0) return Recv::Closed;
+        data += got;
+        size -= got;
+    }
+    return Recv::Ok;
+}
+
+inline Recv recvFrame(Pipe& pipe, Msg& type, std::vector<uint8_t>& payload, int timeoutMs, Passed* received = nullptr) {
+    uint8_t header[kHeaderBytes];
+    if (received) *received = kNoPassed;
+    Recv status = readAll(pipe, header, sizeof(header), timeoutMs);
+    if (status != Recv::Ok) return status;
+    uint32_t length = 0;
+    std::memcpy(&length, header, 4);
+    if (length < 1 + sizeof(int64_t) || length > kMaxFrameBytes) return Recv::Error;
+    type = static_cast<Msg>(header[4]);
+    int64_t carried = -1;
+    std::memcpy(&carried, header + 5, sizeof(carried));
+    if (received && carried != -1) *received = static_cast<Passed>(carried);
+    payload.resize(length - 1 - sizeof(int64_t));
+    if (payload.empty()) return Recv::Ok;
+    return readAll(pipe, payload.data(), payload.size(), timeoutMs);
 }
 
 #endif

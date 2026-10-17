@@ -4,6 +4,8 @@
 // own folder and system libraries, seccomp blocks networking, starting
 // programs, debugging or signalling other processes, and resource limits
 // cap memory. The engine reaches the plugin only through the socket on fd 3.
+// On Windows the editor starts this program inside an AppContainer and a job
+// object (see PluginSandboxWindows.inc) and it talks over an inherited pipe.
 
 #include <algorithm>
 #include <cerrno>
@@ -15,6 +17,10 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include "plugin/PluginIpc.hpp"
+#include <shellapi.h>
+#else
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <linux/audit.h>
@@ -28,6 +34,7 @@
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#endif
 
 #include "plugin/PluginIpc.hpp"
 #include "plugin/kronos_plugin.h"
@@ -35,6 +42,27 @@
 namespace ipc = engine::plugin::ipc;
 
 namespace {
+
+#if defined(_WIN32)
+
+ipc::Pipe gPipe;
+
+bool lockDown(const std::string&, std::string& error) {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    HANDLE token = nullptr;
+    DWORD isContainer = 0;
+    DWORD returned = 0;
+    const bool ok = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) &&
+                    GetTokenInformation(token, TokenIsAppContainer, &isContainer, sizeof(isContainer), &returned);
+    if (token) CloseHandle(token);
+    if (!ok || !isContainer) {
+        error = "the plugin process isn't running inside an AppContainer, so it won't load the plugin";
+        return false;
+    }
+    return true;
+}
+
+#else
 
 constexpr int kSocket = 3;
 
@@ -229,19 +257,33 @@ bool lockDown(const std::string& pluginDir, std::string& error) {
     return restrictFilesystem(pluginDir, error) && applySeccomp(error);
 }
 
+#endif
+
 // --- Talking to the engine ----------------------------------------------
 
 [[noreturn]] void lost() { _exit(3); }
 
+#if defined(_WIN32)
+bool sendRaw(ipc::Msg type, const std::vector<uint8_t>& bytes) { return ipc::sendFrame(gPipe, type, bytes); }
+ipc::Recv recvRaw(ipc::Msg& type, std::vector<uint8_t>& bytes, ipc::Passed* passed) {
+    return ipc::recvFrame(gPipe, type, bytes, -1, passed);
+}
+#else
+bool sendRaw(ipc::Msg type, const std::vector<uint8_t>& bytes) { return ipc::sendFrame(kSocket, type, bytes); }
+ipc::Recv recvRaw(ipc::Msg& type, std::vector<uint8_t>& bytes, ipc::Passed* passed) {
+    return ipc::recvFrame(kSocket, type, bytes, -1, passed);
+}
+#endif
+
 void send(ipc::Msg type, const ipc::Writer& payload) {
-    if (!ipc::sendFrame(kSocket, type, payload.bytes)) lost();
+    if (!sendRaw(type, payload.bytes)) lost();
 }
 
-std::vector<uint8_t> hostCall(ipc::Msg type, const ipc::Writer& payload, int* fd = nullptr) {
+std::vector<uint8_t> hostCall(ipc::Msg type, const ipc::Writer& payload, ipc::Passed* passed = nullptr) {
     send(type, payload);
     ipc::Msg reply{};
     std::vector<uint8_t> bytes;
-    if (ipc::recvFrame(kSocket, reply, bytes, -1, fd) != ipc::Recv::Ok || reply != ipc::Msg::HostReply) lost();
+    if (recvRaw(reply, bytes, passed) != ipc::Recv::Ok || reply != ipc::Msg::HostReply) lost();
     return bytes;
 }
 
@@ -323,16 +365,27 @@ int32_t hostOpenChannel(KronosHost*, const char* name, uint32_t version, uint64_
     }
     ipc::Writer w;
     w.str(name).put(version).put(size);
-    int fd = -1;
-    const int32_t result = resultOf(hostCall(ipc::Msg::OpenChannel, w, &fd));
+    ipc::Passed shared = ipc::kNoPassed;
+    const int32_t result = resultOf(hostCall(ipc::Msg::OpenChannel, w, &shared));
+#if defined(_WIN32)
     if (result != KRONOS_OK) {
-        if (fd >= 0) close(fd);
+        if (shared != ipc::kNoPassed) CloseHandle(reinterpret_cast<HANDLE>(shared));
         return result;
     }
-    if (fd < 0) return KRONOS_ERROR;
-    void* data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
+    if (shared == ipc::kNoPassed) return KRONOS_ERROR;
+    void* data = MapViewOfFile(reinterpret_cast<HANDLE>(shared), FILE_MAP_ALL_ACCESS, 0, 0, static_cast<SIZE_T>(size));
+    CloseHandle(reinterpret_cast<HANDLE>(shared));
+    if (!data) return KRONOS_ERROR;
+#else
+    if (result != KRONOS_OK) {
+        if (shared >= 0) close(shared);
+        return result;
+    }
+    if (shared < 0) return KRONOS_ERROR;
+    void* data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shared, 0);
+    close(shared);
     if (data == MAP_FAILED) return KRONOS_ERROR;
+#endif
     channels.push_back({name, {data, size, version}});
     *out = channels.back().channel;
     return KRONOS_OK;
@@ -517,6 +570,14 @@ std::vector<uint8_t> drawPanel(ipc::Reader& reader) {
     return reply.bytes;
 }
 
+void* findSymbol(void* library, const char* name) {
+#if defined(_WIN32)
+    return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(library), name));
+#else
+    return dlsym(library, name);
+#endif
+}
+
 struct Output {
     std::vector<uint8_t> bytes;
 };
@@ -532,6 +593,18 @@ int32_t outputWrite(void* context, const void* data, uint64_t size) {
 } // namespace
 
 int main(int argc, char** argv) {
+#if defined(_WIN32)
+    int wideCount = 0;
+    LPWSTR* wide = CommandLineToArgvW(GetCommandLineW(), &wideCount);
+    if (!wide || wideCount < 3) {
+        std::fprintf(stderr, "kronos_plugin_sandbox is started by the editor to run one plugin.\n");
+        return 2;
+    }
+    gPipe.handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(_wcstoui64(wide[1], nullptr, 10)));
+    const std::wstring pluginPath = wide[2];
+    const std::string pluginDir;
+    (void)argv;
+#else
     if (argc < 3) {
         std::fprintf(stderr, "kronos_plugin_sandbox is started by the editor to run one plugin.\n");
         return 2;
@@ -544,6 +617,7 @@ int main(int argc, char** argv) {
     const std::string pluginPath = argv[2];
     std::error_code ec;
     const std::string pluginDir = std::filesystem::absolute(pluginPath, ec).parent_path().string();
+#endif
 
     std::string error;
     const bool lockedDown = lockDown(pluginDir, error);
@@ -558,7 +632,7 @@ int main(int argc, char** argv) {
     for (;;) {
         ipc::Msg type{};
         std::vector<uint8_t> payload;
-        if (ipc::recvFrame(kSocket, type, payload, -1) != ipc::Recv::Ok) lost();
+        if (recvRaw(type, payload, nullptr) != ipc::Recv::Ok) lost();
         ipc::Reader reader(payload);
         ipc::Writer reply;
         switch (type) {
@@ -567,17 +641,23 @@ int main(int argc, char** argv) {
             info.struct_size = sizeof(KronosPluginInfo);
             int32_t result = KRONOS_ERROR;
             if (lockedDown) {
+#if defined(_WIN32)
+                library = LoadLibraryExW(pluginPath.c_str(), nullptr,
+                                         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+                if (!library) error = "could not load the library (Windows error " + std::to_string(GetLastError()) + ")";
+#else
                 library = dlopen(pluginPath.c_str(), RTLD_NOW | RTLD_LOCAL);
                 if (!library) {
                     const char* message = dlerror();
                     error = message ? message : "could not load the library";
                 }
+#endif
             }
             if (library) {
-                auto queryFn = reinterpret_cast<KronosPluginQueryFn>(dlsym(library, KRONOS_PLUGIN_QUERY_SYMBOL));
-                loadFn = reinterpret_cast<KronosPluginLoadFn>(dlsym(library, KRONOS_PLUGIN_LOAD_SYMBOL));
-                tickFn = reinterpret_cast<KronosPluginTickFn>(dlsym(library, KRONOS_PLUGIN_TICK_SYMBOL));
-                unloadFn = reinterpret_cast<KronosPluginUnloadFn>(dlsym(library, KRONOS_PLUGIN_UNLOAD_SYMBOL));
+                auto queryFn = reinterpret_cast<KronosPluginQueryFn>(findSymbol(library, KRONOS_PLUGIN_QUERY_SYMBOL));
+                loadFn = reinterpret_cast<KronosPluginLoadFn>(findSymbol(library, KRONOS_PLUGIN_LOAD_SYMBOL));
+                tickFn = reinterpret_cast<KronosPluginTickFn>(findSymbol(library, KRONOS_PLUGIN_TICK_SYMBOL));
+                unloadFn = reinterpret_cast<KronosPluginUnloadFn>(findSymbol(library, KRONOS_PLUGIN_UNLOAD_SYMBOL));
                 if (!queryFn || !loadFn || !unloadFn) {
                     error = "the library doesn't export the Kronos plugin functions";
                 } else {

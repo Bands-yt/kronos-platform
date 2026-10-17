@@ -614,7 +614,7 @@ if(WIN32)
     # (core/CredentialStoreWindows.cpp), Shell32 for ShellExecuteA
     # (core/OpenUrl.cpp) -- both real, built-in Win32 libraries, no
     # extra download/install needed.
-    target_link_libraries(engine_core PUBLIC ws2_32 winmm Crypt32 Shell32)
+    target_link_libraries(engine_core PUBLIC ws2_32 winmm Crypt32 Shell32 Userenv Advapi32)
 elseif(UNIX)
     # miniaudio dlopen()s the platform audio backend (ALSA/PulseAudio) at
     # runtime rather than being linked against it directly.
@@ -763,11 +763,20 @@ add_library(kronos_despair STATIC
 target_link_libraries(kronos_despair PUBLIC engine_core)
 
 # Runs one third-party plugin in a locked-down process (plugin/SandboxMain.cpp).
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
     add_executable(kronos_plugin_sandbox plugin/SandboxMain.cpp)
     target_include_directories(kronos_plugin_sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(kronos_plugin_sandbox PRIVATE dl)
     target_compile_features(kronos_plugin_sandbox PRIVATE cxx_std_20)
+    if(WIN32)
+        # Runs inside an AppContainer that can't read the VC++ runtime, so link it statically.
+        set_property(TARGET kronos_plugin_sandbox PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        if(NOT MSVC)
+            target_link_options(kronos_plugin_sandbox PRIVATE -static)
+        endif()
+        target_link_libraries(kronos_plugin_sandbox PRIVATE shell32)
+    else()
+        target_link_libraries(kronos_plugin_sandbox PRIVATE dl)
+    endif()
 endif()
 
 if(ENGINE_BUILD_RUNTIME)
