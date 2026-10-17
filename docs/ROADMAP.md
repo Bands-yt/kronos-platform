@@ -13,7 +13,7 @@ feeling. Estimates are rough, and the big ones are weeks, not hours.
 | 4.4 | Polish from launch feedback, plus the small 4.2 leftovers | Mostly done and released in 4.4.0-pre-beta; the Windows plugin sandbox is left |
 | 4.5 | Foundations: Rust plugins, Python scripts, permanent object IDs, engine clean-up | In progress; steps 1, 2, 4, 8 and a first Python slice released in 4.4.0-pre-beta |
 | 4.6 | Prove it works: Compatibility Lab, complete GUI and images, honest docs (the advisor's Milestone A); Studio first round (Milestone B) | Steps 1–6 and 8 done; step 7 (server program) is unblocked, not started |
-| 5.0 | Next-gen: graphics, web player, collaboration, media tools, 3D Model Maker | Parked until the bridge works |
+| 5.0 (v5) | The 1,000-item backlog rated by difficulty and our time (`docs/V5_PLAN.md`), then the next-gen tracks below | Plan written 17 Oct 2026; v5 core = P0 + easy and medium P1 items (about 4 work weeks); next-gen tracks parked until after it |
 
 ## Already in the engine
 
