@@ -19,23 +19,23 @@ Other marks: ✅ already exists or was finished (checked against the code), ◐ 
 
 | | Items | Time (at our pace) |
 |---|---|---|
-| 🔴 Extremely hard | 31 | 34.0 work weeks |
-| 🟠 Hard | 236 | 22.6 work weeks |
-| 🟡 Medium | 488 | 8.4 work weeks |
-| 🟢 Easy | 245 | 4 days |
-| **All 1,000** | **1000** | **65.9 work weeks** |
+| 🔴 Extremely hard | 31 | 33.6 work weeks |
+| 🟠 Hard | 236 | 19.9 work weeks |
+| 🟡 Medium | 488 | 7.5 work weeks |
+| 🟢 Easy | 245 | 3.7 days |
+| **All 1,000** | **1000** | **61.8 work weeks** |
 
-- ✅ **100** items already exist or are finished, ◐ **676** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
+- ✅ **100** items already exist or are finished, ◐ **797** are partly done, ⛔ **150** need you (7.8 work weeks of the total).
 - Without the ⛔ items, the work I can do alone is **54.0 work weeks**.
 - P0 (42 items): 9.8 days
-- P1 (278 items): 37.0 work weeks
-- P2 (680 items): 26.9 work weeks
+- P1 (278 items): 34.0 work weeks
+- P2 (680 items): 25.8 work weeks
 
 **Honest note:** this total is a planning number, not a promise. Real work always finds surprises, like the three Windows build failures this week. The red items are the least certain: treat their times as 'about this, maybe double'. The ⛔ items can also slip because they wait for you.
 
 ## What I suggest v5 should contain
 
-Doing all 1,000 items is about **65.9 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
+Doing all 1,000 items is about **61.8 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
 
 | Slice | Items | Time |
 |---|---|---|
@@ -73,21 +73,21 @@ The v5 core is 3.0 work weeks. At the pace of a busy week that is several weeks 
 | Kronos Player and end-user experience | 0 | 7 | 13 | 5 | 5 days |
 | Build packaging and release engineering | 2 | 6 | 12 | 5 | 2.3 work weeks |
 | Multiplayer runtime and netcode | 0 | 8 | 13 | 4 | 4.6 days |
-| Cloud servers and matchmaking | 1 | 8 | 10 | 6 | 2.2 work weeks |
-| Backend and developer portal | 0 | 6 | 14 | 5 | 7 days |
-| Persistence, economy and commerce | 0 | 7 | 13 | 5 | 7.7 days |
+| Cloud servers and matchmaking | 1 | 8 | 10 | 6 | 6.7 days |
+| Backend and developer portal | 0 | 6 | 14 | 5 | 3.6 days |
+| Persistence, economy and commerce | 0 | 7 | 13 | 5 | 4 days |
 | Realtime collaboration and Team Create | 5 | 3 | 12 | 5 | 8.1 work weeks |
-| Plugin architecture and developer API | 0 | 6 | 14 | 5 | 3.9 days |
-| Plugin marketplace and ecosystem | 0 | 6 | 9 | 10 | 6.4 days |
+| Plugin architecture and developer API | 0 | 6 | 14 | 5 | 3.5 days |
+| Plugin marketplace and ecosystem | 0 | 6 | 9 | 10 | 3.4 days |
 | Templates, samples and documentation | 0 | 5 | 8 | 12 | 4.8 days |
-| AI-assisted creator workflows | 2 | 5 | 13 | 5 | 2.8 work weeks |
+| AI-assisted creator workflows | 2 | 5 | 13 | 5 | 2.2 work weeks |
 | Quality assurance and automation | 0 | 5 | 15 | 5 | 3.4 days |
 | Security, permissions and safety | 0 | 6 | 8 | 11 | 3.2 days |
 | Performance profiling and optimization | 0 | 5 | 13 | 7 | 2.8 days |
 | Input, accessibility and controls | 0 | 4 | 12 | 9 | 2.7 days |
 | Mobile and low-end platform readiness | 2 | 5 | 14 | 4 | 4.6 work weeks |
 | Web and console portability | 1 | 4 | 12 | 8 | 2.5 work weeks |
-| Creator discovery and community tooling | 0 | 5 | 15 | 5 | 6.4 days |
+| Creator discovery and community tooling | 0 | 5 | 15 | 5 | 3.6 days |
 | Product identity and strategic differentiation | 1 | 0 | 6 | 18 | 4.6 days |
 
 ## Suggested order for v5
@@ -822,7 +822,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0599 | P2 | 2 to 16-player reference sample | 15 min |  |
 | 🟡 | 0600 | P2 | Server-client desync detector | 45 min | ◐ |
 
-### 25. Cloud servers and matchmaking (2.2 work weeks)
+### 25. Cloud servers and matchmaking (6.7 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -831,86 +831,86 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0603 | P1 | Container image for dedicated server | 8 h |  |
 | 🟠 | 0604 | P1 | Docker compose dev deployment | 8 h |  |
 | 🟡 | 0605 | P1 | Server health and readiness endpoints | 45 min | ◐ |
-| 🔴 | 0606 | P1 | Autoscaling policy prototype with limits | 4 days | ⛔ |
-| 🟠 | 0607 | P1 | Region-aware server selection | 8 h | ⛔ |
-| 🟠 | 0608 | P1 | Party-aware matchmaking | 8 h | ⛔ |
-| 🟡 | 0609 | P2 | Skill or latency matchmaking plugin API | 1.5 h | ⛔ |
-| 🟡 | 0610 | P2 | Capacity-aware queue with timeout | 1.5 h | ⛔ |
+| 🔴 | 0606 | P1 | Autoscaling policy prototype with limits | 2 days | ◐⛔ |
+| 🟠 | 0607 | P1 | Region-aware server selection | 4 h | ◐⛔ |
+| 🟠 | 0608 | P1 | Party-aware matchmaking | 4 h | ◐⛔ |
+| 🟡 | 0609 | P2 | Skill or latency matchmaking plugin API | 45 min | ◐⛔ |
+| 🟡 | 0610 | P2 | Capacity-aware queue with timeout | 45 min | ◐⛔ |
 | 🟢 | 0611 | P2 | Join tokens with expiry and single use | 8 min | ◐ |
-| 🟠 | 0612 | P2 | Server drain and rolling updates | 8 h | ⛔ |
-| 🟡 | 0613 | P2 | Crash restart budget and alerting | 1.5 h | ⛔ |
-| 🟢 | 0614 | P2 | Per-instance CPU memory and player metrics | 15 min | ⛔ |
-| 🟢 | 0615 | P2 | Cost estimator before cloud deployment | 15 min | ⛔ |
+| 🟠 | 0612 | P2 | Server drain and rolling updates | 4 h | ◐⛔ |
+| 🟡 | 0613 | P2 | Crash restart budget and alerting | 45 min | ◐⛔ |
+| 🟢 | 0614 | P2 | Per-instance CPU memory and player metrics | 8 min | ◐⛔ |
+| 🟢 | 0615 | P2 | Cost estimator before cloud deployment | 8 min | ◐⛔ |
 | 🟢 | 0616 | P2 | Bring-your-own-host deployment docs | done | ✅ |
 | 🟢 | 0617 | P2 | Kubernetes deployment evaluation only after container MVP | done | ✅ |
 | 🟡 | 0618 | P2 | Secrets injection without committing credentials | done | ✅ |
-| 🟡 | 0619 | P2 | Region failover behavior | 1.5 h | ⛔ |
+| 🟡 | 0619 | P2 | Region failover behavior | 45 min | ◐⛔ |
 | 🟡 | 0620 | P2 | Server version compatibility gate | 45 min | ◐ |
-| 🟢 | 0621 | P2 | Matchmaking load-test simulator | 15 min | ⛔ |
-| 🟡 | 0622 | P2 | Queue visibility and estimated wait | 1.5 h | ⛔ |
-| 🟡 | 0623 | P2 | Reserved private servers | 1.5 h | ⛔ |
-| 🟠 | 0624 | P2 | Server browser for community-hosted games | 8 h | ⛔ |
+| 🟢 | 0621 | P2 | Matchmaking load-test simulator | 8 min | ◐⛔ |
+| 🟡 | 0622 | P2 | Queue visibility and estimated wait | 45 min | ◐⛔ |
+| 🟡 | 0623 | P2 | Reserved private servers | 45 min | ◐⛔ |
+| 🟠 | 0624 | P2 | Server browser for community-hosted games | 4 h | ◐⛔ |
 | 🟡 | 0625 | P2 | Local-first deploy preview without cloud charges | done | ✅ |
 
-### 26. Backend and developer portal (7 days)
+### 26. Backend and developer portal (3.6 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0626 | P1 | Versioned public backend API | 8 h | ⛔ |
-| 🟠 | 0627 | P1 | OpenAPI schema and generated clients | 8 h | ⛔ |
-| 🟠 | 0628 | P1 | Developer portal login hardening | 8 h | ⛔ |
-| 🟠 | 0629 | P1 | Per-game environment settings | 8 h | ⛔ |
-| 🟡 | 0630 | P1 | Staging and production environment separation | 1.5 h | ⛔ |
-| 🟠 | 0631 | P1 | Publish API with resumable uploads | 8 h | ⛔ |
-| 🟠 | 0632 | P1 | Release channel management | 8 h | ⛔ |
-| 🟡 | 0633 | P1 | API rate-limit dashboard | 1.5 h | ⛔ |
-| 🟡 | 0634 | P2 | Request tracing with correlation IDs | 1.5 h | ⛔ |
-| 🟡 | 0635 | P2 | Backend migration rollback plan | 1.5 h | ⛔ |
-| 🟢 | 0636 | P2 | Database schema migration tests | 15 min | ⛔ |
-| 🟡 | 0637 | P2 | Service health dashboard | 1.5 h | ⛔ |
-| 🟡 | 0638 | P2 | Object storage lifecycle policy | 1.5 h | ⛔ |
-| 🟢 | 0639 | P2 | Asset upload virus and type checks | 15 min | ⛔ |
-| 🟡 | 0640 | P2 | Per-project API credentials | 1.5 h | ⛔ |
-| 🟡 | 0641 | P2 | Credential rotation flow | 1.5 h | ⛔ |
-| 🟢 | 0642 | P2 | Webhook signature verification | 15 min | ⛔ |
-| 🟡 | 0643 | P2 | Idempotency keys for publish requests | 1.5 h | ⛔ |
-| 🟡 | 0644 | P2 | Audit log for creator actions | 1.5 h | ⛔ |
-| 🟡 | 0645 | P2 | Backend outage status page | 1.5 h | ⛔ |
-| 🟢 | 0646 | P2 | Local backend mock for tests | 15 min | ⛔ |
+| 🟠 | 0626 | P1 | Versioned public backend API | 4 h | ◐⛔ |
+| 🟠 | 0627 | P1 | OpenAPI schema and generated clients | 4 h | ◐⛔ |
+| 🟠 | 0628 | P1 | Developer portal login hardening | 4 h | ◐⛔ |
+| 🟠 | 0629 | P1 | Per-game environment settings | 4 h | ◐⛔ |
+| 🟡 | 0630 | P1 | Staging and production environment separation | 45 min | ◐⛔ |
+| 🟠 | 0631 | P1 | Publish API with resumable uploads | 4 h | ◐⛔ |
+| 🟠 | 0632 | P1 | Release channel management | 4 h | ◐⛔ |
+| 🟡 | 0633 | P1 | API rate-limit dashboard | 45 min | ◐⛔ |
+| 🟡 | 0634 | P2 | Request tracing with correlation IDs | 45 min | ◐⛔ |
+| 🟡 | 0635 | P2 | Backend migration rollback plan | 45 min | ◐⛔ |
+| 🟢 | 0636 | P2 | Database schema migration tests | 8 min | ◐⛔ |
+| 🟡 | 0637 | P2 | Service health dashboard | 45 min | ◐⛔ |
+| 🟡 | 0638 | P2 | Object storage lifecycle policy | 45 min | ◐⛔ |
+| 🟢 | 0639 | P2 | Asset upload virus and type checks | 8 min | ◐⛔ |
+| 🟡 | 0640 | P2 | Per-project API credentials | 45 min | ◐⛔ |
+| 🟡 | 0641 | P2 | Credential rotation flow | 45 min | ◐⛔ |
+| 🟢 | 0642 | P2 | Webhook signature verification | 8 min | ◐⛔ |
+| 🟡 | 0643 | P2 | Idempotency keys for publish requests | 45 min | ◐⛔ |
+| 🟡 | 0644 | P2 | Audit log for creator actions | 45 min | ◐⛔ |
+| 🟡 | 0645 | P2 | Backend outage status page | 45 min | ◐⛔ |
+| 🟢 | 0646 | P2 | Local backend mock for tests | 8 min | ◐⛔ |
 | 🟡 | 0647 | P2 | Developer portal accessibility audit | 1.5 h | ⛔ |
-| 🟡 | 0648 | P2 | Project ownership transfer workflow | 1.5 h | ⛔ |
-| 🟢 | 0649 | P2 | Export user data package | 15 min | ⛔ |
-| 🟡 | 0650 | P2 | Delete project and account flow with confirmation | 1.5 h | ⛔ |
+| 🟡 | 0648 | P2 | Project ownership transfer workflow | 45 min | ◐⛔ |
+| 🟢 | 0649 | P2 | Export user data package | 8 min | ◐⛔ |
+| 🟡 | 0650 | P2 | Delete project and account flow with confirmation | 45 min | ◐⛔ |
 
-### 27. Persistence, economy and commerce (7.7 days)
+### 27. Persistence, economy and commerce (4 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0651 | P1 | Versioned DataStore emulator | 8 h | ⛔ |
-| 🟠 | 0652 | P1 | Atomic update operations and conflict tests | 8 h | ⛔ |
-| 🟠 | 0653 | P1 | Per-key rate limits with backoff | 8 h | ⛔ |
-| 🟠 | 0654 | P1 | Persistent data schema migrations | 8 h | ⛔ |
-| 🟡 | 0655 | P1 | Backup and restore per game | 1.5 h | ⛔ |
-| 🟠 | 0656 | P1 | Cross-server session locking | 8 h | ⛔ |
-| 🟠 | 0657 | P1 | Server-side receipt validation interface | 8 h | ⛔ |
-| 🟡 | 0658 | P1 | Developer-defined currency service template | 1.5 h | ⛔ |
-| 🟡 | 0659 | P2 | Inventory API with unique item IDs | 1.5 h | ⛔ |
-| 🟡 | 0660 | P2 | Transaction idempotency protection | 1.5 h | ⛔ |
-| 🟢 | 0661 | P2 | Audit ledger for item grants and purchases | 15 min | ⛔ |
-| 🟡 | 0662 | P2 | Refund and reversal event handling | 1.5 h | ⛔ |
-| 🟡 | 0663 | P2 | Fraud and duplication detection hooks | 1.5 h | ⛔ |
-| 🟢 | 0664 | P2 | Entitlement checks that never trust the client | 15 min | ⛔ |
-| 🟡 | 0665 | P2 | Transparent platform fee policy controls | 1.5 h | ⛔ |
-| 🟠 | 0666 | P2 | BYO payment-provider adapter interface | 8 h | ⛔ |
-| 🟢 | 0667 | P2 | No payment details stored in the game client | 15 min | ⛔ |
-| 🟡 | 0668 | P2 | Test-mode purchase simulator | 1.5 h | ⛔ |
+| 🟠 | 0651 | P1 | Versioned DataStore emulator | 4 h | ◐⛔ |
+| 🟠 | 0652 | P1 | Atomic update operations and conflict tests | 4 h | ◐⛔ |
+| 🟠 | 0653 | P1 | Per-key rate limits with backoff | 4 h | ◐⛔ |
+| 🟠 | 0654 | P1 | Persistent data schema migrations | 4 h | ◐⛔ |
+| 🟡 | 0655 | P1 | Backup and restore per game | 45 min | ◐⛔ |
+| 🟠 | 0656 | P1 | Cross-server session locking | 4 h | ◐⛔ |
+| 🟠 | 0657 | P1 | Server-side receipt validation interface | 4 h | ◐⛔ |
+| 🟡 | 0658 | P1 | Developer-defined currency service template | 45 min | ◐⛔ |
+| 🟡 | 0659 | P2 | Inventory API with unique item IDs | 45 min | ◐⛔ |
+| 🟡 | 0660 | P2 | Transaction idempotency protection | 45 min | ◐⛔ |
+| 🟢 | 0661 | P2 | Audit ledger for item grants and purchases | 8 min | ◐⛔ |
+| 🟡 | 0662 | P2 | Refund and reversal event handling | 45 min | ◐⛔ |
+| 🟡 | 0663 | P2 | Fraud and duplication detection hooks | 45 min | ◐⛔ |
+| 🟢 | 0664 | P2 | Entitlement checks that never trust the client | 8 min | ◐⛔ |
+| 🟡 | 0665 | P2 | Transparent platform fee policy controls | 45 min | ◐⛔ |
+| 🟠 | 0666 | P2 | BYO payment-provider adapter interface | 4 h | ◐⛔ |
+| 🟢 | 0667 | P2 | No payment details stored in the game client | 8 min | ◐⛔ |
+| 🟡 | 0668 | P2 | Test-mode purchase simulator | 45 min | ◐⛔ |
 | 🟡 | 0669 | P2 | Regional tax and compliance checklist | 1.5 h | ⛔ |
-| 🟡 | 0670 | P2 | Economy balance simulation spreadsheet export | 1.5 h | ⛔ |
-| 🟢 | 0671 | P2 | Developer analytics for purchases | 15 min | ⛔ |
+| 🟡 | 0670 | P2 | Economy balance simulation spreadsheet export | 45 min | ◐⛔ |
+| 🟢 | 0671 | P2 | Developer analytics for purchases | 8 min | ◐⛔ |
 | 🟡 | 0672 | P2 | User purchase history controls | 1.5 h | ⛔ |
-| 🟡 | 0673 | P2 | Gift and trade permission system | 1.5 h | ⛔ |
-| 🟢 | 0674 | P2 | Spending limits and parental controls evaluation | 15 min | ⛔ |
-| 🟡 | 0675 | P2 | Marketplace item ownership validation | 1.5 h | ⛔ |
+| 🟡 | 0673 | P2 | Gift and trade permission system | 45 min | ◐⛔ |
+| 🟢 | 0674 | P2 | Spending limits and parental controls evaluation | 8 min | ◐⛔ |
+| 🟡 | 0675 | P2 | Marketplace item ownership validation | 45 min | ◐⛔ |
 
 ### 28. Realtime collaboration and Team Create (8.1 work weeks)
 
@@ -942,14 +942,14 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0699 | P2 | Collaboration disabled fallback | done | ✅ |
 | 🟡 | 0700 | P2 | Local-hosted collaboration option | 45 min | ◐ |
 
-### 29. Plugin architecture and developer API (3.9 days)
+### 29. Plugin architecture and developer API (3.5 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
 | 🟠 | 0701 | P1 | Formal plugin lifecycle documentation | 4 h | ◐ |
 | 🟠 | 0702 | P1 | Manifest schema with permissions | 4 h | ◐ |
 | 🟠 | 0703 | P1 | Plugin API capability negotiation | 4 h | ◐ |
-| 🟠 | 0704 | P1 | Signed plugin package metadata | 8 h | ⛔ |
+| 🟠 | 0704 | P1 | Signed plugin package metadata | 4 h | ◐⛔ |
 | 🟠 | 0705 | P1 | Sandboxed plugin process health watchdog | 4 h | ◐ |
 | 🟡 | 0706 | P1 | Per-plugin CPU and memory telemetry | 45 min | ◐ |
 | 🟠 | 0707 | P1 | Crash isolation and automatic disable | 4 h | ◐ |
@@ -972,35 +972,35 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0724 | P2 | API deprecation and migration guide | done | ✅ |
 | 🟡 | 0725 | P2 | Headless plugin test harness | 45 min | ◐ |
 
-### 30. Plugin marketplace and ecosystem (6.4 days)
+### 30. Plugin marketplace and ecosystem (3.4 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0726 | P1 | Curated featured plugin directory | 8 h | ⛔ |
-| 🟠 | 0727 | P1 | Signed plugin catalog metadata | 8 h | ⛔ |
-| 🟠 | 0728 | P1 | Search plugins by task and compatibility | 8 h | ⛔ |
-| 🟠 | 0729 | P1 | Plugin reviews with abuse controls | 8 h | ⛔ |
-| 🟡 | 0730 | P1 | Verified author badges criteria | 1.5 h | ⛔ |
-| 🟡 | 0731 | P1 | Plugin version pinning per project | 1.5 h | ⛔ |
-| 🟠 | 0732 | P1 | Dependency compatibility warnings | 8 h | ⛔ |
-| 🟠 | 0733 | P1 | Private team plugin registry | 8 h | ⛔ |
-| 🟡 | 0734 | P2 | One-click install update and remove | 1.5 h | ⛔ |
-| 🟡 | 0735 | P2 | Plugin uninstall cleanup preview | 1.5 h | ⛔ |
-| 🟢 | 0736 | P2 | Report malicious plugin workflow | 15 min | ⛔ |
+| 🟠 | 0726 | P1 | Curated featured plugin directory | 4 h | ◐⛔ |
+| 🟠 | 0727 | P1 | Signed plugin catalog metadata | 4 h | ◐⛔ |
+| 🟠 | 0728 | P1 | Search plugins by task and compatibility | 4 h | ◐⛔ |
+| 🟠 | 0729 | P1 | Plugin reviews with abuse controls | 4 h | ◐⛔ |
+| 🟡 | 0730 | P1 | Verified author badges criteria | 45 min | ◐⛔ |
+| 🟡 | 0731 | P1 | Plugin version pinning per project | 45 min | ◐⛔ |
+| 🟠 | 0732 | P1 | Dependency compatibility warnings | 4 h | ◐⛔ |
+| 🟠 | 0733 | P1 | Private team plugin registry | 4 h | ◐⛔ |
+| 🟡 | 0734 | P2 | One-click install update and remove | 45 min | ◐⛔ |
+| 🟡 | 0735 | P2 | Plugin uninstall cleanup preview | 45 min | ◐⛔ |
+| 🟢 | 0736 | P2 | Report malicious plugin workflow | 8 min | ◐⛔ |
 | 🟢 | 0737 | P2 | Vulnerability disclosure channel | 15 min | ⛔ |
 | 🟢 | 0738 | P2 | Free and paid plugin policy decision | 15 min | ⛔ |
 | 🟢 | 0739 | P2 | Revenue split transparency if paid plugins launch | 15 min | ⛔ |
-| 🟡 | 0740 | P2 | Plugin sandbox threat model review | 1.5 h | ⛔ |
-| 🟡 | 0741 | P2 | Automated package scanning | 1.5 h | ⛔ |
+| 🟡 | 0740 | P2 | Plugin sandbox threat model review | 45 min | ◐⛔ |
+| 🟡 | 0741 | P2 | Automated package scanning | 45 min | ◐⛔ |
 | 🟢 | 0742 | P2 | Plugin demo projects | 15 min | ⛔ |
-| 🟢 | 0743 | P2 | Plugin changelog and screenshots | 15 min | ⛔ |
-| 🟡 | 0744 | P2 | Plugin download integrity verification | 1.5 h | ⛔ |
-| 🟢 | 0745 | P2 | Deprecation notices for abandoned plugins | 15 min | ⛔ |
+| 🟢 | 0743 | P2 | Plugin changelog and screenshots | 8 min | ◐⛔ |
+| 🟡 | 0744 | P2 | Plugin download integrity verification | 45 min | ◐⛔ |
+| 🟢 | 0745 | P2 | Deprecation notices for abandoned plugins | 8 min | ◐⛔ |
 | 🟢 | 0746 | P2 | Plugin analytics opt-in | 15 min | ⛔ |
 | 🟡 | 0747 | P2 | Offline plugin installation package | 1.5 h | ⛔ |
 | 🟢 | 0748 | P2 | Marketplace moderation guidelines | 15 min | ⛔ |
-| 🟢 | 0749 | P2 | Plugin licensing metadata display | 15 min | ⛔ |
-| 🟡 | 0750 | P2 | Export and import plugin sets | 1.5 h | ⛔ |
+| 🟢 | 0749 | P2 | Plugin licensing metadata display | 8 min | ◐⛔ |
+| 🟡 | 0750 | P2 | Export and import plugin sets | 45 min | ◐⛔ |
 
 ### 31. Templates, samples and documentation (4.8 days)
 
@@ -1032,35 +1032,35 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0774 | P2 | Learning path for programmers | done | ✅ |
 | 🟢 | 0775 | P2 | Sample asset licensing manifest | done | ✅ |
 
-### 32. AI-assisted creator workflows (2.8 work weeks)
+### 32. AI-assisted creator workflows (2.2 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0776 | P1 | Opt-in explain selection assistant | 8 h | ⛔ |
-| 🟠 | 0777 | P1 | Generate script from described behavior with preview | 8 h | ⛔ |
-| 🟠 | 0778 | P1 | Explain existing script selection | 8 h | ⛔ |
-| 🟠 | 0779 | P1 | Script error explanation linked to line | 8 h | ⛔ |
-| 🟡 | 0780 | P1 | AI-generated code tests before insertion | 1.5 h | ⛔ |
+| 🟠 | 0776 | P1 | Opt-in explain selection assistant | 4 h | ◐⛔ |
+| 🟠 | 0777 | P1 | Generate script from described behavior with preview | 4 h | ◐⛔ |
+| 🟠 | 0778 | P1 | Explain existing script selection | 4 h | ◐⛔ |
+| 🟠 | 0779 | P1 | Script error explanation linked to line | 4 h | ◐⛔ |
+| 🟡 | 0780 | P1 | AI-generated code tests before insertion | 45 min | ◐⛔ |
 | 🔴 | 0781 | P1 | Prompt-to-prototype scene generation | 4 days | ⛔ |
-| 🟠 | 0782 | P1 | Procedural level seed suggestions | 8 h | ⛔ |
+| 🟠 | 0782 | P1 | Procedural level seed suggestions | 4 h | ◐⛔ |
 | 🔴 | 0783 | P1 | Material graph generation from brief | 4 days | ⛔ |
-| 🟡 | 0784 | P2 | AI-assisted asset tagging local-first option | 1.5 h | ⛔ |
-| 🟡 | 0785 | P2 | Natural-language scene search | 1.5 h | ⛔ |
+| 🟡 | 0784 | P2 | AI-assisted asset tagging local-first option | 45 min | ◐⛔ |
+| 🟡 | 0785 | P2 | Natural-language scene search | 45 min | ◐⛔ |
 | 🟢 | 0786 | P2 | Documentation question answering grounded in current API | 15 min | ⛔ |
-| 🟡 | 0787 | P2 | AI diff viewer before accepting changes | 1.5 h | ⛔ |
-| 🟡 | 0788 | P2 | Never silently overwrite user code | 1.5 h | ⛔ |
-| 🟢 | 0789 | P2 | Provider adapter architecture | 15 min | ⛔ |
+| 🟡 | 0787 | P2 | AI diff viewer before accepting changes | 45 min | ◐⛔ |
+| 🟡 | 0788 | P2 | Never silently overwrite user code | 45 min | ◐⛔ |
+| 🟢 | 0789 | P2 | Provider adapter architecture | 8 min | ◐⛔ |
 | 🟡 | 0790 | P2 | Local model endpoint option | 1.5 h | ⛔ |
-| 🟡 | 0791 | P2 | Cost and token usage meter | 1.5 h | ⛔ |
-| 🟢 | 0792 | P2 | Redact secrets from prompts | 15 min | ⛔ |
-| 🟡 | 0793 | P2 | AI feature opt-out and disable switch | 1.5 h | ⛔ |
-| 🟡 | 0794 | P2 | Generated content provenance metadata | 1.5 h | ⛔ |
-| 🟡 | 0795 | P2 | Asset rights and safety warnings | 1.5 h | ⛔ |
-| 🟢 | 0796 | P2 | Deterministic fallback when service unavailable | 15 min | ⛔ |
-| 🟡 | 0797 | P2 | Context window budgeting | 1.5 h | ⛔ |
-| 🟡 | 0798 | P2 | Prompt injection threat model for imported content | 1.5 h | ⛔ |
-| 🟢 | 0799 | P2 | Benchmark task success on fixtures | 15 min | ⛔ |
-| 🟡 | 0800 | P2 | AI feature telemetry opt-in only | 1.5 h | ⛔ |
+| 🟡 | 0791 | P2 | Cost and token usage meter | 45 min | ◐⛔ |
+| 🟢 | 0792 | P2 | Redact secrets from prompts | 8 min | ◐⛔ |
+| 🟡 | 0793 | P2 | AI feature opt-out and disable switch | 45 min | ◐⛔ |
+| 🟡 | 0794 | P2 | Generated content provenance metadata | 45 min | ◐⛔ |
+| 🟡 | 0795 | P2 | Asset rights and safety warnings | 45 min | ◐⛔ |
+| 🟢 | 0796 | P2 | Deterministic fallback when service unavailable | 8 min | ◐⛔ |
+| 🟡 | 0797 | P2 | Context window budgeting | 45 min | ◐⛔ |
+| 🟡 | 0798 | P2 | Prompt injection threat model for imported content | 45 min | ◐⛔ |
+| 🟢 | 0799 | P2 | Benchmark task success on fixtures | 8 min | ◐⛔ |
+| 🟡 | 0800 | P2 | AI feature telemetry opt-in only | 45 min | ◐⛔ |
 
 ### 33. Quality assurance and automation (3.4 days)
 
@@ -1242,35 +1242,35 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0949 | P2 | Browser cache versioning strategy | done | ✅ |
 | 🟢 | 0950 | P2 | Portability risk register | done | ✅ |
 
-### 39. Creator discovery and community tooling (6.4 days)
+### 39. Creator discovery and community tooling (3.6 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
-| 🟠 | 0951 | P1 | Public creator profile page | 8 h | ⛔ |
-| 🟠 | 0952 | P1 | Game page with screenshots and tags | 8 h | ⛔ |
-| 🟠 | 0953 | P1 | Search and filtering for published games | 8 h | ⛔ |
-| 🟠 | 0954 | P1 | Featured collections with transparent rules | 8 h | ⛔ |
-| 🟡 | 0955 | P1 | Recently updated games feed | 1.5 h | ⛔ |
+| 🟠 | 0951 | P1 | Public creator profile page | 4 h | ◐⛔ |
+| 🟠 | 0952 | P1 | Game page with screenshots and tags | 4 h | ◐⛔ |
+| 🟠 | 0953 | P1 | Search and filtering for published games | 4 h | ◐⛔ |
+| 🟠 | 0954 | P1 | Featured collections with transparent rules | 4 h | ◐⛔ |
+| 🟡 | 0955 | P1 | Recently updated games feed | 45 min | ◐⛔ |
 | 🟡 | 0956 | P1 | Creator portfolio linking projects | 1.5 h | ⛔ |
-| 🟠 | 0957 | P1 | Public demo links and safe launch flow | 8 h | ⛔ |
+| 🟠 | 0957 | P1 | Public demo links and safe launch flow | 4 h | ◐⛔ |
 | 🟡 | 0958 | P1 | Game changelog visible to players | 1.5 h | ⛔ |
-| 🟡 | 0959 | P2 | Player feedback survey widget | 1.5 h | ⛔ |
+| 🟡 | 0959 | P2 | Player feedback survey widget | 45 min | ◐⛔ |
 | 🟡 | 0960 | P2 | Bug report link from a game page | 1.5 h | ⛔ |
-| 🟢 | 0961 | P2 | Creator follower and update notifications | 15 min | ⛔ |
-| 🟡 | 0962 | P2 | Community showcase submission workflow | 1.5 h | ⛔ |
-| 🟡 | 0963 | P2 | Showcase video metadata and thumbnail | 1.5 h | ⛔ |
-| 🟢 | 0964 | P2 | Verified links to official project downloads | 15 min | ⛔ |
+| 🟢 | 0961 | P2 | Creator follower and update notifications | 8 min | ◐⛔ |
+| 🟡 | 0962 | P2 | Community showcase submission workflow | 45 min | ◐⛔ |
+| 🟡 | 0963 | P2 | Showcase video metadata and thumbnail | 45 min | ◐⛔ |
+| 🟢 | 0964 | P2 | Verified links to official project downloads | 8 min | ◐⛔ |
 | 🟡 | 0965 | P2 | Community guidelines for asset use | 1.5 h | ⛔ |
-| 🟡 | 0966 | P2 | Spam and impersonation reporting | 1.5 h | ⛔ |
-| 🟢 | 0967 | P2 | Developer forum category taxonomy | 15 min | ⛔ |
-| 🟡 | 0968 | P2 | Monthly challenge starter kits | 1.5 h | ⛔ |
+| 🟡 | 0966 | P2 | Spam and impersonation reporting | 45 min | ◐⛔ |
+| 🟢 | 0967 | P2 | Developer forum category taxonomy | 8 min | ◐⛔ |
+| 🟡 | 0968 | P2 | Monthly challenge starter kits | 45 min | ◐⛔ |
 | 🟡 | 0969 | P2 | Community-contributed tutorials review queue | 1.5 h | ⛔ |
-| 🟡 | 0970 | P2 | Contributor onboarding issue list | 1.5 h | ⛔ |
-| 🟢 | 0971 | P2 | Release announcement template generator | 15 min | ⛔ |
-| 🟡 | 0972 | P2 | Public compatibility badges backed by tests | 1.5 h | ⛔ |
-| 🟡 | 0973 | P2 | Creator analytics privacy controls | 1.5 h | ⛔ |
-| 🟢 | 0974 | P2 | Project attribution and credits page | 15 min | ⛔ |
-| 🟡 | 0975 | P2 | Independent project health metrics dashboard | 1.5 h | ⛔ |
+| 🟡 | 0970 | P2 | Contributor onboarding issue list | 45 min | ◐⛔ |
+| 🟢 | 0971 | P2 | Release announcement template generator | 8 min | ◐⛔ |
+| 🟡 | 0972 | P2 | Public compatibility badges backed by tests | 45 min | ◐⛔ |
+| 🟡 | 0973 | P2 | Creator analytics privacy controls | 45 min | ◐⛔ |
+| 🟢 | 0974 | P2 | Project attribution and credits page | 8 min | ◐⛔ |
+| 🟡 | 0975 | P2 | Independent project health metrics dashboard | 45 min | ◐⛔ |
 
 ### 40. Product identity and strategic differentiation (4.6 days)
 

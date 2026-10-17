@@ -892,3 +892,129 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0928 | Browser fallback renderer decision record | partial | docs/WEB_DECISIONS.md, decision records, no web build exists |
 | 0932 | Web networking transport evaluation | partial | docs/WEB_DECISIONS.md, decision records, no web build exists |
 | 0762 | Python game scripting sample | partial | samples/python_game, sample script and README; not run by a test yet |
+
+## v5 batch 11
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0606 | Autoscaling policy prototype with limits | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0607 | Region-aware server selection | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0608 | Party-aware matchmaking | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0609 | Skill or latency matchmaking plugin API | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0610 | Capacity-aware queue with timeout | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0612 | Server drain and rolling updates | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0613 | Crash restart budget and alerting | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0614 | Per-instance CPU memory and player metrics | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0615 | Cost estimator before cloud deployment | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0619 | Region failover behavior | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0621 | Matchmaking load-test simulator | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0622 | Queue visibility and estimated wait | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0623 | Reserved private servers | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0624 | Server browser for community-hosted games | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0626 | Versioned public backend API | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0627 | OpenAPI schema and generated clients | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0628 | Developer portal login hardening | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0629 | Per-game environment settings | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0630 | Staging and production environment separation | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0631 | Publish API with resumable uploads | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0632 | Release channel management | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0633 | API rate-limit dashboard | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0634 | Request tracing with correlation IDs | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0635 | Backend migration rollback plan | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0636 | Database schema migration tests | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0637 | Service health dashboard | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0638 | Object storage lifecycle policy | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0639 | Asset upload virus and type checks | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0640 | Per-project API credentials | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0641 | Credential rotation flow | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0642 | Webhook signature verification | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0643 | Idempotency keys for publish requests | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0644 | Audit log for creator actions | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0645 | Backend outage status page | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0646 | Local backend mock for tests | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0648 | Project ownership transfer workflow | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0649 | Export user data package | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0650 | Delete project and account flow with confirmation | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0651 | Versioned DataStore emulator | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0652 | Atomic update operations and conflict tests | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0653 | Per-key rate limits with backoff | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0654 | Persistent data schema migrations | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0655 | Backup and restore per game | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0656 | Cross-server session locking | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0657 | Server-side receipt validation interface | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0658 | Developer-defined currency service template | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0659 | Inventory API with unique item IDs | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0660 | Transaction idempotency protection | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0661 | Audit ledger for item grants and purchases | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0662 | Refund and reversal event handling | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0663 | Fraud and duplication detection hooks | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0664 | Entitlement checks that never trust the client | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0665 | Transparent platform fee policy controls | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0666 | BYO payment-provider adapter interface | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0667 | No payment details stored in the game client | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0668 | Test-mode purchase simulator | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0670 | Economy balance simulation spreadsheet export | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0671 | Developer analytics for purchases | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0673 | Gift and trade permission system | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0674 | Spending limits and parental controls evaluation | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0675 | Marketplace item ownership validation | partial | BackendLogicTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0704 | Signed plugin package metadata | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0726 | Curated featured plugin directory | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0727 | Signed plugin catalog metadata | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0728 | Search plugins by task and compatibility | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0729 | Plugin reviews with abuse controls | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0730 | Verified author badges criteria | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0731 | Plugin version pinning per project | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0732 | Dependency compatibility warnings | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0733 | Private team plugin registry | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0734 | One-click install update and remove | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0735 | Plugin uninstall cleanup preview | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0736 | Report malicious plugin workflow | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0740 | Plugin sandbox threat model review | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0741 | Automated package scanning | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0743 | Plugin changelog and screenshots | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0744 | Plugin download integrity verification | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0745 | Deprecation notices for abandoned plugins | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0749 | Plugin licensing metadata display | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0750 | Export and import plugin sets | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0776 | Opt-in explain selection assistant | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0777 | Generate script from described behavior with preview | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0778 | Explain existing script selection | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0779 | Script error explanation linked to line | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0780 | AI-generated code tests before insertion | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0782 | Procedural level seed suggestions | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0784 | AI-assisted asset tagging local-first option | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0785 | Natural-language scene search | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0787 | AI diff viewer before accepting changes | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0788 | Never silently overwrite user code | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0789 | Provider adapter architecture | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0791 | Cost and token usage meter | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0792 | Redact secrets from prompts | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0793 | AI feature opt-out and disable switch | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0794 | Generated content provenance metadata | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0795 | Asset rights and safety warnings | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0796 | Deterministic fallback when service unavailable | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0797 | Context window budgeting | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0798 | Prompt injection threat model for imported content | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0799 | Benchmark task success on fixtures | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0800 | AI feature telemetry opt-in only | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0951 | Public creator profile page | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0952 | Game page with screenshots and tags | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0953 | Search and filtering for published games | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0954 | Featured collections with transparent rules | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0955 | Recently updated games feed | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0957 | Public demo links and safe launch flow | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0959 | Player feedback survey widget | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0961 | Creator follower and update notifications | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0962 | Community showcase submission workflow | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0963 | Showcase video metadata and thumbnail | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0964 | Verified links to official project downloads | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0966 | Spam and impersonation reporting | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0967 | Developer forum category taxonomy | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0968 | Monthly challenge starter kits | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0970 | Contributor onboarding issue list | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0971 | Release announcement template generator | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0972 | Public compatibility badges backed by tests | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0973 | Creator analytics privacy controls | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0974 | Project attribution and credits page | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
+| 0975 | Independent project health metrics dashboard | partial | CommunityAiTools.hpp, testV5Batch11; logic only, the live service or account part needs the owner |
