@@ -495,3 +495,243 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0540 | Local parental and privacy settings | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
 | 0543 | Server region and ping display | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
 | 0544 | Join friend flow with permission controls | partial | ContentTools.hpp, testV5Batch8; library only, not wired into the UI yet |
+
+## v5 batch 9
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0007 | Light dark and high-contrast themes | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0008 | Consistent spacing and typography tokens | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0009 | Unified icon library with clear metaphors | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0011 | Context-sensitive help panel | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0012 | Undo and redo status visibility | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0015 | Empty states with actionable next steps | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0024 | Reduced-motion UI option | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0030 | Draggable tabs with clear drop targets | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0031 | Dock preview before releasing panel | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0032 | Panel search and panel visibility manager | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0034 | Quick switch between Studio Player and Movie Maker | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0036 | Responsive layout for 720p displays | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0037 | No clipped text at common DPI scales | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0038 | DPI-aware icons and hit targets | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0039 | Consistent property row alignment | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0040 | Color tokens for status selection and warnings | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0041 | Shared style guide for all windows | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0042 | Empty panel onboarding | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0043 | Panel-level keyboard shortcuts | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0045 | Pop-out script editor window | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0050 | UI consistency lint rules | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0059 | Bulk component add remove and reset | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0060 | Inspector sections grouped by component | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0061 | Property search and quick focus | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0062 | Mixed-value display for multi-selection | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0064 | Vector and transform gizmos in inspector | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0070 | Entity reference picker | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0073 | Inspector schema generated from reflection metadata | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0074 | Saveable custom inspector layouts | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0075 | Hierarchy performance stress test with 100k entities | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0080 | Walkthrough camera with collision | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0086 | Vertex edge face and object selection modes | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0089 | X-ray and wireframe selection | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0094 | Screenshot capture without editor chrome | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0099 | Multi-viewport split layouts | partial | UiTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0121 | Procedural mesh from Luau parameters | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0122 | Mesh operation history and replay | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0123 | Gizmo-based deform brushes | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0141 | Terrain sculpt undo history | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0155 | Import report with warnings and skipped fields | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0161 | glTF 2.0 import quality suite | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0162 | OBJ and MTL import reliability | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0166 | SVG and raster image import | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0167 | HDR EXR and environment map import | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0168 | Font import with shaping validation | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0169 | Video clip import metadata extraction | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0170 | Audio waveform and metadata import | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0174 | Import sandbox for untrusted parsers | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0175 | Batch import regression corpus | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0185 | Version history for source assets | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0187 | License and attribution metadata | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0190 | Preview 3D models with lighting presets | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0191 | Preview audio and video in browser | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0192 | Preview animation clips on rig | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0193 | Asset comparison view | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0194 | Drag assets directly into scene | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0195 | Download and cache remote assets | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0199 | Asset database consistency repair | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0200 | Asset browser keyboard navigation | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0208 | UV channel preview | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0211 | Decal authoring and projection bounds | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0213 | Shader compile cache with diagnostics | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0214 | Hot reload material graphs | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0216 | Visualize normals roughness and overdraw | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0222 | Shader graph version migration | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0225 | Material graph unit tests | partial | ImportTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0233 | Persistent mapped upload buffer manager | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0234 | Async texture upload | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0235 | Async mesh upload | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0237 | Descriptor allocation diagnostics | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0238 | Render-thread command queue profiling | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0239 | Pipeline cache persistence | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0241 | RenderDoc-friendly debug markers | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0243 | Swapchain recreation reliability | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0246 | GPU timing queries with graceful fallback | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0249 | Renderer feature flags per driver | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0250 | Render correctness test scenes | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0263 | Procedural sky and cloud layers | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0269 | Light bake preview and invalidation | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0271 | Shadow caster diagnostics | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0274 | Environment profile assets | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0280 | Mesh particles | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0288 | Decal burst emitters | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0292 | VFX preview window | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0293 | VFX timeline authoring | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0299 | VFX capture and thumbnail | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0311 | Constraint stack for props and limbs | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0317 | Python animation utilities | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0319 | Facial blendshape timeline | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0325 | Animation regression corpus | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0335 | Audio waveform and sync tracks | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0336 | Animation and facial tracks | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0343 | Proxy preview for heavy scenes | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0349 | MP4 export through bundled or documented encoder | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0372 | Sound library browser | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0373 | Batch audio conversion | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0383 | Streaming long music tracks | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0393 | Runtime audio capture permission model | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0397 | Audio events exposed to Luau | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0398 | Python audio event API | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0400 | Audio loopback test harness | partial | RenderMediaTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0408 | Multi-file tabs and split panes | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0412 | Static type checking integration | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0413 | Type-aware autocomplete for Instances | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0418 | Evaluate expression in debug console | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0419 | Per-script CPU and memory budgets | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0435 | Per-script memory and time budget UI | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0420 | Hot-reload diff before applying | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0422 | Unit-test runner for Luau | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0442 | Python unit-test harness | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0423 | Script template gallery | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0424 | API compatibility annotations for Roblox imports | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0436 | Python stack traces linked to source lines | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0441 | Python formatter integration where feasible | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0443 | Python type hint documentation generation | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0459 | Ownership-safe scene handle wrapper | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0460 | Typed entity IDs with stale-handle checks | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0458 | Plugin ABI conformance test binary | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0465 | Rust plugin diagnostics and logging macros | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0468 | Language-neutral asset and scene schema | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0481 | Runtime variable watch window | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0483 | Frame-by-frame simulation stepping | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0484 | Physics contact visualization | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0485 | Network replication visualization | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0487 | Asset loading timeline | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0488 | Shader compilation error grouping | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0490 | Copyable diagnostics bundle | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0500 | One-click environment report export | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0491 | Searchable project-wide logs | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0492 | Error panel with source links | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0493 | Recoverable error notification queue | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0494 | Built-in command console with permission checks | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0496 | Server/client correlated logs | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0498 | Debug-only simulation overlays | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0720 | Plugin logging and diagnostic bundle | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0725 | Headless plugin test harness | partial | DevTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0505 | API shims for common services | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0506 | GUI constraints and layout compatibility | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0508 | MeshPart and texture preservation | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0511 | Sound and music mapping report | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0512 | Lighting and atmosphere mapping | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0514 | CollectionService tag preservation | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0515 | RemoteEvent network semantic parity tests | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0516 | DataStore emulator with clear migration notes | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0517 | Unsupported API call source report | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0520 | Batch place conversion CLI | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0522 | Roblox-version metadata handling | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0525 | Compatibility report export for marketing claims | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0536 | Avatar customization saved across games | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0537 | Avatar preview performance mode | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0541 | Clear offline mode behavior | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0545 | Crash-safe game return to home | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0548 | Player update rollback safety | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0550 | User-facing privacy and safety center | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0555 | Clean-machine installer smoke tests | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0556 | Portable archive validation | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0559 | Update channel for stable preview and nightly | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0566 | Asset compression profile per target | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0567 | Build cache reuse | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0568 | Build progress and cancel controls | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0569 | Build error summary with source paths | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0570 | Headless command-line build mode | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0575 | Installer uninstall cleanup and preserve-user-data choice | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0592 | Late join world snapshot recovery | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0596 | Secure remote-call rate limits | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0597 | Network fuzzing harness | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0816 | Fuzz test project manifest loader | partial | ProductTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0684 | Conflict-aware script merge UI | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0685 | Lock and lease policy for high-risk edits | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0688 | Permission roles for owner editor viewer | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0690 | Collaborative asset import status | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0693 | Change attribution timeline | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0694 | Session audit log | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0695 | Offline edits conflict review | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0697 | Large-scene sync benchmarks | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0698 | Multi-user test harness | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0706 | Per-plugin CPU and memory telemetry | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0708 | Plugin compatibility testing across versions | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0711 | Plugin command registration API | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0712 | Menu and toolbar extension points | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0713 | Inspector custom property editors | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0714 | Scene gizmo extension API | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0715 | Asset importer extension API | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0716 | Exporter extension API | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0717 | Custom viewport render-pass API | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0718 | Script language extension API | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0719 | Project validator plugin API | partial | CollabPluginTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0805 | Studio launch and clean exit test | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0806 | Import corpus regression runner | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0808 | GPU renderer golden-image tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0809 | Physics behavior scenario suite | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0810 | Network simulation integration suite | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0811 | Script language conformance tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0813 | Save reopen identity tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0814 | Data migration backward-compat tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0817 | Memory leak checks on exit | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0819 | Windows clean-machine smoke tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0820 | Linux clean-machine smoke tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0821 | Long-running soak test | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0822 | Automated packaged game launch test | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0831 | TLS and certificate failure handling | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0833 | Redaction of tokens from diagnostics | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0836 | Asset parser resource limits | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0837 | Backend authorization checks per game | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0841 | Moderation actions audit trail | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0859 | Audio voice and CPU meter | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0870 | UI layout performance trace | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0883 | Keyboard-only Studio navigation | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0884 | Screen-reader labels for controls | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0899 | Focus order regression tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0906 | Touch-first runtime controls | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0913 | App suspend and resume recovery | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0915 | Small download game packaging profile | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0918 | Mobile network handover resilience | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0920 | Device compatibility report | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0922 | Shader fallback for older GPUs | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0930 | Web runtime sandbox boundaries | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0931 | Browser save-data adapter design | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0933 | Browser audio autoplay compliance handling | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0934 | Pointer-lock and fullscreen UX | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0935 | Web crash and context-loss recovery | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0938 | Platform abstraction audit | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0940 | Platform-specific input adapter tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0941 | Cross-platform save migration format | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0942 | Cross-platform shader variant tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0944 | Shared project format conformance suite | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0945 | Per-platform packaging profiles | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0947 | Platform feature flags | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0948 | Web performance benchmark scenes | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0766 | API reference generated from reflection | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0768 | Versioned tutorial matching release | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0772 | Sample project automated smoke tests | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0979 | State licensing terms consistently across repository and website | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0981 | Publish data flow and privacy diagram | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0988 | Keep roadmap priorities measurable | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |

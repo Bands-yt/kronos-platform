@@ -8,6 +8,13 @@
 #include "core/EditorTools.hpp"
 #include "core/PerfTools.hpp"
 #include "core/ContentTools.hpp"
+#include "core/UiTools.hpp"
+#include "core/ImportTools.hpp"
+#include "core/RenderMediaTools.hpp"
+#include "core/DevTools.hpp"
+#include "core/ProductTools.hpp"
+#include "core/CollabPluginTools.hpp"
+#include "core/QaPlatformTools.hpp"
 #include "core/ScriptTools.hpp"
 #include "net/NetTools.hpp"
 #include "core/AssetPipelineTools.hpp"
@@ -16491,6 +16498,286 @@ void testV5Batch6() {
     meter.push(1.5f, 3.1);
     check(meter.peak() == 1.5f && meter.clipped(), "peak meter flags clipping");
     check(au::periodFramesForLatency(48000, 10) == 256 && au::secondsToFrames(0.5, 48000) == 24000, "buffer size and frame scheduling");
+}
+
+void testV5Batch9() {
+    namespace ui = engine::core::uitools;
+    namespace it = engine::core::importtools;
+    namespace rm = engine::core::rendermedia;
+    namespace dv = engine::core::devtools;
+    namespace pr = engine::core::product;
+    namespace cb = engine::core::collab;
+    namespace qa = engine::core::qa;
+
+    // ---- UiTools
+    check(ui::contrastRatio(ui::themeNamed("high-contrast").text, ui::themeNamed("high-contrast").background) > 15.0f, "high contrast theme has a strong ratio");
+    check(ui::contrastRatio(ui::themeNamed("dark").text, ui::themeNamed("dark").background) > 7.0f && ui::contrastRatio(ui::themeNamed("light").text, ui::themeNamed("light").background) > 7.0f, "dark and light themes are readable");
+    check(ui::spacing(2) == 8.0f && ui::iconFor("script") == "code" && ui::iconFor("zzz") == "question", "spacing steps and icon fallback");
+    check(ui::helpFor("Inspector").find("properties") != std::string::npos && ui::helpFor("x").find("No help") == 0, "help text");
+    check(ui::undoStatus(true, "Move") == "Undo Move" && ui::undoStatus(false, "") == "Nothing to undo", "undo status text");
+    check(ui::animationSeconds(0.3f, true) == 0.0f && ui::tabDropIndex({100, 100}, 40) == 0 && ui::tabDropIndex({100, 100}, 130) == 1 && ui::tabDropIndex({100, 100}, 500) == 2, "reduced motion and tab drop index");
+    check(ui::dockPreview("left", {0, 0, 1000, 500}).w == 300.0f && ui::dockPreview("bottom", {0, 0, 1000, 500}).y == 350.0f, "dock preview rectangles");
+    check(ui::filterNames({"Explorer", "Inspector", "Stats"}, "ins") == std::vector<std::string>({"Inspector"}) && ui::nextMode("Movie Maker") == "Studio", "panel search and mode switch");
+    check(ui::useCompactLayout(720) && !ui::useCompactLayout(1080) && ui::ellipsize("abcdefghij", 6) == "abc...", "compact layout and ellipsis");
+    check(ui::hitTargetSize(10, 2.0f) == 48.0f && ui::labelColumnWidth({"a", "abcdef"}, 7, 100) == 54.0f, "dpi hit target and label column");
+    check(ui::styleGuide("light").find("contrast") != std::string::npos, "style guide text");
+    check(ui::shortcutConflicts({{"A", "Ctrl+1"}, {"B", "Ctrl+1"}, {"C", "Ctrl+2"}}).size() == 1, "shortcut conflict found");
+    const auto pop = ui::popOutRect({1800, 1000, 100, 100}, 1920, 1080);
+    check(pop.x + pop.w <= 1920 && pop.y + pop.h <= 1080, "pop out window stays on screen");
+    check(ui::lintUi({{"a", "", 40}, {"b", "x", 40}, {"b", "y", 40}, {"c", "long label", 3}}).size() == 3, "ui lint finds empty, duplicate and long");
+    const auto bulk = ui::bulkApply({{"Mesh"}, {}}, "Light", ui::BulkOp::Add);
+    check(bulk[0].count("Light") && bulk[1].count("Light") && !ui::bulkApply(bulk, "Light", ui::BulkOp::Remove)[0].count("Light"), "bulk add and remove components");
+    check(ui::groupByComponent({{"Light", "Range"}, {"Light", "Color"}, {"Mesh", "Path"}}).at("Light").size() == 2, "properties grouped by component");
+    check(ui::mixedDisplay({"1", "1"}) == "1" && ui::mixedDisplay({"1", "2"}) == "(mixed)" && ui::formatVec3(-0.0001f, 1, 2.5f) == "0.000, 1.000, 2.500", "mixed values and vector text");
+    check(ui::pickCandidates({{1, "Door", {"Mesh"}}, {2, "Doorbell", {}}}, "door", "Mesh") == std::vector<int>({1}), "entity picker filters by component");
+    check(ui::inspectorSchemaText("Part", {{"Size", "Vector3", false}, {"Class", "string", true}}).find("(read only)") != std::string::npos, "inspector schema text");
+    std::vector<std::string> order;
+    std::set<std::string> collapsed;
+    ui::parseInspectorLayout(ui::serializeInspectorLayout({"Transform", "Light"}, {"Light"}), order, collapsed);
+    check(order.size() == 2 && collapsed.count("Light") && !collapsed.count("Transform"), "inspector layout round-trip");
+    const auto rows = ui::visibleRows(100000, 20, 40000, 600);
+    check(rows.first == 2000 && rows.last - rows.first < 40, "100k rows: only about 30 are drawn");
+    const std::vector<ui::Box> walls{{0, 0, 10, 1}};
+    check(ui::walkMove(walls, 5, -0.5f, 0.5f, 1.0f).second == -0.5f && ui::walkMove(walls, 5, -0.5f, 0.5f, 1.0f).first == 5.5f, "walkthrough slides along walls");
+    check(ui::nextSelectionMode("face") == "object" && ui::nextShadeMode("wireframe") == "xray" && !ui::cleanCapture().gizmos, "selection and shading modes, clean capture");
+    check(ui::viewportRects("four", 100, 100).size() == 4 && ui::viewportRects("x", 10, 10).size() == 1, "split viewport layouts");
+
+    // ---- ImportTools
+    const auto grid = it::gridMesh(10, 10, 4, 4);
+    check(grid.positions.size() == 25 && grid.indices.size() == 96, "grid mesh counts");
+    it::OpHistory hist;
+    hist.record("extrude 1");
+    hist.record("bevel 2");
+    std::vector<std::string> replayed;
+    it::OpHistory::parse(hist.serialize()).replay([&](const std::string& o) { replayed.push_back(o); }, 1);
+    check(replayed == std::vector<std::string>({"extrude 1"}), "mesh history replays up to a step");
+    std::vector<it::Vec3> pts{{0, 0, 0}, {5, 0, 0}, {20, 0, 0}};
+    it::deformBrush(pts, {0, 0, 0}, 10, 2);
+    check(std::abs(pts[0].y - 2.0f) < 1e-4f && pts[1].y > 0 && pts[1].y < 2 && pts[2].y == 0, "deform brush falls off");
+    std::vector<float> heights{1, 2, 3};
+    it::SculptUndo sculpt;
+    sculpt.beginStroke();
+    sculpt.touch(heights, 1);
+    heights[1] = 9;
+    sculpt.touch(heights, 1);
+    check(sculpt.undo(heights) && heights[1] == 2 && !sculpt.undo(heights), "sculpt undo restores heights");
+    check(it::importReport(3, {{"a.obj", "no normals", false}, {"b.fbx", "unsupported", true}}).find("SKIPPED b.fbx") != std::string::npos, "import report names skipped files");
+    check(it::detectFormat({0x89, 'P', 'N', 'G'}) == "png" && it::detectFormat({'O', 'g', 'g', 'S'}) == "ogg" && it::detectFormat({1, 2}) == "unknown", "format sniffing");
+    std::string problem;
+    check(it::gltfLooksValid("{\"asset\":{\"version\":\"2.0\"},\"meshes\":[]}", problem) && !it::gltfLooksValid("{}", problem) && problem == "missing asset block", "glTF sanity check");
+    const auto obj = it::parseObjCounts("mtllib a.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\nf 1 2\nf 0 1 2\n");
+    check(obj.vertices == 3 && obj.faces == 1 && obj.badFaces == 2 && obj.materialLibs.size() == 1, "OBJ counts and bad faces");
+    std::vector<uint8_t> wav = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x40, 0x1F, 0, 0, 0x80, 0x3E, 0, 0, 2, 0, 16, 0, 'd', 'a', 't', 'a', 0x40, 0x1F, 0, 0};
+    wav.resize(wav.size() + 8000);
+    const auto wi = it::parseWav(wav);
+    check(wi.ok && wi.channels == 1 && wi.sampleRate == 8000 && wi.bits == 16 && std::abs(wi.seconds - 0.5) < 0.001, "WAV header read");
+    check(it::mp4Brand({0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}) == "isom", "MP4 brand");
+    check(it::checkLimits({}, 1, 1, 100000) == "texture is too large" && it::checkLimits({}, 1, 1, 1).empty(), "import limits");
+    check(it::corpusRegressions({{"a", "1"}, {"b", "2"}, {"c", "3"}}, {{"a", "1"}, {"b", "9"}}).size() == 2, "corpus regressions");
+    it::AssetVersions versions;
+    versions.add({1}, "first");
+    versions.add({2}, "second");
+    check(versions.count() == 2 && versions.hashOf(1) != versions.hashOf(2) && versions.noteOf(2) == "second" && versions.hashOf(3).empty(), "asset versions");
+    check(it::parseLicense(it::serializeLicense({"CC0", "me", "web"})).author == "me" && it::licenseWarning({"GPL", "", ""}).find("unknown") == 0 && it::licenseWarning({"CC-BY-4.0", "", ""}) == "needs an author for credit" && it::licenseWarning({"MIT", "", ""}).empty(), "licence metadata and warnings");
+    check(it::lightingPreset("night").first < 0 && it::previewerFor("wav") == "audio" && it::previewerFor("zip") == "none", "preview presets");
+    check(it::clipTime(5, 2, true) == 1.0f && it::clipTime(5, 2, false) == 2.0f && it::clipTime(-1, 2, true) == 1.0f, "animation preview time");
+    check(it::compareMetadata({{"a", "1"}, {"b", "2"}}, {{"a", "1"}, {"b", "3"}, {"c", "4"}}).size() == 2, "asset compare");
+    it::Vec3 hit{};
+    check(it::dropOnGround({0, 10, 0}, {0, -1, 1}, hit) && std::abs(hit.z - 10) < 1e-4f && !it::dropOnGround({0, 10, 0}, {0, 1, 0}, hit), "drop asset on ground");
+    check(it::cacheFileName("http://x/y.png") == it::cacheFileName("http://x/y.png") && it::cacheFileName("a") != it::cacheFileName("b") && it::cacheExpired(0, 100, 50) && !it::cacheExpired(0, 10, 50), "remote cache names and expiry");
+    const auto repair = it::repairPlan({"a", "b"}, {"b", "c"});
+    check(repair.missingFiles == std::vector<std::string>({"a"}) && repair.orphanFiles == std::vector<std::string>({"c"}), "asset database repair plan");
+    check(it::gridNavigate(0, "right", 4, 10) == 1 && it::gridNavigate(0, "left", 4, 10) == 0 && it::gridNavigate(8, "down", 4, 10) == 9 && it::gridNavigate(3, "end", 4, 10) == 9, "grid keyboard navigation");
+    const auto uv = it::uvInfo({{0, 0}, {1.5f, 0.5f}});
+    check(uv.outside == 1 && uv.maxU == 1.5f, "uv bounds");
+    check(it::insideDecal({0, 0, 0}, {1, 1, 1}, {0.5f, 0.5f, 0.5f}) && !it::insideDecal({0, 0, 0}, {1, 1, 1}, {2, 0, 0}), "decal bounds");
+    check(it::shaderCacheKey("a", {"X"}) != it::shaderCacheKey("a", {"Y"}) && it::groupDiagnostics({"error at line 4", "error at line 17"}).size() == 1, "shader cache keys and grouped diagnostics");
+    check(it::overdrawHeat(1) == "cool" && it::overdrawHeat(9) == "critical", "overdraw heat");
+    int steps = 0;
+    check(it::migrateVersion(1, 4, [&](int) { ++steps; }) == 4 && steps == 3, "graph migration steps");
+    check(it::evalGraph({{"const", 2, -1, -1}, {"const", 3, -1, -1}, {"add", 0, 0, 1}, {"mul", 0, 2, 1}}, 3) == 15.0f, "material graph evaluates");
+
+    // ---- RenderMediaTools
+    rm::UploadRing ring(1024);
+    check(ring.allocate(100, 64) == 0 && ring.allocate(100, 64) == 128 && ring.allocate(2000, 1) == -1, "upload ring aligns and refuses too big");
+    check(ring.allocate(800, 1) == -1, "upload ring refuses when full");
+    ring.releaseAll();
+    check(ring.allocate(800, 1) == 0, "upload ring reusable after release");
+    rm::UploadQueue uq;
+    uq.push("a", 600);
+    uq.push("b", 600);
+    uq.push("c", 100);
+    check(uq.takeForFrame(1000).size() == 1 && uq.pending() == 2 && uq.takeForFrame(1000).size() == 2, "upload queue respects the frame budget");
+    check(rm::descriptorStatus(50, 100) == "ok" && rm::descriptorStatus(85, 100) != "ok" && rm::descriptorStatus(100, 100) == "full", "descriptor pool status");
+    rm::CommandProfile cp;
+    cp.add("draw", 2);
+    cp.add("draw", 3);
+    cp.add("copy", 1);
+    check(cp.slowest(1)[0].first == "draw" && cp.countOf("draw") == 2, "command profile");
+    check(rm::pipelineCacheUsable({0x4B504331, 5, 7}, 5, 7) && !rm::pipelineCacheUsable({0x4B504331, 5, 7}, 6, 7), "pipeline cache validity");
+    check(rm::markerName("Shadow", 2) == "Shadow #2" && rm::swapchainNeedsRecreate(-1000001004) && !rm::swapchainNeedsRecreate(0), "debug markers and swapchain results");
+    check(rm::gpuTimingAvailable(1.0f, 64) && !rm::gpuTimingAvailable(0, 64) && rm::driverQuirks(0x8086).count("simple_shadows") && rm::driverQuirks(0x10DE).empty(), "gpu timing and driver quirks");
+    check(rm::imageRmse({1, 2}, {1, 2}) == 0.0 && rm::imageRmse({1}, {1, 2}) == 255.0, "image difference");
+    check(rm::zenithColour(40).b > rm::zenithColour(-10).b && rm::cloudDensity(1.0f, 0.5f) > 0 && rm::cloudDensity(0.1f, 0.1f) == 0, "sky colour and clouds");
+    check(rm::needsRebake({{true, true, false}}) && !rm::needsRebake({{false, true, false}}) && rm::shadowReport({{true, false, false}, {true, true, true}, {false, true, false}}).find("2 shadow casters") == 0, "bake invalidation and shadow report");
+    check(rm::parseEnv(rm::serializeEnv({"dusk", 8, 0.02f, 1.5f})).name == "dusk", "environment profile round-trip");
+    check(rm::meshParticles(8, 2, 0.5f, 1).size() == 8 && rm::eventsBetween(rm::burstSchedule(1, 3, 0.5f, "puff"), 1.0f, 2.0f).size() == 2, "mesh particles and burst events");
+    check(rm::thumbnailSize(1920, 1080, 256).first == 256 && rm::thumbnailSize(100, 50, 256).first == 100, "thumbnail size never upscales");
+    check(rm::runConstraintStack(0, {{[](float) { return 10.0f; }, 0.5f}}) == 5.0f && rm::sampleTrack({{0, 0}, {2, 10}}, 1) == 5.0f && rm::easeInOut(0.5f) == 0.5f, "constraints, tracks, easing");
+    check(rm::maxPoseError({1, 2}, {1, 2.5f}) == 0.5f && rm::mergeTrackNames({"arm"}, {"smile"})[1] == "face/smile", "pose error and merged tracks");
+    check(rm::waveformPeaks({0.1f, -0.9f, 0.3f, 0.2f}, 2)[0] == 0.9f && rm::proxyLevel(2'000'000) == 2, "waveform peaks and proxy level");
+    check(rm::ffmpegArgs("f%04d.png", 30, "a.wav", "o.mp4").back() == "o.mp4", "video export command");
+    check(rm::findSounds({{"boom", {"explosion"}, 2}, {"hum", {"ambient"}, 60}}, "", 10) == std::vector<std::string>({"boom"}) && rm::convertedName("a.b.wav", "ogg") == "a.b.ogg" && rm::shouldStream(120, 1) && !rm::shouldStream(1, 1), "sound library, conversion names, streaming rule");
+    rm::PermissionStore perms;
+    perms.grant("plugin", "capture");
+    check(perms.allowed("plugin", "capture") && !perms.allowed("other", "capture"), "capture permission");
+    rm::EventBus bus;
+    std::string heard;
+    bus.on("beat", [&](const std::string& a) { heard += a; });
+    check(bus.emit("beat", "x") == 1 && heard == "x" && bus.emit("none", "") == 0, "audio event bus");
+    check(std::abs(rm::estimateFrequency(rm::sineWave(440, 48000, 48000), 48000) - 440.0f) < 2.0f, "loopback frequency estimate");
+
+    // ---- DevTools
+    dv::EditorTabs tabs;
+    tabs.open("a.lua", 0);
+    tabs.open("b.lua", 1);
+    tabs.open("a.lua", 1);
+    check(tabs.inPane(1).size() == 2 && tabs.inPane(0).empty(), "editor tabs and panes");
+    dv::ClassMembers cls{{"Instance", {"Name", "Parent"}}, {"Part", {"Size", "Position"}}};
+    const std::map<std::string, std::string> parents{{"Part", "Instance"}};
+    check(dv::completeMembers(cls, parents, "Part", "P") == std::vector<std::string>({"Parent", "Position"}) && dv::memberExists(cls, parents, "Part", "Name") && !dv::memberExists(cls, parents, "Instance", "Size"), "inherited autocomplete");
+    double val = 0;
+    check(dv::evalExpression("x * 2", {{"x", 4}}, val) && val == 8 && !dv::evalExpression("1 / 0", {}, val) && !dv::evalExpression("zz", {}, val), "console expressions");
+    check(dv::overBudget({{"a", 20, 10}, {"b", 1, 900}}, 16, 256).size() == 2, "script budgets");
+    check(dv::lineDiffCounts("a\nb\n", "a\nc\nd\n") == std::make_pair(2, 1), "hot reload diff counts");
+    check(dv::runTests({{"ok", [] { return std::string(); }}, {"bad", [] { return std::string("nope"); }}, {"throws", []() -> std::string { throw std::runtime_error("boom"); }}}).failed == 2, "test runner counts failures");
+    check(dv::scriptTemplates("python").size() == 2 && !dv::compatibilityNote("HttpService:GetAsync").empty() && dv::compatibilityNote("x").empty(), "templates and compatibility notes");
+    std::string tf;
+    int tl = 0;
+    check(dv::parseTracebackLine("  File \"main.py\", line 12, in f", tf, tl) && tf == "main.py" && tl == 12 && dv::parseSourceLink("x.lua:7: bad", tf, tl) && tl == 7, "traceback and source links");
+    check(dv::formatPython("def f():\t\n    pass   \n\n\n") == "def f():\n    pass\n", "python formatter");
+    check(dv::docFromSignature("def f(a: int) -> str:") == "`f(a: int)` returns str", "doc from signature");
+    dv::EntitySlots slots;
+    const auto e1 = slots.create();
+    slots.destroy(e1);
+    const auto e2 = slots.create();
+    check(!slots.valid(e1) && slots.valid(e2) && e1.index == e2.index, "stale entity handles are detected");
+    check(dv::checkApiStruct(8, 16, 1, 1) == "struct is smaller than expected" && dv::checkApiStruct(32, 16, 2, 1) == "major version differs" && dv::checkApiStruct(32, 16, 1, 1).empty(), "api struct conformance");
+    check(dv::pluginLogLine("p", "warn", "m") == "[p] warn: m" && dv::schemaProblems({{"id", "1"}}).size() == 2, "plugin log line and schema problems");
+    dv::WatchList watch;
+    watch.add("hp");
+    watch.add("hp");
+    check(watch.render({{"hp", "10"}}) == std::vector<std::string>({"hp = 10"}), "watch list");
+    dv::FrameStepper stepper;
+    stepper.pause();
+    check(!stepper.shouldAdvance(), "paused simulation does not advance");
+    stepper.step(2);
+    check(stepper.shouldAdvance() && stepper.shouldAdvance() && !stepper.shouldAdvance(), "frame stepping advances exactly the requested frames");
+    check(dv::contactColour(0.5f) == "green" && dv::heaviestEntities({{"a", 5}, {"b", 50}}, 1)[0].first == "b", "contact colours and heaviest entities");
+    check(dv::loadTimelineTotal({{"a", 0, 10}, {"b", 5, 40}}) == 40 && dv::slowestLoad({{"a", 0, 10}, {"b", 5, 40}}) == "b" && dv::groupShaderErrors({{"a.glsl", 3}, {"a.glsl", 9}}).at("a.glsl").size() == 2, "load timeline and grouped shader errors");
+    check(dv::redactSecrets("url?token=abc123&x=1") == "url?token=[removed]&x=1" && dv::diagnosticsBundle({{"Log", "password=hunter2 ok"}}).find("hunter2") == std::string::npos, "secrets removed from diagnostics");
+    check(dv::searchLogs({{"a", "error", "disk full"}, {"b", "info", "ok"}}, "disk", "error").size() == 1, "project log search");
+    dv::NotificationQueue nq(2);
+    nq.push("a");
+    nq.push("a");
+    nq.push("b");
+    nq.push("c");
+    check(nq.lines() == std::vector<std::string>({"b", "c"}), "notification queue keeps the newest");
+    check(dv::commandAllowed("fps", false, false) && !dv::commandAllowed("kick", false, true) && dv::commandAllowed("kick", true, true) && !dv::commandAllowed("rm", true, true), "console permissions");
+    check(dv::mergeLogs({{1, "server", "a"}, {3, "server", "c"}}, {{2, "client", "b"}})[1].side == "client" && !dv::overlayEnabled(false, true), "merged logs and release overlays");
+
+    // ---- ProductTools
+    check(pr::shimStatus("Players") == "works" && pr::shimStatus("zzz") == "unknown" && pr::resolveUDim(0.5f, 10, 200) == 110.0f, "shims and UDim");
+    check(pr::mapAsset({{"123", "a.png"}}, "rbxassetid://123") == "a.png" && pr::mappingReport("Sounds", {"rbxassetid://1", "rbxassetid://123"}, {{"123", "a.ogg"}}).find("1 of 2") != std::string::npos, "asset mapping report");
+    check(pr::mapLighting(2, 12, 1000).sunElevation > 80 && pr::parseTags(pr::serializeTags({"b", "a"})).size() == 2 && pr::arrivedInOrder({1, 2, 3}, {1, 3}) && !pr::arrivedInOrder({1, 2, 3}, {2, 1}), "lighting map, tags, remote order");
+    pr::DataStoreEmulator ds;
+    ds.set("k", "1");
+    ds.update("k", [](const std::string& v) { return v + "2"; });
+    std::string dsv;
+    check(ds.get("k", dsv) && dsv == "12" && ds.version("k") == 2 && ds.version("none") == 0, "datastore emulator versions");
+    check(pr::unsupportedApiUses("a\nlocal p = PathfindingService\n", {"PathfindingService"}).front().first == 2, "unsupported api lines");
+    const auto cli = pr::parseArgs({"--in", "a.rbxl", "--fast"}); (void)0; const auto cli2 = pr::parseArgs({"--in", "a.rbxl", "out", "--fast"});
+    check(cli.options.at("in") == "a.rbxl" && cli.options.at("fast") == "true" && cli2.positional.size() == 1 && cli2.options.at("fast") == "true", "command line parsing");
+    check(pr::robloxFileKind("<roblox!") == "binary" && pr::robloxFileKind("<roblox xmlns") == "xml" && pr::compatMarkdown({{"a", 100}, {"b", 80}}).find("90%") != std::string::npos, "roblox file kind and compat table");
+    check(pr::parseLoadout(pr::serializeLoadout({{"hat", "cap"}})).at("hat") == "cap" && pr::avatarLod(30, false) == 1 && pr::avatarLod(30, true) == 2, "loadout and avatar lod");
+    check(pr::featuresAvailable(false).size() < pr::featuresAvailable(true).size() && pr::exitAction(1, true).find("crash") != std::string::npos, "offline features and exit action");
+    check(pr::parseVersion("v4.4.1-pre-beta").patch == 1 && pr::pickRelease("stable", {"v4.4.0", "v4.5.0-pre-beta", "v4.3.0"}) == "v4.4.0" && pr::pickRelease("preview", {"v4.4.0", "v4.5.0-pre-beta"}) == "v4.5.0-pre-beta" && !pr::updateIsSafe("4.4.0", "4.3.0", true), "versions and update channels");
+    check(pr::privacyCentreLines().size() == 4 && pr::missingFiles({"a"}, {"a", "b"}) == std::vector<std::string>({"b"}) && pr::uninstallTargets({"bin/x", "saves/s"}, true).size() == 1, "privacy lines, missing files, uninstall");
+    check(pr::compressionFor("mobile").maxTextureSide == 1024 && pr::canReuseBuild("h", "h") && !pr::canReuseBuild("", ""), "compression profile and build cache");
+    pr::BuildProgress bp(4);
+    bp.advance();
+    bp.advance();
+    bp.cancel();
+    bp.advance();
+    check(bp.percent() == 50 && bp.cancelled(), "build progress stops on cancel");
+    const auto errs = pr::parseBuildErrors("src/a.cpp:12:5: error: bad thing\nok line\n");
+    check(errs.size() == 1 && errs[0].file == "src/a.cpp" && errs[0].line == 12 && errs[0].message == "bad thing", "build error parsing");
+    std::string joined;
+    check(pr::joinSnapshot(pr::splitSnapshot("hello world", 4), joined) && joined == "hello world", "snapshot chunks reassemble");
+    auto chunks = pr::splitSnapshot("hello world", 4);
+    chunks.pop_back();
+    check(!pr::joinSnapshot(chunks, joined), "missing snapshot chunk detected");
+    pr::TokenBucket bucket(1, 2);
+    check(bucket.allow(0) && bucket.allow(0) && !bucket.allow(0) && bucket.allow(1.5), "token bucket");
+    check(pr::fuzzParser("{\"a\":1}", 200, 5, [](const std::string& s) { if (s.size() > 100) throw 1; }) == 0 && pr::fuzzParser("abcdef", 50, 5, [](const std::string&) { throw 1; }) == 50, "fuzz harness runs and counts throws");
+
+    // ---- CollabPluginTools
+    std::vector<std::string> merged;
+    check(cb::mergeLines({"a", "b"}, {"a", "B"}, {"a", "b", "c"}, merged) && merged == std::vector<std::string>({"a", "B", "c"}), "clean three-way merge");
+    check(!cb::mergeLines({"a"}, {"x"}, {"y"}, merged) && merged[0] == "<<<<<<< mine", "conflicting merge is marked");
+    cb::LeaseTable leases;
+    check(leases.acquire("scene", "ann", 0, 10) && !leases.acquire("scene", "bob", 5, 10) && leases.acquire("scene", "bob", 11, 10) && leases.holder("scene", 12) == "bob", "lease expires");
+    check(cb::roleCan(cb::Role::Viewer, "view") && !cb::roleCan(cb::Role::Viewer, "edit") && cb::roleCan(cb::Role::Editor, "edit") && !cb::roleCan(cb::Role::Editor, "invite") && cb::roleCan(cb::Role::Owner, "invite"), "roles");
+    cb::SessionLog slog;
+    slog.add(1, "ann", "moved Part");
+    slog.add(2, "bob", "deleted Part");
+    slog.add(3, "ann", "added Light");
+    check(slog.byUser("ann").size() == 2 && slog.counts().at("bob") == 1 && cb::importStatusLine("ann", "a.glb", 40).find("40%") != std::string::npos, "session log");
+    check(cb::syncBytesPerSecond(10, 100, 4) == 3000.0 && cb::mergeRegister({"a", 1, "x"}, {"b", 2, "y"}).value == "b" && cb::mergeRegister({"a", 1, "x"}, {"b", 1, "y"}).value == "b", "sync cost and register merge");
+    cb::PluginMeter meter;
+    meter.add("p1", 5, 10);
+    meter.add("p2", 50, 10);
+    check(meter.heaviest() == "p2" && cb::versionInRange("1.2.0-2.0.0", 1, 5, 0) && !cb::versionInRange("1.2.0-2.0.0", 2, 0, 0), "plugin meter and version ranges");
+    cb::Registry<int> reg;
+    check(reg.add("cmd.a", 1) && !reg.add("cmd.a", 2) && *reg.find("cmd.a") == 1 && reg.remove("cmd.a") && reg.find("cmd.a") == nullptr, "extension registry");
+    check(cb::menuPath("Tools/My Plugin/Run").size() == 3 && cb::handlerForExtension({{"glb", "gltf-importer"}}, "x.GLB") == "gltf-importer" && cb::orderPasses({{"b", 2}, {"a", 1}, {"c", 2}})[2] == "c", "menu paths, importer lookup, pass order");
+    check(cb::runValidators({{"v1", [] { return std::vector<std::string>{"bad"}; }}, {"v2", []() -> std::vector<std::string> { throw std::runtime_error("x"); }}}).size() == 2, "validator plugins, a throwing one is reported");
+
+    // ---- QaPlatformTools
+    check(qa::classifyExit(0, false) == "clean exit" && qa::classifyExit(3, false) == "exited with code 3" && qa::classifyExit(0, true) == "crashed", "exit classification");
+    check(qa::matchesGolden({10, 10}, {11, 10}, 1.0) && !qa::matchesGolden({10, 10}, {50, 10}, 1.0), "golden image tolerance");
+    check(std::abs(qa::freeFallHeight(10, 1) - 5.095) < 1e-3 && std::abs(qa::fallTime(4.905) - 1.0) < 1e-3, "free fall");
+    const auto link = qa::simulateLink(1000, 10, 50, 5, 3);
+    check(link.delivered > 850 && link.delivered < 950 && std::abs(link.averageDelayMs - 50) < 2, "lossy link simulation");
+    check(qa::identityDiff({{"a", "1"}, {"b", "2"}}, {{"a", "1"}, {"b", "3"}, {"c", "4"}}).size() == 2, "save identity diff");
+    qa::AllocationCounter ac;
+    ac.onAlloc();
+    ac.onAlloc();
+    ac.onFree();
+    check(ac.live() == 1 && qa::soakLooksLeaky({{0, 100}, {1, 150}, {2, 200}}, 10) && !qa::soakLooksLeaky({{0, 100}, {1, 100}}, 10), "leak counter and soak growth");
+    check(qa::launchArgs("kr", "g", true).size() == 4 && qa::tlsMessage("expired").find("expired") != std::string::npos, "launch args and tls messages");
+    check(qa::canManageGame("u1", "u1", {}, "delete") && qa::canManageGame("u2", "u1", {"u2"}, "edit") && !qa::canManageGame("u2", "u1", {"u2"}, "delete") && !qa::canManageGame("", "", {}, "edit"), "per-game authorisation");
+    qa::AuditTrail trail;
+    trail.add("mod", "mute ann");
+    trail.add("mod", "ban bob");
+    check(trail.intact(), "audit trail is intact before tampering");
+    trail.tamper(0, "nothing");
+    check(!trail.intact(), "audit trail detects tampering");
+    check(qa::peakLevel({0.1f, -0.7f}) == 0.7f && qa::nextFocus(2, 3, false) == 0 && qa::nextFocus(0, 3, true) == 2 && qa::nextFocus(-1, 3, false) == 0, "peak level and focus cycling");
+    check(qa::focusOrderFollowsLayout({{"a", 0, 0}, {"b", 10, 0}, {"c", 0, 20}}) && !qa::focusOrderFollowsLayout({{"a", 10, 0}, {"b", 0, 0}}), "focus order follows layout");
+    check(qa::missingAccessibleNames({{"ok", "button", "Save"}, {"bad", "button", ""}, {"label", "text", ""}}) == std::vector<std::string>({"bad"}), "controls without accessible names");
+    check(qa::virtualStick(1, 0, 100, 0.1f).first == 0 && qa::virtualStick(200, 0, 100, 0.1f).first == 1.0f, "virtual stick deadzone and clamp");
+    check(qa::resumeSteps(60, true).size() == 4 && qa::excludeForSmallDownload({"bin/a", "docs/x", "t_4k.png"}).size() == 1 && qa::backoffSchedule(5, 1, 8) == std::vector<double>({1, 2, 4, 8, 8}), "resume steps, download profile, backoff");
+    check(qa::deviceVerdict({false, false, false, 8000}).find("not supported") == 0 && qa::deviceVerdict({true, true, true, 8000}).find("great") == 0 && qa::pickShaderVariant({true, false, false, 1024}) == "simple", "device verdict and shader variant");
+    check(qa::webApiAllowed("audio") && !qa::webApiAllowed("filesystem") && qa::audioNeedsUserGesture(true, false) && qa::pointerLockHint(true, false).find("Esc") != std::string::npos && qa::contextLossSteps().size() == 5, "web notes");
+    check(qa::portablePath("a\\b\\c") == "a/b/c" && qa::normalizeSave("a\r\nb\rc") == "a\nb\nc" && qa::platformIncludes("#include <windows.h>\n#include <vector>\n").size() == 1, "portable paths, saves, platform includes");
+    check(qa::actionFor("pad", "a") == "jump" && qa::actionFor("key", "q").empty() && qa::manifestProblems({{"name", "x"}}).size() == 2, "input adapters and manifest check");
+    qa::FeatureFlags flags;
+    flags.set("ssr", true);
+    flags.set("ssr", false, "mobile");
+    check(flags.enabled("ssr", "desktop") && !flags.enabled("ssr", "mobile") && !flags.enabled("none", "desktop"), "feature flags per platform");
+    check(qa::apiReference("Part", {{"Size", "Vector3", "Size in studs"}}).find("| Size |") != std::string::npos && qa::tutorialMatchesRelease("v4.4.1", "4.4.0") && !qa::tutorialMatchesRelease("4.3", "4.4") && qa::sampleProblems({"project.json"}).size() == 1, "api reference, tutorial version, sample check");
+    check(qa::licenceClaims("Kronos is open source\nThe plugin kit is open source\n").size() == 1 && qa::dataFlowMermaid({{"Player", "Server"}}).find("Player --> Server") != std::string::npos && qa::unmeasurableItems({"ship it", "reach 60 fps"}).size() == 1, "licence claims, data flow diagram, measurable roadmap");
 }
 
 void testV5Batch8() {
@@ -53369,6 +53656,7 @@ int main() {
     testV5Batch6();
     testV5Batch7();
     testV5Batch8();
+    testV5Batch9();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();
