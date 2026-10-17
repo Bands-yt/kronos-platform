@@ -7,7 +7,7 @@ Kronos has three kinds of code. They run in different places and have different 
 | Used for | game scripts, Roblox imports | game scripts (preview) | Studio tools |
 | Runs in | Player, servers, Studio Play | Player, servers, Studio Play | Studio only |
 | What it is | Luau VM (the Roblox language) | PocketPy 2.2.0, a small Python 3, not CPython | compiled library over a C ABI (`kronos_plugin.h`) |
-| Sandbox | memory, time and stack limits; no file or OS access | memory, time and stack limits; no file, OS or import access | separate process on Linux (permissions asked in the manifest); a plugin in the trusted folder runs in-process; Windows sandbox not built yet |
+| Sandbox | memory, time and stack limits; no file or OS access | memory, time and stack limits; no file, OS or import access | separate process on Linux and Windows (permissions asked in the manifest); a plugin in the trusted folder runs in-process; no macOS sandbox |
 | Limits | 64 MB per script, 256 MB per game, 8 ms per tick | 64 MB, 8 ms per tick, 15 scripts | whatever its capability bits allow |
 | Roblox API | yes, see ROBLOX_BRIDGE.md | no, only `world` and `events` | no |
 | Docs | LUA_API.md | PYTHON_SCRIPTS.md | PLUGIN_API.md |

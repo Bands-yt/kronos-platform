@@ -20,7 +20,7 @@
 | Multiplayer (ENet), remotes, replication | preview | full diff each tick, no interest management |
 | Rollback netcode and Match scripts | experimental | not tried in a real two-window match |
 | `kronos_server` and its container image | experimental | Linux only |
-| Native plugins (C, C++, Rust) | preview | Windows sandbox not built |
+| Native plugins (C, C++, Rust) | preview | Windows sandbox new (one VM tested); none on macOS |
 | Movie Mode, Audio Maker, 3D Maker | experimental | |
 | Windows installer and downloads | preview | fresh-PC test still to do |
 | Backend: accounts, publishing, catalogue | preview | DataStore backend and moderation data not deployed |

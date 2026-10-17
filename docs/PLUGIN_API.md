@@ -204,8 +204,12 @@ Limits:
 
 - The sandbox needs Linux 5.13 or newer with Landlock enabled. Without it, third-party plugins
   aren't loaded at all; the editor won't fall back to running them unsandboxed.
-- Windows and macOS don't have the sandbox yet, so third-party plugins can't be loaded there.
-  Trusted plugins work everywhere.
+- On Windows the plugin runs in an AppContainer (no files, registry, network or other processes), inside a job
+  object (one process, 1 GB memory cap, killed with the editor) with process mitigation policies, and a
+  copy of it is staged in a private temp folder that is deleted afterwards. Checked in a Windows 11 VM:
+  file reads and writes, network, starting programs and opening the editor process were all denied, and a
+  crash or hang is contained. A plugin that needs other DLLs next to it won't find them (only the plugin file is copied).
+- macOS doesn't have the sandbox yet, so third-party plugins can't be loaded there. Trusted plugins work everywhere.
 - Trusted plugins get the same capability checks on API calls, but they're ordinary native code
   in the editor's process and can do anything the editor can. Only put plugins you trust in `native_plugins`.
 

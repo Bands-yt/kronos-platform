@@ -131,7 +131,7 @@ Small, high-value items, picked up between bridge steps:
 - **Import fixes from the first Roblox-made place**: warn before spawning a second copy ✔; an imported Baseplate replaces the template Ground ✔; unions keep their shape ✔; ragdoll on death ✔.
 - **Keyframe-bound audio** (from 4.2): timeline events play sounds at exact sample times, through the shared mixer ✔.
 - **Build cache** (from 4.2): a `KRONOS_COMPILER_CACHE` CMake option for sccache/ccache ✔, and a content-hash cache for compiled shaders ✔. Distributed builds across machines only if build times become a real problem.
-- **Third-party plugin sandbox on Windows** (Linux has it; Windows skips third-party plugins today).
+- **Third-party plugin sandbox on Windows** ✔ (AppContainer, job object, mitigation policies, pipe IPC; checked in the Windows VM, Windows CI runs the same sandbox test). macOS still has none.
 - **Rollback-aware Luau**: scripts that run inside rollback matches ✔.
 
 ### Done
