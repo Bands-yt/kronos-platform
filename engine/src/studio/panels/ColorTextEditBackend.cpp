@@ -1,5 +1,7 @@
 #include "studio/panels/ColorTextEditBackend.hpp"
 
+#include "core/RobloxApiDefinitions.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -374,6 +376,14 @@ struct LuauLiveAnalyzer {
     }
 
     void loadKronosGlobalDefinitions(Luau::GlobalTypes& globals) {
+        // The generated Roblox classes come first: kronos_globals.d.lua refers to Workspace and DataModel.
+        const bool forAutocomplete = &globals == &frontend.globalsForAutocomplete;
+        Luau::LoadDefinitionFileResult classes = frontend.loadDefinitionFile(
+            globals, globals.globalScope, core::robloxLuauDefinitions(), "roblox_classes", /*captureComments*/ false, forAutocomplete);
+        if (!classes.success) {
+            std::fprintf(stderr, "ColorTextEditBackend: the generated Roblox class definitions failed to typecheck (%zu error(s)).\n",
+                         classes.parseResult.errors.size());
+        }
         const std::string path = kronosGlobalDefinitionsPath();
         std::optional<std::string> source = readFileToString(path);
         if (!source) {

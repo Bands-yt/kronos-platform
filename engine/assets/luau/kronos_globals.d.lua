@@ -17,7 +17,8 @@
 --   core/ScriptUiApi.cpp      -- ui
 --   core/ScriptChatApi.cpp    -- TextChatService
 --   core/ScriptInstanceApi.cpp -- game, workspace, script, Instance (Roblox bridge)
--- The Roblox Instance tree is declared loosely (`any`) for now; full types
+-- The Roblox classes are generated from the reflection table (core/RobloxApiDefinitions.cpp);
+-- values returned from them are still loosely typed (`any`); full types
 -- will be generated from the class table (core/InstanceTree.cpp). Update this file in the same commit that adds or changes a
 -- real global -- it drifts out of sync exactly like kKronosVersion does
 -- if that rule isn't followed (see core/KronosVersion.hpp's own comment).
@@ -56,8 +57,8 @@ declare function time(): number
 declare function elapsedTime(): number
 
 --- The Roblox object tree (see docs/ROBLOX_BRIDGE.md).
-declare game: any
-declare workspace: any
+declare game: DataModel
+declare workspace: Workspace
 declare Instance: {
     new: (className: string, parent: any?) -> any,
 }

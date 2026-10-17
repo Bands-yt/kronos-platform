@@ -405,6 +405,7 @@ add_library(engine_core STATIC
     migration/CompatLab.cpp
     migration/ProjectValidator.cpp
     core/RobloxDatatypes.cpp
+    core/RobloxApiDefinitions.cpp
     core/InstanceTree.cpp
     core/InstanceSignals.cpp
     core/RobloxPlayers.cpp

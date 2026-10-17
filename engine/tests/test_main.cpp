@@ -97,6 +97,7 @@
 #include "core/CascadeSplitMath.hpp"
 #include "core/CrashReporter.hpp"
 #include "core/LogFilter.hpp"
+#include "core/RobloxApiDefinitions.hpp"
 #include "core/SystemTimers.hpp"
 #include "core/ResourcePaths.hpp"
 #include "core/CatalogueDatabase.hpp"
@@ -29094,6 +29095,18 @@ void testFreshProjectTemplate() {
     physics.shutdown();
 }
 
+void testRobloxApiDefinitions() {
+    const std::string defs = engine::core::robloxLuauDefinitions();
+    check(defs.find("declare class Part extends BasePart") != std::string::npos, "the generated definitions declare Part with its parent");
+    check(defs.find("declare class Instance\n") != std::string::npos, "the root Instance class comes first without a parent");
+    check(defs.find("    Anchored: boolean\n") != std::string::npos && defs.find("    Position: any\n") != std::string::npos,
+          "properties carry simple Luau types");
+    check(defs.find("GetService: (self: DataModel") != std::string::npos, "methods are declared with a self parameter");
+    check(defs.find("declare class Workspace extends WorldRoot") != std::string::npos, "Workspace is declared");
+    const size_t instance = defs.find("declare class Instance"), part = defs.find("declare class Part ");
+    check(instance != std::string::npos && part != std::string::npos && instance < part, "a parent is declared before its children");
+}
+
 void testPluginCapabilityProfiles() {
     using namespace engine::plugin;
     bool found = false;
@@ -52515,6 +52528,7 @@ int main() {
     testSystemTimers();
     testGpuSummary();
     testPluginCapabilityProfiles();
+    testRobloxApiDefinitions();
     testFreshProjectTemplate();
     testSingleInstanceLock();
     testPermanentObjectIds();

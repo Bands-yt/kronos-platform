@@ -43,7 +43,7 @@ reading audit: nothing here was run on a clean machine.
 | ID | Item | Status | Evidence / gap |
 |---|---|---|---|
 | 0401 | Syntax-highlighted Luau editor | exists | Script Editor, Luau checker, error line markers |
-| 0402 | Autocomplete from reflected APIs | partial | editor completions exist; the Roblox class table (`InstanceTree`) is not yet used for them (4.5 "reflection-driven autocomplete") |
+| 0402 | Autocomplete from reflected APIs | exists | `core/RobloxApiDefinitions` turns the class table into Luau `declare class` text; `workspace.` and `game:` complete members (screen-checked, 0 false errors on the Player greeting template); return values are still `any` |
 | 0403 | API hover cards | missing | |
 | 0426 | Python in Studio Play | exists | 12 Oct 2026; `#`-first-line scripts run in Play (`testStudioPythonScripts`). The backlog preamble is out of date on this |
 | 0427 | Python editor with diagnostics | partial | colours and templates; no autocomplete or error markers |
