@@ -25,7 +25,7 @@ Other marks: ✅ already exists or was finished (checked against the code), ◐ 
 | 🟢 Easy | 245 | 3.7 days |
 | **All 1,000** | **1000** | **48.2 work weeks** |
 
-- ✅ **107** items already exist or are finished, ◐ **841** are partly done, ⛔ **150** need you (7.5 work weeks of the total).
+- ✅ **109** items already exist or are finished, ◐ **839** are partly done, ⛔ **150** need you (7.5 work weeks of the total).
 - Without the ⛔ items, the work I can do alone is **40.7 work weeks**.
 - P0 (42 items): 9.8 days
 - P1 (278 items): 26.1 work weeks
@@ -83,7 +83,7 @@ The v5 core is 3.0 work weeks. At the pace of a busy week that is several weeks 
 | AI-assisted creator workflows | 2 | 5 | 13 | 5 | 2.2 work weeks |
 | Quality assurance and automation | 0 | 5 | 15 | 5 | 3.2 days |
 | Security, permissions and safety | 0 | 6 | 8 | 11 | 2.4 days |
-| Performance profiling and optimization | 0 | 5 | 13 | 7 | 2.3 days |
+| Performance profiling and optimization | 0 | 5 | 13 | 7 | 2.1 days |
 | Input, accessibility and controls | 0 | 4 | 12 | 9 | 2.7 days |
 | Mobile and low-end platform readiness | 2 | 5 | 14 | 4 | 2.6 work weeks |
 | Web and console portability | 1 | 4 | 12 | 8 | 7.6 days |
@@ -1122,7 +1122,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0849 | P2 | Permission prompt for external integrations | 8 min | ◐ |
 | 🟢 | 0850 | P2 | Security checklist for each release | done | ✅ |
 
-### 35. Performance profiling and optimization (2.3 days)
+### 35. Performance profiling and optimization (2.1 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -1143,8 +1143,8 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟢 | 0865 | P2 | Hot-start time benchmark | 8 min | ◐ |
 | 🟡 | 0866 | P2 | Memory high-water-mark view | done | ✅ |
 | 🟢 | 0867 | P2 | GPU memory high-water-mark view | done | ✅ |
-| 🟡 | 0868 | P2 | Asset streaming hitch detector | 45 min | ◐ |
-| 🟡 | 0869 | P2 | Shader compile hitch detector | 45 min | ◐ |
+| 🟡 | 0868 | P2 | Asset streaming hitch detector | done | ✅ |
+| 🟡 | 0869 | P2 | Shader compile hitch detector | done | ✅ |
 | 🟡 | 0870 | P2 | UI layout performance trace | 45 min | ◐ |
 | 🟢 | 0871 | P2 | Scalable quality settings by GPU tier | 8 min | ◐ |
 | 🟡 | 0872 | P2 | Batch and instancing efficiency report | 45 min | ◐ |

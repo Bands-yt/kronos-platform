@@ -16507,6 +16507,11 @@ void testV5Batch6() {
     check(au::periodFramesForLatency(48000, 10) == 256 && au::secondsToFrames(0.5, 48000) == 24000, "buffer size and frame scheduling");
 }
 
+void testV5Wiring() {
+    const std::string r = engine::core::redactPersonalInfo("open /home/ann/x token=abc123 mail zed@x.com", "/home/ann", "ann");
+    check(r.find("abc123") == std::string::npos && r.find("[removed]") != std::string::npos && r.find("<email>") != std::string::npos, "crash reports hide tokens as well as names and e-mail");
+}
+
 void testSampleScriptsCompile() {
     namespace fs = std::filesystem;
     const fs::path root = fs::path(ENGINE_SAMPLES_DIR);
@@ -54042,6 +54047,7 @@ int main() {
     testV5Batch10();
     testV5Batch11();
     testSampleScriptsCompile();
+    testV5Wiring();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();

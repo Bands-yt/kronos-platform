@@ -35,6 +35,25 @@ void StatsPanel::draw(const core::PerformanceMetrics& metrics) {
                       static_cast<int>(frameTimeHistory_.samples().size()), 0, nullptr, 0.0f,
                       std::max(33.4f, frameTimeHistory_.max()), ImVec2(0.0f, 40.0f));
 
+    {
+        std::string cause = "unknown";
+        float slowest = 0;
+        for (const auto& timer : core::SystemTimers::instance().entries()) {
+            if (timer.smoothedMs > slowest) {
+                slowest = timer.smoothedMs;
+                cause = timer.name;
+            }
+        }
+        if (hitches_.onFrame(metrics.frameTimeMs, cause)) ++hitchCount_;
+        ImGui::TextDisabled("Hitches: %d", hitchCount_);
+        if (ImGui::IsItemHovered() && !hitches_.causes().empty()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted("A hitch is a frame much slower than usual. Busiest system at that moment:");
+            for (const auto& [name, count] : hitches_.causes()) ImGui::Text("%s: %d", name.c_str(), count);
+            ImGui::EndTooltip();
+        }
+    }
+
     if (ImGui::TreeNodeEx("Where the time goes", ImGuiTreeNodeFlags_DefaultOpen)) {
         const auto& timers = core::SystemTimers::instance().entries();
         if (timers.empty()) ImGui::TextDisabled("(no samples yet)");

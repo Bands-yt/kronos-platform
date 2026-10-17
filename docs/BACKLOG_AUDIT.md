@@ -463,8 +463,8 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0084 | Toggle grid axes and safe guides | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
 | 0095 | Viewport statistics overlay | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
 | 0100 | Viewport interaction recording tests | partial | EditorTools.hpp, testV5Batch8; library only, not wired into Studio yet |
-| 0868 | Asset streaming hitch detector | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
-| 0869 | Shader compile hitch detector | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
+| 0868 | Asset streaming hitch detector | done | HitchDetector wired into the Stats panel (count + busiest system on hover), screen-checked 18 Oct |
+| 0869 | Shader compile hitch detector | done | HitchDetector wired into the Stats panel (count + busiest system on hover), screen-checked 18 Oct |
 | 0873 | Frame pacing and missed-deadline report | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
 | 0860 | Render pass cost waterfall | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
 | 0858 | Network bandwidth profiler | partial | PerfTools.hpp, testV5Batch8; library only, not fed by the live engine yet |
@@ -701,7 +701,7 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0821 | Long-running soak test | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
 | 0822 | Automated packaged game launch test | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
 | 0831 | TLS and certificate failure handling | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
-| 0833 | Redaction of tokens from diagnostics | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
+| 0833 | Redaction of tokens from diagnostics | partial | redactSecrets now runs on crash reports (testV5Wiring); diagnostics bundle not wired yet |
 | 0836 | Asset parser resource limits | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
 | 0837 | Backend authorization checks per game | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |
 | 0841 | Moderation actions audit trail | partial | QaPlatformTools.hpp, testV5Batch9; library only, not wired into the app yet |

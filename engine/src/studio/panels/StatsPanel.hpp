@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/PerfTools.hpp"
 #include "core/PerformanceDiagnostics.hpp"
 #include "core/PerformanceMetrics.hpp"
 #include "core/RuntimeTuning.hpp"
@@ -28,6 +29,8 @@ private:
     core::PerformanceHistory frameTimeHistory_;
     size_t entityCount_ = 0;
     core::HighWaterMark gpuMemoryPeak_;
+    core::perf::HitchDetector hitches_;
+    int hitchCount_ = 0;
     core::PerformanceHistory memoryFractionHistory_;
     core::PerformanceHistory drawCallHistory_;
 };

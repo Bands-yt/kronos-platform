@@ -1,4 +1,5 @@
 #include "core/CrashReporter.hpp"
+#include "core/DevTools.hpp"
 
 #include <csignal>
 #include <cstdlib>
@@ -40,7 +41,7 @@ std::string redactPersonalInfo(const std::string& text, const std::string& homeD
         out.replace(begin, end - begin, "<email>");
         at = begin;
     }
-    return out;
+    return devtools::redactSecrets(out);
 }
 
 #if defined(__linux__)
