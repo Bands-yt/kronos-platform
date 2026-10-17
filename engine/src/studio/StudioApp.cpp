@@ -35,6 +35,7 @@
 #include "core/Logger.hpp"
 #include "core/PhysicsMaterial.hpp"
 #include "core/KronosVersion.hpp"
+#include "core/WhatsNew.hpp"
 #include "core/ProjectReadmeGenerator.hpp"
 #include "core/QualityScore.hpp"
 #include "core/ProcessLaunch.hpp"
@@ -1163,6 +1164,7 @@ bool StudioApp::initImGuiVulkanBackend() {
     loadHiddenPanels();
     ImGui::StyleColorsDark();
     applyStudioStyle(accentColor()); // Studio's own dark-charcoal palette + per-mode accent -- see StudioStyle.hpp
+    applyDensity();
     // Kronos ("UI/UX Revamp" -- "bold, thick, modern text"): must load
     // before ImGui_ImplVulkan_Init() below builds the font atlas texture.
     core::loadKronosFonts(core::resolveResourceDir(core::executableDirectory(), "assets", ENGINE_ASSET_DIR) + "/fonts");
@@ -1335,6 +1337,20 @@ void StudioApp::drawDockspace() {
             if (ImGui::MenuItem("Performance Overlay", "F3", performanceOverlay_.isOpen())) {
                 performanceOverlay_.toggle();
             }
+            if (ImGui::MenuItem("Focus Mode", "F10", &focusMode_) && !focusMode_) presentationMode_ = false;
+            if (ImGui::MenuItem("Presentation Mode", "Shift+F10", &presentationMode_)) focusMode_ = presentationMode_;
+            if (ImGui::BeginMenu("Density")) {
+                static const char* kNames[] = {"Compact", "Normal", "Spacious"};
+                for (int i = 0; i < 3; ++i) {
+                    if (ImGui::MenuItem(kNames[i], nullptr, density_ == i)) {
+                        density_ = i;
+                        applyDensity();
+                        saveHiddenPanels();
+                    }
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::MenuItem("Keyboard Shortcuts", "F1", &showShortcuts_);
             ImGui::Separator();
             // Kronos ("Studio Revamp" -- "flexible window docking
             // layouts"): the only way back to a sane layout used to be
@@ -1391,6 +1407,8 @@ void StudioApp::drawDockspace() {
         if (ImGui::BeginMenu("Help")) {
             std::string aboutLabel = std::string("About ") + brandName();
             if (ImGui::MenuItem(aboutLabel.c_str())) showAboutPanel_ = true;
+            ImGui::MenuItem("What's New", nullptr, &showWhatsNew_);
+            ImGui::MenuItem("Keyboard Shortcuts", "F1", &showShortcuts_);
             ImGui::EndMenu();
         }
         // Kronos ("Modular Executable Targets"): Full only -- the v0.4.0
@@ -1406,12 +1424,14 @@ void StudioApp::drawDockspace() {
         ImGui::EndMenuBar();
     }
 
-    if (showRibbon()) drawRibbon();
+    if (showRibbon() && !presentationMode_) drawRibbon();
 
     drawAboutPanel();
     drawSceneTabsBar();
     drawRecoveryBanner();
     drawWelcomePanel();
+    drawShortcutsWindow();
+    drawWhatsNewWindow();
 
     ImGuiID dockspaceId = ImGui::GetID("StudioDockSpace");
 
@@ -2687,7 +2707,7 @@ void StudioApp::run() {
         // selectedEntity() every frame), only its own dockable *window*
         // (the "Scene Tree" the brief names) stops appearing in modes that
         // don't list it.
-        if (showSceneTree() && !hideExplorer_) explorerPanel_.draw(ecs_);
+        if (showSceneTree() && !panelHidden(hideExplorer_)) explorerPanel_.draw(ecs_);
         if (const core::EntityId inserted = explorerPanel_.takeInserted(); inserted != core::kNullEntity) {
             pushCreationUndo("Insert Object", {inserted});
         }
@@ -2704,7 +2724,7 @@ void StudioApp::run() {
                              },
                              [this, m] { core::hierarchy::setParent(ecs_, m.child, m.newParent); }});
         }
-        if (showInspector() && !hideInspector_) {
+        if (showInspector() && !panelHidden(hideInspector_)) {
             inspectorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities(), undoStack_);
         }
 
@@ -2739,6 +2759,23 @@ void StudioApp::run() {
                 // real palette rather than one of them silently doing
                 // nothing.
                 commandPalette_.open();
+            }
+
+            if (!io.WantTextInput && !playSoloPlayer_.active()) {
+                if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) showShortcuts_ = !showShortcuts_;
+                if (ImGui::IsKeyPressed(ImGuiKey_F10, false)) {
+                    if (io.KeyShift) {
+                        presentationMode_ = !presentationMode_;
+                        focusMode_ = presentationMode_;
+                    } else {
+                        focusMode_ = !focusMode_;
+                        if (!focusMode_) presentationMode_ = false;
+                    }
+                }
+                if (presentationMode_ && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                    presentationMode_ = false;
+                    focusMode_ = false;
+                }
             }
 
             // Kronos ("Developer Velocity Sprint" -- "Real-Time Visual
@@ -2801,7 +2838,7 @@ void StudioApp::run() {
                                  movieModePlugin_, showEngineDebugOverlays(), modelingModePlugin_,
                                  terrainEditorPlugin_);
         }
-        if (showScriptEditor() && !hideScriptEditor_) scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
+        if (showScriptEditor() && !panelHidden(hideScriptEditor_)) scriptEditorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), notifications_);
         scriptEditorPanel_.drawAuxiliaryWindows(ecs_, physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying());
         // debugConsolePanel_.tick() above still runs unconditionally in
         // every mode (see its own call site comment) -- only draw() (the
@@ -2882,7 +2919,7 @@ void StudioApp::run() {
             profiler_.recordFrame(lastPerformanceMetrics_.frameTimeMs, nowSeconds);
             profiler_.recordSnapshot(lastPerformanceMetrics_, nowSeconds);
         }
-        if (showStats() && !hideStats_) statsPanel_.draw(lastPerformanceMetrics_);
+        if (showStats() && !panelHidden(hideStats_)) statsPanel_.draw(lastPerformanceMetrics_);
         performanceOverlay_.draw(lastPerformanceMetrics_, (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying())
                                                                 ? &physicsPreviewPlugin_->scripting()
                                                                 : nullptr);
@@ -2892,7 +2929,7 @@ void StudioApp::run() {
         // window itself -- this panel's entire purpose is jumping the
         // Explorer's own selection to a search result, so it's the same
         // "Scene Tree" surface the brief means, not a separate one.
-        if (showSceneTree() && !hideSceneSearch_) {
+        if (showSceneTree() && !panelHidden(hideSceneSearch_)) {
             if (core::EntityId searchClicked = sceneSearchPanel_.draw(ecs_, explorerPanel_.selectedEntities());
                 searchClicked != core::kNullEntity) {
                 explorerPanel_.setSelected(searchClicked);
@@ -3653,7 +3690,10 @@ void StudioApp::loadHiddenPanels() {
         else if (line == "ScriptEditor") hideScriptEditor_ = true;
         else if (line == "Stats") hideStats_ = true;
         else if (line == "SceneSearch") hideSceneSearch_ = true;
+        else if (line == "Density=0") density_ = 0;
+        else if (line == "Density=2") density_ = 2;
     }
+    applyDensity();
 }
 
 void StudioApp::saveHiddenPanels() const {
@@ -3663,6 +3703,57 @@ void StudioApp::saveHiddenPanels() const {
     if (hideScriptEditor_) out << "ScriptEditor\n";
     if (hideStats_) out << "Stats\n";
     if (hideSceneSearch_) out << "SceneSearch\n";
+    if (density_ != 1) out << "Density=" << density_ << "\n";
+}
+
+void StudioApp::applyDensity() {
+    static const float kPadY[] = {3.0f, 5.0f, 7.0f};
+    static const float kSpaceY[] = {4.0f, 7.0f, 10.0f};
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.FramePadding.y = kPadY[density_];
+    style.ItemSpacing.y = kSpaceY[density_];
+}
+
+void StudioApp::drawWhatsNewWindow() {
+    if (!showWhatsNew_) return;
+    ImGui::SetNextWindowSize(ImVec2(520.0f, 380.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("What's New", &showWhatsNew_)) {
+        ImGui::TextDisabled("Kronos %s (pre-beta)", core::kKronosVersion);
+        for (const core::WhatsNewEntry& entry : core::whatsNew()) {
+            ImGui::SeparatorText(entry.heading.c_str());
+            for (const std::string& item : entry.items) ImGui::BulletText("%s", item.c_str());
+        }
+    }
+    ImGui::End();
+}
+
+void StudioApp::drawShortcutsWindow() {
+    if (!showShortcuts_) return;
+    ImGui::SetNextWindowSize(ImVec2(460.0f, 420.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Keyboard Shortcuts", &showShortcuts_)) {
+        struct Row {
+            const char* keys;
+            const char* what;
+        };
+        static const Row kRows[] = {
+            {"Ctrl+S", "Save"}, {"Ctrl+Z / Ctrl+Y", "Undo / Redo"}, {"Ctrl+X / C / V", "Cut / Copy / Paste"},
+            {"Ctrl+D", "Duplicate"}, {"Ctrl+A", "Select all"}, {"Ctrl+G / Ctrl+U", "Group / Ungroup"},
+            {"Delete", "Delete selection"}, {"Ctrl+K or Ctrl+P", "Command palette"}, {"F", "Focus the selection"},
+            {"W / E / R", "Move / Rotate / Scale tool"}, {"F1", "This list"}, {"F3", "Performance overlay"},
+            {"F10", "Focus mode (hide side panels)"}, {"Shift+F10", "Presentation mode (Esc leaves it)"},
+        };
+        if (ImGui::BeginTable("shortcuts", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            for (const Row& r : kRows) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(r.keys);
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%s", r.what);
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::End();
 }
 
 void StudioApp::insertPrimitive(panels::ViewportPanel::Primitive kind) {

@@ -180,4 +180,50 @@ GpuSummary queryGpuSummary(VkPhysicalDevice physicalDevice) {
     return describeGpu(props.deviceName, props.apiVersion, props.deviceType);
 }
 
+RayTracingSupport detectRayTracing(const std::vector<std::string>& ext) {
+    RayTracingSupport s;
+    s.accelerationStructure = has(ext, "VK_KHR_acceleration_structure");
+    s.rayTracingPipeline = has(ext, "VK_KHR_ray_tracing_pipeline");
+    s.rayQuery = has(ext, "VK_KHR_ray_query");
+    return s;
+}
+
+std::string gpuReport() {
+    std::string out;
+    if (volkInitialize() != VK_SUCCESS) {
+        return "Vulkan is not installed (the loader library was not found). Install your graphics driver.\n";
+    }
+    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.apiVersion = VK_API_VERSION_1_1;
+    VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    info.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (vkCreateInstance(&info, nullptr, &instance) != VK_SUCCESS) {
+        return "Vulkan could not start. Install or update your graphics driver.\n";
+    }
+    volkLoadInstance(instance);
+    uint32_t count = 0;
+    vkEnumeratePhysicalDevices(instance, &count, nullptr);
+    std::vector<VkPhysicalDevice> devices(count);
+    vkEnumeratePhysicalDevices(instance, &count, devices.data());
+    if (devices.empty()) out += "No Vulkan graphics device found.\n";
+    for (VkPhysicalDevice device : devices) {
+        const GpuSummary s = queryGpuSummary(device);
+        uint32_t extCount = 0;
+        vkEnumerateDeviceExtensionProperties(device, nullptr, &extCount, nullptr);
+        std::vector<VkExtensionProperties> props(extCount);
+        vkEnumerateDeviceExtensionProperties(device, nullptr, &extCount, props.data());
+        std::vector<std::string> names;
+        for (const auto& p : props) names.emplace_back(p.extensionName);
+        const RayTracingSupport rt = detectRayTracing(names);
+        out += s.name + "\n  Vulkan " + s.vulkanVersion + ", " + s.kind + "\n  " + s.advice + "\n";
+        out += std::string("  Hardware ray tracing: ") + (rt.usable() ? "yes" : "no") + " (acceleration structure " +
+               (rt.accelerationStructure ? "yes" : "no") + ", pipeline " + (rt.rayTracingPipeline ? "yes" : "no") +
+               ", ray query " + (rt.rayQuery ? "yes" : "no") + ")\n";
+        out += "  Extensions available: " + std::to_string(names.size()) + "\n";
+    }
+    vkDestroyInstance(instance, nullptr);
+    return out;
+}
+
 } // namespace engine::core

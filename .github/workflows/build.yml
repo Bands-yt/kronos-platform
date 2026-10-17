@@ -79,11 +79,22 @@ jobs:
       # time here for no reason -- doubling this job's own compile time
       # for binaries it never packages.
       - name: Build
-        run: cmake --build "$BUILD_DIR" --config Release --parallel --target engine_runtime studio engine_tests
+        run: cmake --build "$BUILD_DIR" --config Release --parallel --target engine_runtime studio engine_tests kronos_compat
 
       - name: Run tests
         working-directory: engine
         run: ./build/tests/engine_tests
+
+      # One line per test place, shown on the run's summary page.
+      - name: Roblox compatibility report
+        working-directory: engine
+        run: |
+          {
+            echo '### Roblox compatibility (test places)'
+            echo '```'
+            ./build/src/kronos_compat 2>/dev/null | grep -E '% overall'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Kronos ("In-App Auto-Updater"): the real updater helper ships
       # INSIDE the release archive, next to the binaries it replaces --

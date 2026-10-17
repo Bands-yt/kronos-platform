@@ -42,3 +42,28 @@ with `engine_runtime --client <host>:7777`. Matchmaking and "deploy to the cloud
 for now you run the container on any machine that can open the UDP port.
 
 Linux only for now; the Windows build hasn't been tried.
+
+## Host it yourself
+
+Kronos has no cloud hosting. Anyone can run a server:
+
+1. Build or download `kronos_server` (Linux), or use the container above.
+2. Put the game folder where the server finds it (`KRONOS_GAMES_DIR`).
+3. Open the UDP port (default 7777) on the machine and on your router or cloud firewall.
+4. Start it: `kronos_server --port 7777 --game my-game`.
+5. Players join with `engine_runtime --client <your-address>:7777`.
+
+Things to know:
+
+- Use a normal user, not root. The server needs no files outside its game folder and log.
+- Put it behind a firewall that allows only the game port.
+- A server counts players, not CPU: start with one core and 512 MB and watch `kronos_server.log`.
+- Restart it with `systemd` or `docker run --restart unless-stopped` so a crash comes back.
+- Nothing is billed by Kronos. If you rent a machine, the host bills you.
+
+## Kubernetes
+
+Not now. The container image is the only supported way to run the server in a cluster, and that image is new.
+Kubernetes would be worth looking at once all of these are true: a matchmaker that can start servers on demand,
+metrics from the server (players, tick time, memory), and a person who needs more than one machine. Until then a
+single container on one machine is simpler and cheaper.

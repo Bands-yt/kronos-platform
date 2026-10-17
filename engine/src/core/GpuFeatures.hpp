@@ -41,6 +41,18 @@ struct GpuSummary {
 GpuSummary describeGpu(const std::string& name, uint32_t apiVersion, VkPhysicalDeviceType type);
 GpuSummary queryGpuSummary(VkPhysicalDevice physicalDevice);
 
+// Hardware ray tracing needs all three (pure, so tests don't need a GPU).
+struct RayTracingSupport {
+    bool accelerationStructure = false;
+    bool rayTracingPipeline = false;
+    bool rayQuery = false;
+    [[nodiscard]] bool usable() const { return accelerationStructure && (rayTracingPipeline || rayQuery); }
+};
+RayTracingSupport detectRayTracing(const std::vector<std::string>& deviceExtensions);
+
+// Text report of every Vulkan device (name, version, kind, features, ray tracing) for `--gpu-info`.
+std::string gpuReport();
+
 class GpuFeatureEnables {
 public:
     explicit GpuFeatureEnables(const GpuFeatureTier& tier);

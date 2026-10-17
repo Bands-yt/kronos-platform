@@ -17,6 +17,8 @@ namespace engine::core {
 
 namespace {
 
+constexpr int kApiVersion = 1; // bump when a world/events function changes or is removed
+
 // PocketPy's VMs are process-wide, so every PythonScripting shares these.
 struct SlotOwner {
     PythonScripting* host = nullptr;
@@ -268,6 +270,8 @@ struct PythonScripting::Bindings {
         py_bindfunc(worldModule, "apply_impulse", applyImpulse);
         py_bindfunc(worldModule, "set_velocity", setVelocity);
         py_bindfunc(worldModule, "time", time);
+        py_newint(py_r0(), kApiVersion);
+        py_setdict(worldModule, py_name("API_VERSION"), py_r0());
 
         py_GlobalRef eventsModule = py_newmodule("events");
         for (const char* list : {"_update", "_collision", "_unload"}) {
@@ -302,7 +306,7 @@ std::string PythonScripting::capabilityReport() {
     report += "  memory:      " + std::to_string(python.maxMemoryBytes_ / (1024 * 1024)) + " MB per script\n";
     report += "  time:        " + std::to_string(static_cast<int>(python.maxMillisPerTick_)) + " ms per tick, " +
               std::to_string(static_cast<int>(python.maxMillisForLoad_)) + " ms to load\n";
-    report += "  builtins:    world, events\n  probes (what a script can do):\n";
+    report += "  builtins:    world, events (API version " + std::to_string(kApiVersion) + ")\n  probes (what a script can do):\n";
     for (const auto& probe : probes) {
         const ScriptId id = python.load("probe", probe[1]);
         report += std::string("    ") + probe[0] + ": " + (id == kInvalidScript ? "blocked" : "ALLOWED") + "\n";

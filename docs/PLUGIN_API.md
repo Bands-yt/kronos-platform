@@ -184,6 +184,27 @@ same checks as the C sample in both modes when `cargo` is installed (Linux and m
 - Registration copies every string. Function pointers must stay valid until `kronos_plugin_unload`.
   Everything a plugin registered is removed before its library is unloaded.
 
+## Trusted and sandboxed plugins
+
+| | Sandboxed (third-party) | Trusted |
+|---|---|---|
+| Where | `kronos_plugin_sandbox`, one process per plugin | In the editor's own process |
+| Files, network, other programs | Denied by the operating system | Anything the editor can do |
+| API calls | Checked against the plugin's capabilities | Checked against the plugin's capabilities |
+| A crash | Stops only that plugin | Stops the editor |
+| Platforms | Linux, Windows | Everywhere |
+| Use for | Anything you downloaded | Plugins you wrote or fully trust |
+
+The Resources panel shows which mode a plugin runs in.
+
+## Deprecation policy
+
+- A function or field is **deprecated** in a minor version: it keeps working and is marked in this document and in
+  `kronos_plugin.h`.
+- It is **removed** only with the next `KRONOS_PLUGIN_API_MAJOR`, never before. The release notes list every removal.
+- Before API version 1.0 (today), a break may happen with a major bump and one release's notice.
+- The replacement is named in the same release that deprecates the old call.
+
 ## The sandbox
 
 Sandboxed plugins run in `kronos_plugin_sandbox`, one process per plugin, which ships next to

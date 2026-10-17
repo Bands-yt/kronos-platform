@@ -1,5 +1,23 @@
 #include "plugin/PluginHost.hpp"
 #include "core/UITheme.hpp"
+#include "core/AnimationReduce.hpp"
+#include "core/AssetTools.hpp"
+#include "core/ComponentRules.hpp"
+#include "core/AudioAnalysis.hpp"
+#include "core/ColorLut.hpp"
+#include "core/EnvironmentMath.hpp"
+#include "core/MusicStates.hpp"
+#include "core/TerrainRules.hpp"
+#include "core/WhatsNew.hpp"
+#include "core/MeshOps.hpp"
+#include "core/MigrationBackup.hpp"
+#include "core/ModuleGraph.hpp"
+#include "core/ReportReasons.hpp"
+#include "core/RotationEdit.hpp"
+#include "core/SpriteSheet.hpp"
+#include "migration/ImportWarnings.hpp"
+#include "net/JoinToken.hpp"
+
 #include "tntwars/TntWarsNetRules.hpp"
 #include "plugin/PluginSandbox.hpp"
 #include <set>
@@ -15992,6 +16010,210 @@ void testHierarchySetParentBuildsTwoSidedRelationship() {
           "setParent() real-adds the child to the parent's own children list");
 }
 
+void testV5SmallLibraries() {
+    namespace aa = engine::core::audio_analysis;
+    namespace mo = engine::core::meshops;
+    const std::vector<float> wave = {0.0f, 0.5f, -0.25f, 0.1f};
+    const aa::Levels lv = aa::measure(wave);
+    check(std::fabs(lv.peak - 0.5f) < 1e-6f && std::fabs(lv.peakDb + 6.02f) < 0.05f, "audio peak 0.5 is about -6 dB");
+    check(std::fabs(aa::normalizeGain(wave, 0.0f) - 2.0f) < 1e-4f, "normalize gain brings 0.5 peak to full scale");
+    check(aa::normalizeGain({}, 0.0f) == 1.0f && aa::measure({}).peakDb <= -119.0f, "silence is handled");
+    check(aa::loudnessGain({0.9f, -0.9f, 0.9f, -0.9f}, -3.0f) <= 1.0f / 0.9f + 1e-4f, "loudness gain never clips the peak");
+    const auto peaks = aa::waveformPeaks(wave, 2);
+    check(peaks.size() == 2 && peaks[0].max == 0.5f && peaks[1].min == -0.25f, "waveform peaks per bucket");
+    check(aa::waveformPeaks(wave, 10).size() == 10 && aa::waveformPeaks({}, 4).size() == 4, "waveform peaks fixed length");
+    check(aa::findPreset("Voice") && aa::findPreset("Voice")->channels == 1 && !aa::findPreset("nope"), "compression presets");
+
+    mo::MeshData tri;
+    tri.positions = {{0, 0, 0}, {1, 0, 0}, {0, 0, 1}};
+    tri.indices = {0, 2, 1};
+    const auto normals = mo::recalculateNormals(tri);
+    check(std::fabs(std::fabs(normals[0][1]) - 1.0f) < 1e-5f, "triangle in XZ plane has a Y normal");
+    mo::MeshData shell = mo::solidify(tri, 0.1f);
+    check(shell.positions.size() == 6 && shell.indices.size() == 6, "solidify doubles vertices and triangles");
+    check(std::fabs(shell.positions[3][1] - shell.positions[0][1]) > 0.09f, "solidify offsets the inner copy");
+    mo::MeshData moved = tri;
+    for (auto& p : moved.positions) p[1] += 5.0f;
+    const mo::Vec3 off = mo::recenter(moved, mo::Pivot::BoundsBottom);
+    check(std::fabs(off[1] - 5.0f) < 1e-5f && std::fabs(mo::bounds(moved).min[1]) < 1e-5f, "recentre moves the bottom to the origin");
+    const mo::MeshDiff same = mo::compare(tri, tri);
+    check(same.sameTopology && same.movedVertices == 0, "identical meshes compare equal");
+    mo::MeshData bent = tri;
+    bent.positions[1][1] = 2.0f;
+    const mo::MeshDiff d = mo::compare(tri, bent);
+    check(d.sameTopology && d.movedVertices == 1 && std::fabs(d.maxVertexDistance - 2.0f) < 1e-5f, "mesh diff finds the moved vertex");
+    check(mo::compare(tri, shell).vertexDelta == 3 && mo::compare(tri, shell).triangleDelta == 1, "mesh diff counts added geometry");
+
+    const auto cells = engine::core::sliceSpriteSheet(64, 32, 16, 16, "walk");
+    check(cells.size() == 8 && cells[5].name == "walk_5" && cells[5].x == 16 && cells[5].y == 16, "sprite sheet grid order");
+    check(engine::core::sliceSpriteSheet(10, 10, 0, 4, "x").empty(), "sprite sheet rejects a zero cell");
+    check(engine::core::sliceSpriteSheetByCount(100, 50, 4, 2, "a").size() == 8, "sprite sheet by count");
+    check(engine::core::sliceSpriteSheet(34, 16, 16, 16, "s", 0, 0, 2, 0).size() == 2, "sprite sheet spacing");
+
+    const glm::quat start = glm::quat(glm::vec3(0.0f, glm::radians(89.0f), 0.0f));
+    const glm::quat edited = engine::core::applyEulerEdit(start, glm::vec3(0, 89, 0), glm::vec3(0, 91, 0));
+    check(std::fabs(glm::length(edited) - 1.0f) < 1e-5f && glm::dot(edited, start) > 0.99f, "euler edit near gimbal lock stays smooth");
+    const glm::quat a(1, 0, 0, 0);
+    const glm::quat b(-1, 0, 0, 0);
+    check(glm::dot(engine::core::shortestSlerp(a, b, 0.5f), a) > 0.999f, "shortest slerp handles opposite signs");
+
+    engine::migration::ImportWarningAggregator agg;
+    for (int i = 0; i < 40; ++i) agg.add("Part 'Wall" + std::to_string(i) + "': mesh not supported", "Wall" + std::to_string(i));
+    agg.add("Script 'Main' uses PathfindingService");
+    const auto grouped = agg.result();
+    check(grouped.size() == 2 && grouped[0].count == 40 && grouped[0].examples.size() == 3 && agg.total() == 41, "import warnings are grouped");
+
+    namespace en = engine::net;
+    auto now = std::chrono::steady_clock::now();
+    en::JoinTokenStore tokens(std::chrono::seconds(60), [&] { return now; });
+    const std::string tok = tokens.issue("ana");
+    check(tok.size() == 32 && tokens.pending() == 1, "join token issued");
+    check(!tokens.consume(tok, "bob") && tokens.pending() == 0, "join token is not usable by another player (and burns)");
+    const std::string tok2 = tokens.issue("ana");
+    check(tokens.consume(tok2, "ana") && !tokens.consume(tok2, "ana"), "join token works once");
+    const std::string tok3 = tokens.issue("ana");
+    now += std::chrono::seconds(61);
+    check(!tokens.consume(tok3, "ana"), "join token expires");
+
+    engine::core::ReportReason reason{};
+    check(engine::core::parseReportReason("scam", reason) && reason == engine::core::ReportReason::Scam, "report reason parses");
+    check(!engine::core::parseReportReason("Scam!", reason) && std::string(engine::core::reportReasonCode(reason)) == "scam", "report reason rejects typos");
+
+    const auto reqs = engine::core::findRequires("local A = require(script.Parent.Util)\nlocal B = require('Config')");
+    check(reqs.count("Util") == 1 && reqs.count("Config") == 1, "require() names found");
+    const auto graph = engine::core::buildModuleGraph({{"A", "require(script.Parent.B)"}, {"B", "require(script.Parent.C)"},
+                                                       {"C", "require(script.Parent.A)"}, {"D", "require('A')"}});
+    check(graph.cycles.size() == 1 && graph.cycles[0].size() == 3 && graph.cycles[0][0] == "A", "module cycle found once");
+
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "kronos_backup_test";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / "scene.kscene";
+    { std::ofstream(file) << "v1"; }
+    const auto b1 = engine::core::backupBeforeMigration(file, "8");
+    const auto b2 = engine::core::backupBeforeMigration(file, "8");
+    check(!b1.empty() && b1 != b2 && std::filesystem::exists(b1) && std::filesystem::exists(b2), "migration backups never overwrite");
+    check(engine::core::backupBeforeMigration(dir / "missing", "8").empty(), "no backup of a missing file");
+    std::filesystem::remove_all(dir);
+}
+
+void testV5MoreLibraries() {
+    using namespace engine::core;
+    check(detectRayTracing({"VK_KHR_acceleration_structure", "VK_KHR_ray_query"}).usable() &&
+              !detectRayTracing({"VK_KHR_ray_query"}).usable() && !detectRayTracing({}).usable(),
+          "ray tracing needs an acceleration structure plus pipeline or ray query");
+    std::vector<FloatKey> line;
+    for (int i = 0; i <= 10; ++i) line.push_back({static_cast<float>(i), 2.0f * static_cast<float>(i)});
+    check(reduceKeys(line, 0.001f).size() == 2, "a straight line reduces to two keys");
+    std::vector<FloatKey> bump = {{0, 0}, {1, 0}, {2, 5}, {3, 0}, {4, 0}};
+    check(reduceKeys(bump, 0.01f).size() == 5 && reduceKeys(bump, 100.0f).size() == 2, "key reduction keeps real peaks");
+
+    MusicStateMachine music;
+    music.setFadeSeconds(2.0f);
+    music.setState("explore");
+    check(music.gainOf("explore") == 1.0f && !music.fading(), "first music state starts at once");
+    music.setState("combat");
+    music.update(1.0f);
+    check(music.fading() && std::fabs(music.gainOf("explore") - 0.5f) < 1e-5f && std::fabs(music.gainOf("combat") - 0.5f) < 1e-5f,
+          "music crossfade is halfway after half the time");
+    music.update(5.0f);
+    check(!music.fading() && music.gainOf("combat") == 1.0f && music.gainOf("explore") == 0.0f, "music crossfade finishes");
+
+    ColorLut3D lut;
+    std::string error;
+    std::string cube = "TITLE \"id\"\nLUT_3D_SIZE 2\n";
+    for (int b = 0; b < 2; ++b)
+        for (int g = 0; g < 2; ++g)
+            for (int r = 0; r < 2; ++r) cube += std::to_string(r) + " " + std::to_string(g) + " " + std::to_string(b) + "\n";
+    check(parseCubeLut(cube, lut, error) && lut.valid(), "identity .cube LUT parses");
+    const auto mid = lut.sample(0.25f, 0.5f, 0.75f);
+    check(std::fabs(mid[0] - 0.25f) < 1e-5f && std::fabs(mid[1] - 0.5f) < 1e-5f && std::fabs(mid[2] - 0.75f) < 1e-5f, "identity LUT keeps colours");
+    check(!parseCubeLut("LUT_3D_SIZE 2\n0 0 0\n", lut, error) && !error.empty(), "short LUT is rejected");
+    check(!parseCubeLut("LUT_1D_SIZE 4\n", lut, error), "1D LUT is rejected");
+
+    const auto w = splatWeights(255, 255, 0, 0);
+    check(std::fabs(w[0] - 0.5f) < 1e-5f && std::fabs(w[1] - 0.5f) < 1e-5f, "splatmap weights are normalised");
+    check(splatWeights(0, 0, 0, 0)[0] == 1.0f && splatWeights(10, 10, 10, 10, 2)[2] == 0.0f, "splatmap empty pixel and layer limit");
+    const std::vector<BiomeRule> rules = {{"snow", 80, 1e9f, 90, 0, 1}, {"rock", -1e9f, 1e9f, 90, 0, 1}};
+    check(pickBiome({{"grass", 0, 50, 30, 0.3f, 1}, {"rock", -1e9f, 1e9f, 90, 0, 1}}, 10, 10, 0.5f) == "grass", "biome by height, slope, moisture");
+    check(pickBiome({{"grass", 0, 50, 30, 0.3f, 1}, {"rock", -1e9f, 1e9f, 90, 0, 1}}, 10, 60, 0.5f) == "rock", "steep ground falls to rock");
+    check(pickBiome(rules, 100, 5, 0.5f) == "snow" && pickBiome({}, 0, 0, 0).empty(), "biome order and empty rules");
+    check(distanceBlend(0, 10, 20) == 0.0f && distanceBlend(30, 10, 20) == 1.0f && std::fabs(distanceBlend(15, 10, 20) - 0.5f) < 1e-5f, "terrain distance blend");
+
+    check(heightFogAmount(0, 0, 0.1f, 0, 0.1f) == 0.0f && heightFogAmount(1000, 0, 0.1f, 0, 0.1f) > 0.99f, "fog grows with distance");
+    check(heightFogAmount(100, 50, 0.1f, 0, 0.2f) < heightFogAmount(100, 0, 0.1f, 0, 0.2f), "fog thins with height");
+    const ShakeEnvelope env;
+    check(env.at(-1) == 0.0f && env.at(env.attack) == 1.0f && env.at(env.duration() + 1) == 0.0f && env.at(env.duration() * 0.99f) < 0.1f, "shake envelope");
+    check(std::fabs(shakeOffset(0.37f, 8.0f, 1.0f)) <= 1.0f && shakeOffset(0.37f, 8.0f, 1.0f) == shakeOffset(0.37f, 8.0f, 1.0f), "shake is bounded and repeatable");
+    WindForce wind;
+    wind.turbulence = 0.0f;
+    wind.gustAmount = 0.0f;
+    float f[3];
+    wind.at(0, 0, 0, 0, f);
+    check(f[0] == 1.0f && f[1] == 0.0f && f[2] == 0.0f, "steady wind pushes along its direction");
+    const float six[6] = {1, 0, 0.5f, 0.2f, 0.1f, 0.0f};
+    float l = 0, r = 0;
+    downmixToStereo(six, 6, l, r);
+    check(l > 1.3f && r > 0.3f && r < 0.5f, "5.1 folds down to stereo");
+    downmixToStereo(six, 1, l, r);
+    check(l == 1.0f && r == 1.0f, "mono is copied to both ears");
+
+    const glm::quat flat(1, 0, 0, 0);
+    const glm::quat tilted = alignToSurface(flat, glm::vec3(1, 1, 0));
+    const glm::vec3 up = tilted * glm::vec3(0, 1, 0);
+    check(glm::length(up - glm::normalize(glm::vec3(1, 1, 0))) < 1e-4f, "surface alignment turns up to the normal");
+    check(glm::dot(alignToSurface(flat, glm::vec3(0, 1, 0)), flat) > 0.9999f, "flat ground leaves the rotation alone");
+    const glm::vec3 flipped = alignToSurface(flat, glm::vec3(0, -1, 0)) * glm::vec3(0, 1, 0);
+    check(flipped.y < -0.999f, "upside-down surface flips the object");
+}
+
+void testV5AssetTools() {
+    using namespace engine::core;
+    int pages = 0;
+    const auto cells = contactSheetLayout(10, 3, 2, 600, 400, 10, pages);
+    check(cells.size() == 10 && pages == 2 && cells[6].index == 6 && cells[6].x == cells[0].x && cells[6].y == cells[0].y,
+          "contact sheet wraps to a second page");
+    check(cells[1].x > cells[0].x && cells[3].y > cells[0].y && cells[0].w > 0, "contact sheet cells run left to right then down");
+    check(contactSheetLayout(5, 0, 2, 100, 100, 5, pages).empty() && pages == 0, "contact sheet rejects zero columns");
+    check(contactSheetLayout(5, 50, 50, 100, 100, 5, pages).empty(), "contact sheet rejects cells with no room");
+
+    check(normalizeTag("Sci Fi") == "sci-fi" && normalizeTag("biome:Desert") == "biome:desert", "tags are normalised");
+    check(normalizeTag("bad!").empty() && normalizeTag(":x").empty() && normalizeTag("").empty(), "bad tags are rejected");
+    AssetTagSet tags;
+    check(tags.add("Tree") && !tags.add("tree") && tags.add("biome:forest") && tags.has("TREE"), "tag set ignores duplicates and case");
+    check(tags.value("biome") == "forest" && tags.value("none").empty() && tags.remove("tree") && !tags.has("tree"), "key:value tags");
+
+    GpuMemoryBudget budget(1000);
+    budget.allocate("textures", 500);
+    check(budget.state() == GpuMemoryBudget::State::Ok, "under 80% is fine");
+    budget.allocate("meshes", 350);
+    check(budget.state() == GpuMemoryBudget::State::Warning && budget.byCategory()[0].first == "textures", "80% warns, biggest category first");
+    budget.allocate("shadows", 200);
+    check(budget.state() == GpuMemoryBudget::State::OverBudget, "over budget is reported");
+    budget.release("shadows", 999999);
+    check(budget.total() == 850, "release never goes below zero");
+
+    RecentServers servers(3);
+    for (const char* s : {"a:1", "b:2", "c:3", "a:1", "d:4"}) servers.add(s);
+    check(servers.list().size() == 3 && servers.last() == "d:4" && servers.list()[1] == "a:1", "recent servers: newest first, no duplicates, capped");
+    const RecentServers again = RecentServers::parse(servers.serialize(), 3);
+    check(again.list() == servers.list(), "recent servers survive saving and loading");
+
+    check(batchingHints({{"a", 1}, {"b", 1}}).empty(), "few materials: no batching advice");
+    std::map<std::string, int> many;
+    for (int i = 0; i < 24; ++i) many["m" + std::to_string(i)] = 1;
+    check(batchingHints(many).size() == 1, "many one-off materials get advice");
+
+    check(!engine::core::whatsNew().empty() && !engine::core::whatsNew().front().items.empty(), "What's New has entries");
+    const std::string report = provenanceReport({{"tree.glb", "made here", "CC0"}, {"rock.glb", "", ""}});
+    check(report.find("2 assets, 1 with no licence") != std::string::npos && report.find("**unknown**") < report.find("tree.glb"),
+          "provenance report lists unknown licences first");
+    check(saveStatusText(SaveState::Saved, 5) == "Saved just now" && saveStatusText(SaveState::Saved, 600) == "Saved 10 min ago" &&
+              saveStatusText(SaveState::Unsaved, -1) == "Not saved yet" && saveStatusText(SaveState::Failed, 0).find("not saved") != std::string::npos,
+          "save status wording");
+    check(componentWarnings({"RigidBody"}).size() == 1 && componentWarnings({"RigidBody", "Collider"}).empty(), "component dependency warnings");
+    check(componentWarnings({"MeshRenderer", "Light"}).size() == 2, "each missing dependency warns once");
+}
+
 void testPaletteTextContrast() {
     namespace pal = engine::core::kronos_palette;
     auto linear = [](float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); };
@@ -29246,7 +29468,7 @@ void testPythonScripts() {
 
     auto game = python.load("Game", R"PY(
 crate = world.find("Crate")
-print("found", world.name(crate), world.find("Nope"))
+print("found", world.name(crate), world.find("Nope"), "api", world.API_VERSION)
 ticks = 0
 
 @events.on_update
@@ -29259,7 +29481,7 @@ def spin(dt):
         print("ticks", ticks, "time", round(world.time(), 2))
 )PY");
     check(game != PythonScripting::kInvalidScript, "a Python script loads");
-    check(output.find("found Crate None") != std::string::npos, "print and world.find/world.name work");
+    check(output.find("found Crate None api 1") != std::string::npos, "print and world.find/world.name work, world.API_VERSION is 1");
     python.tick(0.5f);
     python.tick(0.5f);
     const auto* transform = ecs.tryGetComponent<engine::core::Transform>(crate);
@@ -52620,6 +52842,9 @@ int main() {
     testPermanentObjectIds();
     testHierarchyReparentCanBeUndone();
     testPaletteTextContrast();
+    testV5SmallLibraries();
+    testV5MoreLibraries();
+    testV5AssetTools();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();

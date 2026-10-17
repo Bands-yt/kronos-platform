@@ -580,6 +580,15 @@ private:
     bool hideScriptEditor_ = false;
     bool hideStats_ = false;
     bool hideSceneSearch_ = false;
+    bool focusMode_ = false;        // hides the side panels, keeps the viewport
+    bool presentationMode_ = false; // focus mode plus no ribbon, for recording
+    bool showShortcuts_ = false;
+    bool showWhatsNew_ = false;
+    int density_ = 1;               // 0 compact, 1 normal, 2 spacious
+    [[nodiscard]] bool panelHidden(bool hidden) const { return hidden || focusMode_ || presentationMode_; }
+    void applyDensity();
+    void drawShortcutsWindow();
+    void drawWhatsNewWindow();
     [[nodiscard]] core::PlayerAvatarLook localPlayerLook() const;
     // Kronos ("Moderation Architecture v1", Phase 1): Studio's own real
     // TrustSafetyService instance, distinct from any net::NetworkSession's

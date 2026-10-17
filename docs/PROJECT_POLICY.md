@@ -100,6 +100,19 @@ Nothing in Kronos costs money today and nothing is sold. There is no cloud bill 
 hosting. If hosting is added later, the policy is: show an estimate before anything is started, never start
 paid services automatically, and let people host their own servers for free.
 
+## Telemetry
+
+Kronos sends no usage data today. If a future version asks to collect first-launch performance numbers
+(graphics card name, frame time, load time), the rules are fixed now: it is **off until you say yes**, the
+question is shown once in plain words with an example of exactly what is sent, nothing identifies you, you can
+turn it off any time, and the data is not sold or shared. Crash reports stay on your PC (see above).
+
+## Working together (collaboration)
+
+Team Create (several people editing one place live) is not built and is not planned for v5. Until then, the
+fallback is: one person edits, and you share work by exporting a package or handing over the project folder.
+Studio never opens a shared session by itself, so nothing breaks when collaboration is missing.
+
 ## Kronos compared with other tools
 
 These are honest, limited comparisons, not claims of being better.

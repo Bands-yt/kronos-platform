@@ -20,6 +20,7 @@
 #include "tntwars/TntWarsNetRules.hpp"
 #include "core/AnimationDatabase.hpp"
 #include "core/Application.hpp"
+#include "core/GpuFeatures.hpp"
 #include "core/PythonScripting.hpp"
 #include "core/AvatarLoadout.hpp"
 #include "core/CatalogueDatabase.hpp"
@@ -393,6 +394,9 @@ int main(int argc, char** argv) {
             headless = true;
         } else if (arg == "--python-info") {
             std::printf("%s", engine::core::PythonScripting::capabilityReport().c_str());
+            return 0;
+        } else if (arg == "--gpu-info") {
+            std::printf("%s", engine::core::gpuReport().c_str());
             return 0;
         } else if (arg == "--self-test") {
             selfTestMode = true;

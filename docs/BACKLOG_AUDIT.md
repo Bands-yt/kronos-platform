@@ -127,3 +127,62 @@ All of these are covered by [PROJECT_POLICY.md](PROJECT_POLICY.md) or [MATURITY.
 | 0882 | Text contrast validation | partial | `testPaletteTextContrast`: bright, muted, blue, green and amber text reach 4.5:1 on all panel colours; red on app background and panels; faint text 3:1. Known gaps: faint text and red text on raised controls (under 4.5:1) |
 | 0005 | Clear pre-beta warning and crash-safe reset | done | Studio welcome panel shows an amber pre-beta note; View > Reset Layout to Default exists |
 | 0881 | Color-blind friendly status palette | partial | Checked with deuteranopia/protanopia simulation: green, amber and blue status colours are nearly the same brightness (contrast 1.0-1.3:1), so status must never rely on colour alone. A post-process colour-blind mode exists. Gap: audit status UI for text/icon backup |
+
+## v5 batch 3 (17 Oct 2026): 50 items
+
+Most are small tested libraries that are not in the UI yet; the status column says so.
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0361 | Normalize and loudness analysis | partial | core/AudioAnalysis.hpp + tests; not in an audio UI yet |
+| 0374 | Waveform cache and peaks generation | partial | waveformPeaks tested; no cache or drawing yet |
+| 0392 | Audio asset compression presets | partial | preset table tested; no exporter uses it yet |
+| 0114 | Normals display and recalculation | partial | core/MeshOps.hpp recalculateNormals tested; not in Studio UI |
+| 0111 | Solidify and shell modifier | partial | MeshOps solidify tested; not in Studio UI |
+| 0117 | Pivot and origin editing | partial | MeshOps recenter tested; not in Studio UI |
+| 0124 | Mesh compare and diff view | partial | MeshOps compare tested; no diff view |
+| 0171 | Sprite sheet slicing on import | partial | core/SpriteSheet.hpp tested; no import step |
+| 0314 | Quaternion-safe rotation editing | partial | core/RotationEdit.hpp tested; Inspector not switched over |
+| 0092 | Surface alignment placement tool | partial | alignToSurface tested; no placement tool |
+| 0489 | Import warning aggregation | partial | migration/ImportWarnings.hpp tested; importer not switched over |
+| 0611 | Join tokens with expiry and single use | partial | net/JoinToken.hpp tested; not used by the server yet |
+| 0539 | Content reporting with reason codes | partial | core/ReportReasons.hpp tested; no report UI or backend |
+| 0414 | Module dependency graph | partial | core/ModuleGraph.hpp finds require() and cycles, tested; no UI |
+| 0574 | Safe prerelease migration backups | partial | core/MigrationBackup.hpp tested; not called by the loader yet |
+| 0016 | Keyboard shortcut discovery overlay | done | F1 / View / Help; screen-checked |
+| 0047 | Focus mode hides nonessential chrome | done | F10; screen-checked |
+| 0048 | Presentation mode for screen recording | partial | Shift+F10 hides panels and ribbon, Esc leaves; not screen-checked |
+| 0035 | Compact and spacious density modes | partial | View > Density, saved; not screen-checked |
+| 0321 | Animation compression settings | partial | core/AnimationReduce.hpp reduceKeys tested; no setting yet |
+| 0396 | Music state and snapshot transitions | partial | core/MusicStates.hpp tested; not wired to Audio |
+| 0267 | Color grading LUT support | partial | core/ColorLut.hpp parses .cube, tested; renderer doesn't use it |
+| 0146 | Splatmap import support | partial | splatWeights tested; no importer |
+| 0136 | Procedural biome rules | partial | pickBiome tested; terrain doesn't call it |
+| 0142 | Terrain layers with distance blending | partial | distanceBlend tested; terrain doesn't call it |
+| 0261 | Height fog and distance fog controls | partial | heightFogAmount tested; shader not changed |
+| 0339 | Camera shake library with envelopes | partial | ShakeEnvelope/shakeOffset tested; not in Application |
+| 0289 | Wind and turbulence forces | partial | WindForce tested; particles don't use it |
+| 0367 | Stereo and surround channel routing | partial | downmixToStereo tested; mixer unchanged |
+| 0242 | Render backend capability report | done | engine_runtime --gpu-info; run on this PC |
+| 0346 | Hardware ray-tracing capability probe | done | --gpu-info reports it; detectRayTracing tested |
+| 0449 | Python API compatibility versioning | done | world.API_VERSION = 1, in --python-info; tested |
+| 0189 | Thumbnail contact sheets | partial | contactSheetLayout tested; no renderer |
+| 0186 | Metadata tags and custom fields | partial | AssetTagSet tested; not stored with assets |
+| 0236 | GPU memory budget manager | partial | GpuMemoryBudget tested; renderer doesn't report to it |
+| 0542 | Rejoin last server action | partial | RecentServers tested; no button |
+| 0217 | Material batching compatibility hints | partial | batchingHints tested; no UI |
+| 0071 | Component dependency warnings | partial | core/ComponentRules.hpp tested; Inspector doesn't show them |
+| 0025 | Accessibility audit checklist | done | docs/ACCESSIBILITY.md |
+| 0474 | Plugin API deprecation policy | done | docs/PLUGIN_API.md |
+| 0471 | Native versus sandboxed plugins | done | table in PLUGIN_API.md; Resources panel already labels each plugin |
+| 0616 | Bring-your-own-host deployment docs | done | docs/SERVER.md |
+| 0617 | Kubernetes evaluation | done | docs/SERVER.md: not now, with the conditions |
+| 0571 | CI-generated compatibility report | partial | Linux job writes it to the run summary; first run not seen yet |
+| 0499 | Diagnostic mode toggles | partial | docs/TROUBLESHOOTING.md lists the commands |
+| 0014 | In-app release notes and migration hints | partial | Help > What's New; hints are minimal |
+| 0521 | Asset-license provenance report | partial | provenanceReport tested; nothing records licences yet |
+| 0546 | Save-data status feedback | partial | saveStatusText tested; not shown in a status bar |
+| 0549 | First-launch telemetry opt-in | partial | policy written (off until yes); nothing is collected |
+| 0699 | Collaboration disabled fallback | done | PROJECT_POLICY.md |
+
+Already existed (checked, not built): 0061 property filter, 0596 remote rate limit, 0589 loss simulator, 0514 tag import, 0023 accent, 0024 reduced motion, 0013 notification centre, 0010 command palette.

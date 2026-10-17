@@ -124,6 +124,18 @@ alpha. For local testing, `--server` and `--client 127.0.0.1` on the same
 machine is the simplest way to confirm the binaries themselves work
 before troubleshooting network reachability.
 
+## Diagnostic commands
+
+| Command | What it tells you |
+|---|---|
+| `engine_runtime --gpu-info` | Each Vulkan graphics device, its Vulkan version, whether it is a real GPU or software, and whether it has hardware ray tracing |
+| `engine_runtime --python-info` | The Python version and which risky operations are blocked |
+| `engine_runtime --self-test` | Starts the renderer for 10 frames and exits (used by the release smoke test) |
+| `kronos_compat` (from `engine/`) | How well the Roblox test places import and run |
+| `KRONOS_SILENT_AUDIO=1` | Turns the sound off |
+
+Studio's **Stats** panel shows frame time and where it goes, and **F3** shows the performance overlay.
+
 ## Still stuck
 
 Check `core::Logger`'s output (both binaries print to stdout/stderr, and
