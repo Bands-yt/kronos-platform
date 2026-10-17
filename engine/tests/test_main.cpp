@@ -15985,6 +15985,26 @@ void testHierarchySetParentBuildsTwoSidedRelationship() {
           "setParent() real-adds the child to the parent's own children list");
 }
 
+void testHierarchyReparentCanBeUndone() {
+    engine::core::ECS ecs;
+    const auto a = ecs.createEntity("a");
+    const auto b = ecs.createEntity("b");
+    const auto child = ecs.createEntity("child");
+    ecs.tryGetComponent<engine::core::Transform>(a)->position = {10.0f, 0.0f, 0.0f};
+    ecs.tryGetComponent<engine::core::Transform>(child)->position = {1.0f, 2.0f, 3.0f};
+    const auto before = *ecs.tryGetComponent<engine::core::Transform>(child);
+    engine::core::hierarchy::setParent(ecs, child, a);
+    engine::core::hierarchy::setParent(ecs, child, b);
+    engine::core::hierarchy::setParent(ecs, child, a);
+    engine::core::hierarchy::unparent(ecs, child);
+    *ecs.tryGetComponent<engine::core::Transform>(child) = before;
+    const auto* h = ecs.tryGetComponent<engine::core::Hierarchy>(child);
+    check(h && h->parent == engine::core::kNullEntity && ecs.tryGetComponent<engine::core::Transform>(child)->position.y == 2.0f &&
+              ecs.tryGetComponent<engine::core::Hierarchy>(a)->children.empty() &&
+              ecs.tryGetComponent<engine::core::Hierarchy>(b)->children.empty(),
+          "undoing a reparent restores the old parent lists and the old local position");
+}
+
 void testHierarchySetParentRejectsSelfParenting() {
     engine::core::ECS ecs;
     engine::core::EntityId entity = ecs.createEntity("solo");
@@ -52564,6 +52584,7 @@ int main() {
     testFreshProjectTemplate();
     testSingleInstanceLock();
     testPermanentObjectIds();
+    testHierarchyReparentCanBeUndone();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include <algorithm>
 #include <array>
 #include <unordered_map>
@@ -65,6 +67,19 @@ public:
         return made;
     }
 
+    // A drag-and-drop reparent made this frame, once, for undo.
+    struct Reparented {
+        core::EntityId child = core::kNullEntity;
+        core::EntityId oldParent = core::kNullEntity;
+        core::EntityId newParent = core::kNullEntity;
+        core::Transform before;
+    };
+    [[nodiscard]] std::optional<Reparented> takeReparented() {
+        std::optional<Reparented> made = reparented_;
+        reparented_.reset();
+        return made;
+    }
+
     void setSelected(core::EntityId entity) {
         selected_ = entity;
         selection_.clear();
@@ -111,6 +126,7 @@ private:
     void drawRobloxTree(core::ECS& ecs);
     bool robloxTree_ = true;
     core::EntityId inserted_ = core::kNullEntity;
+    std::optional<Reparented> reparented_;
     char search_[96] = "";
 
     core::EntityId selected_ = core::kNullEntity; // primary selection -- last entity clicked, any modifier

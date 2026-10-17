@@ -28,7 +28,7 @@ reading audit: nothing here was run on a clean machine.
 |---|---|---|---|
 | 0051 | Virtualized hierarchy for big scenes | exists | `ExplorerPanel` skips rows outside the view (5,000-part folder scrolled on screen); no 100k-entity timing test yet (0075) |
 | 0052 | Multi-select with a summary | exists | Select All, "N entities selected", multi-object Inspector |
-| 0053 | Drag-and-drop parenting, no cycles | partial | Explorer has a drag source (`EXPLORER_ENTITY`); verify the drop target reparents with undo and refuses cycles |
+| 0053 | Drag-and-drop parenting, no cycles | done | the Explorer drop calls `hierarchy::setParent` (self and cycles refused) and now pushes an undo step "Move in Hierarchy" (`testHierarchyReparentCanBeUndone`); the drag itself is not driven by my screen tools |
 
 ## Assets
 

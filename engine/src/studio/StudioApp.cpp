@@ -2687,6 +2687,19 @@ void StudioApp::run() {
         if (const core::EntityId inserted = explorerPanel_.takeInserted(); inserted != core::kNullEntity) {
             pushCreationUndo("Insert Object", {inserted});
         }
+        if (const auto moved = explorerPanel_.takeReparented()) {
+            const auto m = *moved;
+            undoStack_.push({"Move in Hierarchy",
+                             [this, m] {
+                                 if (m.oldParent == core::kNullEntity) {
+                                     core::hierarchy::unparent(ecs_, m.child);
+                                 } else {
+                                     core::hierarchy::setParent(ecs_, m.child, m.oldParent);
+                                 }
+                                 if (auto* t = ecs_.tryGetComponent<core::Transform>(m.child)) *t = m.before;
+                             },
+                             [this, m] { core::hierarchy::setParent(ecs_, m.child, m.newParent); }});
+        }
         if (showInspector() && !hideInspector_) {
             inspectorPanel_.draw(ecs_, explorerPanel_.selectedEntity(), explorerPanel_.selectedEntities(), undoStack_);
         }

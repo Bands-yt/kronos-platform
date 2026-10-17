@@ -273,7 +273,14 @@ void ExplorerPanel::drawEntityNode(core::ECS& ecs, core::EntityId entity, int& r
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("EXPLORER_ENTITY")) {
             core::EntityId dragged = *static_cast<const core::EntityId*>(payload->Data);
-            if (dragged != entity) core::hierarchy::setParent(ecs, dragged, entity);
+            if (dragged != entity) {
+                Reparented move;
+                move.child = dragged;
+                move.newParent = entity;
+                if (const auto* h = ecs.tryGetComponent<core::Hierarchy>(dragged)) move.oldParent = h->parent;
+                if (const auto* t = ecs.tryGetComponent<core::Transform>(dragged)) move.before = *t;
+                if (core::hierarchy::setParent(ecs, dragged, entity) && move.oldParent != entity) reparented_ = move;
+            }
         }
         // Kronos (Alpha Completion Checklist, "Editor UX Polish" --
         // "Stable drag-and-drop in Asset Browser"): the real drop-target
