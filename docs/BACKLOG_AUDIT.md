@@ -308,3 +308,62 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0266 | Bloom and tone mapping presets | partial | reinhard/acesFilm/bloomPresets tested |
 | 0244 | Dynamic resolution scaling option | partial | adjustRenderScale tested; renderer unchanged |
 | 0245 | Render scale presets | partial | renderScalePresets tested |
+
+## v5 batch 6 (17 Oct 2026): animation, camera, VFX and audio helpers
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0308 | Root-motion extraction and preview | partial | anim::rootDeltas/stripRootMotion tested; no preview |
+| 0310 | Foot planting and slope correction | partial | solveTwoBone + pelvisDrop tested; not connected to the rig |
+| 0312 | Timeline markers and events | partial | anim::MarkerTrack (fires once, handles loops) tested |
+| 0313 | Animation curve editor | partial | bezier and keyframe evaluation tested; no editor UI |
+| 0315 | Motion capture cleanup tools | partial | smoothSamples/removeSpikes tested |
+| 0318 | Pose library and pose mirroring | partial | mirrorPose/mirrorBoneName tested; no library UI |
+| 0320 | Ragdoll-to-animation blending | partial | recoverBlend tested |
+| 0322 | Runtime animation LOD | partial | animationUpdateInterval tested; animator doesn't use it |
+| 0323 | Retargeting validation report | partial | validateRetarget tested |
+| 0330 | Lens focal length and aperture animation | partial | fovFromFocalLength/focalLengthFromFov tested |
+| 0331 | Depth-of-field preview | partial | circleOfConfusion tested; no preview |
+| 0338 | Camera rig presets for dolly orbit and crane | partial | dolly/orbit/crane poses tested |
+| 0340 | Focus target and rack-focus tool | partial | rackFocus tested |
+| 0341 | Marker and annotation tracks | partial | MarkerTrack tested |
+| 0334 | Material and post-effect keyframes | partial | evaluateTrack (step/linear/smooth) tested |
+| 0333 | Lighting and time-of-day tracks | partial | sunElevationDegrees tested |
+| 0264 | Day-night timeline component | partial | sunElevationDegrees and skyPresets tested; TimeOfDay not changed |
+| 0262 | Sky atmosphere presets | partial | skyPresets table tested |
+| 0268 | Light linking and exclusion groups | partial | lightAffects mask tested; renderer doesn't use it |
+| 0272 | Per-light performance budget | partial | pickShadowCasters tested |
+| 0275 | Lighting regression comparison captures | partial | imageMse/imagePsnr tested; no capture flow |
+| 0337 | Scene shot list and storyboard board | partial | shotListMarkdown tested |
+| 0342 | Timeline nested sequences | partial | flattenSequences (depth-limited) tested |
+| 0344 | Render queue with resumable jobs | partial | serialize/parse queue tested; no renderer |
+| 0348 | EXR PNG and image-sequence export | partial | frameFileName only; no exporter |
+| 0350 | Frame-accurate render tests | partial | frame/time/timecode maths tested |
+| 0283 | Deterministic seeded particle playback | partial | vfx::SeededRng tested |
+| 0284 | Particle LOD and distance culling | partial | particleLodScale tested |
+| 0281 | Flipbook sprite particles | partial | flipbookFrame tested |
+| 0286 | Sub-emitter support | partial | subEmitterSpawns tested |
+| 0287 | Beam and laser effects | partial | beamPoints tested |
+| 0294 | Effect pooling for runtime | partial | EffectPool tested |
+| 0295 | VFX budget overlay | partial | vfxWarnings tested; no overlay |
+| 0297 | GPU overflow diagnostics | partial | vfxWarnings covers particle counts; GPU buffers not covered |
+| 0298 | Lightweight mobile particle profile | partial | vfxProfiles table |
+| 0291 | Particle event hooks for scripts | partial | ParticleEvents tested; not exposed to Luau |
+| 0296 | Asset presets for fire smoke and magic | partial | effectPresets table |
+| 0355 | Clip gain and track gain controls | partial | combinedGain tested |
+| 0356 | Loop and region playback | partial | audiotools::advance tested |
+| 0358 | Marker and cue regions | partial | MarkerTrack tested |
+| 0359 | Sample slicing and transient detection | partial | detectTransients tested; no slicing |
+| 0363 | EQ and compressor effect rack | partial | peakingEq/highPass/compressorGainDb tested; no rack |
+| 0366 | Bus and send routing | partial | busChainGain tested |
+| 0368 | Audio clip crossfade editing | partial | crossfadeGains tested |
+| 0369 | Sample-rate conversion quality report | partial | resampleLinear + resampleQualityNote tested |
+| 0375 | Audio export stems and mixdown | partial | mixdown tested; no export |
+| 0381 | Audio zones and reverb regions | partial | zoneReverbAt tested |
+| 0385 | Audio ducking and sidechain control | partial | Ducker tested |
+| 0390 | Audio pooling and voice stealing | partial | VoiceAllocator tested; mixer doesn't use it |
+| 0391 | Priority-based voice limits | partial | VoiceAllocator tested |
+| 0394 | Master limiter to prevent clipping | partial | softLimit tested; mixer unchanged |
+| 0395 | Loudness meter and peak warning | partial | PeakMeter tested |
+| 0386 | Low-latency voice buffer tuning | partial | periodFramesForLatency tested |
+| 0389 | Sample-accurate scheduled playback | partial | secondsToFrames; engine cues already schedule by frame |

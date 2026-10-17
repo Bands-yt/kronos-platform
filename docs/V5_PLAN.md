@@ -21,29 +21,29 @@ Other marks: ✅ already exists or was finished (checked against the code), ◐ 
 |---|---|---|
 | 🔴 Extremely hard | 31 | 38.0 work weeks |
 | 🟠 Hard | 236 | 33.6 work weeks |
-| 🟡 Medium | 488 | 13.7 work weeks |
-| 🟢 Easy | 245 | 4.9 days |
-| **All 1,000** | **1000** | **86.3 work weeks** |
+| 🟡 Medium | 488 | 13.0 work weeks |
+| 🟢 Easy | 245 | 4.8 days |
+| **All 1,000** | **1000** | **85.6 work weeks** |
 
-- ✅ **83** items already exist or are finished, ◐ **134** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
-- Without the ⛔ items, the work I can do alone is **74.5 work weeks**.
+- ✅ **83** items already exist or are finished, ◐ **188** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
+- Without the ⛔ items, the work I can do alone is **73.7 work weeks**.
 - P0 (42 items): 9.8 days
-- P1 (278 items): 49.3 work weeks
-- P2 (680 items): 35.1 work weeks
+- P1 (278 items): 49.1 work weeks
+- P2 (680 items): 34.5 work weeks
 
 **Honest note:** this total is a planning number, not a promise. Real work always finds surprises, like the three Windows build failures this week. The red items are the least certain: treat their times as 'about this, maybe double'. The ⛔ items can also slip because they wait for you.
 
 ## What I suggest v5 should contain
 
-Doing all 1,000 items is about **86.3 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
+Doing all 1,000 items is about **85.6 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
 
 | Slice | Items | Time |
 |---|---|---|
-| **v5 core:** every P0 item, plus every 🟢 and 🟡 P1 item (nothing that needs you) | 130 | 4.1 work weeks |
+| **v5 core:** every P0 item, plus every 🟢 and 🟡 P1 item (nothing that needs you) | 130 | 3.9 work weeks |
 | **v5 extras if time allows:** the 🟠 P1 items (terrain, materials, animation, netcode, Player settings) | 127 | 20.3 work weeks |
 | **After v5:** all P2 items, all 🔴 items, and everything marked ⛔ | rest | rest |
 
-The v5 core is 4.1 work weeks. At the pace of a busy week that is several weeks of building, with the Windows VM test and the owner-only steps done in between.
+The v5 core is 3.9 work weeks. At the pace of a busy week that is several weeks of building, with the Windows VM test and the owner-only steps done in between.
 
 ## By area
 
@@ -60,11 +60,11 @@ The v5 core is 4.1 work weeks. At the pace of a busy week that is several weeks 
 | Materials and shader authoring | 1 | 5 | 15 | 4 | 3.2 work weeks |
 | Core renderer architecture | 2 | 6 | 12 | 5 | 2.9 work weeks |
 | Lighting and environment | 1 | 9 | 10 | 5 | 2.5 work weeks |
-| Visual effects and particles | 1 | 5 | 14 | 5 | 3.2 work weeks |
-| Animation and rigging | 0 | 8 | 12 | 5 | 8.3 days |
-| Movie Maker and cinematic sequencer | 2 | 5 | 13 | 5 | 4.0 work weeks |
-| Audio Maker and sound design tools | 2 | 8 | 11 | 4 | 4.4 work weeks |
-| Runtime audio engine | 3 | 6 | 11 | 5 | 4.9 work weeks |
+| Visual effects and particles | 1 | 5 | 14 | 5 | 3.1 work weeks |
+| Animation and rigging | 0 | 8 | 12 | 5 | 7.6 days |
+| Movie Maker and cinematic sequencer | 2 | 5 | 13 | 5 | 3.8 work weeks |
+| Audio Maker and sound design tools | 2 | 8 | 11 | 4 | 4.3 work weeks |
+| Runtime audio engine | 3 | 6 | 11 | 5 | 4.8 work weeks |
 | Luau scripting experience | 0 | 8 | 13 | 4 | 6.1 days |
 | Python scripting environment | 0 | 6 | 15 | 4 | 5.2 days |
 | Rust SDK and polyglot architecture | 0 | 6 | 14 | 5 | 4.7 days |
@@ -417,22 +417,22 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0259 | P2 | Screen-space reflections quality path | 8 h |  |
 | 🟠 | 0260 | P2 | Volumetric fog prototype | 8 h |  |
 | 🟢 | 0261 | P2 | Height fog and distance fog controls | 8 min | ◐ |
-| 🟡 | 0262 | P2 | Sky atmosphere presets | 1.5 h |  |
+| 🟡 | 0262 | P2 | Sky atmosphere presets | 45 min | ◐ |
 | 🟡 | 0263 | P2 | Procedural sky and cloud layers | 1.5 h |  |
-| 🟢 | 0264 | P2 | Day-night timeline component | 15 min |  |
+| 🟢 | 0264 | P2 | Day-night timeline component | 8 min | ◐ |
 | 🟡 | 0265 | P2 | Automatic exposure controls | 45 min | ◐ |
 | 🟡 | 0266 | P2 | Bloom and tone mapping presets | 45 min | ◐ |
 | 🟢 | 0267 | P2 | Color grading LUT support | 8 min | ◐ |
-| 🟡 | 0268 | P2 | Light linking and exclusion groups | 1.5 h |  |
+| 🟡 | 0268 | P2 | Light linking and exclusion groups | 45 min | ◐ |
 | 🟡 | 0269 | P2 | Light bake preview and invalidation | 1.5 h |  |
 | 🟡 | 0270 | P2 | Emissive material indirect-light contribution research | 1.5 h |  |
 | 🟢 | 0271 | P2 | Shadow caster diagnostics | 15 min |  |
-| 🟡 | 0272 | P2 | Per-light performance budget | 1.5 h |  |
+| 🟡 | 0272 | P2 | Per-light performance budget | 45 min | ◐ |
 | 🟡 | 0273 | P2 | Indoor lighting sample scene | 1.5 h |  |
 | 🟢 | 0274 | P2 | Environment profile assets | 15 min |  |
-| 🟡 | 0275 | P2 | Lighting regression comparison captures | 1.5 h |  |
+| 🟡 | 0275 | P2 | Lighting regression comparison captures | 45 min | ◐ |
 
-### 12. Visual effects and particles (3.2 work weeks)
+### 12. Visual effects and particles (3.1 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -441,28 +441,28 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0278 | P1 | Particle collision with world and terrain | 8 h |  |
 | 🟠 | 0279 | P1 | Particle trails and ribbons | 8 h |  |
 | 🟡 | 0280 | P1 | Mesh particles | 1.5 h |  |
-| 🟡 | 0281 | P1 | Flipbook sprite particles | 1.5 h |  |
+| 🟡 | 0281 | P1 | Flipbook sprite particles | 45 min | ◐ |
 | 🟠 | 0282 | P1 | Curve editors for size speed and color | 8 h |  |
-| 🟡 | 0283 | P1 | Deterministic seeded particle playback | 1.5 h |  |
-| 🟡 | 0284 | P2 | Particle LOD and distance culling | 1.5 h |  |
+| 🟡 | 0283 | P1 | Deterministic seeded particle playback | 45 min | ◐ |
+| 🟡 | 0284 | P2 | Particle LOD and distance culling | 45 min | ◐ |
 | 🔴 | 0285 | P2 | VFX graph with reusable blocks | 2.0 work weeks |  |
-| 🟢 | 0286 | P2 | Sub-emitter support | 15 min |  |
-| 🟡 | 0287 | P2 | Beam and laser effects | 1.5 h |  |
+| 🟢 | 0286 | P2 | Sub-emitter support | 8 min | ◐ |
+| 🟡 | 0287 | P2 | Beam and laser effects | 45 min | ◐ |
 | 🟡 | 0288 | P2 | Decal burst emitters | 1.5 h |  |
 | 🟢 | 0289 | P2 | Wind and turbulence forces | 8 min | ◐ |
 | 🟡 | 0290 | P2 | Volumetric fog interaction prototype | 1.5 h |  |
-| 🟡 | 0291 | P2 | Particle event hooks for scripts | 1.5 h |  |
+| 🟡 | 0291 | P2 | Particle event hooks for scripts | 45 min | ◐ |
 | 🟢 | 0292 | P2 | VFX preview window | 15 min |  |
 | 🟡 | 0293 | P2 | VFX timeline authoring | 1.5 h |  |
-| 🟡 | 0294 | P2 | Effect pooling for runtime | 1.5 h |  |
-| 🟡 | 0295 | P2 | VFX budget overlay | 1.5 h |  |
-| 🟢 | 0296 | P2 | Asset presets for fire smoke and magic | 15 min |  |
-| 🟡 | 0297 | P2 | GPU overflow diagnostics | 1.5 h |  |
-| 🟡 | 0298 | P2 | Lightweight mobile particle profile | 1.5 h |  |
+| 🟡 | 0294 | P2 | Effect pooling for runtime | 45 min | ◐ |
+| 🟡 | 0295 | P2 | VFX budget overlay | 45 min | ◐ |
+| 🟢 | 0296 | P2 | Asset presets for fire smoke and magic | 8 min | ◐ |
+| 🟡 | 0297 | P2 | GPU overflow diagnostics | 45 min | ◐ |
+| 🟡 | 0298 | P2 | Lightweight mobile particle profile | 45 min | ◐ |
 | 🟢 | 0299 | P2 | VFX capture and thumbnail | 15 min |  |
 | 🟡 | 0300 | P2 | VFX sample library | 1.5 h |  |
 
-### 13. Animation and rigging (8.3 days)
+### 13. Animation and rigging (7.6 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -473,26 +473,26 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0305 | P1 | Animation state machine graph | 8 h |  |
 | 🟠 | 0306 | P1 | Blend trees for locomotion | 8 h |  |
 | 🟠 | 0307 | P1 | Animation layers and masks | 8 h |  |
-| 🟡 | 0308 | P1 | Root-motion extraction and preview | 1.5 h |  |
+| 🟡 | 0308 | P1 | Root-motion extraction and preview | 45 min | ◐ |
 | 🟠 | 0309 | P2 | Inverse-kinematics target controls | 8 h |  |
-| 🟡 | 0310 | P2 | Foot planting and slope correction | 1.5 h |  |
+| 🟡 | 0310 | P2 | Foot planting and slope correction | 45 min | ◐ |
 | 🟢 | 0311 | P2 | Constraint stack for props and limbs | 15 min |  |
-| 🟡 | 0312 | P2 | Timeline markers and events | 1.5 h |  |
-| 🟡 | 0313 | P2 | Animation curve editor | 1.5 h |  |
+| 🟡 | 0312 | P2 | Timeline markers and events | 45 min | ◐ |
+| 🟡 | 0313 | P2 | Animation curve editor | 45 min | ◐ |
 | 🟢 | 0314 | P2 | Quaternion-safe rotation editing | 8 min | ◐ |
-| 🟡 | 0315 | P2 | Motion capture cleanup tools | 1.5 h |  |
+| 🟡 | 0315 | P2 | Motion capture cleanup tools | 45 min | ◐ |
 | 🟡 | 0316 | P2 | Procedural animation hooks for Luau | 1.5 h |  |
 | 🟢 | 0317 | P2 | Python animation utilities | 15 min |  |
-| 🟡 | 0318 | P2 | Pose library and pose mirroring | 1.5 h |  |
+| 🟡 | 0318 | P2 | Pose library and pose mirroring | 45 min | ◐ |
 | 🟡 | 0319 | P2 | Facial blendshape timeline | 1.5 h |  |
-| 🟡 | 0320 | P2 | Ragdoll-to-animation blending | 1.5 h |  |
+| 🟡 | 0320 | P2 | Ragdoll-to-animation blending | 45 min | ◐ |
 | 🟢 | 0321 | P2 | Animation compression settings | 8 min | ◐ |
-| 🟡 | 0322 | P2 | Runtime animation LOD | 1.5 h |  |
-| 🟡 | 0323 | P2 | Retargeting validation report | 1.5 h |  |
+| 🟡 | 0322 | P2 | Runtime animation LOD | 45 min | ◐ |
+| 🟡 | 0323 | P2 | Retargeting validation report | 45 min | ◐ |
 | 🟢 | 0324 | P2 | Animation preview against live physics | 15 min |  |
 | 🟡 | 0325 | P2 | Animation regression corpus | 1.5 h |  |
 
-### 14. Movie Maker and cinematic sequencer (4.0 work weeks)
+### 14. Movie Maker and cinematic sequencer (3.8 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -500,29 +500,29 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0327 | P1 | Track-based timeline with zoom and snapping | 8 h |  |
 | 🟠 | 0328 | P1 | Camera cuts and multi-camera tracks | 8 h |  |
 | 🟠 | 0329 | P1 | Transform keyframes with curve handles | 8 h |  |
-| 🟡 | 0330 | P1 | Lens focal length and aperture animation | 1.5 h |  |
-| 🟡 | 0331 | P1 | Depth-of-field preview | 1.5 h |  |
+| 🟡 | 0330 | P1 | Lens focal length and aperture animation | 45 min | ◐ |
+| 🟡 | 0331 | P1 | Depth-of-field preview | 45 min | ◐ |
 | 🟠 | 0332 | P1 | Motion blur quality controls | 8 h |  |
-| 🟡 | 0333 | P1 | Lighting and time-of-day tracks | 1.5 h |  |
-| 🟡 | 0334 | P2 | Material and post-effect keyframes | 1.5 h |  |
+| 🟡 | 0333 | P1 | Lighting and time-of-day tracks | 45 min | ◐ |
+| 🟡 | 0334 | P2 | Material and post-effect keyframes | 45 min | ◐ |
 | 🟡 | 0335 | P2 | Audio waveform and sync tracks | 1.5 h |  |
 | 🟢 | 0336 | P2 | Animation and facial tracks | 15 min |  |
-| 🟡 | 0337 | P2 | Scene shot list and storyboard board | 1.5 h |  |
-| 🟡 | 0338 | P2 | Camera rig presets for dolly orbit and crane | 1.5 h |  |
+| 🟡 | 0337 | P2 | Scene shot list and storyboard board | 45 min | ◐ |
+| 🟡 | 0338 | P2 | Camera rig presets for dolly orbit and crane | 45 min | ◐ |
 | 🟢 | 0339 | P2 | Camera shake library with envelopes | 8 min | ◐ |
-| 🟡 | 0340 | P2 | Focus target and rack-focus tool | 1.5 h |  |
-| 🟡 | 0341 | P2 | Marker and annotation tracks | 1.5 h |  |
-| 🟢 | 0342 | P2 | Timeline nested sequences | 15 min |  |
+| 🟡 | 0340 | P2 | Focus target and rack-focus tool | 45 min | ◐ |
+| 🟡 | 0341 | P2 | Marker and annotation tracks | 45 min | ◐ |
+| 🟢 | 0342 | P2 | Timeline nested sequences | 8 min | ◐ |
 | 🟡 | 0343 | P2 | Proxy preview for heavy scenes | 1.5 h |  |
-| 🟡 | 0344 | P2 | Render queue with resumable jobs | 1.5 h |  |
+| 🟡 | 0344 | P2 | Render queue with resumable jobs | 45 min | ◐ |
 | 🔴 | 0345 | P2 | Offline high-quality renderer evaluation | 4 days |  |
 | 🟢 | 0346 | P2 | Hardware ray-tracing capability probe | done | ✅ |
 | 🔴 | 0347 | P2 | Path-tracing research branch with fallback | 2.0 work weeks |  |
-| 🟡 | 0348 | P2 | EXR PNG and image-sequence export | 1.5 h |  |
+| 🟡 | 0348 | P2 | EXR PNG and image-sequence export | 45 min | ◐ |
 | 🟢 | 0349 | P2 | MP4 export through bundled or documented encoder | 15 min |  |
-| 🟡 | 0350 | P2 | Frame-accurate render tests | 1.5 h |  |
+| 🟡 | 0350 | P2 | Frame-accurate render tests | 45 min | ◐ |
 
-### 15. Audio Maker and sound design tools (4.4 work weeks)
+### 15. Audio Maker and sound design tools (4.3 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -530,29 +530,29 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0352 | P1 | Non-destructive waveform editing | 8 h |  |
 | 🟠 | 0353 | P1 | Region split trim fade and slip editing | 8 h |  |
 | 🟠 | 0354 | P1 | Envelope and automation lanes | 8 h |  |
-| 🟡 | 0355 | P1 | Clip gain and track gain controls | 1.5 h |  |
-| 🟡 | 0356 | P1 | Loop and region playback | 1.5 h |  |
+| 🟡 | 0355 | P1 | Clip gain and track gain controls | 45 min | ◐ |
+| 🟡 | 0356 | P1 | Loop and region playback | 45 min | ◐ |
 | 🟠 | 0357 | P1 | Tempo and time-signature grid | 8 h |  |
-| 🟡 | 0358 | P1 | Marker and cue regions | 1.5 h |  |
-| 🟡 | 0359 | P2 | Sample slicing and transient detection | 1.5 h |  |
+| 🟡 | 0358 | P1 | Marker and cue regions | 45 min | ◐ |
+| 🟡 | 0359 | P2 | Sample slicing and transient detection | 45 min | ◐ |
 | 🟠 | 0360 | P2 | Pitch and time-stretch evaluation | 8 h |  |
 | 🟢 | 0361 | P2 | Normalize and loudness analysis | 8 min | ◐ |
 | 🟠 | 0362 | P2 | Noise gate and denoise offline tools | 8 h |  |
-| 🟡 | 0363 | P2 | EQ and compressor effect rack | 1.5 h |  |
+| 🟡 | 0363 | P2 | EQ and compressor effect rack | 45 min | ◐ |
 | 🟢 | 0364 | P2 | Reverb delay chorus and saturation presets | 8 min | ◐ |
 | 🟠 | 0365 | P2 | Sidechain routing prototype | 8 h |  |
-| 🟡 | 0366 | P2 | Bus and send routing | 1.5 h |  |
+| 🟡 | 0366 | P2 | Bus and send routing | 45 min | ◐ |
 | 🟢 | 0367 | P2 | Stereo and surround channel routing | 8 min | ◐ |
-| 🟡 | 0368 | P2 | Audio clip crossfade editing | 1.5 h |  |
-| 🟡 | 0369 | P2 | Sample-rate conversion quality report | 1.5 h |  |
+| 🟡 | 0368 | P2 | Audio clip crossfade editing | 45 min | ◐ |
+| 🟡 | 0369 | P2 | Sample-rate conversion quality report | 45 min | ◐ |
 | 🔴 | 0370 | P2 | Plugin host for supported audio effects | 4 days |  |
 | 🟠 | 0371 | P2 | MIDI note editor prototype | 8 h |  |
 | 🟡 | 0372 | P2 | Sound library browser | 1.5 h |  |
 | 🟡 | 0373 | P2 | Batch audio conversion | 1.5 h |  |
 | 🟢 | 0374 | P2 | Waveform cache and peaks generation | 8 min | ◐ |
-| 🟡 | 0375 | P2 | Audio export stems and mixdown | 1.5 h |  |
+| 🟡 | 0375 | P2 | Audio export stems and mixdown | 45 min | ◐ |
 
-### 16. Runtime audio engine (4.9 work weeks)
+### 16. Runtime audio engine (4.8 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -561,21 +561,21 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0378 | P1 | 3D positional sound attenuation | 8 h |  |
 | 🟠 | 0379 | P1 | Directional cone emitters | 8 h |  |
 | 🟠 | 0380 | P1 | Occlusion and obstruction filtering | 8 h |  |
-| 🟡 | 0381 | P1 | Audio zones and reverb regions | 1.5 h |  |
+| 🟡 | 0381 | P1 | Audio zones and reverb regions | 45 min | ◐ |
 | 🟠 | 0382 | P1 | Doppler shift option | 8 h |  |
 | 🟡 | 0383 | P1 | Streaming long music tracks | 1.5 h |  |
 | 🔴 | 0384 | P2 | Voice chat architecture evaluation | 4 days |  |
-| 🟡 | 0385 | P2 | Audio ducking and sidechain control | 1.5 h |  |
-| 🟢 | 0386 | P2 | Low-latency voice buffer tuning | 15 min |  |
+| 🟡 | 0385 | P2 | Audio ducking and sidechain control | 45 min | ◐ |
+| 🟢 | 0386 | P2 | Low-latency voice buffer tuning | 8 min | ◐ |
 | 🔴 | 0387 | P2 | Spatial audio headphone mode | 2.0 work weeks |  |
 | 🔴 | 0388 | P2 | HRTF capability evaluation | 4 days |  |
-| 🟢 | 0389 | P2 | Sample-accurate scheduled playback | 15 min |  |
-| 🟡 | 0390 | P2 | Audio pooling and voice stealing | 1.5 h |  |
-| 🟡 | 0391 | P2 | Priority-based voice limits | 1.5 h |  |
+| 🟢 | 0389 | P2 | Sample-accurate scheduled playback | 8 min | ◐ |
+| 🟡 | 0390 | P2 | Audio pooling and voice stealing | 45 min | ◐ |
+| 🟡 | 0391 | P2 | Priority-based voice limits | 45 min | ◐ |
 | 🟢 | 0392 | P2 | Audio asset compression presets | 8 min | ◐ |
 | 🟡 | 0393 | P2 | Runtime audio capture permission model | 1.5 h |  |
-| 🟡 | 0394 | P2 | Master limiter to prevent clipping | 1.5 h |  |
-| 🟡 | 0395 | P2 | Loudness meter and peak warning | 1.5 h |  |
+| 🟡 | 0394 | P2 | Master limiter to prevent clipping | 45 min | ◐ |
+| 🟡 | 0395 | P2 | Loudness meter and peak warning | 45 min | ◐ |
 | 🟢 | 0396 | P2 | Music state and snapshot transitions | 8 min | ◐ |
 | 🟡 | 0397 | P2 | Audio events exposed to Luau | 1.5 h |  |
 | 🟡 | 0398 | P2 | Python audio event API | 1.5 h |  |

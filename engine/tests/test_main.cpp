@@ -3,7 +3,10 @@
 #include "core/AnimationReduce.hpp"
 #include "core/AssetTools.hpp"
 #include "core/ComponentRules.hpp"
+#include "core/AnimationTools.hpp"
 #include "core/AssetPipelineTools.hpp"
+#include "core/AudioTools.hpp"
+#include "core/VfxTools.hpp"
 #include "core/AudioAnalysis.hpp"
 #include "core/MeshOps2.hpp"
 #include "core/ProceduralShading.hpp"
@@ -16374,6 +16377,114 @@ void testV5Batch5() {
     check(std::fabs(exposure - 2.0f) < 0.05f, "auto exposure settles on the target");
     check(sh::bloomPresets()[0].intensity == 0.0f && sh::renderScalePresets()[3].scale == 0.5f, "bloom and render scale presets");
     check(sh::adjustRenderScale(1.0f, 30.0f, 16.6f) < 1.0f && sh::adjustRenderScale(0.8f, 8.0f, 16.6f) > 0.8f && sh::adjustRenderScale(0.8f, 16.6f, 16.6f) == 0.8f && sh::adjustRenderScale(0.5f, 50.0f, 16.6f) == 0.5f, "dynamic resolution moves with frame time");
+}
+
+void testV5Batch6() {
+    namespace an = engine::core::anim;
+    namespace vf = engine::core::vfx;
+    namespace au = engine::core::audiotools;
+
+    const auto deltas = an::rootDeltas({{0, 0, 0}, {1, 0, 0}, {3, 1, 0}});
+    check(deltas.size() == 2 && deltas[1].x == 2.0f && an::stripRootMotion({{0, 0, 0}, {5, 2, 3}})[1].x == 0.0f && an::stripRootMotion({{0, 0, 0}, {5, 2, 3}})[1].y == 2.0f, "root motion extraction");
+    const auto ik = an::solveTwoBone(1.0f, 1.0f, 2.0f);
+    check(!ik.reachable || ik.kneeAngle < 0.1f, "a straight leg has almost no knee bend");
+    check(an::solveTwoBone(1, 1, 1.0f).reachable && an::solveTwoBone(1, 1, 1.0f).kneeAngle > 1.0f && !an::solveTwoBone(1, 1, 5.0f).reachable, "two-bone IK bends and reports out-of-reach");
+    check(an::pelvisDrop(0.1f, -0.2f) == -0.2f && an::pelvisDrop(0.1f, 0.3f) == 0.0f, "pelvis drops for the lower foot");
+    an::MarkerTrack markers;
+    markers.add(1.0f, "step");
+    markers.add(0.2f, "start");
+    check(markers.markers()[0].name == "start" && markers.crossed(0.0f, 0.5f, 2.0f).size() == 1 && markers.crossed(0.5f, 1.0f, 2.0f).size() == 1 && markers.crossed(0.5f, 0.5f, 2.0f).empty(), "markers fire once when crossed");
+    check(markers.crossed(1.5f, 0.3f, 2.0f).size() == 1 && markers.crossed(1.5f, 0.3f, 2.0f)[0].name == "start", "markers fire across a loop");
+    check(std::fabs(an::cubicBezier1D(0, 0, 1, 1, 0.5f) - 0.5f) < 1e-5f, "bezier midpoint");
+    const std::vector<an::Key> keys = {{0, 0, an::Interp::Linear}, {2, 10, an::Interp::Step}, {4, 20, an::Interp::Linear}};
+    check(an::evaluateTrack(keys, 1) == 5.0f && an::evaluateTrack(keys, 3) == 10.0f && an::evaluateTrack(keys, 9) == 20.0f && an::evaluateTrack({}, 1) == 0.0f, "keyframe track interpolation");
+    check(an::smoothSamples({0, 10, 0}, 1)[1] < 4.0f && an::removeSpikes({1, 1, 50, 1, 1}, 5.0f)[2] == 1.0f, "mocap smoothing and spike removal");
+    check(an::mirrorBoneName("LeftHand") == "RightHand" && an::mirrorBoneName("arm_R") == "arm_L" && an::mirrorBoneName("Spine") == "Spine", "bone names mirror");
+    const auto mirrored = an::mirrorPose({{"LeftArm", {10, 20, 30}}});
+    check(mirrored.count("RightArm") == 1 && mirrored.at("RightArm")[1] == -20.0f, "pose mirrors across X");
+    const auto rep = an::validateRetarget({"Hips", "Tail"}, {"Hips", "Wing"});
+    check(rep.unmapped == std::vector<std::string>{"Tail"} && rep.unused == std::vector<std::string>{"Wing"}, "retarget validation");
+    check(an::recoverBlend(0.5f, 1.0f) == 0.5f && an::recoverBlend(5, 1) == 1.0f && an::animationUpdateInterval(5) == 1 && an::animationUpdateInterval(100) == 4, "recovery blend and animation LOD");
+    check(std::fabs(an::fovFromFocalLength(50.0f) - 27.0f) < 0.2f && std::fabs(an::focalLengthFromFov(an::fovFromFocalLength(35.0f)) - 35.0f) < 0.01f, "focal length and field of view");
+    check(an::circleOfConfusion(50, 1.8f, 3.0f, 3.0f) == 0.0f && an::circleOfConfusion(50, 1.8f, 3.0f, 10.0f) > an::circleOfConfusion(50, 4.0f, 3.0f, 10.0f), "depth of field blur grows with a wider aperture");
+    check(an::dolly({0, 0, 0}, {10, 0, 0}, 0.5f).position.x == 5.0f && std::fabs(an::orbit({0, 0, 0}, 5, 2, 1, 0.0f).position.z - 5.0f) < 1e-4f && an::crane({0, 0, 0}, 4, 0, 90, 1.0f).position.y > 3.9f, "camera rig presets");
+    check(an::rackFocus(2, 8, 0) == 2.0f && an::rackFocus(2, 8, 1) == 8.0f, "rack focus");
+    check(an::sunElevationDegrees(12) > 89.0f && an::sunElevationDegrees(0) < -89.0f && an::skyPresets().size() == 4, "sun elevation by hour");
+    check(an::lightAffects(0b01, 0b11) && !an::lightAffects(0b01, 0b10), "light linking masks");
+    check(an::pickShadowCasters({0.1f, 0.9f, 0.5f, 0.7f, 0.2f}, {2, 64}) == std::vector<int>{1, 3}, "most important lights cast shadows");
+    check(an::imageMse({1, 2}, {1, 2}) == 0.0 && an::imagePsnr({1, 2}, {1, 2}) == 99.0 && an::imageMse({1}, {1, 2}) < 0 && an::imagePsnr({0, 0}, {255, 255}) < 1.0, "image comparison");
+    check(an::shotListMarkdown({{"Intro", 3, "dolly", ""}, {"Chase", 5, "orbit", "fast"}}).find("Total: 8 s") != std::string::npos, "shot list");
+    std::map<std::string, an::Sequence> seqs{{"main", {"main", 10, {{"intro", 0}, {"loop", 5}}}}, {"intro", {"intro", 5, {}}}, {"loop", {"loop", 5, {{"loop", 1}}}}};
+    std::vector<std::pair<std::string, float>> flat;
+    an::flattenSequences(seqs, "main", 0, 3, flat);
+    check(flat.size() >= 3 && flat[1].first == "intro" && flat[2].second == 5.0f && flat.size() < 12, "nested sequences flatten and stop at max depth");
+    check(an::frameFileName("shot", 7, 4, "png") == "shot_0007.png" && an::frameAtSeconds(3.0, 30) == 90 && an::secondsAtFrame(90, 30) == 3.0 && an::timecode(90061, 30) == "00:50:02:01", "frame names, exact frames and timecode");
+    const auto q = an::parseQueue(an::serializeQueue({{"a", 10, 10}, {"b", 20, 5}}));
+    check(q.size() == 2 && an::nextJob(q) && an::nextJob(q)->name == "b" && an::nextJob(q)->nextFrame == 5, "render queue resumes at the unfinished job");
+
+    vf::SeededRng r1(42), r2(42), r3(43);
+    check(r1.next() == r2.next() && r1.unit() == r2.unit() && r1.next() != r3.next() && r1.unit() < 1.0f, "seeded particles replay exactly");
+    check(vf::particleLodScale(5) == 1.0f && vf::particleLodScale(200) == 0.0f && vf::particleLodScale(60) > 0.0f && vf::particleLodScale(60) < 1.0f, "particle LOD by distance");
+    check(vf::flipbookFrame(0, 1, 4, 4).u == 0.0f && vf::flipbookFrame(0.99f, 1, 4, 4).u == 0.75f && vf::flipbookFrame(0.99f, 1, 4, 4).v == 0.75f && vf::flipbookFrame(5.0f, 1, 4, 4, true).w == 0.25f, "flipbook frames");
+    check(vf::subEmitterSpawns({{"smoke", 3, vf::SubEmitter::On::Death}, {"sparks", 5, vf::SubEmitter::On::Collision}}, vf::SubEmitter::On::Death) == 3, "sub-emitters by trigger");
+    vf::SeededRng br(5);
+    const auto beam = vf::beamPoints({0, 0, 0}, {10, 0, 0}, 5, 0.5f, br);
+    check(beam.size() == 6 && beam.front().y == 0.0f && beam.back().x == 10.0f, "beam keeps its end points");
+    vf::EffectPool pool(2);
+    const int p1 = pool.acquire(), p2 = pool.acquire();
+    check(p1 == 0 && p2 == 1 && pool.acquire() == -1, "effect pool refuses when full");
+    pool.release(p1);
+    check(pool.acquire() == p1 && pool.created() == 2 && pool.active() == 2, "released effects are reused");
+    const auto profile = vf::vfxProfiles()[2];
+    check(vf::vfxWarnings({6000, 5}, profile).size() == 1 && vf::vfxWarnings({4500, 40}, profile).size() == 2 && vf::vfxWarnings({10, 1}, profile).empty(), "effect budget warnings");
+    vf::ParticleEvents events;
+    int fired = 0;
+    events.on("death", [&](int id) { fired += id; });
+    check(events.emit("death", 7) == 1 && fired == 7 && events.emit("none", 1) == 0, "particle event hooks");
+    check(vf::effectPresets().size() == 4 && std::string(vf::effectPresets()[0].name) == "Fire", "effect presets");
+
+    check(std::fabs(au::dbToLinear(-6.02f) - 0.5f) < 1e-3f && au::combinedGain(0, 0, true) == 0.0f && std::fabs(au::combinedGain(-6, -6, false) - au::dbToLinear(-12)) < 1e-6f, "clip and track gain");
+    au::Playback pb{2, 1, 3, true, false};
+    au::advance(pb, 2.5);
+    check(std::fabs(pb.position - 2.5) < 1e-9 && !pb.finished, "region loops");
+    au::Playback once{0, 1, 3, false, false};
+    au::advance(once, 5);
+    check(once.finished && once.position == 3.0, "region stops at its end");
+    std::vector<float> clicks(2048, 0.0f);
+    for (int i = 1024; i < 1100; ++i) clicks[i] = 0.8f;
+    check(au::detectTransients(clicks).size() == 1 && au::detectTransients(clicks)[0] == 1024, "transient detection finds the click");
+    au::Biquad eq = au::peakingEq(48000, 1000, 0.0f, 1.0f);
+    check(std::fabs(eq.process(1.0f) - 1.0f) < 1e-4f, "a 0 dB peaking filter changes nothing");
+    au::Biquad hp = au::highPass(48000, 200);
+    float tail = 0;
+    for (int i = 0; i < 4000; ++i) tail = hp.process(1.0f);
+    check(std::fabs(tail) < 0.01f, "high-pass removes a constant (DC) signal");
+    check(au::compressorGainDb(-30, -20, 4) == 0.0f && std::fabs(au::compressorGainDb(-8, -20, 4) + 9.0f) < 1e-4f, "compressor reduces above the threshold");
+    check(std::fabs(au::busChainGain({{"sfx", {"master", -6}}, {"master", {"", -6}}}, "sfx") - au::dbToLinear(-12)) < 1e-5f, "bus chain gain");
+    float go, gi;
+    au::crossfadeGains(0.5f, go, gi);
+    check(std::fabs(go * go + gi * gi - 1.0f) < 1e-5f, "equal-power crossfade keeps the power");
+    check(au::resampleLinear({0, 1}, 1, 2).size() == 4 && au::resampleLinear({}, 1, 2).empty() && au::resampleQualityNote(48000, 24000).find("12000") != std::string::npos, "resampling and its note");
+    bool clipped = false;
+    au::mixdown({{0.6f}, {0.6f}}, {1, 1}, clipped);
+    check(clipped, "mixdown reports clipping");
+    const float inside[3] = {1, 1, 1}, outside[3] = {9, 9, 9};
+    check(au::zoneReverbAt({{{0, 0, 0}, {2, 2, 2}, "Cave"}}, inside) == "Cave" && au::zoneReverbAt({{{0, 0, 0}, {2, 2, 2}, "Cave"}}, outside).empty(), "audio zones");
+    au::Ducker duck;
+    float d = 0;
+    for (int i = 0; i < 20; ++i) d = duck.update(true, 0.05f);
+    check(d == -12.0f && duck.update(false, 0.05f) > -12.0f, "ducking lowers and recovers");
+    au::VoiceAllocator voices(2);
+    check(voices.request({1, 1, 0.5f}) == 0 && voices.request({2, 5, 0.5f}) == 0 && voices.request({3, 0, 0.9f}) == -1 && voices.request({4, 3, 0.1f}) == 1 && voices.size() == 2, "voice stealing takes the least important voice");
+    check(au::softLimit(0.5f) == 0.5f && au::softLimit(10.0f) <= 0.98f && au::softLimit(-10.0f) >= -0.98f, "limiter never passes the ceiling");
+    au::PeakMeter meter;
+    meter.push(0.5f, 0);
+    meter.push(0.2f, 0.5);
+    check(meter.peak() == 0.5f && !meter.clipped(), "peak meter holds");
+    meter.push(0.1f, 3.0);
+    meter.push(1.5f, 3.1);
+    check(meter.peak() == 1.5f && meter.clipped(), "peak meter flags clipping");
+    check(au::periodFramesForLatency(48000, 10) == 256 && au::secondsToFrames(0.5, 48000) == 24000, "buffer size and frame scheduling");
 }
 
 void testPaletteTextContrast() {
@@ -53009,6 +53120,7 @@ int main() {
     testV5AssetTools();
     testV5RuntimeTuning();
     testV5Batch5();
+    testV5Batch6();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();
