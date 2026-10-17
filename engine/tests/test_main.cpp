@@ -1,4 +1,5 @@
 #include "plugin/PluginHost.hpp"
+#include "core/UITheme.hpp"
 #include "tntwars/TntWarsNetRules.hpp"
 #include "plugin/PluginSandbox.hpp"
 #include <set>
@@ -15989,6 +15990,33 @@ void testHierarchySetParentBuildsTwoSidedRelationship() {
     check(parentHierarchy != nullptr && parentHierarchy->children.size() == 1 &&
               parentHierarchy->children[0] == child,
           "setParent() real-adds the child to the parent's own children list");
+}
+
+void testPaletteTextContrast() {
+    namespace pal = engine::core::kronos_palette;
+    auto linear = [](float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); };
+    auto luminance = [&](const float* c) { return 0.2126f * linear(c[0]) + 0.7152f * linear(c[1]) + 0.0722f * linear(c[2]); };
+    auto contrast = [&](const float* a, const float* b) {
+        const float x = luminance(a);
+        const float y = luminance(b);
+        return (std::max(x, y) + 0.05f) / (std::min(x, y) + 0.05f);
+    };
+    const float* surfaces[] = {pal::kCharcoal, pal::kSurface, pal::kSlate, pal::kRaised};
+    bool normalTextOk = true;
+    for (const float* surface : surfaces) {
+        for (const float* text : {pal::kTextBright, pal::kTextMuted, pal::kSkyBlue, pal::kGreen, pal::kWarning}) {
+            normalTextOk = normalTextOk && contrast(text, surface) >= 4.5f;
+        }
+    }
+    check(normalTextOk, "bright, muted, blue, green and amber text reach 4.5:1 on every panel colour");
+    check(contrast(pal::kDanger, pal::kCharcoal) >= 4.5f && contrast(pal::kDanger, pal::kSurface) >= 4.5f,
+          "red text reaches 4.5:1 on the app background and panels");
+    check(contrast(pal::kTextFaint, pal::kCharcoal) >= 3.0f && contrast(pal::kTextFaint, pal::kSurface) >= 3.0f &&
+              contrast(pal::kTextFaint, pal::kSlate) >= 3.0f,
+          "faint text (disabled and decoration only) reaches 3:1 on panels and cards");
+    // Known gaps, kept visible: faint text on raised controls and red text on cards/controls are under 4.5:1.
+    check(contrast(pal::kTextFaint, pal::kRaised) < 4.5f && contrast(pal::kDanger, pal::kRaised) < 4.5f,
+          "the known low-contrast pairs are still the ones listed in docs/PROJECT_POLICY.md");
 }
 
 void testHierarchyReparentCanBeUndone() {
@@ -52591,6 +52619,7 @@ int main() {
     testSingleInstanceLock();
     testPermanentObjectIds();
     testHierarchyReparentCanBeUndone();
+    testPaletteTextContrast();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();

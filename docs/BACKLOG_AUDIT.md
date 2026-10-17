@@ -119,3 +119,9 @@ All of these are covered by [PROJECT_POLICY.md](PROJECT_POLICY.md) or [MATURITY.
 | 0998 | Transparent cloud-cost policy | done | PROJECT_POLICY.md "Money" |
 | 1000 | Success metrics around active creators | done | PROJECT_POLICY.md |
 | 0824 | Release-blocking severity policy | done | bug severity table |
+
+## v5 batch 2 (17 Oct 2026): small checks
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0882 | Text contrast validation | partial | `testPaletteTextContrast`: bright, muted, blue, green and amber text reach 4.5:1 on all panel colours; red on app background and panels; faint text 3:1. Known gaps: faint text and red text on raised controls (under 4.5:1) |
