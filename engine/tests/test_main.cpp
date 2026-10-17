@@ -31229,13 +31229,16 @@ void testRobloxParsersSurviveMutations() {
         return data;
     };
 
+    // KRONOS_FUZZ_ROUNDS=100 runs a much longer pass (and a different seed per value).
+    const int rounds = std::getenv("KRONOS_FUZZ_ROUNDS") != nullptr ? std::max(1, std::atoi(std::getenv("KRONOS_FUZZ_ROUNDS"))) : 1;
+    if (rounds > 1) state ^= static_cast<uint64_t>(rounds) * 0x100000001B3ull;
     int binaryFiles = 0, xmlFiles = 0, runs = 0;
     for (const auto& dir : fs::directory_iterator("tests/fixtures/rbx-test-files")) {
         const fs::path binary = dir.path() / "binary.rbxm";
         if (!fs::exists(binary) || binaryFiles >= 14) continue;
         ++binaryFiles;
         const std::string original = slurpFile(binary);
-        for (int i = 0; i < 150; ++i) {
+        for (int i = 0; i < 150 * rounds; ++i) {
             std::vector<engine::migration::ImportedInstance> out;
             std::string error;
             (void)engine::migration::readRobloxBinary(damage(original), out, error);
@@ -31246,7 +31249,7 @@ void testRobloxParsersSurviveMutations() {
         if (file.path().extension() != ".rbxlx" || xmlFiles >= 4) continue;
         ++xmlFiles;
         const std::string original = slurpFile(file.path());
-        for (int i = 0; i < 60; ++i) {
+        for (int i = 0; i < 60 * rounds; ++i) {
             (void)engine::migration::RbxlxParser::parse(damage(original));
             ++runs;
         }
