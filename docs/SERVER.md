@@ -21,7 +21,7 @@ kronos_server --port 7777 --game <slug> [--server-key <key>]
 
 It is the same engine code. `server/SdlNull.cpp` supplies do-nothing versions of the
 few SDL functions shared code still calls (plus a clock and the quit signal), and the
-link uses `--as-needed`, so the binary has no `libSDL2`, X11 or video-codec
+link uses `--as-needed` (the smoke script checks this with `ldd`: pass the server binary as its third argument), so the binary has no `libSDL2`, X11 or video-codec
 dependencies. The graphics code is still compiled in but never started. Splitting the
 simulation out of `Application` properly is a later step (`Renderer.hpp` is still one class).
 

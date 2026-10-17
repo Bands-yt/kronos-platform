@@ -54,6 +54,16 @@ else
     echo "FAIL server: DataStore file holds 42"
     failed=1
 fi
+# kronos_server must stay free of window, GPU-driver and video libraries.
+if [ -n "$serverBin" ] && command -v ldd >/dev/null 2>&1; then
+    if ldd "$(realpath "$serverBin")" | grep -qiE "libSDL2|libX11|libwayland|libvulkan|libav(codec|format|util)|libGL\.|libGLX|libEGL"; then
+        echo "FAIL kronos_server links a window, GPU or video library:"
+        ldd "$(realpath "$serverBin")" | grep -iE "libSDL2|libX11|libwayland|libvulkan|libav(codec|format|util)|libGL\.|libGLX|libEGL"
+        failed=1
+    else
+        echo "ok   kronos_server links no window, GPU or video library"
+    fi
+fi
 if grep -h "Replication" "$work/server.log" "$work/client.log"; then
     echo "FAIL replication warnings (above)"
     failed=1
