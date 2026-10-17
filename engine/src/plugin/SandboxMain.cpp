@@ -19,7 +19,6 @@
 
 #if defined(_WIN32)
 #include "plugin/PluginIpc.hpp"
-#include <shellapi.h>
 #else
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -570,6 +569,31 @@ std::vector<uint8_t> drawPanel(ipc::Reader& reader) {
     return reply.bytes;
 }
 
+#if defined(_WIN32)
+// Splits "a b" c into words; the editor writes this command line, so quotes are all it needs.
+std::vector<std::wstring> splitCommandLine(const wchar_t* line) {
+    std::vector<std::wstring> words;
+    std::wstring word;
+    bool quoted = false;
+    bool open = false;
+    for (const wchar_t* c = line; *c; ++c) {
+        if (*c == L'"') {
+            quoted = !quoted;
+            open = true;
+        } else if (*c == L' ' && !quoted) {
+            if (open) words.push_back(word);
+            word.clear();
+            open = false;
+        } else {
+            word += *c;
+            open = true;
+        }
+    }
+    if (open) words.push_back(word);
+    return words;
+}
+#endif
+
 void* findSymbol(void* library, const char* name) {
 #if defined(_WIN32)
     return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(library), name));
@@ -594,13 +618,12 @@ int32_t outputWrite(void* context, const void* data, uint64_t size) {
 
 int main(int argc, char** argv) {
 #if defined(_WIN32)
-    int wideCount = 0;
-    LPWSTR* wide = CommandLineToArgvW(GetCommandLineW(), &wideCount);
-    if (!wide || wideCount < 3) {
+    std::vector<std::wstring> wide = splitCommandLine(GetCommandLineW());
+    if (wide.size() < 3) {
         std::fprintf(stderr, "kronos_plugin_sandbox is started by the editor to run one plugin.\n");
         return 2;
     }
-    gPipe.handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(_wcstoui64(wide[1], nullptr, 10)));
+    gPipe.handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::wcstoull(wide[1].c_str(), nullptr, 10)));
     const std::wstring pluginPath = wide[2];
     const std::string pluginDir;
     (void)argv;

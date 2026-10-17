@@ -73,23 +73,27 @@ static void probe(const uint8_t* data, uint64_t size, char* report, size_t capac
              readResult, signalResult);
 }
 #elif defined(_WIN32)
-/* data: write path, read path and the editor's process id, one per line. */
+/* data: write path, read path, the editor's process id and a loopback port it listens on, one per line. */
 static void probe(const uint8_t* data, uint64_t size, char* report, size_t capacity) {
     char writePath[512] = {0};
     char readPath[512] = {0};
     char pidText[32] = {0};
+    char portText[32] = {0};
     char* text = (char*)malloc((size_t)size + 1);
     if (text) {
         memcpy(text, data, (size_t)size);
         text[size] = 0;
         char* first = strchr(text, '\n');
         char* second = first ? strchr(first + 1, '\n') : NULL;
-        if (first && second) {
+        char* third = second ? strchr(second + 1, '\n') : NULL;
+        if (first && second && third) {
             *first = 0;
             *second = 0;
+            *third = 0;
             snprintf(writePath, sizeof(writePath), "%s", text);
             snprintf(readPath, sizeof(readPath), "%s", first + 1);
             snprintf(pidText, sizeof(pidText), "%s", second + 1);
+            snprintf(portText, sizeof(portText), "%s", third + 1);
         }
         free(text);
     }
@@ -102,7 +106,18 @@ static void probe(const uint8_t* data, uint64_t size, char* report, size_t capac
             memset(&address, 0, sizeof(address));
             address.sin_family = AF_INET;
             address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            if (bind(s, (struct sockaddr*)&address, sizeof(address)) == 0 && listen(s, 1) == 0) socketResult = "ok";
+            address.sin_port = htons((unsigned short)strtoul(portText, NULL, 10));
+            u_long nonBlocking = 1;
+            ioctlsocket(s, FIONBIO, &nonBlocking);
+            connect(s, (struct sockaddr*)&address, sizeof(address));
+            fd_set writable;
+            fd_set failed;
+            struct timeval wait = {2, 0};
+            FD_ZERO(&writable);
+            FD_ZERO(&failed);
+            FD_SET(s, &writable);
+            FD_SET(s, &failed);
+            if (select(0, NULL, &writable, &failed, &wait) > 0 && FD_ISSET(s, &writable)) socketResult = "ok";
             closesocket(s);
         }
         WSACleanup();

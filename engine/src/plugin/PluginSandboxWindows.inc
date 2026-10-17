@@ -156,6 +156,7 @@ bool SandboxProcess::spawn(const std::string& executable, const std::string& plu
     HANDLE inheritList[1] = {clientEnd};
     SECURITY_CAPABILITIES capabilities{};
     capabilities.AppContainerSid = sid;
+
     DWORD64 mitigations = 0x1ull |        // DEP
                           0x1ull << 24 |  // strict handle checks
                           0x1ull << 28 |  // Win32k system calls disabled

@@ -15,6 +15,7 @@
 #undef WINVER
 #define WINVER 0x0A00
 #endif
+#include <winsock2.h>
 #include <windows.h>
 #elif defined(__linux__)
 #include <cerrno>
