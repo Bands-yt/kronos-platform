@@ -92,7 +92,7 @@ The v5 core is 4.3 work weeks. At the pace of a busy week that is several weeks 
 
 ## Suggested order for v5
 
-1. **Finish the important basics (P0).** 44 items, mostly easy or already done. First 15 minutes for a new creator.
+1. **Finish the important basics (P0).** 42 items, about half already done. First 15 minutes for a new creator.
 2. **All the 🟢 and 🟡 items in the P1 list.** Many quick wins, big feel improvement.
 3. **The 🟠 items that make Kronos useful for real games:** terrain, materials, animation, netcode, Player settings.
 4. **🔴 items last, one at a time,** each as a small measured prototype first (the advisor's own rule).
