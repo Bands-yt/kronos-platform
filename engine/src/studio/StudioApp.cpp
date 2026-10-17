@@ -2919,7 +2919,10 @@ void StudioApp::run() {
             profiler_.recordFrame(lastPerformanceMetrics_.frameTimeMs, nowSeconds);
             profiler_.recordSnapshot(lastPerformanceMetrics_, nowSeconds);
         }
-        if (showStats() && !panelHidden(hideStats_)) statsPanel_.draw(lastPerformanceMetrics_);
+        if (showStats() && !panelHidden(hideStats_)) {
+            statsPanel_.setEntityCount(ecs_.entityCount());
+            statsPanel_.draw(lastPerformanceMetrics_);
+        }
         performanceOverlay_.draw(lastPerformanceMetrics_, (physicsPreviewPlugin_ != nullptr && physicsPreviewPlugin_->isPlaying())
                                                                 ? &physicsPreviewPlugin_->scripting()
                                                                 : nullptr);

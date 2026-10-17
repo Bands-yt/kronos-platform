@@ -124,6 +124,20 @@ alpha. For local testing, `--server` and `--client 127.0.0.1` on the same
 machine is the simplest way to confirm the binaries themselves work
 before troubleshooting network reachability.
 
+## Quick decision tree
+
+1. **Nothing opens.** Run `engine_runtime --gpu-info`.
+   - "Vulkan could not start" or "loader not found": install your graphics driver, then try again.
+   - A device listed as `software`: the driver is missing; it will be slow or may crash.
+   - A real GPU listed: go to 2.
+2. **It opens, then crashes.** Look for `crash_report_*.txt` in the folder you started it from (it has your name removed).
+   Attach it to an issue.
+3. **A Roblox place looks wrong or its scripts don't run.** Run the Bridge Doctor on it and read the import report.
+4. **Multiplayer: can't join.** Is the server's UDP port open? Same version on both sides? Try `--client 127.0.0.1:7777` on the same PC first.
+5. **A plugin doesn't load.** Open the Resources panel; it shows the reason and a Restart button. Third-party plugins need Linux 5.13+ or Windows.
+6. **Studio layout is messy.** View > Reset Layout to Default.
+7. **Still stuck.** See the end of this page.
+
 ## Diagnostic commands
 
 | Command | What it tells you |

@@ -97,3 +97,29 @@ inline const CompressionPreset* findPreset(const std::string& name) {
 }
 
 } // namespace engine::core::audio_analysis
+
+namespace engine::core::audio_analysis {
+
+struct ReverbPreset {
+    const char* name;
+    float roomSeconds; // decay time
+    float wet;         // 0..1
+    float damping;     // 0..1, higher = darker tail
+};
+
+inline const std::vector<ReverbPreset>& reverbPresets() {
+    static const std::vector<ReverbPreset> list = {
+        {"Small room", 0.4f, 0.15f, 0.5f}, {"Hall", 1.8f, 0.3f, 0.4f},
+        {"Cave", 3.5f, 0.45f, 0.6f},       {"Bathroom", 0.9f, 0.35f, 0.2f},
+        {"Outdoors", 0.2f, 0.05f, 0.7f},
+    };
+    return list;
+}
+
+// Chorus and delay are described by time and depth; saturation by drive (tanh soft clip).
+inline float saturate(float x, float drive) {
+    if (drive <= 0.0f) return x;
+    return std::tanh(x * (1.0f + drive * 4.0f)) / std::tanh(1.0f + drive * 4.0f);
+}
+
+} // namespace engine::core::audio_analysis

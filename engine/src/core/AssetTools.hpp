@@ -208,3 +208,24 @@ inline std::string saveStatusText(SaveState state, int secondsAgo) {
 }
 
 } // namespace engine::core
+
+namespace engine::core {
+
+struct AssetProfile {
+    const char* name;
+    int maxTextureSize;
+    const char* textureFormat;
+    int maxTriangles;
+    int audioSampleRate;
+};
+
+inline const std::vector<AssetProfile>& assetProfiles() {
+    static const std::vector<AssetProfile> profiles = {
+        {"Desktop", 4096, "BC7", 200000, 48000},
+        {"Laptop", 2048, "BC7", 100000, 48000},
+        {"Mobile", 1024, "ASTC 6x6", 50000, 24000},
+    };
+    return profiles;
+}
+
+} // namespace engine::core

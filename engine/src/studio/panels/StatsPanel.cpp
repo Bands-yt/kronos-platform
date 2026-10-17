@@ -63,12 +63,15 @@ void StatsPanel::draw(const core::PerformanceMetrics& metrics) {
                                                    static_cast<double>(metrics.gpuMemoryBudgetBytes))
                              : 0.0f;
     ImGui::ProgressBar(memFraction);
+    gpuMemoryPeak_.set(metrics.gpuMemoryUsedBytes);
+    ImGui::TextDisabled("Highest so far: %.0f MB", static_cast<double>(gpuMemoryPeak_.peak) / (1024.0 * 1024.0));
     memoryFractionHistory_.push(memFraction);
     ImGui::PlotLines("##memory_graph", memoryFractionHistory_.samples().data(),
                       static_cast<int>(memoryFractionHistory_.samples().size()), 0, nullptr, 0.0f, 1.0f,
                       ImVec2(0.0f, 40.0f));
 
     ImGui::Separator();
+    ImGui::Text("Scene objects: %zu", entityCount_);
     ImGui::Text("Physics bodies: %u active / %u total", metrics.activePhysicsBodies, metrics.totalPhysicsBodies);
     ImGui::Text("Terrain chunks: %u loaded / %u total", metrics.loadedTerrainChunks, metrics.totalTerrainChunks);
 

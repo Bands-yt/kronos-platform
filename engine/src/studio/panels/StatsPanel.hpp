@@ -2,6 +2,7 @@
 
 #include "core/PerformanceDiagnostics.hpp"
 #include "core/PerformanceMetrics.hpp"
+#include "core/RuntimeTuning.hpp"
 
 namespace engine::studio::panels {
 
@@ -21,9 +22,12 @@ namespace engine::studio::panels {
 class StatsPanel {
 public:
     void draw(const core::PerformanceMetrics& metrics);
+    void setEntityCount(size_t count) { entityCount_ = count; }
 
 private:
     core::PerformanceHistory frameTimeHistory_;
+    size_t entityCount_ = 0;
+    core::HighWaterMark gpuMemoryPeak_;
     core::PerformanceHistory memoryFractionHistory_;
     core::PerformanceHistory drawCallHistory_;
 };

@@ -186,3 +186,67 @@ Most are small tested libraries that are not in the UI yet; the status column sa
 | 0699 | Collaboration disabled fallback | done | PROJECT_POLICY.md |
 
 Already existed (checked, not built): 0061 property filter, 0596 remote rate limit, 0589 loss simulator, 0514 tag import, 0023 accent, 0024 reduced motion, 0013 notification centre, 0010 command palette.
+
+## v5 batch 4 (17 Oct 2026): docs and small helpers
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0846 | Third-party license inventory | done | THIRD_PARTY_LICENSES.md (NOTICE file in the download still to do) |
+| 0845 | Secure dependency update process | done | SECURITY_PROCESS.md |
+| 0847 | Security contact and disclosure process | partial | SECURITY_PROCESS.md; a real e-mail address is the owner's choice |
+| 0850 | Security checklist for each release | done | SECURITY_PROCESS.md |
+| 0849 | Permission prompt for external integrations | partial | rules written; nothing external to prompt for yet |
+| 0840 | Anti-cheat authority boundary documentation | done | SECURITY_PROCESS.md table |
+| 0844 | Data retention and deletion policy | partial | DATA_AND_PRIVACY.md proposals for the owner; deletion jobs not built |
+| 0843 | Age-aware privacy design review | partial | DATA_AND_PRIVACY.md; under-13 rule is the owner's and needs legal advice |
+| 0842 | User reporting and appeal workflow | partial | DATA_AND_PRIVACY.md workflow; report button not built |
+| 0770 | Known limitations page with severity | done | LIMITATIONS.md |
+| 0991 | Maintain public known limitations page | done | LIMITATIONS.md linked from README index |
+| 0987 | Publish engine architecture overview | done | ARCHITECTURE_OVERVIEW.md |
+| 0990 | Reproducible showcase benchmark methodology | done | BENCHMARKS.md |
+| 0874 | Optimization before-after benchmark snapshots | partial | BENCHMARKS.md method + benchmarkVerdict tested; no results recorded |
+| 0864 | Cold-start time benchmark | partial | method in BENCHMARKS.md; not measured yet |
+| 0865 | Hot-start time benchmark | partial | method in BENCHMARKS.md; not measured yet |
+| 0943 | Platform capability matrix | done | PLATFORMS.md |
+| 0946 | Graceful unsupported-feature fallback | partial | rule + current fallbacks listed in PLATFORMS.md |
+| 0937 | Console architecture assessment document | done | PLATFORMS.md |
+| 0939 | Gamepad certification checklist draft | done | PLATFORMS.md |
+| 0936 | Web build CI experiment | partial | plan only in PLATFORMS.md |
+| 0949 | Browser cache versioning strategy | done | PLATFORMS.md |
+| 0911 | Mobile asset compression profiles | partial | assetProfiles table tested; no exporter |
+| 0924 | Mobile player onboarding | partial | notes only in PLATFORMS.md |
+| 0950 | Portability risk register | done | PLATFORMS.md |
+| 0686 | Shared undo history semantics | partial | design in COLLABORATION_DESIGN.md; collaboration not built |
+| 0689 | Invite revocation and access expiry | partial | design only |
+| 0692 | Follow collaborator camera mode | partial | design only |
+| 0696 | Collaboration bandwidth simulator | partial | design only; reuses the network conditioning menu |
+| 0774 | Learning path for programmers | done | LEARNING_PATH.md |
+| 0775 | Sample asset licensing manifest | done | SAMPLES.md |
+| 0721 | Plugin API sample gallery | done | SAMPLES.md |
+| 0724 | API deprecation and migration guide | done | MIGRATION_GUIDE.md + PLUGIN_API.md policy |
+| 0767 | Searchable offline docs | partial | docs/README.md index; plain Markdown is greppable; no in-app search |
+| 0769 | Troubleshooting decision tree | done | TROUBLESHOOTING.md |
+| 0897 | WCAG-inspired UI checklist | done | ACCESSIBILITY.md; boxes unticked until checked on screen |
+| 0896 | Accessible error message wording | done | ACCESSIBILITY.md rules; existing messages not audited |
+| 0871 | Scalable quality settings by GPU tier | partial | recommendedQuality tested; renderer doesn't use it |
+| 0921 | Scaled physics budget for low-end CPUs | partial | physicsBudgetFor tested; physics doesn't use it |
+| 0888 | Reduced flashing effect mode | partial | FlashLimiter tested; effects don't use it |
+| 0889 | Motion-sickness camera options | partial | CameraComfort tested; camera doesn't use it |
+| 0914 | Low-memory asset eviction | partial | LruAssetCache tested; loader doesn't use it |
+| 0421 | Script profiler flame graph | partial | FlameNode aggregation and folded output tested; no sampler or drawing |
+| 0856 | Script execution flame graph | partial | same as 0421 |
+| 0399 | Audio profiler with active voice graph | partial | VoiceHistory tested; no panel |
+| 0867 | GPU memory high-water-mark view | done | Stats panel shows 'Highest so far' |
+| 0364 | Reverb delay chorus and saturation presets | partial | preset table and saturate() tested; mixer doesn't use them |
+| 0861 | Entity count and component count stats | partial | Stats shows scene object count; component count not shown |
+| 0010 | Searchable command palette | done | already built (Ctrl+K), verified in code |
+| 0013 | Global notification center | done | already built (NotificationCenter) |
+| 0021 | UI frame-time overlay | done | already built (F3 overlay, Stats) |
+| 0023 | Customizable accent colors | done | already built (StudioAccent) |
+| 0067 | Reparent and duplicate with undo | done | built this week (reparent undo, Ctrl+D) |
+| 0564 | Project packaging manifest | done | already built (game package manifest) |
+| 0589 | Packet loss and latency simulator | done | already built (ENetTransport conditioning) |
+| 0461 | Rust panic containment at ABI boundary | done | already built (catch_unwind in sdk/rust/kronos) |
+| 0464 | Rust plugin capability manifest | done | already built (capability bits in plugin info) |
+| 0771 | Feature maturity labels | done | MATURITY.md |
+| 0989 | Separate shipped features from prototypes | done | MATURITY.md |

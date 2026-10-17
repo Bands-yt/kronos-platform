@@ -7,6 +7,7 @@
 #include "core/ColorLut.hpp"
 #include "core/EnvironmentMath.hpp"
 #include "core/MusicStates.hpp"
+#include "core/RuntimeTuning.hpp"
 #include "core/TerrainRules.hpp"
 #include "core/WhatsNew.hpp"
 #include "core/MeshOps.hpp"
@@ -16212,6 +16213,49 @@ void testV5AssetTools() {
           "save status wording");
     check(componentWarnings({"RigidBody"}).size() == 1 && componentWarnings({"RigidBody", "Collider"}).empty(), "component dependency warnings");
     check(componentWarnings({"MeshRenderer", "Light"}).size() == 2, "each missing dependency warns once");
+}
+
+void testV5RuntimeTuning() {
+    using namespace engine::core;
+    check(recommendedQuality("software", 0) == QualityPreset::Low && recommendedQuality("integrated", 1ull << 30) == QualityPreset::Low, "software and integrated GPUs start on Low");
+    check(recommendedQuality("discrete", 8ull << 30) == QualityPreset::High && recommendedQuality("discrete", 2ull << 30) == QualityPreset::Medium, "discrete GPUs by memory");
+    check(physicsBudgetFor(40.0f, 8).maxSubSteps == 2 && physicsBudgetFor(10.0f, 16).maxSubSteps == 4 && physicsBudgetFor(10.0f, 4).maxSubSteps == 3, "physics budget shrinks on slow machines");
+
+    FlashLimiter limiter(3);
+    int allowed = 0;
+    for (int i = 0; i < 10; ++i) allowed += limiter.request(0.05 * i, 1.0f) > 0.0f ? 1 : 0;
+    check(allowed == 3 && limiter.request(0.6, 0.1f) == 0.1f && limiter.request(1.2, 1.0f) == 1.0f, "flashes are limited to 3 per second");
+    check(!comfortFromReducedMotion(true).headBob && comfortFromReducedMotion(true).shakeScale == 0.0f && comfortFromReducedMotion(false).headBob, "reduced motion turns camera effects off");
+
+    LruAssetCache cache(100);
+    check(cache.add("a", 40).empty() && cache.add("b", 40).empty(), "assets inside the budget stay");
+    cache.touch("a");
+    const auto evicted = cache.add("c", 40);
+    check(evicted.size() == 1 && evicted[0] == "b" && cache.has("a") && cache.has("c") && cache.used() == 80, "least recently used asset is evicted first");
+    check(cache.add("huge", 500).size() == 2 && cache.has("huge"), "one huge asset stays even over budget");
+
+    FlameNode root;
+    addFlameSample(root, {"update", "physics"});
+    addFlameSample(root, {"update", "physics"});
+    addFlameSample(root, {"update", "scripts"});
+    addFlameSample(root, {"render"});
+    std::string folded;
+    flameFolded(root, "", folded);
+    check(root.samples == 4 && folded.find("update;physics 2\n") != std::string::npos && folded.find("render 1\n") != std::string::npos, "flame graph folds samples");
+
+    VoiceHistory voices;
+    voices.capacity = 3;
+    for (int v : {1, 5, 2, 3}) voices.push(v);
+    check(voices.counts.size() == 3 && voices.counts.front() == 5 && voices.peak() == 5, "voice history keeps the newest samples");
+    HighWaterMark mark;
+    mark.set(10);
+    mark.set(50);
+    mark.set(20);
+    check(mark.peak == 50 && mark.current == 20, "high-water mark keeps the peak");
+    check(std::fabs(percentChange(100, 80) + 20.0) < 1e-9 && benchmarkVerdict(100, 99, 2) == "no real change (within the run-to-run spread)" && benchmarkVerdict(100, 80, 2) == "faster", "benchmark verdict respects the spread");
+    check(assetProfiles().size() == 3 && std::string(assetProfiles()[2].name) == "Mobile", "asset profiles");
+    using namespace engine::core::audio_analysis;
+    check(reverbPresets().size() == 5 && std::fabs(saturate(1.0f, 0.5f) - 1.0f) < 1e-5f && saturate(0.3f, 0.0f) == 0.3f, "reverb presets and saturation");
 }
 
 void testPaletteTextContrast() {
@@ -52845,6 +52889,7 @@ int main() {
     testV5SmallLibraries();
     testV5MoreLibraries();
     testV5AssetTools();
+    testV5RuntimeTuning();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();
