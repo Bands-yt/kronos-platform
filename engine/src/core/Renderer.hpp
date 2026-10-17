@@ -985,6 +985,9 @@ private:
         VkSemaphore renderFinished = VK_NULL_HANDLE;
         VkFence inFlight = VK_NULL_HANDLE;
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        // Two GPU timestamps (start, end) for the whole frame; read the next time this slot is used.
+        VkQueryPool timestamps = VK_NULL_HANDLE;
+        bool timestampsWritten = false;
 
         VkBuffer sceneUboBuffer = VK_NULL_HANDLE;
         VmaAllocation sceneUboAllocation = nullptr;
@@ -1637,6 +1640,7 @@ private:
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
+    float timestampPeriodNs_ = 0.0f; // 0 when the GPU can't time graphics work
     VkDevice device_ = VK_NULL_HANDLE;
     QueueFamilyIndices queueFamilies_;
     VkQueue graphicsQueue_ = VK_NULL_HANDLE;

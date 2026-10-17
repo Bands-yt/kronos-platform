@@ -85,8 +85,8 @@ reading audit: nothing here was run on a clean machine.
 | 0827 | Sandbox escape regression suite | done | `docs/THREAT_MODEL.md` "Sandbox escape tests" lists each escape attempt and the test that runs it; macOS plugins have no sandbox |
 | 0828 | Least-privilege plugin profiles | partial | named profiles (`capabilityProfile`, `testPluginCapabilityProfiles`); Studio doesn't yet ask the user which profile to grant |
 | 0851 | CPU frame-time breakdown | exists | `core::SystemTimers` (scripting, physics, pre-tick, post-physics, render) shown in Stats "Where the time goes"; not screen-checked |
-| 0852 | GPU frame-time breakdown | missing | no timestamp queries found |
-| 0853 | Per-system ECS timing | missing | |
+| 0852 | GPU frame-time breakdown | partial | one GPU time for the whole frame (timestamp queries in `RendererFrame.cpp`, shown as "GPU frame" in Stats; screen-checked 17 Oct 2026); no per-pass split yet |
+| 0853 | Per-system ECS timing | done | `core/SystemTimers` (scripting, physics, game logic, post-physics, render, plugins) shown in Stats under "Where the time goes"; wall-clock, not per ECS system |
 
 ## What this suggests for 4.7 ("first 15 minutes")
 

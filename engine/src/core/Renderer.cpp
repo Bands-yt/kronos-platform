@@ -833,6 +833,7 @@ void Renderer::shutdown() {
         if (frame.imageAvailable) vkDestroySemaphore(device_, frame.imageAvailable, nullptr);
         if (frame.renderFinished) vkDestroySemaphore(device_, frame.renderFinished, nullptr);
         if (frame.inFlight) vkDestroyFence(device_, frame.inFlight, nullptr);
+        if (frame.timestamps) vkDestroyQueryPool(device_, frame.timestamps, nullptr);
     }
     frames_.clear();
 

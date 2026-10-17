@@ -64,6 +64,20 @@ bool Renderer::createSyncObjects() {
         }
     }
 
+    VkPhysicalDeviceProperties deviceProperties{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
+    if (deviceProperties.limits.timestampComputeAndGraphics) {
+        timestampPeriodNs_ = deviceProperties.limits.timestampPeriod;
+        VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        queryInfo.queryCount = 2;
+        for (auto& frame : frames_) {
+            if (vkCreateQueryPool(device_, &queryInfo, nullptr, &frame.timestamps) != VK_SUCCESS) {
+                frame.timestamps = VK_NULL_HANDLE;
+            }
+        }
+    }
+
     if (!createPerImageSemaphores()) return false;
     return true;
 }

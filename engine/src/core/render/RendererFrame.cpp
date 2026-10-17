@@ -1,4 +1,5 @@
 #include "core/Renderer.hpp"
+#include "core/SystemTimers.hpp"
 #include "core/render/RendererInternal.hpp"
 #include "core/SceneSpatialIndex.hpp"
 #include "core/StaticBatching.hpp"
@@ -340,6 +341,14 @@ bool Renderer::renderFrame() {
     FrameSync& frame = frames_[currentFrame_];
 
     vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
+    if (frame.timestamps && frame.timestampsWritten) {
+        uint64_t ticks[2] = {0, 0};
+        if (vkGetQueryPoolResults(device_, frame.timestamps, 0, 2, sizeof(ticks), ticks, sizeof(uint64_t),
+                                  VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && ticks[1] >= ticks[0]) {
+            SystemTimers::instance().add("GPU frame", static_cast<double>(ticks[1] - ticks[0]) * timestampPeriodNs_ * 1e-6);
+        }
+        frame.timestampsWritten = false;
+    }
     if (!deferredDestroys_.empty()) {
         auto due = std::stable_partition(deferredDestroys_.begin(), deferredDestroys_.end(),
                                          [this](const auto& entry) { return entry.first > frameSerial_; });
@@ -370,6 +379,10 @@ bool Renderer::renderFrame() {
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &beginInfo);
+    if (frame.timestamps) {
+        vkCmdResetQueryPool(cmd, frame.timestamps, 0, 2);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.timestamps, 0);
+    }
 
     if (prePassCallback_) {
         prePassCallback_(cmd);
@@ -444,6 +457,10 @@ bool Renderer::renderFrame() {
                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_NONE,
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
 
+    if (frame.timestamps) {
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestamps, 1);
+        frame.timestampsWritten = true;
+    }
     if (VkResult endResult = vkEndCommandBuffer(cmd); endResult != VK_SUCCESS) {
         std::fprintf(stderr, "Renderer: vkEndCommandBuffer failed (VkResult=%d).\n", static_cast<int>(endResult));
     }
