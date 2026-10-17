@@ -21,29 +21,29 @@ Other marks: ✅ already exists or was finished (checked against the code), ◐ 
 |---|---|---|
 | 🔴 Extremely hard | 31 | 38.0 work weeks |
 | 🟠 Hard | 236 | 33.6 work weeks |
-| 🟡 Medium | 488 | 14.5 work weeks |
-| 🟢 Easy | 245 | 5 days |
-| **All 1,000** | **1000** | **87.1 work weeks** |
+| 🟡 Medium | 488 | 13.7 work weeks |
+| 🟢 Easy | 245 | 4.9 days |
+| **All 1,000** | **1000** | **86.3 work weeks** |
 
-- ✅ **83** items already exist or are finished, ◐ **81** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
-- Without the ⛔ items, the work I can do alone is **75.2 work weeks**.
+- ✅ **83** items already exist or are finished, ◐ **134** are partly done, ⛔ **150** need you (11.9 work weeks of the total).
+- Without the ⛔ items, the work I can do alone is **74.5 work weeks**.
 - P0 (42 items): 9.8 days
-- P1 (278 items): 49.4 work weeks
-- P2 (680 items): 35.7 work weeks
+- P1 (278 items): 49.3 work weeks
+- P2 (680 items): 35.1 work weeks
 
 **Honest note:** this total is a planning number, not a promise. Real work always finds surprises, like the three Windows build failures this week. The red items are the least certain: treat their times as 'about this, maybe double'. The ⛔ items can also slip because they wait for you.
 
 ## What I suggest v5 should contain
 
-Doing all 1,000 items is about **87.1 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
+Doing all 1,000 items is about **86.3 work weeks** (a work week is 5 days of about 10 hours). That is too much for one release, so here is a cut:
 
 | Slice | Items | Time |
 |---|---|---|
-| **v5 core:** every P0 item, plus every 🟢 and 🟡 P1 item (nothing that needs you) | 130 | 4.2 work weeks |
+| **v5 core:** every P0 item, plus every 🟢 and 🟡 P1 item (nothing that needs you) | 130 | 4.1 work weeks |
 | **v5 extras if time allows:** the 🟠 P1 items (terrain, materials, animation, netcode, Player settings) | 127 | 20.3 work weeks |
 | **After v5:** all P2 items, all 🔴 items, and everything marked ⛔ | rest | rest |
 
-The v5 core is 4.2 work weeks. At the pace of a busy week that is several weeks of building, with the Windows VM test and the owner-only steps done in between.
+The v5 core is 4.1 work weeks. At the pace of a busy week that is several weeks of building, with the Windows VM test and the owner-only steps done in between.
 
 ## By area
 
@@ -51,15 +51,15 @@ The v5 core is 4.2 work weeks. At the pace of a busy week that is several weeks 
 |---|---|---|---|---|---|
 | First-run UX and UI foundation | 0 | 3 | 10 | 12 | 3.9 days |
 | Workspace layout and visual design | 0 | 6 | 10 | 9 | 5.7 days |
-| Scene graph and inspector | 0 | 5 | 15 | 5 | 4 days |
-| Viewport and editor navigation | 0 | 5 | 15 | 5 | 6.4 days |
-| Native modeling and mesh editing | 2 | 6 | 12 | 5 | 2.9 work weeks |
-| Terrain and procedural worldbuilding | 1 | 10 | 9 | 5 | 2.7 work weeks |
+| Scene graph and inspector | 0 | 5 | 15 | 5 | 3.8 days |
+| Viewport and editor navigation | 0 | 5 | 15 | 5 | 5.6 days |
+| Native modeling and mesh editing | 2 | 6 | 12 | 5 | 2.8 work weeks |
+| Terrain and procedural worldbuilding | 1 | 10 | 9 | 5 | 2.6 work weeks |
 | Asset import pipeline | 1 | 6 | 14 | 4 | 2.1 work weeks |
-| Asset browser and content management | 0 | 5 | 15 | 5 | 6.3 days |
-| Materials and shader authoring | 1 | 5 | 15 | 4 | 3.3 work weeks |
+| Asset browser and content management | 0 | 5 | 15 | 5 | 5.9 days |
+| Materials and shader authoring | 1 | 5 | 15 | 4 | 3.2 work weeks |
 | Core renderer architecture | 2 | 6 | 12 | 5 | 2.9 work weeks |
-| Lighting and environment | 1 | 9 | 10 | 5 | 2.6 work weeks |
+| Lighting and environment | 1 | 9 | 10 | 5 | 2.5 work weeks |
 | Visual effects and particles | 1 | 5 | 14 | 5 | 3.2 work weeks |
 | Animation and rigging | 0 | 8 | 12 | 5 | 8.3 days |
 | Movie Maker and cinematic sequencer | 2 | 5 | 13 | 5 | 4.0 work weeks |
@@ -162,7 +162,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0049 | P2 | UI screenshot regression suite | 8 h |  |
 | 🟡 | 0050 | P2 | UI consistency lint rules | 1.5 h |  |
 
-### 3. Scene graph and inspector (4 days)
+### 3. Scene graph and inspector (3.8 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -173,7 +173,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0055 | P1 | Filter hierarchy by component | 1.5 h |  |
 | 🟡 | 0056 | P1 | Favorites and pinned entities | 1.5 h |  |
 | 🟠 | 0057 | P1 | Rename in place with validation | 8 h |  |
-| 🟡 | 0058 | P1 | Bulk rename with patterns | 1.5 h |  |
+| 🟡 | 0058 | P1 | Bulk rename with patterns | 45 min | ◐ |
 | 🟡 | 0059 | P2 | Bulk component add remove and reset | 1.5 h |  |
 | 🟡 | 0060 | P2 | Inspector sections grouped by component | 1.5 h |  |
 | 🟢 | 0061 | P2 | Property search and quick focus | 15 min |  |
@@ -181,18 +181,18 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0063 | P2 | Numeric property scrub controls | 1.5 h |  |
 | 🟢 | 0064 | P2 | Vector and transform gizmos in inspector | 15 min |  |
 | 🟡 | 0065 | P2 | Copy and paste component values | 1.5 h |  |
-| 🟡 | 0066 | P2 | Copy entity path or stable ID | 1.5 h |  |
+| 🟡 | 0066 | P2 | Copy entity path or stable ID | 45 min | ◐ |
 | 🟢 | 0067 | P2 | Reparent and duplicate with undo | done | ✅ |
 | 🟡 | 0068 | P2 | Lock hide and solo entities | 1.5 h |  |
 | 🟡 | 0069 | P2 | Scene tree diff after import | 1.5 h |  |
 | 🟡 | 0070 | P2 | Entity reference picker | 1.5 h |  |
 | 🟢 | 0071 | P2 | Component dependency warnings | 8 min | ◐ |
-| 🟡 | 0072 | P2 | Missing-reference repair panel | 1.5 h |  |
+| 🟡 | 0072 | P2 | Missing-reference repair panel | 45 min | ◐ |
 | 🟡 | 0073 | P2 | Inspector schema generated from reflection metadata | 1.5 h |  |
 | 🟢 | 0074 | P2 | Saveable custom inspector layouts | 15 min |  |
 | 🟡 | 0075 | P2 | Hierarchy performance stress test with 100k entities | 1.5 h |  |
 
-### 4. Viewport and editor navigation (6.4 days)
+### 4. Viewport and editor navigation (5.6 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -201,28 +201,28 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0078 | P1 | Focus selected bounding box smoothly | 8 h |  |
 | 🟠 | 0079 | P1 | Fly camera with adjustable speed | 8 h |  |
 | 🟡 | 0080 | P1 | Walkthrough camera with collision | 1.5 h |  |
-| 🟡 | 0081 | P1 | Orthographic top front side and isometric views | 1.5 h |  |
+| 🟡 | 0081 | P1 | Orthographic top front side and isometric views | 45 min | ◐ |
 | 🟠 | 0082 | P1 | Perspective lens and field-of-view controls | 8 h |  |
-| 🟡 | 0083 | P1 | Viewport bookmarks and named cameras | 1.5 h |  |
+| 🟡 | 0083 | P1 | Viewport bookmarks and named cameras | 45 min | ◐ |
 | 🟡 | 0084 | P2 | Toggle grid axes and safe guides | 1.5 h |  |
-| 🟡 | 0085 | P2 | Snap to grid and angular increments | 1.5 h |  |
+| 🟡 | 0085 | P2 | Snap to grid and angular increments | 45 min | ◐ |
 | 🟢 | 0086 | P2 | Vertex edge face and object selection modes | 15 min |  |
-| 🟡 | 0087 | P2 | Box lasso and paint selection | 1.5 h |  |
-| 🟡 | 0088 | P2 | Occlusion-aware selection | 1.5 h |  |
+| 🟡 | 0087 | P2 | Box lasso and paint selection | 45 min | ◐ |
+| 🟡 | 0088 | P2 | Occlusion-aware selection | 45 min | ◐ |
 | 🟢 | 0089 | P2 | X-ray and wireframe selection | 15 min |  |
-| 🟡 | 0090 | P2 | Transform gizmo coordinate-space toggle | 1.5 h |  |
-| 🟡 | 0091 | P2 | Pivot editing and reset | 1.5 h |  |
+| 🟡 | 0090 | P2 | Transform gizmo coordinate-space toggle | 45 min | ◐ |
+| 🟡 | 0091 | P2 | Pivot editing and reset | 45 min | ◐ |
 | 🟢 | 0092 | P2 | Surface alignment placement tool | 8 min | ◐ |
-| 🟡 | 0093 | P2 | Measurement ruler and distance annotations | 1.5 h |  |
+| 🟡 | 0093 | P2 | Measurement ruler and distance annotations | 45 min | ◐ |
 | 🟡 | 0094 | P2 | Screenshot capture without editor chrome | 1.5 h |  |
 | 🟡 | 0095 | P2 | Viewport statistics overlay | 1.5 h |  |
-| 🟢 | 0096 | P2 | Camera clip-plane controls | 15 min |  |
-| 🟡 | 0097 | P2 | Near-camera clipping diagnostics | 1.5 h |  |
-| 🟡 | 0098 | P2 | Gizmo hit-target accessibility | 1.5 h |  |
+| 🟢 | 0096 | P2 | Camera clip-plane controls | 8 min | ◐ |
+| 🟡 | 0097 | P2 | Near-camera clipping diagnostics | 45 min | ◐ |
+| 🟡 | 0098 | P2 | Gizmo hit-target accessibility | 45 min | ◐ |
 | 🟢 | 0099 | P2 | Multi-viewport split layouts | 15 min |  |
 | 🟡 | 0100 | P2 | Viewport interaction recording tests | 1.5 h |  |
 
-### 5. Native modeling and mesh editing (2.9 work weeks)
+### 5. Native modeling and mesh editing (2.8 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -230,29 +230,29 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0102 | P1 | Extrude faces with inset and offset | 8 h |  |
 | 🟠 | 0103 | P1 | Inset and bevel mesh operations | 8 h |  |
 | 🟠 | 0104 | P1 | Loop cut and edge slide | 8 h |  |
-| 🟡 | 0105 | P1 | Vertex merge and weld cleanup | 1.5 h |  |
+| 🟡 | 0105 | P1 | Vertex merge and weld cleanup | 45 min | ◐ |
 | 🟠 | 0106 | P1 | Knife and plane cut tools | 8 h |  |
 | 🔴 | 0107 | P1 | Boolean union subtract and intersect | 4 days |  |
 | 🟠 | 0108 | P1 | Non-destructive modifier stack | 8 h |  |
-| 🟡 | 0109 | P2 | Mirror modifier with clipping | 1.5 h |  |
-| 🟡 | 0110 | P2 | Array and radial duplication modifiers | 1.5 h |  |
+| 🟡 | 0109 | P2 | Mirror modifier with clipping | 45 min | ◐ |
+| 🟡 | 0110 | P2 | Array and radial duplication modifiers | 45 min | ◐ |
 | 🟢 | 0111 | P2 | Solidify and shell modifier | 8 min | ◐ |
-| 🟡 | 0112 | P2 | Subdivision surface modifier | 1.5 h |  |
+| 🟡 | 0112 | P2 | Subdivision surface modifier | 45 min | ◐ |
 | 🔴 | 0113 | P2 | Decimate and retopology assist | 4 days |  |
 | 🟢 | 0114 | P2 | Normals display and recalculation | 8 min | ◐ |
-| 🟡 | 0115 | P2 | UV seam marking | 1.5 h |  |
-| 🟡 | 0116 | P2 | Mesh validation for non-manifold geometry | 1.5 h |  |
+| 🟡 | 0115 | P2 | UV seam marking | 45 min | ◐ |
+| 🟡 | 0116 | P2 | Mesh validation for non-manifold geometry | 45 min | ◐ |
 | 🟢 | 0117 | P2 | Pivot and origin editing | 8 min | ◐ |
-| 🟡 | 0118 | P2 | Mesh island selection and separation | 1.5 h |  |
-| 🟡 | 0119 | P2 | Mesh join with material preservation | 1.5 h |  |
-| 🟡 | 0120 | P2 | LOD generation preview | 1.5 h |  |
+| 🟡 | 0118 | P2 | Mesh island selection and separation | 45 min | ◐ |
+| 🟡 | 0119 | P2 | Mesh join with material preservation | 45 min | ◐ |
+| 🟡 | 0120 | P2 | LOD generation preview | 45 min | ◐ |
 | 🟢 | 0121 | P2 | Procedural mesh from Luau parameters | 15 min |  |
 | 🟡 | 0122 | P2 | Mesh operation history and replay | 1.5 h |  |
 | 🟡 | 0123 | P2 | Gizmo-based deform brushes | 1.5 h |  |
 | 🟢 | 0124 | P2 | Mesh compare and diff view | 8 min | ◐ |
-| 🟡 | 0125 | P2 | Export selected mesh with clean transforms | 1.5 h |  |
+| 🟡 | 0125 | P2 | Export selected mesh with clean transforms | 45 min | ◐ |
 
-### 6. Terrain and procedural worldbuilding (2.7 work weeks)
+### 6. Terrain and procedural worldbuilding (2.6 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -264,22 +264,22 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0131 | P1 | Voxel terrain block editing | 8 h |  |
 | 🔴 | 0132 | P1 | Smooth voxel terrain via marching cubes prototype | 4 days |  |
 | 🟠 | 0133 | P1 | Terrain chunk LOD and crack prevention | 8 h |  |
-| 🟡 | 0134 | P2 | Spline-based road and river tools | 1.5 h |  |
-| 🟡 | 0135 | P2 | Landscape stamps and reusable brushes | 1.5 h |  |
+| 🟡 | 0134 | P2 | Spline-based road and river tools | 45 min | ◐ |
+| 🟡 | 0135 | P2 | Landscape stamps and reusable brushes | 45 min | ◐ |
 | 🟢 | 0136 | P2 | Procedural biome rules | 8 min | ◐ |
-| 🟡 | 0137 | P2 | Scatter vegetation along slope and masks | 1.5 h |  |
-| 🟡 | 0138 | P2 | Foliage instancing with density controls | 1.5 h |  |
-| 🟢 | 0139 | P2 | Runtime terrain carving API | 15 min |  |
-| 🟡 | 0140 | P2 | Terrain collision mesh generation | 1.5 h |  |
+| 🟡 | 0137 | P2 | Scatter vegetation along slope and masks | 45 min | ◐ |
+| 🟡 | 0138 | P2 | Foliage instancing with density controls | 45 min | ◐ |
+| 🟢 | 0139 | P2 | Runtime terrain carving API | 8 min | ◐ |
+| 🟡 | 0140 | P2 | Terrain collision mesh generation | 45 min | ◐ |
 | 🟡 | 0141 | P2 | Terrain sculpt undo history | 1.5 h |  |
 | 🟢 | 0142 | P2 | Terrain material layers with distance blending | 8 min | ◐ |
 | 🟠 | 0143 | P2 | Cave and overhang workflow | 8 h |  |
-| 🟡 | 0144 | P2 | Terrain streaming diagnostics | 1.5 h |  |
+| 🟡 | 0144 | P2 | Terrain streaming diagnostics | 45 min | ◐ |
 | 🟠 | 0145 | P2 | World origin rebasing for large maps | 8 h |  |
 | 🟢 | 0146 | P2 | Splatmap import support | 8 min | ◐ |
-| 🟡 | 0147 | P2 | Terrain export to heightmap and meshes | 1.5 h |  |
+| 🟡 | 0147 | P2 | Terrain export to heightmap and meshes | 45 min | ◐ |
 | 🟠 | 0148 | P2 | Erosion simulation with bake step | 8 h |  |
-| 🟢 | 0149 | P2 | Terrain boundary stitching | 15 min |  |
+| 🟢 | 0149 | P2 | Terrain boundary stitching | 8 min | ◐ |
 | 🟡 | 0150 | P2 | Sample open-world terrain project | 1.5 h |  |
 
 ### 7. Asset import pipeline (2.1 work weeks)
@@ -293,8 +293,8 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0155 | P1 | Import report with warnings and skipped fields | 1.5 h |  |
 | 🟡 | 0156 | P1 | Reimport when source files change | 1.5 h |  |
 | 🟠 | 0157 | P1 | Asset dependency tracking | 8 h |  |
-| 🟡 | 0158 | P1 | Stable GUID assignment for imported assets | 1.5 h |  |
-| 🟡 | 0159 | P2 | Duplicate asset detection by hash | 1.5 h |  |
+| 🟡 | 0158 | P1 | Stable GUID assignment for imported assets | 45 min | ◐ |
+| 🟡 | 0159 | P2 | Duplicate asset detection by hash | 45 min | ◐ |
 | 🟡 | 0160 | P2 | Import conflict resolution UI | 1.5 h |  |
 | 🟢 | 0161 | P2 | glTF 2.0 import quality suite | 15 min |  |
 | 🟡 | 0162 | P2 | OBJ and MTL import reliability | 1.5 h |  |
@@ -307,12 +307,12 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0169 | P2 | Video clip import metadata extraction | 1.5 h |  |
 | 🟡 | 0170 | P2 | Audio waveform and metadata import | 1.5 h |  |
 | 🟢 | 0171 | P2 | Sprite sheet slicing on import | 8 min | ◐ |
-| 🟡 | 0172 | P2 | Texture channel packing presets | 1.5 h |  |
-| 🟡 | 0173 | P2 | Unit scale and axis conversion preview | 1.5 h |  |
+| 🟡 | 0172 | P2 | Texture channel packing presets | 45 min | ◐ |
+| 🟡 | 0173 | P2 | Unit scale and axis conversion preview | 45 min | ◐ |
 | 🟢 | 0174 | P2 | Import sandbox for untrusted parsers | 15 min |  |
 | 🟡 | 0175 | P2 | Batch import regression corpus | 1.5 h |  |
 
-### 8. Asset browser and content management (6.3 days)
+### 8. Asset browser and content management (5.9 days)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -320,15 +320,15 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟠 | 0177 | P1 | Search by name tag type and usage | 8 h |  |
 | 🟠 | 0178 | P1 | Smart collections based on rules | 8 h |  |
 | 🟠 | 0179 | P1 | User-created asset folders and favorites | 8 h |  |
-| 🟡 | 0180 | P1 | Duplicate and orphan asset scanner | 1.5 h |  |
-| 🟡 | 0181 | P1 | Dependency graph for assets | 1.5 h |  |
+| 🟡 | 0180 | P1 | Duplicate and orphan asset scanner | 45 min | ◐ |
+| 🟡 | 0181 | P1 | Dependency graph for assets | 45 min | ◐ |
 | 🟠 | 0182 | P1 | Find references before delete | 8 h |  |
-| 🟡 | 0183 | P1 | Replace asset across project | 1.5 h |  |
-| 🟡 | 0184 | P2 | Asset usage counts by scene | 1.5 h |  |
+| 🟡 | 0183 | P1 | Replace asset across project | 45 min | ◐ |
+| 🟡 | 0184 | P2 | Asset usage counts by scene | 45 min | ◐ |
 | 🟡 | 0185 | P2 | Version history for source assets | 1.5 h |  |
 | 🟢 | 0186 | P2 | Metadata tags and custom fields | 8 min | ◐ |
 | 🟡 | 0187 | P2 | License and attribution metadata | 1.5 h |  |
-| 🟡 | 0188 | P2 | Content hash verification | 1.5 h |  |
+| 🟡 | 0188 | P2 | Content hash verification | 45 min | ◐ |
 | 🟢 | 0189 | P2 | Thumbnail contact sheets | 8 min | ◐ |
 | 🟡 | 0190 | P2 | Preview 3D models with lighting presets | 1.5 h |  |
 | 🟡 | 0191 | P2 | Preview audio and video in browser | 1.5 h |  |
@@ -338,11 +338,11 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0195 | P2 | Download and cache remote assets | 1.5 h |  |
 | 🟢 | 0196 | P2 | Asset pack creation wizard | 15 min |  |
 | 🟡 | 0197 | P2 | Reusable project-level asset aliases | 1.5 h |  |
-| 🟡 | 0198 | P2 | Missing asset relink wizard | 1.5 h |  |
+| 🟡 | 0198 | P2 | Missing asset relink wizard | 45 min | ◐ |
 | 🟢 | 0199 | P2 | Asset database consistency repair | 15 min |  |
 | 🟡 | 0200 | P2 | Asset browser keyboard navigation | 1.5 h |  |
 
-### 9. Materials and shader authoring (3.3 work weeks)
+### 9. Materials and shader authoring (3.2 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -354,8 +354,8 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0206 | P1 | Material preview sphere and custom mesh | 1.5 h |  |
 | 🟠 | 0207 | P1 | Texture sampler and tiling controls | 8 h |  |
 | 🟡 | 0208 | P1 | UV channel preview | 1.5 h |  |
-| 🟡 | 0209 | P2 | Triplanar mapping node | 1.5 h |  |
-| 🟡 | 0210 | P2 | Vertex-color material blending | 1.5 h |  |
+| 🟡 | 0209 | P2 | Triplanar mapping node | 45 min | ◐ |
+| 🟡 | 0210 | P2 | Vertex-color material blending | 45 min | ◐ |
 | 🟢 | 0211 | P2 | Decal authoring and projection bounds | 15 min |  |
 | 🟡 | 0212 | P2 | Shader include and reusable function library | 1.5 h |  |
 | 🟡 | 0213 | P2 | Shader compile cache with diagnostics | 1.5 h |  |
@@ -363,9 +363,9 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0215 | P2 | Per-platform shader variant selection | 1.5 h |  |
 | 🟡 | 0216 | P2 | Visualize normals roughness and overdraw | 1.5 h |  |
 | 🟢 | 0217 | P2 | Material batching compatibility hints | 8 min | ◐ |
-| 🟡 | 0218 | P2 | Procedural noise and gradient nodes | 1.5 h |  |
-| 🟡 | 0219 | P2 | Water material preset with depth fade | 1.5 h |  |
-| 🟡 | 0220 | P2 | Toon and stylized shading templates | 1.5 h |  |
+| 🟡 | 0218 | P2 | Procedural noise and gradient nodes | 45 min | ◐ |
+| 🟡 | 0219 | P2 | Water material preset with depth fade | 45 min | ◐ |
+| 🟡 | 0220 | P2 | Toon and stylized shading templates | 45 min | ◐ |
 | 🟠 | 0221 | P2 | Subsurface-scattering research prototype | 8 h |  |
 | 🟡 | 0222 | P2 | Shader graph version migration | 1.5 h |  |
 | 🟡 | 0223 | P2 | Exportable material presets | 1.5 h |  |
@@ -394,15 +394,15 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0241 | P2 | RenderDoc-friendly debug markers | 1.5 h |  |
 | 🟢 | 0242 | P2 | Render backend capability report | done | ✅ |
 | 🟡 | 0243 | P2 | Swapchain recreation reliability | 1.5 h |  |
-| 🟡 | 0244 | P2 | Dynamic resolution scaling option | 1.5 h |  |
-| 🟡 | 0245 | P2 | Render scale presets | 1.5 h |  |
+| 🟡 | 0244 | P2 | Dynamic resolution scaling option | 45 min | ◐ |
+| 🟡 | 0245 | P2 | Render scale presets | 45 min | ◐ |
 | 🟢 | 0246 | P2 | GPU timing queries with graceful fallback | 15 min |  |
 | 🟠 | 0247 | P2 | Mesh shader capability-gated experiment | 8 h |  |
 | 🟠 | 0248 | P2 | Clustered geometry culling prototype | 8 h |  |
 | 🟢 | 0249 | P2 | Renderer feature flags per driver | 15 min |  |
 | 🟡 | 0250 | P2 | Render correctness test scenes | 1.5 h |  |
 
-### 11. Lighting and environment (2.6 work weeks)
+### 11. Lighting and environment (2.5 work weeks)
 
 | | ID | Pri | Item | Time | |
 |---|---|---|---|---|---|
@@ -420,8 +420,8 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0262 | P2 | Sky atmosphere presets | 1.5 h |  |
 | 🟡 | 0263 | P2 | Procedural sky and cloud layers | 1.5 h |  |
 | 🟢 | 0264 | P2 | Day-night timeline component | 15 min |  |
-| 🟡 | 0265 | P2 | Automatic exposure controls | 1.5 h |  |
-| 🟡 | 0266 | P2 | Bloom and tone mapping presets | 1.5 h |  |
+| 🟡 | 0265 | P2 | Automatic exposure controls | 45 min | ◐ |
+| 🟡 | 0266 | P2 | Bloom and tone mapping presets | 45 min | ◐ |
 | 🟢 | 0267 | P2 | Color grading LUT support | 8 min | ◐ |
 | 🟡 | 0268 | P2 | Light linking and exclusion groups | 1.5 h |  |
 | 🟡 | 0269 | P2 | Light bake preview and invalidation | 1.5 h |  |
@@ -1194,7 +1194,7 @@ Columns: dot, ID, priority, item, ours (time), marks.
 | 🟡 | 0906 | P1 | Touch-first runtime controls | 1.5 h |  |
 | 🟠 | 0907 | P1 | Virtual thumbstick component | 8 h |  |
 | 🟡 | 0908 | P1 | Gesture input API | 1.5 h |  |
-| 🟡 | 0909 | P2 | Safe-area layout support | 1.5 h |  |
+| 🟡 | 0909 | P2 | Safe-area layout support | 45 min | ◐ |
 | 🟡 | 0910 | P2 | Battery and thermal-aware quality hints | 1.5 h |  |
 | 🟢 | 0911 | P2 | Mobile asset compression profiles | 8 min | ◐ |
 | 🟡 | 0912 | P2 | Background pause and audio policy | 1.5 h |  |

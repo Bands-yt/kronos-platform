@@ -3,7 +3,12 @@
 #include "core/AnimationReduce.hpp"
 #include "core/AssetTools.hpp"
 #include "core/ComponentRules.hpp"
+#include "core/AssetPipelineTools.hpp"
 #include "core/AudioAnalysis.hpp"
+#include "core/MeshOps2.hpp"
+#include "core/ProceduralShading.hpp"
+#include "core/TerrainTools.hpp"
+#include "core/ViewportMath.hpp"
 #include "core/ColorLut.hpp"
 #include "core/EnvironmentMath.hpp"
 #include "core/MusicStates.hpp"
@@ -16256,6 +16261,119 @@ void testV5RuntimeTuning() {
     check(assetProfiles().size() == 3 && std::string(assetProfiles()[2].name) == "Mobile", "asset profiles");
     using namespace engine::core::audio_analysis;
     check(reverbPresets().size() == 5 && std::fabs(saturate(1.0f, 0.5f) - 1.0f) < 1e-5f && saturate(0.3f, 0.0f) == 0.3f, "reverb presets and saturation");
+}
+
+void testV5Batch5() {
+    namespace as = engine::core::assets;
+    namespace mo = engine::core::meshops;
+    namespace vp = engine::core::viewport;
+    namespace tr = engine::core::terrain;
+    namespace sh = engine::core::shading;
+
+    const std::vector<uint8_t> a = {1, 2, 3}, b = {1, 2, 3}, c = {9};
+    check(as::contentHash(a) == as::contentHash(b) && as::contentHash(a) != as::contentHash(c), "content hash");
+    check(as::verifyHash(a, as::hex64(as::contentHash(a))) && !as::verifyHash(a, "0000000000000000"), "hash verification");
+    const auto dups = as::findDuplicates({{"x.png", a}, {"y.png", b}, {"z.png", c}});
+    check(dups.size() == 1 && dups[0].size() == 2, "duplicate files found by hash");
+    check(as::stableAssetId("a/b.png") == as::stableAssetId("a/b.png") && as::stableAssetId("a/b.png") != as::stableAssetId("a/c.png") &&
+              as::stableAssetId("p").size() == 36, "stable asset ids");
+    const auto scan = as::scanAssets({"a", "b"}, {"b", "c"});
+    check(scan.orphans == std::vector<std::string>{"a"} && scan.missing == std::vector<std::string>{"c"}, "orphan and missing assets");
+    as::DepMap deps{{"scene", {"mat"}}, {"mat", {"tex"}}};
+    check(as::transitiveDeps(deps, "scene").size() == 2 && as::dependents(deps, "tex").count("mat") == 1, "asset dependency graph");
+    std::map<std::string, std::vector<std::string>> scenes{{"s1", {"tex", "tex", "m"}}, {"s2", {"tex"}}};
+    check(as::usageCounts(scenes)["tex"] == 3 && as::replaceAsset(scenes, "tex", "tex2") == 3 && as::usageCounts(scenes)["tex2"] == 3, "usage counts and replace");
+    check(as::suggestRelink("old/Wood.PNG", {"new/wood.jpg", "new/stone.png"}) == "new/wood.jpg" && as::suggestRelink("zzzzzzzz", {"a.png"}).empty(), "relink suggestion");
+    check(as::repairSuggestions({"tex/wood.png"}, {"tex/wod.png"}).front().second == "tex/wood.png", "missing reference repair");
+    check(as::bulkRename({"A", "B"}, "{name}_{nn}") == std::vector<std::string>{"A_01", "B_02"} && as::bulkRename({"x"}, "Part{n}", 7)[0] == "Part7", "bulk rename");
+    check(as::entityPath({"Workspace", "Model", "Part"}) == "Workspace/Model/Part", "entity path");
+    const std::vector<uint8_t> r1 = {10, 20}, g1 = {30, 40};
+    const auto packed = as::packChannels({&r1, &g1, nullptr, nullptr}, 2, 255);
+    check(packed.size() == 8 && packed[0] == 10 && packed[1] == 30 && packed[2] == 255 && packed[4] == 20 && as::packPresets().size() == 3, "texture channel packing");
+    const auto conv = as::convertPoint({1, 2, 3}, as::UpAxis::Z, as::UpAxis::Y, 0.5f);
+    check(conv.x == 0.5f && conv.y == 1.5f && conv.z == -1.0f, "Z-up to Y-up conversion with scale");
+
+    mo::MeshData quad;
+    quad.positions = {{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}, {0, 0, 0}};
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    check(mo::validate(quad).boundaryEdges == 4 && !mo::validate(quad).clean(), "open quad has 4 boundary edges");
+    mo::MeshData extra = quad;
+    extra.positions.push_back({0, 0, 0});
+    extra.indices = {4, 1, 2, 0, 1, 4};
+    check(mo::weld(extra, 0.01f).positions.size() == 4 && mo::weld(extra, 0.01f).indices.size() == 3, "weld merges close vertices and drops collapsed triangles");
+    check(mo::mirror(quad, 0).positions.size() == 10 && mo::mirror(quad, 0).indices.size() == 12, "mirror doubles geometry");
+    check(mo::arrayDuplicate(quad, 3, {2, 0, 0}).positions.size() == 15 && mo::arrayDuplicate(quad, 3, {2, 0, 0}).positions[10][0] >= 4.0f, "array duplicate");
+    check(mo::radialDuplicate(quad, 4).indices.size() == 24, "radial duplicate");
+    int count = 0;
+    const auto isl = mo::islands(mo::join(quad, quad), count);
+    check(count == 2 && isl.size() == 4 && isl[0] != isl[2], "two separate pieces are two islands");
+    int one = 0;
+    mo::islands(quad, one);
+    check(one == 1, "one piece is one island");
+    check(mo::subdivideLinear(quad).indices.size() == quad.indices.size() * 4, "linear subdivision makes 4 triangles per triangle");
+    check(mo::applyTransform(quad, 2.0f, {1, 0, 0}).positions[1][0] == 3.0f, "apply transform");
+    check(mo::uvSeams({0, 1, 2, 0, 2, 3}, {0, 1, 2, 0, 2, 3}).empty() && mo::uvSeams({0, 1, 2, 0, 2, 3}, {0, 1, 2, 4, 5, 6}).size() == 1, "uv seams");
+
+    check(vp::snapValue(1.4f, 0.5f) == 1.5f && vp::snapAngleDegrees(47, 15) == 45 && vp::snapValue(3, 0) == 3, "snapping");
+    check(vp::rulerLabel({0, 0, 0}, {3, 4, 0}) == "5.00 studs", "ruler label");
+    check(vp::viewPresets().size() == 7 && vp::viewPresets()[0].orthographic, "view presets");
+    const auto marks = vp::parseBookmarks(vp::serializeBookmarks({{"Main gate", {1, 2, 3}, 0.5f, -0.25f}}));
+    check(marks.size() == 1 && marks[0].name == "Main gate" && marks[0].position.y == 2.0f, "camera bookmarks round trip");
+    const std::vector<vp::P2> tri = {{0, 0}, {10, 0}, {0, 10}};
+    check(vp::pointInPolygon({2, 2}, tri) && !vp::pointInPolygon({9, 9}, tri) && vp::pointInBox({1, 1}, {2, 2}, {0, 0}), "lasso and box selection");
+    check(vp::pickNearestVisible({{1, 5, false}, {2, 2, true}, {3, 9, false}}) == 1 && vp::pickNearestVisible({{2, 1, true}}) == -1, "picking skips hidden objects");
+    check(vp::gizmoDeltaToWorld({1, 0, 0}, 1.5707963f, true).z < -0.99f && vp::gizmoDeltaToWorld({1, 0, 0}, 1.0f, false).x == 1.0f, "gizmo space toggle");
+    check(vp::gizmoHitRadius(4, true) == 18.0f && vp::gizmoHitRadius(30, false) == 30.0f, "gizmo hit target");
+    const auto clip = vp::clampClipPlanes({0.0001f, 1e9f});
+    check(clip.nearPlane >= 0.01f && clip.farPlane / clip.nearPlane <= 100001.0f, "clip planes keep depth precision");
+    check(vp::nearClipped({0.5f, 10.0f}, 0.1f, 1.0f) == std::vector<int>{0}, "near-clipped objects found");
+    float sx, sy, sw, sh2;
+    vp::applySafeArea(100, 50, {10, 5, 10, 5}, sx, sy, sw, sh2);
+    check(sx == 10 && sy == 5 && sw == 80 && sh2 == 40, "safe area");
+
+    tr::Heightfield land = tr::makeFlat(9, 9, 0.0f);
+    tr::carve(land, 4, 4, 3, -2.0f);
+    check(land.at(4, 4) < -1.9f && land.at(0, 0) == 0.0f && land.at(4, 4) <= land.at(5, 4), "carving makes a smooth hole");
+    tr::Heightfield brush = tr::makeFlat(2, 2, 1.0f);
+    tr::stamp(land, brush, 8, 8, 2.0f);
+    check(land.at(8, 8) == 2.0f, "stamp clips at the edge");
+    const auto cm = tr::collisionMesh(tr::makeFlat(3, 3), 2.0f);
+    check(cm.vertices.size() == 27 && cm.indices.size() == 24, "terrain collision mesh");
+    const auto raw = tr::exportHeightmap16(tr::makeFlat(2, 2, 5.0f), 0.0f, 10.0f);
+    const tr::Heightfield back = tr::importHeightmap16(raw, 2, 2, 0.0f, 10.0f);
+    check(raw.size() == 8 && std::fabs(back.at(1, 1) - 5.0f) < 0.01f, "heightmap export and import");
+    tr::Heightfield left = tr::makeFlat(3, 3, 0.0f), right = tr::makeFlat(3, 3, 4.0f);
+    tr::stitchRightLeft(left, right);
+    check(left.at(2, 1) == 2.0f && right.at(0, 1) == 2.0f, "chunk edges are stitched");
+    check(tr::streamingSummary({3, 10, 5}).find("hitches") != std::string::npos && tr::streamingSummary({3, 1, 5}).find("hitches") == std::string::npos, "streaming summary");
+    const auto spline = tr::sampleSpline({{0, 0}, {10, 0}, {20, 5}}, 4);
+    check(spline.size() == 9 && spline.front().x == 0 && spline.back().x == 20, "spline sampling");
+    const auto edges = tr::roadEdges({{0, 0}, {10, 0}}, 2.0f);
+    check(edges.size() == 2 && std::fabs(edges[0].first.z - edges[0].second.z) > 3.9f, "road edges are a road width apart");
+    tr::Heightfield hill = tr::makeFlat(20, 20, 0.0f);
+    tr::ScatterRule rule;
+    rule.spacing = 2.0f;
+    const auto pts = tr::scatter(hill, 1.0f, rule, 7);
+    check(!pts.empty() && pts == tr::scatter(hill, 1.0f, rule, 7) && pts != tr::scatter(hill, 1.0f, rule, 8), "scatter is seeded");
+    rule.maxHeight = -1.0f;
+    check(tr::scatter(hill, 1.0f, rule, 7).empty(), "scatter respects height rules");
+    rule.maxHeight = 1e9f;
+    rule.density = 0.0f;
+    check(tr::scatter(hill, 1.0f, rule, 7).size() < pts.size() / 2, "scatter density thins points");
+
+    check(sh::valueNoise(1.3f, 2.1f, 0.4f, 3) == sh::valueNoise(1.3f, 2.1f, 0.4f, 3) && sh::fbm(0.5f, 0.5f, 0.5f) >= 0.0f && sh::fbm(0.5f, 0.5f, 0.5f) <= 1.0f, "noise is repeatable and bounded");
+    check(sh::gradient({0, 0, 0}, {1, 1, 1}, 0.5f)[1] == 0.5f, "gradient");
+    const auto tw = sh::triplanarWeights(0, 1, 0);
+    check(std::fabs(tw[0] + tw[1] + tw[2] - 1.0f) < 1e-5f && tw[1] > 0.99f, "triplanar weights sum to 1");
+    check(sh::heightBlend(0.2f, 0.9f, 0.5f) > 0.5f && sh::heightBlend(0.9f, 0.2f, 0.5f) < 0.5f, "height blend favours the taller layer");
+    check(sh::waterAt(0.0f).foam > 0.99f && sh::waterAt(10.0f).depthFade == 1.0f && sh::waterAt(10.0f).foam == 0.0f, "water depth fade and foam");
+    check(sh::toonRamp(0.0f) == 0.0f && sh::toonRamp(1.0f) == 1.0f, "toon ramp ends");
+    check(sh::reinhard(1.0f) == 0.5f && sh::acesFilm(100.0f) <= 1.0f && sh::acesFilm(0.0f) >= 0.0f, "tone mapping stays in range");
+    float exposure = 1.0f;
+    for (int i = 0; i < 200; ++i) exposure = sh::adaptExposure(exposure, 0.09f, 0.05f);
+    check(std::fabs(exposure - 2.0f) < 0.05f, "auto exposure settles on the target");
+    check(sh::bloomPresets()[0].intensity == 0.0f && sh::renderScalePresets()[3].scale == 0.5f, "bloom and render scale presets");
+    check(sh::adjustRenderScale(1.0f, 30.0f, 16.6f) < 1.0f && sh::adjustRenderScale(0.8f, 8.0f, 16.6f) > 0.8f && sh::adjustRenderScale(0.8f, 16.6f, 16.6f) == 0.8f && sh::adjustRenderScale(0.5f, 50.0f, 16.6f) == 0.5f, "dynamic resolution moves with frame time");
 }
 
 void testPaletteTextContrast() {
@@ -52890,6 +53008,7 @@ int main() {
     testV5MoreLibraries();
     testV5AssetTools();
     testV5RuntimeTuning();
+    testV5Batch5();
     testRollbackPacketCodec();
     testRollbackNetSessionLoopback();
     testRollbackCharacterMovement();

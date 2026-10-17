@@ -250,3 +250,61 @@ Already existed (checked, not built): 0061 property filter, 0596 remote rate lim
 | 0464 | Rust plugin capability manifest | done | already built (capability bits in plugin info) |
 | 0771 | Feature maturity labels | done | MATURITY.md |
 | 0989 | Separate shipped features from prototypes | done | MATURITY.md |
+
+## v5 batch 5 (17 Oct 2026): tested helper libraries
+
+| ID | Item | Status | Evidence / gap |
+|---|---|---|---|
+| 0058 | Bulk rename with patterns | partial | assets::bulkRename ({name},{n},{nn}) tested; no Studio dialog |
+| 0066 | Copy entity path or stable ID | partial | assets::entityPath tested; no menu item |
+| 0159 | Duplicate asset detection by hash | partial | assets::findDuplicates tested; not run on import |
+| 0188 | Content hash verification | partial | assets::verifyHash (FNV-1a 64, not cryptographic) tested |
+| 0158 | Stable GUID assignment for imported assets | partial | assets::stableAssetId tested; importer doesn't use it |
+| 0180 | Duplicate and orphan asset scanner | partial | assets::scanAssets + findDuplicates tested; no panel |
+| 0181 | Dependency graph for assets | partial | transitiveDeps/dependents tested; no graph view |
+| 0184 | Asset usage counts by scene | partial | assets::usageCounts tested |
+| 0183 | Replace asset across project | partial | assets::replaceAsset tested on reference lists |
+| 0198 | Missing asset relink wizard | partial | suggestRelink tested; no wizard |
+| 0072 | Missing-reference repair panel | partial | repairSuggestions tested; no panel |
+| 0172 | Texture channel packing presets | partial | packPresets + packChannels tested |
+| 0173 | Unit scale and axis conversion preview | partial | convertPoint Z-up/Y-up with scale tested |
+| 0105 | Vertex merge and weld cleanup | partial | meshops::weld tested |
+| 0109 | Mirror modifier with clipping | partial | meshops::mirror tested (no clipping) |
+| 0110 | Array and radial duplication modifiers | partial | arrayDuplicate/radialDuplicate tested |
+| 0116 | Mesh validation for non-manifold geometry | partial | meshops::validate (holes, 3+ edges, degenerate) tested |
+| 0118 | Mesh island selection and separation | partial | meshops::islands tested; no selection UI |
+| 0119 | Mesh join with material preservation | partial | meshops::join tested; materials not tracked |
+| 0125 | Export selected mesh with clean transforms | partial | meshops::applyTransform tested; no exporter |
+| 0120 | LOD generation preview | partial | simplifyByGrid tested; no preview |
+| 0115 | UV seam marking | partial | uvSeams tested; no UI |
+| 0112 | Subdivision surface modifier | partial | linear subdivision only (no smoothing) |
+| 0091 | Pivot editing and reset | partial | meshops::recenter tested |
+| 0081 | Orthographic top front side and isometric views | partial | viewport::viewPresets table tested; camera doesn't use it |
+| 0085 | Snap to grid and angular increments | partial | snapValue/snapAngleDegrees tested |
+| 0093 | Measurement ruler and distance annotations | partial | distance/rulerLabel tested; no tool |
+| 0083 | Viewport bookmarks and named cameras | partial | serialize/parseBookmarks tested; no UI |
+| 0087 | Box lasso and paint selection | partial | pointInPolygon/pointInBox tested; no tool |
+| 0088 | Occlusion-aware selection | partial | pickNearestVisible tested |
+| 0090 | Transform gizmo coordinate-space toggle | partial | gizmoDeltaToWorld (yaw only) tested |
+| 0098 | Gizmo hit-target accessibility | partial | gizmoHitRadius tested |
+| 0096 | Camera clip-plane controls | partial | clampClipPlanes tested; no controls |
+| 0097 | Near-camera clipping diagnostics | partial | nearClipped tested |
+| 0909 | Safe-area layout support | partial | applySafeArea tested |
+| 0134 | Spline-based road and river tools | partial | sampleSpline/roadEdges tested; no tool |
+| 0135 | Landscape stamps and reusable brushes | partial | terrain::stamp tested |
+| 0137 | Scatter vegetation along slope and masks | partial | terrain::scatter (seeded, height/slope/density) tested |
+| 0138 | Foliage instancing with density controls | partial | scatter density tested; no instancing |
+| 0139 | Runtime terrain carving API | partial | terrain::carve on a heightfield tested; not on the real Terrain or Luau |
+| 0140 | Terrain collision mesh generation | partial | collisionMesh tested; physics doesn't use it |
+| 0147 | Terrain export to heightmap and meshes | partial | 16-bit heightmap export/import tested |
+| 0149 | Terrain boundary stitching | partial | stitchRightLeft tested |
+| 0144 | Terrain streaming diagnostics | partial | streamingSummary tested |
+| 0218 | Procedural noise and gradient nodes | partial | valueNoise/fbm/gradient tested; no shader nodes |
+| 0209 | Triplanar mapping node | partial | triplanarWeights tested |
+| 0210 | Vertex-color material blending | partial | heightBlend tested |
+| 0219 | Water material preset with depth fade | partial | waterAt tested |
+| 0220 | Toon and stylized shading templates | partial | toonRamp tested |
+| 0265 | Automatic exposure controls | partial | adaptExposure tested; renderer unchanged |
+| 0266 | Bloom and tone mapping presets | partial | reinhard/acesFilm/bloomPresets tested |
+| 0244 | Dynamic resolution scaling option | partial | adjustRenderScale tested; renderer unchanged |
+| 0245 | Render scale presets | partial | renderScalePresets tested |
