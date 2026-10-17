@@ -397,6 +397,12 @@
 #include "tntwars/RadarIntercept.hpp"
 #include "tntwars/Scavenging.hpp"
 #include "tntwars/SkyPlatforms.hpp"
+
+#if defined(_WIN32)
+// windows.h defines these; the tests use them as names.
+#undef near
+#undef far
+#endif
 #include "tntwars/ThrusterHp.hpp"
 #include "tntwars/TntCharge.hpp"
 #include "tntwars/SkyMapTerrain.hpp"

@@ -17,8 +17,6 @@
 #endif
 #include <winsock2.h>
 #include <windows.h>
-#undef near
-#undef far
 #else
 #include <dlfcn.h>
 #include <unistd.h>
