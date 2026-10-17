@@ -23,6 +23,8 @@
 #endif
 #include <winsock2.h>
 #include <windows.h>
+#undef near
+#undef far
 #elif defined(__linux__)
 #include <cerrno>
 #include <poll.h>
